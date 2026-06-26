@@ -1,13 +1,15 @@
 name: Browser CI
 
-# Build + unit tests for services/browser on every browser-touching PR.
-# Lifted (minimal) from neonbinder_browser browser-deploy.yml `test` job.
+# Build + unit tests, AND a per-PR Cloud Run preview for services/browser.
+# Ported from neonbinder_browser/browser-deploy.yml (deploy-preview +
+# preview-login-probe + comment-preview). The push-to-main prod deploy
+# pipeline (build-push / deploy-dev / dev-promote / deploy-prod) is NOT here —
+# that lands at cutover (step D). This lane only stands up + validates the
+# per-PR preview so the web E2E can run against the PR's OWN browser code.
 #
-# NOTE: the full deploy pipeline (per-PR Cloud Run preview, login-probe,
-# dev/prod promote) is intentionally NOT here yet — it needs the GCP WIF
-# provider to trust neonbinder/neonbinder (Terraform change, see CUTOVER.md)
-# and the prod deploy keys. It lands at cutover. Until then, services/browser
-# E2E runs against the dev browser service (the Convex preview default).
+# WIF: the dev provider now trusts neonbinder/neonbinder (NEO-18 terraform
+# change, neonbinder_ioc#25). GCP_WIF_PROVIDER_DEV / GCP_SERVICE_ACCOUNT_DEPLOYER_DEV
+# are set on this repo.
 
 on:
   pull_request:
@@ -20,7 +22,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: browser-ci-${{ github.event.pull_request.number || github.ref }}
+  # PRs: group per-PR and cancel in-flight so rapid pushes don't stack up
+  # redundant preview builds. main/dispatch: group per-ref without cancel.
+  group: browser-ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -45,3 +49,202 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+
+  # ---------------------------------------------------------------------------
+  # Per-PR preview: each PR gets a stable `pr-<N>` tagged, NO-TRAFFIC revision
+  # on the dev Cloud Run service. Traffic-serving dev (main's HEAD) is
+  # untouched. The deterministic tagged URL
+  #   https://pr-<N>---neonbinder-browser-xxlo66yxuq-uc.a.run.app
+  # is what apps/web's vercel-build.sh points the Convex preview's
+  # NEONBINDER_BROWSER_URL at, so the web E2E exercises THIS PR's browser code.
+  # Fork PRs are skipped (no WIF/OIDC access). Teardown: a cutover follow-up
+  # (port preview-cleanup.yml on pull_request: closed).
+  # ---------------------------------------------------------------------------
+  deploy-preview:
+    name: Deploy per-PR Cloud Run preview
+    needs: test
+    if: |
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      preview_url: ${{ steps.capture.outputs.preview_url }}
+      preview_tag: ${{ steps.capture.outputs.preview_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build and push Docker image
+        env:
+          IMAGE: gcr.io/neonbinder-dev/neonbinder-browser
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        # cwd = services/browser (job default); Dockerfile.prod + context live here.
+        run: |
+          docker build -f Dockerfile.prod -t "$IMAGE:pr-$PR_NUMBER" .
+          docker push "$IMAGE:pr-$PR_NUMBER"
+
+      - name: Deploy tagged no-traffic preview to dev Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: neonbinder-browser
+          region: us-central1
+          image: gcr.io/neonbinder-dev/neonbinder-browser:pr-${{ github.event.pull_request.number }}
+          project_id: neonbinder-dev
+          env_vars: ENVIRONMENT=dev
+          no_traffic: true
+          tag: pr-${{ github.event.pull_request.number }}
+
+      - id: capture
+        name: Capture preview URL
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          TAG="pr-$PR"
+          TAGGED_URL=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 \
+            --project=neonbinder-dev \
+            --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "ERROR: preview URL for tag=$TAG not found on service."
+            exit 1
+          fi
+          echo "preview_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+          echo "preview_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Preview URL: $TAGGED_URL"
+
+  # Real BSC + SportLots login round-trip against the tagged preview revision.
+  # This is the dedicated browser-service e2e check (tests/integration/*.test.mjs
+  # via test:prod-gate) that was missing in the monorepo CI — it catches auth
+  # regressions in the PR's own browser code before the web E2E even runs.
+  preview-login-probe:
+    name: Preview login probe (BSC + SportLots)
+    needs: deploy-preview
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: services/browser/.nvmrc
+          cache: npm
+          cache-dependency-path: services/browser/package-lock.json
+      - run: npm ci
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Cloud Run validates the OIDC token's audience against the *base* service
+      # URL even when the request targets the tag-prefixed host. Capture the base.
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 \
+            --project=neonbinder-dev \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      # Mint a Google OIDC ID token as the deployer SA (holds run.invoker via
+      # Terraform deployer_invoker), audience = base service URL.
+      - id: probe-token
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Run integration login suite against preview
+        env:
+          TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
+          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
+          SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
+          SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
+        run: npm run test:prod-gate
+
+  # Sticky PR comment with the preview URL + probe result, always posted so a
+  # failure still leaves a trace on the PR.
+  comment-preview:
+    name: Comment preview URL
+    needs: [deploy-preview, preview-login-probe]
+    if: |
+      always()
+      && github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Sticky preview comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          URL: ${{ needs.deploy-preview.outputs.preview_url }}
+          TAG: ${{ needs.deploy-preview.outputs.preview_tag }}
+          DEPLOY_RESULT: ${{ needs.deploy-preview.result }}
+          PROBE_RESULT: ${{ needs.preview-login-probe.result }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          status() {
+            case "$1" in
+              success) echo "PASS" ;;
+              failure) echo "FAIL" ;;
+              cancelled) echo "CANCELLED" ;;
+              skipped) echo "skipped" ;;
+              *) echo "$1" ;;
+            esac
+          }
+          URL_LINE="not deployed — see workflow run"
+          if [ "$DEPLOY_RESULT" = "success" ] && [ -n "$URL" ]; then URL_LINE="$URL"; fi
+          cat > /tmp/body.md <<EOF
+          <!-- neonbinder-browser-preview-marker -->
+          ## Browser service preview
+
+          **URL:** $URL_LINE
+          **Tag:** \`$TAG\`
+
+          **Checks**
+          - Deploy: $(status "$DEPLOY_RESULT")
+          - Login probe (BSC + SportLots): $(status "$PROBE_RESULT")
+
+          The web E2E on this PR runs against this preview (NEONBINDER_BROWSER_URL is pointed at the tagged URL). [Workflow run]($RUN_URL)
+          EOF
+          EXISTING=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | contains("neonbinder-browser-preview-marker")) | .id' | head -n 1)
+          if [ -n "$EXISTING" ]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$EXISTING" -f body="$(cat /tmp/body.md)" > /dev/null
+            echo "Updated sticky comment $EXISTING."
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -f body="$(cat /tmp/body.md)" > /dev/null
+            echo "Created sticky comment."
+          fi

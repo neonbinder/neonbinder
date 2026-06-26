@@ -2,6 +2,12 @@
 
 A TypeScript-based web automation service for card delisting operations.
 
+> **CI — per-PR preview (NEO-18):** every PR that changes `services/browser/**`
+> deploys a `pr-<N>` tagged, no-traffic Cloud Run preview on the dev service and
+> runs a real BSC + SportLots login probe against it (`browser.yml`). The web
+> Maestro E2E on the same PR points `NEONBINDER_BROWSER_URL` at that preview, so
+> a PR is validated against its OWN browser code end-to-end.
+
 ## Features
 
 - Express.js server with TypeScript
