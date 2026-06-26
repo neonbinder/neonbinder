@@ -1,0 +1,48 @@
+url: ${APP_URL || "https://localhost:3000"}
+name: AI Card Identification Feature Page
+tags:
+  - marketing
+  - home
+---
+# Clear cookies/storage so the worker is always signed out, making the CTA test deterministic
+- launchApp:
+    clearState: true
+- assertVisible: "Neon Binder"
+
+# Scroll to and tap the AI card to navigate
+- scrollUntilVisible:
+    element:
+      text: ".*AI-Based.*"
+    centerElement: true
+- tapOn:
+    text: ".*AI-Based.*"
+
+# Four feature sections
+- assertVisible: "Instant Recognition"
+- scrollUntilVisible:
+    element:
+      text: "Complete Card Data"
+- scrollUntilVisible:
+    element:
+      text: "Accuracy & Verification"
+- scrollUntilVisible:
+    element:
+      text: "Machine Learning"
+
+# CTA: Get Started opens Clerk sign-up dialog. clearState guarantees signed-out, so this is unconditional.
+- scrollUntilVisible:
+    element:
+      text: "Get Started"
+    centerElement: true
+- tapOn: "Get Started"
+- assertVisible: "Create your account"
+
+# Dismiss dialog and verify it closed
+- tapOn:
+    point: "5%, 50%"
+- assertNotVisible: "Create your account"
+
+# Always verify the Back button works; signed-out is now guaranteed
+- tapOn: "Back"
+- assertVisible:
+    text: ".*Sign In.*"

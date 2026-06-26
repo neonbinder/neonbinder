@@ -1,0 +1,47 @@
+name: Browser CI
+
+# Build + unit tests for services/browser on every browser-touching PR.
+# Lifted (minimal) from neonbinder_browser browser-deploy.yml `test` job.
+#
+# NOTE: the full deploy pipeline (per-PR Cloud Run preview, login-probe,
+# dev/prod promote) is intentionally NOT here yet — it needs the GCP WIF
+# provider to trust neonbinder/neonbinder (Terraform change, see CUTOVER.md)
+# and the prod deploy keys. It lands at cutover. Until then, services/browser
+# E2E runs against the dev browser service (the Convex preview default).
+
+on:
+  pull_request:
+    paths:
+      - "services/browser/**"
+  push:
+    branches: [main]
+    paths:
+      - "services/browser/**"
+  workflow_dispatch:
+
+concurrency:
+  group: browser-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/browser
+
+jobs:
+  test:
+    name: Build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: services/browser/.nvmrc
+          cache: npm
+          cache-dependency-path: services/browser/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test

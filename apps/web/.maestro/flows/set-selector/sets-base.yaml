@@ -1,0 +1,110 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "BaseSetPicker — confirm SportLots base-set mapping for 2024 Topps Heritage"
+tags:
+  - set-selector
+  - regression
+---
+# Independent BaseSetPicker test (was cascade/sets-base). Uses 2024 Topps HERITAGE
+# — a DIFFERENT set from the setup track's Topps Chrome — so it exercises the
+# BaseSetPicker on a set whose base mapping is NOT pre-confirmed by setup.
+# (Heritage is a clean single-base set: one 1–500 base, no Series-1/2/Update
+# split, so SportLots returns one unambiguous "likely match". Flagship "Topps"
+# was rejected for exactly that split; "Topps Fire" doesn't exist in 2024.)
+#
+# Topps Heritage's variant types + base mapping are not pre-synced, so the drill
+# does a cold variant-type sync and the picker does a LIVE SportLots base-set
+# fetch. The 60s wait on the picker open is that live marketplace fetch (the
+# BaseSetPicker's real latency), not padding — every other wait uses the 7s default.
+#
+# Phase-0 bootstrap (worker-bootstrap.yaml) already seeds BSC + SL credentials
+# AND warms both marketplace tokens (best-effort optional). BaseSetPicker's
+# getSiteToken performs lazy re-auth on cache-miss, so no explicit re-login is
+# needed here. The redundant util-login-to-bsc / util-login-to-sportlots calls
+# that appeared here have been removed — they caused a CDP-scroll flake
+# (MismatchedInputException × 118 in CI) on the SL auth-success scroll
+# and provided no coverage not already guaranteed by the bootstrap.
+#
+# The flow URL lands directly on /set-selector. util-drill-to-2024-topps-chrome
+# calls openLink /set-selector itself (same-page reload), so no /profile detour
+# is needed to make it a cross-page mount.
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# Drill Baseball → 2024 → Topps → Topps Heritage (cold variant-type sync inside util).
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SET: "Topps Heritage"
+
+# ── SELECT BASE → BaseSetPicker ─────────────────────────────────────────────
+# "Base" sits in the Variant Types column. Center it before tapping — without
+# centering, the element can land in the 1024×629 footer-steal zone (y≥490) and
+# the click is absorbed by the footer layer rather than the row. Rule 8.
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+- tapOn: "Base"
+
+# Wait up to 60s for EITHER the BaseSetPicker modal (live SL fetch, Path A) OR
+# the "Re-map Base" button (auto-closed with a prior mapping, Path B).
+# This 60s wait is the only sanctioned >7s wait in this flow; it covers the
+# real Puppeteer/SSO marketplace round-trip latency.
+- extendedWaitUntil:
+    visible:
+      text: ".*Select Base Set.*|.*Re-map Base.*"
+    timeout: 60000
+
+# PATH A — picker stays open (SL returned data, no prior mapping):
+#   Validate the picker structure, then confirm. The "Confirm Base Set" button
+#   is already present once "Select Base Set" is visible (same modal open, same
+#   fetch result) — no second 60s wait needed. Center before tapping to keep
+#   the button clear of the footer-steal zone. Rule 8.
+- runFlow:
+    when:
+      visible: "Select Base Set"
+    commands:
+      # BaseSetPicker modal STRUCTURE — the unique coverage this flow owns.
+      - assertVisible:
+          text: ".*Choose the base set for.*"
+      - assertVisible:
+          text: ".*SportLots base.*"
+      - assertVisible: "likely match"
+      - scrollUntilVisible:
+          element:
+            text: "Confirm Base Set"
+          centerElement: true
+      - tapOn: "Confirm Base Set"
+      # Wait for the modal to close; default 7s is enough — no backend
+      # round-trip at this point, the Convex write fires optimistically.
+      - extendedWaitUntil:
+          notVisible: "Select Base Set"
+
+# PATH B — auto-closed (prior mapping already exists): the picker dismissed
+#   itself and "Re-map Base" is already visible. No picker structure to validate
+#   here, but we explicitly assert the Re-map button to confirm the mapping
+#   committed correctly and the CardChecklist section rendered.
+- runFlow:
+    when:
+      notVisible: "Select Base Set"
+    commands:
+      - assertVisible: "Re-map Base"
+
+# ── CardChecklist renders after the mapping is confirmed ────────────────────
+# Scroll DOWN to the "Fetch from Marketplaces" / "Refresh" button to confirm
+# the CardChecklist section is mounted and the fetch CTA is present.
+# scrollUntilVisible already asserts visibility — no trailing assertVisible needed.
+- scrollUntilVisible:
+    element:
+      text: ".*Fetch from Marketplaces.*|Refresh"
+    visibilityPercentage: 50
+
+# Scroll UP to "Re-map Base" to confirm the base-mapping badge is visible.
+# scrollUntilVisible already asserts visibility — no trailing assertVisible needed.
+- scrollUntilVisible:
+    element:
+      text: "Re-map Base"
+    direction: UP
+    visibilityPercentage: 50

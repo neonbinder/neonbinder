@@ -1,0 +1,74 @@
+# R1 — Single feature: a signed-in user WITH a saved public profile can enter a
+# sale amount on /qr-code and generate a QR code whose sale URL points at their
+# public sale page (https://neonbinder.io/u/<username>/sale?amt=<amount>), with
+# Download + Print actions appearing.
+#
+# SELF-CONTAINED (R3/R4): the cloud queue regenerates ${TEST_USERNAME} fresh per
+# flow run on an arbitrary runner, so no flow can rely on another flow's saved
+# profile — each must create its own. This flow signs in (new-profile account) +
+# resets to an empty profile, then fills+saves the public profile under its own
+# ${TEST_USERNAME} via the shared util (the QR generator only needs
+# getMyPublicProfile.username to be non-null — app/qr-code/page.tsx). We sign in
+# as `new-profile` because getMyPublicProfile is keyed by the signed-in user, so
+# the account that fills the profile must also be the one that reads it on
+# /qr-code. No in-body re-login beyond this entry handshake (R4).
+#
+# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile.
+# `account=new-profile` and `worker` are top-level sign-in query params (the
+# inner redirect value is left unencoded so the router parses them as siblings).
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: QR Code — generate sale QR
+tags:
+  - smoke
+  - qr-code
+---
+# Step 1: land on the freshly-reset /profile page.
+- launchApp
+- assertVisible: "Profile Settings"
+
+# Step 2: fill + save this run's public profile (username/display + payments) via
+# the shared util — runs in this session, returns after "Profile saved." (R3:
+# reuse the proven fill steps instead of copy-pasting them here).
+- runFlow:
+    file: ../profile/util-fill-public-profile.yaml
+
+# Step 3: go to /qr-code (openLink = fresh cross-page mount; avoids the post-tap
+# CDP nav crash). The generator form renders because the profile now exists.
+- openLink: ${APP_URL || "https://localhost:3000"}/qr-code
+- assertVisible: "QR Code Generator"
+
+# Step 4: enter a valid amount. We target what the USER perceives — the visible
+# "Sale Amount" label. Its `htmlFor="amount"` focuses the amount input on click,
+# so the subsequent typing lands in that input (proven by the Step 7 URL assert:
+# amt=8 only appears if the value actually reached the field). No bare HTML id or
+# aria-label — selecting by visible label is the perceivable, rule-compliant way.
+# The Generate button stays disabled until the amount is valid (0.01–9999.99).
+- tapOn: "Sale Amount"
+- inputText: "8"
+
+# Step 5: generate the QR code.
+- tapOn: "Generate QR Code"
+
+# Step 6: the generated content (QR box, encoded-URL <p>, Download/Print) renders
+# BELOW the fold on the 1024x629 headless viewport — the big white QR box pushes
+# the URL text and the action buttons off the bottom. Scroll the Download button
+# into view (centerElement) first; it sits just below the URL <p>, so bringing it
+# on-screen also surfaces the URL text. (Different element than the URL we assert
+# next, so this scroll is not a redundant pre-assert of that text — R6 ok.)
+- scrollUntilVisible:
+    element:
+      text: "Download"
+    centerElement: true
+
+# Step 7: the encoded sale URL renders as plain <p> text — assert it carries this
+# user's username and the amount. Integer amounts render bare (8, not 8.00). The
+# ? is escaped; .* tolerates the surrounding break-all wrapping.
+- assertVisible: ".*neonbinder.io/u/${TEST_USERNAME}/sale[?]amt=8.*"
+
+# Step 8: Download + Print actions render only after generate (Download is already
+# on-screen from the Step 6 scroll; Print sits beside it). Assert both render (the
+# feature); do NOT tap — Download triggers a file download and Print does
+# window.open + a native print dialog, both of which would leave the DOM.
+- assertVisible: "Download"
+- assertVisible: "Print"

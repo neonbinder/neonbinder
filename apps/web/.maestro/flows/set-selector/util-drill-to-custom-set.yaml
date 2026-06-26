@@ -1,0 +1,45 @@
+appId: com.neonbinder.web
+name: "Util — drill to E2E Test Sport ${WORKER_INDEX} → 2026 → Topps → <SET_NAME> (custom set) and land at Variant Types column"
+tags:
+  - util
+---
+# Thin wrapper over util-drill-to-custom.yaml.
+#
+# Fixes the synthetic per-worker Sport/Year/Manufacturer defaults so callers
+# only need to supply SET_NAME (required) and VARIANT_TYPE (optional, default Insert).
+#
+# WHY "E2E Test Sport ${WORKER_INDEX}" / 2026 / Topps?
+#   These three values are synthetic — no marketplace (BSC/SportLots) will ever
+#   return them as synced data, so the custom-add path is always legitimate and
+#   the subtree is fully isolated from real Baseball → 2024 → Topps Chrome data.
+#   The WORKER_INDEX suffix makes the Sport node PER-WORKER: worker 0 owns
+#   "E2E Test Sport 0", worker 1 owns "E2E Test Sport 1", etc. Concurrent workers
+#   never share the same Sport → Year column and therefore never contend on the
+#   same addCustomSelectorOption documents. "2026" and the custom "Topps" further
+#   separate this playground from any real marketplace year or manufacturer.
+#
+# INPUTS:
+#   SET_NAME     (required) — per-flow unique set basename, e.g. "pg-move-0"
+#   VARIANT_TYPE (optional, default "Insert") — variant type to land on; the
+#                  wrapper passes it through to util-drill-to-custom unchanged.
+#
+# RETURN CONTRACT (same as util-drill-to-custom-set was before):
+#   - Custom sport E2E Test Sport ${WORKER_INDEX} → 2026 → Topps → SET_NAME drilled.
+#   - Variant Types column visible, VARIANT_TYPE selected.
+#   - Variants column visible (pluralized header: "Inserts" or "Parallels").
+#   - "Add custom Inserts" / "Add custom Parallels" button in viewport.
+#   - All levels were created as custom entries if absent; idempotent on re-run.
+#
+# CALLER CONTRACT:
+#   - Caller has called launchApp and the session is signed in.
+#   - Navigation to /set-selector is performed inside util-drill-to-custom.
+#   - Caller does NOT need to navigate before invoking this util.
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: ${SET_NAME}
+      VARIANT_TYPE: ${VARIANT_TYPE || "Insert"}

@@ -1,0 +1,76 @@
+appId: com.neonbinder.web
+name: "Util — Ensure SportLots credentials are saved and authenticated (bonus; BSC alone unlocks data flows)"
+tags:
+  - util
+---
+# Shared prerequisite for flows that depend on a live SportLots fetch.
+#
+# WHY THIS EXISTS:
+#   Mirrors util-login-to-bsc.yaml for the SportLots platform. SportLots uses
+#   cookie-based authentication; the cookie can expire between test runs. Forcing
+#   a "Test Credentials" call refreshes the session and ensures SL card data is
+#   returned by the checklist fetch.
+#
+# CALLER CONTRACT:
+#   - Caller must have called launchApp and waited for sign-in redirect.
+#   - Credentials are already seeded server-side by worker-bootstrap; no
+#     credential env vars need to be passed.
+#   - This util leaves the browser on /profile (same as util-login-to-bsc).
+
+# ============================================================
+# NAVIGATE TO PROFILE
+# ============================================================
+
+- openLink: ${APP_URL || "http://localhost:3000"}/profile
+- extendedWaitUntil:
+    visible: "Neon Binder"
+
+# ============================================================
+# FORCE A FRESH SPORTLOTS LOGIN — tap "Test Credentials"
+# ============================================================
+
+# Wait for the stable page heading before scrolling. The DOM is fully settled
+# once "Profile Settings" is visible — starting a scroll during mid-reflow
+# widens the CDP empty-response window that causes the NEO-8 flake.
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 10000
+
+# Center the "Sportlots" tab itself rather than the "Select Platform" heading.
+# The tab row sits at y≈612–650, which falls at or below the 1024×629 headless
+# viewport fold. Scrolling to the heading leaves the tab at the very bottom edge,
+# causing tapOn to invoke Maestro's scrollToPoint which trips the CDP
+# empty-response flake. Centering the tab puts it near y≈315 so the subsequent
+# tapOn needs no implicit scroll.
+# (Reverted 2026-06-10: the #28 agent's centerElement removal was based on a
+# misdiagnosis — the JVM crashes were infra SIGSEGVs, not this swipe; CDP
+# "Failed to execute JS" errors are benign recoverable noise, ~47-94 per PASSING
+# run. centerElement stays to avoid the documented tap-time scrollToPoint flake.)
+- scrollUntilVisible:
+    element:
+      text: "Sportlots"
+    centerElement: true
+    timeout: 20000
+
+# Switch to SportLots in the platform tablist (was a native <select> —
+# now role="tab" buttons; tap the visible label).
+- tapOn: "Sportlots"
+
+- scrollUntilVisible:
+    element:
+      text: "Test Credentials"
+    centerElement: true
+    timeout: 10000
+    waitToSettleTimeoutMs: 1000
+- tapOn: "Test Credentials"
+
+# 30s exception: a COLD marketplace login is a real ~22s Puppeteer/SSO round-trip (cached is <1s).
+# This is the ONE sanctioned >10s wait (the standing rule is 10s) — do NOT copy this ceiling elsewhere.
+# scrollUntilVisible both waits for the element AND scrolls it into the viewport (Rule 6: no
+# redundant assertVisible needed after a scrollUntilVisible of the same element).
+- scrollUntilVisible:
+    element:
+      text: ".*Sportlots account authenticated successfully.*"
+    timeout: 30000
+    waitToSettleTimeoutMs: 1000
+

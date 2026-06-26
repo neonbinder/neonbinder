@@ -1,0 +1,36 @@
+# ── monorepo root ignores (apps/web and services/browser keep their own too) ──
+
+# dependencies
+node_modules/
+**/node_modules/
+
+# env / secrets — never commit
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+.mono-secrets.env
+**/.env.vercel.*
+
+# build output
+dist/
+build/
+**/dist/
+**/build/
+out/
+
+# vercel / local
+.vercel/
+**/.vercel/
+
+# claude machine-specific
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# editor / os
+.DS_Store
+*.log
+.idea/
+.vscode/

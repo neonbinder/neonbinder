@@ -1,0 +1,11 @@
+# Web-only project. Run with: maestro test --platform web --config .maestro/config.yaml .maestro/flows
+# (platform cannot be set in config; use --platform web on CLI.)
+url: ${APP_URL || "https://localhost:3000"}
+
+flows:
+  - "*/*"
+  - "*"
+
+excludeTags:
+  - util
+  - wip

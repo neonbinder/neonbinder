@@ -1,0 +1,73 @@
+appId: com.neonbinder.web
+name: "Util — Ensure BSC credentials are saved and authenticated (sellerId is fresh)"
+tags:
+  - util
+---
+# Shared prerequisite for flows that depend on a live BSC fetch.
+#
+# WHY THIS EXISTS:
+#   The worker-bootstrap flow seeds real credentials server-side via
+#   /testing/seed-credentials. This util forces a "Test Credentials" call
+#   (which re-runs the Puppeteer BSC login and refreshes the sellerId in the
+#   DB) regardless of whether credentials were already present. If the sellerId
+#   is stale or absent, BSC fetch returns 0 cards and the UnknownEntitiesDialog
+#   never opens — causing all data-dependent checklist flows to fail silently.
+#
+# WHEN TO CALL:
+#   Call this util (via runFlow) before util-drill-to-base-variant in any flow that:
+#     - Triggers "Fetch from Marketplaces" and expects real BSC card data
+#     - Depends on the UnknownEntitiesDialog appearing (needs cards returned by BSC)
+#
+# CALLER CONTRACT:
+#   - Caller must have called launchApp and waited for sign-in redirect.
+#   - Credentials are already seeded server-side by worker-bootstrap; no
+#     credential env vars need to be passed.
+#   - Caller is expected to call util-drill-to-base-variant after this util returns.
+#   - This util leaves the browser on /profile (the drill util will navigate from there).
+
+# ============================================================
+# NAVIGATE TO PROFILE
+# The browser may be anywhere after launchApp redirect. Navigate explicitly.
+# ============================================================
+
+- openLink: ${APP_URL || "http://localhost:3000"}/profile
+- extendedWaitUntil:
+    visible: "Neon Binder"
+
+# ============================================================
+# FORCE A FRESH BSC LOGIN — tap "Test Credentials"
+# The "Test Credentials" button triggers the Puppeteer BSC login and
+# refreshes the sellerId stored in the DB.
+# Cloud Run cold-starts can add 20–30 s to the login round-trip.
+# ============================================================
+
+# Wait for the stable page heading before scrolling. The DOM is fully settled
+# once "Profile Settings" is visible — starting a scroll during mid-reflow
+# widens the CDP empty-response window that causes the NEO-8 flake.
+- extendedWaitUntil:
+    visible: "Profile Settings"
+
+# waitToSettleTimeoutMs: Maestro waits for the view hierarchy to quiesce between
+# scroll steps, reducing CDP "end-of-input"/empty-hierarchy errors on dynamic pages.
+- scrollUntilVisible:
+    element:
+      text: "Test Credentials"
+    centerElement: true
+    waitToSettleTimeoutMs: 1000
+- tapOn: "Test Credentials"
+
+# 30s exception: a COLD marketplace login is a real ~22s Puppeteer/SSO round-trip (cached is <1s).
+# This is the ONE sanctioned >10s wait (the standing rule is 10s) — do NOT copy this ceiling elsewhere.
+# scrollUntilVisible both waits for the element AND scrolls it into the viewport (Rule 6: no
+# redundant assertVisible needed after a scrollUntilVisible of the same element).
+- scrollUntilVisible:
+    element:
+      text: ".*BSC account authenticated successfully.*"
+    timeout: 30000
+    waitToSettleTimeoutMs: 1000
+
+# ============================================================
+# CONFIRM AUTHENTICATED
+# At this point the sellerId is fresh and valid in the DB.
+# The caller may now run util-drill-to-base-variant safely.
+# ============================================================

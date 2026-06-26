@@ -1,0 +1,47 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&account=admin-bsc-only&worker=${WORKER_INDEX || "0"}
+name: "Set Builder Gate — admin without SportLots credentials sees the warning banner"
+tags:
+  - set-selector
+  - regression
+---
+# Verifies the credentials gate on /set-selector:
+#   - Signs in as the dedicated admin-bsc-only account (dev+e2e-bsc-only@neonbinder.io).
+#   - Seeds ONLY BuySportsCards creds via ?sites=buysportscards (no SL seed).
+#   - Navigating to /set-selector renders the MissingCredentialsBanner
+#     naming SportLots only — NOT BuySportsCards.
+#   - The "Configure credentials in Profile" link points to /profile.
+#
+# No clear, no restore, no reset — the account starts and ends with BSC-only.
+# BSC seed does a real login; allow up to ~18s for the seed step to complete.
+
+# Step 1: open /set-selector as admin-bsc-only (nothing seeded yet — don't assert gate here)
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Builder"
+    timeout: 45000
+
+# Step 2: seed ONLY BuySportsCards (real login, up to ~18s) then redirect back to /set-selector
+- openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=buysportscards&redirect=/set-selector
+- extendedWaitUntil:
+    visible: "Set Builder"
+    timeout: 30000
+
+# Step 3: the gate banner must appear naming SportLots only
+- assertVisible: "Set Builder requires marketplace credentials"
+# SportLots must be named in the banner (the missing platform)
+- assertVisible: "SportLots"
+# BuySportsCards must NOT appear — asserting only the SL name is insufficient
+# because the both-missing banner also contains "SportLots"
+- assertNotVisible: "BuySportsCards"
+# The Set Selector UI itself must not be visible
+- assertNotVisible: "Set Selector"
+
+# Step 4: the CTA link leads to /profile
+- scrollUntilVisible:
+    element:
+      id: "Configure credentials in Profile"
+    centerElement: true
+- tapOn:
+    id: "Configure credentials in Profile"
+- assertVisible: "Profile Settings"

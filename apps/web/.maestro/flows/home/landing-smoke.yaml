@@ -1,0 +1,20 @@
+url: ${APP_URL || "https://localhost:3000"}
+name: Landing Page Smoke Test
+tags:
+  - smoke
+  - home
+---
+- launchApp:
+    clearState: true
+
+# Header: logo text and Sign In button
+- assertVisible: "Neon Binder"
+- assertVisible: "Sign In"
+
+# Hero: Get Started CTA
+- assertVisible: "Get Started"
+
+# Bottom CTA: Create Account
+- scrollUntilVisible:
+    element:
+      text: "Create Free Account"

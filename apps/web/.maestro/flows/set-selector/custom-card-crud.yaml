@@ -1,0 +1,112 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Custom card lifecycle — add (Custom badge), rename, delete"
+tags:
+  - set-selector
+  - regression
+---
+# PRODUCT-FEATURE test: the lifecycle of a manually-added (custom) card in a
+# checklist — add via the Add Card form, confirm it renders with #num + player
+# name + card name + a "Custom" badge (card.isCustom), rename the card name
+# and confirm the new name sticks, then delete the card (Del -> Confirm?).
+# TeamPicker is NOT exercised here — team-picker.yaml owns that feature.
+# Fully isolated per-worker custom subtree (E2E Test Sport N -> 2026):
+# no marketplace call fires, nothing shared is read or wiped, so this runs
+# independent of the cascade and survives concurrent workers.
+#
+# Card number + names carry ${ATTEMPT_ID} (w<worker>-a<attempt>-<RANDOM>)
+# so a retry cannot collide with a row attempt 1 left behind.
+#
+# FIELD MODEL (corrected):
+#   The add-card form has ONE name input (aria-label "Card name", placeholder
+#   "Player name") which is stored as cardName in the DB. The checklist row
+#   renders cardName only.
+#   PLAYER_NAME ("Test Player ${ATTEMPT_ID}") is typed first (fills cardName).
+#   CARD_NAME   ("CRUDName-${ATTEMPT_ID}") is then typed with an erase step
+#   (replaces cardName). The stored cardName = CARD_NAME alone.
+#   The rename test renames cardName from "CRUDName-..." to "Renamed-...".
+#   After rename, "Renamed-..." is visible on the row; "CRUDName-..." is gone.
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# ============================================================
+# DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
+# E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps -> ccrud-<WORKER_INDEX> ->
+# Insert -> "Base" (custom insert).
+# util-add-custom-card drills the hierarchy, adds "Base" idempotently
+# (guards with when: notVisible "Base"), opens the CardChecklist, submits
+# card 999-${ATTEMPT_ID} with both a player name and a card name, and
+# returns with the "Edit card 999-${ATTEMPT_ID}" button scrolled into view.
+# ============================================================
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "ccrud-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "999-${ATTEMPT_ID}"
+      PLAYER_NAME: "Test Player ${ATTEMPT_ID}"
+      CARD_NAME: "CRUDName-${ATTEMPT_ID}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# VERIFY the new row: #num + card name + Custom badge + edit btn
+# The checklist row renders card.cardName only (not player name separately).
+# When both PLAYER_NAME and CARD_NAME are supplied, util-add-custom-card
+# fills PLAYER_NAME first then erases and types CARD_NAME — so the stored
+# cardName = CARD_NAME alone (e.g. "CRUDName-...").
+# ════════════════════════════════════════════════════════════════════════════
+# The "Edit card" button is already in view from the util's return contract.
+- assertVisible: "#999-${ATTEMPT_ID}"
+- assertVisible: "CRUDName-${ATTEMPT_ID}"
+- assertVisible:
+    id: "Edit card 999-${ATTEMPT_ID}"
+# The manually-added card carries a "Custom" badge (card.isCustom). Exact-match
+# "^Custom$" so it cannot match the columns' "+ Custom" buttons.
+- assertVisible:
+    text: "^Custom$"
+
+# ════════════════════════════════════════════════════════════════════════════
+# EDIT: rename the Card name; the new name sticks and the old card name is gone.
+# The Player name ("Test Player ${ATTEMPT_ID}") is unchanged and stays visible.
+# ════════════════════════════════════════════════════════════════════════════
+- tapOn:
+    id: "Edit card 999-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+- tapOn:
+    id: "Card name"
+- eraseText: 40
+- inputText: "Renamed-${ATTEMPT_ID}"
+# Assert Save is visible (sticky footer button — always in viewport).
+- assertVisible:
+    id: "Save card edit"
+- tapOn:
+    id: "Save card edit"
+
+# After save the edit form closes. Scroll to the row to verify rename.
+- scrollUntilVisible:
+    element:
+      text: "Renamed-${ATTEMPT_ID}"
+    centerElement: true
+    timeout: 10000
+- assertVisible: "Renamed-${ATTEMPT_ID}"
+# Old Card name (cardName) is gone after rename.
+- assertNotVisible: "CRUDName-${ATTEMPT_ID}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# DELETE: two-step Del -> Confirm? -> row removed
+# ════════════════════════════════════════════════════════════════════════════
+- scrollUntilVisible:
+    element:
+      id: "Delete card 999-${ATTEMPT_ID}"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Delete card 999-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 999-${ATTEMPT_ID}"
+- assertNotVisible: "Renamed-${ATTEMPT_ID}"

@@ -1,0 +1,76 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — card rows render card number, sub-line, attribute badges, and platform badges"
+tags:
+  - set-selector
+---
+# Rendering test: confirms that a populated CardChecklist draws rich structured
+# fields on each card row — card numbers, platform badges, and rookie badges.
+#
+# DEPENDS ON: setup.yaml having pre-synced the 2024 Topps Chrome Base checklist
+# (~335 cards) for this worker. If the checklist is empty this flow fails loudly —
+# correct behavior; the fix is to ensure setup ran, not to paper over it.
+#
+# WHAT THIS TESTS:
+#   - Card numbers appear as "#NNN" in the left column of each row
+#   - BSC platform badge appears on marketplace-sourced cards
+#   - RC badge appears for rookie cards (common in 2024 Topps Chrome Base)
+#
+# NOTE: "SL" badge requires a SportLots platform mapping written by the
+# ReconciliationModal. That mapping is set up by the setup track, but SL
+# badge appearance is not asserted here — that belongs in a reconciliation flow.
+# Print-run ("/N") belongs to parallel variant types, not Base; not asserted.
+#
+# FLOW: launch → drill to Base (setup pre-synced) → verify rich fields on rows.
+# No marketplace fetch; the data is already there from setup.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+
+# ============================================================
+# DRILL TO BASE VARIANT (setup pre-synced 335 cards)
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-base-variant.yaml
+
+# ============================================================
+# SCROLL INTO THE CARD ROWS
+# The drill leaves the "Add Card" / "Refresh" action row visible.
+# Card rows render below it; scroll one into view before asserting.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*#[0-9].*"
+    centerElement: true
+    timeout: 10000
+
+# ============================================================
+# VERIFY CARD ROW STRUCTURE — ALWAYS-PRESENT FIELDS
+# ============================================================
+
+# At least one card number in "#NNN" format is visible.
+- assertVisible:
+    text: ".*#[0-9].*"
+
+# BSC platform badge appears on at least one card row.
+- assertVisible: "BSC"
+
+# ============================================================
+# VERIFY RC BADGE — scroll through the list to find a rookie card.
+# RC badges are common in Base sets; the flow fails only if none
+# exist in the entire list (unexpected for 2024 Topps Chrome Base).
+# scrollUntilVisible failing loudly is the assertion — no redundant assertVisible.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "RC"
+    centerElement: true
+    timeout: 30000

@@ -1,0 +1,143 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Multi-source sets panel — Attach more dialog opens and cancels"
+tags:
+  - regression
+  - set-selector
+  - neo-6
+---
+# NEO-6 phase 1 smoke test.
+#
+# Precondition: cascade setup.yaml has run (provides:setup-done).
+# That means Baseball → 2024 → Topps → Topps Chrome hierarchy is
+# pre-populated and BSC/SL credentials are saved.
+#
+# This flow drills to the Base variantType row (which has a confirmed
+# BaseMappingForm mapping from sets-base.yaml), then verifies that:
+#   1. The "Multi-source sets" panel is visible.
+#   2. "Attach more…" opens the "Attach more source sets" dialog.
+#   3. Typing in the BSC search input narrows the list.
+#   4. Cancelling dismisses the dialog without side effects.
+#   5. The panel is still visible after cancel.
+#
+# Mutation (attach + confirm) is intentionally excluded — the full
+# attach → filter chip → per-card badge mutation cycle is NOT YET
+# COVERED by any flow and remains a coverage gap.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+# Wait for sign-in redirect to complete and the Set Selector page to load.
+# Without this guard, execution proceeds before the Clerk session is
+# established, and util-drill's openLink: /set-selector is intercepted by
+# Clerk and bounced back to the sign-in page.
+- assertVisible: "Set Selector"
+
+# ============================================================
+# DRILL TO BASE VARIANT + CONFIRM BASESET PICKER
+# R9 — delegated to util-drill-to-base-variant.yaml (the canonical util that
+# owns the full Baseball→2024→Topps→Topps Chrome→Base drill, handles both
+# BaseSetPicker Path A/B, and leaves CardChecklist visible).
+# No inline Base-tap or BaseSetPicker logic here.
+# Return contract: CardChecklist panel is visible ("Add Card" in viewport).
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-base-variant.yaml
+
+# ============================================================
+# ASSERT "Multi-source sets" PANEL IS VISIBLE
+# After centering "Add Card" (CardChecklist header), the MultiSourcePanel
+# sits above the fold. Scroll UP with centerElement: true to bring the
+# "Multi-source sets" heading to mid-viewport (~y=315). This is the only
+# reliable way to avoid the sticky binder-header (top ~64px) occlusion:
+# scrolling DOWN finds the element at the top edge (y~39) where the
+# z-index-20 header steals clicks. Scrolling UP + centering guarantees
+# the panel body is fully in the safe zone (y=64..490).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Multi-source sets"
+    direction: UP
+    centerElement: true
+    timeout: 10000
+- assertVisible: "Multi-source sets"
+
+# ============================================================
+# OPEN THE ATTACH DIALOG
+# The "Attach more…" button has aria-label "Attach more source sets".
+# In Maestro web, aria-label maps to resource-id — use id: not text:.
+#
+# After centering "Multi-source sets" (the panel heading), the "Attach
+# more…" button is in the same panel row — also at mid-viewport and
+# clear of the sticky header. The extendedWaitUntil before tapOn is a
+# safety guard: if for any reason the button is not yet in a tappable
+# position, the assertion surfaces it as a clear failure rather than a
+# silent tap-miss.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Attach more source sets"
+    timeout: 5000
+- tapOn:
+    id: "Attach more source sets"
+
+# Dialog should open — the BSC search input (aria-label "Search BSC sets")
+# only exists inside the dialog, making it the unambiguous open signal.
+# The panel's "Attach more source sets" button also carries that aria-label,
+# so asserting `id: "Attach more source sets"` is unreliable as a
+# dialog-open check (the button is always present on the panel).
+- extendedWaitUntil:
+    visible:
+      id: "Search BSC sets"
+    timeout: 10000
+
+# ============================================================
+# TYPE INTO THE BSC SEARCH INPUT AND VERIFY LIST NARROWS
+# The input has aria-label "Search BSC sets".
+# The BSC candidate list is loaded when the dialog opens and typing
+# filters client-side, so the 7s default is sufficient here.
+# ============================================================
+
+- tapOn:
+    id: "Search BSC sets"
+- inputText: "Chrome"
+
+# After typing, the BSC candidate list should update — wait for at least
+# one result that matches "Chrome" to confirm the search filtered results.
+- extendedWaitUntil:
+    visible:
+      text: ".*Chrome.*"
+    timeout: 7000
+
+# ============================================================
+# CANCEL OUT OF THE DIALOG
+# Tap the visible "Cancel" button inside the dialog footer.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Cancel"
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn: "Cancel"
+
+# Wait for dialog to close — the BSC search input disappears when the
+# dialog unmounts. Using the search input as the close signal avoids the
+# ambiguity of the panel's "Attach more source sets" aria-label (which
+# remains on the panel button after the dialog closes).
+- extendedWaitUntil:
+    notVisible:
+      id: "Search BSC sets"
+    timeout: 10000
+
+# ============================================================
+# ASSERT PANEL STILL VISIBLE AFTER CANCEL
+# Cancelling must not remove or reset the "Multi-source sets" panel.
+# ============================================================
+
+- assertVisible: "Multi-source sets"

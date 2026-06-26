@@ -1,0 +1,65 @@
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile&worker=${WORKER_INDEX || "0"}
+name: "Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds"
+tags:
+  - util
+---
+# Per-worker scheduler bootstrap. Runs in Phase 0 of run-e2e-smoke.sh, once
+# per worker BEFORE any cascade or independent flow. Signs the worker's
+# Clerk user in (TEST_EMAIL_${WORKER_INDEX}), resets their Convex state via
+# /testing/reset, then seeds real BSC + SL credentials server-side via
+# /testing/seed-credentials.
+#
+# The seed-credentials page calls the auth-scoped seedMyTestCredentials
+# Convex action, which reads dev marketplace credentials from Convex server
+# env vars (never from Maestro -e) and stores them under the signed-in user.
+# This replaces the old clear-then-save credential typing approach, which
+# required passing real passwords via Maestro -e env and leaked them into
+# public CI debug artifacts.
+#
+# No secret is passed to Maestro: the action is gated by Clerk auth (it can
+# only touch the caller's own rows) plus a server-side TESTING_RESET_SECRET
+# presence check on the Convex deployment (unset in prod → fails closed).
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# ============================================================
+# WARM MARKETPLACE TOKENS — BSC then SportLots (BEST-EFFORT)
+#
+# seed-credentials stored real creds in Secret Manager but does NOT
+# warm the Puppeteer sessions (eager auth was removed from
+# seedMyTestCredentials to keep the redirect snappy). Each util
+# navigates to /profile, taps "Test Credentials", and waits up to
+# 30s for the "...authenticated successfully..." message — a cold
+# Puppeteer/SSO round-trip measures ~22s; 30s gives margin.
+#
+# WHY optional: true?
+#   The warm is an OPTIMIZATION, not a correctness requirement.
+#   getSiteToken performs lazy re-auth on cache-miss (production-correct),
+#   so a worker with seeded creds but an unwarmed token simply warms on
+#   its first marketplace fetch. A transient CDP scroll flake
+#   (MismatchedInputException) during this warm step previously aborted
+#   the entire shard via run-e2e-smoke.sh's set -e. With optional: true,
+#   Maestro downgrades the sub-flow failure to a CommandWarned (logged,
+#   non-fatal) and the bootstrap continues. The sign-in / reset /
+#   seed-credentials steps above remain mandatory and will still abort
+#   the shard on failure.
+#
+# Maestro 2.6.0 evidence:
+#   YamlRunFlow.optional (boolean field) is read by YamlFluentCommand
+#   and passed as the 6th arg to RunFlowCommand.<init>. Orchestra's
+#   executeCommand catches MaestroException and, when Command.getOptional()
+#   is true, throws CommandWarned (logged + skipped) instead of rethrowing.
+#   Verified by decompiling maestro-orchestra-models.jar and
+#   maestro-orchestra.jar at ~/.maestro/lib/.
+# ============================================================
+
+- runFlow:
+    file: ../util/util-login-to-bsc.yaml
+    optional: true
+
+- runFlow:
+    file: ../util/util-login-to-sportlots.yaml
+    optional: true

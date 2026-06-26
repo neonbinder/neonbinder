@@ -1,0 +1,25 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npx convex deploy --cmd-url-env-var-name VITE_CONVEX_URL --cmd 'npm run build'",
+  "framework": "vite",
+  "installCommand": "npm ci",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/ingest/static/(.*)",
+      "destination": "https://us-assets.i.posthog.com/static/$1"
+    },
+    {
+      "source": "/ingest/(.*)",
+      "destination": "https://us.i.posthog.com/$1"
+    },
+    {
+      "source": "/monitoring/(.*)",
+      "destination": "https://o4510257330520064.ingest.us.sentry.io/$1"
+    },
+    {
+      "source": "/((?!assets|ingest|monitoring).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

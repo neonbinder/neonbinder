@@ -1,0 +1,855 @@
+appId: com.neonbinder.web
+name: "Util — drill the EntitySelector hierarchy to the deepest provided level (real or custom)"
+tags:
+  - util
+---
+# General-purpose drill util. Navigates to /set-selector, drills each level of
+# the EntitySelector cascade to the depth the caller specifies, and returns with
+# the deepest selected column's contents visible.
+#
+# INPUTS (all optional — drill stops after the deepest provided one):
+#   SPORT          — Sports column value     (e.g. "Baseball", "E2E Test Sport 0")
+#   YEAR           — Years column value      (e.g. "2024", "2026")
+#   MANUFACTURER   — Manufacturers column    (e.g. "Topps")
+#   SET_NAME       — Sets column value       (e.g. "tp-0", "2024 Topps Chrome")
+#   VARIANT_TYPE   — Variant Types column    (e.g. "Insert", "Parallel")
+#   VARIANT        — Variants column         (e.g. "Base", "Stars Gold")
+#                    (column header is pluralized: "Inserts", "Parallels", etc.)
+#
+# STOPPING RULE — CRITICAL:
+#   Each level is guarded by a cumulative `when: { true: ... }` condition that
+#   evaluates ALL vars from Level 1 through Level N. If ANY var in that prefix
+#   is absent (unset or empty), the level is skipped. Drill therefore stops at
+#   the first absent var in the sequence.
+#
+#   Example: SPORT="Baseball", YEAR="2024", MANUFACTURER unset
+#     → Level 1 runs (SPORT set)
+#     → Level 2 runs (SPORT + YEAR set)
+#     → Level 3 SKIPPED (MANUFACTURER unset)
+#     → Levels 4–6 SKIPPED (MANUFACTURER absent)
+#   Return contract: Manufacturers column visible (next column after last drilled).
+#
+# GATING EXPRESSION — HOW IT WORKS:
+#   The expression form is: when: { true: "${SPORT && YEAR}" }
+#
+#   Maestro evaluates the content of ${...} as JavaScript via GraalJS. Env vars
+#   are injected as JS bindings. An unset env var is NOT in the binding map →
+#   the Proxy on globalThis returns `undefined` for it (see GraalJsEngine.kt:
+#   Object.setPrototypeOf(globalThis, new Proxy(Object.prototype, { has: ()=>true })) )
+#   → `undefined` is falsy → the `&&` short-circuits → false → block skipped.
+#
+#   Confirmed by Maestro IntegrationTest case 065: ${undefined} is skipped,
+#   ${true} and ${'String'} run, ${false}/${null}/${0} are skipped.
+#   Source: maestro-test/src/test/resources/065_when_true.yaml + IntegrationTest.kt
+#
+#   No defaults (|| fallbacks) anywhere in this file — absence means "stop here".
+#   An empty string passed explicitly (SPORT="") is also falsy → also stops.
+#   An empty string is treated the same as unset: both mean "caller did not want
+#   this level drilled."
+#
+#   BATCH-VALIDATION PROBE (required before merge):
+#     (A) Pass only SPORT="Baseball" → verify Sports drilled, Years visible, NO Year selected.
+#     (B) Pass SPORT="Baseball" + YEAR="2024" → verify Years drilled, Manufacturers visible.
+#     (C) Pass all 6 vars (team-picker path) → verify full depth, CardChecklist visible.
+#     (D) Pass no vars → verify page opens to Set Selector, Sports auto-syncs, no drilling.
+#
+# SET_NAME and VARIANT_TYPE names are intentionally identical to
+# util-drill-to-custom-set.yaml so callers can migrate by swapping the
+# runFlow file path with minimal env changes.
+#
+# RETURN CONTRACT:
+#   - If only SPORT is given:        Sports column is active; Years column visible.
+#   - If SPORT + YEAR:               Years column is active; Manufacturers column visible.
+#   - If … + MANUFACTURER:           Manufacturers selected; Sets column visible.
+#   - If … + SET_NAME:               Set selected; Variant Types column visible,
+#                                    Add-custom-<Variant Types> button in viewport.
+#   - If … + VARIANT_TYPE:           Variant Type selected; Variants column visible,
+#                                    Add-custom-<Variants> button in viewport.
+#   - If … + VARIANT:                Variant selected; CardChecklist visible
+#                                    (Open add card form button in viewport).
+#   - If no vars given:              /set-selector open, Sports auto-sync done,
+#                                    "Baseball" visible, no column selected.
+#
+# CALLER CONTRACT:
+#   - Caller has called launchApp and the session is signed in.
+#   - openLink to /set-selector is performed here — caller does NOT need to navigate first.
+#
+# PER-LEVEL ALGORITHM (uniform, idempotent):
+#   1. Wait for column header to confirm it rendered.
+#   2. Wait for idle-mode signal (search input present OR Add-custom button visible).
+#   3. If target value is already visible: select it directly.
+#   4. If not visible:
+#      a. If a search input exists (real-synced large list): tap search, type value,
+#         select via `below: id:"Search <column>"` relationship — never by index.
+#      b. If no search input (custom/short list): scrollUntilVisible Add-custom button
+#         (centerElement: true), tap it, inputText, Enter, wait notVisible modal.
+#   5. After select: wait for the next column header before proceeding.
+#
+# SEARCH vs. DIRECT-TAP DECISION:
+#   Real-synced columns (Sports on the Baseball path, Years on Baseball/2024,
+#   Manufacturers after a real Year, Sets after a real Manufacturer) show a
+#   "Search <column>" input when the list has >8 items. The util always checks
+#   for the search input and uses it when present — this avoids the
+#   max-h-[400px] overflow-y-auto clip issue where rows past the fold have
+#   layout bounds reported by CDP even though they are visually clipped.
+#   Custom subtree columns (all columns under a custom Sport OR under a custom
+#   Year) never show the search input (short list), so the Add-custom path
+#   is used unconditionally on those levels.
+#
+# CDP SCROLL AVOIDANCE (Variant Types column):
+#   After a fresh Set is created and selected, the page re-renders briefly.
+#   Maestro's CDP scroll throws MismatchedInputException during re-renders.
+#   So for Variant Types we use a non-scrolling extendedWaitUntil on the
+#   Add-custom button (the button is always in-viewport for short VT lists).
+#   See memory reference_maestro_headless_viewport.md and util-drill-to-custom-set.yaml
+#   comments for full CI failure history.
+#
+# centerElement: true RATIONALE:
+#   Maestro Web headless viewport is 1024×629. The footer paints over the
+#   body's overflow region at y≥489 and steals click events. Any Add-custom
+#   button or selectable row near the bottom without centering gets its tap
+#   registered in the DOM but the follow-up events (modal open, column expand)
+#   are swallowed by the footer. Centering puts the element at y≈315, clear
+#   of the footer. Applied on every Add-custom tap and on every row tap that
+#   might be near the scroll fold.
+
+- openLink: ${APP_URL || "http://localhost:3000"}/set-selector
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 20000
+
+# ============================================================
+# LEVEL 1 — Sport
+# Gate: SPORT must be non-empty.
+#
+# Real-synced sports (Baseball, Football, etc.) appear after the
+# Sports auto-sync completes. "Baseball" is the cascade idle signal —
+# setup.yaml seeds it, so its appearance confirms sync done.
+# For custom synthetic sports (e.g. "E2E Test Sport 0") the value
+# will not be in the list until we add it.
+#
+# Search input: Sports always shows "Search sports" after sync (real path).
+# For custom sports not yet in the list the search input is still present
+# (real synced sports rendered around it), so we can always use it to check
+# existence then fall through to the Add-custom branch if not found.
+# ============================================================
+
+# Wait for Sports column and auto-sync completion unconditionally —
+# this is always safe and ensures the page is ready before any gated logic runs.
+- extendedWaitUntil:
+    visible: "Sports"
+    timeout: 30000
+
+# Wait for Sports auto-sync to complete. "Baseball" (always seeded by setup)
+# appearing signals that the sync has finished and the Search input is ready.
+- extendedWaitUntil:
+    visible: "Baseball"
+    timeout: 60000
+
+# Level 1 body: runs only when SPORT is provided (non-empty, non-undefined).
+# ${SPORT} evaluates as JS: a set var is a non-empty string → truthy → runs.
+# An unset var is undefined → falsy → skipped (drill stops here, Years not opened).
+- runFlow:
+    when:
+      true: "${SPORT}"
+    commands:
+      # For real-synced Sports the search input is always present.
+      # Use it to find the target — avoids the overflow-y-auto clip on long lists.
+      - runFlow:
+          when:
+            visible:
+              id: "Search sports"
+          commands:
+            - scrollUntilVisible:
+                element:
+                  id: "Search sports"
+                centerElement: true
+                timeout: 10000
+            - tapOn:
+                id: "Search sports"
+            - inputText: ${SPORT}
+            # If the value appears in search results, tap it via relationship.
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*${SPORT}.*"
+                    below:
+                      id: "Search sports"
+                commands:
+                  # Non-scrolling wait: in a filtered list the single result is
+                  # always at the top, already in viewport. scrollUntilVisible
+                  # fires page-level CDP swipes that can accidentally clear the
+                  # search input filter (column is overflow-y-auto; page scroll
+                  # does not center the item but CAN hit/blur the input).
+                  - extendedWaitUntil:
+                      visible:
+                        text: ".*${SPORT}.*"
+                        below:
+                          id: "Search sports"
+                      timeout: 7000
+                  # Guard on notVisible "Years": if Years is already open (re-drill
+                  # case where SPORT was already selected), skip the tap — re-tapping
+                  # a SELECTED row can DESELECT it and close the next column.
+                  - runFlow:
+                      when:
+                        notVisible: "Years"
+                      commands:
+                        - tapOn:
+                            text: ".*${SPORT}.*"
+                            below:
+                              id: "Search sports"
+            # If NOT found via search (custom sport not yet in list):
+            # clear search, add custom, then tap.
+            # Guard on notVisible "Years": if Years is already visible, the Sport
+            # was just selected above — skip this branch (the "not visible" condition
+            # would otherwise be TRUE because the search+result both disappear after
+            # a successful selection).
+            - runFlow:
+                when:
+                  notVisible: "Years"
+                commands:
+                  - runFlow:
+                      when:
+                        notVisible:
+                          text: ".*${SPORT}.*"
+                          below:
+                            id: "Search sports"
+                      commands:
+                        # The sport was not found in the search results. At this point
+                        # the search shows "No matches found" and the "+ Custom" button
+                        # (aria-label "Add custom Sports") is rendered BELOW the search
+                        # box at y≈520 — inside the 1024×629 footer-steal zone (y≥489).
+                        # Do NOT erase the search text first: eraseText leaves a trailing
+                        # char (the Maestro cursor-trap bug). The page is STABLE in
+                        # "No matches found" state (no re-render in progress), so CDP
+                        # scroll works safely. scrollUntilVisible + centerElement: true
+                        # brings the button to y≈315, clear of the footer.
+                        - scrollUntilVisible:
+                            element:
+                              id: "Add custom Sports"
+                            centerElement: true
+                            timeout: 10000
+                        - tapOn:
+                            id: "Add custom Sports"
+                        - extendedWaitUntil:
+                            visible: "Add Custom Entry"
+                            timeout: 5000
+                        - inputText: ${SPORT}
+                        - pressKey: Enter
+                        - extendedWaitUntil:
+                            notVisible: "Add Custom Entry"
+                            timeout: 10000
+                        # After the modal closes, the search input still has the
+                        # sport name typed in it — the newly created sport now
+                        # matches the search filter and appears below the input.
+                        # Wait for it and tap it directly (no need to re-type).
+                        - extendedWaitUntil:
+                            visible:
+                              text: ".*${SPORT}.*"
+                              below:
+                                id: "Search sports"
+                            timeout: 10000
+                        - tapOn:
+                            text: ".*${SPORT}.*"
+                            below:
+                              id: "Search sports"
+
+      # Fallback: no search input (very small / custom-only Sports column).
+      # Add if absent, then tap directly.
+      # Guarded by notVisible "Years" — if the first (search) branch already
+      # selected a Sport, Years will be visible and we must skip this fallback
+      # to avoid a second erroneous tap that would collapse the selection.
+      - runFlow:
+          when:
+            notVisible: "Years"
+          commands:
+            - runFlow:
+                when:
+                  notVisible:
+                    id: "Search sports"
+                commands:
+                  - runFlow:
+                      when:
+                        notVisible: ${SPORT}
+                      commands:
+                        - scrollUntilVisible:
+                            element:
+                              id: "Add custom Sports"
+                            centerElement: true
+                            timeout: 10000
+                        - tapOn:
+                            id: "Add custom Sports"
+                        - extendedWaitUntil:
+                            visible: "Add Custom Entry"
+                            timeout: 5000
+                        - inputText: ${SPORT}
+                        - pressKey: Enter
+                        - extendedWaitUntil:
+                            notVisible: "Add Custom Entry"
+                            timeout: 10000
+                  - extendedWaitUntil:
+                      visible: ${SPORT}
+                      timeout: 10000
+                  - scrollUntilVisible:
+                      element:
+                        text: ${SPORT}
+                      centerElement: true
+                      timeout: 10000
+                  - tapOn: ${SPORT}
+
+      # Wait for Years column to appear after Sport selection.
+      # 60s ceiling: in RETRY runs, a pre-existing selection from attempt-1
+      # (e.g. "E2E Test Sport 0") may briefly hold the Years column showing
+      # ITS years. After the correct sport tap, the cascade re-renders:
+      # old years disappear, new years sync, "Years" header may be absent
+      # for several seconds. 20s was too short in CI-scale retries (the
+      # column can be absent for 14+ s during the transition).
+      - extendedWaitUntil:
+          visible: "Years"
+          timeout: 60000
+
+# ============================================================
+# LEVEL 2 — Year
+# Gate: SPORT AND YEAR must both be non-empty.
+# ${SPORT && YEAR}: if either is undefined/empty → falsy → skip.
+# If both set → "2024" (last value in &&-chain) → truthy → run.
+#
+# Real-synced path (Baseball): "Search years" input appears after sync.
+# Custom path (E2E Test Sport): no search input; short list; Add-custom only.
+# 60s ceiling for "Search years" idle signal covers cold BSC+SL sync.
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${SPORT && YEAR}"
+    commands:
+      # Real-synced Years: search input present — use it.
+      - runFlow:
+          when:
+            visible:
+              text: ".*Search years.*"
+          commands:
+            - scrollUntilVisible:
+                element:
+                  text: ".*Search years.*"
+                direction: right
+                centerElement: true
+                timeout: 10000
+            - tapOn:
+                text: ".*Search years.*"
+            - inputText: ${YEAR}
+            - runFlow:
+                when:
+                  visible:
+                    text: "${YEAR}"
+                    below:
+                      id: "Search years"
+                commands:
+                  # Non-scrolling wait: filtered list result is already at top,
+                  # in viewport. scrollUntilVisible fires page-level CDP swipes
+                  # that can clear the search filter (overflow-y-auto column).
+                  - extendedWaitUntil:
+                      visible:
+                        text: "${YEAR}"
+                        below:
+                          id: "Search years"
+                      timeout: 7000
+                  # Guard: skip tap if Manufacturers already open (re-drill toggle risk).
+                  - runFlow:
+                      when:
+                        notVisible: "Manufacturers"
+                      commands:
+                        - tapOn:
+                            text: "${YEAR}"
+                            below:
+                              id: "Search years"
+            # If the year is not in search results (custom year not yet added).
+            # Guard on notVisible "Manufacturers": if Manufacturers is already visible,
+            # the Year was just selected — skip (same reason as Sports guard above).
+            - runFlow:
+                when:
+                  notVisible: "Manufacturers"
+                commands:
+                  - runFlow:
+                      when:
+                        notVisible:
+                          text: "${YEAR}"
+                          below:
+                            id: "Search years"
+                      commands:
+                        - eraseText: 50
+                        - scrollUntilVisible:
+                            element:
+                              id: "Add custom Years"
+                            centerElement: true
+                            timeout: 10000
+                        - tapOn:
+                            id: "Add custom Years"
+                        - extendedWaitUntil:
+                            visible: "Add Custom Entry"
+                            timeout: 5000
+                        - inputText: ${YEAR}
+                        - pressKey: Enter
+                        - extendedWaitUntil:
+                            notVisible: "Add Custom Entry"
+                            timeout: 10000
+                        - tapOn:
+                            text: ".*Search years.*"
+                        - inputText: ${YEAR}
+                        - extendedWaitUntil:
+                            visible:
+                              text: "${YEAR}"
+                              below:
+                                id: "Search years"
+                            timeout: 10000
+                        - tapOn:
+                            text: "${YEAR}"
+                            below:
+                              id: "Search years"
+
+      # Custom-only Years (no search input): wait for Add-custom idle signal.
+      # scrollUntilVisible tolerates brief in-flight sync (custom-subtree gate).
+      # Guarded by notVisible "Manufacturers" — if the search branch already
+      # selected a Year, Manufacturers will be visible; skip this fallback.
+      - runFlow:
+          when:
+            notVisible: "Manufacturers"
+          commands:
+            - runFlow:
+                when:
+                  notVisible:
+                    text: ".*Search years.*"
+                commands:
+                  # Non-scroll wait before the centering swipe: the Years column
+                  # can be mid-re-render (Convex subscription initial load on a
+                  # retry after a prior run saved data). CDP swipe crashes during
+                  # re-render. extendedWaitUntil re-queries without scrolling and
+                  # lets the render settle before the scroll fires.
+                  - extendedWaitUntil:
+                      visible:
+                        id: "Add custom Years"
+                      timeout: 60000
+                  - scrollUntilVisible:
+                      element:
+                        id: "Add custom Years"
+                      visibilityPercentage: 50
+                      timeout: 60000
+                  - runFlow:
+                      when:
+                        notVisible: ${YEAR}
+                      commands:
+                        - tapOn:
+                            id: "Add custom Years"
+                        - extendedWaitUntil:
+                            visible: "Add Custom Entry"
+                            timeout: 5000
+                        - inputText: ${YEAR}
+                        - pressKey: Enter
+                        - extendedWaitUntil:
+                            notVisible: "Add Custom Entry"
+                            timeout: 10000
+                  - extendedWaitUntil:
+                      visible: ${YEAR}
+                      timeout: 10000
+                  - scrollUntilVisible:
+                      element:
+                        text: ${YEAR}
+                      timeout: 10000
+                  - tapOn: ${YEAR}
+
+      # Wait for Manufacturers column to appear after Year selection.
+      - extendedWaitUntil:
+          visible: "Manufacturers"
+          timeout: 20000
+
+# ============================================================
+# LEVEL 3 — Manufacturer
+# Gate: SPORT AND YEAR AND MANUFACTURER must all be non-empty.
+#
+# Real-synced path: "Search manufacturers" input present.
+# Custom path (under custom Sport or Year): no search input; Add-custom only.
+# centerElement: true on Add-custom tap — footer-steal risk (see header comment).
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${SPORT && YEAR && MANUFACTURER}"
+    commands:
+      # Real-synced Manufacturers: search input present.
+      - runFlow:
+          when:
+            visible:
+              text: ".*Search manufacturers.*"
+          commands:
+            - scrollUntilVisible:
+                element:
+                  text: ".*Search manufacturers.*"
+                direction: right
+                centerElement: true
+                timeout: 10000
+            - tapOn:
+                text: ".*Search manufacturers.*"
+            - inputText: ${MANUFACTURER}
+            - runFlow:
+                when:
+                  visible:
+                    text: "${MANUFACTURER}"
+                    below:
+                      id: "Search manufacturers"
+                commands:
+                  # Non-scrolling wait: filtered list result is already at top,
+                  # in viewport. scrollUntilVisible fires page-level CDP swipes
+                  # that can clear the search filter (overflow-y-auto column).
+                  - extendedWaitUntil:
+                      visible:
+                        text: "${MANUFACTURER}"
+                        below:
+                          id: "Search manufacturers"
+                      timeout: 7000
+                  # Guard: skip tap if Sets already open (re-drill toggle risk).
+                  - runFlow:
+                      when:
+                        notVisible: "Sets"
+                      commands:
+                        - tapOn:
+                            text: "${MANUFACTURER}"
+                            below:
+                              id: "Search manufacturers"
+            # Guard on notVisible "Sets": if Sets is already visible, the
+            # Manufacturer was just selected — skip (same reason as Sports guard above).
+            - runFlow:
+                when:
+                  notVisible: "Sets"
+                commands:
+                  - runFlow:
+                      when:
+                        notVisible:
+                          text: "${MANUFACTURER}"
+                          below:
+                            id: "Search manufacturers"
+                      commands:
+                        - eraseText: 50
+                        - scrollUntilVisible:
+                            element:
+                              id: "Add custom Manufacturers"
+                            centerElement: true
+                            timeout: 10000
+                        - tapOn:
+                            id: "Add custom Manufacturers"
+                        - extendedWaitUntil:
+                            visible: "Add Custom Entry"
+                            timeout: 5000
+                        - inputText: ${MANUFACTURER}
+                        - pressKey: Enter
+                        - extendedWaitUntil:
+                            notVisible: "Add Custom Entry"
+                            timeout: 10000
+                        - tapOn:
+                            text: ".*Search manufacturers.*"
+                        - inputText: ${MANUFACTURER}
+                        - extendedWaitUntil:
+                            visible:
+                              text: "${MANUFACTURER}"
+                              below:
+                                id: "Search manufacturers"
+                            timeout: 10000
+                        - tapOn:
+                            text: "${MANUFACTURER}"
+                            below:
+                              id: "Search manufacturers"
+
+      # Custom-only Manufacturers (no search input).
+      # centerElement: true — footer-steal risk at 1024×629 (see util-drill-to-custom-set
+      # Level 3 comment; once-custom-always-custom gate removes the search input).
+      # Guarded by notVisible "Sets" — if the search branch already selected a
+      # Manufacturer, Sets will be visible; skip this fallback.
+      - runFlow:
+          when:
+            notVisible: "Sets"
+          commands:
+            - runFlow:
+                when:
+                  notVisible:
+                    text: ".*Search manufacturers.*"
+                commands:
+                  # Non-scroll wait before the centering swipe — same CDP re-render
+                  # crash guard as Level 2 and Level 4 (see those comments).
+                  - extendedWaitUntil:
+                      visible:
+                        id: "Add custom Manufacturers"
+                      timeout: 60000
+                  - scrollUntilVisible:
+                      element:
+                        id: "Add custom Manufacturers"
+                      centerElement: true
+                      timeout: 60000
+                  - runFlow:
+                      when:
+                        notVisible: ${MANUFACTURER}
+                      commands:
+                        - tapOn:
+                            id: "Add custom Manufacturers"
+                        - extendedWaitUntil:
+                            visible: "Add Custom Entry"
+                            timeout: 5000
+                        - inputText: ${MANUFACTURER}
+                        - pressKey: Enter
+                        - extendedWaitUntil:
+                            notVisible: "Add Custom Entry"
+                            timeout: 10000
+                  - extendedWaitUntil:
+                      visible: ${MANUFACTURER}
+                      timeout: 10000
+                  - scrollUntilVisible:
+                      element:
+                        text: ${MANUFACTURER}
+                      timeout: 10000
+                  - tapOn: ${MANUFACTURER}
+
+      # Wait for Sets column to appear after Manufacturer selection.
+      - extendedWaitUntil:
+          visible: "Sets"
+          timeout: 20000
+
+# ============================================================
+# LEVEL 4 — Set (SET_NAME)
+# Gate: SPORT AND YEAR AND MANUFACTURER AND SET_NAME must all be non-empty.
+#
+# Both real-synced and custom columns can have the search input when large.
+# centerElement: true on Add-custom Sets tap — footer-steal (see util-drill-to-custom-set
+# Level 4 comment for full CI failure history at y≈583+).
+#
+# After the custom-add idempotency runFlow, the search-vs-direct tap logic
+# mirrors util-drill-to-custom-set exactly (search branch + fallback branch),
+# including the UP-scroll trick to rescue the search input from beneath the
+# nav header after centerElement scrolled it off the top.
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${SPORT && YEAR && MANUFACTURER && SET_NAME}"
+    commands:
+      # Wait for Sets column idle. Scroll to the Add-custom button as
+      # the idle signal — it appears only when mode=idle. centerElement: true.
+      - scrollUntilVisible:
+          element:
+            id: "Add custom Sets"
+          centerElement: true
+          timeout: 60000
+
+      # Add the SET_NAME if not already present.
+      - runFlow:
+          when:
+            notVisible: ${SET_NAME}
+          commands:
+            - tapOn:
+                id: "Add custom Sets"
+            - extendedWaitUntil:
+                visible: "Add Custom Entry"
+                timeout: 5000
+            - inputText: ${SET_NAME}
+            - pressKey: Enter
+            - extendedWaitUntil:
+                notVisible: "Add Custom Entry"
+                timeout: 10000
+
+      # Tap the SET_NAME row — search path if the list grew large (>8 items),
+      # direct-scroll path for short lists. Pattern mirrors util-drill-to-custom-set.
+      - runFlow:
+          when:
+            visible: ".*Search sets.*"
+          commands:
+            # centerElement on Add-custom-Sets above may leave the Sets header above
+            # the viewport (y≈4 under the nav). Scroll UP to bring "Sets" back into
+            # center so the search input lands at ~y=360, clear of the nav header.
+            - scrollUntilVisible:
+                element:
+                  text: "^Sets$"
+                direction: UP
+                centerElement: true
+                timeout: 10000
+            - tapOn:
+                text: ".*Search sets.*"
+            - inputText: ${SET_NAME}
+            # Select via relationship (below the search input), not by index.
+            # index: is unreliable — (input, row) DOM order flips between a cold
+            # sync and a re-drill; index:1 has landed on the input in CI (NEO-46).
+            - extendedWaitUntil:
+                visible:
+                  text: ".*${SET_NAME}.*"
+                  below:
+                    id: "Search sets"
+                timeout: 10000
+            - tapOn:
+                text: ".*${SET_NAME}.*"
+                below:
+                  id: "Search sets"
+                waitToSettleTimeoutMs: 2000
+            # Wait for Variant Types before leaving this branch — prevents the
+            # fallback below from firing a second tap that collapses the column.
+            - extendedWaitUntil:
+                visible: "Variant Types"
+                timeout: 30000
+
+      # Fallback: short list (no search input). Guarded by notVisible "Variant Types"
+      # to prevent double-tap after the search-input branch succeeded.
+      - runFlow:
+          when:
+            notVisible: "Variant Types"
+          commands:
+            # Wait for the SET_NAME row to be stable before scrolling.
+            # The Sets column can be mid-re-render (Convex subscription initial
+            # load) on a retry after a previous run saved data — the CDP swipe
+            # inside scrollUntilVisible throws MismatchedInputException during
+            # the render. A non-scroll extendedWaitUntil gives the re-render
+            # time to settle before the centering swipe runs.
+            - extendedWaitUntil:
+                visible:
+                  text: ".*${SET_NAME}.*"
+                timeout: 10000
+            - scrollUntilVisible:
+                element:
+                  text: ".*${SET_NAME}.*"
+                centerElement: true
+                timeout: 10000
+            - tapOn:
+                text: ".*${SET_NAME}.*"
+                waitToSettleTimeoutMs: 2000
+            - extendedWaitUntil:
+                visible: "Variant Types"
+                timeout: 30000
+
+# ============================================================
+# LEVEL 5 — Variant Types (VARIANT_TYPE)
+# Gate: SPORT AND YEAR AND MANUFACTURER AND SET_NAME AND VARIANT_TYPE.
+#
+# NEO-47 raised the EntityColumn empty-state height ("No variant types
+# available. Sync from marketplaces to populate."), pushing the
+# "Add custom Variant Types" button to y≈605 in the 1024×629 headless
+# viewport — well into the footer-steal zone (≥489) and below the fold.
+# A non-scrolling extendedWaitUntil can't bring a below-fold button into
+# view, so we MUST use the standard R8 centerElement scroll.
+# The CDP MismatchedInputException that previously blocked this approach
+# is a recoverable transient that scrollUntilVisible retries through; the
+# fatal SIGSEGV era is mitigated by JAVA_TOOL_OPTIONS=-XX:+UseSerialGC.
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${SPORT && YEAR && MANUFACTURER && SET_NAME && VARIANT_TYPE}"
+    commands:
+      # Idle-mode signal: centerElement-scroll to Add-custom button (R8 pattern).
+      # 45s covers shared-Convex contention from parallel workers (~11s observed)
+      # plus a first-run cold path where the Variant Types column briefly shows
+      # "Syncing Variant Types" after a fresh custom Set is created (~32s recorded
+      # on the cold path in CI; 30s was intermittently too short).
+      - scrollUntilVisible:
+          element:
+            id: "Add custom Variant Types"
+          centerElement: true
+          timeout: 45000
+
+      # Add VARIANT_TYPE if not present yet.
+      # waitToSettleTimeoutMs defends against the stale-coordinate race observed in
+      # PR #31: Maestro found the button at y=179 then the page scrolled, so the tap
+      # landed in empty space and the create modal never opened.
+      # extendedWaitUntil immediately before tapOn: the `when:` check above takes
+      # ~7s (Maestro polling); during that window the VT column may briefly
+      # re-render (fresh custom-set selected → component remount). Re-asserting
+      # visibility right before the tap ensures the button is stable.
+      - runFlow:
+          when:
+            notVisible: ${VARIANT_TYPE}
+          commands:
+            - scrollUntilVisible:
+                element:
+                  id: "Add custom Variant Types"
+                centerElement: true
+                timeout: 30000
+            - tapOn:
+                id: "Add custom Variant Types"
+                waitToSettleTimeoutMs: 2000
+            - extendedWaitUntil:
+                visible: "Add Custom Entry"
+                timeout: 10000
+            - inputText: ${VARIANT_TYPE}
+            - pressKey: Enter
+            - extendedWaitUntil:
+                visible:
+                  text: ".*${VARIANT_TYPE}.*"
+                timeout: 5000
+
+      - scrollUntilVisible:
+          element:
+            text: ${VARIANT_TYPE}
+          timeout: 10000
+      - tapOn: ${VARIANT_TYPE}
+
+      # Verify the Variants column opened. Header is the pluralized VARIANT_TYPE:
+      # "Insert" → "Inserts", "Parallel" → "Parallels", etc.
+      - extendedWaitUntil:
+          visible:
+            text: ".*${VARIANT_TYPE}s.*"
+          timeout: 15000
+
+      # Wait for idle mode in the Variants column (Add-custom button present).
+      # Custom VTs short-circuit the gate so the button is immediately available.
+      # For a real-synced VT (Insert/Parallel on 2024 Topps Chrome) the column
+      # can auto-sync and open a ReconciliationModal — but the custom-set callers
+      # pass a synthetic sport, so the VT here is custom and no modal fires.
+      - scrollUntilVisible:
+          element:
+            id: "Add custom ${VARIANT_TYPE}s"
+          visibilityPercentage: 50
+          timeout: 30000
+
+# ============================================================
+# LEVEL 6 — Variant (VARIANT)
+# Gate: all 6 vars must be non-empty.
+#
+# Column header: pluralized VARIANT_TYPE (e.g. "Inserts", "Parallels").
+# Add-custom button: "Add custom Inserts" / "Add custom Parallels".
+# Tapping a Variant opens the CardChecklist panel.
+# Return contract: "Open add card form" button visible in viewport.
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${SPORT && YEAR && MANUFACTURER && SET_NAME && VARIANT_TYPE && VARIANT}"
+    commands:
+      # Add VARIANT if not present yet.
+      - runFlow:
+          when:
+            notVisible: ${VARIANT}
+          commands:
+            - tapOn:
+                id: "Add custom ${VARIANT_TYPE}s"
+            - extendedWaitUntil:
+                visible: "Add Custom Entry"
+                timeout: 5000
+            - inputText: ${VARIANT}
+            - pressKey: Enter
+            - extendedWaitUntil:
+                notVisible: "Add Custom Entry"
+                timeout: 10000
+
+      # Tap the Variant to open CardChecklist. centerElement: true — footer-steal
+      # risk at 1024×629 (see header comment).
+      - scrollUntilVisible:
+          element:
+            text: ${VARIANT}
+          centerElement: true
+          timeout: 10000
+      - extendedWaitUntil:
+          visible:
+            text: ${VARIANT}
+          timeout: 7000
+      - tapOn: ${VARIANT}
+
+      # Wait for the CardChecklist panel to appear.
+      - scrollUntilVisible:
+          element:
+            id: "Open add card form"
+          centerElement: true
+          visibilityPercentage: 50
+          timeout: 15000

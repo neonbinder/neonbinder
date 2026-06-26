@@ -1,0 +1,9 @@
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/profile&worker=${WORKER_INDEX || "0"}
+name: View Profile
+tags:
+  - smoke
+  - profile
+---
+- launchApp
+- assertVisible: "Profile Settings"
+- assertVisible: "Public Profile"

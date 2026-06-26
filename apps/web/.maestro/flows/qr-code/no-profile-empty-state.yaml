@@ -1,0 +1,34 @@
+# R1 — Single feature: the /qr-code page shows the "set up your profile first"
+# empty state (and a Go to Profile CTA) when the signed-in user has NO saved
+# public profile.
+#
+# SELF-CONTAINED (R4): the flow owns its own reset — signing in as the
+# `new-profile` account and routing through /testing/reset wipes this user's
+# publicProfiles so getMyPublicProfile === null and the empty state renders. It
+# depends on NO other flow's state, so it's correct under the cloud queue (which
+# runs flows in arbitrary order, on arbitrary runners, with a fresh per-flow
+# ${TEST_USERNAME}). The `new-profile` account is per-WORKER_INDEX, so distinct
+# runners never collide; within a runner flows run sequentially, and every flow
+# that touches this account resets it at entry — so our reset immediately
+# precedes our assert and the empty state is deterministic.
+#
+# Entry URL: sign in as the new-profile account, reset it, land on /qr-code.
+# `account=new-profile` and `worker` are TOP-LEVEL sign-in query params (the
+# inner redirect value is left unencoded so the router parses them as siblings).
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/qr-code&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: QR Code — no profile empty state
+tags:
+  - smoke
+  - qr-code
+---
+# Step 1: open the app at the signed-in, freshly-reset /qr-code route.
+- launchApp
+
+# Step 2: with no saved profile, the page shows the empty-state copy verbatim.
+# (No "QR Code Generator" form here — the null-profile branch renders instead.)
+- assertVisible: "Set up your public profile first to generate sale QR codes."
+
+# Step 3: and offers the Go to Profile CTA (links to /profile). Asserting it
+# renders is the feature; we do NOT tap it (plain <a> nav — out of scope, and
+# tapping nav links risks the maestro-web CDP crash).
+- assertVisible: "Go to Profile"

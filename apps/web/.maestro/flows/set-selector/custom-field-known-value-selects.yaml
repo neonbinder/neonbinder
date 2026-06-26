@@ -1,0 +1,120 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Custom field — typing a known synced value selects it instead of creating a duplicate"
+tags:
+  - set-selector
+  - regression
+---
+# Regression test for the "forgiving + Custom field" behaviour introduced in NEO-46.
+#
+# WHAT IS BEING TESTED
+# When a user opens the Sports column's "+ Custom" form and types a value that
+# already exists as real marketplace-synced data ("Baseball"), the app must:
+#   1. NOT error.
+#   2. NOT create a duplicate custom entry.
+#   3. Treat the input exactly like tapping the existing "Baseball" row —
+#      close the form and advance the drill so the Year column appears.
+#
+# SERVER BEHAVIOUR (addCustomSelectorOption):
+#   Finds the existing row by normalised value, returns its _id.
+#   The EntityColumn FE calls onSelectExisting(_id) — the same handler that
+#   fires when the user taps the row directly — which drives the drill forward.
+#
+# PRECONDITION:
+#   setup.yaml (the worker-bootstrap flow) runs first via the test:e2e:pick
+#   prerequisite closure. It seeds BSC + SL credentials and pre-syncs Baseball
+#   into the Sports column so it is available as synced data by the time this
+#   flow starts. The work-queue (NEO-49) replaced the old requires:/provides:
+#   dep-graph and the cascade/ directory is gone.
+#
+# DATA ISOLATION:
+#   This flow only reads from the shared Sports column (Baseball) and drills
+#   forward — it creates NO new selectorOptions rows. Concurrent workers are safe.
+
+# ============================================================
+# LAUNCH + SIGN IN → /set-selector
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+
+# ============================================================
+# WAIT FOR SPORTS COLUMN IDLE
+# Baseball is the established idle signal — setup.yaml seeded it and it
+# appears in the Sports column once the auto-sync settles. Using it as
+# the idle guard means this flow works even if the column is still
+# syncing when launchApp fires.
+# ============================================================
+
+- extendedWaitUntil:
+    visible: "Sports"
+
+- extendedWaitUntil:
+    visible: "Baseball"
+
+# ============================================================
+# OPEN THE "+ CUSTOM" FORM ON THE SPORTS COLUMN
+# The button's aria-label is "Add custom Sports" — in Maestro web,
+# aria-label maps to resource-id, so we use `id:` not `text:`.
+#
+# scrollUntilVisible with visibilityPercentage: 50 is required because
+# the 1024×629 headless viewport's page layout leaves this button up
+# to 2px off the left edge (~98% visible). The default 100% threshold
+# triggers a CDP centering scroll that can throw MismatchedInputException.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Add custom Sports"
+    visibilityPercentage: 50
+- tapOn:
+    id: "Add custom Sports"
+
+# ============================================================
+# TYPE A VALUE THAT ALREADY EXISTS AS SYNCED DATA
+# "Baseball" is real marketplace data already in the Sports column.
+# Typing it here exercises the server-side match path in
+# addCustomSelectorOption: the mutation finds the existing row,
+# returns its _id, and the FE calls onSelectExisting(_id) rather
+# than creating a new custom row.
+# ============================================================
+
+# No need to tap a placeholder input first — the form's text input
+# receives focus automatically when the form mounts (autoFocus).
+- inputText: "Baseball"
+
+# Press Enter to submit. The input's onKeyDown handler calls
+# handleCustomSubmit on Enter. We avoid tapping the "Add" button
+# because `text: "Add"` is ambiguous with the "Add Custom Entry"
+# heading and the button resolves differently across renders.
+- pressKey: Enter
+
+# ============================================================
+# ASSERT OUTCOME 1 — FORM CLOSED (no error, drill advanced)
+# The form unmounting proves the server accepted the input and the
+# FE called onSelectExisting. If an error occurred the form would
+# stay open (or re-render with an error message).
+# The unit test for addCustomSelectorOption covers the no-duplicate
+# guarantee; here we cover the UI path only.
+# ============================================================
+
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+
+# ============================================================
+# ASSERT OUTCOME 2 — DRILL ADVANCED TO YEAR COLUMN
+# The Year column rendering is the definitive proof that
+# onSelectExisting fired correctly. If the form had simply closed
+# without selecting (e.g. a silent dismiss), the Years column
+# would never appear.
+#
+# We assert "Sync Years" (the sync button at the bottom of the
+# Years column) rather than the "Years" heading: the 1024×629
+# headless viewport renders the year rows list starting near the
+# top of the column, pushing the heading above the fold before
+# the assertion fires. "Sync Years" is always visible in the
+# lower portion of the column and is unique to the Years column.
+# ============================================================
+
+- assertVisible: "Sync Years"

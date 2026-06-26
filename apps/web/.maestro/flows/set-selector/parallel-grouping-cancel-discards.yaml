@@ -1,0 +1,211 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Parallel Grouping — Cancel discards changes (reopen shows original); also closes via backdrop"
+tags:
+  - parallel-grouping
+  - regression
+---
+# PRODUCT-FEATURE test: Cancel discards pending groupings and does NOT persist.
+# Also covers the modal's two close mechanisms (Cancel button + backdrop tap).
+#
+# KEY PROOF: after Accept All → Cancel → reopen, the items show "Suggested"
+# badges again (live auto-suggestions, not saved placements). If Cancel had
+# written to the DB, the reopen would show them as persisted parallels with no
+# Suggested badge. So "Suggested" on reopen == Cancel correctly discarded.
+#
+# IDEMPOTENCY: ATTEMPT_ID prefix-names the insert triplet so concurrent workers
+# and re-runs never collide. The CI runner injects ATTEMPT_ID; the evalScript
+# below provides a fallback for standalone local runs.
+#
+# Fully custom subtree (E2E Test Sport ${WORKER_INDEX} → 2026 → pg-cancel-<worker>-<ATTEMPT_ID>),
+# every wait is the 7s default; the util owns the cold custom-subtree drill.
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# The runner injects ATTEMPT_ID. This evalScript provides a fallback for
+# standalone runs where the runner is not involved. output.ATTEMPT_ID is only
+# set if unset — so a runner-injected value is preserved.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "pg-cancel-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+
+# ── ADD THREE CUSTOM INSERTS (<ID> Stars / <ID> Stars Gold / <ID> Stars Red) ──
+# NAMING STRATEGY: ATTEMPT_ID is a PREFIX so the auto-suggestion prefix-match
+# groups Gold/Red under OUR Stars, not an old bare "Stars" entry from a prior run.
+# aria-label "Add custom Inserts" maps to resource-id (id:).
+# centerElement: true on every scroll whose target we then tap — clears the
+# 1024×629 headless footer-steal zone (y≥489).
+#
+# --- <ID> Stars ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Stars Gold ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars Gold"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Stars Red (third entry keeps the Group Parallels button layout stable) ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars Red"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# ── OPEN MODAL → ACCEPT ALL (places <ID> Stars Gold + <ID> Stars Red under <ID> Stars) ─
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+- tapOn: "Group Parallels"
+- assertVisible: ".*Drag inserts under a parent.*"
+- assertVisible: "Top-level inserts"
+- assertVisible: ".*Accept all suggestions.*"
+# Center the Accept All button before tapping — modal footer clips at 1024×629.
+- scrollUntilVisible:
+    element:
+      text: ".*Accept all suggestions.*"
+    centerElement: true
+- tapOn: ".*Accept all suggestions.*"
+- assertVisible: ".*[0-9]+ promotion.*"
+- assertVisible: ".*Parallels of.*${ATTEMPT_ID} Stars.*"
+
+# ── CANCEL (close #1, via the Cancel button) discards the pending promotion ─
+- tapOn: "Cancel"
+- assertNotVisible: ".*Drag inserts under a parent.*"
+
+# ── EXACT DATA CHECK: all three inserts still top-level after Cancel ─────────
+# Cancel (button close) returns the Inserts column to idle. In first-run state
+# the column is expanded (no selection) and shows all three rows directly.
+# On retries the flow re-adds <ID> Stars Red via + Custom — but it already
+# exists, so EntityColumn's handleCustomSubmit finds it via onSelectExisting,
+# calls handleVariantSelect, and leaves the column in collapsed-pill mode
+# (selectedVariantId != null, variantExpanded = false).
+#
+# Strategy: scroll the "+ Custom" button into view (always present in idle mode
+# regardless of expanded/collapsed state), then detect whether the "Inserts" h2
+# header is visible. The h2 only appears in expanded state; its absence means
+# the column is showing a collapsed pill. When collapsed, tap the pill (any
+# .*<ID> Stars.* element above the "+ Custom" button) to call setExpanded(true).
+# After expansion, assert all three rows are top-level.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    direction: UP
+    centerElement: true
+- runFlow:
+    when:
+      notVisible:
+        text: "^Inserts$"
+    commands:
+      # Column is collapsed — a selected insert is shown as a pill above
+      # the action buttons. Tap it to call setExpanded(true).
+      - tapOn:
+          text: ".*${ATTEMPT_ID} Stars.*"
+          above:
+            id: "Add custom Inserts"
+      - extendedWaitUntil:
+          visible:
+            text: "^Inserts$"
+- assertVisible:
+    text: "^${ATTEMPT_ID} Stars$"
+- assertVisible: "${ATTEMPT_ID} Stars Gold"
+- assertVisible: "${ATTEMPT_ID} Stars Red"
+
+# ── RE-OPEN → original state: items are SUGGESTIONS again, not persisted ────
+# (CANCEL-button proof: after Accept All → Cancel → reopen, "Suggested" badges
+# are present because Cancel correctly discarded the pending promotion.)
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+- tapOn: "Group Parallels"
+- assertVisible: ".*Drag inserts under a parent.*"
+- assertVisible: "Top-level inserts"
+# Footer re-shows promotions (auto-suggested), and the rows carry "Suggested"
+# badges — the proof that Cancel never wrote to the DB.
+- assertVisible: ".*[0-9]+ promotion.*"
+- scrollUntilVisible:
+    element:
+      text: "Suggested"
+    centerElement: true
+    visibilityPercentage: 50
+# R6: no redundant assertVisible "Suggested" here — scrollUntilVisible already
+# confirmed visibility.
+- assertVisible: ".*Save [0-9]+ change.*"
+
+# ── BACKDROP PROOF: Accept All → backdrop-close → reopen → assert "Suggested" ─
+# SETUP: Accept All inside the already-open modal (items are currently showing
+# "Suggested" state from the Cancel-proof above). After Accept All the items
+# should be promoted (pending, not yet saved).
+- scrollUntilVisible:
+    element:
+      text: ".*Accept all suggestions.*"
+    centerElement: true
+- tapOn: ".*Accept all suggestions.*"
+- assertVisible: ".*[0-9]+ promotion.*"
+- assertVisible: ".*Parallels of.*${ATTEMPT_ID} Stars.*"
+
+# CLOSE #2: via BACKDROP tap (far-left edge, outside the modal panel).
+# This should discard the pending Accept All — NOT write it to the DB.
+- tapOn:
+    point: "2%, 50%"
+- assertNotVisible: ".*Drag inserts under a parent.*"
+
+# RE-OPEN to verify backdrop discarded the pending promotion.
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+- tapOn: "Group Parallels"
+- assertVisible: ".*Drag inserts under a parent.*"
+
+# PROOF: items carry "Suggested" badges again — if backdrop had persisted the
+# Accept All, reopening would show them as saved parallels with no "Suggested"
+# badge. "Suggested" on reopen == backdrop correctly discarded.
+- scrollUntilVisible:
+    element:
+      text: "Suggested"
+    centerElement: true
+    visibilityPercentage: 50
+# R6: no redundant assertVisible here — scrollUntilVisible already confirmed it.
+- assertVisible: ".*Save [0-9]+ change.*"
+
+# ── CLOSE the modal and verify columns intact ───────────────────────────────
+- tapOn: "Cancel"
+- assertNotVisible: ".*Drag inserts under a parent.*"
+
+# The Inserts column action buttons are present and the modal is gone.
+# R6 applied: scrollUntilVisible already asserts visibility; no redundant
+# assertVisible after the scroll.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    visibilityPercentage: 50
+    centerElement: true
+- assertVisible: "Group Parallels"

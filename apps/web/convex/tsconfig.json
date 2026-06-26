@@ -1,0 +1,33 @@
+{
+  /* This TypeScript project config describes the environment that
+   * Convex functions run in and is used to typecheck them.
+   * You can modify it, but some settings required to use Convex.
+   */
+  "compilerOptions": {
+    /* These settings are not required by Convex and can be modified. */
+    "allowJs": true,
+    "strict": true,
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+
+    /* These compiler options are required by Convex */
+    "target": "ESNext",
+    "lib": ["ES2022", "dom"],
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["./**/*"],
+  /* Exclude *.test.ts from the convex DEPLOY typecheck. `convex deploy` runs tsc
+   * over this config; the unit tests are already typechecked + run by vitest
+   * (with convex-test types) in CI, and they aren't deployed as functions. Their
+   * convex-test generic-DataModel typing intermittently degrades under the deploy
+   * tsc (e.g. selectorOptions.addCustom.test.ts: a real index resolves to
+   * `keyof SystemIndexes`), which was FAILING the deploy typecheck repo-wide and
+   * silently triggering the `|| npm run build` fallback in vercel.json — so the
+   * per-PR Convex preview never deployed its functions (incl. NEO-49 http.ts). */
+  "exclude": ["./_generated", "./**/*.test.ts"]
+}

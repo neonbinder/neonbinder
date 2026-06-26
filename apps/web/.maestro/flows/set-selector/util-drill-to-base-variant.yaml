@@ -1,0 +1,129 @@
+appId: com.neonbinder.web
+name: "Util — Drill to Base variant type, confirm BaseSetPicker (leaves CardChecklist visible)"
+tags:
+  - util
+---
+# Shared prerequisite for all card-checklist flows.
+#
+# When this util returns, the browser is on /set-selector with:
+#   - Baseball → 2024 → Topps → Topps Chrome → Base selected
+#   - BaseSetPicker confirmed (SportLots base set mapped)
+#   - CardChecklist panel visible below the selector row (may be empty
+#     OR populated from prior runs — the util does not reset cardChecklist)
+#   - NO Level 6 Variants column (Base is a terminal variant type)
+#
+# CALLER NOTES:
+#   - Assumes `setup.yaml` (the setup track) has populated the shared
+#     hierarchy and saved BSC/SL credentials for the running worker's user.
+#     setup.yaml only saves credentials for the worker that ran it (level 0
+#     picks one worker), so callers running on other workers must save
+#     credentials themselves before invoking this util.
+#   - Does NOT reset cardChecklist; if your test premise requires an empty
+#     checklist, reset state explicitly.
+#
+# CRITICAL — BASE IS TERMINAL:
+#   Selecting "Base" at Level 5 suppresses the Variants column entirely.
+#   The CardChecklist component attaches directly to the variantType row
+#   (cardChecklistId = selectedVariantTypeId when isBaseVariantTypeSelected).
+#   Do NOT wait for "Variants", "Sync Variants", or try to tap Level 6 items.
+#
+# BASESET PICKER (BaseMappingForm):
+#   Tapping "Base" opens the BaseSetPicker modal (heading "Select Base Set").
+#   The modal auto-opens on first selection because baseHasMapping is false.
+#   Confirming with "Confirm Base Set" sets platformData.sportlots on the row,
+#   making baseHasMapping true, which causes CardChecklist to render.
+#
+# CALLER CONTRACT:
+#   - Caller must have called launchApp and waited for sign-in redirect.
+#   - Credentials are already seeded server-side by worker-bootstrap; no
+#     credential env vars need to be passed.
+#   - This util does NOT reset the DB or save credentials — `setup.yaml` and
+#     `worker-bootstrap` do that. Don't rely on this util for either.
+
+# ============================================================
+# DRILL TO 2024 TOPPS CHROME + SYNC VARIANT TYPES
+# util-drill-to-2024-topps-chrome (now a thin wrapper over util-drill-to-custom)
+# handles navigation + levels 1–5, leaving Base visible in the list. DB reset and
+# credentials come from setup.yaml / worker-bootstrap — NOT from the drill util.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# ============================================================
+# LEVEL 5 — Select "Base" variant type
+# Tapping "Base" triggers BaseMappingForm with autoOpen=true.
+#
+# TWO POSSIBLE PATHS:
+#
+# Path A — SL has options (SL session active):
+#   BaseMappingForm opens BaseSetPicker and WAITS for user confirmation.
+#   Heading "Select Base Set" stays visible. We tap "Confirm Base Set".
+#
+# Path B — SL has no data (no SL session or no SL data for this set):
+#   BaseMappingForm opens the picker briefly (skeleton state), then
+#   auto-closes it and writes the BSC fallback mapping on its own.
+#   "Select Base Set" appears for < 500ms — extendedWaitUntil misses it.
+#   BaseMappingForm then calls onClose() which renders CardChecklist.
+#   In this path we go straight to waiting for "Fetch from Marketplaces".
+#
+# We handle both paths: if the picker opens and stays, confirm it.
+# If it never appears, skip straight to the CardChecklist wait.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    timeout: 10000
+- tapOn: "Base"
+
+# Brief wait to let the BaseMappingForm decide whether to hold the picker
+# open (SL data found) or auto-confirm and close (no SL data).
+# 60s covers: SL fetch round trip (~50s) + Puppeteer session re-auth if needed.
+# Wait for either the BaseSetPicker modal (SL data present) OR the post-confirm
+# "Re-map Base" control (Path B — modal auto-closed). Re-map Base sits in the
+# variant-type row and stays in viewport, unlike "Fetch from Marketplaces"
+# which renders below in the column's overflow.
+- extendedWaitUntil:
+    visible:
+      text: ".*Select Base Set.*|.*Re-map Base.*"
+    timeout: 60000
+
+# If the picker is open (SL data present), confirm the pre-selected set.
+- runFlow:
+    when:
+      visible: "Select Base Set"
+    commands:
+      - tapOn: "Confirm Base Set"
+      - extendedWaitUntil:
+          notVisible: "Select Base Set"
+          timeout: 10000
+
+# ============================================================
+# VERIFY CARD CHECKLIST PANEL IS VISIBLE
+# CardChecklist renders immediately after baseHasMapping becomes true.
+# No Level 6 Variants column — Base is terminal.
+#
+# Scroll to find Add Card — sits in the same flex row as the Refresh /
+# Fetch from Marketplaces button. Anchor on Add Card so the assertion
+# after works whether the checklist is empty (button labels "Fetch from
+# Marketplaces") or populated by a prior run (button labels "Refresh").
+# visibilityPercentage 50 — strict 100 fails on viewport-edge clipping.
+#
+# We do NOT assert "No cards in this checklist yet." here. The util's
+# contract is "leaves CardChecklist visible", not "leaves it empty";
+# callers that genuinely need the empty-state should assert it themselves.
+# ============================================================
+
+# Add Card sits in the CardChecklist action row, rendered below the
+# selector columns and Re-map Base button after BaseMappingForm closes.
+# Scroll DOWN with default direction; vis:50 to handle viewport-edge
+# clipping.
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- assertVisible:
+    text: ".*Fetch from Marketplaces.*|Refresh"

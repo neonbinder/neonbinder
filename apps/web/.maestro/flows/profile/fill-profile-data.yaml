@@ -1,0 +1,171 @@
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Fill Profile Data
+tags:
+  - profile
+# TEST_USERNAME must be unique per run. The runner (run-e2e-smoke.sh) sets it
+# to neontester-$(date +%s); when running this flow directly pass
+# -e TEST_USERNAME=neontester-$(date +%s). No env-block default — a hardcoded
+# fallback caused "Username already taken" when a prior run's account still
+# owned the shared name.
+---
+- launchApp
+- assertVisible: "Profile Settings"
+
+# Basic Info — tap label to focus, then type.
+# Skips eraseText: account=new-profile guarantees empty fields, saving ~13 erase
+# cycles (~2-3 min) per run. See NEO-7.
+- scrollUntilVisible:
+    element:
+      text: "Basic Info"
+- tapOn: "Username.*"
+- inputText: "${TEST_USERNAME}"
+- tapOn: "Display Name"
+- inputText: "${TEST_USERNAME}"
+- tapOn: "Tagline"
+- inputText: "Buying and Selling all kinds of Sports Cards"
+
+# Marketplace Links
+# Use id-based selectors — the section's text labels can be off-screen after
+# the bio inputText scrolls the page, and the credential section below this
+# editor also contains a "Username/Email" label that text-based taps could match.
+- scrollUntilVisible:
+    element:
+      text: "Marketplace Links"
+- scrollUntilVisible:
+    element:
+      id: "pub-ebay"
+    centerElement: true
+- tapOn:
+    id: "pub-ebay"
+- inputText: "https://www.ebay.com/str/${TEST_USERNAME}"
+- scrollUntilVisible:
+    element:
+      id: "pub-bsc"
+    centerElement: true
+- tapOn:
+    id: "pub-bsc"
+- inputText: "https://www.buysportscards.com/Seller/1d8570d204/${TEST_USERNAME}"
+- scrollUntilVisible:
+    element:
+      id: "pub-sportlots"
+    centerElement: true
+- tapOn:
+    id: "pub-sportlots"
+- inputText: "https://sportlots.com/dealers/?dealer=${TEST_USERNAME}"
+- scrollUntilVisible:
+    element:
+      id: "pub-myslabs"
+    centerElement: true
+- tapOn:
+    id: "pub-myslabs"
+- inputText: "http://myslabs.to/e8c447c0-5917-4326-be26-be2201e36d4a"
+
+# Payment Handles — use id-based selectors; the labels can be off-screen after
+# the marketplace links section, and "PayPal.*" matches both the username and
+# email rows ambiguously.
+- scrollUntilVisible:
+    element:
+      text: "Payment Handles"
+- scrollUntilVisible:
+    element:
+      id: "pub-paypal"
+    centerElement: true
+- tapOn:
+    id: "pub-paypal"
+- inputText: "${TEST_USERNAME}-pp"
+- assertVisible: "→ paypal.me/${TEST_USERNAME}-pp"
+- scrollUntilVisible:
+    element:
+      id: "pub-venmo"
+    centerElement: true
+- tapOn:
+    id: "pub-venmo"
+- inputText: "${TEST_USERNAME}-venmo"
+- assertVisible: "→ venmo.com/${TEST_USERNAME}-venmo"
+- scrollUntilVisible:
+    element:
+      id: "pub-cashapp"
+    centerElement: true
+- tapOn:
+    id: "pub-cashapp"
+- inputText: "${TEST_USERNAME}-cashapp"
+- assertVisible: "→ cash.app/$${TEST_USERNAME}-cashapp"
+
+# Social Media — id-based selectors (pub-twitter, pub-instagram, pub-tiktok)
+- scrollUntilVisible:
+    element:
+      text: "Social Media"
+- scrollUntilVisible:
+    element:
+      id: "pub-twitter"
+    centerElement: true
+- tapOn:
+    id: "pub-twitter"
+- inputText: "https://x.com/${TEST_USERNAME}-twit"
+- scrollUntilVisible:
+    element:
+      id: "pub-instagram"
+    centerElement: true
+- tapOn:
+    id: "pub-instagram"
+- inputText: "https://instagram.com/${TEST_USERNAME}-ig"
+- scrollUntilVisible:
+    element:
+      id: "pub-tiktok"
+    centerElement: true
+- tapOn:
+    id: "pub-tiktok"
+- inputText: "https://tiktok.com/@${TEST_USERNAME}-tt"
+
+# Save — centerElement keeps "Save Public Profile" away from the y>=489 footer-steal
+# zone in the 1024x629 headless viewport (R8).
+- scrollUntilVisible:
+    element:
+      text: "Save Public Profile"
+    centerElement: true
+- tapOn: "Save Public Profile"
+- assertVisible: "Profile saved.*"
+# Verify the profile link shows the correct URL path
+- assertVisible: "View your profile at /u/${TEST_USERNAME}"
+
+# Navigate to the public profile — openLink avoids the CDP-context destruction
+# that tapOn-on-a-link causes when the client-side router tears down the page
+# mid-tap (null→Int cast crash; seen in CI run 27905676068). The assertVisible
+# above already proved the link text/path is correct; this just gets us there.
+- openLink: ${APP_URL || "http://localhost:3000"}/u/${TEST_USERNAME}
+- assertVisible: "Buying and Selling all kinds of Sports Cards"
+
+# Validate public profile content
+- assertVisible: "${TEST_USERNAME}"
+- assertVisible: "Buying and Selling all kinds of Sports Cards"
+
+# Verify each link on the public profile page points to the correct URL.
+# The link buttons include their href as screen-reader text, so we can
+# match the actual destination URL rendered on the page.
+
+# Marketplace links
+- assertVisible: ".*ebay.com/str/${TEST_USERNAME}.*"
+- assertVisible: ".*buysportscards.com/Seller/1d8570d204/${TEST_USERNAME}.*"
+- assertVisible: ".*sportlots.com/dealers.*${TEST_USERNAME}.*"
+- assertVisible: ".*myslabs.to/.*"
+
+# Payment links — Marketplace Stores render at the top of the public profile,
+# Payment Handles below the fold. Scroll each into view before asserting; we
+# already do this for Cash App + the social links below, just bring PayPal
+# and Venmo in line.
+- scrollUntilVisible:
+    element:
+      text: ".*paypal.me/${TEST_USERNAME}-pp.*"
+- scrollUntilVisible:
+    element:
+      text: ".*venmo.com/${TEST_USERNAME}-venmo.*"
+- scrollUntilVisible:
+    element:
+      text: ".*cash.app.*${TEST_USERNAME}-cashapp.*"
+
+# Social media links
+- scrollUntilVisible:
+    element:
+      text: ".*x.com/${TEST_USERNAME}-twit.*"
+- assertVisible: ".*instagram.com/${TEST_USERNAME}-ig.*"
+- assertVisible: ".*tiktok.com.*${TEST_USERNAME}-tt.*"

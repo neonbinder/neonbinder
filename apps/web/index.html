@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Exposes the (already-public) per-deployment Convex URL so CI can resolve
+         the preview's .convex.site HTTP endpoints for the E2E work-queue (NEO-49).
+         Vite substitutes %VITE_CONVEX_URL% at build time. -->
+    <meta name="x-convex-url" content="%VITE_CONVEX_URL%" />
+    <title>Neon Binder</title>
+    <link rel="icon" href="/favicon.ico" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --font-geist-sans: "Geist", sans-serif;
+        --font-geist-mono: "Geist Mono", monospace;
+      }
+    </style>
+  </head>
+  <body class="antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

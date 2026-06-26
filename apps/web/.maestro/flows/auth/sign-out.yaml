@@ -1,0 +1,8 @@
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/dashboard&worker=${WORKER_INDEX || "0"}
+name: Sign Out
+tags:
+  - auth
+---
+- launchApp
+- tapOn: "Sign out"
+- assertVisible: "Get Started"

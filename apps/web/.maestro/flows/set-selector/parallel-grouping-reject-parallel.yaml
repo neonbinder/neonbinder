@@ -1,0 +1,144 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Parallel Grouping — reject (✕) button moves a parallel back to top-level inserts"
+tags:
+  - parallel-grouping
+  - regression
+---
+# PRODUCT-FEATURE test: the per-row ✕ (reject) button inside a "Parallels of X"
+# card. Add <ID> Stars / <ID> Stars Gold / <ID> Champions:
+#   - Stars Gold PREFIX-MATCHES Stars → auto-suggested as a parallel
+#   - Champions does NOT prefix-match → stays top-level (gives 3 inserts for a
+#     stable Group Parallels button)
+# Accept All places Stars Gold under Stars; the ✕ ungroups it. Net diff is zero,
+# so the footer reverts to "No changes yet" and Save disables — a subtle state
+# invariant worth pinning.
+#
+# IDEMPOTENCY: ATTEMPT_ID is a per-run prefix so accumulated entries from prior
+# runs (bare "Stars", "Stars Gold", etc.) never act as prefix-match parents for
+# THIS run's triplet. The fallback evalScript below produces a stable 4-digit ID
+# for standalone runs.
+#
+# Fully custom subtree (E2E Test Sport ${WORKER_INDEX} → 2026 → pg-reject-<worker>-<ATTEMPT_ID>);
+# every wait is the 7s default; the util owns the cold custom-subtree drill.
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# Provide a per-run unique prefix for all insert names. The CI runner injects
+# ATTEMPT_ID; for standalone local runs we fall back to the last 4 digits of
+# the current epoch ms (matches move-parallels-of-inserts-custom.yaml pattern).
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "pg-reject-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+
+# ── ADD THREE CUSTOM INSERTS (<ID> Stars / <ID> Stars Gold / <ID> Champions) ──
+# NAMING STRATEGY: ATTEMPT_ID is used as a PREFIX so that the auto-suggestion
+# algorithm only sees THIS run's triplet as related — no old bare "Stars" entry
+# (from runs before ATTEMPT_ID was active) can steal the parent role.
+#   - "${ATTEMPT_ID} Stars Gold" prefix-matches "${ATTEMPT_ID} Stars" → suggested
+#   - "${ATTEMPT_ID} Champions" does NOT prefix-match → stays top-level
+#
+# aria-label "Add custom Inserts" maps to resource-id (id:); centerElement on
+# every scroll whose target is then tapped — clears the 1024×629 headless
+# footer-steal zone (y≥489).
+#
+# Non-scroll settle guard: the Inserts column can be mid-re-render immediately
+# after util-drill returns. Let it settle before the first swipe fires.
+- extendedWaitUntil:
+    visible:
+      id: "Add custom Inserts"
+
+# --- <ID> Stars ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Stars Gold (prefix-matches Stars → suggested parallel) ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars Gold"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Champions (no prefix match → stays top-level; gives 3 inserts) ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Champions"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+- assertVisible:
+    text: ".*${ATTEMPT_ID} Champions.*"
+
+# ── OPEN MODAL → ACCEPT ALL (places Stars Gold under Stars) ─────────────────
+# centerElement: true on the Group Parallels scroll — the button may sit near
+# y≈425–447 after 3 inserts are added; centering guards against the footer-steal
+# zone in edge-case viewport states.
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+- tapOn: "Group Parallels"
+- assertVisible: ".*Drag inserts under a parent.*"
+- assertVisible: "Top-level inserts"
+- assertVisible: ".*Accept all suggestions.*"
+
+# Center the Accept All button before tapping — modal footer clips at 1024×629.
+- scrollUntilVisible:
+    element:
+      text: ".*Accept all suggestions.*"
+    centerElement: true
+- tapOn: ".*Accept all suggestions.*"
+- assertVisible: ".*[0-9]+ promotion.*"
+# Stars Gold should now be inside the "Parallels of <ID> Stars" zone.
+- assertVisible:
+    text: ".*Parallels of.*${ATTEMPT_ID} Stars.*"
+
+# ── TAP ✕ NEXT TO "<ID> Stars Gold" ────────────────────────────────────────
+# The product scrolls the last reject button into view on state change (bodyRef
+# scrollIntoView), so the ✕ for Stars Gold is within the modal body's visible
+# area. aria-label maps to resource-id (id: matcher).
+- tapOn:
+    id: "Remove ${ATTEMPT_ID} Stars Gold from parallels"
+
+# ── VERIFY: net diff zero → footer "No changes yet", Gold back at top-level ─
+# The footer status span shows "No changes yet" when totalChanges === 0.
+# This is the authoritative zero-diff signal. The Save button simultaneously
+# reads "No changes" (button label), but "No changes" is a substring of
+# "No changes yet" — asserting both would target the same elements. We assert
+# only the footer status text, which is the distinct, unique zero-diff indicator.
+- assertVisible: "No changes yet"
+# "No changes yet" is the AUTHORITATIVE proof the reject worked.
+# Accept All made +1 promotion; the ✕ reject made −1 (demoting Gold back to
+# top-level); net diff is zero → footer reads "No changes yet". That accounting
+# signal is stronger than any zone-visibility check: the product intentionally
+# keeps the now-empty "Parallels of <ID> Stars" zone visible as a drop target,
+# so assertNotVisible on that heading can never pass. We do NOT assert it.
+# assertVisible on Stars Gold confirms the item itself is visible at top level.
+- assertVisible:
+    text: ".*${ATTEMPT_ID} Stars Gold.*"
+
+# ── CLOSE ───────────────────────────────────────────────────────────────────
+- tapOn: "Cancel"
+- assertNotVisible: ".*Drag inserts under a parent.*"

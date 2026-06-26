@@ -1,0 +1,88 @@
+appId: com.neonbinder.web
+name: "Util — fill + save a public profile (username/display/tagline + payment handles)"
+tags:
+  - util
+---
+# Reusable sub-flow (invoked via runFlow) that fills + saves the signed-in user's
+# public profile under ${TEST_USERNAME}, so a CONSUMER flow can be self-contained
+# (the cloud queue regenerates TEST_USERNAME fresh per flow run, so no flow can
+# rely on another flow's saved profile — each must create its own). Mirrors the
+# proven steps in profile/fill-profile-data.yaml, trimmed to exactly what the QR
+# generator and the public sale page need:
+#   - username + display name + tagline  → makes getMyPublicProfile.username
+#     non-null (the QR generator's only requirement) and gives the public profile
+#     visible content.
+#   - venmo / paypal / cashapp handles    → makes the sale page's PayPal(F&F) /
+#     Venmo / Cash App payment buttons render.
+# (Marketplace + social links are omitted — neither consumer asserts them.)
+#
+# CONTRACT: runs INSIDE the caller's session (no `url:`/`launchApp`). The caller
+# must already be signed in (as the account that owns ${TEST_USERNAME}) and on a
+# freshly-reset /profile page. Returns after "Profile saved." confirmed.
+#
+# account=new-profile + /testing/reset (done by the caller's entry URL) guarantee
+# empty fields, so we skip eraseText (saves ~13 erase cycles; see NEO-7).
+- assertVisible: "Profile Settings"
+
+# Basic Info — tap the visible label to focus, then type.
+- scrollUntilVisible:
+    element:
+      text: "Basic Info"
+- tapOn: "Username.*"
+- inputText: "${TEST_USERNAME}"
+- tapOn: "Display Name"
+- inputText: "${TEST_USERNAME}"
+- tapOn: "Tagline"
+- inputText: "Buying and Selling all kinds of Sports Cards"
+
+# Payment Handles — pre-existing pub-* selectors (same as fill-profile-data); the
+# "→ ..." preview text is the visible confirmation that the value landed.
+- scrollUntilVisible:
+    element:
+      text: "Payment Handles"
+- scrollUntilVisible:
+    element:
+      id: "pub-paypal"
+    centerElement: true
+- tapOn:
+    id: "pub-paypal"
+- inputText: "${TEST_USERNAME}-pp"
+- assertVisible: "→ paypal.me/${TEST_USERNAME}-pp"
+# PayPal email (Goods & Services) — set so the sale page renders the "PayPal
+# (G&S)" button (its href is gated on profile.paypalEmail). Target the VISIBLE
+# label (its htmlFor="pub-paypal-email" focuses the input), not the bare HTML id.
+# The label parens are regex-special — escaped as [(] / [)]. The label also has a
+# trailing "Buyer-protected payments" span, so wrap in .* (Maestro text matches
+# are full-string anchored). There is no "→" preview for the email field; the
+# G&S button on the sale page is the downstream proof the value persisted.
+- scrollUntilVisible:
+    element:
+      text: ".*PayPal email [(]Goods & Services[)].*"
+    centerElement: true
+- tapOn:
+    text: ".*PayPal email [(]Goods & Services[)].*"
+- inputText: "${TEST_USERNAME}@example.com"
+- scrollUntilVisible:
+    element:
+      id: "pub-venmo"
+    centerElement: true
+- tapOn:
+    id: "pub-venmo"
+- inputText: "${TEST_USERNAME}-venmo"
+- assertVisible: "→ venmo.com/${TEST_USERNAME}-venmo"
+- scrollUntilVisible:
+    element:
+      id: "pub-cashapp"
+    centerElement: true
+- tapOn:
+    id: "pub-cashapp"
+- inputText: "${TEST_USERNAME}-cashapp"
+- assertVisible: "→ cash.app/$${TEST_USERNAME}-cashapp"
+
+# Save and confirm.
+- scrollUntilVisible:
+    element:
+      text: "Save Public Profile"
+- tapOn: "Save Public Profile"
+- assertVisible: "Profile saved.*"
+- assertVisible: "View your profile at /u/${TEST_USERNAME}"

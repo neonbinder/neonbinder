@@ -1,0 +1,108 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Variant metadata editor — edit Prefix on a custom Insert variant and verify persistence"
+tags:
+  - set-selector
+  - regression
+---
+# PRODUCT-FEATURE test: add a custom Insert variant, then edit its metadata
+# (the Prefix field) via VariantMetadataEditor and confirm it persists.
+#
+# Why Insert, not Base?
+#   VariantMetadataEditor renders only when selectedVariantId or
+#   selectedVariantOfVariantId is set (SetSelector.tsx). Base is a terminal
+#   variantType — no Variants column, no variant row to tap, so the editor never
+#   renders for Base. Insert is the correct home: the editor renders unchanged,
+#   and the isInsert flag (derived from variantType="Insert") makes it the
+#   primary case for the Insert + Parallel checkbox display.
+#
+# End-user story: drill to a custom E2E Test Sport ${WORKER_INDEX} → 2026 set →
+# Insert → add a custom Insert variant → tap it → see the Metadata panel below
+# the list (Insert/Parallel flags + Prefix field) → type a prefix → save →
+# confirm the Save button disappears.
+#
+# Fully custom subtree, so no live BSC/SL call fires. Every wait is the 7s
+# default; the util owns the cold custom-subtree drill.
+#
+# VariantMetadataEditor renders inline in the Level 6 EntityColumn's selector
+# slot, below the VariantSelector, as soon as a variant row is selected:
+#   - "Metadata" heading
+#   - "Insert" checkbox (read-only, checked because variantType = Insert)
+#   - "Parallel" checkbox (read-only, unchecked for a non-parallel variant)
+#   - "Prefix:" label + text input
+#   - "Save" button — only when the Prefix field has unsaved changes
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# Drill to a per-flow custom set; returns on the Inserts column (idle).
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "vme-insert-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+
+# ── ADD A CUSTOM INSERT VARIANT "META-TEST" ─────────────────────────────────
+# aria-label "Add custom Inserts" is unique to the Inserts column.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+# Type into the autofocused input and press Enter — EntityColumn.tsx:129's
+# onKeyDown calls handleCustomSubmit, so we skip the ambiguous "Add" button.
+- tapOn: "Enter custom value..."
+- inputText: "META-TEST"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# ── SELECT "META-TEST" → VariantMetadataEditor panel renders ────────────────
+# R8 — centerElement: true so the tap lands clear of the footer (y≈315),
+# avoiding the sticky-footer-steal zone at y≥489.
+# R6 — dropped the preceding assertVisible: "META-TEST" (redundant with scroll).
+- scrollUntilVisible:
+    element:
+      text: "META-TEST"
+    centerElement: true
+- tapOn: "META-TEST"
+
+# The Metadata panel renders below the Variants list (off-fold) — scroll to it.
+- scrollUntilVisible:
+    element:
+      text: "Metadata"
+# Insert checkbox (read-only, checked); Parallel checkbox (read-only, unchecked).
+- assertVisible: "Insert"
+- assertVisible: "Parallel"
+- assertVisible: "Prefix:"
+
+# ── EDIT THE PREFIX → "Save" appears ────────────────────────────────────────
+# Erase any prior value first (idempotency: on re-run the field may already hold
+# a prior TEST-* value; without eraseText the field is unchanged → Save never
+# appears → assert fails). Then type a fresh value keyed to this attempt.
+# R8 — centerElement: true; Prefix: is in the VariantMetadataEditor panel
+# which may be near the bottom of the viewport.
+- scrollUntilVisible:
+    element:
+      text: "Prefix:"
+    centerElement: true
+- tapOn: "Prefix:"
+- eraseText: 20
+- inputText: "TEST-${ATTEMPT_ID}"
+- assertVisible: "Save"
+
+# ── SAVE → button disappears once the mutation commits; panel stays ─────────
+# R8 — centerElement: true; "Save" is at the bottom of the VariantMetadataEditor
+# panel — the footer-steal zone at y≥489 is a real risk here.
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+- tapOn: "Save"
+- assertNotVisible: "Save"
+- assertVisible: "Metadata"
+- assertVisible: "Prefix:"
+# Confirm the saved value persisted in the panel.
+- assertVisible:
+    text: ".*TEST-${ATTEMPT_ID}.*"

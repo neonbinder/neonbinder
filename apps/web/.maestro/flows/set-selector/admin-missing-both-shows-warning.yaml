@@ -1,0 +1,24 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&account=admin-no-credentials&worker=${WORKER_INDEX || "0"}
+name: "Set Builder Gate — admin with neither BSC nor SportLots credentials sees the warning banner"
+tags:
+  - set-selector
+  - regression
+---
+# Uses the dedicated never-seeded account (admin-no-credentials / dev+e2e-no-creds@neonbinder.io).
+# No clear / restore / seed / reset — strictly sign-in and assert.
+
+- launchApp
+- assertVisible: "Set Builder requires marketplace credentials"
+- assertVisible: ".*BuySportsCards and SportLots.*"
+- assertNotVisible: "Set Selector"
+- assertNotVisible: "Sync Sports"
+
+# Verify the "Configure credentials" link navigates to the profile page.
+- scrollUntilVisible:
+    element:
+      id: "Configure credentials in Profile"
+    centerElement: true
+- tapOn:
+    id: "Configure credentials in Profile"
+- assertVisible: "Profile Settings"
