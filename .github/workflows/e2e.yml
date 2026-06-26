@@ -1,12 +1,21 @@
 name: E2E Tests
 
+# Reusable workflow. The single PR entry point is the top-level deployment
+# pipeline (.github/workflows/pr-pipeline.yml), which — when the PR changes
+# services/browser — first points the Convex preview's NEONBINDER_BROWSER_URL at
+# the PR's OWN per-PR browser preview, and only THEN calls this. Keeping the
+# browser-URL wiring in that pipeline (not here) is deliberate: it belongs to the
+# overall deployment, not to E2E. workflow_dispatch is retained for manual /
+# standalone runs (which exercise the canonical dev browser default).
 on:
-  pull_request:
+  workflow_call:
   workflow_dispatch:
 # Cancel any in-flight run on this PR/branch when a newer commit arrives.
 # Two concurrent runs share the same Convex dev deployment, browser service,
 # and test users — concurrent /login/bsc calls for the same BSC account
 # reliably trigger a 503 on the slower request. One active run per branch.
+# (On workflow_call the caller pr-pipeline owns concurrency; this still applies
+# to direct workflow_dispatch runs.)
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -143,12 +152,10 @@ jobs:
     # 0 at parallelism 1; `run-e2e-smoke.sh setup` is the only entry point that
     # runs setup-tagged flows. Because resetMyTestState (the per-shard Phase-0
     # bootstrap) is auth-scoped per user, it never wipes this global baseline.
-    # Also waits on browser-override so NEONBINDER_BROWSER_URL is set on the
-    # preview before this seeds marketplace creds through the browser service.
-    # browser-override SKIPS on fork PRs (fork guard); `always() && setup ok`
-    # lets seed still run then (falling back to the canonical dev default).
-    # A non-skipped browser-override FAILURE is itself fail-safe (it exits 0 on
-    # every path), so seed never needs to gate on its result.
+    # By the time this runs, NEONBINDER_BROWSER_URL on the Convex preview already
+    # points at the PR's own browser preview (when services/browser changed): the
+    # top-level pr-pipeline.yml sets it and only THEN invokes this workflow, so
+    # seeding marketplace creds here hits the PR's browser service, not dev.
     needs: setup
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-latest
@@ -213,12 +220,11 @@ jobs:
     # N → TEST_EMAIL_N (0..7 provisioned). Needs the preview URL (setup), the
     # seeded baseline AND the enqueued queue (seed).
     needs: [setup, seed]
-    # Mirror seed's own guard. On workflow_dispatch (the deploy-gate / cross-repo
-    # trigger) the PR-only `browser-override` job is skipped; without this `if`
-    # that skip cascades through `seed` to `runner`, so the matrix never expands
-    # and the queue is never drained — the `e2e` gate then fails on pending>0
-    # having run zero flows (NEO-68). `seed` already succeeded via its own
-    # `if: always()`, so gate on seed's result and run regardless of the skip.
+    # `seed` runs with `if: always()` so it isn't skipped when an upstream
+    # conditional job is. A downstream job that omits `always()` is itself skipped
+    # whenever ANY need was skipped — that cascade would leave the matrix
+    # un-expanded, the queue never drains, and the gate fails on pending>0 having
+    # run zero flows (NEO-68). So gate explicitly on seed's result instead.
     if: always() && needs.seed.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45

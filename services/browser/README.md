@@ -4,9 +4,12 @@ A TypeScript-based web automation service for card delisting operations.
 
 > **CI — per-PR preview (NEO-18):** every PR that changes `services/browser/**`
 > deploys a `pr-<N>` tagged, no-traffic Cloud Run preview on the dev service and
-> runs a real BSC + SportLots login probe against it (`browser.yml`). The web
-> Maestro E2E on the same PR points `NEONBINDER_BROWSER_URL` at that preview, so
-> a PR is validated against its OWN browser code end-to-end.
+> runs a real BSC + SportLots login probe against it (`browser.yml`). The
+> top-level deployment pipeline (`pr-pipeline.yml`) then points the Convex
+> preview's `NEONBINDER_BROWSER_URL` at that `pr-<N>` URL and only afterward runs
+> the web Maestro E2E — so a PR is validated against its OWN browser code
+> end-to-end. (Vercel never talks to the browser service; the wiring lives in the
+> deployment pipeline, preserving the FE → Convex → browser boundary.)
 
 ## Features
 
