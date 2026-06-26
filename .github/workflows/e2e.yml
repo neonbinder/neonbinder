@@ -15,10 +15,11 @@ concurrency:
 # and pull-requests:write to add its summary comment. Repo default is read-only.
 permissions:
   contents: read
+  # PRIVATE repo: GITHUB_TOKEN needs explicit deployments:read to resolve the
+  # Vercel preview via the Deployments API (was implicit on the old public repo).
+  deployments: read
   checks: write
   pull-requests: write
-  # NEO-35: keyless WIF auth to read Cloud Run for browser-preview discovery.
-  id-token: write
 
 # ─── Dynamic work-queue (NEO-49) ──────────────────────────────────────────────
 # main deploys to prod on every merge, so the FULL suite is the merge-blocking
