@@ -46,10 +46,6 @@ permissions:
 # To scale: extend matrix.runner (e.g. add 8..11) and provision TEST_EMAIL_8.. —
 # the queue auto-distributes; nothing else changes. Requires the E2E_QUEUE_SECRET
 # GitHub secret + the same value set on the Convex preview env.
-defaults:
-  run:
-    working-directory: apps/web
-
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -138,6 +134,9 @@ jobs:
           echo "convex_site=$site" >> "$GITHUB_OUTPUT"
 
   seed:
+    defaults:
+      run:
+        working-directory: apps/web
     # Seed the shared per-PR Convex preview's global baseline ONCE, before the
     # matrix fans out. Runs the setup track (setup → insert → parallel) as worker
     # 0 at parallelism 1; `run-e2e-smoke.sh setup` is the only entry point that
@@ -201,6 +200,9 @@ jobs:
           retention-days: 14
 
   runner:
+    defaults:
+      run:
+        working-directory: apps/web
     # Homogeneous runner pool (NEO-49 dynamic queue). Every runner is identical —
     # it drains the SHARED Convex work-queue (work-stealing) instead of a static
     # shard slice, so the legs balance themselves (no slow-shard tail) and the
@@ -311,6 +313,9 @@ jobs:
           fi
 
   report:
+    defaults:
+      run:
+        working-directory: apps/web
     needs: [runner]
     # Run even when a runner fails so the merged report always publishes.
     if: always()
