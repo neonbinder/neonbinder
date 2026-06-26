@@ -82,6 +82,9 @@ runs:
     - name: Read pinned versions
       id: pins
       shell: bash
+      # Monorepo: composite-action steps don't inherit the caller job's
+      # working-directory, so resolve the pinned-version files under apps/web.
+      working-directory: apps/web
       run: |
         # Single source of truth for Maestro + Java versions. Local devs
         # read the same files via setup-maestro.sh.
