@@ -194,9 +194,9 @@ jobs:
         with:
           name: maestro-report-seed
           path: |
-            maestro-report/
-            !maestro-report/**/commands-*.json
-            !maestro-report/maestro-home/**
+            apps/web/maestro-report/
+            !apps/web/maestro-report/**/commands-*.json
+            !apps/web/maestro-report/maestro-home/**
           if-no-files-found: ignore
           retention-days: 14
 
@@ -262,9 +262,9 @@ jobs:
           # that serialize Maestro's `-e` env map (NEO-29 defense-in-depth) and
           # the verbose per-worker home dirs.
           path: |
-            maestro-report/
-            !maestro-report/**/commands-*.json
-            !maestro-report/maestro-home/**
+            apps/web/maestro-report/
+            !apps/web/maestro-report/**/commands-*.json
+            !apps/web/maestro-report/maestro-home/**
           if-no-files-found: ignore
           retention-days: 14
 
@@ -329,7 +329,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: maestro-report-runner-*
-          path: all-shards
+          path: apps/web/all-shards
 
       - name: Regenerate flow-timings.tsv (LPT seed table)
         if: always()
@@ -345,7 +345,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: flow-timings
-          path: flow-timings.tsv
+          path: apps/web/flow-timings.tsv
           if-no-files-found: ignore
           retention-days: 14
 
@@ -375,7 +375,7 @@ jobs:
         uses: mikepenz/action-junit-report@v5
         with:
           # Every shard's per-flow JUnit, merged into ONE "Maestro E2E" check.
-          report_paths: all-shards/**/junit/*.xml
+          report_paths: apps/web/all-shards/**/junit/*.xml
           check_name: Maestro E2E
           detailed_summary: true
           include_passed: true
@@ -464,5 +464,5 @@ jobs:
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: maestro-results
-          path: combined-summary.md
+          path: apps/web/combined-summary.md
 
