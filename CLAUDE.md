@@ -1,5 +1,12 @@
 # CLAUDE.md
 
+> **⚠️ MONOREPO (NEO-18, 2026-06-26):** This is now the consolidated monorepo
+> `neonbinder/neonbinder` — **`apps/web`** (Vite SPA + Convex) and **`services/browser`**
+> (Puppeteer → Cloud Run). One git repo, one CI pipeline (`.github/workflows/`), path-filtered
+> lanes. The "**This is NOT a monorepo**" + "commit in each subdirectory separately" guidance
+> below is **OBSOLETE** and pending a full rewrite (see `CUTOVER.md`). Deploy targets remain
+> separate (Vercel / Convex / Cloud Run) — a monorepo doesn't merge runtimes.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
