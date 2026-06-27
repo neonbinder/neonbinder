@@ -1,49 +1,48 @@
 # CLAUDE.md
 
-> **⚠️ MONOREPO (NEO-18, 2026-06-26):** This is now the consolidated monorepo
-> `neonbinder/neonbinder` — **`apps/web`** (Vite SPA + Convex) and **`services/browser`**
-> (Puppeteer → Cloud Run). One git repo, one CI pipeline (`.github/workflows/`), path-filtered
-> lanes. The "**This is NOT a monorepo**" + "commit in each subdirectory separately" guidance
-> below is **OBSOLETE** and pending a full rewrite (see `CUTOVER.md`). Deploy targets remain
-> separate (Vercel / Convex / Cloud Run) — a monorepo doesn't merge runtimes.
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview
 
-NeonBinder is a multi-repository platform for trading card collectors to manage collections and sell across marketplaces (eBay, SportLots, BuySportsCards, MySlabs, MyCardPost).
+NeonBinder is a platform for trading card collectors to manage collections and sell across marketplaces (eBay, SportLots, BuySportsCards, MySlabs, MyCardPost).
 
-**This is NOT a monorepo.** Each subdirectory is an independent project with its own git repository, package.json, and deployment pipeline. The root directory (`neonbinder/`) is a wrapper that holds shared Claude Code configuration (`.claude/`, `CLAUDE.md`) — it contains no application source code.
+**This is the consolidated monorepo `neonbinder/neonbinder` (NEO-18).** One git repo, one CI pipeline (`.github/workflows/`), path-filtered lanes. Two deployable projects live side by side plus shared Claude config:
 
-| Directory | Purpose | Tech Stack | Own Git Repo |
-|-----------|---------|-----------|:---:|
-| `neonbinder_web/` | Vite SPA + Convex backend | Vite 6, React 19, React Router 7, Convex, Clerk, TypeScript | Yes |
-| `neonbinder_browser/` | Puppeteer automation service for marketplace scraping | Node.js, Puppeteer, Express 5, TypeScript | Yes |
-| `NeonBinderApp/` | React Native mobile client | Expo 54, React Native, NativeWind | Yes |
-| `neonbinder_terraform/` | GCP infrastructure provisioning | Terraform | Yes |
+| Path | Purpose | Tech Stack | Deploy target |
+|------|---------|-----------|---------------|
+| `apps/web/` | Vite SPA + Convex backend | Vite 6, React 19, React Router 7, Convex, Clerk, TypeScript | Vercel (SPA) + Convex |
+| `services/browser/` | Puppeteer automation service for marketplace login/scraping | Node.js, Puppeteer, Express 5, TypeScript | GCP Cloud Run |
+| `.claude/`, `CLAUDE.md` | Shared Claude Code config (agents, skills, memory) | — | — |
+| `.github/workflows/` | Unified CI/CD (see **CI/CD** below) | GitHub Actions | — |
 
-## Code Search & Navigation (CRITICAL)
+> A monorepo doesn't merge runtimes: `apps/web` still deploys to Vercel/Convex and `services/browser` still deploys to Cloud Run — they're just one repo now.
+>
+> **Not in this repo:** GCP infrastructure is a separate Terraform repo, **`neonbinder/neonbinder_ioc`** (GitFlow: `develop`→dev apply, `main`→prod apply). The React Native mobile client (`NeonBinderApp`) is **paused** and not part of the monorepo today; it's expected to return after the web stabilizes (keep cross-platform concerns like Maestro in mind).
 
-**There is no source code at the root level.** All application code lives inside the project subdirectories above. When searching for code, files, functions, or patterns:
+## Code Search & Navigation
 
-1. **Always search within the specific project directory** relevant to the task — e.g., `neonbinder_web/`, `neonbinder_browser/`, etc.
-2. **If unsure which project**, search across all four: `neonbinder_web/`, `neonbinder_browser/`, `NeonBinderApp/`, `neonbinder_terraform/`.
-3. **Never assume a search from the root that returns nothing means the code doesn't exist.** Narrow your search to the correct subdirectory and try again.
-4. **Use path-scoped searches:** `Glob("**/*.ts", path="neonbinder_web")` or `Grep("functionName", path="neonbinder_browser/src")`.
+Application code lives under `apps/web/` and `services/browser/`. When searching:
 
-## Git Commits (CRITICAL)
+1. **Scope to the relevant project** — `apps/web/` (frontend + Convex) or `services/browser/` (Puppeteer service).
+2. **If unsure**, search both. Example: `Glob("**/*.ts", path="apps/web")` or `Grep("functionName", path="services/browser/src")`.
+3. The repo root holds only config (`.claude/`, `.github/`, `CLAUDE.md`, `CUTOVER.md`) — no application source.
 
-Each subdirectory is its own git repository. When the user asks for a git commit:
+## Git & Branching
 
-1. **Identify which project(s) have changes** — run `git status` inside each affected subdirectory (e.g., `cd neonbinder_web && git status`).
-2. **Commit within each subdirectory separately** — `cd neonbinder_web && git add ... && git commit ...`.
-3. **Never run git commands from the root expecting them to capture changes in subdirectories** — the root repo only tracks `.claude/` config and `CLAUDE.md`.
-4. If changes span multiple projects, create a separate commit in each project directory.
+One repository, one git history. Standard model:
+
+1. **Branch off latest `main`** (`git fetch origin && git pull`), ideally in a worktree named for the ticket.
+2. **One commit captures all changes** across `apps/web` and `services/browser` — they share a history now. No more per-subdirectory commits.
+3. **Feature branch → PR → squash-merge.** Trunk-based; never push directly to `main`.
+4. Terraform lives in the separate `neonbinder_ioc` repo and follows **GitFlow** there (feature → `develop` → `main`).
+
+End commit messages with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
 ## Development Commands
 
-### neonbinder_web (main development)
+### apps/web (main development)
 ```bash
+cd apps/web
 npm run dev              # Start Vite frontend only (port 3000)
 npm run dev:backend      # Start Convex dev server only (wraps ./dev-backend.sh)
 npm run dev:all          # Start Vite + Convex in parallel (runs setup-env.sh first)
@@ -51,50 +50,47 @@ npm run dev:backend:tunnel  # Convex dev with cloudflared tunnel for browser ser
 npm run build            # Vite production build
 npm run preview          # Preview built bundle
 npm run lint             # ESLint
-npx convex dev           # Convex dev server with hot reload (used by dev:backend)
-npx convex deploy        # Deploy Convex functions to production
+npm run test:e2e         # Maestro E2E locally (see E2E Testing below)
 ```
 
-### neonbinder_browser
+### services/browser
 ```bash
+cd services/browser
 npm run dev              # Start with ts-node (development)
 npm run build            # Compile TypeScript
-npm start                # Run compiled server
-npm run deploy           # Deploy to GCP Cloud Run
+npm start                # Run compiled server (port 8080)
+npm test                 # Unit tests
+npm run test:prod-gate   # Real BSC + SportLots login integration tests (node --test tests/integration/*.test.mjs)
 ```
 
-### NeonBinderApp
-```bash
-npm start                # Start Expo dev server
-npm run ios              # Run on iOS simulator
-npm run android          # Run on Android emulator
-npm run storybook        # Component development with Storybook
-```
+> Deploys are driven by CI, not by hand — see **CI/CD**. Vercel owns the Convex deploy (the SPA build runs `convex deploy`); Cloud Run is deployed from `browser.yml`.
 
 ## Architecture
 
 ```
-Frontend (Web/Mobile)
+Frontend (apps/web SPA)
     ↓
-Convex Backend (neonbinder_web/convex/)
-    ↓ calls
-Browser Service (neonbinder_browser/) for marketplace automation
+Convex Backend (apps/web/convex/)
+    ↓ calls (OIDC, server-side only)
+Browser Service (services/browser/) for marketplace automation
     ↓
-External Marketplaces (via Puppeteer)
+External Marketplaces (via Puppeteer / direct HTTP)
 ```
 
 **Data Flow:** Image → Recognition → Structured Card → Collection → (Optional) Listing
 
-### Key Entry Points
-- **Web entry point:** `neonbinder_web/src/main.tsx` - Vite entry; mounts `BrowserRouter`, sets up providers (Clerk, Convex, PostHog, Sentry, Radix Theme), and declares all routes
-- **Route layouts:** `neonbinder_web/src/layouts/ProtectedLayout.tsx` (auth-gated routes), `neonbinder_web/src/layouts/binder-layout.tsx` (binder shell)
-- **Page components:** still under `neonbinder_web/app/<route>/page.tsx` — imported into `src/main.tsx` and mapped to React Router `<Route>` elements (no Next.js file-system routing)
-- **Convex schema:** `neonbinder_web/convex/schema.ts` - database tables
-- **Convex functions:** `neonbinder_web/convex/myFunctions.ts`
-- **Marketplace adapters:** `neonbinder_web/convex/adapters/` - platform integrations
-- **Browser automation:** `neonbinder_browser/src/index.ts` - Express server with adapter routes
+**Security boundary (do not collapse):** the frontend never calls the browser service directly. It goes FE → Convex → browser. Convex proxies all privileged operations (credentials, marketplace calls) and is the only caller of the browser service. The `apps/web/convex/adapters/` and `services/browser/src/adapters/` layers are an intentional duplication across that boundary — only non-privileged wire types/taxonomy are shareable, never the adapter logic.
 
-> **Note:** `neonbinder_web/app/layout.tsx` is a leftover Next.js stub kept only for migration reference — it is not the active root layout. Provider setup lives in `src/main.tsx`.
+### Key Entry Points
+- **Web entry point:** `apps/web/src/main.tsx` — Vite entry; mounts `BrowserRouter`, sets up providers (Clerk, Convex, PostHog, Sentry, Radix Theme), declares all routes
+- **Route layouts:** `apps/web/src/layouts/ProtectedLayout.tsx` (auth-gated), `apps/web/src/layouts/binder-layout.tsx` (binder shell)
+- **Page components:** under `apps/web/app/<route>/page.tsx` — imported into `src/main.tsx` and mapped to React Router `<Route>` elements (no Next.js file-system routing)
+- **Convex schema:** `apps/web/convex/schema.ts`
+- **Convex functions:** `apps/web/convex/myFunctions.ts`
+- **Marketplace adapters (Convex side):** `apps/web/convex/adapters/`
+- **Browser automation:** `services/browser/src/index.ts` — Express server with adapter routes
+
+> `apps/web/app/layout.tsx` is a leftover Next.js stub kept only for migration reference — not the active root layout. Provider setup lives in `src/main.tsx`.
 
 ## Convex Development Patterns
 
@@ -135,7 +131,7 @@ const mutate = useMutation(api.myFunctions.myMutation);
 ## Authentication
 
 Uses **Clerk + Convex Auth**:
-- Clerk handles user authentication via `<ClerkProvider>` in `src/main.tsx`
+- Clerk handles user authentication via `<ClerkProvider>` in `apps/web/src/main.tsx`
 - JWT passed to Convex with `aud: "convex"` claim
 - Get current user in Convex: `getCurrentUserId(ctx)` from `./auth`
 - Protected routes are wrapped with `<ProtectedLayout>` in `src/main.tsx` (no `middleware.ts` — that was Next.js)
@@ -145,9 +141,7 @@ Uses **Clerk + Convex Auth**:
 
 ### GCP Service Accounts
 
-Each service uses a dedicated service account, managed by Terraform (`neonbinder_terraform/`):
-
-All NeonBinder GCP projects live under the `neonbinder.io` organization (org ID `250044610272`) billed from the `Neon Binder Billing` account. Project topology:
+Each service uses a dedicated service account, managed by Terraform in the **`neonbinder_ioc`** repo. All NeonBinder GCP projects live under the `neonbinder.io` organization (org ID `250044610272`). Project topology:
 
 - **Prod:** `neonbinder` (project number `117170654588`)
 - **Dev:** `neonbinder-dev` (project number `339836466983`)
@@ -155,10 +149,10 @@ All NeonBinder GCP projects live under the `neonbinder.io` organization (org ID 
 | Service Account | Project | Purpose | Local Auth Method |
 |---|---|---|---|
 | `neonbinder-browser-runtime` | `neonbinder-dev` (dev) / `neonbinder` (prod) | Browser service runtime (Cloud Run + local dev) | SA impersonation via ADC |
-| `neonbinder-browser-deployer` | `neonbinder-dev` (dev) / `neonbinder` (prod) | GitHub Actions CI/CD | Workload Identity Federation |
-| `neonbinder-convex` | `neonbinder-dev` (dev) / `neonbinder` (prod) | Convex backend (GCS) | SA key in Convex env (`GOOGLE_APPLICATION_CREDENTIALS_B64`); Convex runs off-GCP, can't use WIF |
+| `neonbinder-browser-deployer` | `neonbinder-dev` (dev) / `neonbinder` (prod) | GitHub Actions CI/CD (WIF) | Workload Identity Federation |
+| `neonbinder-convex` | `neonbinder-dev` (dev) / `neonbinder` (prod) | Convex backend (GCS + OIDC to browser) | SA key in Convex env (`GOOGLE_APPLICATION_CREDENTIALS_B64`); Convex runs off-GCP, can't use WIF |
 
-**Org policy:** SA key creation is disabled (`iam.disableServiceAccountKeyCreation`) except for the two `neonbinder-convex` SAs, which have an explicit exception because Convex Cloud requires a key to authenticate to GCS. Everywhere else, use impersonation.
+**Org policy:** SA key creation is disabled (`iam.disableServiceAccountKeyCreation`) except for the two `neonbinder-convex` SAs, which have an explicit exception because Convex Cloud requires a key to authenticate to GCS. Everywhere else, use impersonation. **All GCP changes go through `neonbinder_ioc` (Terraform)** — no console/CLI mutations.
 
 Local dev setup (one-time per SA):
 ```bash
@@ -176,19 +170,19 @@ Prerequisite: your user account needs `roles/iam.serviceAccountTokenCreator` on 
 ### Environment Variables
 
 ```bash
-# Key env vars (in .env.local — Vite exposes anything prefixed with VITE_ to the client):
+# Key env vars (in apps/web/.env.local — Vite exposes anything prefixed with VITE_ to the client):
 # VITE_CONVEX_URL              - Convex deployment URL
 # VITE_CLERK_PUBLISHABLE_KEY   - Clerk public key
 # CLERK_SECRET_KEY             - Clerk secret (server-side / Convex only)
 # ENCRYPTION_KEY               - 32-char key for credential encryption
-# NEONBINDER_BROWSER_URL       - Browser service URL (default: http://localhost:8080)
+# NEONBINDER_BROWSER_URL       - Browser service URL (Convex env; default: http://localhost:8080)
 ```
 
-> Convex dev reads its own env from `.env.convex` when `npm run dev:backend` is used (see `dev-backend.sh`).
+> Convex dev reads its own env from `.env.convex` when `npm run dev:backend` is used (see `apps/web/dev-backend.sh`).
 
 For marketplace automation testing, start the browser service first:
 ```bash
-cd neonbinder_browser && npm start  # Runs on port 8080 (reads .env for GCP credentials)
+cd services/browser && npm start  # Runs on port 8080 (reads .env for GCP credentials)
 ```
 
 ## UI & Styling
@@ -197,13 +191,15 @@ cd neonbinder_browser && npm start  # Runs on port 8080 (reads .env for GCP cred
 - **Colors:** Primary=Neon Green (#00D558), Cancel=Neon Pink (#FF2EB3), Accent=Blue (#00B7FF)
 - **Font:** Lexend
 - **Components:** Radix UI Themes, Tailwind CSS 4.x
-- **Structure:** `/components/primitives/` (base), `/components/modules/` (composed)
+- **Structure:** `apps/web/components/primitives/` (base), `apps/web/components/modules/` (composed)
+- **Keyboard-first:** every flow must be fully operable from the keyboard (Enter confirms, Escape cancels, preselect sensible defaults).
 
 ## Observability
 
-- **Sentry:** Error tracking, performance monitoring, structured logging
-- **PostHog:** Product analytics, feature flags, user tracking
-- Correlation: Include `requestId`, `userId` in both systems
+- **Sentry:** client-side error tracking + performance monitoring (no `@sentry/node` — the frontend only).
+- **PostHog:** product analytics, feature flags, user tracking.
+- **Server-side (Convex / browser service):** PostHog events + structured JSON logs (not Sentry).
+- Correlation: include `requestId`, `userId` across systems. Check GCP Cloud Run + Convex logs (via `gcloud` / `npx convex logs`) before diagnosing runtime errors.
 
 ## File Naming Conventions
 
@@ -214,28 +210,33 @@ cd neonbinder_browser && npm start  # Runs on port 8080 (reads .env for GCP cred
 
 ## Secrets Management
 
-Sensitive credentials stored in **Google Cloud Secret Manager**, not `.env` files. Access via `neonbinder_browser/src/services/secrets-manager.ts`. The Convex backend proxies credential operations through the browser service HTTP API (`neonbinder_web/convex/credentials.ts`).
+Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` files. Access via `services/browser/src/services/secrets-manager.ts`. The Convex backend proxies credential operations through the browser service HTTP API (`apps/web/convex/credentials.ts`) — only the browser service touches Secret Manager.
+
+## CI/CD
+
+All workflows live in `.github/workflows/`. Path-filtered lanes keyed on `apps/web/**` vs `services/browser/**`:
+
+- **`web-ci.yml`** — `apps/web` lint + unit tests (vitest/eslint).
+- **`browser.yml`** — `services/browser` build + unit tests, and the **per-PR browser preview**: builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, and runs a real BSC + SportLots login probe against it. (The push-to-`main` prod deploy lane lands at cutover — see `CUTOVER.md`.)
+- **`pr-pipeline.yml`** — the top-level per-PR orchestrator: `changes` (paths filter) → `wire-browser-url` (when `services/browser` changed: point the Convex preview's `NEONBINDER_BROWSER_URL` at this PR's `pr-<N>` browser preview) → **`e2e`** (calls the reusable `e2e.yml`). So a PR touching web + browser is validated end-to-end against its **own** browser code; web-only PRs run E2E against the dev browser default. **Vercel stays "dumb"** (SPA build + `convex deploy` only — it never calls the browser service); the browser-URL wiring is a deployment concern that lives here.
+- **`e2e.yml`** — reusable (`workflow_call`) Maestro suite on the NEO-49 dynamic Convex work-queue: a homogeneous pool of work-stealing runners drains a shared queue; the single required **`e2e`** gate is green iff every queued flow passed and the queue fully drained.
+- **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image.
+- **`refresh-flow-timings.yml`** — weekly chore PR keeping the LPT flow-timings table aligned to main's flow set.
+- **`e2e-repeat.yml`** — manual flakiness sampler (runs the suite N times).
 
 ## E2E Testing (Maestro)
 
-Maestro flows live in `neonbinder_web/.maestro/flows/` mirroring app routes:
+Maestro flows live in `apps/web/.maestro/flows/`, mirroring app routes.
 
-| App route | Flow directory |
-|---|---|
-| `/signin` | `auth/` |
-| `/dashboard` | `dashboard/` |
-| `/profile` | `profile/` |
-| `/u/[username]` | `public-profile/` |
-
-**Run locally:**
+**Run locally** (validates against local Vite → the remote **dev** browser service):
 ```bash
-cd neonbinder_web
-APP_URL=http://localhost:3000 TEST_EMAIL=... TEST_PASSWORD=... npm run test:e2e
-npm run test:e2e:smoke   # smoke-tagged flows only
+cd apps/web
+APP_URL=http://localhost:3000 npm run test:e2e
+npm run test:e2e:pick -- <flow>   # run a subset (name / list / regex / tag) with prereq closure
 ```
 
-**Known constraint — Clerk bot protection:** Automated sign-in flows may be blocked by Clerk's bot detection. Use [Clerk testing tokens](https://clerk.com/docs/testing/overview) to bypass this in CI/test environments. Set `CLERK_SECRET_KEY` and generate a token server-side to pre-authenticate test sessions.
+> Local Maestro web runs headless at CI's **1024×629** viewport — always run via the npm scripts (bare `maestro test` is non-headless and hides CI-only fold/layout gotchas). Use parallelism 1 locally (higher crashes Chrome tabs on a laptop).
 
-**GitHub Actions:** `.github/workflows/e2e-tests.yml` waits for the Vercel preview URL then runs the smoke suite via Maestro Cloud. Required secrets: `MAESTRO_API_KEY`, `MAESTRO_TEST_EMAIL`, `MAESTRO_TEST_PASSWORD`, `VERCEL_TOKEN`.
+**In CI:** the suite runs via `pr-pipeline.yml` → `e2e.yml` on every PR (see CI/CD). The `e2e` check is the merge-blocking gate. Test users are provisioned per work-queue runner (`dev+e2e-<N>@neonbinder.io`); flows must be self-contained and parallel-safe (create-and-use their own data; no shared global state).
 
-**Test tags:** `smoke` (every PR), `regression` (nightly/main), `auth`/`dashboard`/`profile` (feature groupings).
+**Test tags:** `smoke`, `regression`, plus feature groupings (`auth`/`dashboard`/`profile`/...). Never add a `wip` tag — fix the underlying bug instead.

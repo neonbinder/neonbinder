@@ -1,0 +1,56 @@
+name: Preview Cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+# When a PR closes (merged or not), tear down its per-PR browser preview on the
+# dev Cloud Run service (browser.yml's deploy-preview stands it up). Removing the
+# `pr-<N>` tag stops the preview URL resolving and frees the tag slot; Cloud Run
+# then GCs the underlying no-traffic revision on its own. We also delete the
+# pushed `:pr-<N>` image so dev GCR storage doesn't accumulate dead preview tags.
+jobs:
+  cleanup:
+    if: |
+      github.base_ref == 'main'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Remove pr-<N> tag from dev Cloud Run service
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          TAG="pr-$PR"
+          echo "Removing tag $TAG from neonbinder-browser (neonbinder-dev)"
+          # `--remove-tags` is idempotent — if the tag is absent (e.g. the
+          # deploy-preview job never succeeded for this PR) gcloud still exits 0.
+          # That's desired: cleanup should never fail a PR close.
+          gcloud run services update-traffic neonbinder-browser \
+            --region=us-central1 \
+            --project=neonbinder-dev \
+            --remove-tags="$TAG"
+
+      - name: Delete the pr-<N> image from dev GCR (best-effort)
+        if: always()
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          IMAGE="gcr.io/neonbinder-dev/neonbinder-browser:pr-$PR"
+          echo "Deleting $IMAGE (best-effort; never fails the cleanup)"
+          # Best-effort: missing image or insufficient delete perms must not fail
+          # a PR close. The tag removal above is the load-bearing teardown.
+          gcloud container images delete "$IMAGE" --force-delete-tags --quiet || \
+            echo "image $IMAGE not deleted (absent or no delete permission) — ignoring"
