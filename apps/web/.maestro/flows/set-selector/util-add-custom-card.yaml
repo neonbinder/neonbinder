@@ -1,0 +1,196 @@
+appId: com.neonbinder.web
+name: "Util — drill to per-worker custom set, add a custom insert entry, open CardChecklist, add one card"
+tags:
+  - util
+---
+# Reusable preamble: from a signed-in session with launchApp already called,
+# drill to a per-worker custom set, ensure the INSERT_NAME entry exists in the
+# Inserts column (idempotent), open the CardChecklist, and add one card.
+#
+# Returns with the "Edit card ${CARD_NUMBER}" button scrolled into view (50%
+# visibility). Callers can immediately tapOn that button or continue to verify
+# the row before opening the edit drawer/form.
+#
+# CALLER CONTRACT:
+#   - Caller has already called launchApp AND the session is signed in.
+#   - Caller does NOT call util-drill-to-custom-set separately.
+#   - Navigation to /set-selector is performed inside util-drill-to-custom-set.
+#   - The same ATTEMPT_ID (or equivalent) embedded in CARD_NUMBER is available
+#     in the calling flow's env so post-add references ("Edit card ${CARD_NUMBER}",
+#     "Delete card ${CARD_NUMBER}") resolve correctly.
+#
+# INPUTS:
+#   SET_NAME      (required) — per-flow, per-worker custom set basename,
+#                   e.g. "cd-${WORKER_INDEX||0}", "cfm-${WORKER_INDEX||0}".
+#                   Passed through to util-drill-to-custom-set.
+#   VARIANT_TYPE  (optional, default "Insert") — variant type column to land on.
+#                   Passed through to util-drill-to-custom-set.
+#   INSERT_NAME   (optional, default "Base") — the name to add as a custom entry
+#                   in the Variants column (e.g. "Inserts"). Idempotent:
+#                   skipped if the entry already exists.
+#   CARD_NUMBER   (required) — card number to type into the autofocused number
+#                   input. Embed ATTEMPT_ID to avoid collisions, e.g.
+#                   "888-${ATTEMPT_ID}". Used to identify the row afterward.
+#   PLAYER_NAME   (required) — typed into the "Player name" field on the add-card
+#                   form. Displayed in the checklist row. Always filled.
+#   CARD_NAME     (optional) — typed into the "Card name" field when provided.
+#                   Only flows that need to verify/rename the card name pass this.
+#                   When absent (falsy), the Card name step is skipped entirely.
+#
+# RETURN CONTRACT:
+#   - util-drill-to-custom-set has run: E2E Test Sport ${WORKER_INDEX} -> 2026 ->
+#     Topps -> SET_NAME drilled; VARIANT_TYPE column visible; Variants column
+#     visible with "Add custom <VARIANT_TYPE>s" button in viewport.
+#   - INSERT_NAME entry exists in the Variants column and is selected.
+#   - CardChecklist is open ("Open add card form" button was scrolled into view).
+#   - A card with CARD_NUMBER and PLAYER_NAME (and optionally CARD_NAME) has been
+#     submitted via the add-card form.
+#   - "Edit card ${CARD_NUMBER}" button is scrolled into view at 50% visibility.
+
+# ============================================================
+# STEP 1 — DRILL TO PER-WORKER CUSTOM SET
+# util-drill-to-custom-set handles E2E Test Sport ${WORKER_INDEX} -> 2026 ->
+# Topps -> SET_NAME -> VARIANT_TYPE -> returns with Variants column idle.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: ${SET_NAME}
+      VARIANT_TYPE: ${VARIANT_TYPE || "Insert"}
+
+# ============================================================
+# STEP 2 — ADD INSERT ENTRY (idempotent)
+# The "Add custom <VARIANT_TYPE>s" button is in viewport after util-drill.
+# centerElement: true prevents the footer-steal zone (y>=489 in 1024x629)
+# from absorbing the tap without firing the modal-open follow-up events.
+# The when: notVisible guard skips the add if INSERT_NAME already exists
+# (idempotent on rerun when a prior attempt left the entry in the DB).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Add custom ${VARIANT_TYPE || 'Insert'}s"
+    centerElement: true
+    timeout: 10000
+
+- runFlow:
+    when:
+      notVisible: ${INSERT_NAME || "Base"}
+    commands:
+      - tapOn:
+          id: "Add custom ${VARIANT_TYPE || 'Insert'}s"
+      - assertVisible: "Add Custom Entry"
+      - inputText: ${INSERT_NAME || "Base"}
+      - pressKey: Enter
+      - assertNotVisible: "Add Custom Entry"
+
+# ============================================================
+# STEP 3 — SELECT THE INSERT ENTRY TO OPEN CARDCHECKLIST
+# scrollUntilVisible + centerElement: true keeps the row at y~315,
+# clear of both the sticky nav (top) and the footer-steal zone (y>=489).
+# extendedWaitUntil immediately before tapOn confirms the row is stable
+# after the add-modal close animation.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ${INSERT_NAME || "Base"}
+    centerElement: true
+    timeout: 10000
+- extendedWaitUntil:
+    visible:
+      text: ${INSERT_NAME || "Base"}
+    timeout: 7000
+- tapOn: ${INSERT_NAME || "Base"}
+
+# ============================================================
+# STEP 4 — WAIT FOR CARDCHECKLIST TO RENDER
+# Custom subtrees short-circuit the BSC/SL adapters via the isCustomSubtree
+# gate (NEO-22), so no marketplace fetch fires. "Open add card form" is
+# the reliable idle signal on custom sets (no "Fetch from Marketplaces" step).
+# centerElement: true clears the footer zone before the subsequent tap.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- extendedWaitUntil:
+    visible:
+      id: "Open add card form"
+    timeout: 7000
+
+# ============================================================
+# STEP 5 — OPEN THE ADD-CARD FORM
+# ============================================================
+
+- tapOn:
+    id: "Open add card form"
+- assertVisible:
+    id: "Card name"
+
+# ============================================================
+# STEP 6 — FILL CARD NUMBER (autofocus)
+# The card number input has autoFocus — type directly without tapOn first.
+# ============================================================
+
+- inputText: ${CARD_NUMBER}
+
+# ============================================================
+# STEP 7 — FILL PLAYER NAME (always required)
+# Tap the "Player name" field, then type. Player name is always populated.
+# ============================================================
+
+- tapOn: "Player name"
+- inputText: ${PLAYER_NAME}
+
+# ============================================================
+# STEP 8 — OVERWRITE WITH CARD NAME (optional)
+# Only executed when CARD_NAME is provided (truthy GraalJS check).
+# The "Card name" input already contains PLAYER_NAME from Step 7;
+# we must erase it before typing CARD_NAME so the stored cardName
+# is CARD_NAME alone (not "PLAYER_NAME + CARD_NAME" concatenated).
+# eraseText: 80 clears all but the last character (Maestro web cursor
+# is placed at the penultimate position on tap); the trailing character
+# is harmless because CARD_NAME immediately replaces the whole value
+# and the callers assert/rename by CARD_NAME not PLAYER_NAME.
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${CARD_NAME}"
+    commands:
+      - tapOn:
+          id: "Card name"
+      - eraseText: 80
+      - inputText: ${CARD_NAME}
+
+# ============================================================
+# STEP 9 — SUBMIT THE NEW CARD
+# ============================================================
+
+- tapOn:
+    id: "Submit new card"
+
+# ============================================================
+# STEP 10 — SCROLL TO THE NEW CARD ROW
+# After Submit, the new card sorts to the BOTTOM of the Virtuoso list
+# and is NOT rendered in the initial viewport (Virtuoso only renders
+# rows near the current scroll position). Do NOT use extendedWaitUntil
+# on the player name text — the row is not in the DOM yet.
+# scrollUntilVisible materializes the row via scrollToIndex.
+# visibilityPercentage: 50 is enough to tap; no centerElement (the
+# new card is at the bottom — centering a bottom element can fail
+# if the list cannot scroll further to satisfy the centering contract).
+# waitToSettleTimeoutMs: 1000 lets Virtuoso settle after each scroll step.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card ${CARD_NUMBER}"
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000

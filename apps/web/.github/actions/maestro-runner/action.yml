@@ -1,0 +1,166 @@
+name: "Maestro runner setup"
+description: >
+  Prepare an ubuntu runner to drive Maestro web flows against the PR's Vercel
+  preview: a localhost:3000 bypass proxy, pinned Java + Chrome + Xvfb, and the
+  pinned Maestro CLI. Shared by the `seed` job (pre-matrix baseline) and every
+  `e2e` shard leg so the runner prep never drifts between them.
+
+inputs:
+  preview-url:
+    description: "Vercel preview URL (from the setup job's output)."
+    required: true
+  bypass-secret:
+    description: "Vercel automation bypass secret (header injected by the proxy)."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Start bypass-injecting proxy
+      shell: bash
+      env:
+        PREVIEW_URL: ${{ inputs.preview-url }}
+        VERCEL_AUTOMATION_BYPASS_SECRET: ${{ inputs.bypass-secret }}
+      run: |
+        # Tiny Node proxy: forwards localhost:3000 → Vercel preview with the
+        # x-vercel-protection-bypass header injected on every request. Lets
+        # Maestro flows use APP_URL=http://localhost:3000 without any flow
+        # rewrites (which would hurt PO readability). Each job runs on its own
+        # runner, so each needs its own localhost:3000 proxy.
+        if [ -z "$PREVIEW_URL" ]; then
+          echo "No preview URL provided to maestro-runner."
+          exit 1
+        fi
+        cat > /tmp/vercel-proxy.js <<'EOF'
+        const http = require('http');
+        const https = require('https');
+        const { URL } = require('url');
+
+        const upstream = new URL(process.env.PREVIEW_URL);
+        const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+        const PORT = 3000;
+
+        const server = http.createServer((req, res) => {
+          const opts = {
+            hostname: upstream.hostname,
+            port: 443,
+            path: req.url,
+            method: req.method,
+            headers: {
+              ...req.headers,
+              host: upstream.hostname,
+              'x-vercel-protection-bypass': bypass,
+            },
+          };
+          const upstreamReq = https.request(opts, upstreamRes => {
+            res.writeHead(upstreamRes.statusCode || 500, upstreamRes.headers);
+            upstreamRes.pipe(res);
+          });
+          upstreamReq.on('error', err => {
+            console.error('proxy error:', err.message);
+            res.statusCode = 502;
+            res.end('proxy error');
+          });
+          req.pipe(upstreamReq);
+        });
+
+        server.listen(PORT, () => {
+          console.log(`Bypass proxy listening on http://localhost:${PORT} -> ${upstream.origin}`);
+        });
+        EOF
+        node /tmp/vercel-proxy.js &
+        echo "PROXY_PID=$!" >> "$GITHUB_ENV"
+        # Wait for proxy to be reachable
+        for i in $(seq 1 20); do
+          if curl -sS -o /dev/null "http://localhost:3000/" ; then
+            echo "Proxy ready."
+            break
+          fi
+          sleep 0.5
+        done
+
+    - name: Read pinned versions
+      id: pins
+      shell: bash
+      # Monorepo: composite-action steps don't inherit the caller job's
+      # working-directory, so resolve the pinned-version files under apps/web.
+      working-directory: apps/web
+      run: |
+        # Single source of truth for Maestro + Java versions. Local devs
+        # read the same files via setup-maestro.sh.
+        maestro_version="$(tr -d '[:space:]' < .maestro/version)"
+        java_version="$(tr -d '[:space:]' < .java-version)"
+        echo "maestro=${maestro_version}" >> "$GITHUB_OUTPUT"
+        echo "java=${java_version}" >> "$GITHUB_OUTPUT"
+        echo "Pinned Maestro: ${maestro_version}"
+        echo "Pinned Java:    ${java_version}"
+
+    - name: Cache Maestro CLI
+      id: maestro-cache
+      uses: actions/cache@v4
+      with:
+        # Maestro installs into ~/.maestro (bin + bundled lib). Key on the pinned
+        # version so a bump invalidates automatically (NEO-62 — saves the ~30s
+        # curl|bash install on every seed + runner job).
+        path: ~/.maestro
+        key: maestro-${{ runner.os }}-${{ steps.pins.outputs.maestro }}
+
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ steps.pins.outputs.java }}
+
+    - uses: browser-actions/setup-chrome@v1
+
+    - name: Start Xvfb
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb
+        Xvfb :99 -screen 0 1280x1024x24 &
+        echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+    - name: Install Maestro CLI
+      shell: bash
+      env:
+        MAESTRO_VERSION: ${{ steps.pins.outputs.maestro }}
+        # Suppress the first-run analytics opt-in banner so `maestro --version`
+        # returns just the version string. Without this, the version-match
+        # check below sees multi-line output and fails even when the version
+        # is correct. Also propagate to downstream steps via GITHUB_ENV.
+        MAESTRO_CLI_NO_ANALYTICS: "1"
+        MAESTRO_CACHE_HIT: ${{ steps.maestro-cache.outputs.cache-hit }}
+      run: |
+        # Pin Maestro to .maestro/version. The installer reads MAESTRO_VERSION
+        # to grab a specific tag instead of latest — without this, CI drifts
+        # away from local boxes as upstream releases land.
+        # pipefail so a curl failure (e.g. 504 from the Maestro CDN) surfaces
+        # as a non-zero exit — the install script prints the error but exits 0.
+        set -o pipefail
+        install_maestro() {
+          curl -fLsS --retry 5 --retry-all-errors --retry-delay 10 \
+            "https://get.maestro.mobile.dev" | bash
+        }
+        if [ "$MAESTRO_CACHE_HIT" = "true" ] && [ -x "$HOME/.maestro/bin/maestro" ]; then
+          echo "Maestro restored from cache — skipping install."
+        else
+          install_maestro
+        fi
+        echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+        echo "MAESTRO_CLI_NO_ANALYTICS=1" >> "$GITHUB_ENV"
+        # Verify the binary is actually installed AND matches the pin before
+        # we spend 30 min in downstream steps discovering it doesn't. Extract
+        # just the semver line with grep — defensive against any leftover
+        # banner output if MAESTRO_CLI_NO_ANALYTICS isn't honored. A stale/corrupt
+        # cache self-heals: reinstall once before failing.
+        installed="$("$HOME/.maestro/bin/maestro" --version | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -1)"
+        if [ "$installed" != "$MAESTRO_VERSION" ]; then
+          echo "::warning::Maestro is '${installed}' (pin '${MAESTRO_VERSION}') — reinstalling."
+          install_maestro
+          installed="$("$HOME/.maestro/bin/maestro" --version | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+$' | tail -1)"
+          if [ "$installed" != "$MAESTRO_VERSION" ]; then
+            echo "::error::Maestro still '${installed}' after reinstall (pin '${MAESTRO_VERSION}')"
+            exit 1
+          fi
+        fi
+        echo "Maestro ${installed} ready (pinned)"

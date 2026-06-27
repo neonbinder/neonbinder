@@ -1,0 +1,55 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Variant types persist across sessions; auto-sync guard skips re-sync when present"
+tags:
+  - set-selector
+  - regression
+---
+# Independent test (was cascade/sets-resync-already-loaded). The setup track
+# pre-synced Base/Insert/Parallel variant types for 2024 Topps Chrome. This
+# verifies that, on a FRESH session, they persist AND the EntityColumn auto-sync
+# guard does NOT re-sync when items already exist.
+#
+# WHY THE WARM STEP: it taps Test Credentials on /profile (cached <1s here) and,
+# critically, navigates AWAY to /profile so util-drill's openLink /set-selector is
+# a fresh CROSS-page mount. A same-URL openLink doesn't remount and leaves the
+# Sports column non-interactive (selection never drills) — this is the proven
+# pattern from the setup track.
+#
+# WHY WE DON'T TAP "Sync Variant Types": SetVariantForm calls onDone() on
+# success (~600ms) before any UI assertion can land, and "Close" only renders on
+# the error path. So we assert the idle-mode button is present without tapping.
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# /profile detour (load-bearing): navigate away so util-drill's openLink
+# /set-selector is a fresh CROSS-page mount. No marketplace warm needed — this
+# flow reads cached variant types, not live data.
+- openLink: ${APP_URL || "http://localhost:3000"}/profile
+- assertVisible: "Profile Settings"
+
+# Fast-drill to Topps Chrome (data pre-synced; selection via the fixed below: util).
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# Variant types persisted across the fresh session.
+# R8: scroll Base into view first — the variant types column is overflow-y-auto
+# and at 1024×629 the entries can be below the fold.
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+- assertVisible: "Insert"
+- assertVisible: "Parallel"
+
+# Auto-sync guard: with items already present the column must NOT have entered
+# sync mode. "Syncing Variant Types" is the in-progress state — a broken guard
+# would still be showing it here (BSC/SL round-trips take multiple seconds).
+- assertNotVisible: "Syncing Variant Types"
+
+# Idle button confirms the column settled without a re-sync. R6: the scroll
+# itself proves visibility; the redundant assertVisible that followed is dropped.
+- scrollUntilVisible:
+    element:
+      text: "Sync Variant Types"

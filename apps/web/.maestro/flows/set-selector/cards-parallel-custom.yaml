@@ -1,0 +1,78 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Add custom Parallel — new entry appears with Custom badge and is selectable"
+tags:
+  - set-selector
+  - regression
+---
+# PRODUCT-FEATURE test: a user can ADD A CUSTOM PARALLEL under a set's Parallel
+# variant type, and the new entry shows up as a Custom-badged, selectable row.
+#
+# This is the ONLY flow that exercises adding a parallel via the "Add custom
+# Parallels" column. (Adding a custom INSERT is covered by
+# variant-metadata-editor-insert; NESTING parallels under an insert is covered
+# by move-parallels-of-inserts-custom.)
+#
+# It asserts the ADD outcome — deliberately NOT "Fetch from Marketplaces". That
+# button is an IMPORT (pull the checklist from BSC/SportLots); a custom parallel
+# you invented has no marketplace counterpart, so it imports 0 cards via the
+# isCustomSubtree gate. That gate is exercised incidentally elsewhere and is not
+# this flow's concern. Putting cards INTO a custom variant is the separate
+# "Add Card" path (custom-card-crud.yaml).
+#
+# Fully custom subtree (E2E Test Sport ${WORKER_INDEX} → 2026 → custom set), so
+# no live BSC/SL call happens anywhere — every column's sync short-circuits.
+# Every wait below is the 7s default; the util owns the cold custom-subtree
+# drill and its sync-tolerant waits.
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# Drill to a per-flow custom set and land on its Parallels column (idle, with
+# the "Add custom Parallels" button scrolled into view).
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "parallel-feature-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Parallel"
+
+# ── ADD A CUSTOM PARALLEL "Prizm Gold" ──────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      id: "Add custom Parallels"
+    centerElement: true
+- tapOn:
+    id: "Add custom Parallels"
+- assertVisible: "Add Custom Entry"
+- inputText: "Prizm Gold"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# ── FEATURE ASSERTION: the new parallel appears, badged "Custom" ────────────
+# The entry renders at the Parallels column top (visible without scrolling).
+# Maestro indexes the value and the badge as SEPARATE elements (the row's
+# value span "Prizm Gold" and a sibling badge span "Custom"), so a combined
+# "Prizm Gold.*Custom" regex matches nothing. Assert them as two facts: the
+# value is present, and a "Custom" badge sits to its RIGHT (rightOf pins it to
+# THIS row's badge — not the column's "+ Custom" add button, which is below).
+- assertVisible: ".*Prizm Gold.*"
+- assertVisible:
+    text: "Custom"
+    rightOf:
+      text: "Prizm Gold"
+
+# ── …and it is a real, selectable entry: tapping it opens its CardChecklist ──
+# The CardChecklist panel renders BELOW the columns (off-fold on 1024×629), so
+# scroll it into view. The page is settled by now (the entry+badge asserts above
+# already passed without scrolling), so this scroll is clear of the fresh-render
+# CDP scroll bug that bit the drill.
+- scrollUntilVisible:
+    element:
+      text: ".*Prizm Gold.*"
+    centerElement: true
+- tapOn: ".*Prizm Gold.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Fetch from Marketplaces.*|Refresh"
+    centerElement: true
+- assertVisible: "No cards in this checklist yet."

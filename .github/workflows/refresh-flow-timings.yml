@@ -1,0 +1,159 @@
+name: Refresh flow timings
+
+# Keeps apps/web/.maestro/flow-timings.tsv (the NEO-61 LPT seed table) "generally
+# correct" as flows are added / changed, with no babysitting.
+#
+# It does NOT run the E2E suite. It only downloads the `flow-timings` artifact that
+# every PR Pipeline run already produces (uploaded by e2e.yml's `report` job, which
+# now runs as a called workflow under pr-pipeline.yml — so the artifact lives on the
+# "PR Pipeline" run), RE-ALIGNS it to main's current flow set (via gen-flow-timings.sh,
+# so branch-only flows drop and main-only flows fall to the consumer's median-default),
+# and opens a chore PR when the table has drifted.
+#
+# Merge the PR like any other: a human merge re-runs the required `e2e` check (a PR
+# opened by the default GITHUB_TOKEN doesn't auto-start it). Timings only affect the
+# ORDER flows seed into the queue (longest-first), never pass/fail — review is a glance.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC. workflow_dispatch needs this file on main.
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the chore branch
+  pull-requests: write # open the chore PR
+
+concurrency:
+  group: refresh-flow-timings
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/web # gen-flow-timings.sh + .maestro/ live here
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download latest PR Pipeline run's flow-timings artifact
+        id: dl
+        run: |
+          set -uo pipefail
+          rid=$(gh run list --workflow "PR Pipeline" --status success --limit 1 \
+            --json databaseId --jq '.[0].databaseId // ""')
+          if [ -z "$rid" ]; then
+            echo "No successful 'PR Pipeline' run found — nothing to refresh."
+            echo "found=0" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "Latest successful PR Pipeline run: $rid"
+          if ! gh run download "$rid" -n flow-timings -D dl 2>/dev/null; then
+            echo "Run $rid has no 'flow-timings' artifact (predates the producer, or expired)."
+            echo "found=0" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "found=1" >> "$GITHUB_OUTPUT"
+          echo "rid=$rid" >> "$GITHUB_OUTPUT"
+
+      - name: Re-align to main's flow set + detect drift
+        id: drift
+        if: steps.dl.outputs.found == '1'
+        run: |
+          set -uo pipefail
+          mkdir -p empty-junit
+          # No measured times + downloaded table as the committed input → emits main's
+          # CURRENT enqueue set with the latest run's values, same header/sort as the
+          # committed file (so the diff only fires on real changes).
+          bash gen-flow-timings.sh empty-junit dl/flow-timings.tsv > candidate.tsv
+          python3 - .maestro/flow-timings.tsv candidate.tsv <<'PY'
+          import sys, os
+
+          def load(path):
+              order, secs = [], {}
+              try:
+                  fh = open(path)
+              except FileNotFoundError:
+                  return order, secs
+              with fh:
+                  for line in fh:
+                      line = line.rstrip("\n")
+                      if not line or line.startswith("#"):
+                          continue
+                      a = line.split("\t")
+                      if len(a) >= 2:
+                          try:
+                              order.append(a[1]); secs[a[1]] = int(round(float(a[0])))
+                          except ValueError:
+                              pass
+              return order, secs
+
+          old_order, old = load(sys.argv[1])
+          new_order, new = load(sys.argv[2])
+          reasons = []
+          added = [p for p in new_order if p not in old]
+          removed = [p for p in old_order if p not in new]
+          if added:
+              reasons.append(f"{len(added)} added: " + ", ".join(p.split('/')[-1] for p in added[:5]))
+          if removed:
+              reasons.append(f"{len(removed)} removed: " + ", ".join(p.split('/')[-1] for p in removed[:5]))
+          moved = []
+          for p in set(old) & set(new):
+              o, n = old[p], new[p]
+              if abs(n - o) >= max(10, 0.20 * o):  # ≥ max(20%, 10s)
+                  moved.append((p, o, n))
+          if moved:
+              moved.sort(key=lambda x: -abs(x[2] - x[1]))
+              reasons.append(f"{len(moved)} moved, e.g. " +
+                  ", ".join(f"{p.split('/')[-1]} {o}->{n}s" for p, o, n in moved[:5]))
+          reorder = (old_order != new_order) and not (added or removed)
+          if reorder:
+              reasons.append("enqueue order changed")
+          drift = bool(added or removed or moved or reorder)
+          reason = "; ".join(reasons) if reasons else "no material drift"
+          print("Drift:", drift, "—", reason)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"drift={'true' if drift else 'false'}\n")
+              fh.write(f"reason={reason}\n")
+          PY
+
+      - name: Open / update chore PR
+        if: steps.dl.outputs.found == '1' && steps.drift.outputs.drift == 'true'
+        env:
+          RID: ${{ steps.dl.outputs.rid }}
+          REASON: ${{ steps.drift.outputs.reason }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BR=chore/flow-timings-refresh
+          git checkout -B "$BR"
+          cp candidate.tsv .maestro/flow-timings.tsv
+          git add .maestro/flow-timings.tsv
+          if git diff --cached --quiet; then
+            echo "Candidate is byte-identical to committed — nothing to commit."; exit 0
+          fi
+          git commit \
+            -m "chore(e2e): refresh LPT flow-timings from run ${RID}" \
+            -m "${REASON}" \
+            -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+          git push --force origin "$BR"
+          existing=$(gh pr list --head "$BR" --state open --json number --jq '.[0].number // ""')
+          if [ -n "$existing" ]; then
+            echo "Existing PR #$existing updated by force-push."
+            exit 0
+          fi
+          BODY=$(printf '%s\n' \
+            "Auto-generated by **refresh-flow-timings.yml** from the latest successful **PR Pipeline** run (\`$RID\`)." \
+            "" \
+            "**Drift:** $REASON" \
+            "" \
+            "These timings only affect the **order** flows seed into the work-queue (longest-first / LPT, NEO-61) — never pass/fail. Review is a glance." \
+            "" \
+            "⚠️ **Merge manually:** opened by the default \`GITHUB_TOKEN\`, so the required \`e2e\` check won't auto-start. Use **Update branch** / push an empty commit / just merge to trigger it." \
+            "" \
+            "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+          gh pr create --head "$BR" --base main \
+            --title "chore(e2e): refresh LPT flow-timings table" \
+            --body "$BODY"

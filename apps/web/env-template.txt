@@ -1,0 +1,17 @@
+# Copy this file to .env.local and fill in your actual values
+
+# Sentry Configuration
+# This is the value that was hardcoded in your config files
+SENTRY_DSN=https://1020d108441464cb1275b92cda2b8a6e@o4510257330520064.ingest.us.sentry.io/4510257349525504
+NEXT_PUBLIC_SENTRY_DSN=https://1020d108441464cb1275b92cda2b8a6e@o4510257330520064.ingest.us.sentry.io/4510257349525504
+
+# Application Version
+NEXT_PUBLIC_APP_VERSION=0.1.0
+
+# PostHog Configuration (if using PostHog)
+NEXT_PUBLIC_POSTHOG_KEY=
+NEXT_PUBLIC_POSTHOG_HOST=https://us.posthog.com
+
+# Environment
+NEXT_PUBLIC_ENVIRONMENT=development
+NODE_ENV=development

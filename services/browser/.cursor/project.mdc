@@ -1,0 +1,20 @@
+---
+description: This project in the mono repo is for browser manipulation work. 
+alwaysApply: true
+---
+
+This project is leveraging Puppeteer to manipulate the browser for automation purposes.
+ - useContext7 to ensure we are following all Puppeteer standards
+ - 
+## General Conventions
+
+- Use `async/await` for all asynchronous Puppeteer operations.
+- Always close `page` and `browser` in a `try/finally` or `afterEach` block.
+- Prefer `waitForSelector` over `setTimeout` or `waitForTimeout`.
+- Reuse browser/page instances when possible to avoid overhead.
+
+## File & Folder Structure
+
+- Each piece of automationg belongs in the appropriate file in `src/adapters/`
+- Use `src/utils/` for shared functions like element selectors or wait wrappers.
+- Keep configuration (like launch options) in a `config/puppeteer.js`.

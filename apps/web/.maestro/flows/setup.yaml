@@ -1,0 +1,582 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel)"
+tags:
+  - setup
+  - regression
+---
+# ════════════════════════════════════════════════════════════════════════════
+# THE GLOBAL SETUP TRACK — ONE FLOW (collapsed from 3 by NEO-62 Lever 1).
+#
+# Runs ONCE, as worker 0, before every other flow in the E2E suite. A single
+# browser context handles all three variant types (Base → Insert → Parallel)
+# so the redundant re-logins and cold sign-in overhead from the old 3-flow
+# design are eliminated. After the Base card fetch, the flow re-drills to
+# Topps Chrome (via util-drill-to-2024-topps-chrome) to reach Insert and
+# Parallel — the util's fast-drill (no syncs needed; all data in Convex)
+# is cheaper than the session restart the old design paid.
+#
+# LAYOUT REALITY (NEO-62 investigation — corrected):
+#   The SetSelector columns row (overflow-x-auto) IS always rendered; the
+#   columns are NOT replaced by the detail view after selecting Base. After
+#   the Base card fetch the page scrolls DOWN to the checklist — the columns
+#   row is simply ABOVE the viewport (not removed). The Variant Types column
+#   ("Insert", "Parallel") is recoverable with a vertical scroll UP.
+#
+#   HOWEVER: after scroll UP + chip expansion (tapping the collapsed "Base"
+#   chip) + tapping Insert, the Inserts column appears at the current
+#   horizontal-scroll position of the columns container. That position is set
+#   by the Base-fetch drill and places the Inserts column's search input at
+#   x≈719–1011, which OVERLAPS the fixed nav sidebar (x≈860–1024). Maestro's
+#   hierarchyBasedTap then hits the "Inventory" nav item instead of the
+#   search input, silently navigating away. Confirmed forensically: screen-
+#   shot shows /inventory after the tap, every time.
+#
+#   The util-drill-to-2024-topps-chrome openLink resets both the vertical and
+#   horizontal scroll to a safe starting position where the Inserts/Parallels
+#   search inputs are at x<860 (nav-safe). That is why openLink re-drill IS
+#   the correct approach for the Base→Insert and Insert→Parallel transitions.
+#
+# ── CANONICAL PRE-SYNCED DATA (the contract every other flow relies on) ──────
+# After this flow completes, the shared Convex deployment holds exactly this —
+# any flow may fast-drill to it and read it WITHOUT syncing. If you need data
+# NOT listed here, your flow must sync it itself (and accept the cost), or this
+# inventory must be extended. Keep this list in sync with the agent memory:
+# .claude/agent-memory/maestro-e2e-author/reference_presynced_setup_data.md
+#
+#   - selectorOptions / cardChecklist / players / teams cleared, then rebuilt
+#   - Worker 0's BSC + SportLots sessions warmed (creds seeded by the
+#     /testing/seed-credentials redirect in the url above)
+#   - Seeded teams: New York Yankees, New York Mets
+#   - Hierarchy: Baseball → 2024 → Topps → Topps Chrome
+#   - Variant Types synced: Base, Insert, Parallel
+#   - Base   → card checklist fetched + saved                                    [this flow]
+#   - Insert → matched variants saved; "Future Stars" checklist (~20 cards)      [this flow]
+#   - Parallel → matched variants saved; "Gold Wave Refractors" checklist (~300) [this flow]
+#
+# NOT pre-synced (sync lazily if you need them): any other year / manufacturer /
+# set (e.g. Topps Update, Topps Pro Debut, Topps Wonderland), any other sport,
+# and any non-Topps-Chrome variant rows beyond the matched sets saved above.
+#
+# WHERE THE LOGGED-IN USER COMES FROM:
+#   The `url:` above signs this flow in as TEST_EMAIL_${WORKER_INDEX} (worker 0
+#   by default) and seeds that user's marketplace creds server-side. The reset
+#   and the whole sync run as that one user. No prior flow is required.
+#   NOTE: The seed CI job runs with MAESTRO_SKIP_BOOTSTRAP=1 — no preceding
+#   worker-bootstrap. This flow is fully self-sufficient: sign-in + reset + seed
+#   creds are all handled by the /testing/sign-in?redirect=... chain in url: above.
+#
+# CREDS FOR *ALL* WORKER THREADS:
+#   This flow only warms worker 0. Every parallel worker needs its own warmed
+#   Clerk user (TEST_EMAIL_N) — that is the CI runner's job (worker-bootstrap.yaml
+#   looped per worker). A single Maestro flow can't loop a varying &worker=N URL.
+#
+# TIMEOUT POLICY — READ THIS BEFORE COPYING A WAIT ELSEWHERE:
+#   This is the ONE flow allowed to wait longer than Maestro's default. It pays
+#   the cold-start cost ONCE — Cloud Run spin-up, first marketplace login, the
+#   first selectorOptions write — so that EVERY other flow reads warm data and
+#   responds in <7s. Do NOT copy these long waits into feature flows. If a
+#   feature flow needs >7s for a UI response, that is a bug to fix, not a
+#   timeout to raise.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 30000
+
+# ── GLOBAL RESET ────────────────────────────────────────────────────────────
+# DESTRUCTIVE — sanctioned global wipe; gated by ALLOW_RESET_SET_BUILDER_DATA,
+# dev/preview only. This is the ONE authorised destructive step in the whole
+# E2E suite — every other flow reads from the clean state it creates.
+- scrollUntilVisible:
+    element:
+      text: "Reset Set Builder Data"
+    timeout: 10000
+- tapOn: "Reset Set Builder Data"
+- extendedWaitUntil:
+    visible: "Delete Everything"
+    timeout: 20000
+# Confirm input is autofocused; erase any stray chars, then type the keyword.
+# NEVER tapOn the placeholder first — it injects a stray character.
+- eraseText: 10
+- inputText: "RESET"
+- tapOn: "Delete Everything"
+# Reset deletes can be large; "Reset failed: ..." surfaces clearly if it errors.
+- extendedWaitUntil:
+    visible:
+      text: ".*Deleted [0-9]+ selector options.*"
+    timeout: 60000
+
+# ── SEED TEST TEAMS ─────────────────────────────────────────────────────────
+# The reset wiped `teams`. Seed New York Yankees + Mets so TeamPicker-style
+# flows get a deterministic typeahead match without depending on card commits.
+- scrollUntilVisible:
+    element:
+      text: "Seed Test Teams"
+    timeout: 10000
+- tapOn: "Seed Test Teams"
+- extendedWaitUntil:
+    visible:
+      text: ".*Seed complete.*"
+    timeout: 15000
+
+# ── WARM WORKER 0's MARKETPLACE SESSIONS ────────────────────────────────────
+# seed-credentials (in the url above) stored real BSC + SL creds but does NOT
+# warm the Puppeteer sessions. Force a fresh login for each so the syncs below
+# hit live marketplace data instead of stalling on a cold login mid-drill.
+# Each util taps "Test Credentials" on /profile (a cold login is a real ~22s
+# round-trip — the sanctioned long wait lives inside these utils, not here).
+# They also navigate to /profile, which sets up the fresh re-mount below.
+- runFlow:
+    file: util/util-login-to-bsc.yaml
+- runFlow:
+    file: util/util-login-to-sportlots.yaml
+
+# ── FRESH MOUNT OF THE SET SELECTOR ─────────────────────────────────────────
+# The reset wiped selectorOptions IN PLACE; the Sports column only auto-syncs
+# when it first mounts empty. Re-navigate so the now-empty column re-triggers
+# the sync — without this, "Baseball" never appears and the drill below fails.
+- openLink: ${APP_URL || "http://localhost:3000"}/set-selector
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 20000
+
+# ════════════════════════════════════════════════════════════════════════════
+# SYNC 2024 TOPPS CHROME BASEBALL — full drill.
+# Each column auto-syncs when it opens empty (post-reset). We wait on each
+# column's search input appearing, which is the "sync finished, list populated"
+# signal. These are the warm waits — they absorb the first marketplace fetch.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── SPORT: Baseball ─────────────────────────────────────────────────────────
+- runFlow:
+    when:
+      notVisible: "Baseball"
+    commands:
+      - extendedWaitUntil:
+          visible: "Baseball"
+          timeout: 60000
+- scrollUntilVisible:
+    element:
+      text: "Baseball"
+    centerElement: true
+    timeout: 10000
+- tapOn: "Baseball"
+
+# ── YEAR: 2024 ──────────────────────────────────────────────────────────────
+# First marketplace data fetch after the reset — also covers the Convex action
+# cold start, so this is the single longest warm wait in the flow.
+- extendedWaitUntil:
+    visible: "Years"
+    timeout: 20000
+- extendedWaitUntil:
+    visible: ".*Search years.*"
+    timeout: 90000
+# Columns lay out horizontally — bring this column's search input into the
+# viewport before tapping (10s is the tight ceiling; the sync wait above is the
+# warm cost, this scroll is pure layout).
+- scrollUntilVisible:
+    element:
+      text: ".*Search years.*"
+    timeout: 10000
+- tapOn:
+    text: ".*Search years.*"
+- inputText: "2024"
+- tapOn:
+    text: "2024"
+    below:
+      id: "Search years"
+
+# ── MANUFACTURER: Topps ─────────────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: "Manufacturers"
+    timeout: 20000
+- extendedWaitUntil:
+    visible: ".*Search manufacturers.*"
+    timeout: 45000
+- scrollUntilVisible:
+    element:
+      text: ".*Search manufacturers.*"
+    timeout: 10000
+- tapOn:
+    text: ".*Search manufacturers.*"
+- inputText: "Topps"
+- tapOn:
+    text: "Topps"
+    below:
+      id: "Search manufacturers"
+
+# ── SET: Topps Chrome ───────────────────────────────────────────────────────
+# Opening the Sets column syncs the full set list for Topps / 2024 — this is
+# where "all sets" land in selectorOptions.
+- extendedWaitUntil:
+    visible: "Sets"
+    timeout: 20000
+- extendedWaitUntil:
+    visible: ".*Search sets.*"
+    timeout: 45000
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    timeout: 10000
+- tapOn:
+    text: ".*Search sets.*"
+- inputText: "Topps Chrome"
+- tapOn:
+    text: "Topps Chrome"
+    below:
+      id: "Search sets"
+
+# ── VARIANT TYPES: Base / Insert / Parallel ─────────────────────────────────
+- extendedWaitUntil:
+    visible: "Variant Types"
+    timeout: 20000
+- runFlow:
+    when:
+      notVisible: "Base"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "Sync Variant Types"
+          timeout: 10000
+      - tapOn: "Sync Variant Types"
+      - extendedWaitUntil:
+          notVisible: "Syncing Variant Types"
+          timeout: 45000
+      - runFlow:
+          when:
+            visible: "Close"
+          commands:
+            - tapOn: "Close"
+            - extendedWaitUntil:
+                visible: "Sync Variant Types"
+                timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+    timeout: 10000
+- assertVisible: "Base"
+- assertVisible: "Insert"
+- assertVisible: "Parallel"
+
+# ════════════════════════════════════════════════════════════════════════════
+# LOAD CARDS — Base variant of 2024 Topps Chrome.
+# Base is terminal (no Variants column); selecting it opens BaseMappingForm,
+# then the CardChecklist. Fetch the checklist and confirm the first-run
+# UnknownEntitiesDialog so players/teams persist and cards save.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn: "Base"
+# Path A: BaseSetPicker stays open (SL data present) → confirm.
+# Path B: it auto-closes (BSC fallback) → "Re-map Base" appears. Handle both.
+- extendedWaitUntil:
+    visible:
+      text: ".*Select Base Set.*|.*Re-map Base.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Select Base Set"
+    commands:
+      - extendedWaitUntil:
+          visible: "Confirm Base Set"
+          timeout: 45000
+      - tapOn: "Confirm Base Set"
+      - extendedWaitUntil:
+          notVisible: "Select Base Set"
+          timeout: 30000
+
+# CardChecklist renders below the columns — it is BELOW the fold in the
+# 1024×629 headless viewport. "Fetch from Marketplaces" is NOT reachable by
+# extendedWaitUntil visible because it is scroll-clipped.
+#
+# Correct pattern (mirrors util-drill-to-base-variant.yaml):
+#   1. Wait for "Re-map Base" (in-viewport settle anchor — proves baseHasMapping
+#      became true and CardChecklist has mounted after the Convex write).
+#   2. scrollUntilVisible "Add Card" (centerElement + vis:50) — brings the
+#      CardChecklist header row into viewport before tapping.
+#   3. assertVisible "Fetch from Marketplaces|Refresh" — confirm it's in-view.
+#   4. tapOn it.
+- extendedWaitUntil:
+    visible: "Re-map Base"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 30000
+- assertVisible:
+    text: ".*Fetch from Marketplaces.*|Refresh"
+- tapOn:
+    text: ".*Fetch from Marketplaces.*|Refresh"
+
+# First fetch: all players/teams are new → UnknownEntitiesDialog opens.
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+          timeout: 10000
+      - tapOn:
+          text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 30000
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 30000
+# A "#NNN" card row confirms the fetch + save pipeline ran end-to-end.
+- assertVisible:
+    text: ".*#[0-9].*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# RE-DRILL TO INSERT — NEO-62 Lever 1.
+#
+# After the Base card fetch the Variant Types column shows a COLLAPSED CHIP
+# (EntitySelector: selectedId && !expanded → chip mode). The chip IS visible
+# (columns row persists above the viewport — a UP scroll recovers it), but
+# tapping the chip to expand + selecting Insert places the Inserts column
+# search input at x≈719–1011 which overlaps the fixed nav sidebar (x≈860+).
+# Maestro's hierarchyBasedTap then hits "Inventory" nav instead of the input.
+#
+# Pattern (R9): use util-drill-to-2024-topps-chrome, which does openLink to
+# /set-selector and re-drills the cascade (fast, all data already in Convex).
+# The openLink resets both vertical and horizontal scroll, placing the Inserts
+# column at a nav-safe x position (<860). The util's return contract:
+# "Variant Types" visible, "Base" scrolled to center.
+# ════════════════════════════════════════════════════════════════════════════
+
+- runFlow: set-selector/util-drill-to-2024-topps-chrome.yaml
+
+# util return contract: "Base" is visible (scrolled to center). "Insert" is
+# just below Base in the Variant Types column — scroll down to reach it.
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 10000
+- tapOn: "Insert"
+# Wait for the Inserts column to appear — this is the "variant type switched"
+# confirmation and the "auto-sync started" anchor point.
+- extendedWaitUntil:
+    visible: "Inserts"
+    timeout: 20000
+
+# Auto-sync → cross-platform ReconciliationModal OR already-populated.
+# 240s = warm cost (first Insert BSC+SL fetch), sanctioned in setup-track only.
+- extendedWaitUntil:
+    visible:
+      text: ".*Reconcile Inserts.*|.*Search inserts.*"
+    timeout: 240000
+- runFlow:
+    when:
+      visible: "Reconcile Inserts"
+    commands:
+      # ReconciliationModal STRUCTURE coverage — folded in from the retired
+      # insert-variant-flow / cascade/sets-inserts (which couldn't survive a
+      # pre-saved column). Verify the modal before saving the matched rows.
+      - assertVisible:
+          text: ".*[0-9]+ matched.*"
+      - assertVisible:
+          text: ".*BSC-only.*"
+      - assertVisible:
+          text: ".*SL-only.*"
+      - scrollUntilVisible:
+          element:
+            text: ".*Unmatched.*"
+      - assertVisible:
+          text: ".*BSC.*"
+      - assertVisible:
+          text: ".*SportLots.*"
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ matched.*"
+      - tapOn:
+          text: ".*Save [0-9]+ matched.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile Inserts"
+          timeout: 30000
+
+# ── PICK "Future Stars" (below:{id} targets the result row, not the input) ───
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 10000
+# 250ms settle after tap so the search input is focused before inputText fires
+# (mirrors util-drill-to-2024-topps-chrome pattern; prevents keystroke drop).
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Future Stars"
+- extendedWaitUntil:
+    visible:
+      text: "^Future Stars$"
+      below:
+        id: "Search inserts"
+    timeout: 15000
+- tapOn:
+    text: "^Future Stars$"
+    below:
+      id: "Search inserts"
+
+# ── FETCH THE INSERT CHECKLIST ───────────────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: ".*Fetch from Marketplaces.*|Refresh"
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    text: ".*Fetch from Marketplaces.*|^Refresh$"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+          timeout: 10000
+      - tapOn:
+          text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 30000
+# Strict count — a card checklist is immutable once produced, so "Saved 20 cards"
+# is a fixed fact. If this number is ever wrong it's a real fetch/save regression,
+# not "marketplace drift" — do NOT loosen it to hide a bug.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved 20 cards.*"
+    timeout: 30000
+
+# ════════════════════════════════════════════════════════════════════════════
+# RE-DRILL TO PARALLEL — NEO-62 Lever 1 (continued).
+#
+# Same situation as the Insert section above: after the Future Stars card
+# fetch, chip expansion + Parallel selection places the Parallels column
+# search input at x≈719–1011, overlapping the nav sidebar. Re-drill via
+# openLink resets scroll positions and puts the Parallels search input at
+# a nav-safe x position. See the Insert section comment for the full
+# nav-overlap analysis.
+# ════════════════════════════════════════════════════════════════════════════
+
+- runFlow: set-selector/util-drill-to-2024-topps-chrome.yaml
+
+# Scroll down past "Base" (centered by the util) to reach "Parallel".
+- scrollUntilVisible:
+    element:
+      text: "Parallel"
+    centerElement: true
+    timeout: 10000
+- tapOn: "Parallel"
+# Wait for the Parallels column to appear as the switch confirmation.
+- extendedWaitUntil:
+    visible: "Parallels"
+    timeout: 20000
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Reconcile Parallels.*|.*Search parallels.*"
+    timeout: 240000
+- runFlow:
+    when:
+      visible: "Reconcile Parallels"
+    commands:
+      # ReconciliationModal STRUCTURE coverage — folded in from the retired
+      # cascade/sets-parallels (which couldn't survive a pre-saved column).
+      # Verify the modal before saving the matched rows.
+      - assertVisible:
+          text: ".*[0-9]+ matched.*"
+      - assertVisible:
+          text: ".*BSC-only.*"
+      - assertVisible:
+          text: ".*SL-only.*"
+      - scrollUntilVisible:
+          element:
+            text: ".*BSC.*"
+      # R6 — scrollUntilVisible already asserts the ".*BSC.*" element is visible;
+      # the redundant assertVisible of the same target was removed.
+      - assertVisible:
+          text: ".*SportLots.*"
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ matched.*"
+      - tapOn:
+          text: ".*Save [0-9]+ matched.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile Parallels"
+          timeout: 30000
+
+# ── PICK "Gold Wave Refractors" ──────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: ".*Search parallels.*"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      text: ".*Search parallels.*"
+    centerElement: true
+    timeout: 10000
+# 250ms settle so the search input is focused before inputText fires.
+- tapOn:
+    text: ".*Search parallels.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Gold Wave Refractors"
+- extendedWaitUntil:
+    visible:
+      text: "^Gold Wave Refractors$"
+      below:
+        id: "Search parallels"
+    timeout: 15000
+- tapOn:
+    text: "^Gold Wave Refractors$"
+    below:
+      id: "Search parallels"
+
+# ── FETCH THE PARALLEL CHECKLIST ─────────────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: ".*Fetch from Marketplaces.*|Refresh"
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    text: ".*Fetch from Marketplaces.*|^Refresh$"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+          timeout: 10000
+      - tapOn:
+          text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 30000
+# Strict count — checklists are immutable once produced, so "Saved 300 cards" is
+# a fixed fact. A wrong number is a real fetch/save regression, not drift.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved 300 cards.*"
+    timeout: 30000

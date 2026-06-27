@@ -1,0 +1,27 @@
+url: ${APP_URL || "https://localhost:3000"}
+name: Landing Page Marketing Content
+tags:
+  - marketing
+  - home
+---
+- launchApp
+- assertVisible: "Neon Binder"
+
+# Free Tier section
+- scrollUntilVisible:
+    element:
+      text: ".*Free Tier.*"
+
+# Feature detail sections (3-up grid)
+- scrollUntilVisible:
+    element:
+      text: ".*Collection Tracking.*"
+- assertVisible:
+    text: ".*AI-Based Card Identification.*"
+- assertVisible:
+    text: ".*Inventory.*"
+
+# How It Works section
+- scrollUntilVisible:
+    element:
+      text: "How It Works"

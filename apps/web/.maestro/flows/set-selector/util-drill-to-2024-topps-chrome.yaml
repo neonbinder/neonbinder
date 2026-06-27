@@ -1,0 +1,127 @@
+appId: com.neonbinder.web
+name: "Util — drill to a (Sport, Year, Manufacturer, Set) — accepts env overrides"
+tags:
+  - util
+---
+# Direct search-select drill for the REAL pre-synced hierarchy.
+#
+# DEFAULTS (canonical Topps Chrome test anchor):
+#   SPORT        = "Baseball"
+#   YEAR         = "2024"
+#   MANUFACTURER = "Topps"
+#   SET          = "Topps Chrome"
+#
+# CALLER OVERRIDES — pass any subset of SPORT / YEAR / MANUFACTURER / SET via
+# `runFlow.env` to target a different hierarchy (must be pre-synced or this
+# util will fail clearly when the search input does not appear).
+#
+# RETURN CONTRACT:
+#   Variant Types column is visible, "Base" is listed.
+#   The 60s timeout on "Base" is sanctioned — it covers the variant-type
+#   auto-sync on the override / cold path (BSC + SL fetch for a non-pre-synced
+#   set). On the canonical Topps Chrome path the warm data satisfies it in <7s.
+#
+# WHAT THIS IS NOT:
+#   - This util does NOT create custom entries (no "Add custom" branch).
+#   - Use util-drill-to-custom.yaml for flows that need create-or-select logic.
+#
+# PROVEN PATTERN: mirrors setup.yaml lines ~132-209 exactly — select-only,
+# no notVisible guards, no create branches.
+
+# ── NAVIGATE ─────────────────────────────────────────────────────────────────
+- openLink: ${APP_URL || "http://localhost:3000"}/set-selector
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 20000
+
+# ── SPORT ─────────────────────────────────────────────────────────────────────
+# Baseball is seeded by setup.yaml and appears immediately — no search input at
+# this level. Scroll + center before tapping (footer-steal zone rule).
+# waitToSettleTimeoutMs: 0 — the subsequent extendedWaitUntil re-syncs; the
+# settle dead-wait is redundant here.
+- extendedWaitUntil:
+    visible: ${SPORT || "Baseball"}
+- scrollUntilVisible:
+    element:
+      text: ${SPORT || "Baseball"}
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+- tapOn:
+    text: ${SPORT || "Baseball"}
+    waitToSettleTimeoutMs: 0
+
+# ── YEAR ──────────────────────────────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: "Years"
+- extendedWaitUntil:
+    visible: ".*Search years.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Search years.*"
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+# 250ms settle on the search-box tap — input needs to be focused before inputText
+# fires, and a 0ms settle can drop the first character on a reactive page.
+- tapOn:
+    text: ".*Search years.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${YEAR || "2024"}
+- tapOn:
+    text: ${YEAR || "2024"}
+    below:
+      id: "Search years"
+    waitToSettleTimeoutMs: 0
+
+# ── MANUFACTURER ──────────────────────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: "Manufacturers"
+- extendedWaitUntil:
+    visible: ".*Search manufacturers.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Search manufacturers.*"
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+- tapOn:
+    text: ".*Search manufacturers.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${MANUFACTURER || "Topps"}
+- tapOn:
+    text: ${MANUFACTURER || "Topps"}
+    below:
+      id: "Search manufacturers"
+    waitToSettleTimeoutMs: 0
+
+# ── SET ───────────────────────────────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: "Sets"
+- extendedWaitUntil:
+    visible: ".*Search sets.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${SET || "Topps Chrome"}
+- tapOn:
+    text: ${SET || "Topps Chrome"}
+    below:
+      id: "Search sets"
+    waitToSettleTimeoutMs: 0
+
+# ── RETURN CONTRACT ───────────────────────────────────────────────────────────
+# Variant Types column appears once the set row is selected.
+- extendedWaitUntil:
+    visible: "Variant Types"
+# "Base" appears after the variant-type sync completes. 60s is the sanctioned
+# ceiling for override / cold paths (BSC + SL fetch); warm Topps Chrome satisfies
+# this in <7s. DO NOT increase this timeout without explicit user approval.
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+    timeout: 60000
+    waitToSettleTimeoutMs: 0

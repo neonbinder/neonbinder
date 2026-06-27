@@ -1,0 +1,44 @@
+url: ${APP_URL || "https://localhost:3000"}
+name: Collection Tracking Feature Page
+tags:
+  - marketing
+  - home
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Neon Binder"
+
+# Scroll to and tap the Collection Tracking card
+- scrollUntilVisible:
+    element:
+      text: ".*Collection Tracking.*"
+    centerElement: true
+- tapOn:
+    text: ".*Collection Tracking.*"
+
+# Four feature sections
+- assertVisible: "Snap & Upload"
+- scrollUntilVisible:
+    element:
+      text: "We Find Your Cards"
+- scrollUntilVisible:
+    element:
+      text: "Build It Your Way"
+- scrollUntilVisible:
+    element:
+      text: "Track Everything"
+
+# CTA: verify Get Started button opens Clerk dialog
+- scrollUntilVisible:
+    element:
+      text: "Get Started"
+    centerElement: true
+- tapOn: "Get Started"
+- assertVisible: "Create your account"
+
+# Dismiss dialog and navigate back to home
+- tapOn:
+    point: "5%, 50%"
+- assertNotVisible: "Create your account"
+- tapOn: "Back"
+- assertVisible: "Sign In"

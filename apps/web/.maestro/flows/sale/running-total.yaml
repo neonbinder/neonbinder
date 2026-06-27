@@ -1,0 +1,84 @@
+# R1 — Single feature: the PUBLIC sale page (/u/:username/sale) reads ?amt= and
+# accumulates a per-username running total in localStorage that persists across
+# reloads, and renders the configured payment buttons.
+# (Reset-on-pay is NOT covered here — see the note at the bottom of the flow.)
+#
+# SELF-CONTAINED (R3/R4): the cloud queue regenerates ${TEST_USERNAME} fresh per
+# flow run on an arbitrary runner, so no flow can rely on another flow's saved
+# profile — each must create its own. This flow signs in (new-profile) + resets,
+# fills+saves the public profile (INCLUDING venmo/paypal/cashapp — the sale-page
+# payment buttons only render when payment fields are set) under its own
+# ${TEST_USERNAME} via the shared util, THEN drops to a clean signed-out state to
+# exercise the public page. No in-body re-login beyond the entry handshake (R4).
+#
+# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Sale page — running total accumulates
+tags:
+  - smoke
+  - sale
+---
+# Step 1: land on the freshly-reset /profile page.
+- launchApp
+- assertVisible: "Profile Settings"
+
+# Step 2: fill + save this run's public profile (incl. payment handles) via the
+# shared util (R3 reuse). The profile is now persisted in Convex under
+# ${TEST_USERNAME} and is readable by the public sale page (getPublicProfileBy-
+# Username — no auth needed).
+- runFlow:
+    file: ../profile/util-fill-public-profile.yaml
+
+# Step 3: drop to a clean signed-out state — clearState signs out the Clerk
+# session AND clears localStorage, so no authed session and no stale
+# sale_total_<username> carry into the public-page assertions below. (The saved
+# profile lives in Convex, unaffected by clearing client state.)
+- launchApp:
+    clearState: true
+
+# Step 4: first scan of $5 — the public page reads ?amt=5 and shows the total.
+- openLink: ${APP_URL || "https://localhost:3000"}/u/${TEST_USERNAME}/sale?amt=5
+- assertVisible: "Total Sale Amount"
+- assertVisible: "$5.00"
+
+# Step 5: second scan of $3 (different search string → not deduped) accumulates to
+# $8.00, proving the per-username running total persists across reloads. (The add
+# is deduped per `username:location.search`, so accumulation requires full reloads
+# with DIFFERENT amt values — each openLink is a real reload with a new search.)
+- openLink: ${APP_URL || "https://localhost:3000"}/u/${TEST_USERNAME}/sale?amt=3
+- assertVisible: "$8.00"
+
+# Step 6: all four payment buttons render (they only appear because the profile
+# has the matching fields set — PayPal F&F from paypalUsername, PayPal G&S from
+# paypalEmail, Venmo from venmoUsername, Cash App from cashAppUsername). Unlike
+# the public-profile page, these sale-page buttons expose NO sr-only href text —
+# the accessible name is just the visible label — so we assert the visible
+# labels, not the hrefs. Scroll each into view first (centerElement clears the
+# 1024x629 edge-clipping; this public page has no sticky binder-header, but
+# centering is still safest). Labels with parens are escaped [(]...[)].
+- scrollUntilVisible:
+    element:
+      text: "PayPal [(]F&F[)]"
+    centerElement: true
+- scrollUntilVisible:
+    element:
+      text: "PayPal [(]G&S[)]"
+    centerElement: true
+- scrollUntilVisible:
+    element:
+      text: "Venmo"
+    centerElement: true
+- scrollUntilVisible:
+    element:
+      text: "Cash App"
+    centerElement: true
+
+# Reset-on-pay is DE-SCOPED (not testable cleanly in maestro-web): the ONLY
+# trigger for reset() → $0.00 is tapping a payment button, and that handler does
+# `window.open(href, "_blank")` to the EXTERNAL payment site (e.g. cash.app).
+# maestro-web follows into that new tab, so the original sale tab (where $0.00
+# would render) is unreachable — the run lands on the external site (a cash.app
+# 404 in our run) and the $0.00 assert can never see the reset DOM. Verifying
+# reset-on-pay would require a product change (a non-navigating reset affordance,
+# or an sr-only total) which is out of scope for this flow.

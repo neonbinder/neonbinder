@@ -1,0 +1,222 @@
+name: PR Pipeline
+
+# Top-level per-PR deployment orchestration (NEO-18). The single pull_request
+# entry point that ties the web E2E to the PR's OWN browser code:
+#
+#   changes ──► wire-browser-url ──► e2e   (reusable .github/workflows/e2e.yml)
+#
+# When a PR changes services/browser, Browser CI (browser.yml) independently
+# builds + deploys a `pr-<N>` tagged, NO-traffic Cloud Run preview on the dev
+# service. THIS pipeline then points the Convex preview's NEONBINDER_BROWSER_URL
+# at that tagged URL and only AFTERWARD invokes the E2E suite — so the Maestro
+# flows exercise the PR's browser service, not shared dev. Web-only PRs skip the
+# wiring and run E2E against the canonical dev browser default.
+#
+# Why the wiring lives HERE (not in e2e.yml, not in the Vercel build):
+#  • Vercel stays "dumb": it only builds the SPA + `convex deploy`. The
+#    FE → Convex → browser security boundary means Vercel never talks to the
+#    browser service, so the browser-URL wiring can't live in the Vercel build.
+#  • It's a deployment concern, not an E2E concern — so it doesn't belong inside
+#    e2e.yml either (which is now a reusable workflow called from here).
+#  • Ordering is explicit via `needs:` — the Convex preview is guaranteed to
+#    exist (its Vercel deployment resolved) AND the pr-<N> browser revision is
+#    guaranteed live BEFORE the env var is set and E2E starts. No races.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pr-pipeline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# Superset of what the reusable e2e.yml needs (a called workflow's GITHUB_TOKEN
+# can't exceed the caller's): deployments:read to resolve the Vercel preview,
+# checks:write + pull-requests:write for the E2E "Maestro E2E" check + sticky
+# comment. The wire-browser-url job adds id-token:write at the job level (for
+# WIF) without granting it to the E2E jobs.
+permissions:
+  contents: read
+  deployments: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      browser: ${{ steps.filter.outputs.browser }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            browser:
+              - 'services/browser/**'
+
+  # Point the Convex preview's NEONBINDER_BROWSER_URL at the PR's own pr-<N>
+  # browser preview, so the E2E suite (invoked next) hits the PR's browser code.
+  # Skipped for web-only PRs and for workflow_dispatch (no PR ⇒ no pr-<N>
+  # preview) → E2E then uses the canonical dev browser default.
+  wire-browser-url:
+    name: Wire NEONBINDER_BROWSER_URL → pr-<N> browser preview
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Job-scoped perms: id-token (WIF for gcloud), deployments (resolve Vercel
+    # preview via the API), contents (checkout). Does NOT need checks/PR-write.
+    permissions:
+      contents: read
+      deployments: read
+      id-token: write
+    env:
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Resolve the dev browser service's BASE host from Cloud Run (authoritative;
+      # no hardcoded subdomain). Tagged revisions are reachable at
+      # `pr-<N>---<base-host>`, and convex/browserAudience.ts (NEO-35) validates
+      # the OIDC token against this base host even for the tagged URL.
+      - name: Resolve browser base host
+        id: host
+        run: |
+          set -euo pipefail
+          base=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev \
+            --format='value(status.url)')
+          host="${base#https://}"
+          if [ -z "$host" ]; then echo "::error::could not resolve browser base host"; exit 1; fi
+          echo "host=$host" >> "$GITHUB_OUTPUT"
+          echo "Browser base host: $host"
+
+      # Resolve this PR's Vercel preview (proves the Convex preview exists). Same
+      # approach as e2e.yml's setup: poll the GitHub Deployments API for the
+      # vercel[bot] deployment on this SHA, then its success status URL.
+      - name: Resolve Vercel preview URL
+        id: vercel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for attempt in $(seq 1 60); do
+            deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=100" \
+              --jq '[.[] | select(.creator.login == "vercel[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty')
+            if [ -n "$deployment_id" ]; then
+              url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+                --jq '[.[] | select(.state == "success")] | .[0] | (.environment_url // .target_url // empty)')
+              if [ -n "$url" ]; then
+                echo "Vercel preview URL: $url"
+                echo "url=$url" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              failed=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+                --jq '[.[] | select(.state == "failure" or .state == "error")] | length')
+              if [ "${failed:-0}" -gt 0 ]; then
+                echo "::error::Vercel deployment ${deployment_id} reported failure/error — cannot wire browser URL."; exit 1
+              fi
+            fi
+            echo "attempt $attempt/60: Vercel deployment not ready for $SHA — retry in 5s"
+            sleep 5
+          done
+          echo "::error::Timed out (5 min) waiting for a successful Vercel deployment on $SHA."; exit 1
+
+      # Extract the Convex deployment NAME (slug) from the preview's x-convex-url
+      # meta (Vite injects VITE_CONVEX_URL at build). The slug is the
+      # `--deployment` selector for `convex env set`.
+      - name: Resolve Convex preview deployment name
+        id: convex
+        env:
+          PREVIEW_URL: ${{ steps.vercel.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            html=$(curl -sS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$PREVIEW_URL/" || true)
+            cloud=$(printf '%s' "$html" | grep -oE 'name="x-convex-url" content="[^"]*"' | grep -oE 'https://[a-z0-9-]+\.convex\.cloud' | head -1 || true)
+            if [ -n "$cloud" ]; then
+              name="${cloud#https://}"; name="${name%.convex.cloud}"
+              echo "Convex deployment: $name"
+              echo "name=$name" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt $attempt/60: preview not serving x-convex-url yet — retry in 5s"
+            sleep 5
+          done
+          echo "::error::Could not resolve Convex deployment name from preview index.html."; exit 1
+
+      # Wait for the PR's pr-<N> browser revision to be live before pointing the
+      # Convex preview at it. browser.yml deploys it in parallel (~3-5 min). The
+      # service requires OIDC, so an UNauthenticated probe returns 403 once the
+      # revision exists (404 = tag not present yet, 000 = unreachable).
+      - name: Wait for pr-<N> browser preview to be live
+        id: browser
+        env:
+          HOST: ${{ steps.host.outputs.host }}
+        run: |
+          set -euo pipefail
+          PREVIEW_BROWSER_URL="https://pr-${PR}---${HOST}"
+          echo "browser_url=$PREVIEW_BROWSER_URL" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 60); do  # ~10 min ceiling
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_BROWSER_URL}/health" || echo 000)
+            if [ "$code" != "404" ] && [ "$code" != "000" ]; then
+              echo "pr-${PR} browser preview is live (HTTP ${code}): $PREVIEW_BROWSER_URL"
+              exit 0
+            fi
+            echo "attempt $attempt/60: $PREVIEW_BROWSER_URL → HTTP ${code} — retry in 10s"
+            sleep 10
+          done
+          echo "::error::pr-${PR} browser preview never came up — browser.yml deploy may have failed."; exit 1
+
+      # Point the Convex preview at the pr-<N> browser. A PREVIEW deploy key is
+      # project-scoped; `--deployment <slug>` selects THIS PR's preview. Verified
+      # with a read-back so a silent no-op can't masquerade as success.
+      - name: Set NEONBINDER_BROWSER_URL on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ steps.convex.outputs.name }}
+          BROWSER_URL: ${{ steps.browser.outputs.browser_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          npx --yes convex@1.39.1 env set NEONBINDER_BROWSER_URL "$BROWSER_URL" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_BROWSER_URL --deployment "$CONVEX_NAME")
+          echo "Convex preview NEONBINDER_BROWSER_URL = $got"
+          if [ "$got" != "$BROWSER_URL" ]; then
+            echo "::error::read-back mismatch: expected $BROWSER_URL, got '$got'"; exit 1
+          fi
+          echo "✅ Wired — E2E will run against the PR's own browser preview."
+
+  # Invoke the (reusable) E2E suite. Runs AFTER wiring so the Convex preview is
+  # already pointed at the PR's browser (when services/browser changed). For
+  # web-only PRs wire-browser-url is SKIPPED and E2E still runs (dev default).
+  # If wiring FAILS, E2E is skipped (no false green against dev) and the red
+  # wire-browser-url job surfaces the problem.
+  e2e:
+    name: E2E
+    needs: [changes, wire-browser-url]
+    if: |
+      always()
+      && needs.changes.result == 'success'
+      && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
+    uses: ./.github/workflows/e2e.yml
+    secrets: inherit

@@ -1,0 +1,43 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&account=admin-sl-only&worker=${WORKER_INDEX || "0"}
+name: "Set Builder Gate — admin without BSC credentials sees the warning banner"
+tags:
+  - set-selector
+  - regression
+---
+# Verifies the credentials gate on /set-selector:
+#   - Signs in as the dedicated admin-sl-only account (dev+e2e-sl-only@neonbinder.io).
+#   - Seeds ONLY SportLots creds via ?sites=sportlots (no BSC seed).
+#   - Navigating to /set-selector renders the MissingCredentialsBanner
+#     naming BuySportsCards only — NOT SportLots.
+#   - The "Configure credentials in Profile" link points to /profile.
+#
+# No clear, no restore, no reset — the account starts and ends with SL-only.
+
+# Step 1: open /set-selector as admin-sl-only (nothing seeded yet — don't assert gate here)
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Builder"
+    timeout: 45000
+
+# Step 2: seed ONLY SportLots (~3s HTTP call) then redirect back to /set-selector
+- openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/set-selector
+
+# Step 3: the gate banner must appear naming BuySportsCards only
+- assertVisible: "Set Builder requires marketplace credentials"
+# BuySportsCards must be named in the banner (the missing platform)
+- assertVisible: "BuySportsCards"
+# SportLots must NOT appear — asserting only the BSC name is insufficient
+# because the both-missing banner also contains "BuySportsCards"
+- assertNotVisible: "SportLots"
+# The Set Selector UI itself must not be visible
+- assertNotVisible: "Set Selector"
+
+# Step 4: the CTA link leads to /profile
+- scrollUntilVisible:
+    element:
+      id: "Configure credentials in Profile"
+    centerElement: true
+- tapOn:
+    id: "Configure credentials in Profile"
+- assertVisible: "Profile Settings"

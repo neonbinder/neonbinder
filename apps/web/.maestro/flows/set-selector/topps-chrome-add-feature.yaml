@@ -1,0 +1,161 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Topps Chrome — write a feature value via SetAttributesPanel and verify propagation toast + persistence (sole-writer)"
+tags:
+  - regression
+  - set-selector
+---
+# Writes a feature value on the REAL 2024 Topps Chrome set and verifies:
+#   1. The "Updated N cards" propagation toast fires after saving on Enter.
+#   2. The value persists: re-opening the panel (page reload + re-drill) shows
+#      the value in the "Value for League" input.
+#
+# ISOLATION STORY (sole-writer tolerance):
+#   This flow is the SOLE writer of Topps Chrome's League feature. No other
+#   flow writes that datum: topps-chrome-marketplace-read.yaml (#36) is
+#   read-only and only checks the row exists; features-propagation.yaml writes
+#   a per-worker custom set (never touches the real Topps Chrome League value);
+#   card checklist flows read Base badges, not League. Because only one instance
+#   of this flow is enqueued per run it never races itself. It writes a FIXED
+#   value via a two-step CLEAR→MLB, so its own write is always a real change
+#   → deterministic toast + convergent end-state. Therefore it is safe under
+#   the NEO-49 work-queue via idempotent sole-writer tolerance — no serial lane
+#   is needed (the isolated lane no longer exists).
+#
+# PROPAGATION TOAST TIMING:
+#   The "Updated N cards" toast is a Convex mutation write — 7s like every
+#   other Convex call. Measured warm propagation to Topps Chrome cards ≈ 0.4–1s;
+#   a >7s propagation is a product finding, not a pad to inflate.
+#
+# PREREQUISITE (implicit): Topps Chrome with variant types and card checklist
+# rows must already exist in the shared Convex deployment. Like
+# topps-chrome-marketplace-read.yaml, this flow relies on that data being
+# present (seeded by the cascade setup track).
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO 2024 TOPPS CHROME (setName level)
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# ============================================================
+# OPEN THE SET ATTRIBUTES PANEL
+# At the setName level the panel defaults EXPANDED.
+# Idempotent expand guard in case a prior isolated flow collapsed it.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# IDEMPOTENT EXPAND: tap only if currently collapsed.
+- runFlow:
+    when:
+      visible:
+        id: "Edit attributes"
+    commands:
+      - tapOn:
+          id: "Edit attributes"
+      - extendedWaitUntil:
+          visible:
+            id: "Hide attributes"
+          timeout: 5000
+
+- assertVisible:
+    id: "Hide attributes"
+
+# ============================================================
+# WRITE A FEATURE VALUE — "Value for League"
+# Two-step write to avoid the same-value no-op:
+#   Step 1: a clearing sentinel ("TChrome-CLEAR") that is definitively NOT
+#           the final intended value — guarantees the DB value changes.
+#   Step 2: the test sentinel ("TChrome-MLB") — the actual value to assert.
+#
+# The first write always triggers the propagation engine (DB had a different
+# value). The second write is then always a real change from "TChrome-CLEAR".
+# This matches the pattern in features-propagation.yaml (PropTest-X → PropTest-MLB).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Value for League"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# Step 1: clearing sentinel write.
+- tapOn:
+    id: "Value for League"
+- eraseText: 20
+- inputText: "TChrome-CLEAR"
+- pressKey: Enter
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Updated [0-9]+ cards.*"
+    timeout: 7000
+
+# Step 2: the test sentinel value.
+- tapOn:
+    id: "Value for League"
+- eraseText: 20
+- inputText: "TChrome-MLB"
+- pressKey: Enter
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Updated [0-9]+ cards.*"
+    timeout: 7000
+
+# ============================================================
+# VERIFY VALUE PERSISTS — reload the page and re-drill
+# Navigate away and back to confirm "TChrome-MLB" was durably written.
+# util-drill-to-2024-topps-chrome navigates to /set-selector itself.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# Open the panel again.
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+- runFlow:
+    when:
+      visible:
+        id: "Edit attributes"
+    commands:
+      - tapOn:
+          id: "Edit attributes"
+      - extendedWaitUntil:
+          visible:
+            id: "Hide attributes"
+          timeout: 5000
+
+# Scroll to League and verify "TChrome-MLB" is still there.
+- scrollUntilVisible:
+    element:
+      id: "Value for League"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# The input should now show "TChrome-MLB" (persisted from the earlier write).
+# Maestro assertVisible with a full-match regex — partial match via ".*".
+- assertVisible:
+    text: ".*TChrome-MLB.*"

@@ -1,0 +1,5 @@
+# Enable auto-env in ~/.sdkman/etc/config (sdkman_auto_env=true) so
+# sdkman switches JDKs automatically when cd-ing into this directory.
+# Bumping the patch version is a single PR; CI uses Temurin via
+# actions/setup-java with java-version from .java-version.
+java=21.0.11-tem

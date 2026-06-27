@@ -1,0 +1,9 @@
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/dashboard&worker=${WORKER_INDEX || "0"}
+name: View Collection (Dashboard)
+tags:
+  - smoke
+  - dashboard
+---
+- launchApp
+- assertVisible: "Neon Binder"
+- assertVisible: "COMING SOON"

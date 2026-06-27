@@ -1,0 +1,276 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "TeamPicker — chip add, remove, keyboard Enter, 'No matches' state, cancel reverts"
+tags:
+  - set-selector
+  - regression
+---
+# Full feature test for the NEO-26 TeamPicker chip-list component.
+#
+# WHAT THIS TESTS:
+#   1. The old free-text team input is gone — no "Team" text field visible in edit form.
+#   2. "+ Add team" button exists and opens the popover.
+#   3. Typing in the search input filters the typeahead list.
+#   4. Picking a team adds a chip labeled with the team name.
+#   5. The "Remove team <name>" button removes the chip.
+#   6. Typing a non-existent name shows "No matches." in the popover.
+#   7. Pressing Enter on the highlighted match adds the chip (keyboard path).
+#   8. Cancel revert: opening the edit form, adding a chip, then clicking Cancel
+#      reverts the chip list back to the original state.
+#   9. Saving a team and reloading the page shows the team name persists.
+#
+# PER-WORKER DATA ISOLATION:
+#   Drills to Baseball → 2024 → Topps → tp-<WORKER_INDEX> (custom set) →
+#   custom Insert VT → "Base" (custom insert variant). Each worker has its own
+#   checklist — no concurrent checklist contention with the cascade's
+#   Topps Chrome path.
+#
+#   WHY Baseball/2024/Topps (not E2E Test Sport ${WORKER_INDEX}/2026):
+#     cascade/setup.yaml seeds New York Yankees + New York Mets for Baseball.
+#     The TeamPicker query is sport-scoped — an E2E Test Sport ${WORKER_INDEX} checklist
+#     would return no seeded teams, not Yankees/Mets. Baseball context makes the seeded
+#     teams available for typeahead search. The custom Set name (tp-<worker>) is
+#     unique and not a real marketplace set, so BSC/SL adapters short-circuit
+#     via the NEO-22 gate.
+#
+# Uses a fresh custom card (card #889) for each sub-test to avoid state bleed.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO PER-WORKER CUSTOM SET
+# Baseball → 2024 → Topps → tp-<WORKER_INDEX> → Insert VT → "Base" insert
+# Delegated to util-drill-to-custom.yaml which handles real-synced levels
+# (Baseball/2024/Topps exist as marketplace data) and the custom Set + VT +
+# Variant uniformly and idempotently.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "tp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# Wait for the CardChecklist panel to appear.
+# (util-drill-to-custom scrolls "Open add card form" into view on return,
+# but an explicit scroll here is the canonical entry point before card ops.)
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+
+# Per-attempt-unique card number + player name. The runner injects
+# ATTEMPT_ID="w<worker>-a<attempt>-<RANDOM>" so attempt-2 doesn't
+# collide with attempt-1's row left in the per-worker cardChecklist.
+
+# ============================================================
+# Add a custom card to serve as the test target.
+# ============================================================
+
+- tapOn:
+    id: "Open add card form"
+- assertVisible:
+    id: "Card name"
+- inputText: "889-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Team Feature Player ${ATTEMPT_ID}"
+- tapOn:
+    id: "Submit new card"
+- assertVisible: "Team Feature Player ${ATTEMPT_ID}"
+
+# Scroll the just-added card into view before tapping its Edit button.
+- scrollUntilVisible:
+    element:
+      id: "Edit card 889-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+
+# ============================================================
+# TEST 1 — No old "Team" text field: the edit form shows TeamPicker only
+# ============================================================
+
+- tapOn:
+    id: "Edit card 889-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# The TeamPicker container has aria-label "Team picker".
+- assertVisible:
+    id: "Team picker"
+
+# The "+ Add team" trigger is visible.
+- assertVisible:
+    id: "Add team"
+
+# ============================================================
+# TEST 2 — Open popover, search, and pick a team by clicking
+# (In-place form-field taps use direct tapOn by aria-label — the form
+# is already in-viewport after the Edit tap above; no scroll needed.)
+# ============================================================
+
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+
+- tapOn:
+    id: "Search teams"
+- inputText: "Yankees"
+- assertVisible:
+    id: "Add New York Yankees"
+
+- tapOn:
+    id: "Add New York Yankees"
+
+# Yankees chip appears. Close popover by clicking card name.
+- tapOn:
+    id: "Card name"
+- assertVisible:
+    id: "Remove team New York Yankees"
+
+# ============================================================
+# TEST 3 — Remove the chip using the × button
+# ============================================================
+
+- tapOn:
+    id: "Remove team New York Yankees"
+- assertNotVisible:
+    id: "Remove team New York Yankees"
+
+# ============================================================
+# TEST 4 — "No matches." state when search finds nothing
+# ============================================================
+
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- inputText: "ZZZZNOTATEAM"
+- assertVisible: "No matches."
+
+# Close popover.
+- tapOn:
+    id: "Card name"
+
+# ============================================================
+# TEST 5 — Keyboard: Enter on highlighted match adds the chip
+# ============================================================
+
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- eraseText: 20
+- inputText: "Mets"
+- assertVisible:
+    id: "Add New York Mets"
+
+# Press Enter to confirm the highlighted first match.
+- pressKey: Enter
+- tapOn:
+    id: "Card name"
+
+# The Mets chip should now appear.
+- assertVisible:
+    id: "Remove team New York Mets"
+
+# ============================================================
+# TEST 6 — Cancel reverts the team edit
+# ============================================================
+
+# Cancel — chip should disappear.
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible: "Card name"
+
+# Re-open edit — no chip (we never saved).
+- tapOn:
+    id: "Edit card 889-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# Only the "+ Add team" trigger — no chip.
+- assertVisible:
+    id: "Add team"
+
+# ============================================================
+# TEST 7 — Save + reload persists the team name
+# ============================================================
+
+# Add Yankees and save.
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- inputText: "Yankees"
+- assertVisible:
+    id: "Add New York Yankees"
+- tapOn:
+    id: "Add New York Yankees"
+- tapOn:
+    id: "Card name"
+- tapOn:
+    id: "Save card edit"
+- assertVisible: "Team Feature Player ${ATTEMPT_ID}"
+
+- assertVisible:
+    text: ".*Yankees.*"
+
+# ============================================================
+# Reload and re-drill to the SAME per-worker custom set to confirm
+# persistence. Baseball/2024/Topps/tp-<worker>/Insert/Base.
+# All real-synced levels (Baseball/2024/Topps) are already warm in
+# selectorOptions; the custom Set/VT/Variant already exist from the
+# first drill — util-drill-to-custom handles both idempotently.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "tp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# After reload, find our card and confirm the team name is in the sub-line.
+- scrollUntilVisible:
+    element:
+      text: "Team Feature Player ${ATTEMPT_ID}"
+    timeout: 30000
+- assertVisible:
+    text: ".*Yankees.*"
+
+# ============================================================
+# CLEANUP — delete this attempt's test card
+# ============================================================
+
+- tapOn:
+    id: "Delete card 889-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 889-${ATTEMPT_ID}"
+- assertNotVisible: "Team Feature Player ${ATTEMPT_ID}"

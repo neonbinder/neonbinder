@@ -1,0 +1,38 @@
+# Template for .env.test — copy this to .env.test and fill in real values.
+# .env.test is gitignored. Loaded by run-e2e-smoke.sh and passed through to
+# Maestro flows via -e. NOT loaded by Vite or the deployed app.
+
+# Local app URL (https for HMR + secure cookies; mkcert provides the cert).
+APP_URL=https://localhost:3000
+
+# Default username for Maestro flows that fill the profile form. The runner
+# overrides this with `neontester_$(date +%s)` per run, but a stable default
+# is useful when invoking maestro test directly.
+TEST_USERNAME=e2etest
+
+# Marketplace credentials. The serial-marketplace lane runs on Worker 0 only,
+# so a single set of real credentials is correct (the browser service can't
+# handle concurrent /login/bsc against the same BSC account).
+SPORTLOTS_USERNAME=
+SPORTLOTS_PASSWORD=
+BSC_USERNAME=
+BSC_PASSWORD=
+
+# Convex HTTP actions endpoint (only used by a subset of flows).
+CONVEX_HTTP_URL=
+
+# ─── Per-worker test accounts (NOT here — see below) ───────────────────────
+# TEST_EMAIL_${worker} / NEW_PROFILE_TEST_EMAIL_${worker} are read by the
+# /api/auth/testing endpoint, NOT by Maestro or the runner. They live where
+# that endpoint runs:
+#
+#   Local Vite dev   → .env.local (read by vite.config.ts middleware)
+#   Vercel preview   → Vercel env vars for the Preview environment
+#                      (vercel env add TEST_EMAIL_0 preview, etc.)
+#
+# The runner sets WORKER_INDEX per worker; the flow passes ?worker=N in the
+# /testing/sign-in URL; the endpoint resolves TEST_EMAIL_N from its own env.
+# Existing dev Clerk users (provisioned 2026-05-07):
+#   dev+e2e-{1,2,3}@neonbinder.io          (TEST_EMAIL_{0,1,2})
+#   dev+e2e-{1,2,3}-profile@neonbinder.io  (NEW_PROFILE_TEST_EMAIL_{0,1,2})
+# All created without passwords (testing-token flow uses one-time tickets).

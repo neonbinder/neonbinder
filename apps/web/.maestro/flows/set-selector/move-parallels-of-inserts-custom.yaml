@@ -1,0 +1,317 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Move parallels-of-inserts — suggestions pre-placed on open, Accept All clears badges, Save persists nesting"
+tags:
+  - parallel-grouping
+  - set-selector
+  - regression
+---
+# PRODUCT-FEATURE test: the full happy-path lifecycle of the Group Parallels modal.
+# Covers:
+#   1. Auto-suggestion pre-placement: Stars Gold + Stars Red appear in the
+#      "Parallels of "Stars"" zone (not "Top-level inserts") on modal open,
+#      badged "Suggested".
+#   2. Accept All clears the "Suggested" badges (reducer-only, no persist) while
+#      keeping the placement and enabling Save.
+#   3. Save (applyParallelGroupings mutation) persists the nesting: modal closes,
+#      Stars Gold + Stars Red disappear from the Inserts column (they are now
+#      level=parallel), and selecting Stars in the Inserts column reveals a
+#      "Parallels" column containing Stars Gold and Stars Red.
+#
+# IDEMPOTENCY: The runner (run-e2e-smoke.sh) injects ATTEMPT_ID=w<N>-a<attempt>-<RANDOM>
+# so each run creates a unique INSERT TRIPLET inside the SAME stable set.
+# ATTEMPT_ID is used as a PREFIX ("w0-a1-X Stars"), not a suffix ("Stars w0-a1-X").
+# This prevents old bare "Stars" entries (from runs before ATTEMPT_ID was active)
+# from matching as a parent prefix in the auto-suggestion algorithm. The algorithm
+# would wrongly group "Stars w0-a1-X Gold" under the old "Stars" parent (not
+# under the ATTEMPT_ID-suffixed parent), causing the test's post-save assertion
+# to fail (the parent insert disappears from Inserts because it was saved as a
+# parallel of the old "Stars").
+#   run 1: w0-a1-X Stars / w0-a1-X Stars Gold / w0-a1-X Stars Red
+#   run 2: w0-a2-Y Stars / w0-a2-Y Stars Gold / w0-a2-Y Stars Red
+# After Save, Gold/Red become level=parallel. The next run's DIFFERENT-prefixed
+# Gold/Red start as inserts and never collide with prior saved parallels.
+# SET_NAME is STABLE (pg-move-<worker>) so the set already exists on re-runs
+# and the Variant Types column loads from cache — avoiding the >45s "Syncing
+# Variant Types" round-trip that a brand-new set triggers.
+#
+# Self-contained under E2E Test Sport ${WORKER_INDEX} → 2026 → Topps → pg-move-<worker>
+# (a fully custom subtree — every column's sync short-circuits, no live BSC/SL).
+# Every wait is the 7s default; the util owns the cold custom-subtree drill.
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# The runner injects ATTEMPT_ID. This evalScript provides a fallback for standalone
+# runs where the runner is not involved. output.ATTEMPT_ID is only set if unset.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+# Drill to the STABLE per-worker custom set; returns with Inserts column at idle.
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "pg-move-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+
+# ── ADD THREE CUSTOM INSERTS (<ID> Stars / <ID> Stars Gold / <ID> Stars Red) ──
+# NAMING STRATEGY: ATTEMPT_ID is used as a PREFIX ("w0-a1-1234 Stars"), NOT a
+# suffix ("Stars w0-a1-1234"). Using a prefix ensures:
+#   - No accumulated old entries (like a bare "Stars" from prior runs that had
+#     no ATTEMPT_ID) can serve as a prefix match for the auto-suggestion algorithm
+#   - The auto-suggestion only groups this run's own triplet under their common
+#     parent (ATTEMPT_ID + " Stars")
+# Using a suffix causes a bare "Stars" entry (accumulated from old runs) to be
+# a prefix of "Stars w0-a1-X Gold" and "Stars w0-a1-X Red", leading the algorithm
+# to group all entries under "Stars" instead of the ATTEMPT_ID-suffixed parent.
+#
+# aria-label "Add custom Inserts" maps to resource-id (id:). Maestro best
+# practice: centerElement: true on every scroll whose target we then tap — it
+# also clears the 1024×629 headless footer-steal zone.
+#
+# Non-scroll settle guard: the Inserts column can be mid-re-render immediately
+# after util-drill returns (Convex subscription fires as the page re-settles).
+# scrollUntilVisible's CDP centering swipe crashes during re-render
+# (MismatchedInputException) and Maestro reports "Element not found" even when
+# the button was found at try-0. Let the render settle before the swipe fires.
+- extendedWaitUntil:
+    visible:
+      id: "Add custom Inserts"
+    timeout: 30000
+# --- <ID> Stars ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Stars Gold ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars Gold"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Stars Red ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars Red"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# After adding <ID> Stars Red it is auto-selected and the card checklist panel
+# opens at the bottom of the viewport. The panel occupies y≈488-628; the
+# "Group Parallels" button sits at y≈425-447, fully above the panel — the
+# button's DOM center (x≈500, y≈430) is within the visible columns area and
+# safe from the footer-steal zone (y≥489). No deselection needed.
+#
+# ── OPEN MODAL: assert initial suggestion pre-placement ─────────────────────
+# On open, <ID> Stars sits in "Top-level inserts"; <ID> Stars Gold and
+# <ID> Stars Red are pre-placed in "Parallels of "<ID> Stars"" (prefix-match
+# auto-detection) with "Suggested" badges.
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+- tapOn: "Group Parallels"
+- assertVisible: ".*Drag inserts under a parent.*"
+
+# The modal has an internal scroll container that Maestro CDP cannot scroll
+# (scrollUntilVisible sends to the page root, not the modal div). With
+# accumulated inserts from prior runs the modal's internal scroll places the
+# most recent run's triplet OUTSIDE the modal's visible fold — both above it
+# (parent "Stars" is scrolled up in "Top-level inserts") and below it
+# (Gold + Red are in a "Parallels of..." section appended below prior groups).
+#
+# WHAT WE CAN ASSERT WITHOUT SCROLLING:
+#   - The modal itself is open (already confirmed above: ".*Drag inserts under a parent.*")
+#   - The "Accept all suggestions (N)" button is visible in the modal footer —
+#     this ONLY appears when there are pending suggestions, confirming auto-
+#     detection fired for the current run's triplet.
+#   - The promotion count (footer) reflects that Gold + Red are pre-placed.
+#   - Save is enabled (footer has pending changes).
+#
+# WHAT WE CANNOT ASSERT (due to accumulated state + uncontrollable modal scroll):
+#   - "${ATTEMPT_ID} Stars" — scrolled above fold in the "Top-level inserts" section
+#   - "${ATTEMPT_ID} Stars Gold" / "Stars Red" — scrolled below fold in the
+#     "Parallels of..." section appended below prior saved groups.
+#
+# The prefix-match correctness (Gold/Red correctly grouped under Stars) is
+# verified AFTER Save by the post-save column assertions below.
+
+# Accept All button text: "Accept all suggestions (N)" where N = suggestion count.
+# Its presence proves auto-detection produced suggestions (no button = no suggestions).
+- assertVisible: ".*Accept all suggestions.*"
+# Footer shows promotions count because changes are pending.
+- assertVisible: ".*[0-9]+ promotion.*"
+# Save is enabled because there are pending changes.
+- assertVisible: ".*Save [0-9]+ change.*"
+
+# ── ACCEPT ALL → badges clear; placement unchanged; Save still enabled ───────
+# Dispatches ACCEPT_ALL_SUGGESTIONS reducer action — clears the suggested set
+# without moving rows. Gold + Red remain under "Parallels of Stars <ID>".
+# Center the button first — modal footer clips at the 1024×629 headless viewport.
+- scrollUntilVisible:
+    element:
+      text: ".*Accept all suggestions.*"
+    centerElement: true
+- tapOn: ".*Accept all suggestions.*"
+# Badges gone — this is the unique assertion Accept All owns.
+- assertNotVisible: "Suggested"
+# Promotion count unchanged — Accept All is purely a UI state, not a data action.
+- assertVisible: ".*[0-9]+ promotion.*"
+# Save button still enabled (changes are still pending).
+- assertVisible: ".*Save [0-9]+ change.*"
+
+# ── SAVE → modal closes, DB mutation fires ───────────────────────────────────
+# Center the button first — modal footer clips at the 1024×629 headless viewport.
+- scrollUntilVisible:
+    element:
+      text: ".*Save [0-9]+ change.*"
+    centerElement: true
+- tapOn: ".*Save [0-9]+ change.*"
+
+# applyParallelGroupings mutation runs; modal closes on success.
+# Use extendedWaitUntil to give the mutation + modal-close animation time to complete.
+- extendedWaitUntil:
+    notVisible: ".*Drag inserts under a parent.*"
+    timeout: 15000
+
+# ── VERIFY POST-SAVE STATE IN THE REAL COLUMNS ──────────────────────────────
+# After Save, the EntitySelector Inserts column has a stale internal scroll
+# position from the pre-save interactions (Group Parallels modal, add-inserts
+# steps, etc.). Maestro's CDP page-level scroll cannot reach items inside an
+# overflow-y-auto container — the scroll is INTERNAL to the column div.
+#
+# An in-SPA openLink to /set-selector (what util-drill-to-custom.yaml does)
+# does NOT unmount the EntitySelector component tree, so the column's DOM
+# scroll position is preserved. With accumulated prior-run entries the new
+# run's ${ATTEMPT_ID} Stars entry (alphabetically last) lands at the very
+# bottom of the internal scroll — just barely clipping below the column's
+# visual area — and every scrollUntilVisible attempt is a no-op because the
+# CDP swipe targets the page root, not the inner container.
+#
+# FIX: navigate to a DIFFERENT route (/dashboard) first to FULLY UNMOUNT the
+# EntitySelector, then navigate DIRECTLY to /set-selector to pre-warm the
+# Convex subscriptions (letting the Sports auto-sync complete) BEFORE calling
+# the util-drill.
+#
+# WHY the two-step approach:
+#   1. openLink /dashboard → full React unmount of SetSelector; component tree
+#      is gone so the column scroll position is dropped.
+#   2. openLink /set-selector → SPA remounts SetSelector, Convex subscriptions
+#      re-establish; wait for "Baseball" (Sports auto-sync complete signal) so
+#      the Sports column is ready. Now the util-drill finds the column already
+#      synced — it does NOT trigger another auto-sync cycle.
+#
+# Without step 2, the util-drill's OWN openLink /set-selector arrives at a
+# component that is mid-auto-sync. The util-drill taps the sport and Years
+# opens, then the auto-sync wipes the Sports list, and Years never reappears
+# within the 60 s extendedWaitUntil window (the sport was briefly selected,
+# then the sync reset it, and the util-drill does not retry the sport tap).
+- openLink: ${APP_URL || "http://localhost:3000"}/dashboard
+- extendedWaitUntil:
+    visible: "COMING SOON"
+    timeout: 20000
+
+# Pre-warm /set-selector so the Sports auto-sync completes before the util-drill runs.
+- openLink: ${APP_URL || "http://localhost:3000"}/set-selector
+- extendedWaitUntil:
+    visible: "Baseball"
+    timeout: 60000
+
+# Re-drill from a fresh component mount. The util-drill is idempotent: the
+# pg-move-X set already exists, so it just re-selects each level without
+# creating anything new. The Sports column is already synced (Baseball visible
+# above), so the drill proceeds without triggering another auto-sync cycle.
+# Returns with the Inserts column at idle, scroll=0.
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "pg-move-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+
+# The Inserts column (level=insert) now shows <ID> Stars but NOT <ID> Stars Gold
+# or <ID> Stars Red — those were promoted to level=parallel.
+#
+# FINDING <ID> STARS IN A CROWDED LIST
+# After accumulated runs the column may have >8 insert entries. When >8 entries
+# are present the EntitySelector renders a search input (aria-label "Search inserts").
+# When ≤8 entries are present (fresh CI state) the search input is hidden and
+# standard scrollUntilVisible can reach the entry.
+#
+# We use a when: block to pick the right strategy:
+#   - Search path (>8 items): filter by ATTEMPT_ID, then tap the single result.
+#   - Scroll path (≤8 items): scrollUntilVisible + tapOn directly.
+#
+# Gold and Red are no longer top-level inserts (they're now level=parallel and
+# excluded from the insert-level Convex query), so assertNotVisible passes
+# regardless of scroll position.
+- assertNotVisible: ".*${ATTEMPT_ID} Stars Gold.*"
+- assertNotVisible: ".*${ATTEMPT_ID} Stars Red.*"
+
+# Search path: Inserts column has >8 entries → search input visible.
+# Type the ATTEMPT_ID to filter down to a single matching row.
+# runFlow+when is the correct Maestro pattern for conditional execution
+# (standalone `when:` is not a valid top-level command).
+- runFlow:
+    when:
+      visible:
+        id: "Search inserts"
+    commands:
+      - tapOn:
+          id: "Search inserts"
+      - inputText: "${ATTEMPT_ID} Stars"
+      - extendedWaitUntil:
+          visible:
+            text: ".*${ATTEMPT_ID} Stars$"
+          timeout: 7000
+      - tapOn:
+          text: ".*${ATTEMPT_ID} Stars$"
+          below:
+            id: "Search inserts"
+
+# Scroll path: Inserts column has ≤8 entries (clean CI state) → no search input.
+# scrollUntilVisible works because the column fits within the page-level scroll
+# axis (no overflow-y-auto needed when all items fit in the visible container).
+- runFlow:
+    when:
+      notVisible:
+        id: "Search inserts"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*${ATTEMPT_ID} Stars$"
+          centerElement: true
+      - tapOn:
+          text: ".*${ATTEMPT_ID} Stars$"
+
+# The Parallels column (level=parallel, parentId=<ID> Stars) opens to the right.
+# The column is scoped to this insert's parentId — exactly 2 items (Gold + Red).
+# No search input (<8 items), no scrolling needed — both rows render in-viewport.
+#
+# extendedWaitUntil first to let the Parallels column load, then assertVisible
+# to confirm both saved entries are present (proving the nesting was persisted).
+- extendedWaitUntil:
+    visible:
+      text: ".*${ATTEMPT_ID} Stars Gold.*"
+    timeout: 10000
+# Both Gold and Red appear as parallels of <ID> Stars — the saved nesting is live.
+- assertVisible:
+    text: ".*${ATTEMPT_ID} Stars Gold.*"
+- assertVisible:
+    text: ".*${ATTEMPT_ID} Stars Red.*"

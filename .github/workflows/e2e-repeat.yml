@@ -1,0 +1,129 @@
+name: E2E Repeat (flakiness sampler)
+
+# Cloud-native flakiness sampler.
+#
+# A SINGLE dispatch runs the full "E2E Tests" suite N times, sequentially,
+# entirely on GitHub's runners. The loop lives in CI — not on a laptop — so it
+# survives sleep / being away: one approval, then walk away.
+#
+# Each sample is dispatched as its OWN "E2E Tests" run (e2e.yml via
+# workflow_dispatch → standalone run against the dev browser default; separate
+# github.run_id → separate work-queue, separate artifacts → no collisions). We
+# wait for each to finish before dispatching the next, so the suite's own
+# cancel-in-progress concurrency never cancels a sample and two runs never contend
+# on the shared Convex preview / dev browser service (the documented 503-under-
+# contention).
+#
+# Samples run against the dispatched ref's existing Vercel/Convex preview (resolved
+# by github.sha inside E2E Tests), so all samples share the same code + preview —
+# any flow that flips pass<->fail across samples is genuine flakiness.
+#
+# Read the results from the per-sample "E2E Tests" runs (linked in this run's log
+# and in the uploaded sample-index artifact).
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: "Number of sequential full E2E runs (1-12)"
+        required: false
+        default: "5"
+        type: string
+  # NOTE: workflow_dispatch only works once this file is on the DEFAULT branch.
+  # Until it's merged to main, trigger a sweep by pushing a tag like
+  # `e2e-sample-run1` at the branch's HEAD — tag/push triggers run the workflow
+  # from the pushed ref, with no default-branch requirement. Tag triggers can't
+  # pass `count`, so they use the script's default (8) and sample against `main`.
+  push:
+    tags:
+      - "e2e-sample-*"
+
+# Don't let a second dispatch cancel an in-flight sampling sweep.
+concurrency:
+  group: e2e-repeat-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write # dispatch + watch the "E2E Tests" workflow via GITHUB_TOKEN
+  contents: read
+
+jobs:
+  drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # ~24m/sample; 350 covers up to ~12 sequential samples
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # No checkout in this job, so gh can't infer the repo from git context —
+      # pin it explicitly (otherwise gh errors "not a git repository").
+      GH_REPO: ${{ github.repository }}
+      # On a tag push, github.ref_name is the tag — not a branch — so sample
+      # against main. On workflow_dispatch use the dispatch ref.
+      REF: ${{ github.event_name == 'push' && 'main' || github.ref_name }}
+      COUNT: ${{ inputs.count }}
+    steps:
+      - name: Run "E2E Tests" N times sequentially
+        run: |
+          set -uo pipefail
+          n="${COUNT:-8}"
+          case "$n" in (*[!0-9]*|'') n=8;; esac
+          [ "$n" -lt 1 ] && n=1
+          [ "$n" -gt 12 ] && n=12
+          echo "Running $n sequential E2E samples on ref '$REF'"
+          : > samples.txt
+
+          for i in $(seq 1 "$n"); do
+            echo "::group::sample $i/$n — dispatch"
+            before=$(gh run list --workflow "E2E Tests" --branch "$REF" \
+              --event workflow_dispatch --limit 1 --json databaseId \
+              --jq '.[0].databaseId // "0"' 2>/dev/null || echo 0)
+            if ! gh workflow run e2e.yml --ref "$REF"; then
+              echo "::warning::sample $i: workflow dispatch call failed — skipping"
+              echo "sample $i: DISPATCH_FAILED" >> samples.txt
+              echo "::endgroup::"
+              continue
+            fi
+            rid=""
+            for t in $(seq 1 36); do
+              sleep 5
+              cand=$(gh run list --workflow "E2E Tests" --branch "$REF" \
+                --event workflow_dispatch --limit 1 --json databaseId \
+                --jq '.[0].databaseId // "0"' 2>/dev/null || echo 0)
+              if [ "$cand" != "$before" ] && [ "$cand" != "0" ]; then rid="$cand"; break; fi
+            done
+            if [ -z "$rid" ]; then
+              echo "::warning::sample $i: dispatched run did not appear within 3m — skipping"
+              echo "sample $i: DISPATCH_FAILED" >> samples.txt
+              echo "::endgroup::"
+              continue
+            fi
+            echo "sample $i = E2E Tests run $rid"
+            echo "::endgroup::"
+
+            echo "::group::sample $i/$n — run $rid (waiting ~24m)"
+            # Wait for the whole suite; don't let a red sample fail the sweep.
+            gh run watch "$rid" --interval 30 --exit-status || true
+            concl=$(gh run view "$rid" --json conclusion --jq '.conclusion' 2>/dev/null || echo unknown)
+            url=$(gh run view "$rid" --json url --jq '.url' 2>/dev/null || echo "")
+            echo "sample $i ($rid) -> $concl  $url"
+            echo "sample $i: $rid $concl $url" >> samples.txt
+            echo "::endgroup::"
+          done
+
+          echo "===== SAMPLE INDEX ====="
+          cat samples.txt
+          {
+            echo "## E2E Repeat — sample index"
+            echo ""
+            echo "| sample | run | conclusion |"
+            echo "|---|---|---|"
+            awk '{ print "| " $2 " | " $3 " | " $4 " |" }' samples.txt 2>/dev/null || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sample index
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-repeat-sample-index
+          path: samples.txt
+          if-no-files-found: ignore
+          retention-days: 14

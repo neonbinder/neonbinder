@@ -1,0 +1,353 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "SetAttributesPanel — breadcrumb scope, metadata editing, collapse/expand, inherited values at child level (per-worker custom set)"
+tags:
+  - regression
+  - set-selector
+---
+# NEO-38 / NEO-39 acceptance test for the SetAttributesPanel redesign.
+#
+# ISOLATION: uses a per-worker CUSTOM set (attr-edit-{WORKER_INDEX}) under
+# Baseball → 2024 → Topps. Each of the 3 CI workers owns a separate custom
+# set, so concurrent workers cannot interfere. The real 2024 Topps Chrome set
+# is never touched — that path is owned exclusively by topps-chrome-*.yaml.
+#
+# WHAT THIS TESTS (three sub-scenarios):
+#
+#   1. BREADCRUMB SCOPE TEXT
+#      Drill to the custom set (setName level). The panel header shows a
+#      breadcrumb like "Attributes for attr-edit-0 (Set) — Baseball › 2024 › Topps"
+#      confirming the panel identifies which node it is editing and its ancestry.
+#
+#   2. METADATA EDIT AT SETNAME LEVEL
+#      The editable metadata fields (Release Date, Block, TCDB Set ID, Source URL)
+#      are visible because the panel defaults EXPANDED at the setName level.
+#      Write a value in each field and confirm the corresponding save toast.
+#        - "Value for Release Date" → "Saved Release Date"
+#        - "Value for Block"       → "Saved Block"
+#        - "Value for TCDB Set ID" → "Saved TCDB Set ID"
+#        - "Value for Source URL"  → "Saved Source URL"
+#
+#   3. COLLAPSED STATE / EXPAND / INHERITED VALUES AT CHILD LEVEL
+#      a. Tap "Hide attributes" to collapse the panel manually. Verify "Edit
+#         attributes" appears (collapsed summary bar) and "Hide attributes" is gone.
+#      b. Re-expand via "Edit attributes". Verify "Hide attributes" returns.
+#      c. Drill into a custom variant type (Base-{worker}). The breadcrumb in
+#         the panel header now shows the child scope. The panel remains open
+#         at this level (no card checklist on a custom set). Assert the scope
+#         text has changed to include the variant type name — this confirms
+#         the panel context updates correctly when the user selects a child row.
+#
+# FLOW OVERVIEW:
+#   A. Sign in → navigate to /set-selector
+#   B. Drill Baseball → 2024 → Topps → custom set (add if absent)
+#   C. Assert breadcrumb scope text at setName level
+#   C.  Edit "Value for Release Date" → assert "Saved Release Date" toast
+#   C2. Edit "Value for Block"        → assert "Saved Block" toast
+#   C3. Edit "Value for TCDB Set ID"  → assert "Saved TCDB Set ID" toast
+#   C4. Edit "Value for Source URL"   → assert "Saved Source URL" toast
+#   D. Manually collapse panel → assert "Edit attributes" visible
+#   E. Re-expand panel → assert "Hide attributes" visible
+#   F. Drill into custom variant type → assert breadcrumb updates to child scope
+
+- launchApp
+# Wait for the async testing-sign-in (Clerk auth + rate-limit retry backoff on
+# the Nth concurrent sign-in) to finish and auto-redirect to /set-selector
+# BEFORE drilling. Without this guard, util-drill's openLink: /set-selector
+# races the in-flight sign-in and is bounced to /signin — which failed this
+# flow deterministically at parallelism>1 (3rd rapid sign-in per account →
+# rate-limit backoff). 45s covers the full backoff; matches team-picker's gate.
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "attr-edit-${WORKER_INDEX || 0}"
+
+# ============================================================
+# PART B — ASSERT BREADCRUMB SCOPE TEXT
+# The panel header shows "Attributes for attr-edit-{N} (Set) — ... › Topps"
+# We match the "›" separator to confirm ancestry is rendered.
+# ============================================================
+
+# Scroll to the "Edit attributes" toggle to locate the panel area.
+# Using the toggle (small, reliably centerable) avoids the fragile
+# centerElement scroll on the full panel wrapper at 1024×629.
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# IDEMPOTENT EXPAND: at setName level the panel defaults EXPANDED (no card
+# checklist on a custom set). A prior run may have left it collapsed — guard.
+- runFlow:
+    when:
+      visible:
+        id: "Edit attributes"
+    commands:
+      - tapOn:
+          id: "Edit attributes"
+      - assertVisible:
+          id: "Hide attributes"
+
+# Panel is expanded: "Hide attributes" button must be visible.
+- assertVisible:
+    id: "Hide attributes"
+
+# The "Will propagate to N cards" counter is visible when the panel is open at
+# the setName level — confirms the propagation preview is rendered.
+# (Unique assertion folded from set-features-panel.yaml, which was deleted.)
+- assertVisible:
+    text: ".*Will propagate to.*"
+
+# The breadcrumb header shows "... › attr-edit-{N}" as leaf.
+# The ancestor chain uses "›" as separator; assert at least one "›" exists.
+- assertVisible:
+    text: ".*›.*attr-edit-${WORKER_INDEX || 0}.*"
+
+# ============================================================
+# PART C — EDIT "Value for Release Date" (setName-level metadata field)
+# setSetMetadata works on custom sets. Two-step write avoids no-op when
+# the DB already holds the intended value from a prior run.
+#
+# CI VIEWPORT FIX: "Value for Release Date" renders at y≈626 in the
+# 1024×629 headless viewport — right at the fold. Scrolling to "Value for
+# Block" (the editable field BELOW Release Date in the same grid) lifts
+# Release Date fully into view. tapOn then needs no further scroll.
+# See patterns_scroll_visibility.md for the centerElement 0.0 trap.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Value for Block"
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+- assertVisible:
+    id: "Value for Release Date"
+
+# Step 1: clearing sentinel — guarantees the DB value changes.
+- tapOn:
+    id: "Value for Release Date"
+- eraseText: 30
+- inputText: "1900-01-01"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Release Date.*"
+    timeout: 7000
+
+# Step 2: the test sentinel value.
+- tapOn:
+    id: "Value for Release Date"
+- eraseText: 30
+- inputText: "2024-08-01"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Release Date.*"
+    timeout: 7000
+
+# ============================================================
+# PART C2 — EDIT "Value for Block" (metadata field rendered below Release Date)
+# Block is already in view from the Part C scroll. Apply the same two-step
+# write pattern: sentinel clear → test value.
+# ============================================================
+
+- tapOn:
+    id: "Value for Block"
+- eraseText: 30
+- inputText: "Flagship"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Block.*"
+    timeout: 7000
+
+# ============================================================
+# PART C3 — EDIT "Value for TCDB Set ID"
+# TCDB Set ID and Source URL are the two newly-editable rows added in this
+# sprint. They render directly below Block in the same metadata grid.
+# Scroll to "Value for Source URL" (the field below TCDB Set ID) to lift
+# TCDB Set ID fully into the 1024×629 viewport — same technique used for
+# Release Date / Block above.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Value for Source URL"
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+- assertVisible:
+    id: "Value for TCDB Set ID"
+
+# Step 1: clearing sentinel.
+- tapOn:
+    id: "Value for TCDB Set ID"
+- eraseText: 30
+- inputText: "00000"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved TCDB Set ID.*"
+    timeout: 7000
+
+# Step 2: the test sentinel value.
+- tapOn:
+    id: "Value for TCDB Set ID"
+- eraseText: 30
+- inputText: "12345"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved TCDB Set ID.*"
+    timeout: 7000
+
+# ============================================================
+# PART C4 — EDIT "Value for Source URL"
+# Source URL is now in view from the Part C3 scroll.
+# Apply the same two-step write pattern.
+# ============================================================
+
+- tapOn:
+    id: "Value for Source URL"
+- eraseText: 100
+- inputText: "https://sentinel.example.com"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Source URL.*"
+    timeout: 7000
+
+- tapOn:
+    id: "Value for Source URL"
+- eraseText: 100
+- inputText: "https://example.com/set"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Source URL.*"
+    timeout: 7000
+
+# ============================================================
+# PART D — COLLAPSE THE PANEL VIA "Hide attributes"
+# On a custom set (no card checklist) the panel stays expanded; we test the
+# explicit collapse path so that "Edit attributes" / "Hide attributes"
+# toggle behaviour is validated independently of card-checklist presence.
+#
+# After Parts C–C4 the page is scrolled DOWN past Source URL. The
+# "Hide attributes" toggle is at the TOP of the SetAttributesPanel which
+# is now ABOVE the current viewport position. direction: UP (swipe-down
+# gesture) pulls content from above back into view — same technique as
+# features-propagation.yaml uses to scroll back up to "Base".
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Hide attributes"
+    direction: UP
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+- tapOn:
+    id: "Hide attributes"
+
+# After collapsing: "Edit attributes" appears in the summary bar.
+- assertVisible:
+    id: "Edit attributes"
+
+# "Hide attributes" is ONLY present when the panel is expanded — its absence
+# confirms the collapsed state.
+- assertNotVisible:
+    id: "Hide attributes"
+
+# ============================================================
+# PART E — RE-EXPAND THE PANEL VIA "Edit attributes"
+# ============================================================
+
+- tapOn:
+    id: "Edit attributes"
+
+- assertVisible:
+    id: "Hide attributes"
+
+# ============================================================
+# PART F — DRILL TO A CUSTOM VARIANT TYPE AND VERIFY CHILD SCOPE
+# Add a custom variant type "BaseAttr-{WORKER_INDEX}" if absent, then tap
+# it. The SetAttributesPanel breadcrumb should update to show the child
+# level — confirming the panel context tracks the user's selection.
+# ============================================================
+
+# Scroll up to reach the Variant Types column. After Part E the panel body
+# is visible; the column is above the fold. Use direction: UP (swipe-down
+# gesture) to bring it back into view.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    direction: UP
+    visibilityPercentage: 100
+    centerElement: true
+    timeout: 15000
+
+- runFlow:
+    when:
+      notVisible: "BaseAttr-${WORKER_INDEX || 0}"
+    commands:
+      - tapOn:
+          id: "Add custom Variant Types"
+          waitToSettleTimeoutMs: 2000
+      - assertVisible: "Add Custom Entry"
+      - inputText: "BaseAttr-${WORKER_INDEX || 0}"
+      - pressKey: Enter
+      - assertVisible:
+          text: ".*BaseAttr-${WORKER_INDEX || 0}.*"
+
+- scrollUntilVisible:
+    element:
+      text: "BaseAttr-${WORKER_INDEX || 0}"
+    timeout: 10000
+- tapOn: "BaseAttr-${WORKER_INDEX || 0}"
+
+# Wait for the next column (pluralized variant type name) to appear,
+# confirming the selection registered.
+- assertVisible:
+    text: ".*BaseAttr-${WORKER_INDEX || 0}s.*"
+
+# The SetAttributesPanel breadcrumb now shows the child scope. The panel
+# either stays expanded (custom set — no card checklist) or the toggle is
+# available. Assert the scope text updated by checking the breadcrumb still
+# contains "›" (ancestry separator) — confirming the panel re-rendered for
+# the child context. The exact text will be something like
+# "Attributes for BaseAttr-0 (Variant Type) — ... › attr-edit-0".
+- scrollUntilVisible:
+    element:
+      id: "Edit attributes"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# IDEMPOTENT EXPAND at variant-type level.
+- runFlow:
+    when:
+      visible:
+        id: "Edit attributes"
+    commands:
+      - tapOn:
+          id: "Edit attributes"
+      - assertVisible:
+          id: "Hide attributes"
+
+# The breadcrumb now includes "BaseAttr-{N}" as the leaf, confirming the
+# panel context has advanced to the child level.
+- assertVisible:
+    text: ".*›.*BaseAttr-${WORKER_INDEX || 0}.*"
