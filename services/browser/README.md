@@ -103,4 +103,11 @@ The project uses strict TypeScript settings with:
 - CommonJS modules
 - Source maps enabled
 - Declaration files generated
-- Strict type checking 
+- Strict type checking
+
+## Deployment
+
+This service deploys to Cloud Run from the consolidated monorepo
+(`neonbinder/neonbinder`) via `.github/workflows/browser.yml`. As of the NEO-18
+cutover (2026-06-27), the monorepo is the sole deploy source of truth for the
+browser service; the standalone `neonbinder_browser` repo is retired.
