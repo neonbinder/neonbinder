@@ -1,0 +1,28 @@
+name: CodeQL
+
+# Static security analysis across the whole monorepo (apps/web + services/browser).
+# CodeQL auto-detects the JS/TS sources; no build needed for the interpreted set.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 8 * * 1" # Mondays 08:00 UTC — catch advisories on unchanged code
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+
+      - uses: github/codeql-action/analyze@v3
