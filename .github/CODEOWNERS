@@ -1,0 +1,21 @@
+# CODEOWNERS — auto-requests review on security-sensitive surfaces.
+#
+# NOTE: review is currently ADVISORY. The `main` ruleset requires 0 approvals,
+# and a solo maintainer cannot approve their own PR, so we do not gate merges on
+# code-owner review (that would wedge the workflow). These entries exist to flag
+# changes to credential / secret / CI / deploy code for extra scrutiny, and are
+# ready to become blocking if/when a second maintainer is added.
+
+# Default owner for everything in the repo
+*                                                    @neonbinder
+
+# CI / deploy pipeline (workflows + composite actions)
+/.github/                                            @neonbinder
+/apps/web/.github/                                   @neonbinder
+
+# Credential proxy + marketplace-adapter security boundary (Convex side)
+/apps/web/convex/credentials.ts                      @neonbinder
+/apps/web/convex/adapters/                           @neonbinder
+
+# Google Secret Manager access (browser service)
+/services/browser/src/services/secrets-manager.ts    @neonbinder

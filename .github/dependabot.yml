@@ -1,0 +1,33 @@
+version: 2
+updates:
+  # GitHub Actions — workflows + the maestro-runner composite action.
+  # Keeps SHA-pinned actions current (Dependabot rewrites the pin + version comment).
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/apps/web/.github/actions/maestro-runner"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # Web app (Vite SPA + Convex backend)
+  - package-ecosystem: npm
+    directory: "/apps/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      web-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Browser automation service (Puppeteer + Express)
+  - package-ecosystem: npm
+    directory: "/services/browser"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      browser-minor-patch:
+        update-types: ["minor", "patch"]
