@@ -142,6 +142,16 @@ export default function ProfilePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSite, hasStoredCredentials]);
 
+  // Escape closes the clear-confirm modal (keyboard parity with the Cancel button).
+  useEffect(() => {
+    if (!confirmingClear) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !credsBusy) setConfirmingClear(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmingClear, credsBusy]);
+
   const handleSaveCredentials = async () => {
     if (!username || !password) {
       setMessage("Please enter both username and password to save.");
@@ -875,25 +885,40 @@ export default function ProfilePage() {
               </>
             )}
             {confirmingClear && (
-              <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-md">
-                <p className="text-amber-800 dark:text-amber-200 font-medium mb-3">
-                  Are you sure you want to clear your {siteMeta?.label} credentials?
-                </p>
-                <div className="flex gap-3">
-                  <NeonButton
-                    onClick={handleConfirmClear}
-                    disabled={credsBusy}
-                    className="bg-red-600 hover:bg-red-700"
-                  >
-                    {isLoading ? "Clearing..." : "Yes, Clear"}
-                  </NeonButton>
-                  <NeonButton
-                    onClick={() => setConfirmingClear(false)}
-                    disabled={credsBusy}
-                    className="bg-slate-600 hover:bg-slate-700"
-                  >
-                    Cancel
-                  </NeonButton>
+              // Centered modal overlay (not inline): a destructive confirm
+              // belongs in a modal, and rendering it fixed/centered keeps it out
+              // of the sticky-header occlusion band that was stealing the
+              // "Yes, Clear" tap when the panel scrolled near the top (NEO-39).
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                role="dialog"
+                aria-modal="true"
+                aria-label={`Clear ${siteMeta?.label} credentials`}
+                onClick={() => !credsBusy && setConfirmingClear(false)}
+              >
+                <div
+                  className="w-full max-w-md p-6 bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800 rounded-lg shadow-xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <p className="text-amber-800 dark:text-amber-200 font-medium mb-4">
+                    Are you sure you want to clear your {siteMeta?.label} credentials?
+                  </p>
+                  <div className="flex gap-3">
+                    <NeonButton
+                      onClick={handleConfirmClear}
+                      disabled={credsBusy}
+                      className="bg-red-600 hover:bg-red-700"
+                    >
+                      {isLoading ? "Clearing..." : "Yes, Clear"}
+                    </NeonButton>
+                    <NeonButton
+                      onClick={() => setConfirmingClear(false)}
+                      disabled={credsBusy}
+                      className="bg-slate-600 hover:bg-slate-700"
+                    >
+                      Cancel
+                    </NeonButton>
+                  </div>
                 </div>
               </div>
             )}

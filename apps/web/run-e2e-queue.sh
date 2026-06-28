@@ -162,11 +162,13 @@ ARGS_BASE=(--platform web --config "$CONFIG" -e "APP_URL=$APP_URL" -e "WORKER_IN
 if [ "${MAESTRO_HEADLESS:-1}" != "0" ]; then ARGS_BASE+=(--headless); fi
 
 # run_flow <flow> → echoes PASS|FAIL ; writes per-flow junit + debug.
-# NEO-39 DIAGNOSTIC (temporary): retry OFF (MAESTRO_FLOW_RETRIES:-1) so a
-# FIRST-attempt failure preserves its debug log + screenshot instead of being
-# overwritten by a passing retry. This run is EXPECTED RED — it's forensics to
-# capture credentials-lifecycle's attempt-1 failure. Revert / fold into the
-# scoped-retry work before any real merge.
+# NEO-39: per-flow retry is OFF (MAESTRO_FLOW_RETRIES:-1). The blanket retry was
+# masking real flow instability — a first-attempt failure that passed on re-run
+# still went green. Forensics traced the sole remaining attempt-1 flake to
+# credentials-lifecycle's clear-confirm being stolen by the sticky header; that
+# confirm is now a centered modal, so the suite should pass on the FIRST attempt
+# (the definition-of-done). Set MAESTRO_FLOW_RETRIES=2+ only to triage a genuine
+# Maestro/JVM infra crash.
 run_flow() {
   local flow="$1"
   local slug; slug=$(echo "$flow" | sed -e 's|^\.maestro/flows/||' -e 's|/|_|g' -e 's|\.yaml$||')
