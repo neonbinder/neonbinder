@@ -97,7 +97,7 @@ runs:
 
     - name: Cache Maestro CLI
       id: maestro-cache
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         # Maestro installs into ~/.maestro (bin + bundled lib). Key on the pinned
         # version so a bump invalidates automatically (NEO-62 — saves the ~30s
@@ -105,12 +105,12 @@ runs:
         path: ~/.maestro
         key: maestro-${{ runner.os }}-${{ steps.pins.outputs.maestro }}
 
-    - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+    - uses: actions/setup-java@1bcf9fb12cf4aa7d266a90ae39939e61372fe520 # v5.4.0
       with:
         distribution: temurin
         java-version: ${{ steps.pins.outputs.java }}
 
-    - uses: browser-actions/setup-chrome@c785b87e244131f27c9f19c1a33e2ead956ab7ce # v1.7.3
+    - uses: browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd # v2.1.2
 
     - name: Start Xvfb
       shell: bash
