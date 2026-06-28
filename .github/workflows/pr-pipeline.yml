@@ -47,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -54,6 +55,8 @@ jobs:
         id: filter
         with:
           filters: |
+            web:
+              - 'apps/web/**'
             browser:
               - 'services/browser/**'
 
@@ -220,3 +223,121 @@ jobs:
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
+
+  # --- Pre-merge area CI -----------------------------------------------------
+  # Inlined here (the only all-PR workflow) so they run + skip per changed area
+  # and can be gated by the always-running `ci-gate` below. web-ci.yml was
+  # removed in favor of web-lint/web-unit. browser.yml's own `test` job is left
+  # intact (it gates the push-to-main deploy lane, which this PR-only workflow
+  # can't cover), so on a services/browser PR the browser build+test runs in
+  # both places — ~1-2 min parallel, no shared state, harmless.
+  web-lint:
+    name: ESLint (apps/web)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+
+  web-unit:
+    name: Unit & component tests (vitest, apps/web)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    env:
+      HUSKY: 0
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run test:unit
+
+  # Mirror of browser.yml `test` (kept in sync intentionally — see note above).
+  browser-test:
+    name: Browser build + unit tests
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/browser
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: services/browser/.nvmrc
+          cache: npm
+          cache-dependency-path: services/browser/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  # Single stable aggregator REQUIRED by the main ruleset. MUST stay in this
+  # all-PR workflow (no `paths:` trigger) with `if: always()` so its check
+  # registers on EVERY PR — including docs-only PRs where every gated job
+  # skips. Adding a `paths:` filter or dropping `always()` re-introduces the
+  # "required check never registers" wedge that blocks out-of-area PRs.
+  # Verdict: `changes` + `e2e` MUST succeed; area/wiring jobs pass on
+  # success OR skipped (out-of-area); any failure/cancelled fails.
+  ci-gate:
+    name: CI Gate
+    needs: [changes, web-lint, web-unit, browser-test, wire-browser-url, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Aggregate required-check verdict
+        env:
+          R_CHANGES: ${{ needs.changes.result }}
+          R_WEB_LINT: ${{ needs.web-lint.result }}
+          R_WEB_UNIT: ${{ needs.web-unit.result }}
+          R_BROWSER_TEST: ${{ needs.browser-test.result }}
+          R_WIRE: ${{ needs.wire-browser-url.result }}
+          R_E2E: ${{ needs.e2e.result }}
+        run: |
+          set -euo pipefail
+          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST wire-browser-url=$R_WIRE e2e=$R_E2E"
+          fail=0
+          # changes + e2e must SUCCEED (skipped => gate unreliable / E2E didn't run)
+          [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
+          [ "$R_E2E" = "success" ]     || { echo "::error::e2e=$R_E2E (must succeed)"; fail=1; }
+          # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
+          for kv in "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "wire-browser-url=$R_WIRE"; do
+            r="${kv#*=}"
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::${kv%%=*}=$r"; fail=1 ;;
+            esac
+          done
+          [ "$fail" = "0" ] || { echo "CI Gate: FAIL"; exit 1; }
+          echo "CI Gate: PASS — in-scope checks green, out-of-scope skipped."
