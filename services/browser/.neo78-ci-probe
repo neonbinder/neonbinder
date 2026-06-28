@@ -1,0 +1,2 @@
+# Temporary NEO-78 CI-validation probe — forces the services/browser change
+# filter so browser-test + wire-browser-url + ci-gate run. Removed before merge.

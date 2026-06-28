@@ -1,0 +1,2 @@
+# Temporary NEO-78 CI-validation probe — forces the apps/web change filter
+# so web-lint + web-unit + ci-gate run on the introducing PR. Removed before merge.
