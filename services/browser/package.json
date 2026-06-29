@@ -30,5 +30,9 @@
     "dotenv-cli": "^11.0.0",
     "ts-node": "^10.9.1",
     "typescript": "^5.3.2"
+  },
+  "overrides": {
+    "ws": "^8.21.0",
+    "js-yaml": "^4.3.0"
   }
 }
