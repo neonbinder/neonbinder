@@ -161,14 +161,20 @@ export MAESTRO_OPTS="-Duser.home=$PWD/$REPORT_DIR/maestro-home"
 ARGS_BASE=(--platform web --config "$CONFIG" -e "APP_URL=$APP_URL" -e "WORKER_INDEX=$WORKER_INDEX")
 if [ "${MAESTRO_HEADLESS:-1}" != "0" ]; then ARGS_BASE+=(--headless); fi
 
-# run_flow <flow> → echoes PASS|FAIL ; writes per-flow junit + debug; 1 retry on
-# non-timeout failure (the same infra-flake mitigation as run-e2e-smoke.sh).
+# run_flow <flow> → echoes PASS|FAIL ; writes per-flow junit + debug.
+# NEO-39: per-flow retry is OFF (MAESTRO_FLOW_RETRIES:-1). The blanket retry was
+# masking real flow instability — a first-attempt failure that passed on re-run
+# still went green. Forensics traced the sole remaining attempt-1 flake to
+# credentials-lifecycle's clear-confirm being stolen by the sticky header; that
+# confirm is now a centered modal, so the suite should pass on the FIRST attempt
+# (the definition-of-done). Set MAESTRO_FLOW_RETRIES=2+ only to triage a genuine
+# Maestro/JVM infra crash.
 run_flow() {
   local flow="$1"
   local slug; slug=$(echo "$flow" | sed -e 's|^\.maestro/flows/||' -e 's|/|_|g' -e 's|\.yaml$||')
   local report_args=(--format JUNIT --output "$REPORT_DIR/junit/$slug.xml" --test-suite-name "$slug"
     --test-output-dir "$REPORT_DIR/artifacts/$slug" --debug-output "$REPORT_DIR/debug/$slug" --flatten-debug-output)
-  local exit_code attempt=1 max_attempts="${MAESTRO_FLOW_RETRIES:-2}"
+  local exit_code attempt=1 max_attempts="${MAESTRO_FLOW_RETRIES:-1}"
   while [ "$attempt" -le "$max_attempts" ]; do
     exit_code=0
     [ "$attempt" -gt 1 ] && echo "↻ [$RUNNER_ID] retry $attempt: $flow" >> "$LOG"

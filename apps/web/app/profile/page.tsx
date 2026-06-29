@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useAction, useQuery } from "convex/react";
 import { useFeatureFlagEnabled } from "posthog-js/react";
 import { api } from "../../convex/_generated/api";
@@ -27,6 +27,11 @@ export default function ProfilePage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
+
+  // Refs for clear-confirm modal focus management (2.4.3 Focus Order, 2.1.1 Keyboard)
+  const clearTriggerRef = useRef<HTMLElement | null>(null);
+  const clearCancelButtonRef = useRef<HTMLButtonElement>(null);
+  const clearDialogRef = useRef<HTMLDivElement>(null);
 
   // Prize Pool state
   const [newPrizeName, setNewPrizeName] = useState("");
@@ -142,6 +147,32 @@ export default function ProfilePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSite, hasStoredCredentials]);
 
+  // Escape closes the clear-confirm modal (keyboard parity with the Cancel button).
+  useEffect(() => {
+    if (!confirmingClear) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !credsBusy) setConfirmingClear(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmingClear, credsBusy]);
+
+  // Focus management for the clear-confirm modal: move focus into the Cancel button
+  // on open (safe default for a destructive dialog), and return focus to the trigger
+  // on close. WCAG 2.4.3 Focus Order requires focus to enter a dialog when it opens
+  // and return to the invoking element when it closes.
+  useEffect(() => {
+    if (confirmingClear) {
+      // rAF defers until after the browser has painted the dialog, avoiding a
+      // VoiceOver timing edge case where focus lands before the node is visible.
+      const raf = requestAnimationFrame(() => clearCancelButtonRef.current?.focus());
+      return () => cancelAnimationFrame(raf);
+    } else {
+      clearTriggerRef.current?.focus();
+      clearTriggerRef.current = null;
+    }
+  }, [confirmingClear]);
+
   const handleSaveCredentials = async () => {
     if (!username || !password) {
       setMessage("Please enter both username and password to save.");
@@ -237,7 +268,33 @@ export default function ProfilePage() {
   };
 
   const handleClearCredentials = () => {
+    // Capture the trigger before opening so focus can be returned on close (WCAG 2.4.3).
+    clearTriggerRef.current = document.activeElement as HTMLElement;
     setConfirmingClear(true);
+  };
+
+  // Focus trap for the clear-confirm modal. While the dialog is open, Tab and
+  // Shift+Tab must cycle only within the dialog's focusable elements (WCAG 2.1.1,
+  // WAI-ARIA Dialog Pattern).
+  const handleClearModalKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== "Tab") return;
+    const dialog = clearDialogRef.current;
+    if (!dialog) return;
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   };
 
   const handleConfirmClear = async () => {
@@ -875,25 +932,45 @@ export default function ProfilePage() {
               </>
             )}
             {confirmingClear && (
-              <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-md">
-                <p className="text-amber-800 dark:text-amber-200 font-medium mb-3">
-                  Are you sure you want to clear your {siteMeta?.label} credentials?
-                </p>
-                <div className="flex gap-3">
-                  <NeonButton
-                    onClick={handleConfirmClear}
-                    disabled={credsBusy}
-                    className="bg-red-600 hover:bg-red-700"
+              // Centered modal overlay (not inline): a destructive confirm
+              // belongs in a modal, and rendering it fixed/centered keeps it out
+              // of the sticky-header occlusion band that was stealing the
+              // "Yes, Clear" tap when the panel scrolled near the top (NEO-39).
+              <div
+                ref={clearDialogRef}
+                className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="clear-confirm-title"
+                onClick={() => !credsBusy && setConfirmingClear(false)}
+                onKeyDown={handleClearModalKeyDown}
+              >
+                <div
+                  className="w-full max-w-md p-6 bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-800 rounded-lg shadow-xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <p
+                    id="clear-confirm-title"
+                    className="text-amber-800 dark:text-amber-200 font-medium mb-4"
                   >
-                    {isLoading ? "Clearing..." : "Yes, Clear"}
-                  </NeonButton>
-                  <NeonButton
-                    onClick={() => setConfirmingClear(false)}
-                    disabled={credsBusy}
-                    className="bg-slate-600 hover:bg-slate-700"
-                  >
-                    Cancel
-                  </NeonButton>
+                    Are you sure you want to clear your {siteMeta?.label} credentials?
+                  </p>
+                  <div className="flex gap-3">
+                    <NeonButton
+                      cancel
+                      onClick={handleConfirmClear}
+                      disabled={credsBusy}
+                    >
+                      {isLoading ? "Clearing..." : "Yes, Clear"}
+                    </NeonButton>
+                    <NeonButton
+                      ref={clearCancelButtonRef}
+                      onClick={() => setConfirmingClear(false)}
+                      disabled={credsBusy}
+                    >
+                      Cancel
+                    </NeonButton>
+                  </div>
                 </div>
               </div>
             )}
