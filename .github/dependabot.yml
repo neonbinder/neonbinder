@@ -2,6 +2,10 @@ version: 2
 updates:
   # GitHub Actions — workflows + the maestro-runner composite action.
   # Keeps SHA-pinned actions current (Dependabot rewrites the pin + version comment).
+  # Group ONLY minor/patch so a routine bump stays one low-risk PR; MAJOR bumps
+  # come as individual PRs (reviewed deliberately — e.g. setup-chrome/setup-java
+  # majors can break the maestro-runner, and one bad major shouldn't block the
+  # rest). A grouped all-versions bump previously broke E2E (closed PR #9).
   - package-ecosystem: github-actions
     directories:
       - "/"
@@ -10,7 +14,7 @@ updates:
       interval: weekly
     groups:
       github-actions:
-        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   # Web app (Vite SPA + Convex backend)
   - package-ecosystem: npm
