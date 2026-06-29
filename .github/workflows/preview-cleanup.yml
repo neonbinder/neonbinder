@@ -25,7 +25,7 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
 
-      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: Remove pr-<N> tag from dev Cloud Run service
         env:
