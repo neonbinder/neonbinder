@@ -4,6 +4,7 @@ FROM node:22
 # Install Chrome dependencies
 RUN apt-get update && apt-get install -y \
   wget \
+  unzip \
   ca-certificates \
   fonts-liberation \
   libappindicator3-1 \
