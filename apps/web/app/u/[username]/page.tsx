@@ -327,7 +327,7 @@ export default function PublicProfilePage() {
             <p className="text-xs text-slate-500">
               Powered by{" "}
               <Link
-                href="/"
+                to="/"
                 className="underline hover:text-slate-300 transition-colors"
               >
                 NeonBinder
