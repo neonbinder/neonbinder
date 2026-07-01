@@ -135,6 +135,15 @@ jobs:
           fi
           echo "Vercel preview URL: $url"
 
+          # Host allowlist: only send the Vercel bypass secret to a *.vercel.app
+          # host, so the secret can't be exfiltrated if the deployment record's
+          # URL were ever spoofed/misresolved to an arbitrary host.
+          host=$(printf '%s' "$url" | sed -E 's#^https?://([^/]+).*#\1#')
+          case "$host" in
+            *.vercel.app) : ;;
+            *) echo "Vercel preview host '$host' is not *.vercel.app — skipping cleanup"; exit 0 ;;
+          esac
+
           # Step 2: extract the Convex deployment name from the preview's HTML.
           # Vite injects VITE_CONVEX_URL as a <meta name="x-convex-url"> tag at
           # build time; the subdomain is the deployment name accepted by the API.
@@ -151,7 +160,28 @@ jobs:
           fi
           name="${cloud#https://}"
           name="${name%.convex.cloud}"
-          echo "Convex preview deployment to delete: $name"
+          echo "Convex preview deployment candidate: $name"
+
+          # SAFETY GUARD (defense in depth). $name is derived from the PR's own
+          # x-convex-url meta tag, which a write-access author (or a build
+          # misconfig that falls back to prod) could point at the production or
+          # dev deployment. The delete token is team-scoped, so an unguarded
+          # delete could wipe prod. Refuse the known shared deployments by name,
+          # then fail-closed unless the Management API confirms this is a preview.
+          case "$name" in
+            first-starfish-800|focused-fox-53)
+              echo "::error::refusing to delete non-preview deployment '$name'"; exit 0 ;;
+          esac
+          dtype=$(curl -s --max-time 15 \
+            -H "Authorization: Bearer $CONVEX_ACCESS_TOKEN" \
+            "https://api.convex.dev/v1/deployments/$name" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('deploymentType',''))" \
+            2>/dev/null || true)
+          if [ "$dtype" != "preview" ]; then
+            echo "::error::refusing to delete '$name' — deploymentType='$dtype' is not a confirmed 'preview' (fail-closed)"
+            exit 0
+          fi
+          echo "Confirmed '$name' is a preview deployment — proceeding to delete"
 
           # Step 3: delete via the Management API.
           # POST /deployments/{name}/delete — confirmed in api.convex.dev/v1/openapi.json.
