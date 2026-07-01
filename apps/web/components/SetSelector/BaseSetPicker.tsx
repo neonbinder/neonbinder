@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import NeonButton from "../modules/NeonButton";
 import type { PlatformItem } from "./ReconciliationModal";
 
@@ -183,7 +184,7 @@ export default function BaseSetPicker({
 
   if (!isOpen) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       onClick={onClose}
@@ -329,6 +330,7 @@ export default function BaseSetPicker({
           </NeonButton>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

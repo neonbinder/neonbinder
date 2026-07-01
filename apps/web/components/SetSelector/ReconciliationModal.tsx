@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useReducer, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   DndContext,
   DragOverlay,
@@ -825,7 +826,7 @@ export default function ReconciliationModal({
     state.unmatchedSl.length +
     keptCount;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       onClick={onClose}
@@ -1061,6 +1062,7 @@ export default function ReconciliationModal({
           </NeonButton>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
