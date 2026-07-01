@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery } from "convex/react";
 import {
   DndContext,
@@ -572,7 +573,7 @@ export default function ParallelGroupingModal({
     ? state.rows.get(activeDragId as RowId)?.value
     : null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       onClick={onClose}
@@ -739,6 +740,7 @@ export default function ParallelGroupingModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
