@@ -4,11 +4,27 @@ on:
   pull_request:
     types: [closed]
 
-# When a PR closes (merged or not), tear down its per-PR browser preview on the
-# dev Cloud Run service (browser.yml's deploy-preview stands it up). Removing the
-# `pr-<N>` tag stops the preview URL resolving and frees the tag slot; Cloud Run
-# then GCs the underlying no-traffic revision on its own. We also delete the
-# pushed `:pr-<N>` image so dev GCR storage doesn't accumulate dead preview tags.
+# When a PR closes (merged or not), tear down its per-PR previews:
+#
+#  1. cleanup            — browser preview on dev Cloud Run (browser.yml stands it
+#                          up). Removes the `pr-<N>` traffic tag and deletes the
+#                          `:pr-<N>` GCR image.
+#
+#  2. convex-preview-cleanup — deletes the Convex preview deployment that Vercel's
+#                          build created via CONVEX_PREVIEW_DEPLOY_KEY. Without
+#                          this, previews accumulate to the team quota (40 hard cap)
+#                          and block future PR builds with DeploymentQuotaReached.
+#                          Convex's CLI has no `delete` subcommand; we call the
+#                          Management REST API instead (confirmed in openapi.json:
+#                          POST /deployments/{name}/delete, Bearer Team Token auth).
+#                          Best-effort — a failure here never blocks a PR close.
+#
+#                          Requires repo secret CONVEX_ACCESS_TOKEN (Convex Team
+#                          Access Token, created in dashboard.convex.dev → Team
+#                          Settings → Access Tokens). The existing
+#                          CONVEX_PREVIEW_DEPLOY_KEY is deployment-scoped and NOT
+#                          accepted by the Management API delete endpoint.
+
 jobs:
   cleanup:
     if: |
@@ -54,3 +70,114 @@ jobs:
           # a PR close. The tag removal above is the load-bearing teardown.
           gcloud container images delete "$IMAGE" --force-delete-tags --quiet || \
             echo "image $IMAGE not deleted (absent or no delete permission) — ignoring"
+
+  convex-preview-cleanup:
+    # Delete the Convex preview deployment for this PR so it doesn't accumulate
+    # toward the 40-deployment team quota (DeploymentQuotaReached blocks builds).
+    #
+    # Strategy: resolve the Vercel preview URL from the GitHub Deployments API
+    # (same technique as pr-pipeline.yml's "Resolve Convex preview deployment
+    # name" step — Vercel keeps preview URLs live after PR close, so the lookup
+    # still works). Extract the Convex deployment name from the x-convex-url
+    # meta tag, then DELETE via the Management API.
+    #
+    # Every leg is best-effort: no Vercel deployment, no x-convex-url, or a 404
+    # from Convex (already GC'd) are all silent no-ops. Only truly unexpected
+    # errors (network failure, bad token) are logged; they still never fail the
+    # PR close (continue-on-error: true on the step).
+    if: |
+      github.base_ref == 'main'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: read  # needed to query GitHub Deployments API for Vercel preview URL
+
+    steps:
+      - name: Delete Convex preview deployment (best-effort)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          CONVEX_ACCESS_TOKEN: ${{ secrets.CONVEX_ACCESS_TOKEN }}
+        run: |
+          set -uo pipefail
+
+          # Guard: skip cleanly if the management token isn't provisioned yet.
+          # This lets the workflow land before the secret is added without
+          # hard-failing every PR close.
+          if [ -z "${CONVEX_ACCESS_TOKEN:-}" ]; then
+            echo "CONVEX_ACCESS_TOKEN not set — skipping Convex preview cleanup"
+            echo "(add the secret to enable automatic Convex preview GC)"
+            exit 0
+          fi
+
+          # Step 1: find the Vercel preview deployment record for this PR's SHA.
+          # Vercel keeps preview deployments live after PR close, so the GitHub
+          # Deployments API record (creator=vercel[bot]) is still queryable.
+          deployment_id=$(gh api \
+            "repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=100" \
+            --jq '[.[] | select(.creator.login == "vercel[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty' \
+            || true)
+          if [ -z "$deployment_id" ]; then
+            echo "No Vercel deployment record for SHA=$SHA — no Convex preview to clean up"
+            exit 0
+          fi
+
+          url=$(gh api \
+            "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+            --jq '[.[] | select(.state == "success")] | .[0] | (.environment_url // .target_url // empty)' \
+            || true)
+          if [ -z "$url" ]; then
+            echo "No successful Vercel deployment status found — no Convex preview to clean up"
+            exit 0
+          fi
+          echo "Vercel preview URL: $url"
+
+          # Step 2: extract the Convex deployment name from the preview's HTML.
+          # Vite injects VITE_CONVEX_URL as a <meta name="x-convex-url"> tag at
+          # build time; the subdomain is the deployment name accepted by the API.
+          html=$(curl -sS --max-time 15 \
+            -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" \
+            "$url/" || true)
+          cloud=$(printf '%s' "$html" \
+            | grep -oE 'name="x-convex-url" content="[^"]*"' \
+            | grep -oE 'https://[a-z0-9-]+\.convex\.cloud' \
+            | head -1 || true)
+          if [ -z "$cloud" ]; then
+            echo "Could not extract x-convex-url from Vercel preview — no Convex preview to clean up"
+            exit 0
+          fi
+          name="${cloud#https://}"
+          name="${name%.convex.cloud}"
+          echo "Convex preview deployment to delete: $name"
+
+          # Step 3: delete via the Management API.
+          # POST /deployments/{name}/delete — confirmed in api.convex.dev/v1/openapi.json.
+          # Auth: Bearer <Team Access Token> (PAT also accepted; deployment-scoped
+          # CONVEX_PREVIEW_DEPLOY_KEY is NOT — the Management API requires a
+          # broader token scope).
+          # 200 = deleted; 404 = already gone (GC'd or never created); both are fine.
+          status=$(curl -s \
+            -o /tmp/convex-delete-resp.txt \
+            -w '%{http_code}' \
+            --max-time 15 \
+            -X POST "https://api.convex.dev/v1/deployments/$name/delete" \
+            -H "Authorization: Bearer $CONVEX_ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data '{}' \
+            || echo "000")
+          body=$(cat /tmp/convex-delete-resp.txt 2>/dev/null || true)
+          echo "Convex Management API response: HTTP $status — $body"
+
+          case "$status" in
+            200)
+              echo "Convex preview deployment '$name' deleted successfully" ;;
+            404)
+              echo "Convex preview deployment '$name' not found (already GC'd or never created) — OK" ;;
+            000)
+              echo "Warning: curl failed (network error?) — logged, not failing PR close" ;;
+            *)
+              echo "Warning: unexpected HTTP $status from Convex delete API — logged, not failing PR close" ;;
+          esac
