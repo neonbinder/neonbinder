@@ -75,10 +75,13 @@ async function browserAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (!client) return headers;
   const authHeaders = await client.getRequestHeaders();
-  // google-auth-library returns Authorization (and sometimes x-goog-user-project)
-  for (const [k, v] of Object.entries(authHeaders)) {
-    if (typeof v === "string") headers[k] = v;
-  }
+  // google-auth-library v10 returns a web-standard Headers object (v9 returned a
+  // plain object); iterate its entries (keys lowercased, values strings) to copy
+  // Authorization (and sometimes x-goog-user-project) across. Object.entries()
+  // would yield [] on a Headers instance and silently drop the auth header.
+  authHeaders.forEach((value, key) => {
+    headers[key] = value;
+  });
   return headers;
 }
 
