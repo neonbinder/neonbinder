@@ -14,7 +14,7 @@ type Level =
   | "insert"
   | "parallel";
 
-type EntityColumnProps = {
+export type EntityColumnProps = {
   selector: ReactNode;
   renderForm: (onDone: () => void) => ReactNode;
   addButtonText: string;
@@ -40,6 +40,11 @@ type EntityColumnProps = {
   // match the legacy form heading the flows assert on (e.g. "Syncing Sport
   // Options"). Only used when useEnsureSync is true.
   syncingLabel?: string;
+  // NEO-83: reports the pure-read loading state (getSelectorOptions still
+  // undefined) up to the ResilientEntityColumn backstop, which re-subscribes a
+  // stalled column. Left undefined when this column is used bare (e.g. in
+  // tests) — the backstop is opt-in via the wrapper.
+  onLoadingChange?: (loading: boolean) => void;
 };
 
 export default function EntityColumn({
@@ -53,6 +58,7 @@ export default function EntityColumn({
   extraActions,
   useEnsureSync,
   syncingLabel,
+  onLoadingChange,
 }: EntityColumnProps) {
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
@@ -78,6 +84,19 @@ export default function EntityColumn({
     api.selectorOptions.getSelectorOptions,
     level ? { level, parentId } : "skip",
   );
+
+  // NEO-83: surface the pure-read loading state to the ResilientEntityColumn
+  // backstop. `items === undefined` is exactly the "Loading <level>…" gate in
+  // EntitySelector — both this column and its EntitySelector child subscribe to
+  // the SAME (level, parentId) getSelectorOptions token, which Convex dedupes
+  // into one reactive subscription, so this undefined mirrors the heading gate.
+  // It is disjoint from the marketplace "Syncing…" state (which has
+  // `items === []`, defined), so the backstop only ever fires on a genuine read
+  // stall, never during an in-flight marketplace fetch. No-op for a level-less
+  // column (query skipped → nothing to load).
+  useEffect(() => {
+    onLoadingChange?.(!!level && items === undefined);
+  }, [onLoadingChange, level, items]);
 
   // NEO-47 new-path hooks (active only when useEnsureSync). Reactive sync status
   // (null = idle) drives loading/error; ensureSelectorOptions is the one backend
