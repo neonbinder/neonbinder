@@ -127,8 +127,17 @@ tags:
     element:
       text: "Group Parallels"
     centerElement: true
-- tapOn: "Group Parallels"
-- assertVisible: ".*Drag inserts under a parent.*"
+# Scoped tap-verify-retap — CDP dropped-TRIGGER-tap class (cf. NEO-81 #4: a
+# trigger tap COMPLETES at the CDP layer but the app never registers the click,
+# so the modal never opens on an otherwise-healthy page). retry re-fires ONLY
+# this "Group Parallels" tap when its modal-open signal ("Drag inserts under a
+# parent") fails to appear. Happy path opens <1s so the assert passes on attempt
+# 1 (no re-tap, no double-open). Not a blanket assertion retry; no timeout bump.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Group Parallels"
+      - assertVisible: ".*Drag inserts under a parent.*"
 
 # The modal has an internal scroll container that Maestro CDP cannot scroll
 # (scrollUntilVisible sends to the page root, not the modal div). With
