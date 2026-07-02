@@ -66,11 +66,19 @@ tags:
     text: ".*Search years.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${YEAR || "2024"}
+# NEO-81: drop waitToSettleTimeoutMs:0 so Maestro's default settle re-enables
+# its dropped-tap retry (retryTapIfNoChange) on this filtered-list row select.
 - tapOn:
     text: ${YEAR || "2024"}
     below:
       id: "Search years"
-    waitToSettleTimeoutMs: 0
+# NEO-81 fail-loud: the "Search years" box disappears the instant the select
+# registers (column collapses — EntitySelector.tsx:87-104), so this resolves
+# fast on success but fails HERE ("Search years" still visible) on a dropped
+# tap — instead of the misleading downstream "Manufacturers not visible".
+- extendedWaitUntil:
+    notVisible:
+      id: "Search years"
 
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
 - extendedWaitUntil:
@@ -86,11 +94,18 @@ tags:
     text: ".*Search manufacturers.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${MANUFACTURER || "Topps"}
+# NEO-81: default settle re-enables Maestro's dropped-tap retry (see Years).
 - tapOn:
     text: ${MANUFACTURER || "Topps"}
     below:
       id: "Search manufacturers"
-    waitToSettleTimeoutMs: 0
+# NEO-81 fail-loud: "Search manufacturers" vanishes on a successful select, so
+# a dropped Topps tap fails HERE — not downstream as "Sets" not visible (the
+# original NEO-81 symptom: the Set column mounts only once the manufacturer
+# selection registers).
+- extendedWaitUntil:
+    notVisible:
+      id: "Search manufacturers"
 
 # ── SET ───────────────────────────────────────────────────────────────────────
 - extendedWaitUntil:
@@ -106,11 +121,16 @@ tags:
     text: ".*Search sets.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${SET || "Topps Chrome"}
+# NEO-81: default settle re-enables Maestro's dropped-tap retry (see Years).
 - tapOn:
     text: ${SET || "Topps Chrome"}
     below:
       id: "Search sets"
-    waitToSettleTimeoutMs: 0
+# NEO-81 fail-loud: "Search sets" vanishes on a successful select, so a dropped
+# set tap fails HERE instead of downstream at "Variant Types".
+- extendedWaitUntil:
+    notVisible:
+      id: "Search sets"
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
 # Variant Types column appears once the set row is selected.
