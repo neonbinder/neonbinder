@@ -1,5 +1,3 @@
-"use client";
-
 import type { GenericId } from "convex/values";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
@@ -23,7 +21,9 @@ import SetVariantForm from "../SetSelector/SetVariantForm";
 import VariantForm from "../SetSelector/VariantForm";
 import ParallelForm from "../SetSelector/ParallelForm";
 
-import EntityColumn from "../SetSelector/EntityColumn";
+// NEO-83: ResilientEntityColumn wraps EntityColumn with a stalled-read backstop
+// (auto re-subscribe + Retry) so a column never hangs forever on "Loading…".
+import ResilientEntityColumn from "../SetSelector/ResilientEntityColumn";
 import CardChecklist from "../SetSelector/CardChecklist";
 import BaseMappingForm from "../SetSelector/BaseMappingForm";
 import VariantMetadataEditor from "../SetSelector/VariantMetadataEditor";
@@ -254,7 +254,7 @@ export default function SetSelector() {
           custom-entry-survives-resync 8/8 CI failure, NEO root-cause. */}
       <div className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4">
         {/* 1. Sport (SL & BSC) */}
-        <EntityColumn
+        <ResilientEntityColumn
           selector={
             <SportSelector
               selectedSportId={selectedSportId}
@@ -273,7 +273,7 @@ export default function SetSelector() {
         />
 
         {/* 2. Year (SL & BSC) */}
-        <EntityColumn
+        <ResilientEntityColumn
           selector={
             <YearSelector
               sportId={selectedSportId!}
@@ -296,7 +296,7 @@ export default function SetSelector() {
         />
 
         {/* 3. Manufacturer (SL only) */}
-        <EntityColumn
+        <ResilientEntityColumn
           selector={
             <ManufacturerSelector
               yearId={selectedYearId!}
@@ -319,7 +319,7 @@ export default function SetSelector() {
         />
 
         {/* 4. Set (BSC only) */}
-        <EntityColumn
+        <ResilientEntityColumn
           selector={
             <SetSelectorComponent
               manufacturerId={selectedManufacturerId!}
@@ -345,7 +345,7 @@ export default function SetSelector() {
         />
 
         {/* 5. Variant Type (BSC only: Base, Insert, Parallel, Promo) */}
-        <EntityColumn
+        <ResilientEntityColumn
           selector={
             <SetVariantSelector
               setId={selectedSetId!}
@@ -370,7 +370,7 @@ export default function SetSelector() {
         {/* 6. Variant (reconciled BSC variantName + SL set list) — hidden
             when Base is selected (Base is terminal). */}
         {!isBaseVariantTypeSelected && (
-          <EntityColumn
+          <ResilientEntityColumn
             selector={
               <>
                 <VariantSelector
@@ -412,7 +412,7 @@ export default function SetSelector() {
 
         {/* 7. Variant of Variant (NB only — translates to variant on BSC/SL) */}
         {!isBaseVariantTypeSelected && selectedVariantId && (
-          <EntityColumn
+          <ResilientEntityColumn
             selector={
               <>
                 <ParallelSelector
