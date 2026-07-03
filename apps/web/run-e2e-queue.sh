@@ -174,7 +174,7 @@ run_flow() {
   local slug; slug=$(echo "$flow" | sed -e 's|^\.maestro/flows/||' -e 's|/|_|g' -e 's|\.yaml$||')
   local report_args=(--format JUNIT --output "$REPORT_DIR/junit/$slug.xml" --test-suite-name "$slug"
     --test-output-dir "$REPORT_DIR/artifacts/$slug" --debug-output "$REPORT_DIR/debug/$slug" --flatten-debug-output)
-  local exit_code attempt=1 max_attempts="${MAESTRO_FLOW_RETRIES:-1}"
+  local exit_code attempt=1 max_attempts="${MAESTRO_FLOW_RETRIES:-1}" crash_used=0
   while [ "$attempt" -le "$max_attempts" ]; do
     exit_code=0
     [ "$attempt" -gt 1 ] && echo "↻ [$RUNNER_ID] retry $attempt: $flow" >> "$LOG"
@@ -192,6 +192,23 @@ run_flow() {
     fi
     [ "$exit_code" -eq 0 ] && break
     { [ "$exit_code" -eq 124 ] || [ "$exit_code" -eq 137 ]; } && break  # don't retry timeouts
+    # CRASH-ONLY retry (NEO-81 iter6): the maestro-web CDP driver intermittently
+    # dies with a ClassCastException (null -> kotlin.Int, maestro issue #2944);
+    # the per-flow junit records <failure>Unknown error</failure>. That is an
+    # INFRA crash, not a test failure, and no IN-flow retry can catch it — the
+    # driver itself died (proven run 28656410552 r5: sets-base, 4s, crashed
+    # inside the opener retry). Grant ONE extra attempt. An ASSERTION failure
+    # ("Assertion is false" / "No visible element found") is a REAL bug and is
+    # NEVER retried — it must stay visible. Discriminator = the junit <failure>
+    # MESSAGE (status="ERROR" is set for BOTH crashes and assertions, so it is
+    # NOT usable; only the message text distinguishes them).
+    if [ "$attempt" -ge "$max_attempts" ] && [ "$crash_used" -eq 0 ] \
+       && grep -qE '<failure[^>]*>[[:space:]]*Unknown error' "$REPORT_DIR/junit/$slug.xml" 2>/dev/null \
+       && ! grep -qE 'Assertion is false|No visible element found' "$REPORT_DIR/junit/$slug.xml" 2>/dev/null; then
+      crash_used=1
+      max_attempts=$((max_attempts + 1))
+      echo "↻ [$RUNNER_ID] crash-retry (maestro-web CDP driver crash #2944; flaky-crash-retried): $flow" >> "$LOG"
+    fi
     attempt=$((attempt + 1))
   done
   if [ "$exit_code" -eq 0 ]; then echo "PASS $flow" >> "$RESULTS"; echo "passed"
