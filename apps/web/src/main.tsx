@@ -14,6 +14,7 @@ import * as Sentry from "@sentry/react";
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
 import BinderLayout from "@/src/layouts/binder-layout";
 import AdminLayout from "@/src/layouts/AdminLayout";
+import { initTapForensics } from "@/src/tap-forensics";
 
 // Pages
 import Home from "@/app/page";
@@ -38,6 +39,9 @@ import Collection from "@/app/collection/page";
 import Inventory from "@/app/inventory/page";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+
+// DIAGNOSTIC-ONLY: self-gates on `?tapForensics=1`; a no-op otherwise.
+initTapForensics();
 
 function ScrollToTop() {
   const { pathname } = useLocation();

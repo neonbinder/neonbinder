@@ -1,0 +1,118 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Tap forensics — instrumented drill to prove the CDP tap-drop mechanism"
+tags:
+  - set-selector
+  - tap-forensics
+---
+# DIAGNOSTIC-ONLY (NEO-81): instrumented drill on the UNFIXED base (no retry
+# fixes on this branch, so row-select taps still DROP — that is the point). The
+# app-side harness, gated on ?tapForensics=1, records every capture-phase
+# pointerdown/click with { tappedTarget, elementAtPoint, match } plus
+# EntitySelector render / items-changed events, into a hidden
+# <pre id="tap-forensics">. After EACH row-select tap we copyTextFrom that <pre>
+# BEFORE the next-level assertion — so on a DROP the trace is captured right after
+# the drop, and the downstream assertion failure snapshots the run log.
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# Re-navigate to /set-selector WITH the instrumentation flag. The sign-in redirect
+# can't carry the query param through, so a fresh load with ?tapForensics=1 turns
+# the harness ON (it self-gates on that param — zero impact everywhere else).
+- openLink: ${APP_URL || "http://localhost:3000"}/set-selector?tapForensics=1
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 20000
+# Confirm the harness mounted (the <pre> is present + readable in the a11y tree).
+- copyTextFrom:
+    id: "tap-forensics"
+
+# ── SPORT (direct tap) ──────────────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: "Baseball"
+- scrollUntilVisible:
+    element:
+      text: "Baseball"
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+- tapOn:
+    text: "Baseball"
+    waitToSettleTimeoutMs: 0
+
+# ── YEAR (search + row-select) ──────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: "Years"
+- extendedWaitUntil:
+    visible: ".*Search years.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Search years.*"
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+- tapOn:
+    text: ".*Search years.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "2024"
+- tapOn:
+    text: "2024"
+    below:
+      id: "Search years"
+    waitToSettleTimeoutMs: 0
+# CAPTURE right after the YEAR row-select, BEFORE the next-column assert. On a
+# dropped year tap, the trace here shows the drop and the next assert then fails.
+- copyTextFrom:
+    id: "tap-forensics"
+- evalScript: ${output.tf_year = maestro.copiedText}
+- extendedWaitUntil:
+    visible: "Manufacturers"
+
+# ── MANUFACTURER (search + row-select) ──────────────────────────────────────
+- extendedWaitUntil:
+    visible: ".*Search manufacturers.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Search manufacturers.*"
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+- tapOn:
+    text: ".*Search manufacturers.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Topps"
+- tapOn:
+    text: "Topps"
+    below:
+      id: "Search manufacturers"
+    waitToSettleTimeoutMs: 0
+- copyTextFrom:
+    id: "tap-forensics"
+- evalScript: ${output.tf_mfr = maestro.copiedText}
+- extendedWaitUntil:
+    visible: "Sets"
+
+# ── SET (search + row-select) ───────────────────────────────────────────────
+- extendedWaitUntil:
+    visible: ".*Search sets.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    centerElement: true
+    waitToSettleTimeoutMs: 0
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Topps Chrome"
+- tapOn:
+    text: "Topps Chrome"
+    below:
+      id: "Search sets"
+    waitToSettleTimeoutMs: 0
+- copyTextFrom:
+    id: "tap-forensics"
+- evalScript: ${output.tf_set = maestro.copiedText}
+# On a dropped SET tap, "Variant Types" never appears → this fails, snapshotting
+# the run log (which holds the copyTextFrom traces captured after each tap).
+- extendedWaitUntil:
+    visible: "Variant Types"

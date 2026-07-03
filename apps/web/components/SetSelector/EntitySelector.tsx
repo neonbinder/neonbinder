@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "convex/react";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
+import { recordEntitySelectorRender } from "@/src/tap-forensics";
 
 type SelectorItem = { _id: string; [key: string]: unknown };
 
@@ -53,6 +54,12 @@ export default function EntitySelector({
 }: EntitySelectorProps) {
   const items = useQuery(query, queryArgs);
   const [searchFilter, setSearchFilter] = useState("");
+
+  // DIAGNOSTIC-ONLY (gated behind ?tapForensics=1): runs after every render, is a
+  // cheap no-op when the flag is absent, and never triggers a re-render.
+  useEffect(() => {
+    recordEntitySelectorRender(title, items);
+  });
 
   const selected = items?.find(
     (item: SelectorItem) => item._id === selectedId,
