@@ -28,12 +28,16 @@ tags:
 # LAUNCH + SIGN IN
 # ============================================================
 
-- launchApp
-# Wait for sign-in redirect to complete and the Set Selector page to load.
-# Without this guard, execution proceeds before the Clerk session is
-# established, and util-drill's openLink: /set-selector is intercepted by
-# Clerk and bounced back to the sign-in page.
-- assertVisible: "Set Selector"
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      # Wait for sign-in redirect to complete and the Set Selector page to load.
+      # Without this guard, execution proceeds before the Clerk session is
+      # established, and util-drill's openLink: /set-selector is intercepted by
+      # Clerk and bounced back to the sign-in page.
+      - assertVisible: "Set Selector"
 
 # ============================================================
 # DRILL TO BASE VARIANT + CONFIRM BASESET PICKER

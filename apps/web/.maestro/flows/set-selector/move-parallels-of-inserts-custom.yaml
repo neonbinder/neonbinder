@@ -39,8 +39,12 @@ tags:
 # (a fully custom subtree — every column's sync short-circuits, no live BSC/SL).
 # Every wait is the 7s default; the util owns the cold custom-subtree drill.
 
-- launchApp
-- assertVisible: "Set Selector"
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - assertVisible: "Set Selector"
 
 # The runner injects ATTEMPT_ID. This evalScript provides a fallback for standalone
 # runs where the runner is not involved. output.ATTEMPT_ID is only set if unset.

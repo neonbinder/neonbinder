@@ -52,15 +52,19 @@ tags:
 # PREREQUISITE: cascade setup.yaml must have run (requires:setup-done) so
 # Baseball, 2024, and Topps all exist in the shared Convex DB.
 
-- launchApp
-# Wait for the Clerk testing-token sign-in + redirect to /set-selector to
-# fully complete before calling the util. The util issues its own openLink
-# /set-selector which only works within an already-authenticated session.
-# Without this wait the openLink fires before Clerk finishes the token
-# exchange and the browser is redirected back to the sign-in page.
-- extendedWaitUntil:
-    visible: "Set Selector"
-    timeout: 45000
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      # Wait for the Clerk testing-token sign-in + redirect to /set-selector to
+      # fully complete before calling the util. The util issues its own openLink
+      # /set-selector which only works within an already-authenticated session.
+      # Without this wait the openLink fires before Clerk finishes the token
+      # exchange and the browser is redirected back to the sign-in page.
+      - extendedWaitUntil:
+          visible: "Set Selector"
+          timeout: 45000
 
 # ============================================================
 # STEP 0 — DRILL TO PER-WORKER CUSTOM SET under Baseball/2024/Topps

@@ -54,9 +54,13 @@ tags:
 # LAUNCH + SIGN IN
 # ============================================================
 
-- launchApp
-- extendedWaitUntil:
-    visible: "Set Selector"
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible: "Set Selector"
 
 # ============================================================
 # DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD

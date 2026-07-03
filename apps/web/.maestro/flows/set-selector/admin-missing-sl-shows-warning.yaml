@@ -16,10 +16,14 @@ tags:
 # BSC seed does a real login; allow up to ~18s for the seed step to complete.
 
 # Step 1: open /set-selector as admin-bsc-only (nothing seeded yet — don't assert gate here)
-- launchApp
-- extendedWaitUntil:
-    visible: "Set Builder"
-    timeout: 45000
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible: "Set Builder"
+          timeout: 45000
 
 # Step 2: seed ONLY BuySportsCards (real login, up to ~18s) then redirect back to /set-selector
 - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=buysportscards&redirect=/set-selector

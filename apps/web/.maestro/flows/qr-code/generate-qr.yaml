@@ -24,8 +24,12 @@ tags:
   - qr-code
 ---
 # Step 1: land on the freshly-reset /profile page.
-- launchApp
-- assertVisible: "Profile Settings"
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - assertVisible: "Profile Settings"
 
 # Step 2: fill + save this run's public profile (username/display + payments) via
 # the shared util — runs in this session, returns after "Profile saved." (R3:

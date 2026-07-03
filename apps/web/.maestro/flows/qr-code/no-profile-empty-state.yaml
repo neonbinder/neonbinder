@@ -22,11 +22,15 @@ tags:
   - qr-code
 ---
 # Step 1: open the app at the signed-in, freshly-reset /qr-code route.
-- launchApp
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
 
-# Step 2: with no saved profile, the page shows the empty-state copy verbatim.
-# (No "QR Code Generator" form here — the null-profile branch renders instead.)
-- assertVisible: "Set up your public profile first to generate sale QR codes."
+      # Step 2: with no saved profile, the page shows the empty-state copy verbatim.
+      # (No "QR Code Generator" form here — the null-profile branch renders instead.)
+      - assertVisible: "Set up your public profile first to generate sale QR codes."
 
 # Step 3: and offers the Go to Profile CTA (links to /profile). Asserting it
 # renders is the feature; we do NOT tap it (plain <a> nav — out of scope, and

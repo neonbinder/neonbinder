@@ -8,8 +8,12 @@ tags:
 # fallback caused "Username already taken" when a prior run's account still
 # owned the shared name.
 ---
-- launchApp
-- assertVisible: "Profile Settings"
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - assertVisible: "Profile Settings"
 
 # Basic Info — tap label to focus, then type.
 # Skips eraseText: account=new-profile guarantees empty fields, saving ~13 erase

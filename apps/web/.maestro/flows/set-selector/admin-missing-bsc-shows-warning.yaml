@@ -15,10 +15,14 @@ tags:
 # No clear, no restore, no reset — the account starts and ends with SL-only.
 
 # Step 1: open /set-selector as admin-sl-only (nothing seeded yet — don't assert gate here)
-- launchApp
-- extendedWaitUntil:
-    visible: "Set Builder"
-    timeout: 45000
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible: "Set Builder"
+          timeout: 45000
 
 # Step 2: seed ONLY SportLots (~3s HTTP call) then redirect back to /set-selector
 - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/set-selector

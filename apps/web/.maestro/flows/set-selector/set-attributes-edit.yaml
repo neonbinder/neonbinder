@@ -50,16 +50,20 @@ tags:
 #   E. Re-expand panel → assert "Hide attributes" visible
 #   F. Drill into custom variant type → assert breadcrumb updates to child scope
 
-- launchApp
-# Wait for the async testing-sign-in (Clerk auth + rate-limit retry backoff on
-# the Nth concurrent sign-in) to finish and auto-redirect to /set-selector
-# BEFORE drilling. Without this guard, util-drill's openLink: /set-selector
-# races the in-flight sign-in and is bounced to /signin — which failed this
-# flow deterministically at parallelism>1 (3rd rapid sign-in per account →
-# rate-limit backoff). 45s covers the full backoff; matches team-picker's gate.
-- extendedWaitUntil:
-    visible: "Set Selector"
-    timeout: 45000
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      # Wait for the async testing-sign-in (Clerk auth + rate-limit retry backoff on
+      # the Nth concurrent sign-in) to finish and auto-redirect to /set-selector
+      # BEFORE drilling. Without this guard, util-drill's openLink: /set-selector
+      # races the in-flight sign-in and is bounced to /signin — which failed this
+      # flow deterministically at parallelism>1 (3rd rapid sign-in per account →
+      # rate-limit backoff). 45s covers the full backoff; matches team-picker's gate.
+      - extendedWaitUntil:
+          visible: "Set Selector"
+          timeout: 45000
 - runFlow:
     file: util-drill-to-custom.yaml
     env:

@@ -25,8 +25,12 @@ tags:
 # Every wait below is the 7s default; the util owns the cold custom-subtree
 # drill and its sync-tolerant waits.
 
-- launchApp
-- assertVisible: "Set Selector"
+# NEO-81 iter5: re-drive the sign-in opener if the landing heading didn't render — the Clerk->Convex auth handshake can stall past the wait under concurrent Phase-0 sign-in (proven: worker-bootstrap run 28647629347, set-attributes-edit run 28651468095). Idempotent (reset/seed redirects are idempotent); no timeout bump; re-drives ONLY on a missed heading.
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - assertVisible: "Set Selector"
 
 # Drill to a per-flow custom set and land on its Parallels column (idle, with
 # the "Add custom Parallels" button scrolled into view).
