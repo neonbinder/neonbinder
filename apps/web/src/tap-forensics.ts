@@ -50,9 +50,23 @@ type ItemsChangedEntry = {
   t: number;
   kind: "items-changed";
   title: string;
+  // Detail added to distinguish a gratuitous new-reference re-render (identical
+  // content, missing memoization → fix = stabilize the list) from a REAL data
+  // change (content/order differs → something mutated the data).
+  prevLen: number;
+  newLen: number;
+  sameContent: boolean;
+  sameRef: false;
 };
 
-type TapEntry = TapEventEntry | RenderEntry | ItemsChangedEntry;
+type ReflowEntry = {
+  t: number;
+  kind: "reflow";
+  node: string;
+  note: string;
+};
+
+type TapEntry = TapEventEntry | RenderEntry | ItemsChangedEntry | ReflowEntry;
 
 declare global {
   interface Window {
@@ -70,6 +84,14 @@ const RECENT_LINES = 28;
 let panelNode: HTMLPreElement | null = null;
 /** Previous `items` reference per EntitySelector title (reference identity). */
 const prevItemsByTitle = new Map<string, unknown>();
+
+/** Reflow watcher: the currently-observed columns-region node + its observer. */
+let reflowRegion: Element | null = null;
+let reflowObserver: ResizeObserver | null = null;
+/** Last recorded content-box size, to emit `AxB->CxD` deltas and skip no-ops. */
+let reflowPrev: { w: number; h: number } | null = null;
+/** requestAnimationFrame coalescing flag so a resize burst emits ≤1 entry/frame. */
+let reflowRafScheduled = false;
 
 function isEnabled(): boolean {
   // GLOBAL for this diagnostic branch; revert to the `?tapForensics=1` URL gate
@@ -115,11 +137,26 @@ function matchKind(target: EventTarget | null, atPoint: Element | null): string 
 /** Compact one-line summary of an entry for the visible panel. */
 function formatEntry(e: TapEntry): string {
   if ("kind" in e) {
-    return e.kind === "render"
-      ? `${e.t} render ${e.title} n=${e.itemsLen}`
-      : `${e.t} items-changed ${e.title}`;
+    switch (e.kind) {
+      case "render":
+        return `${e.t} render ${e.title} n=${e.itemsLen}`;
+      case "items-changed":
+        return `${e.t} items-changed ${e.title} ${e.prevLen}->${e.newLen} sameContent=${e.sameContent}`;
+      case "reflow":
+        return `${e.t} reflow ${e.node} ${e.note}`;
+    }
   }
   return `${e.t} ${e.type} (${e.x},${e.y}) tap=${e.tappedTarget} at=${e.elementAtPoint} ${e.match}`;
+}
+
+/** Extract `_id` strings from an unknown value if it's an array of {_id}. */
+function idsOf(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.map((x) =>
+    x && typeof x === "object" && "_id" in x
+      ? String((x as { _id: unknown })._id)
+      : "",
+  );
 }
 
 /**
@@ -169,6 +206,60 @@ function handleTapEvent(e: Event): void {
 }
 
 /**
+ * Coalesced ResizeObserver callback: reads the region's current content box on
+ * the next animation frame and pushes ONE compact `reflow` entry per real size
+ * change (skips no-op fires). This lets us see a layout reflow land inside the
+ * tap window relative to the click.
+ */
+function handleReflow(): void {
+  if (reflowRafScheduled) return;
+  reflowRafScheduled = true;
+  requestAnimationFrame(() => {
+    reflowRafScheduled = false;
+    if (!reflowRegion) return;
+    const r = reflowRegion.getBoundingClientRect();
+    const w = Math.round(r.width);
+    const h = Math.round(r.height);
+    const prev = reflowPrev;
+    if (prev && prev.w === w && prev.h === h) return;
+    const note = prev ? `${prev.w}x${prev.h}->${w}x${h}` : `${w}x${h}`;
+    reflowPrev = { w, h };
+    push({
+      t: Math.round(performance.now()),
+      kind: "reflow",
+      node: "columns-region",
+      note,
+    });
+  });
+}
+
+/**
+ * Watch the set-selector columns row for reflow. The region only exists on
+ * /set-selector and (re)mounts across SPA navigation, so we poll cheaply (one
+ * attribute querySelector every 500ms): (re)attach the observer when the region
+ * appears / is replaced, and detach when it's gone. No-op elsewhere.
+ */
+function startReflowWatcher(): void {
+  const REGION_SELECTOR = "[data-tap-forensics-region]";
+  const sync = (): void => {
+    const el = document.querySelector(REGION_SELECTOR);
+    if (el === reflowRegion) return; // already in the right state (incl. both null)
+    reflowObserver?.disconnect();
+    reflowObserver = null;
+    reflowRegion = el;
+    reflowPrev = null;
+    if (el) {
+      reflowObserver = new ResizeObserver(handleReflow);
+      reflowObserver.observe(el);
+    }
+  };
+  sync();
+  // Kept alive intentionally to handle SPA (re)mounts; the work is one cheap
+  // attribute query per tick and only touches the DOM when the region changes.
+  window.setInterval(sync, 500);
+}
+
+/**
  * Initialize the instrumentation. Self-gates via isEnabled() (GLOBAL on this
  * branch). Idempotent — safe to call more than once.
  */
@@ -208,6 +299,8 @@ export function initTapForensics(): void {
     capture: true,
     passive: true,
   });
+
+  startReflowWatcher();
 }
 
 /**
@@ -223,7 +316,27 @@ export function recordEntitySelectorRender(title: string, items: unknown): void 
   const itemsLen = Array.isArray(items) ? items.length : items == null ? -1 : 0;
   push({ t, kind: "render", title, itemsLen });
   if (prevItemsByTitle.has(title) && prevItemsByTitle.get(title) !== items) {
-    push({ t, kind: "items-changed", title });
+    const prev = prevItemsByTitle.get(title);
+    const prevIds = idsOf(prev);
+    const newIds = idsOf(items);
+    const prevLen = prevIds ? prevIds.length : -1;
+    const newLen = newIds ? newIds.length : -1;
+    // sameContent: same set of _ids in the same ORDER. A new array reference with
+    // identical content == a gratuitous re-render (missing memoization).
+    const sameContent =
+      prevIds !== null &&
+      newIds !== null &&
+      prevIds.length === newIds.length &&
+      prevIds.every((id, i) => id === newIds[i]);
+    push({
+      t,
+      kind: "items-changed",
+      title,
+      prevLen,
+      newLen,
+      sameContent,
+      sameRef: false,
+    });
   }
   prevItemsByTitle.set(title, items);
 }
