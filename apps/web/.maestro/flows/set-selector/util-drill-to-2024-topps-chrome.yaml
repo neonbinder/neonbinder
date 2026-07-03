@@ -37,18 +37,20 @@ tags:
 # ── SPORT ─────────────────────────────────────────────────────────────────────
 # Baseball is seeded by setup.yaml and appears immediately — no search input at
 # this level. Scroll + center before tapping (footer-steal zone rule).
-# waitToSettleTimeoutMs: 0 — the subsequent extendedWaitUntil re-syncs; the
-# settle dead-wait is redundant here.
+# NEO-81 Class-A hardening: default settle (no waitToSettleTimeoutMs:0) lets the
+# just-scrolled list stop reconciling before the tap, and retryTapIfNoChange
+# re-fires a CDP tap the app didn't register (cross-worker reactive re-renders
+# widen that drop window at concurrency). The "Years" wait below is sport's
+# fail-loud signal — a dropped Baseball tap → no Years column.
 - extendedWaitUntil:
     visible: ${SPORT || "Baseball"}
 - scrollUntilVisible:
     element:
       text: ${SPORT || "Baseball"}
     centerElement: true
-    waitToSettleTimeoutMs: 0
 - tapOn:
     text: ${SPORT || "Baseball"}
-    waitToSettleTimeoutMs: 0
+    retryTapIfNoChange: true
 
 # ── YEAR ──────────────────────────────────────────────────────────────────────
 - extendedWaitUntil:
@@ -59,18 +61,24 @@ tags:
     element:
       text: ".*Search years.*"
     centerElement: true
-    waitToSettleTimeoutMs: 0
 # 250ms settle on the search-box tap — input needs to be focused before inputText
 # fires, and a 0ms settle can drop the first character on a reactive page.
 - tapOn:
     text: ".*Search years.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${YEAR || "2024"}
+# NEO-81 Class-A hardening: default settle + retryTapIfNoChange re-fires a
+# dropped row-select on this reactively-filtering list.
 - tapOn:
     text: ${YEAR || "2024"}
     below:
       id: "Search years"
-    waitToSettleTimeoutMs: 0
+    retryTapIfNoChange: true
+# NEO-81 fail-loud: the "Search years" box vanishes the instant the select
+# registers (column collapses) — so a dropped tap fails HERE, not downstream.
+- extendedWaitUntil:
+    notVisible:
+      id: "Search years"
 
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
 - extendedWaitUntil:
@@ -81,16 +89,21 @@ tags:
     element:
       text: ".*Search manufacturers.*"
     centerElement: true
-    waitToSettleTimeoutMs: 0
 - tapOn:
     text: ".*Search manufacturers.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${MANUFACTURER || "Topps"}
+# NEO-81 Class-A hardening: default settle + retryTapIfNoChange (see Years).
 - tapOn:
     text: ${MANUFACTURER || "Topps"}
     below:
       id: "Search manufacturers"
-    waitToSettleTimeoutMs: 0
+    retryTapIfNoChange: true
+# NEO-81 fail-loud: "Search manufacturers" vanishes on a registered select, so a
+# dropped Topps tap fails HERE — not downstream as "Sets" not visible.
+- extendedWaitUntil:
+    notVisible:
+      id: "Search manufacturers"
 
 # ── SET ───────────────────────────────────────────────────────────────────────
 - extendedWaitUntil:
@@ -101,16 +114,21 @@ tags:
     element:
       text: ".*Search sets.*"
     centerElement: true
-    waitToSettleTimeoutMs: 0
 - tapOn:
     text: ".*Search sets.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${SET || "Topps Chrome"}
+# NEO-81 Class-A hardening: default settle + retryTapIfNoChange (see Years).
 - tapOn:
     text: ${SET || "Topps Chrome"}
     below:
       id: "Search sets"
-    waitToSettleTimeoutMs: 0
+    retryTapIfNoChange: true
+# NEO-81 fail-loud: "Search sets" vanishes on a registered select, so a dropped
+# set tap fails HERE — not downstream at "Variant Types".
+- extendedWaitUntil:
+    notVisible:
+      id: "Search sets"
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
 # Variant Types column appears once the set row is selected.
@@ -124,4 +142,3 @@ tags:
       text: "Base"
     centerElement: true
     timeout: 60000
-    waitToSettleTimeoutMs: 0

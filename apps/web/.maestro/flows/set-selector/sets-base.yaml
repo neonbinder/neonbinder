@@ -46,7 +46,14 @@ tags:
     element:
       text: "Base"
     centerElement: true
-- tapOn: "Base"
+# NEO-81 Class-A hardening: the "Base" variant-type row-select drops under CDP
+# (run 28618688460 r5: tap COMPLETED but no variantType selected — the Attributes
+# panel stayed at "Topps Heritage (Set)" level, so BaseMappingForm never opened
+# and the 60s picker wait timed out). retryTapIfNoChange re-fires the dropped
+# select; the 60s wait below is its fail-loud signal.
+- tapOn:
+    text: "Base"
+    retryTapIfNoChange: true
 
 # Wait up to 60s for EITHER the BaseSetPicker modal (live SL fetch, Path A) OR
 # the "Re-map Base" button (auto-closed with a prior mapping, Path B).

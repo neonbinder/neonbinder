@@ -75,7 +75,12 @@ tags:
     element:
       text: "Base"
     timeout: 10000
-- tapOn: "Base"
+# NEO-81 Class-A hardening: retryTapIfNoChange re-fires a dropped "Base"
+# variant-type select (the row-select CDP drop class — proven in sets-base
+# run 28618688460 r5); the 60s wait below is its fail-loud signal.
+- tapOn:
+    text: "Base"
+    retryTapIfNoChange: true
 
 # Brief wait to let the BaseMappingForm decide whether to hold the picker
 # open (SL data found) or auto-confirm and close (no SL data).
