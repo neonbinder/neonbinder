@@ -6,16 +6,27 @@
  * the tap coordinates (a "MISMATCH" means the tap landed on a stale/wrong/absent
  * element — the signature of a dropped or misrouted tap).
  *
- * HARD CONSTRAINTS (do not relax):
- *  - GATED behind `?tapForensics=1`. When absent this module does NOTHING: no
- *    listeners, no DOM node, no allocation, no overhead.
- *  - IN-MEMORY ONLY. No network, no Convex, no React state, no mutations per
- *    event. Everything accumulates in a plain JS array. Adding any reactivity
- *    (setState / Convex write) per event would poison the very measurement this
- *    exists to take.
+ * !!! GATE: GLOBAL on this diagnostic branch (isEnabled() returns true). This
+ * branch is NOT intended to merge. To re-scope, revert isEnabled() to the
+ * `?tapForensics=1` URL gate (see the one-liner in isEnabled below).
  *
- * Read-out: when enabled, a hidden-but-accessibility-visible <pre id="tap-forensics">
- * mirrors the array as JSON so Maestro can read it from the a11y tree.
+ * Capture model (empirically derived):
+ *  - maestro-web writes NO hierarchy dump on failure, and its copyTextFrom reads
+ *    a node but does NOT log the copied value — so the ONLY reliable capture is a
+ *    VISIBLE panel caught in the failure SCREENSHOT.
+ *  - copyTextFrom of a large hidden full-JSON <pre> triggered a CDP
+ *    MismatchedInputException (empty response) and adds global CDP-read weight —
+ *    so there is NO hidden full-JSON node. The single visible panel IS both the
+ *    screenshot capture AND the copyTextFrom target (carries id="tap-forensics").
+ *
+ * HARD CONSTRAINTS (do not relax):
+ *  - IN-MEMORY ONLY. No network, no Convex, no React state, no mutations per
+ *    event. Everything accumulates in a plain JS array (window.__tapForensics)
+ *    plus one textContent write to the visible panel. Adding any reactivity
+ *    (setState / Convex write) per event would poison the measurement.
+ *  - The visible panel is pointer-events:none — proven to keep maestro's
+ *    visibility/occlusion check seeing through it AND to keep it transparent to
+ *    elementFromPoint, so it can NEVER corrupt the measurement.
  */
 
 type TapEventEntry = {
@@ -50,36 +61,21 @@ declare global {
 }
 
 const MAX_ENTRIES = 200;
-/** How many recent entries the visible tail panel shows. */
-const TAIL_ENTRIES = 12;
+/** "TAPS" section: the last N pointerdown/click entries. */
+const TAP_LINES = 5;
+/** "RECENT" section: the last N entries of ANY kind (survives a render flood). */
+const RECENT_LINES = 28;
 
-/** Cached gate result — the URL flag can't change without a full reload. */
-let cachedEnabled: boolean | null = null;
-/**
- * The full-JSON read-out node (created lazily in initTapForensics). Positioned
- * ON-SCREEN at (0,0) as a 1px element — NOT off-screen — so maestro-web's
- * copyTextFrom/visibility model treats it as present with valid layout bounds.
- */
-let readoutNode: HTMLPreElement | null = null;
-/**
- * A second, VISIBLE compact panel showing a one-line-per-entry summary of the
- * last ~12 entries. Captured legibly in maestro's failure screenshot — the key
- * backup when a tap drops (maestro-web has no hierarchy dump on failure).
- */
-let tailNode: HTMLPreElement | null = null;
+/** The single VISIBLE panel — screenshot capture + copyTextFrom target. */
+let panelNode: HTMLPreElement | null = null;
 /** Previous `items` reference per EntitySelector title (reference identity). */
 const prevItemsByTitle = new Map<string, unknown>();
 
 function isEnabled(): boolean {
-  if (cachedEnabled === null) {
-    try {
-      cachedEnabled =
-        new URLSearchParams(window.location.search).get("tapForensics") === "1";
-    } catch {
-      cachedEnabled = false;
-    }
-  }
-  return cachedEnabled;
+  // GLOBAL for this diagnostic branch; revert to the `?tapForensics=1` URL gate
+  // to re-scope. To revert, replace `return true` with:
+  //   return new URLSearchParams(window.location.search).get("tapForensics") === "1";
+  return true;
 }
 
 function truncate(s: string): string {
@@ -88,9 +84,9 @@ function truncate(s: string): string {
 
 /**
  * Short human-readable label for an element.
- * Note: spec used `?? el.id ?? ...`; we use truthy (`||`) fallbacks instead so an
- * empty `id`/`aria-label` correctly falls through to the tag+class label rather
- * than yielding an empty string. Non-Element targets (document/window) → "null".
+ * Note: uses truthy (`||`) fallbacks so an empty `id`/`aria-label` correctly
+ * falls through to the tag+class label rather than yielding an empty string.
+ * Non-Element targets (document/window) → "null".
  */
 function label(el: EventTarget | null): string {
   if (!(el instanceof Element)) return "null";
@@ -116,7 +112,7 @@ function matchKind(target: EventTarget | null, atPoint: Element | null): string 
   return "MISMATCH";
 }
 
-/** Compact one-line summary of an entry for the visible tail panel. */
+/** Compact one-line summary of an entry for the visible panel. */
 function formatEntry(e: TapEntry): string {
   if ("kind" in e) {
     return e.kind === "render"
@@ -127,10 +123,23 @@ function formatEntry(e: TapEntry): string {
 }
 
 /**
- * Push an entry (in-memory), cap the buffer, and mirror to BOTH read-out nodes:
- * the full-JSON node (a11y-readable) and the compact visible tail panel
- * (screenshot-legible). No network, no state.
+ * Two-section panel text. "TAPS" pins the last few taps so a render-flood in the
+ * wait window can't push the dropped tap out of view; "RECENT" shows the full
+ * recent timeline of any kind.
  */
+function renderPanel(arr: TapEntry[]): string {
+  const taps = arr.filter((e) => !("kind" in e)).slice(-TAP_LINES);
+  const recent = arr.slice(-RECENT_LINES);
+  return [
+    "TAPS:",
+    taps.map(formatEntry).join("\n"),
+    "---",
+    "RECENT:",
+    recent.map(formatEntry).join("\n"),
+  ].join("\n");
+}
+
+/** Push an entry (in-memory), cap the buffer, and mirror to the visible panel. */
 function push(entry: TapEntry): void {
   if (!isEnabled()) return;
   if (!window.__tapForensics) window.__tapForensics = [];
@@ -139,11 +148,8 @@ function push(entry: TapEntry): void {
   if (arr.length > MAX_ENTRIES) {
     arr.splice(0, arr.length - MAX_ENTRIES);
   }
-  if (readoutNode) {
-    readoutNode.textContent = JSON.stringify(arr);
-  }
-  if (tailNode) {
-    tailNode.textContent = arr.slice(-TAIL_ENTRIES).map(formatEntry).join("\n");
+  if (panelNode) {
+    panelNode.textContent = renderPanel(arr);
   }
 }
 
@@ -163,40 +169,30 @@ function handleTapEvent(e: Event): void {
 }
 
 /**
- * Initialize the instrumentation. Self-gates on `?tapForensics=1`; a no-op
- * (returns immediately) otherwise. Idempotent — safe to call more than once.
+ * Initialize the instrumentation. Self-gates via isEnabled() (GLOBAL on this
+ * branch). Idempotent — safe to call more than once.
  */
 export function initTapForensics(): void {
   if (!isEnabled()) return;
   if (window.__tapForensics) return; // already initialized
   window.__tapForensics = [];
 
-  // Full-JSON read-out: a 1px element ON-SCREEN at (0,0) — NOT off-screen. A 1px
-  // element at (0,0) has valid on-screen layout bounds, so maestro-web's
-  // copyTextFrom/visibility model treats it as present and readable, while it
-  // stays invisible to a human. Deliberately NOT display:none / visibility:hidden
-  // / [hidden], which would drop it from the a11y tree.
-  const pre = document.createElement("pre");
-  pre.id = "tap-forensics";
-  pre.setAttribute("aria-label", "tap-forensics");
-  pre.style.cssText =
-    "position:fixed;top:0;left:0;width:1px;height:1px;overflow:hidden;z-index:0;white-space:pre;";
-  readoutNode = pre;
-
-  // Visible compact tail panel: legible in maestro's failure SCREENSHOT (the key
-  // backup when a tap drops — maestro-web has no hierarchy dump on failure).
-  // pointer-events:none so it NEVER intercepts taps.
-  const tail = document.createElement("pre");
-  tail.id = "tap-forensics-tail";
-  tail.setAttribute("aria-label", "tap-forensics-tail");
-  tail.style.cssText =
-    "position:fixed;top:0;left:0;max-width:520px;font-size:9px;line-height:1.1;background:rgba(0,0,0,.6);color:#0f0;z-index:2147483647;pointer-events:none;white-space:pre;margin:0;padding:2px;";
-  tailNode = tail;
+  // The ONE visible panel: legible in maestro's failure SCREENSHOT AND the
+  // copyTextFrom target, so it carries BOTH id="tap-forensics" and the matching
+  // aria-label. pointer-events:none is essential — keeps maestro's occlusion
+  // check seeing through it and keeps it transparent to elementFromPoint (so it
+  // can never corrupt the measurement).
+  const panel = document.createElement("pre");
+  panel.id = "tap-forensics";
+  panel.setAttribute("aria-label", "tap-forensics");
+  panel.style.cssText =
+    "position:fixed;top:0;left:0;max-width:680px;font-size:12px;line-height:1.15;font-family:monospace;background:rgba(0,0,0,.78);color:#0f0;z-index:2147483647;pointer-events:none;white-space:pre;margin:0;padding:3px;";
+  panelNode = panel;
 
   const attach = (): void => {
-    if (!document.body) return;
-    if (!document.body.contains(pre)) document.body.appendChild(pre);
-    if (!document.body.contains(tail)) document.body.appendChild(tail);
+    if (document.body && !document.body.contains(panel)) {
+      document.body.appendChild(panel);
+    }
   };
   if (document.body) {
     attach();
@@ -215,7 +211,7 @@ export function initTapForensics(): void {
 }
 
 /**
- * Record an EntitySelector render. Cheap no-op unless `?tapForensics=1`.
+ * Record an EntitySelector render. Gated via isEnabled() (GLOBAL on this branch).
  * Pushes a "render" entry every call, plus an "items-changed" entry whenever the
  * `items` reference differs from the previous render for the same `title` — which
  * reveals whether a data-driven re-render/reorder fired inside a tap window.

@@ -40,7 +40,8 @@ import Inventory from "@/app/inventory/page";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
-// DIAGNOSTIC-ONLY: self-gates on `?tapForensics=1`; a no-op otherwise.
+// DIAGNOSTIC-ONLY: self-gates via isEnabled() (GLOBAL on this diagnostic branch;
+// revert to the `?tapForensics=1` URL gate in tap-forensics.ts to re-scope).
 initTapForensics();
 
 function ScrollToTop() {

@@ -55,8 +55,8 @@ export default function EntitySelector({
   const items = useQuery(query, queryArgs);
   const [searchFilter, setSearchFilter] = useState("");
 
-  // DIAGNOSTIC-ONLY (gated behind ?tapForensics=1): runs after every render, is a
-  // cheap no-op when the flag is absent, and never triggers a re-render.
+  // DIAGNOSTIC-ONLY (GLOBAL on this diagnostic branch; see tap-forensics.ts):
+  // runs after every render and never triggers a re-render.
   useEffect(() => {
     recordEntitySelectorRender(title, items);
   });
