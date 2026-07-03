@@ -83,18 +83,25 @@ tags:
     visible:
       id: "Attach more source sets"
     timeout: 5000
-- tapOn:
-    id: "Attach more source sets"
-
-# Dialog should open — the BSC search input (aria-label "Search BSC sets")
-# only exists inside the dialog, making it the unambiguous open signal.
-# The panel's "Attach more source sets" button also carries that aria-label,
-# so asserting `id: "Attach more source sets"` is unreliable as a
-# dialog-open check (the button is always present on the panel).
-- extendedWaitUntil:
-    visible:
-      id: "Search BSC sets"
-    timeout: 10000
+# Scoped tap-verify-retap — CDP dropped-TRIGGER-tap class (NEO-81 #4: run
+# 28611236769 r4 — this exact "Attach more…" tap COMPLETED at the CDP layer but
+# the app never registered the click, so no dialog opened on an otherwise-healthy
+# page; geometry ruled out nav-occlusion). retry re-fires ONLY this trigger tap
+# when its sole open-signal — the dialog's "Search BSC sets" input — fails to
+# appear. Happy path opens <1s so the wait passes on attempt 1 (no re-tap, no
+# double-open). Inner wait keeps its pre-existing 10s budget — not a blanket
+# retry, no timeout bump.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "Attach more source sets"
+      # "Search BSC sets" is dialog-only (the panel's "Attach more source sets"
+      # button carries that aria-label too, so it can't be the open check).
+      - extendedWaitUntil:
+          visible:
+            id: "Search BSC sets"
+          timeout: 10000
 
 # ============================================================
 # TYPE INTO THE BSC SEARCH INPUT AND VERIFY LIST NARROWS
