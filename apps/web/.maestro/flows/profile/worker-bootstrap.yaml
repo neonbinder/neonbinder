@@ -20,10 +20,24 @@ tags:
 # only touch the caller's own rows) plus a server-side TESTING_RESET_SECRET
 # presence check on the Convex deployment (unset in prod → fails closed).
 
-- launchApp
-- extendedWaitUntil:
-    visible: "Profile Settings"
-    timeout: 45000
+# NEO-81 iter4: scoped result-keyed retry around the sign-in→reset→seed→profile
+# redirect chain. On run 28647629347 r7 the page stuck at "[testing-reset]
+# Waiting for authentication…" — the Clerk-session / Convex-auth handshake at the
+# /testing/reset gate didn't resolve within 45s (transient, 1/8; plausibly auth
+# contention from 8 workers all signing in during Phase 0). There are NO taps in
+# this segment, so it is not a dropped tap — it is a (B) auth/page-load transient,
+# and worker-bootstrap has NO run-level retry (run-e2e-queue.sh runs CI at
+# MAESTRO_FLOW_RETRIES=1 and does NOT retry timeouts). Re-launch RE-DRIVES the
+# sign-in chain ONLY if "Profile Settings" didn't render (result-keyed, not a
+# blanket retry). /testing/reset + /testing/seed-credentials are idempotent, so
+# re-driving is safe; each attempt keeps its 45s cold-auth budget (no bump).
+- retry:
+    maxRetries: 1
+    commands:
+      - launchApp
+      - extendedWaitUntil:
+          visible: "Profile Settings"
+          timeout: 45000
 
 # ============================================================
 # WARM MARKETPLACE TOKENS — BSC then SportLots (BEST-EFFORT)
