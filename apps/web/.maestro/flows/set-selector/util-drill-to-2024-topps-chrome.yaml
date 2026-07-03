@@ -67,18 +67,23 @@ tags:
     text: ".*Search years.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${YEAR || "2024"}
-# NEO-81 Class-A hardening: default settle + retryTapIfNoChange re-fires a
-# dropped row-select on this reactively-filtering list.
-- tapOn:
-    text: ${YEAR || "2024"}
-    below:
-      id: "Search years"
-    retryTapIfNoChange: true
-# NEO-81 fail-loud: the "Search years" box vanishes the instant the select
-# registers (column collapses) — so a dropped tap fails HERE, not downstream.
-- extendedWaitUntil:
-    notVisible:
-      id: "Search years"
+# NEO-81 iter2: scoped tap-verify-retap. retryTapIfNoChange (default-true) is
+# fooled by ambient Convex reactivity (proven: card-features "Insert" tap saw a
+# hierarchy change yet the select didn't register), so the reliable self-heal is
+# re-tapping keyed on the ACTUAL result — the "Search years" box vanishes the
+# instant the select registers (column collapses), so notVisible is the clean
+# signal. A dropped tap → box stays → retry re-fires the tap.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${YEAR || "2024"}
+          below:
+            id: "Search years"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          notVisible:
+            id: "Search years"
 
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
 - extendedWaitUntil:
@@ -93,17 +98,19 @@ tags:
     text: ".*Search manufacturers.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${MANUFACTURER || "Topps"}
-# NEO-81 Class-A hardening: default settle + retryTapIfNoChange (see Years).
-- tapOn:
-    text: ${MANUFACTURER || "Topps"}
-    below:
-      id: "Search manufacturers"
-    retryTapIfNoChange: true
-# NEO-81 fail-loud: "Search manufacturers" vanishes on a registered select, so a
-# dropped Topps tap fails HERE — not downstream as "Sets" not visible.
-- extendedWaitUntil:
-    notVisible:
-      id: "Search manufacturers"
+# NEO-81 iter2: scoped tap-verify-retap keyed on the "Search manufacturers" box
+# vanishing on a registered select (see Years for the full rationale).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${MANUFACTURER || "Topps"}
+          below:
+            id: "Search manufacturers"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          notVisible:
+            id: "Search manufacturers"
 
 # ── SET ───────────────────────────────────────────────────────────────────────
 - extendedWaitUntil:
@@ -118,17 +125,19 @@ tags:
     text: ".*Search sets.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${SET || "Topps Chrome"}
-# NEO-81 Class-A hardening: default settle + retryTapIfNoChange (see Years).
-- tapOn:
-    text: ${SET || "Topps Chrome"}
-    below:
-      id: "Search sets"
-    retryTapIfNoChange: true
-# NEO-81 fail-loud: "Search sets" vanishes on a registered select, so a dropped
-# set tap fails HERE — not downstream at "Variant Types".
-- extendedWaitUntil:
-    notVisible:
-      id: "Search sets"
+# NEO-81 iter2: scoped tap-verify-retap keyed on the "Search sets" box vanishing
+# on a registered select (see Years for the full rationale).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${SET || "Topps Chrome"}
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          notVisible:
+            id: "Search sets"
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
 # Variant Types column appears once the set row is selected.

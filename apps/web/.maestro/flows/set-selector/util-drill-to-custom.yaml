@@ -783,14 +783,23 @@ tags:
           element:
             text: ${VARIANT_TYPE}
           timeout: 10000
-      - tapOn: ${VARIANT_TYPE}
-
-      # Verify the Variants column opened. Header is the pluralized VARIANT_TYPE:
-      # "Insert" → "Inserts", "Parallel" → "Parallels", etc.
-      - extendedWaitUntil:
-          visible:
-            text: ".*${VARIANT_TYPE}s.*"
-          timeout: 15000
+      # Scoped tap-verify-retap — CDP dropped variant-type row-select (NEO-81
+      # iter2, run 28637057704 r4 card-features: the "Insert" tap COMPLETED —
+      # hierarchyBasedTap even saw an ambient change — but the select never
+      # registered; the Attributes panel stayed at Set level, so the "Inserts"
+      # column never mounted. retryTapIfNoChange is fooled by that ambient Convex
+      # reactivity, so the reliable self-heal is re-tapping keyed on the ACTUAL
+      # result — the pluralized Variants column header.
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn: ${VARIANT_TYPE}
+            # Verify the Variants column opened. Header is the pluralized
+            # VARIANT_TYPE: "Insert" → "Inserts", "Parallel" → "Parallels".
+            - extendedWaitUntil:
+                visible:
+                  text: ".*${VARIANT_TYPE}s.*"
+                timeout: 15000
 
       # Wait for idle mode in the Variants column (Add-custom button present).
       # Custom VTs short-circuit the gate so the button is immediately available.
@@ -844,12 +853,17 @@ tags:
           visible:
             text: ${VARIANT}
           timeout: 7000
-      - tapOn: ${VARIANT}
-
-      # Wait for the CardChecklist panel to appear.
-      - scrollUntilVisible:
-          element:
-            id: "Open add card form"
-          centerElement: true
-          visibilityPercentage: 50
-          timeout: 15000
+      # Scoped tap-verify-retap — CDP dropped variant row-select; re-tap keyed on
+      # the CardChecklist ("Open add card form") that a registered select mounts.
+      # The scroll IS the result check (fails loudly if the checklist never
+      # appears) AND centers the button for callers.
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn: ${VARIANT}
+            - scrollUntilVisible:
+                element:
+                  id: "Open add card form"
+                centerElement: true
+                visibilityPercentage: 50
+                timeout: 15000

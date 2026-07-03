@@ -131,16 +131,21 @@ tags:
       text: "Cancel"
     visibilityPercentage: 50
     timeout: 10000
-- tapOn: "Cancel"
-
-# Wait for dialog to close — the BSC search input disappears when the
-# dialog unmounts. Using the search input as the close signal avoids the
-# ambiguity of the panel's "Attach more source sets" aria-label (which
-# remains on the panel button after the dialog closes).
-- extendedWaitUntil:
-    notVisible:
-      id: "Search BSC sets"
-    timeout: 10000
+# Scoped tap-verify-retap — CDP dropped CLOSE-tap (NEO-81 iter2, run 28637606132
+# r6: the Cancel tap COMPLETED but the portaled dialog stayed OPEN — "Search BSC
+# sets" still visible; the modal renders above the nav so this is NOT occlusion).
+# retry re-fires the Cancel tap iff the dialog's search input is still present.
+# The search input disappears when the dialog unmounts, so it's the unambiguous
+# close signal (the panel's "Attach more source sets" aria-label persists after
+# close, so it can't be the check).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn: "Cancel"
+      - extendedWaitUntil:
+          notVisible:
+            id: "Search BSC sets"
+          timeout: 10000
 
 # ============================================================
 # ASSERT PANEL STILL VISIBLE AFTER CANCEL
