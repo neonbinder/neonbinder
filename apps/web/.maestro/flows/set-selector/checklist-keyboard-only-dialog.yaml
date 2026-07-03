@@ -130,10 +130,18 @@ tags:
     when:
       visible: "Cancel"
     commands:
+      # NEO-81 (Flake 2 / checklist TOCTOU): the `when: visible: Cancel` gate can
+      # catch the brief window where the new card row has rendered but the Add Card
+      # form hasn't closed yet; the form then closes normally (~1.5s) and this
+      # scroll would otherwise loop 20s and hard-fail (run 28600417580, r1).
+      # optional:true lets the form-closed-late path no-op cleanly — the tapOn
+      # below is already optional and notVisible:Cancel is already satisfied once
+      # the form has closed. The form-still-open path is unchanged.
       - scrollUntilVisible:
           element:
             text: "Cancel"
           centerElement: true
+          optional: true
       - tapOn:
           text: "Cancel"
           optional: true
