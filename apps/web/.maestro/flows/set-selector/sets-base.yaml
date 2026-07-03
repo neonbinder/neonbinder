@@ -46,23 +46,29 @@ tags:
     element:
       text: "Base"
     centerElement: true
-# NEO-81 Class-A hardening: the "Base" variant-type row-select drops under CDP
-# (run 28618688460 r5: tap COMPLETED but no variantType selected — the Attributes
-# panel stayed at "Topps Heritage (Set)" level, so BaseMappingForm never opened
-# and the 60s picker wait timed out). retryTapIfNoChange re-fires the dropped
-# select; the 60s wait below is its fail-loud signal.
-- tapOn:
-    text: "Base"
-    retryTapIfNoChange: true
-
-# Wait up to 60s for EITHER the BaseSetPicker modal (live SL fetch, Path A) OR
-# the "Re-map Base" button (auto-closed with a prior mapping, Path B).
-# This 60s wait is the only sanctioned >7s wait in this flow; it covers the
-# real Puppeteer/SSO marketplace round-trip latency.
-- extendedWaitUntil:
-    visible:
-      text: ".*Select Base Set.*|.*Re-map Base.*"
-    timeout: 60000
+# NEO-81 iter3: scoped tap-verify-retap on the "Base" variant-type select →
+# BaseSetPicker open. The bare retryTapIfNoChange (iter1) was INSUFFICIENT — it's
+# fooled by ambient Convex reactivity: the "Base" tap logs a hierarchyBasedTap
+# change yet the select never registers (proven runs 28618688460 r5, 28642450978
+# r7, 28643858995 r3 — Attributes panel stayed at "(Set)" level, picker never
+# opened, 60s timeout). Re-fire the tap keyed on the ACTUAL result: the picker
+# ("Select Base Set", Path A) or the "Re-map Base" control (Path B, prior
+# mapping). Inner wait keeps its sanctioned 60s SL-fetch budget (no bump); a
+# dropped tap → picker never opens → retry re-taps. Confirmed Bucket A, NOT a
+# fetch stall (a stall would render "Base (Variant)" in the Attributes panel).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      # Wait up to 60s for EITHER the BaseSetPicker modal (live SL fetch, Path A)
+      # OR the "Re-map Base" button (auto-closed with a prior mapping, Path B) —
+      # the sanctioned marketplace round-trip budget for this flow.
+      - extendedWaitUntil:
+          visible:
+            text: ".*Select Base Set.*|.*Re-map Base.*"
+          timeout: 60000
 
 # PATH A — picker stays open (SL returned data, no prior mapping):
 #   Validate the picker structure, then confirm. The "Confirm Base Set" button

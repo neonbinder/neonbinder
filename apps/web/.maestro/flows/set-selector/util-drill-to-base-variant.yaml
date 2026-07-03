@@ -75,24 +75,24 @@ tags:
     element:
       text: "Base"
     timeout: 10000
-# NEO-81 Class-A hardening: retryTapIfNoChange re-fires a dropped "Base"
-# variant-type select (the row-select CDP drop class — proven in sets-base
-# run 28618688460 r5); the 60s wait below is its fail-loud signal.
-- tapOn:
-    text: "Base"
-    retryTapIfNoChange: true
-
-# Brief wait to let the BaseMappingForm decide whether to hold the picker
-# open (SL data found) or auto-confirm and close (no SL data).
-# 60s covers: SL fetch round trip (~50s) + Puppeteer session re-auth if needed.
-# Wait for either the BaseSetPicker modal (SL data present) OR the post-confirm
-# "Re-map Base" control (Path B — modal auto-closed). Re-map Base sits in the
-# variant-type row and stays in viewport, unlike "Fetch from Marketplaces"
-# which renders below in the column's overflow.
-- extendedWaitUntil:
-    visible:
-      text: ".*Select Base Set.*|.*Re-map Base.*"
-    timeout: 60000
+# NEO-81 iter3: scoped tap-verify-retap on the "Base" variant-type select →
+# BaseSetPicker open. Bare retryTapIfNoChange (iter1) is fooled by ambient Convex
+# reactivity (the tap logs a hierarchy change yet the select never registers —
+# see sets-base.yaml for the proof + run IDs). Re-fire the tap keyed on the
+# ACTUAL result: the BaseSetPicker modal ("Select Base Set", SL data present) OR
+# the post-confirm "Re-map Base" control (Path B — modal auto-closed). Inner wait
+# keeps its 60s SL-fetch budget (SL round trip ~50s + Puppeteer re-auth); a
+# dropped tap → picker never opens → retry re-taps.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible:
+            text: ".*Select Base Set.*|.*Re-map Base.*"
+          timeout: 60000
 
 # If the picker is open (SL data present), confirm the pre-selected set.
 - runFlow:
