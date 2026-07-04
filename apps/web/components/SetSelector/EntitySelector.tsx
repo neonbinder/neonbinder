@@ -5,6 +5,15 @@ import { FunctionReference } from "convex/server";
 
 type SelectorItem = { _id: string; [key: string]: unknown };
 
+// Stable, module-level display accessor shared by every column wrapper
+// (Sport / Year / Manufacturer / Set / SetVariant / Variant / Parallel all
+// display `item.value`). Passing this ONE reference instead of a fresh inline
+// arrow per render keeps `getDisplayName` referentially stable, so the
+// `sortedItems` useMemo below actually memoizes across re-renders (NEO-85). An
+// inline arrow would give the memo a new dep identity every render, silently
+// defeating it.
+export const displayByValue = (item: SelectorItem) => item.value as string;
+
 type EntitySelectorProps = {
   title: string;
   query: FunctionReference<"query">;

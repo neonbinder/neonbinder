@@ -1,6 +1,6 @@
 import type { GenericId } from "convex/values";
 import { api } from "../../convex/_generated/api";
-import EntitySelector from "./EntitySelector";
+import EntitySelector, { displayByValue } from "./EntitySelector";
 
 type ParallelSelectorProps = {
   insertId: GenericId<"selectorOptions">;
@@ -26,7 +26,7 @@ export default function ParallelSelector({
       onSelect={(id) => onParallelSelect(id as GenericId<"selectorOptions">)}
       expanded={expanded}
       setExpanded={setExpanded}
-      getDisplayName={(item) => item.value as string}
+      getDisplayName={displayByValue}
       getDescription={() => undefined}
       selectedColor="bg-amber-100 dark:bg-amber-900 border-amber-300 dark:border-amber-700"
       isItemTerminal={() => true}

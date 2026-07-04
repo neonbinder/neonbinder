@@ -1,6 +1,6 @@
 import type { GenericId } from "convex/values";
 import { api } from "../../convex/_generated/api";
-import EntitySelector from "./EntitySelector";
+import EntitySelector, { displayByValue } from "./EntitySelector";
 
 type SportSelectorProps = {
   selectedSportId: GenericId<"selectorOptions"> | null;
@@ -24,7 +24,7 @@ export default function SportSelector({
       onSelect={(id) => onSportSelect(id as GenericId<"selectorOptions">)}
       expanded={expanded}
       setExpanded={setExpanded}
-      getDisplayName={(sport) => sport.value as string}
+      getDisplayName={displayByValue}
       getDescription={() => undefined}
       selectedColor="bg-pink-100 dark:bg-pink-900 border-pink-300 dark:border-pink-700"
     />

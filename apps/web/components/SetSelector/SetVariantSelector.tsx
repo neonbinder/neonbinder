@@ -1,6 +1,6 @@
 import type { GenericId } from "convex/values";
 import { api } from "../../convex/_generated/api";
-import EntitySelector from "./EntitySelector";
+import EntitySelector, { displayByValue } from "./EntitySelector";
 
 type SetVariantSelectorProps = {
   setId: GenericId<"selectorOptions">;
@@ -26,7 +26,7 @@ export default function SetVariantSelector({
       onSelect={(id) => onVariantTypeSelect(id as GenericId<"selectorOptions">)}
       expanded={expanded}
       setExpanded={setExpanded}
-      getDisplayName={(variant) => variant.value as string}
+      getDisplayName={displayByValue}
       getDescription={() => undefined}
       selectedColor="bg-orange-100 dark:bg-orange-900 border-orange-300 dark:border-orange-700"
       // Variant types are mostly intermediate (Insert/Parallel lead to a
