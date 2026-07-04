@@ -97,7 +97,7 @@ jobs:
           docker push "$IMAGE:pr-$PR_NUMBER"
 
       - name: Deploy tagged no-traffic preview to dev Cloud Run
-        uses: google-github-actions/deploy-cloudrun@251330ba9a8a34bfbc1622895f42e1d53fd14522 # v2
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
         with:
           service: neonbinder-browser
           region: us-central1
@@ -377,7 +377,7 @@ jobs:
           echo "Previous dev revision: $PREV"
           echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
       - name: Deploy to dev Cloud Run (no_traffic + sha tag)
-        uses: google-github-actions/deploy-cloudrun@251330ba9a8a34bfbc1622895f42e1d53fd14522 # v2
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
         with:
           service: neonbinder-browser
           region: us-central1
@@ -520,7 +520,7 @@ jobs:
           echo "Previous prod revision: $PREV"
           echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
       - name: Deploy to prod Cloud Run (no_traffic + sha tag)
-        uses: google-github-actions/deploy-cloudrun@251330ba9a8a34bfbc1622895f42e1d53fd14522 # v2
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
         with:
           service: neonbinder-browser
           region: us-central1
