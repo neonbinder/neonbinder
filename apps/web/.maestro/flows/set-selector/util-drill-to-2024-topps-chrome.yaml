@@ -46,13 +46,22 @@ tags:
       text: ${SPORT || "Baseball"}
     centerElement: true
     waitToSettleTimeoutMs: 0
-- tapOn:
-    text: ${SPORT || "Baseball"}
-    waitToSettleTimeoutMs: 0
+# NEO-85 residual coordinate-staleness: even after the write-if-changed churn fix,
+# maestro-web can read a row's bounds then have the still-settling column reflow
+# before the click lands stale → a false "Something changed… Proceed" that didn't
+# select the row. Result-keyed retry: re-fire the row tap ONCE iff the NEXT column
+# ("Years") doesn't appear; a genuine failure still fails loudly. retryTapIfNoChange
+# is the maestro-native nudge (default settle re-enables it).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${SPORT || "Baseball"}
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Years"
 
 # ── YEAR ──────────────────────────────────────────────────────────────────────
-- extendedWaitUntil:
-    visible: "Years"
 - extendedWaitUntil:
     visible: ".*Search years.*"
 - scrollUntilVisible:
@@ -66,15 +75,20 @@ tags:
     text: ".*Search years.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${YEAR || "2024"}
-- tapOn:
-    text: ${YEAR || "2024"}
-    below:
-      id: "Search years"
-    waitToSettleTimeoutMs: 0
+# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the Year
+# row-select ONCE iff the next column ("Manufacturers") doesn't appear.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${YEAR || "2024"}
+          below:
+            id: "Search years"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Manufacturers"
 
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
-- extendedWaitUntil:
-    visible: "Manufacturers"
 - extendedWaitUntil:
     visible: ".*Search manufacturers.*"
 - scrollUntilVisible:
@@ -86,15 +100,22 @@ tags:
     text: ".*Search manufacturers.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${MANUFACTURER || "Topps"}
-- tapOn:
-    text: ${MANUFACTURER || "Topps"}
-    below:
-      id: "Search manufacturers"
-    waitToSettleTimeoutMs: 0
+# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the
+# Manufacturer row-select ONCE iff the next column ("Sets") doesn't appear. This
+# is the exact drop proven this sweep (checklist-renders-rich-fields: the "Topps"
+# row-select landed stale, the column stayed expanded, "Sets" never appeared).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${MANUFACTURER || "Topps"}
+          below:
+            id: "Search manufacturers"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Sets"
 
 # ── SET ───────────────────────────────────────────────────────────────────────
-- extendedWaitUntil:
-    visible: "Sets"
 - extendedWaitUntil:
     visible: ".*Search sets.*"
 - scrollUntilVisible:
@@ -106,17 +127,22 @@ tags:
     text: ".*Search sets.*"
     waitToSettleTimeoutMs: 250
 - inputText: ${SET || "Topps Chrome"}
-- tapOn:
-    text: ${SET || "Topps Chrome"}
-    below:
-      id: "Search sets"
-    waitToSettleTimeoutMs: 0
+# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the Set
+# row-select ONCE iff the next column ("Variant Types") doesn't appear.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${SET || "Topps Chrome"}
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
-# Variant Types column appears once the set row is selected.
-- extendedWaitUntil:
-    visible: "Variant Types"
-# "Base" appears after the variant-type sync completes. 60s is the sanctioned
+# The Variant Types column is confirmed by the Set retry above. "Base" appears
+# after the variant-type sync completes. 60s is the sanctioned
 # ceiling for override / cold paths (BSC + SL fetch); warm Topps Chrome satisfies
 # this in <7s. DO NOT increase this timeout without explicit user approval.
 - scrollUntilVisible:
