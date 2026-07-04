@@ -91,26 +91,7 @@ export default function EntitySelector({
     });
   }, [items, getDisplayName]);
 
-  if (!items) {
-    // NEO-85: render the loading state inside the same card shell with a
-    // reserved list-area min-height. A transient `undefined` (normal Convex
-    // refetch when the user picks a new parent) otherwise collapses this
-    // column to a single text line, shrinking the flex row and reflowing
-    // sibling columns under Maestro's coordinate taps. No stale data is held —
-    // this is a skeleton, not the previous parent's list.
-    return (
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">{title}</h2>
-        </div>
-        <div className="min-h-[400px]">
-          <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
-            Loading {title.toLowerCase()}...
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (!items) return <div>Loading {title.toLowerCase()}...</div>;
 
   // Apply search filter
   const filteredItems = searchFilter
