@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
@@ -58,22 +58,50 @@ export default function EntitySelector({
     (item: SelectorItem) => item._id === selectedId,
   );
 
-  if (!items) return <div>Loading {title.toLowerCase()}...</div>;
+  // Sort items by their display names. Memoized on `items` (and the
+  // `getDisplayName` reader the comparator uses) so an unrelated re-render —
+  // e.g. a Convex query invalidation from a sibling column — reuses the same
+  // sorted array reference instead of rebuilding it. Rebuilding a fresh array
+  // on every render churns the list and reflows the column under Maestro's
+  // coordinate taps (NEO-85). Declared before the early return so hook order
+  // stays stable when `items` is still loading.
+  const sortedItems = useMemo(() => {
+    if (!items) return [];
+    return [...items].sort((a, b) => {
+      const nameA = getDisplayName(a);
+      const nameB = getDisplayName(b);
 
-  // Sort items by their display names
-  const sortedItems = [...items].sort((a, b) => {
-    const nameA = getDisplayName(a);
-    const nameB = getDisplayName(b);
+      const numA = Number(nameA);
+      const numB = Number(nameB);
 
-    const numA = Number(nameA);
-    const numB = Number(nameB);
+      if (!isNaN(numA) && !isNaN(numB)) {
+        return numB - numA;
+      } else {
+        return nameA.localeCompare(nameB);
+      }
+    });
+  }, [items, getDisplayName]);
 
-    if (!isNaN(numA) && !isNaN(numB)) {
-      return numB - numA;
-    } else {
-      return nameA.localeCompare(nameB);
-    }
-  });
+  if (!items) {
+    // NEO-85: render the loading state inside the same card shell with a
+    // reserved list-area min-height. A transient `undefined` (normal Convex
+    // refetch when the user picks a new parent) otherwise collapses this
+    // column to a single text line, shrinking the flex row and reflowing
+    // sibling columns under Maestro's coordinate taps. No stale data is held —
+    // this is a skeleton, not the previous parent's list.
+    return (
+      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold">{title}</h2>
+        </div>
+        <div className="min-h-[400px]">
+          <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
+            Loading {title.toLowerCase()}...
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Apply search filter
   const filteredItems = searchFilter
