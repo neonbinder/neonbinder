@@ -41,6 +41,39 @@ export default function MultiSourcePanel({
 
   const [dialogOpen, setDialogOpen] = useState(false);
 
+  // Memoize the derived props handed to AttachSetsDialog so they keep a stable
+  // reference identity across re-renders driven by *unrelated* reactive
+  // updates. AttachSetsDialog's candidate-load effect keys off these; a fresh
+  // object/Set every render re-fired that effect and wiped the dialog's search
+  // box mid-interaction (NEO-85 dropped-tap class). These hooks must precede
+  // the early returns below so hook order stays unconditional (Rules of Hooks),
+  // hence the `row?.`/guarded bodies for the not-yet-loaded case.
+  const bscIds = useMemo(
+    () => toArray(row?.platformData.bsc),
+    [row?.platformData.bsc],
+  );
+  const slIds = useMemo(
+    () => toArray(row?.platformData.sportlots),
+    [row?.platformData.sportlots],
+  );
+  const parentFilters = useMemo<Record<string, string>>(() => {
+    const filters: Record<string, string> = {};
+    if (!row || !chain) return filters;
+    for (const ancestor of chain) {
+      if (ancestor._id !== row._id) {
+        filters[ancestor.level] = ancestor.value;
+      }
+    }
+    return filters;
+  }, [chain, row]);
+  const alreadyAttached = useMemo(
+    () => ({
+      bsc: new Set(bscIds),
+      sportlots: new Set(slIds),
+    }),
+    [bscIds, slIds],
+  );
+
   if (!row || !chain) return null;
   if (
     row.level !== "variantType" &&
@@ -50,8 +83,6 @@ export default function MultiSourcePanel({
     return null;
   }
 
-  const bscIds = toArray(row.platformData.bsc);
-  const slIds = toArray(row.platformData.sportlots);
   const primaryBsc = row.primaryPlatformId?.bsc ?? bscIds[0];
   const primarySl = row.primaryPlatformId?.sportlots ?? slIds[0];
 
@@ -59,19 +90,6 @@ export default function MultiSourcePanel({
   // there's nothing to attach extras to yet.
   const hasAnyPrimary = !!primaryBsc || !!primarySl;
   if (!hasAnyPrimary) return null;
-
-  // Build parentFilters for the attach dialog from the ancestor chain.
-  const parentFilters: Record<string, string> = {};
-  for (const ancestor of chain) {
-    if (ancestor._id !== row._id) {
-      parentFilters[ancestor.level] = ancestor.value;
-    }
-  }
-
-  const alreadyAttached = {
-    bsc: new Set(bscIds),
-    sportlots: new Set(slIds),
-  };
 
   return (
     <div className="border border-gray-700 rounded-lg bg-gray-900/60 p-4">
