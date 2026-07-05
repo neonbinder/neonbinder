@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
 
-type SelectorItem = { _id: string; [key: string]: unknown };
+export type SelectorItem = { _id: string; [key: string]: unknown };
 
 // Stable, module-level display accessor shared by every column wrapper
 // (Sport / Year / Manufacturer / Set / SetVariant / Variant / Parallel all
@@ -47,7 +47,7 @@ function getPlatformData(item: SelectorItem): {
   return null;
 }
 
-export default function EntitySelector({
+function EntitySelector({
   title,
   query,
   queryArgs,
@@ -216,3 +216,13 @@ export default function EntitySelector({
     </div>
   );
 }
+
+// NEO-85: memoized so a parent re-render that recreates this element with
+// referentially-stable props does NOT re-render the whole column — and re-run
+// the sort/filter + rebuild every row button. A gratuitously re-rendered list
+// churns the DOM subtree Maestro's hierarchyBasedTap reads mid-tap, feeding the
+// coordinate-staleness dropped-tap class (the Variant Types "Base" flake).
+// Effective only where the wrapper passes stable props (see SetVariantSelector);
+// columns still passing inline props re-render exactly as before (shallow prop
+// compare simply never matches for them — no behavior change either way).
+export default memo(EntitySelector);
