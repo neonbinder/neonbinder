@@ -448,6 +448,46 @@ export const getCardChecklist = query({
   },
 });
 
+// NEO-85: structural deep-equal for the small plain-value objects/arrays we
+// store on selectorOptions (platformData, setMetadata, children id arrays).
+// Leaves are string | number | boolean | null; containers are arrays and plain
+// objects. Used to skip no-op ctx.db.patch calls: in Convex, patching a row —
+// even with byte-identical data — invalidates every query that read it, which
+// re-renders and reflows the SetSelector columns under Maestro's coordinate
+// taps (the weeks-long dropped-tap flake). Order-sensitive for arrays; our
+// syncs write a deterministic order, so identical syncs compare equal.
+function valuesDeepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (a === null || b === null) return a === b;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!valuesDeepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (typeof a === "object" && typeof b === "object") {
+    const aKeys = Object.keys(a as Record<string, unknown>);
+    const bKeys = Object.keys(b as Record<string, unknown>);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const key of aKeys) {
+      if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+      if (
+        !valuesDeepEqual(
+          (a as Record<string, unknown>)[key],
+          (b as Record<string, unknown>)[key],
+        )
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 // ===== MUTATIONS =====
 
 export const storeSelectorOptions = mutation({
@@ -534,18 +574,39 @@ export const storeSelectorOptions = mutation({
           ...option.platformData,
         };
         warnIfIncomplete(existing._id, option.value, mergedPlatformData);
-        const patch: Record<string, unknown> = {
-          platformData: mergedPlatformData,
-          lastUpdated: Date.now(),
-        };
+
         // NEO-24: merge-patch setMetadata if caller supplied any.
-        if (option.setMetadata) {
-          patch.setMetadata = {
-            ...(existing.setMetadata || {}),
-            ...option.setMetadata,
+        const mergedSetMetadata = option.setMetadata
+          ? { ...(existing.setMetadata || {}), ...option.setMetadata }
+          : existing.setMetadata;
+
+        // NEO-85: only patch when the merged data actually differs from what's
+        // stored. A no-op patch still invalidates every query that read this
+        // row, re-rendering + reflowing the SetSelector columns for nothing
+        // (forensics: `items-changed sameContent=true`). `lastUpdated` is a
+        // "data last changed" marker — never displayed or used for staleness
+        // (the FE "Last synced" reads cardChecklist.lastUpdated) — so skipping
+        // the bump on an unchanged sync is correct.
+        const platformDataChanged = !valuesDeepEqual(
+          mergedPlatformData,
+          existing.platformData,
+        );
+        const setMetadataChanged =
+          option.setMetadata !== undefined &&
+          !valuesDeepEqual(mergedSetMetadata, existing.setMetadata);
+
+        if (platformDataChanged || setMetadataChanged) {
+          const patch: Record<string, unknown> = {
+            platformData: mergedPlatformData,
+            lastUpdated: Date.now(),
           };
+          if (option.setMetadata) {
+            patch.setMetadata = mergedSetMetadata;
+          }
+          await ctx.db.patch(existing._id, patch);
         }
-        await ctx.db.patch(existing._id, patch);
+        // Always keep the row in the parent's children set, whether or not we
+        // patched it — skipping the patch must not drop it from the ordering.
         insertedIds.push(existing._id);
       } else {
         warnIfIncomplete("new", option.value, option.platformData);
@@ -583,9 +644,14 @@ export const storeSelectorOptions = mutation({
             !processedValues.has(o.value.toLowerCase().trim()),
         )
         .map((o) => o._id);
-      await ctx.db.patch(parentId, {
-        children: [...insertedIds, ...customIds],
-      });
+      const newChildren = [...insertedIds, ...customIds];
+      // NEO-85: only rewrite children when the array actually changed (same
+      // ids, same order). A no-op rewrite invalidates every reader of the
+      // parent row for nothing.
+      const parent = await ctx.db.get(parentId);
+      if (parent && !valuesDeepEqual(parent.children ?? [], newChildren)) {
+        await ctx.db.patch(parentId, { children: newChildren });
+      }
     }
 
     return {
@@ -653,9 +719,13 @@ export const addCustomSelectorOption = mutation({
     if (parentId) {
       const parent = await ctx.db.get(parentId);
       if (parent) {
-        await ctx.db.patch(parentId, {
-          children: [...(parent.children || []), id],
-        });
+        const newChildren = [...(parent.children || []), id];
+        // NEO-85: guard the rewrite for consistency with storeSelectorOptions.
+        // `id` is a fresh insert so this practically always differs, but the
+        // guard keeps the no-op-patch discipline uniform across both paths.
+        if (!valuesDeepEqual(parent.children ?? [], newChildren)) {
+          await ctx.db.patch(parentId, { children: newChildren });
+        }
       }
     }
 

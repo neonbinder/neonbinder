@@ -68,8 +68,19 @@ tags:
     element:
       id: "Add custom Sports"
     visibilityPercentage: 50
-- tapOn:
-    id: "Add custom Sports"
+# NEO-85 residual coordinate-staleness: this flow advances the drill via the
+# Sports "+ Custom" form (NOT a search-row-select), so its one droppable tap is
+# the form-open trigger. Result-keyed retry — re-fire ONCE iff the "Add Custom
+# Entry" form didn't open; a genuine failure still fails loudly.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "Add custom Sports"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Add Custom Entry"
+          timeout: 5000
 
 # ============================================================
 # TYPE A VALUE THAT ALREADY EXISTS AS SYNCED DATA

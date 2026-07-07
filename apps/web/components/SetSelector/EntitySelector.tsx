@@ -1,9 +1,18 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useQuery } from "convex/react";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
 
-type SelectorItem = { _id: string; [key: string]: unknown };
+export type SelectorItem = { _id: string; [key: string]: unknown };
+
+// Stable, module-level display accessor shared by every column wrapper
+// (Sport / Year / Manufacturer / Set / SetVariant / Variant / Parallel all
+// display `item.value`). Passing this ONE reference instead of a fresh inline
+// arrow per render keeps `getDisplayName` referentially stable, so the
+// `sortedItems` useMemo below actually memoizes across re-renders (NEO-85). An
+// inline arrow would give the memo a new dep identity every render, silently
+// defeating it.
+export const displayByValue = (item: SelectorItem) => item.value as string;
 
 type EntitySelectorProps = {
   title: string;
@@ -38,7 +47,7 @@ function getPlatformData(item: SelectorItem): {
   return null;
 }
 
-export default function EntitySelector({
+function EntitySelector({
   title,
   query,
   queryArgs,
@@ -58,22 +67,31 @@ export default function EntitySelector({
     (item: SelectorItem) => item._id === selectedId,
   );
 
+  // Sort items by their display names. Memoized on `items` (and the
+  // `getDisplayName` reader the comparator uses) so an unrelated re-render —
+  // e.g. a Convex query invalidation from a sibling column — reuses the same
+  // sorted array reference instead of rebuilding it. Rebuilding a fresh array
+  // on every render churns the list and reflows the column under Maestro's
+  // coordinate taps (NEO-85). Declared before the early return so hook order
+  // stays stable when `items` is still loading.
+  const sortedItems = useMemo(() => {
+    if (!items) return [];
+    return [...items].sort((a, b) => {
+      const nameA = getDisplayName(a);
+      const nameB = getDisplayName(b);
+
+      const numA = Number(nameA);
+      const numB = Number(nameB);
+
+      if (!isNaN(numA) && !isNaN(numB)) {
+        return numB - numA;
+      } else {
+        return nameA.localeCompare(nameB);
+      }
+    });
+  }, [items, getDisplayName]);
+
   if (!items) return <div>Loading {title.toLowerCase()}...</div>;
-
-  // Sort items by their display names
-  const sortedItems = [...items].sort((a, b) => {
-    const nameA = getDisplayName(a);
-    const nameB = getDisplayName(b);
-
-    const numA = Number(nameA);
-    const numB = Number(nameB);
-
-    if (!isNaN(numA) && !isNaN(numB)) {
-      return numB - numA;
-    } else {
-      return nameA.localeCompare(nameB);
-    }
-  });
 
   // Apply search filter
   const filteredItems = searchFilter
@@ -198,3 +216,13 @@ export default function EntitySelector({
     </div>
   );
 }
+
+// NEO-85: memoized so a parent re-render that recreates this element with
+// referentially-stable props does NOT re-render the whole column — and re-run
+// the sort/filter + rebuild every row button. A gratuitously re-rendered list
+// churns the DOM subtree Maestro's hierarchyBasedTap reads mid-tap, feeding the
+// coordinate-staleness dropped-tap class (the Variant Types "Base" flake).
+// Effective only where the wrapper passes stable props (see SetVariantSelector);
+// columns still passing inline props re-render exactly as before (shallow prop
+// compare simply never matches for them — no behavior change either way).
+export default memo(EntitySelector);

@@ -13,9 +13,17 @@ tags:
 # was rejected for exactly that split; "Topps Fire" doesn't exist in 2024.)
 #
 # Topps Heritage's variant types + base mapping are not pre-synced, so the drill
-# does a cold variant-type sync and the picker does a LIVE SportLots base-set
-# fetch. The 60s wait on the picker open is that live marketplace fetch (the
-# BaseSetPicker's real latency), not padding — every other wait uses the 7s default.
+# does a cold variant-type sync (absorbed inside util-drill-to-2024-topps-chrome)
+# and the picker does a LIVE SportLots base-set fetch. IMPORTANT — the picker OPEN
+# is NOT that fetch: BaseMappingForm.doSync() calls setPickerOpen(true) BEFORE it
+# awaits fetchRawOptions, so the modal ("Select Base Set") appears in ~343ms
+# (proven from a green run's maestro.log), the SL list rendering skeletons and the
+# Confirm button reading "Loading…"/disabled meanwhile. The real ~10s SL round-trip
+# is absorbed LATER, in Path A: the "likely match" pill only renders once the scored
+# options arrive and "Confirm Base Set" only replaces "Loading…" once the fetch
+# resolves — that Path-A step is where this flow's marketplace latency actually
+# lives. Every other wait uses the 7s default; the "Base" tap keys its result-retry
+# at 7s (the picker-open budget), NOT the old 60s that misattributed the fetch here.
 #
 # Phase-0 bootstrap (worker-bootstrap.yaml) already seeds BSC + SL credentials
 # AND warms both marketplace tokens (best-effort optional). BaseSetPicker's
@@ -46,22 +54,37 @@ tags:
     element:
       text: "Base"
     centerElement: true
-- tapOn: "Base"
-
-# Wait up to 60s for EITHER the BaseSetPicker modal (live SL fetch, Path A) OR
-# the "Re-map Base" button (auto-closed with a prior mapping, Path B).
-# This 60s wait is the only sanctioned >7s wait in this flow; it covers the
-# real Puppeteer/SSO marketplace round-trip latency.
-- extendedWaitUntil:
-    visible:
-      text: ".*Select Base Set.*|.*Re-map Base.*"
-    timeout: 60000
+# NEO-85 residual coordinate-staleness — the SAME maestro-web tap-drop class that
+# 232a39f fixed for the drill row-selects, here on this flow's OWN "Base" tap:
+# maestro reads the "Base" row's bounds, the still-settling Variant Types column
+# reflows, and the click lands stale → a false "Something changed… Proceed" that
+# never registered the select (selectedVariantTypeId stays null → the attributes
+# bar reads "…(Set)" instead of the variant). Result-keyed retry: re-fire the Base
+# tap ONCE iff neither the BaseSetPicker ("Select Base Set", Path A) NOR the
+# "Re-map Base" button (Path B, auto-closed prior mapping) appears; a genuine
+# failure still fails loudly. 7s keying timeout — the picker opens in ~343ms
+# (proven; setPickerOpen(true) fires BEFORE the SL fetch is awaited), so this is a
+# pure UI-open wait, NOT a marketplace round-trip; the SL latency is absorbed
+# downstream at Path-A "Confirm Base Set". retryTapIfNoChange is the maestro-native
+# nudge (default settle re-enables it).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible:
+            text: ".*Select Base Set.*|.*Re-map Base.*"
+          timeout: 7000
 
 # PATH A — picker stays open (SL returned data, no prior mapping):
-#   Validate the picker structure, then confirm. The "Confirm Base Set" button
-#   is already present once "Select Base Set" is visible (same modal open, same
-#   fetch result) — no second 60s wait needed. Center before tapping to keep
-#   the button clear of the footer-steal zone. Rule 8.
+#   Validate the picker structure, then confirm. THIS is where the live SL fetch
+#   latency is absorbed: the "likely match" pill only renders once the scored SL
+#   options arrive, and the confirm button reads "Loading…"/stays disabled until
+#   fetchRawOptions resolves — it only flips to "Confirm Base Set" then, so the
+#   scrollUntilVisible below naturally waits out the real marketplace round-trip.
+#   Center before tapping to keep the button clear of the footer-steal zone. Rule 8.
 - runFlow:
     when:
       visible: "Select Base Set"

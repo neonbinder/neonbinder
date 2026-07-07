@@ -66,16 +66,50 @@ export default function AttachSetsDialog({
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
 
-  // Load candidates when the dialog opens.
+  // Serialized identity of the fetch inputs. The candidate-load effect keys
+  // off THIS string rather than the parentFilters / alreadyAttached object
+  // references, so unrelated parent re-renders (which may hand us fresh object
+  // identities) never re-fire the load and wipe the search box out from under
+  // an in-progress interaction. MultiSourcePanel already memoizes those props;
+  // keying the effect on a value-derived string is defense in depth.
+  const filterKey = useMemo(() => {
+    const sortedFilters = Object.entries(parentFilters).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
+    return JSON.stringify({
+      level,
+      parentId: parentId ?? null,
+      filters: sortedFilters,
+      bsc: Array.from(alreadyAttached.bsc).sort(),
+      sl: Array.from(alreadyAttached.sportlots).sort(),
+    });
+  }, [level, parentId, parentFilters, alreadyAttached]);
+
+  // Reset transient UI (search text + selection) ONLY on a genuine
+  // closed→open transition — never on unrelated re-renders while the dialog is
+  // already open. Tracked via a ref edge so a half-typed search query (e.g.
+  // "Chrome") survives any parent re-render that lands mid-interaction; wiping
+  // it there was the root cause of the dropped Cancel tap.
+  const prevIsOpenRef = useRef(false);
+  useEffect(() => {
+    const justOpened = isOpen && !prevIsOpenRef.current;
+    prevIsOpenRef.current = isOpen;
+    if (justOpened) {
+      setBscSearch("");
+      setSlSearch("");
+      setBscSelected(new Map());
+      setSlSelected(new Map());
+    }
+  }, [isOpen]);
+
+  // Load candidates when the dialog opens or the (value-derived) fetch inputs
+  // genuinely change. This effect must NOT touch the search box — that reset
+  // lives in the open-transition effect above.
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
     setLoading(true);
     setErrorMsg(null);
-    setBscSelected(new Map());
-    setSlSelected(new Map());
-    setBscSearch("");
-    setSlSearch("");
     (async () => {
       try {
         const result = await fetchRawOptions({
@@ -124,14 +158,11 @@ export default function AttachSetsDialog({
     return () => {
       cancelled = true;
     };
-  }, [
-    isOpen,
-    level,
-    parentId,
-    parentFilters,
-    fetchRawOptions,
-    alreadyAttached,
-  ]);
+    // Keyed on filterKey (the value identity of level / parentId /
+    // parentFilters / alreadyAttached) instead of the raw object refs, so a
+    // stable-value re-render never re-triggers the fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, filterKey, fetchRawOptions]);
 
   // Focus the confirm button when the dialog opens so Enter works without
   // tabbing first. Standing UX rule: preselect defaults + Enter to confirm.

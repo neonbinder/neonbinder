@@ -1,6 +1,6 @@
 import type { GenericId } from "convex/values";
 import { api } from "../../convex/_generated/api";
-import EntitySelector from "./EntitySelector";
+import EntitySelector, { displayByValue } from "./EntitySelector";
 
 type VariantSelectorProps = {
   variantTypeId: GenericId<"selectorOptions">;
@@ -28,7 +28,7 @@ export default function VariantSelector({
       onSelect={(id) => onVariantSelect(id as GenericId<"selectorOptions">)}
       expanded={expanded}
       setExpanded={setExpanded}
-      getDisplayName={(item) => item.value as string}
+      getDisplayName={displayByValue}
       getDescription={() => undefined}
       selectedColor="bg-teal-100 dark:bg-teal-900 border-teal-300 dark:border-teal-700"
       isItemTerminal={() => true}

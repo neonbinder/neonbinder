@@ -1,7 +1,7 @@
 "use client";
 
 import type { GenericId } from "convex/values";
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -63,14 +63,19 @@ export default function SetSelector() {
   const [variantExpanded, setVariantExpanded] = useState(false);
   const [variantOfVariantExpanded, setVariantOfVariantExpanded] = useState(false);
 
-  const clearFrom = (level: number) => {
+  // useCallback([]) is safe: the body only calls state setters, whose
+  // identities React guarantees stable. A stable clearFrom lets the level-select
+  // handlers below (e.g. handleVariantTypeSelect) themselves be stable, which
+  // keeps the onSelect prop feeding the memoized Variant Types column referen-
+  // tially stable across parent re-renders (NEO-85).
+  const clearFrom = useCallback((level: number) => {
     if (level <= 2) setSelectedYearId(null);
     if (level <= 3) setSelectedManufacturerId(null);
     if (level <= 4) setSelectedSetId(null);
     if (level <= 5) setSelectedVariantTypeId(null);
     if (level <= 6) setSelectedVariantId(null);
     if (level <= 7) setSelectedVariantOfVariantId(null);
-  };
+  }, []);
 
   // Base is a terminal variantType: when selected, the cascade stops
   // there and the CardChecklist attaches to the variantType row itself
@@ -152,10 +157,16 @@ export default function SetSelector() {
     setSelectedSetId(id);
     clearFrom(5);
   };
-  const handleVariantTypeSelect = (id: GenericId<"selectorOptions">) => {
-    setSelectedVariantTypeId(id);
-    clearFrom(6);
-  };
+  // Stable across re-renders (NEO-85): fed as onSelect into the memoized Variant
+  // Types column via SetVariantSelector, so a bare parent re-render doesn't churn
+  // the list under Maestro's coordinate taps.
+  const handleVariantTypeSelect = useCallback(
+    (id: GenericId<"selectorOptions">) => {
+      setSelectedVariantTypeId(id);
+      clearFrom(6);
+    },
+    [clearFrom],
+  );
   const handleVariantSelect = (id: GenericId<"selectorOptions">) => {
     setSelectedVariantId(id);
     clearFrom(7);

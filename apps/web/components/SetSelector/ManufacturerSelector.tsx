@@ -1,6 +1,6 @@
 import type { GenericId } from "convex/values";
 import { api } from "../../convex/_generated/api";
-import EntitySelector from "./EntitySelector";
+import EntitySelector, { displayByValue } from "./EntitySelector";
 
 type ManufacturerSelectorProps = {
   yearId: GenericId<"selectorOptions">;
@@ -28,7 +28,7 @@ export default function ManufacturerSelector({
       }
       expanded={expanded}
       setExpanded={setExpanded}
-      getDisplayName={(manufacturer) => manufacturer.value as string}
+      getDisplayName={displayByValue}
       getDescription={() => undefined}
       selectedColor="bg-green-100 dark:bg-green-900 border-green-300 dark:border-green-700"
     />

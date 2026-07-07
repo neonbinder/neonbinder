@@ -177,20 +177,29 @@ tags:
 
 # ============================================================
 # STEP 10 — SCROLL TO THE NEW CARD ROW
-# After Submit, the new card sorts to the BOTTOM of the Virtuoso list
-# and is NOT rendered in the initial viewport (Virtuoso only renders
-# rows near the current scroll position). Do NOT use extendedWaitUntil
-# on the player name text — the row is not in the DOM yet.
-# scrollUntilVisible materializes the row via scrollToIndex.
-# visibilityPercentage: 50 is enough to tap; no centerElement (the
-# new card is at the bottom — centering a bottom element can fail
-# if the list cannot scroll further to satisfy the centering contract).
+# After Submit, CardChecklist re-sorts the list by natural cardNumber order
+# (restampCardChecklistSortOrders) — the new row is NOT necessarily at the
+# bottom — and is NOT rendered in the initial viewport (Virtuoso only renders
+# rows near the current scroll position). Do NOT use extendedWaitUntil on the
+# player name text — the row is not in the DOM yet. scrollUntilVisible
+# materializes the row via scrollToIndex.
+#
+# centerElement: true is REQUIRED here (RCA aacdbb3f; Rule 8 scroll-to-tap).
+# On add, the component itself fires virtuosoRef.scrollToIndex({align:"center"})
+# (CardChecklist.tsx ~L262), settling the new row to viewport CENTER. WITHOUT
+# centerElement, Maestro stops the instant the row is 50% visible near the
+# BOTTOM edge (y≈577), reads its bounds there, then the component's async
+# center-scroll shifts the row ~110px UP (to y≈468) before the caller's tap
+# fires → stale-coordinate miss on "Edit card". centerElement drives Maestro to
+# the SAME center target the component uses, so the two scroll authorities agree
+# and the row is stable when its bounds are read.
 # waitToSettleTimeoutMs: 1000 lets Virtuoso settle after each scroll step.
 # ============================================================
 
 - scrollUntilVisible:
     element:
       id: "Edit card ${CARD_NUMBER}"
+    centerElement: true
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 15000

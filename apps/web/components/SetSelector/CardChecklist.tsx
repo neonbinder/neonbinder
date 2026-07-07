@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useAction, useMutation } from "convex/react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../convex/_generated/api";
@@ -272,6 +272,36 @@ export default function CardChecklist({
     prevCardCountRef.current = count;
   }, [cards?.length, cards]);
 
+  // Memoize the filtered/sorted view so unrelated re-renders (this component
+  // re-renders on every reactive getCardChecklist update) reuse the same array
+  // reference instead of handing Virtuoso a fresh `data` prop each time, which
+  // churns the list and widens the reflow window a Maestro tap can land in.
+  // Guarded for the not-yet-loaded case so the hook stays above the early
+  // return (Rules of Hooks). Sort semantics are unchanged.
+  const sortedCards = useMemo(() => {
+    if (!cards) return [];
+    return [...cards]
+      .filter((c) => {
+        if (sourceFilter.bsc && c.sourcePlatformIds?.bsc !== sourceFilter.bsc) {
+          return false;
+        }
+        if (
+          sourceFilter.sportlots &&
+          c.sourcePlatformIds?.sportlots !== sourceFilter.sportlots
+        ) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => a.sortOrder - b.sortOrder);
+  }, [cards, sourceFilter]);
+  const lastSynced = useMemo(() => {
+    if (!cards || cards.length === 0) return null;
+    return Math.max(
+      ...cards.map((c: { lastUpdated: number }) => c.lastUpdated),
+    );
+  }, [cards]);
+
   if (!cards) {
     return (
       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
@@ -280,24 +310,6 @@ export default function CardChecklist({
       </div>
     );
   }
-
-  const sortedCards = [...cards]
-    .filter((c) => {
-      if (sourceFilter.bsc && c.sourcePlatformIds?.bsc !== sourceFilter.bsc) {
-        return false;
-      }
-      if (
-        sourceFilter.sportlots &&
-        c.sourcePlatformIds?.sportlots !== sourceFilter.sportlots
-      ) {
-        return false;
-      }
-      return true;
-    })
-    .sort((a, b) => a.sortOrder - b.sortOrder);
-  const lastSynced = cards.length > 0
-    ? Math.max(...cards.map((c: { lastUpdated: number }) => c.lastUpdated))
-    : null;
 
   // NEO-25: resolve the open card from its id against the live sorted list.
   const selectedIndex = selectedCardId
