@@ -78,7 +78,7 @@
     "concurrently": "^10.0.3",
     "convex-test": "^0.0.54",
     "dotenv": "^17.4.2",
-    "dotenv-cli": "^8.0.0",
+    "dotenv-cli": "^11.0.0",
     "eslint": "^10.6.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "happy-dom": "^20.10.6",
