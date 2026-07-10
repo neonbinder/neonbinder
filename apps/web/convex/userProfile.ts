@@ -1,4 +1,4 @@
-import { query, mutation, internalMutation } from "./_generated/server";
+import { query, mutation, internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 
@@ -123,15 +123,17 @@ export const setMarketplaceAccountIdInternal = internalMutation({
 });
 
 /**
- * Update user profile with site credential references
+ * Update user profile preferences.
+ *
+ * NEO-89: `siteCredentials` was previously an accepted arg here too, which let
+ * any client directly set `hasCredentials` outside the save/delete flow —
+ * dead code in practice (grepped: zero frontend callers ever passed it), but
+ * a real spoofing vector on a general-purpose mutation. Credential status is
+ * now exclusively written by `credentials.saveCredentials` via the internal
+ * mutations below.
  */
 export const updateUserProfile = mutation({
   args: {
-    siteCredentials: v.optional(v.array(v.object({
-      site: v.string(),
-      hasCredentials: v.boolean(),
-      lastUpdated: v.optional(v.string()),
-    }))),
     preferences: v.optional(v.object({
       defaultSport: v.optional(v.string()),
       defaultYear: v.optional(v.number()),
@@ -145,42 +147,21 @@ export const updateUserProfile = mutation({
       throw new Error("Not authenticated");
     }
 
-    // Get existing profile or create new one
     const profile = await ctx.db
       .query("userProfiles")
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .unique();
 
-    // Prepare update data
-    const updateData: {
-      siteCredentials?: Array<{
-        site: string;
-        hasCredentials: boolean;
-        lastUpdated?: string;
-      }>;
-      preferences?: {
-        defaultSport?: string;
-        defaultYear?: number;
-        theme?: "light" | "dark";
-      };
-    } = {};
-    
-    if (args.siteCredentials !== undefined) {
-      updateData.siteCredentials = args.siteCredentials;
-    }
-    
-    if (args.preferences !== undefined) {
-      updateData.preferences = args.preferences;
+    if (args.preferences === undefined) {
+      return true;
     }
 
     if (profile) {
-      // Update existing profile
-      await ctx.db.patch(profile._id, updateData);
+      await ctx.db.patch(profile._id, { preferences: args.preferences });
     } else {
-      // Create new profile
       await ctx.db.insert("userProfiles", {
         userId,
-        ...updateData,
+        preferences: args.preferences,
       });
     }
 
@@ -189,30 +170,37 @@ export const updateUserProfile = mutation({
 });
 
 /**
- * Update a specific site's credential status
+ * Update a specific site's credential status.
+ *
+ * NEO-89: internal — was a public mutation the frontend called as a SECOND,
+ * separate network call after the browser-service secret write succeeded.
+ * If that second call never fired (client interrupted/killed/navigated away
+ * between the two), Convex kept believing credentials existed after the
+ * underlying secret was gone — a permanent "ghost credentials" state with no
+ * self-healing. Now only reachable from `credentials.saveCredentials`,
+ * called server-side in the same action as the secret write, so the two can
+ * no longer drift apart. `userId` is passed explicitly (matching
+ * `acquireCredentialLock` below) since this runs via `ctx.runMutation` from a
+ * "use node" action file, not from a client request with its own auth ctx.
  */
-export const updateSiteCredentialStatus = mutation({
+export const updateSiteCredentialStatus = internalMutation({
   args: {
+    userId: v.string(),
     site: v.string(),
     hasCredentials: v.boolean(),
   },
-  returns: v.boolean(),
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-
     const profile = await ctx.db
       .query("userProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .unique();
 
     const currentCredentials = profile?.siteCredentials || [];
     const existingIndex = currentCredentials.findIndex(cred => cred.site === args.site);
-    
+
     const updatedCredentials = [...currentCredentials];
-    
+
     if (existingIndex >= 0) {
       // Update existing entry
       updatedCredentials[existingIndex] = {
@@ -235,32 +223,34 @@ export const updateSiteCredentialStatus = mutation({
       });
     } else {
       await ctx.db.insert("userProfiles", {
-        userId,
+        userId: args.userId,
         siteCredentials: updatedCredentials,
       });
     }
 
-    return true;
+    return null;
   },
 });
 
 /**
- * Remove a site's credential status
+ * Remove a site's credential status.
+ *
+ * NEO-89: internal — same reasoning as `updateSiteCredentialStatus`. Also now
+ * the self-healing target: `credentials.getSiteToken` calls this directly
+ * when it discovers the underlying secret is missing during an automatic
+ * re-auth attempt, so the UI stops showing stale "saved" state regardless of
+ * how the drift happened.
  */
-export const removeSiteCredentialStatus = mutation({
+export const removeSiteCredentialStatus = internalMutation({
   args: {
+    userId: v.string(),
     site: v.string(),
   },
-  returns: v.boolean(),
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-
     const profile = await ctx.db
       .query("userProfiles")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
       .unique();
 
     if (profile && profile.siteCredentials) {
@@ -273,7 +263,7 @@ export const removeSiteCredentialStatus = mutation({
       });
     }
 
-    return true;
+    return null;
   },
 });
 
@@ -295,6 +285,37 @@ const lockedOpValidator = v.union(
   v.literal("test"),
   v.literal("delete"),
 );
+
+/**
+ * NEO-89: read-only lock check for `credentials.getSiteToken`'s self-heal
+ * path. When a token fetch discovers the secret is missing (404), it clears
+ * the stale `hasCredentials` flag — but if a `saveCredentials` store is
+ * ACTIVELY writing that same secret right now, the 404 is an expected
+ * mid-write transient, not evidence of a truly-missing secret, and
+ * self-healing would both (a) wipe the flag right out from under the
+ * in-flight store's own imminent "set true", and (b) clobber the lock entry
+ * the store is currently holding (`removeSiteCredentialStatus` filters the
+ * whole siteCredentials entry, lock fields included). Skip the self-heal
+ * whenever a live lock is held; a stale/expired lock is not a false positive
+ * (defeats the exact purpose of a lease).
+ */
+export const hasLiveCredentialLock = internalQuery({
+  args: {
+    userId: v.string(),
+    site: v.string(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique();
+    const entry = profile?.siteCredentials?.find((c) => c.site === args.site);
+    return !!(
+      entry?.lockedAt != null && entry.lockedAt + CRED_LOCK_LEASE_MS > Date.now()
+    );
+  },
+});
 
 /**
  * Acquire the per-(user, site) credential lock. Called via ctx.runMutation from

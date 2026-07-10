@@ -23,7 +23,7 @@
 //   index. No bulk-wipe paths, no cross-user reach.
 
 import { mutation, action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 
@@ -174,7 +174,8 @@ export const seedMyTestCredentials = action({
         // Correct secret already present — ensure the flag (a prior
         // /testing/reset may have cleared the userProfile row while Secret
         // Manager kept the creds) and leave the stored token untouched.
-        await ctx.runMutation(api.userProfile.updateSiteCredentialStatus, {
+        await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+          userId,
           site,
           hasCredentials: true,
         });
@@ -182,17 +183,15 @@ export const seedMyTestCredentials = action({
         continue;
       }
 
-      const storeResult = await ctx.runAction(api.credentials.storeSiteCredentials, {
+      // NEO-89: saveCredentials already updates hasCredentials server-side on
+      // a successful store, so no separate follow-up mutation is needed here
+      // (unlike the credsMatch branch above, which skips the store call
+      // entirely and so must set the flag itself).
+      const storeResult = await ctx.runAction(api.credentials.saveCredentials, {
         site,
         username,
         password,
       });
-      if (storeResult.success) {
-        await ctx.runMutation(api.userProfile.updateSiteCredentialStatus, {
-          site,
-          hasCredentials: true,
-        });
-      }
 
       seeded.push({ site, stored: storeResult.success });
     }
