@@ -22,6 +22,16 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { CRED_LOCK_LEASE_MS } from "./userProfile";
 
+// ---------------------------------------------------------------------------
+// NEO-89: updateUserProfile can no longer touch siteCredentials/hasCredentials
+// ---------------------------------------------------------------------------
+// Previously `updateUserProfile` accepted an arbitrary `siteCredentials` array
+// as one of its args, letting a client directly claim `hasCredentials: true`
+// for a site outside the actual save/delete flow (never exploited — grepped
+// zero real callers — but a real spoofing vector on a general-purpose
+// mutation). Credential status is now exclusively written by
+// `credentials.saveCredentials` via the internal-only mutations below.
+
 // convex-test v0.0.53 requires import.meta.glob to discover all modules.
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -342,5 +352,41 @@ describe("lock isolation across (userId, site) pairs", () => {
     const slEntry = await getRawEntry(t, USER_A, SITE_SL);
     expect(bscEntry!.lockedOp).toBe("store");
     expect(slEntry!.lockedOp).toBe("delete");
+  });
+});
+
+describe("updateUserProfile — cannot spoof siteCredentials (NEO-89)", () => {
+  test("passing siteCredentials is rejected by the args validator — the field no longer exists", async () => {
+    const t = convexTest(schema, modules);
+
+    // Bypass TypeScript (the whole point: the type system already forbids
+    // this at compile time) to prove Convex's runtime arg validator also
+    // rejects an attempt to smuggle siteCredentials through this mutation.
+    const spoofedArgs = {
+      siteCredentials: [
+        { site: SITE_BSC, hasCredentials: true, lastUpdated: new Date().toISOString() },
+      ],
+    };
+
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      t.withIdentity({ subject: USER_A }).mutation(api.userProfile.updateUserProfile, spoofedArgs as any),
+    ).rejects.toThrow();
+
+    // No row should have been created with a spoofed credential entry.
+    const entry = await getRawEntry(t, USER_A, SITE_BSC);
+    expect(entry).toBeNull();
+  });
+
+  test("preferences-only update still works normally", async () => {
+    const t = convexTest(schema, modules);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .mutation(api.userProfile.updateUserProfile, {
+        preferences: { theme: "dark" },
+      });
+
+    expect(result).toBe(true);
   });
 });
