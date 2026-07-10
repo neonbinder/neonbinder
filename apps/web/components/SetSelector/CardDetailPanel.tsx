@@ -14,11 +14,14 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
  * `card._id`, so switching cards (arrow nav / prev-next) remounts it with fresh
  * draft state (no manual reset effect).
  *
- * Editable: cardName, teams, attributes (chip toggles → derives isRookie /
- * isRelic), printRun, cardVariation, autographType, listingTitle,
+ * Editable: cardName, teams, attributes (chip toggles → derives isRelic, and
+ * isRookie via an OR with the checkbox below — see NEO-71 comment at the
+ * isRookie write site), printRun, cardVariation, autographType, listingTitle,
  * listingDescription. Per-card feature overrides live in the embedded
  * CardFeaturesEditor (persists immediately via setCardFeature, so they're NOT
- * part of this panel's dirty/Save cycle).
+ * part of this panel's dirty/Save cycle) — this now includes a Rookie
+ * checkbox (NEO-71) that writes `cardChecklist.isRookie` directly and
+ * independently of the RC chip above.
  *
  * Display-only: card images (imageUrls or placeholder), players, and the
  * inherited-from-set hierarchy (sport→…→variant). Per-card override of the
@@ -168,7 +171,13 @@ export default function CardDetailPanel({
         // denormalized booleans from it so they can't drift (matches
         // fetchCardChecklist / commitCardChecklist semantics).
         attributes,
-        isRookie: attributes.includes("RC"),
+        // NEO-71: the embedded CardFeaturesEditor's Rookie checkbox writes
+        // isRookie directly and can autosave between this panel's mount and
+        // this Save click. OR (never AND-downgrade) so Save can still turn
+        // isRookie on via the RC chip, but can never silently revert a
+        // `true` the checkbox already set — `card` is the live reactive
+        // prop, so it reflects the checkbox's write by the time Save fires.
+        isRookie: attributes.includes("RC") || card.isRookie === true,
         isRelic: attributes.includes("RELIC"),
         ...(parsedPrintRun != null && !Number.isNaN(parsedPrintRun)
           ? { printRun: parsedPrintRun }
@@ -362,6 +371,7 @@ export default function CardDetailPanel({
               selectorOptionId={card.selectorOptionId}
               cardFeatures={card.features}
               ancestorSport={ancestorSport}
+              cardIsRookie={card.isRookie}
             />
           </div>
 

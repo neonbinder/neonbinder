@@ -10,6 +10,9 @@ import {
   deriveCardObservedFeatures,
   deriveBackfillFeatures,
   eraForYear,
+  validateFeatureValue,
+  ERA_BUCKET_OPTIONS,
+  LEAGUE_OPTIONS,
 } from "./features/deriveCardFeatures";
 
 describe("deriveSetLevelFeatures", () => {
@@ -78,6 +81,39 @@ describe("eraForYear (eBay-standard buckets)", () => {
   test("vintage flag flips at 1979/1980", () => {
     expect(deriveSetLevelFeatures({ year: "1979" }).vintage).toBe("true");
     expect(deriveSetLevelFeatures({ year: "1980" }).vintage).toBe("false");
+  });
+
+  test("ERA_BUCKET_OPTIONS has exactly the 4 known bucket strings", () => {
+    expect(ERA_BUCKET_OPTIONS).toEqual([
+      "Pre-WWII (Pre-1942)",
+      "Post-WWII (1942-69)",
+      "Vintage (1970-79)",
+      "Modern (1980-Now)",
+    ]);
+  });
+});
+
+describe("validateFeatureValue (NEO-72/73 server-side guard)", () => {
+  test("accepts every LEAGUE_OPTIONS value", () => {
+    for (const league of LEAGUE_OPTIONS) {
+      expect(() => validateFeatureValue("league", league)).not.toThrow();
+    }
+  });
+
+  test("accepts every ERA_BUCKET_OPTIONS value", () => {
+    for (const era of ERA_BUCKET_OPTIONS) {
+      expect(() => validateFeatureValue("era", era)).not.toThrow();
+    }
+  });
+
+  test("rejects an off-list league/era value", () => {
+    expect(() => validateFeatureValue("league", "XFL")).toThrow();
+    expect(() => validateFeatureValue("era", "Junk Wax")).toThrow();
+  });
+
+  test("is a no-op for every other key, even nonsense values", () => {
+    expect(() => validateFeatureValue("manufacturer", "anything")).not.toThrow();
+    expect(() => validateFeatureValue("isReprint", "true")).not.toThrow();
   });
 });
 

@@ -2,8 +2,11 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
-import { useReactiveField } from "../forms/useReactiveField";
+import {
+  EXPECTED_FEATURES,
+  type ExpectedFeature,
+} from "../../convex/features/expectedFeatures";
+import { FeatureValueControl } from "./FeatureValueControl";
 
 /**
  * NEO-24 — per-card feature override editor.
@@ -26,6 +29,7 @@ export default function CardFeaturesEditor({
   selectorOptionId,
   cardFeatures,
   ancestorSport,
+  cardIsRookie,
 }: {
   cardChecklistId: Id<"cardChecklist">;
   /** Variant the card lives under — feeds the ancestor-chain query. */
@@ -34,6 +38,8 @@ export default function CardFeaturesEditor({
   cardFeatures: Record<string, string> | undefined;
   /** Sport from the ancestor chain — drives `applicableSports` filtering. */
   ancestorSport?: string;
+  /** The card's real typed Rookie column — backs the "boolean" input type (NEO-71). */
+  cardIsRookie?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const setCardFeature = useMutation(api.selectorOptions.setCardFeature);
@@ -60,6 +66,7 @@ export default function CardFeaturesEditor({
 
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
+      if (f.hiddenAtLevels?.includes("card")) return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true; // Show all when sport unknown
       return f.applicableSports.includes(ancestorSport);
@@ -101,10 +108,10 @@ export default function CardFeaturesEditor({
         {applicable.map((feat) => (
           <CardFeatureRow
             key={feat.key}
-            featKey={feat.key}
-            label={feat.label}
+            feat={feat}
             cardValue={cardFeatures?.[feat.key]}
             inheritedValue={inheritedByKey[feat.key]}
+            cardIsRookie={cardIsRookie}
             onSave={async (value) => {
               await setCardFeature({
                 cardChecklistId,
@@ -124,6 +131,9 @@ export default function CardFeaturesEditor({
                 features: next,
               });
             }}
+            onSaveBoolean={async (v) => {
+              await updateCard({ id: cardChecklistId, isRookie: v });
+            }}
           />
         ))}
       </div>
@@ -132,41 +142,94 @@ export default function CardFeaturesEditor({
 }
 
 function CardFeatureRow({
-  featKey,
-  label,
+  feat,
   cardValue,
   inheritedValue,
+  cardIsRookie,
   onSave,
   onRevert,
+  onSaveBoolean,
 }: {
-  featKey: string;
-  label: string;
+  feat: ExpectedFeature;
   cardValue: string | undefined;
   inheritedValue: string | undefined;
+  cardIsRookie: boolean | undefined;
   onSave: (value: string) => Promise<unknown>;
   onRevert: () => Promise<unknown>;
+  onSaveBoolean: (value: boolean) => Promise<unknown>;
 }) {
+  const label = feat.label;
+  const [boolBusy, setBoolBusy] = useState(false);
+  const [boolError, setBoolError] = useState<string | null>(null);
+
+  // "boolean"/"derived" rows don't use the string features map at all, so an
+  // unset/false value is a valid complete answer, not missing data.
+  const isMissing =
+    feat.inputType !== "boolean" &&
+    feat.inputType !== "derived" &&
+    (cardValue === undefined || cardValue === "") &&
+    (inheritedValue === undefined || inheritedValue === "");
+
+  if (feat.inputType === "boolean") {
+    const handleToggle = async (checked: boolean) => {
+      setBoolBusy(true);
+      try {
+        await onSaveBoolean(checked);
+        setBoolError(null);
+      } catch (e) {
+        setBoolError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBoolBusy(false);
+      }
+    };
+    return (
+      <label
+        className="flex flex-row items-center gap-2 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
+        aria-label={`Feature ${label}`}
+      >
+        <input
+          type="checkbox"
+          checked={cardIsRookie === true}
+          disabled={boolBusy}
+          onChange={(e) => void handleToggle(e.target.checked)}
+          aria-label={`Value for ${label}`}
+          className="accent-[#00D558]"
+        />
+        <span className="text-[10px] uppercase tracking-wide text-gray-400">
+          {label}
+        </span>
+        {boolError && (
+          <span className="text-[10px] text-[#FF2EB3]" role="alert">
+            {boolError}
+          </span>
+        )}
+      </label>
+    );
+  }
+
+  if (feat.inputType === "derived") {
+    const resolved = cardValue ?? inheritedValue ?? "—";
+    return (
+      <div
+        className="flex flex-col gap-0.5 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
+        aria-label={`Feature ${label}`}
+      >
+        <span className="text-[10px] uppercase tracking-wide text-gray-400">
+          {label}
+        </span>
+        <span aria-label={`Value for ${label}`} className="text-gray-300">
+          {resolved}
+        </span>
+      </div>
+    );
+  }
+
   // Effective displayed value = override if any, else inherited. The wrapper
   // mirrors this into the (uncontrolled) input whenever the field is idle.
   const displayed = cardValue ?? inheritedValue ?? "";
 
-  // NEO-39: uncontrolled, focus-guarded field. Commit reads the live value;
-  // empty input reverts the per-card override; the no-op baseline is the
-  // card's own value (not the displayed inherited fallback), preserving the
-  // original `trimmed === (cardValue ?? "")` check.
-  const { inputProps, busy, error: err } = useReactiveField({
-    value: displayed,
-    compareBaseline: cardValue ?? "",
-    onSave: (trimmed) => onSave(trimmed),
-    onEmptyCommit: () => onRevert(),
-  });
-
   const hasOverride =
     cardValue !== undefined && cardValue !== "" && cardValue !== inheritedValue;
-
-  const isMissing =
-    (cardValue === undefined || cardValue === "") &&
-    (inheritedValue === undefined || inheritedValue === "");
 
   return (
     <label
@@ -194,7 +257,6 @@ function CardFeatureRow({
           <button
             type="button"
             onClick={onRevert}
-            disabled={busy}
             aria-label={`Revert ${label} to inherited`}
             className="text-[10px] text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
           >
@@ -202,22 +264,19 @@ function CardFeatureRow({
           </button>
         )}
       </span>
-      <input
-        {...inputProps}
-        type="text"
-        disabled={busy}
-        aria-label={`Value for ${label}`}
+      <FeatureValueControl
+        feat={feat}
+        value={displayed}
+        compareBaseline={cardValue ?? ""}
+        onSave={onSave}
+        onEmptyCommit={onRevert}
+        ariaLabel={`Value for ${label}`}
         placeholder={inheritedValue ?? "—"}
         className="w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none"
       />
       {!hasOverride && inheritedValue !== undefined && inheritedValue !== "" && (
         <span className="text-[10px] text-gray-500" aria-label={`Inherited value: ${inheritedValue}`}>
           Inherited: {inheritedValue}
-        </span>
-      )}
-      {err && (
-        <span className="text-[10px] text-[#FF2EB3]" role="alert">
-          {err}
         </span>
       )}
     </label>

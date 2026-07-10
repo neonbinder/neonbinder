@@ -16,6 +16,7 @@ import {
 import {
   deriveSetLevelFeatures,
   deriveCardObservedFeatures,
+  validateFeatureValue,
   type SetLevelFeatureInputs,
 } from "./features/deriveCardFeatures";
 
@@ -1466,6 +1467,8 @@ export async function materializeSelectorOptionFeature(
   propagatedToNodeCount: number;
   skippedAsOverridden: number;
 }> {
+  validateFeatureValue(key, value);
+
   const row = await ctx.db.get(selectorOptionId);
   if (!row) {
     throw new Error(`selectorOption ${selectorOptionId} not found`);
@@ -1588,6 +1591,7 @@ export const setCardFeature = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    validateFeatureValue(args.key, args.value);
     const card = await ctx.db.get(args.cardChecklistId);
     if (!card) {
       throw new Error(`cardChecklist ${args.cardChecklistId} not found`);

@@ -16,12 +16,29 @@
  * Feature keys mirror `EXPECTED_FEATURES` in ./expectedFeatures.ts.
  */
 
-const SPORT_TO_LEAGUE: Record<string, string> = {
+export const SPORT_TO_LEAGUE: Record<string, string> = {
   Baseball: "MLB",
   Basketball: "NBA",
   Football: "NFL",
   Hockey: "NHL",
 };
+
+/** Selectable options for the League feature (NEO-72). */
+export const LEAGUE_OPTIONS: ReadonlyArray<string> = Object.values(SPORT_TO_LEAGUE);
+
+/**
+ * eBay-standard "Era" item-specific buckets, named so the Era select
+ * (NEO-73) and `eraForYear` can never drift apart.
+ */
+export const ERA_BUCKETS = {
+  PRE_WWII: "Pre-WWII (Pre-1942)",
+  POST_WWII: "Post-WWII (1942-69)",
+  VINTAGE: "Vintage (1970-79)",
+  MODERN: "Modern (1980-Now)",
+} as const;
+
+/** Selectable options for the Era feature (NEO-73). */
+export const ERA_BUCKET_OPTIONS: ReadonlyArray<string> = Object.values(ERA_BUCKETS);
 
 export type SetLevelFeatureInputs = {
   /** Sport-level value, e.g. "Baseball". */
@@ -51,10 +68,10 @@ export type CardObservedInputs = {
  * (NEO-25 product decision — eBay-standard buckets.)
  */
 export function eraForYear(year: number): string {
-  if (year <= 1941) return "Pre-WWII (Pre-1942)";
-  if (year <= 1969) return "Post-WWII (1942-69)";
-  if (year <= 1979) return "Vintage (1970-79)";
-  return "Modern (1980-Now)";
+  if (year <= 1941) return ERA_BUCKETS.PRE_WWII;
+  if (year <= 1969) return ERA_BUCKETS.POST_WWII;
+  if (year <= 1979) return ERA_BUCKETS.VINTAGE;
+  return ERA_BUCKETS.MODERN;
 }
 
 /** Parse a leading 4-digit year out of a year/season string ("2023-24" → 2023). */
@@ -85,7 +102,7 @@ export function deriveSetLevelFeatures(
   const yearNum = parseYear(inputs.year);
   if (yearNum !== null) {
     f.era = eraForYear(yearNum);
-    f.vintage = yearNum <= 1979 ? "true" : "false";
+    f.vintage = eraForYear(yearNum) !== ERA_BUCKETS.MODERN ? "true" : "false";
   }
 
   // Manufacturer — straight from the ancestor row.
@@ -147,4 +164,18 @@ export function deriveBackfillFeatures(
     ...deriveCardObservedFeatures(cardInputs),
     ...(existing ?? {}),
   };
+}
+
+/**
+ * Server-side guard for the constrained select-type features (NEO-72/73):
+ * rejects a league/era write that doesn't match the fixed option set, in case
+ * a caller bypasses the `<select>` UI. No-op for every other feature key.
+ */
+export function validateFeatureValue(key: string, value: string): void {
+  if (key === "league" && !LEAGUE_OPTIONS.includes(value)) {
+    throw new Error(`Invalid league value: ${value}`);
+  }
+  if (key === "era" && !ERA_BUCKET_OPTIONS.includes(value)) {
+    throw new Error(`Invalid era value: ${value}`);
+  }
 }

@@ -29,7 +29,7 @@ tags:
 #   1. SetAttributesPanel: setting a feature at the set (setName) level saves
 #      and shows a toast with "Updated N cards" (propagation engine ran).
 #   2. A card inherits the set-level value: opening CardFeaturesEditor on a
-#      child card shows "Inherited: PropTest-MLB" under the League row.
+#      child card shows "Inherited: RprtTest-SET1" under the Reprint row.
 #   3. Per-card override: typing a different value saves the override on just
 #      that card. The row changes from "Inherited" to the new value.
 #   4. Re-propagation at the set level to a new value updates non-overridden
@@ -39,14 +39,14 @@ tags:
 # FLOW:
 #   Step 0: Drill to Baseball → 2024 → Topps → custom set fp-{WORKER_INDEX}
 #           via util-drill-to-custom.yaml.
-#   Step A: Set League = "PropTest-MLB" at the set level → assert toast.
+#   Step A: Set Reprint = "RprtTest-SET1" at the set level → assert toast.
 #   Step B: Drill to Insert → fp-insert-{WORKER_INDEX} → add card #992-{ATTEMPT_ID}
-#           → open CardFeaturesEditor → verify "Inherited: PropTest-MLB".
-#   Step C: Override League to "PropTest-NL" on that card.
-#   Step D: Back at set level → update League to "PropTest-AL" → verify toast.
+#           → open CardFeaturesEditor → verify "Inherited: RprtTest-SET1".
+#   Step C: Override Reprint to "RprtTest-OVR" on that card.
+#   Step D: Back at set level → update Reprint to "RprtTest-SET2" → verify toast.
 #           Re-drill via util-drill-to-custom.yaml (idempotent revisit).
-#   Step E: Re-open override card → verify it still shows "PropTest-NL".
-#   Step F: Revert override → card now inherits "PropTest-AL".
+#   Step E: Re-open override card → verify it still shows "RprtTest-OVR".
+#   Step F: Revert override → card now inherits "RprtTest-SET2".
 #   Cleanup: delete the test card.
 #
 # PREREQUISITE: cascade setup.yaml must have run (requires:setup-done) so
@@ -81,16 +81,16 @@ tags:
 - assertVisible: "Variant Types"
 
 # ============================================================
-# STEP A — Set League = "PropTest-MLB" at the set (setName) level
+# STEP A — Set Reprint = "RprtTest-SET1" at the set (setName) level
 #
 # The SetAttributesPanel renders at the setName level (no card checklist).
 # Panel defaults EXPANDED for custom sets with no card checklist.
 #
-# Two-step write: PropTest-X → PropTest-MLB.
-#   - PropTest-X forces a real DB write even if a prior run left PropTest-MLB.
-#   - PropTest-MLB is then always a genuine change from PropTest-X.
+# Two-step write: RprtTest-X → RprtTest-SET1.
+#   - RprtTest-X forces a real DB write even if a prior run left RprtTest-SET1.
+#   - RprtTest-SET1 is then always a genuine change from RprtTest-X.
 #   - For a fresh set with no cards yet, "Updated 0 cards" is fine.
-#     Cards added in Step B will inherit PropTest-MLB via the stored set value.
+#     Cards added in Step B will inherit RprtTest-SET1 via the stored set value.
 # ============================================================
 
 - scrollUntilVisible:
@@ -117,7 +117,7 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Reprint"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
@@ -125,9 +125,9 @@ tags:
 
 # First write: clearing sentinel — guarantees DB value changes.
 - tapOn:
-    id: "Value for League"
+    id: "Value for Reprint"
 - eraseText: 20
-- inputText: "PropTest-X"
+- inputText: "RprtTest-X"
 - pressKey: Enter
 # 7s timeout: 0–1 card propagation write; must land in 7s (Convex write SLA).
 - extendedWaitUntil:
@@ -137,9 +137,9 @@ tags:
 
 # Second write: the canonical test value.
 - tapOn:
-    id: "Value for League"
+    id: "Value for Reprint"
 - eraseText: 20
-- inputText: "PropTest-MLB"
+- inputText: "RprtTest-SET1"
 - pressKey: Enter
 - extendedWaitUntil:
     visible:
@@ -265,37 +265,37 @@ tags:
 - assertVisible:
     id: "Card features editor"
 
-# The card inherits the set-level League value. The "Inherited: PropTest-MLB"
+# The card inherits the set-level Reprint value. The "Inherited: RprtTest-SET1"
 # label appears below the input when the card has no override.
-# (Step A wrote PropTest-MLB to the set before this card existed; the
+# (Step A wrote RprtTest-SET1 to the set before this card existed; the
 # propagation engine stores the value on the set entity. Cards created
-# afterward look up the set value and display it as "Inherited: PropTest-MLB".)
+# afterward look up the set value and display it as "Inherited: RprtTest-SET1".)
 - assertVisible:
-    text: ".*PropTest-MLB.*"
+    text: ".*RprtTest-SET1.*"
 
 # ============================================================
-# STEP C — Override League to "PropTest-NL" on this card
+# STEP C — Override Reprint to "RprtTest-OVR" on this card
 # ============================================================
 
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Reprint"
     centerElement: true
     timeout: 10000
 - tapOn:
-    id: "Value for League"
+    id: "Value for Reprint"
 - eraseText: 20
-- inputText: "PropTest-NL"
+- inputText: "RprtTest-OVR"
 - pressKey: Enter
 
 # After save-on-Enter the "Inherited:" label disappears (card has its own value).
 - extendedWaitUntil:
-    notVisible: ".*Inherited: PropTest-MLB.*"
+    notVisible: ".*Inherited: RprtTest-SET1.*"
     timeout: 10000
 
-# The League input now shows "PropTest-NL".
+# The Reprint input now shows "RprtTest-OVR".
 - assertVisible:
-    id: "Value for League"
+    id: "Value for Reprint"
 
 # Save the card edit (closes the form). Scroll Save button into view first —
 # with features expanded it may be below the 1024×629 headless viewport.
@@ -321,7 +321,7 @@ tags:
     timeout: 15000
 
 # ============================================================
-# STEP D — Re-propagate at set level: League → "PropTest-AL"
+# STEP D — Re-propagate at set level: Reprint → "RprtTest-SET2"
 #
 # Navigate back to the custom set level via util-drill-to-custom.yaml.
 # The util performs its own openLink /set-selector; items pre-exist from
@@ -362,19 +362,19 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Reprint"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 10000
 - tapOn:
-    id: "Value for League"
+    id: "Value for Reprint"
 - eraseText: 20
-- inputText: "PropTest-AL"
+- inputText: "RprtTest-SET2"
 - pressKey: Enter
 
-# Toast: at least 1 card updated (the non-overridden cards get "PropTest-AL").
-# Our override card (#992) has "PropTest-NL" — it is in skippedAsOverridden.
+# Toast: at least 1 card updated (the non-overridden cards get "RprtTest-SET2").
+# Our override card (#992) has "RprtTest-OVR" — it is in skippedAsOverridden.
 # 7s timeout: propagation over 0–1 non-overridden cards (Convex write SLA).
 - extendedWaitUntil:
     visible:
@@ -382,7 +382,7 @@ tags:
     timeout: 7000
 
 # ============================================================
-# STEP E — Verify override card still shows "PropTest-NL", not "PropTest-AL"
+# STEP E — Verify override card still shows "RprtTest-OVR", not "RprtTest-SET2"
 # ============================================================
 
 # Variant Types column is above the fold after writing to the panel.
@@ -430,36 +430,36 @@ tags:
 - assertVisible:
     id: "Card features editor"
 
-# The override card should show "PropTest-NL" in the League input, NOT "PropTest-AL".
-# The card has an override so no "Inherited:" label shows — just "PropTest-NL".
+# The override card should show "RprtTest-OVR" in the Reprint input, NOT "RprtTest-SET2".
+# The card has an override so no "Inherited:" label shows — just "RprtTest-OVR".
 - assertVisible:
-    id: "Value for League"
+    id: "Value for Reprint"
 
-# The "Revert League to inherited" button is visible (card has an override).
+# The "Revert Reprint to inherited" button is visible (card has an override).
 - assertVisible:
-    id: "Revert League to inherited"
+    id: "Revert Reprint to inherited"
 
-# No "Inherited: PropTest-AL" should be visible (override is active).
-- assertNotVisible: ".*Inherited: PropTest-AL.*"
+# No "Inherited: RprtTest-SET2" should be visible (override is active).
+- assertNotVisible: ".*Inherited: RprtTest-SET2.*"
 
 # ============================================================
-# STEP F — Revert the override; card should now inherit "PropTest-AL"
+# STEP F — Revert the override; card should now inherit "RprtTest-SET2"
 # ============================================================
 
 - tapOn:
-    id: "Revert League to inherited"
+    id: "Revert Reprint to inherited"
 
-# After revert, "Inherited: PropTest-AL" label appears (card falls back to set value).
+# After revert, "Inherited: RprtTest-SET2" label appears (card falls back to set value).
 - extendedWaitUntil:
-    visible: ".*Inherited: PropTest-AL.*"
+    visible: ".*Inherited: RprtTest-SET2.*"
     timeout: 10000
 
-# The "Revert" button disappears (no more override on League).
+# The "Revert" button disappears (no more override on Reprint).
 - assertNotVisible:
-    id: "Revert League to inherited"
+    id: "Revert Reprint to inherited"
 
 # Save and close.
-# waitToSettleTimeoutMs: 3000 — tapOn: "Revert League to inherited" above
+# waitToSettleTimeoutMs: 3000 — tapOn: "Revert Reprint to inherited" above
 # fires a Convex write; scroll during re-render causes CDP crashes.
 - scrollUntilVisible:
     element:

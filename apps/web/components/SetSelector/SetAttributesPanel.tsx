@@ -4,7 +4,11 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
+import {
+  EXPECTED_FEATURES,
+  type ExpectedFeature,
+} from "../../convex/features/expectedFeatures";
+import { FeatureValueControl } from "./FeatureValueControl";
 
 /**
  * NEO-38 (PR B-2) — level-agnostic set ATTRIBUTES editor.
@@ -150,6 +154,7 @@ export default function SetAttributesPanel({
 
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
+      if (f.hiddenAtLevels?.includes("set")) return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true;
       return f.applicableSports.includes(ancestorSport);
@@ -321,8 +326,7 @@ export default function SetAttributesPanel({
             {applicable.map((feat) => (
               <SetFeatureRow
                 key={feat.key}
-                featKey={feat.key}
-                label={feat.label}
+                feat={feat}
                 value={features[feat.key]}
                 inherited={inheritedFeatureByKey[feat.key]?.value}
                 inheritedLevel={inheritedFeatureByKey[feat.key]?.level}
@@ -540,28 +544,19 @@ function MetadataReadonlyRow({
  * Editable feature row. Maestro targets `Value for {label}` — DO NOT rename.
  */
 function SetFeatureRow({
-  featKey,
-  label,
+  feat,
   value,
   inherited,
   inheritedLevel,
   onSave,
 }: {
-  featKey: string;
-  label: string;
+  feat: ExpectedFeature;
   value: string | undefined;
   inherited: string | undefined;
   inheritedLevel: Level | undefined;
   onSave: (value: string) => Promise<unknown>;
 }) {
-  // NEO-39: shared reactive-safe field (see useReactiveField). Uncontrolled +
-  // focus-guard + read-at-commit. Behavior preserved: no-op baseline = the
-  // feature's own value; an empty input is a no-op revert (set-level has no
-  // clear-key mutation — only write-time propagation), so no onEmptyCommit.
-  const { inputProps, busy, error: err } = useReactiveField({
-    value: value ?? "",
-    onSave: (trimmed) => onSave(trimmed),
-  });
+  const label = feat.label;
   // Unique per-field marker class so Maestro's inputText targets THIS field
   // rather than the first input sharing the className (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
@@ -569,6 +564,43 @@ function SetFeatureRow({
   const hasOwn = value !== undefined && value !== "";
   const isMissing = !hasOwn && (inherited === undefined || inherited === "");
   const inheritedLabel = inheritedLevel ? LEVEL_LABEL[inheritedLevel] : undefined;
+
+  // "boolean" has no typed target at the set level (no set-level isRookie
+  // column) and is filtered out via `hiddenAtLevels` before reaching here —
+  // this is a defensive fallback, not an expected path.
+  if (feat.inputType === "boolean") {
+    console.warn(
+      `SetFeatureRow: unexpected boolean-type feature "${feat.key}" at set level; rendering read-only.`,
+    );
+    return (
+      <div
+        className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+        aria-label={`Set feature ${label}`}
+      >
+        <span className="text-[10px] uppercase tracking-wide text-gray-400">
+          {label}
+        </span>
+        <span className="text-gray-300">{value ?? "—"}</span>
+      </div>
+    );
+  }
+
+  if (feat.inputType === "derived") {
+    const resolved = value ?? inherited ?? "—";
+    return (
+      <div
+        className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+        aria-label={`Set feature ${label}`}
+      >
+        <span className="text-[10px] uppercase tracking-wide text-gray-400">
+          {label}
+        </span>
+        <span aria-label={`Value for ${label}`} className="text-gray-300">
+          {resolved}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <label
@@ -593,13 +625,13 @@ function SetFeatureRow({
           {label}
         </span>
       </span>
-      <input
-        {...inputProps}
-        type="text"
-        data-feat-key={featKey}
-        disabled={busy}
-        aria-label={`Value for ${label}`}
+      <FeatureValueControl
+        feat={feat}
+        value={value ?? ""}
+        onSave={onSave}
+        ariaLabel={`Value for ${label}`}
         placeholder={inherited ?? "—"}
+        dataFeatKey={feat.key}
         className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
       />
       {!hasOwn && inherited !== undefined && inherited !== "" && (
@@ -608,11 +640,6 @@ function SetFeatureRow({
           aria-label={`Inherited value: ${inherited}`}
         >
           Inherited{inheritedLabel ? ` from ${inheritedLabel}` : ""}: {inherited}
-        </span>
-      )}
-      {err && (
-        <span className="text-[10px] text-[#FF2EB3]" role="alert">
-          {err}
         </span>
       )}
     </label>
