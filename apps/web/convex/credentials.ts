@@ -11,6 +11,10 @@ import { oidcAudienceFor } from "./browserAudience";
 const MAX_INPUT_LENGTH = 256;
 const SUPPORTED_SITES = ["buysportscards", "sportlots"];
 
+function isSupportedSite(site: string): boolean {
+  return (SUPPORTED_SITES as readonly string[]).includes(site);
+}
+
 function browserUrl() {
   return process.env.NEONBINDER_BROWSER_URL || "http://localhost:8080";
 }
@@ -147,18 +151,33 @@ async function withCredentialLock<T>(
 }
 
 /**
- * Store username/password credentials for a site.
- * Sends to browser service which stores in GCP and validates login.
+ * Save (or clear) credentials for a site — the single client-facing entry
+ * point for both operations (NEO-89: previously two separate public actions,
+ * `storeSiteCredentials` and `deleteSiteCredentials`, each paired with its
+ * own separate client-triggered Convex flag update — a non-atomic pair that
+ * could drift apart if the client was interrupted between them).
+ *
+ * - `username`+`password` both provided → store to the browser service (PUT),
+ *   then atomically mark `hasCredentials: true`.
+ * - Both omitted/blank → delete from the browser service (DELETE) — a
+ *   genuinely distinct GCP operation, not a blank overwrite: Secret
+ *   Manager's `updateCredentials` only ever ADDS a version, it never
+ *   destroys prior ones, so a "store with empty strings" could never
+ *   actually purge real credential material — then atomically clear
+ *   `hasCredentials`.
+ *
+ * Either way the Convex flag write happens server-side, inside this same
+ * action, immediately after the browser-service call succeeds — no second
+ * client round-trip that can be interrupted.
  */
-export const storeSiteCredentials = action({
+export const saveCredentials = action({
   args: {
     site: v.string(),
-    username: v.string(),
-    password: v.string(),
+    username: v.optional(v.string()),
+    password: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
-    secretId: v.optional(v.string()),
     message: v.string(),
   }),
   handler: async (ctx, args) => {
@@ -166,48 +185,104 @@ export const storeSiteCredentials = action({
     if (!userId) {
       throw new Error("Not authenticated");
     }
+    if (!isSupportedSite(args.site)) {
+      return { success: false, message: `Unsupported site: ${args.site}` };
+    }
 
-    validateInputLength(args.username, "Username");
-    validateInputLength(args.password, "Password");
+    const hasUsername = !!args.username;
+    const hasPassword = !!args.password;
 
-    return withCredentialLock(ctx, userId, args.site, "store", async () => {
+    if (hasUsername !== hasPassword) {
+      return {
+        success: false,
+        message: "Provide both username and password, or neither (to clear credentials).",
+      };
+    }
+
+    if (hasUsername && hasPassword) {
+      const username = args.username!;
+      const password = args.password!;
+      validateInputLength(username, "Username");
+      validateInputLength(password, "Password");
+
+      return withCredentialLock(ctx, userId, args.site, "store", async () => {
+        try {
+          const key = credKey(args.site, userId);
+
+          // Store credentials without marketplace validation.
+          // Use "Test Credentials" to validate against the marketplace separately.
+          const response = await browserFetch(`/credentials/${key}`, {
+            method: "PUT",
+            headers: await browserAuthHeaders(),
+            body: JSON.stringify({ username, password }),
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
+            return {
+              success: false,
+              message: (errorData as { error?: string }).error || `Failed to store credentials for ${args.site}`,
+            };
+          }
+
+          await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
+            userId,
+            site: args.site,
+            hasCredentials: true,
+          });
+
+          return {
+            success: true,
+            message: `Credentials stored successfully for ${args.site}`,
+          };
+        } catch (error) {
+          const detail = error instanceof Error
+            ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
+            : String(error);
+          console.error(
+            `[saveCredentials] store site=${args.site} url=${browserUrl()} threw: ${detail}`,
+          );
+          return {
+            success: false,
+            message: "Failed to store credentials securely",
+          };
+        }
+      }, {
+        success: false,
+        message: "Another credential operation is in progress — try again.",
+      });
+    }
+
+    // Clear branch — both username and password omitted/blank.
+    return withCredentialLock(ctx, userId, args.site, "delete", async () => {
       try {
         const key = credKey(args.site, userId);
-
-        // Store credentials without marketplace validation.
-        // Use "Test Credentials" to validate against the marketplace separately.
         const response = await browserFetch(`/credentials/${key}`, {
-          method: "PUT",
+          method: "DELETE",
           headers: await browserAuthHeaders(),
-          body: JSON.stringify({
-            username: args.username,
-            password: args.password,
-          }),
         });
 
         if (!response.ok) {
-          const errorData = await response.json().catch(() => ({ error: "Unknown error" }));
           return {
             success: false,
-            message: (errorData as { error?: string }).error || `Failed to store credentials for ${args.site}`,
+            message: "Failed to delete credentials",
           };
         }
 
+        await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
+          userId,
+          site: args.site,
+        });
+
         return {
           success: true,
-          secretId: key,
-          message: `Credentials stored successfully for ${args.site}`,
+          message: `Credentials deleted successfully for ${args.site}`,
         };
       } catch (error) {
-        const detail = error instanceof Error
-          ? `${error.name}: ${error.message}${error.cause ? ` (cause: ${String(error.cause)})` : ""}`
-          : String(error);
-        console.error(
-          `[storeSiteCredentials] site=${args.site} url=${browserUrl()} threw: ${detail}`,
-        );
+        console.error(`[saveCredentials] delete site=${args.site} threw:`, error);
         return {
           success: false,
-          message: "Failed to store credentials securely",
+          message: "Failed to delete credentials",
         };
       }
     }, {
@@ -237,6 +312,9 @@ export const getSiteCredentials = action({
     const userId = await getCurrentUserId(ctx);
     if (!userId) {
       throw new Error("Not authenticated");
+    }
+    if (!isSupportedSite(args.site)) {
+      return null;
     }
 
     try {
@@ -279,19 +357,24 @@ const TOKEN_REFRESH_LEEWAY_MS = 5 * 60 * 1000;
 
 /**
  * Read the raw token + expiresAt from the browser service's secret
- * store. Returns null on 404 (no creds saved) or any non-OK response.
- * Internal helper for getSiteToken — does NOT trigger refresh.
+ * store. Returns `"not_found"` specifically on 404 (the secret doesn't
+ * exist at all — distinct from a transient non-OK response) so
+ * `getSiteToken` can self-heal a stale `hasCredentials` flag (NEO-89:
+ * "ghost credentials" — the flag can say true while the underlying secret
+ * was deleted out from under it, e.g. by an interrupted client operation).
+ * Any other non-OK response returns null. Internal helper for
+ * getSiteToken — does NOT trigger refresh.
  */
 async function readCachedToken(
   site: string,
   userId: string,
-): Promise<{ token: string; expiresAt?: number } | null> {
+): Promise<{ token: string; expiresAt?: number } | null | "not_found"> {
   const key = credKey(site, userId);
   const response = await browserFetch(`/credentials/${key}/token`, {
     method: "GET",
     headers: await browserAuthHeaders(),
   });
-  if (response.status === 404) return null;
+  if (response.status === 404) return "not_found";
   if (!response.ok) return null;
   return (await response.json()) as { token: string; expiresAt?: number };
 }
@@ -338,18 +421,48 @@ export const getSiteToken = internalAction({
 
     try {
       const cached = await readCachedToken(args.site, userId);
+
+      if (cached === "not_found") {
+        // The secret doesn't exist at all — not "stale," genuinely absent.
+        // Self-heal the Convex flag rather than wasting a doomed re-auth
+        // attempt (there's nothing to log in with). This is the fix for
+        // NEO-89: whatever caused the drift (an interrupted delete, a
+        // deleted-out-from-under-us secret), the UI now corrects itself the
+        // next time anyone hits this path instead of staying wrong forever.
+        //
+        // Guard: skip if a saveCredentials store/delete is actively holding
+        // the lock right now — a 404 mid-write is an expected transient, not
+        // proof of absence, and self-healing here would both race the flag
+        // the in-flight op is about to set and clobber the lock entry it's
+        // holding (security-auditor finding, NEO-89 review).
+        const locked = await ctx.runQuery(internal.userProfile.hasLiveCredentialLock, {
+          userId,
+          site: args.site,
+        });
+        if (!locked) {
+          await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
+            userId,
+            site: args.site,
+          });
+        }
+        return null;
+      }
+
       if (!cached) {
-        // No cached token. The per-user creds may be seeded-but-never-warmed
-        // (seed-credentials stores creds without logging in) or the cached
-        // token was evicted by the browser-service TTL mid-session. Mint a
-        // fresh token via re-auth (which logs in using the stored creds)
-        // before giving up — otherwise the caller fails with `no_credentials`
-        // even though credentials exist. Confirmed E2E root cause: a worker's
-        // token was evicted ~18min after warm, so a later sport/year fetch got
-        // a null token and the column came up empty (no Football, etc.).
+        // No cached token, but the secret itself exists (readCachedToken
+        // didn't return "not_found"). The per-user creds may be
+        // seeded-but-never-warmed (seed-credentials stores creds without
+        // logging in) or the cached token was evicted by the
+        // browser-service TTL mid-session. Mint a fresh token via re-auth
+        // (which logs in using the stored creds) before giving up —
+        // otherwise the caller fails with `no_credentials` even though
+        // credentials exist. Confirmed E2E root cause: a worker's token
+        // was evicted ~18min after warm, so a later sport/year fetch got a
+        // null token and the column came up empty (no Football, etc.).
         const minted = await refreshSiteToken(ctx, userId, args.site);
         if (!minted) return null;
-        return await readCachedToken(args.site, userId);
+        const afterMint = await readCachedToken(args.site, userId);
+        return afterMint === "not_found" ? null : afterMint;
       }
 
       const isFresh =
@@ -370,7 +483,7 @@ export const getSiteToken = internalAction({
       }
 
       const fresh = await readCachedToken(args.site, userId);
-      return fresh ?? cached;
+      return fresh === "not_found" ? null : (fresh ?? cached);
     } catch (error) {
       console.error(`Failed to retrieve token for ${args.site}`);
       return null;
@@ -421,56 +534,6 @@ async function refreshSiteToken(
     }
   }, false);
 }
-
-/**
- * Delete credentials for a site via browser service.
- */
-export const deleteSiteCredentials = action({
-  args: {
-    site: v.string(),
-  },
-  returns: v.object({
-    success: v.boolean(),
-    message: v.string(),
-  }),
-  handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-
-    return withCredentialLock(ctx, userId, args.site, "delete", async () => {
-      try {
-        const key = credKey(args.site, userId);
-        const response = await browserFetch(`/credentials/${key}`, {
-          method: "DELETE",
-          headers: await browserAuthHeaders(),
-        });
-
-        if (!response.ok) {
-          return {
-            success: false,
-            message: "Failed to delete credentials",
-          };
-        }
-
-        return {
-          success: true,
-          message: `Credentials deleted successfully for ${args.site}`,
-        };
-      } catch (error) {
-        console.error(`Failed to delete credentials for ${args.site}`);
-        return {
-          success: false,
-          message: "Failed to delete credentials",
-        };
-      }
-    }, {
-      success: false,
-      message: "Another credential operation is in progress — try again.",
-    });
-  },
-});
 
 /**
  * List all sites with stored credentials for the current user.

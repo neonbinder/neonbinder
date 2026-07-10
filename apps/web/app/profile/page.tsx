@@ -64,14 +64,10 @@ export default function ProfilePage() {
   const [sportsDragActive, setSportsDragActive] = useState(false);
 
   // Actions and Mutations
-  const storeCredentials = useAction(api.credentials.storeSiteCredentials);
-  const updateCredentialStatus = useMutation(
-    api.userProfile.updateSiteCredentialStatus,
-  );
-  const removeCredentialStatus = useMutation(
-    api.userProfile.removeSiteCredentialStatus,
-  );
-  const deleteSiteCredentials = useAction(api.credentials.deleteSiteCredentials);
+  // NEO-89: save (store or clear) is a single action now — the Convex
+  // hasCredentials flag is updated server-side inside saveCredentials itself,
+  // not as a second client-triggered mutation, so the two can't drift apart.
+  const saveCredentials = useAction(api.credentials.saveCredentials);
   const getSiteCredentials = useAction(api.credentials.getSiteCredentials);
   const testSiteCredentials = useAction(api.credentials.testSiteCredentials);
   // Prize Pool mutations and queries
@@ -183,7 +179,7 @@ export default function ProfilePage() {
     setMessage("");
     setMessageDetails(undefined);
     try {
-      const secretResult = await storeCredentials({
+      const secretResult = await saveCredentials({
         site: selectedSite,
         username,
         password,
@@ -191,11 +187,6 @@ export default function ProfilePage() {
       if (!secretResult.success) {
         throw new Error(secretResult.message);
       }
-      // Update user profile status
-      await updateCredentialStatus({
-        site: selectedSite,
-        hasCredentials: true,
-      });
       setPassword("");
 
       // Automatically verify credentials against the marketplace so the user
@@ -302,14 +293,13 @@ export default function ProfilePage() {
     setIsLoading(true);
     setMessage("");
     try {
-      const result = await deleteSiteCredentials({ site: selectedSite });
+      const result = await saveCredentials({ site: selectedSite });
       if (!result.success) {
         // e.g. "Another credential operation is in progress — try again."
         setMessage(result.message);
         setMessageType("error");
         return;
       }
-      await removeCredentialStatus({ site: selectedSite });
       setUsername("");
       setPassword("");
       setIsAuthenticated(false);

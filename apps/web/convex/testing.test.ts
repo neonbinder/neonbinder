@@ -175,7 +175,7 @@ describe("resetMyTestState", () => {
 // still SKIPPING (and preserving the warmed token) when the stored username is
 // already correct (the token-storm protection).
 //
-// `getSiteCredentials` / `storeSiteCredentials` reach the browser service only
+// `getSiteCredentials` / `saveCredentials` reach the browser service only
 // through `fetch`, so we point Convex at a loopback URL (skips OIDC via the
 // credentials.ts LOOPBACK_HOSTS check) and stub `fetch` to fake the browser
 // service's GET /metadata and PUT /credentials. The seed env values are read
