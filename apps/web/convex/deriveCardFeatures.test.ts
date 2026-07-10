@@ -106,9 +106,19 @@ describe("validateFeatureValue (NEO-72/73 server-side guard)", () => {
     }
   });
 
-  test("rejects an off-list league/era value", () => {
-    expect(() => validateFeatureValue("league", "XFL")).toThrow();
+  test("rejects an off-list era value", () => {
     expect(() => validateFeatureValue("era", "Junk Wax")).toThrow();
+  });
+
+  // league is intentionally NOT validated against LEAGUE_OPTIONS server-side
+  // (unlike era's closed bucket taxonomy): operators legitimately override it
+  // to values outside the 4-primary-league frontend <select> for
+  // international/niche sets (e.g. "NPB" for Japanese releases — see
+  // cardFeatureDerivation.test.ts's operator-override test, which predates
+  // this file). Hard-rejecting here broke that real, tested capability.
+  test("does NOT reject an off-list league value", () => {
+    expect(() => validateFeatureValue("league", "NPB")).not.toThrow();
+    expect(() => validateFeatureValue("league", "XFL")).not.toThrow();
   });
 
   test("is a no-op for every other key, even nonsense values", () => {

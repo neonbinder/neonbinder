@@ -168,13 +168,19 @@ export function deriveBackfillFeatures(
 
 /**
  * Server-side guard for the constrained select-type features (NEO-72/73):
- * rejects a league/era write that doesn't match the fixed option set, in case
- * a caller bypasses the `<select>` UI. No-op for every other feature key.
+ * rejects an era write that doesn't match the fixed bucket set, in case a
+ * caller bypasses the `<select>` UI. No-op for every other feature key.
+ *
+ * NOT applied to "league": unlike era's closed 4-bucket taxonomy, league is
+ * open-ended in the real world (NPB, KBO, CPBL, minor-league systems, etc.).
+ * `LEAGUE_OPTIONS` covers only the 4 primary US leagues for the frontend
+ * `<select>`'s common case; an operator overriding league via
+ * `setSelectorOptionFeature` for an international/niche set (e.g. "NPB" for
+ * a Japanese release — a pre-existing, tested capability predating this
+ * guard) legitimately needs values outside that list. Hard-rejecting here
+ * would silently break real product functionality, not just a bypassed UI.
  */
 export function validateFeatureValue(key: string, value: string): void {
-  if (key === "league" && !LEAGUE_OPTIONS.includes(value)) {
-    throw new Error(`Invalid league value: ${value}`);
-  }
   if (key === "era" && !ERA_BUCKET_OPTIONS.includes(value)) {
     throw new Error(`Invalid era value: ${value}`);
   }
