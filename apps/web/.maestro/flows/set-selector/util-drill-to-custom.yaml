@@ -329,12 +329,8 @@ tags:
             visible:
               text: ".*Search years.*"
           commands:
-            - scrollUntilVisible:
-                element:
-                  text: ".*Search years.*"
-                direction: right
-                centerElement: true
-                timeout: 10000
+            # App auto-scrolls the newly-revealed Years column fully into view
+            # (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
             - tapOn:
                 text: ".*Search years.*"
             - inputText: ${YEAR}
@@ -481,12 +477,8 @@ tags:
             visible:
               text: ".*Search manufacturers.*"
           commands:
-            - scrollUntilVisible:
-                element:
-                  text: ".*Search manufacturers.*"
-                direction: right
-                centerElement: true
-                timeout: 10000
+            # App auto-scrolls the newly-revealed Manufacturers column fully into
+            # view (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
             - tapOn:
                 text: ".*Search manufacturers.*"
             - inputText: ${MANUFACTURER}
