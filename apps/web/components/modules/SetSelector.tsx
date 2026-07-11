@@ -252,7 +252,10 @@ export default function SetSelector() {
           x=-2 (~98% visible). Maestro's scrollUntilVisible(visibility:100%)
           then can't tap it. Mac overlay scrollbars (0px) hide this locally —
           custom-entry-survives-resync 8/8 CI failure, NEO root-cause. */}
-      <div className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4">
+      <div
+        data-set-selector-scroll
+        className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4"
+      >
         {/* 1. Sport (SL & BSC) */}
         <ResilientEntityColumn
           selector={

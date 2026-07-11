@@ -21,6 +21,7 @@ import type * as adapters_types from "../adapters/types.js";
 import type * as adapters_wikidata from "../adapters/wikidata.js";
 import type * as auth from "../auth.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
+import type * as browserAudience from "../browserAudience.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as credentials from "../credentials.js";
 import type * as e2eQueue from "../e2eQueue.js";
@@ -59,6 +60,7 @@ declare const fullApi: ApiFromModules<{
   "adapters/wikidata": typeof adapters_wikidata;
   auth: typeof auth;
   backfillCardFeatures: typeof backfillCardFeatures;
+  browserAudience: typeof browserAudience;
   cardChecklist: typeof cardChecklist;
   credentials: typeof credentials;
   e2eQueue: typeof e2eQueue;

@@ -47,6 +47,11 @@ export type EntityColumnProps = {
   onLoadingChange?: (loading: boolean) => void;
 };
 
+// Gap left between a newly-revealed column's edge and the scroll row's true
+// visible boundary, so it doesn't land flush against the edge. Matches the
+// gap-4/pl-4 16px spacing unit already used for this row in SetSelector.tsx.
+const REVEAL_SCROLL_BUFFER_PX = 16;
+
 export default function EntityColumn({
   selector,
   renderForm,
@@ -75,7 +80,15 @@ export default function EntityColumn({
   const fieldClass = useFieldTestClass();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const wasVisibleRef = useRef(isVisible);
+  // NEO-71-74 follow-up: always start false, regardless of this column's
+  // isVisible prop at mount. Columns 6/7 (Variant / Variant of Variant) are
+  // conditionally MOUNTED (not just conditionally rendered null like columns
+  // 1-5) and remount already-visible — seeding this from `isVisible` made the
+  // false->true reveal transition unobservable for them, so their scroll-into-
+  // view never fired on any reveal. Starting false means every column's first
+  // visible render is treated as a reveal that needs to scroll, which is a
+  // harmless no-op for the always-mounted columns (they start hidden already).
+  const wasVisibleRef = useRef(false);
 
   // Query the items at this column's level so we can auto-trigger sync
   // when the column opens empty. Skipped when no level is provided
@@ -123,16 +136,47 @@ export default function EntityColumn({
 
   useEffect(() => {
     if (isVisible && !wasVisibleRef.current && containerRef.current) {
-      containerRef.current.scrollIntoView({
-        // "auto" (instant), not "smooth": Maestro reads layout bounds and taps
-        // immediately, so a smooth-scroll animation lets it tap a column before
-        // it settles — the e2e nav-tap that parked the prior NEO-63 attempt.
-        behavior: "auto",
-        block: "nearest",
-        // "center", not "end": keep the active column off both edges (clear of
-        // the fixed nav on the right) when it is first revealed.
-        inline: "center",
-      });
+      // NEO-71-74 follow-up: manual scroll math instead of native
+      // scrollIntoView({inline:"center"}). "center" was chosen over the
+      // original "end" by NEO-63 specifically to stop new columns landing
+      // under the fixed right nav (mis-taps that navigated to /inventory) —
+      // but "center" only centers the column, it doesn't guarantee the
+      // column's own trailing edge actually clears the viewport, so it could
+      // still render clipped (confirmed: reproduces at any viewport width
+      // once enough columns accumulate, and unconditionally for columns 6/7
+      // whose reveal effect never fired at all before the wasVisibleRef fix
+      // above).
+      //
+      // The fixed nav is `position: fixed` (binder-tabs.tsx) — it contributes
+      // zero width to layout. Its gutter is reserved entirely via
+      // `binder-layout.tsx`'s `lg:pr-[170px]` padding on an ancestor several
+      // levels above the scroll row, which (being padding on a border-box
+      // element) already narrows the scroll row's own rendered box. So
+      // measuring purely against the scroll row's own boundingClientRect is
+      // automatically nav-safe — no separate nav-width constant needed.
+      const scrollContainer = containerRef.current.closest<HTMLElement>(
+        "[data-set-selector-scroll]",
+      );
+      if (scrollContainer) {
+        const containerRect = scrollContainer.getBoundingClientRect();
+        const columnRect = containerRef.current.getBoundingClientRect();
+        const overflowRight = columnRect.right - containerRect.right;
+        if (overflowRight > 0) {
+          // Instant, not smooth: Maestro reads layout bounds and taps
+          // immediately, so an animated scroll lets it tap a column before it
+          // settles — the e2e nav-tap that parked the prior NEO-63 attempt.
+          scrollContainer.scrollLeft += overflowRight + REVEAL_SCROLL_BUFFER_PX;
+        } else {
+          const overflowLeft = containerRect.left - columnRect.left;
+          if (overflowLeft > 0) {
+            scrollContainer.scrollLeft -= overflowLeft + REVEAL_SCROLL_BUFFER_PX;
+          }
+        }
+      }
+      // No scroll ancestor found (e.g. an isolated unit-test render with no
+      // [data-set-selector-scroll] wrapper) — do nothing, deliberately not
+      // falling back to scrollIntoView. Keeping exactly one scroll code path
+      // avoids re-introducing the alignment-mode question this fix removes.
     }
     wasVisibleRef.current = isVisible;
   }, [isVisible]);
