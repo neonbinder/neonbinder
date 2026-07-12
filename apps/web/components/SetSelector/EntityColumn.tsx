@@ -52,21 +52,6 @@ export type EntityColumnProps = {
 // gap-4/pl-4 16px spacing unit already used for this row in SetSelector.tsx.
 const REVEAL_SCROLL_BUFFER_PX = 16;
 
-// Re-check delays (ms) after a column becomes visible. Bounds a real,
-// observed race: the column is `min-w-[260px] max-w-[340px]` (content-
-// driven, not fixed) and typically renders narrow on first paint — showing
-// its own "Loading <level>…" placeholder — before its item list resolves
-// and it grows toward the max. A single synchronous check at reveal time
-// measures that narrow, pre-load box and under-scrolls. Tried a
-// ResizeObserver instead of fixed delays first (react to the actual size
-// change rather than guessing timing), but it never fired here — the
-// column's placeholder-to-loaded transition apparently doesn't register as
-// an observable resize in this tree (unconfirmed why; not worth blocking
-// the fix on root-causing that further). Plain re-checks at increasing
-// delays are simpler and empirically verified to work: each one is a cheap
-// no-op once the column has already settled into view.
-const REVEAL_RECHECK_DELAYS_MS = [100, 300, 800, 1600];
-
 // Scrolls `column`'s own [data-set-selector-scroll] ancestor just far enough
 // that `column` clears the ancestor's visible right/left edge. No-op if no
 // such ancestor exists (e.g. an isolated unit-test render).
@@ -128,6 +113,12 @@ export default function EntityColumn({
   // visible render is treated as a reveal that needs to scroll, which is a
   // harmless no-op for the always-mounted columns (they start hidden already).
   const wasVisibleRef = useRef(false);
+  // True from the moment this column is revealed until its content has
+  // genuinely settled (real items loaded, not mid-sync) — see the two
+  // effects below. Scopes the settle re-check to only the column that was
+  // JUST revealed, so it doesn't re-fire (and yank scroll position) for an
+  // older, already-viewed column whose content happens to change later.
+  const settleTargetRef = useRef(false);
 
   // Query the items at this column's level so we can auto-trigger sync
   // when the column opens empty. Skipped when no level is provided
@@ -192,29 +183,39 @@ export default function EntityColumn({
     // element) already narrows the scroll row's own rendered box. So
     // measuring purely against the scroll row's own boundingClientRect is
     // automatically nav-safe — no separate nav-width constant needed.
-    const timers: ReturnType<typeof setTimeout>[] = [];
     if (isVisible && !wasVisibleRef.current && containerRef.current) {
-      const column = containerRef.current;
-      scrollColumnIntoView(column);
-
+      scrollColumnIntoView(containerRef.current);
       // The column is content-driven width (min-w-[260px] max-w-[340px]),
       // and on first reveal its item list is frequently still loading (its
-      // own "Loading <level>…" placeholder), so the call above can measure
-      // a narrower box than the column settles into once real content (e.g.
-      // long set names) arrives — leaving the now-wider column clipped with
-      // no further scroll ever firing, since this effect only re-runs on
-      // the next false->true transition. Re-run the same check a few times
-      // over ~1.6s to catch that late growth; each call is a cheap no-op
-      // once the column has already settled.
-      for (const delay of REVEAL_RECHECK_DELAYS_MS) {
-        timers.push(setTimeout(() => scrollColumnIntoView(column), delay));
-      }
+      // own "Loading <level>…" placeholder from EntitySelector, gated on
+      // this same `items` query being undefined), so the call above can
+      // measure a narrower box than the column settles into once real
+      // content (e.g. long set names) arrives — leaving the now-wider
+      // column clipped with no further scroll ever firing, since this
+      // effect only re-runs on the next false->true transition. Flag this
+      // reveal as pending a settle re-check; the effect below fires it once
+      // the column's content actually stabilizes.
+      settleTargetRef.current = true;
     }
     wasVisibleRef.current = isVisible;
-    return () => {
-      for (const timer of timers) clearTimeout(timer);
-    };
   }, [isVisible]);
+
+  // Fires the settle re-check exactly once per reveal, at the actual moment
+  // this column's content stabilizes — not a guessed delay. `items` goes
+  // undefined -> array the instant EntitySelector's "Loading <level>…"
+  // placeholder (gated on that same undefined) is replaced by the real
+  // list; `mode` leaving "sync" is this file's own existing signal (see the
+  // hasSyncedRef effect below) that an in-flight marketplace fetch has
+  // finished. Waiting on both means a cold column that loads empty and
+  // triggers a sync still gets caught once the fetched results land, not
+  // just the initial (still-empty) resolution.
+  useEffect(() => {
+    if (!settleTargetRef.current || !containerRef.current) return;
+    if (items === undefined) return;
+    if (mode === "sync") return;
+    scrollColumnIntoView(containerRef.current);
+    settleTargetRef.current = false;
+  }, [items, mode]);
 
   // Latch "first sync done" for this column: either the items query has
   // returned data, or a sync cycle has completed (sync → idle). Freeze-on-
