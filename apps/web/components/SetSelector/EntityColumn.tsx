@@ -52,6 +52,45 @@ export type EntityColumnProps = {
 // gap-4/pl-4 16px spacing unit already used for this row in SetSelector.tsx.
 const REVEAL_SCROLL_BUFFER_PX = 16;
 
+// Re-check delays (ms) after a column becomes visible. Bounds a real,
+// observed race: the column is `min-w-[260px] max-w-[340px]` (content-
+// driven, not fixed) and typically renders narrow on first paint — showing
+// its own "Loading <level>…" placeholder — before its item list resolves
+// and it grows toward the max. A single synchronous check at reveal time
+// measures that narrow, pre-load box and under-scrolls. Tried a
+// ResizeObserver instead of fixed delays first (react to the actual size
+// change rather than guessing timing), but it never fired here — the
+// column's placeholder-to-loaded transition apparently doesn't register as
+// an observable resize in this tree (unconfirmed why; not worth blocking
+// the fix on root-causing that further). Plain re-checks at increasing
+// delays are simpler and empirically verified to work: each one is a cheap
+// no-op once the column has already settled into view.
+const REVEAL_RECHECK_DELAYS_MS = [100, 300, 800, 1600];
+
+// Scrolls `column`'s own [data-set-selector-scroll] ancestor just far enough
+// that `column` clears the ancestor's visible right/left edge. No-op if no
+// such ancestor exists (e.g. an isolated unit-test render).
+function scrollColumnIntoView(column: HTMLElement) {
+  const scrollContainer = column.closest<HTMLElement>(
+    "[data-set-selector-scroll]",
+  );
+  if (!scrollContainer) return;
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const columnRect = column.getBoundingClientRect();
+  const overflowRight = columnRect.right - containerRect.right;
+  if (overflowRight > 0) {
+    // Instant, not smooth: Maestro reads layout bounds and taps immediately,
+    // so an animated scroll lets it tap a column before it settles — the
+    // e2e nav-tap that parked the prior NEO-63 attempt.
+    scrollContainer.scrollLeft += overflowRight + REVEAL_SCROLL_BUFFER_PX;
+  } else {
+    const overflowLeft = containerRect.left - columnRect.left;
+    if (overflowLeft > 0) {
+      scrollContainer.scrollLeft -= overflowLeft + REVEAL_SCROLL_BUFFER_PX;
+    }
+  }
+}
+
 export default function EntityColumn({
   selector,
   renderForm,
@@ -135,50 +174,46 @@ export default function EntityColumn({
   const prevModeRef = useRef<"idle" | "sync" | "custom">(mode);
 
   useEffect(() => {
+    // NEO-71-74 follow-up: manual scroll math instead of native
+    // scrollIntoView({inline:"center"}). "center" was chosen over the
+    // original "end" by NEO-63 specifically to stop new columns landing
+    // under the fixed right nav (mis-taps that navigated to /inventory) —
+    // but "center" only centers the column, it doesn't guarantee the
+    // column's own trailing edge actually clears the viewport, so it could
+    // still render clipped (confirmed: reproduces at any viewport width
+    // once enough columns accumulate, and unconditionally for columns 6/7
+    // whose reveal effect never fired at all before the wasVisibleRef fix
+    // above).
+    //
+    // The fixed nav is `position: fixed` (binder-tabs.tsx) — it contributes
+    // zero width to layout. Its gutter is reserved entirely via
+    // `binder-layout.tsx`'s `lg:pr-[170px]` padding on an ancestor several
+    // levels above the scroll row, which (being padding on a border-box
+    // element) already narrows the scroll row's own rendered box. So
+    // measuring purely against the scroll row's own boundingClientRect is
+    // automatically nav-safe — no separate nav-width constant needed.
+    const timers: ReturnType<typeof setTimeout>[] = [];
     if (isVisible && !wasVisibleRef.current && containerRef.current) {
-      // NEO-71-74 follow-up: manual scroll math instead of native
-      // scrollIntoView({inline:"center"}). "center" was chosen over the
-      // original "end" by NEO-63 specifically to stop new columns landing
-      // under the fixed right nav (mis-taps that navigated to /inventory) —
-      // but "center" only centers the column, it doesn't guarantee the
-      // column's own trailing edge actually clears the viewport, so it could
-      // still render clipped (confirmed: reproduces at any viewport width
-      // once enough columns accumulate, and unconditionally for columns 6/7
-      // whose reveal effect never fired at all before the wasVisibleRef fix
-      // above).
-      //
-      // The fixed nav is `position: fixed` (binder-tabs.tsx) — it contributes
-      // zero width to layout. Its gutter is reserved entirely via
-      // `binder-layout.tsx`'s `lg:pr-[170px]` padding on an ancestor several
-      // levels above the scroll row, which (being padding on a border-box
-      // element) already narrows the scroll row's own rendered box. So
-      // measuring purely against the scroll row's own boundingClientRect is
-      // automatically nav-safe — no separate nav-width constant needed.
-      const scrollContainer = containerRef.current.closest<HTMLElement>(
-        "[data-set-selector-scroll]",
-      );
-      if (scrollContainer) {
-        const containerRect = scrollContainer.getBoundingClientRect();
-        const columnRect = containerRef.current.getBoundingClientRect();
-        const overflowRight = columnRect.right - containerRect.right;
-        if (overflowRight > 0) {
-          // Instant, not smooth: Maestro reads layout bounds and taps
-          // immediately, so an animated scroll lets it tap a column before it
-          // settles — the e2e nav-tap that parked the prior NEO-63 attempt.
-          scrollContainer.scrollLeft += overflowRight + REVEAL_SCROLL_BUFFER_PX;
-        } else {
-          const overflowLeft = containerRect.left - columnRect.left;
-          if (overflowLeft > 0) {
-            scrollContainer.scrollLeft -= overflowLeft + REVEAL_SCROLL_BUFFER_PX;
-          }
-        }
+      const column = containerRef.current;
+      scrollColumnIntoView(column);
+
+      // The column is content-driven width (min-w-[260px] max-w-[340px]),
+      // and on first reveal its item list is frequently still loading (its
+      // own "Loading <level>…" placeholder), so the call above can measure
+      // a narrower box than the column settles into once real content (e.g.
+      // long set names) arrives — leaving the now-wider column clipped with
+      // no further scroll ever firing, since this effect only re-runs on
+      // the next false->true transition. Re-run the same check a few times
+      // over ~1.6s to catch that late growth; each call is a cheap no-op
+      // once the column has already settled.
+      for (const delay of REVEAL_RECHECK_DELAYS_MS) {
+        timers.push(setTimeout(() => scrollColumnIntoView(column), delay));
       }
-      // No scroll ancestor found (e.g. an isolated unit-test render with no
-      // [data-set-selector-scroll] wrapper) — do nothing, deliberately not
-      // falling back to scrollIntoView. Keeping exactly one scroll code path
-      // avoids re-introducing the alignment-mode question this fix removes.
     }
     wasVisibleRef.current = isVisible;
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
   }, [isVisible]);
 
   // Latch "first sync done" for this column: either the items query has
