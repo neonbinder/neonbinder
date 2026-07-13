@@ -14,10 +14,9 @@ import {
   classifyAdapterError,
 } from "./observability";
 import {
-  deriveSetLevelFeatures,
   deriveCardObservedFeatures,
+  deriveOwnLevelFeatures,
   validateFeatureValue,
-  type SetLevelFeatureInputs,
 } from "./features/deriveCardFeatures";
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
@@ -504,9 +503,10 @@ export const storeSelectorOptions = mutation({
         }),
         // NEO-24: optional set-level metadata seed. Merge-patched onto
         // existing rows; written-through to fresh inserts. Features are
-        // intentionally NOT accepted here — they only land via the
-        // `setSelectorOptionFeature` mutation so the propagation engine
-        // is the single source of truth.
+        // intentionally NOT accepted here — a fresh row's `features` is
+        // computed automatically (copy-down from its parent + own-level
+        // heuristic, see the fresh-insert branch below); an operator
+        // override after that lands via `setSelectorOptionFeature`.
         setMetadata: v.optional(setMetadataObjectValidator),
       }),
     ),
@@ -520,6 +520,14 @@ export const storeSelectorOptions = mutation({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, options, parentId } = args;
+
+    // NEO-71-74: every option in this batch shares one parentId — fetch its
+    // already-complete `features` snapshot once and copy it onto every
+    // fresh insert below (write-once feature snapshots: see
+    // deriveOwnLevelFeatures in convex/features/deriveCardFeatures.ts).
+    const parentFeatures: Record<string, string> | undefined = parentId
+      ? (await ctx.db.get(parentId))?.features
+      : undefined;
 
     // Get existing non-custom options for this level and parent
     const existingOptions = await ctx.db
@@ -611,6 +619,10 @@ export const storeSelectorOptions = mutation({
         insertedIds.push(existing._id);
       } else {
         warnIfIncomplete("new", option.value, option.platformData);
+        const features = {
+          ...(parentFeatures ?? {}),
+          ...deriveOwnLevelFeatures(level, option.value),
+        };
         const id = await ctx.db.insert("selectorOptions", {
           level,
           value: option.value,
@@ -618,6 +630,7 @@ export const storeSelectorOptions = mutation({
           parentId,
           children: [],
           ...(option.setMetadata ? { setMetadata: option.setMetadata } : {}),
+          ...(Object.keys(features).length > 0 ? { features } : {}),
           lastUpdated: Date.now(),
         });
         insertedIds.push(id);
@@ -670,13 +683,22 @@ export const addCustomSelectorOption = mutation({
     parentId: v.optional(v.id("selectorOptions")),
     userId: v.optional(v.string()),
     // NEO-24: optional set-level metadata to seed the custom row with.
-    // Features intentionally omitted — go through setSelectorOptionFeature.
+    // Features intentionally omitted — a fresh row's `features` is computed
+    // automatically below (copy-down + own-level heuristic); an operator
+    // override after that goes through setSelectorOptionFeature.
     setMetadata: v.optional(setMetadataObjectValidator),
   },
   returns: v.id("selectorOptions"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, value, parentId, userId, setMetadata } = args;
+
+    // NEO-71-74: fetch the parent once, up front — reused both for the
+    // fresh row's copy-down `features` snapshot below and for the
+    // children-array update at the end (same read count as before, just
+    // reordered; the insert doesn't touch the parent doc, so this stays
+    // accurate throughout the mutation).
+    const parent = parentId ? await ctx.db.get(parentId) : null;
 
     // Check for duplicate by normalized value
     const existing = await ctx.db
@@ -704,6 +726,11 @@ export const addCustomSelectorOption = mutation({
       return duplicate._id;
     }
 
+    const features = {
+      ...(parent?.features ?? {}),
+      ...deriveOwnLevelFeatures(level, value),
+    };
+
     const id = await ctx.db.insert("selectorOptions", {
       level,
       value,
@@ -713,20 +740,18 @@ export const addCustomSelectorOption = mutation({
       isCustom: true,
       createdByUserId: userId,
       ...(setMetadata ? { setMetadata } : {}),
+      ...(Object.keys(features).length > 0 ? { features } : {}),
       lastUpdated: Date.now(),
     });
 
     // Update parent's children array
-    if (parentId) {
-      const parent = await ctx.db.get(parentId);
-      if (parent) {
-        const newChildren = [...(parent.children || []), id];
-        // NEO-85: guard the rewrite for consistency with storeSelectorOptions.
-        // `id` is a fresh insert so this practically always differs, but the
-        // guard keeps the no-op-patch discipline uniform across both paths.
-        if (!valuesDeepEqual(parent.children ?? [], newChildren)) {
-          await ctx.db.patch(parentId, { children: newChildren });
-        }
+    if (parentId && parent) {
+      const newChildren = [...(parent.children || []), id];
+      // NEO-85: guard the rewrite for consistency with storeSelectorOptions.
+      // `id` is a fresh insert so this practically always differs, but the
+      // guard keeps the no-op-patch discipline uniform across both paths.
+      if (!valuesDeepEqual(parent.children ?? [], newChildren)) {
+        await ctx.db.patch(parentId, { children: newChildren });
       }
     }
 
@@ -1215,36 +1240,15 @@ export const addCustomCard = mutation({
       ?.map((n) => n.trim())
       .filter((n) => n.length > 0);
 
-    // NEO-38: inherit `features` from the selectorOption ancestor chain via
-    // MATERIALIZED node features. The heuristic (league/era/vintage/
-    // manufacturer/cardType/isReprint) is no longer derived per-card — it is
-    // seeded onto the originating NODES at commit time (see commitCardChecklist)
-    // and cascades down via setSelectorOptionFeature, so by the time a custom
-    // card is added the ancestor nodes already carry the resolved values. We
-    // simply merge each ancestor node's `features` top-down (deeper overrides
-    // shallower). Per-card card-observed facts (rookie/relic from the custom
-    // card's attributes) win over the inherited values.
-    const inheritedFeatures: Record<string, string> = {};
-    {
-      let cursorId: Id<"selectorOptions"> | undefined = args.selectorOptionId;
-      const chain: Array<Record<string, string> | undefined> = [];
-      while (cursorId) {
-        const node: any = await ctx.db.get(cursorId);
-        if (!node) break;
-        chain.unshift(node.features);
-        cursorId = node.parentId;
-      }
-      for (const f of chain) {
-        if (!f) continue;
-        for (const [k, val] of Object.entries(f)) {
-          inheritedFeatures[k] = val;
-        }
-      }
-    }
-    // NEO-38: precedence = materialized ancestor node features < card-observed
-    // facts. The set-level heuristic now lives on the nodes (no per-card
-    // deriveSetLevelFeatures merge), which fixes the bug where a per-card
-    // heuristic shadowed authoritative values written at the node.
+    // NEO-71-74: the selectorOption node this card lives under already
+    // carries a complete, self-contained `features` snapshot (copy-down
+    // happens once, at that node's own creation — see storeSelectorOptions/
+    // addCustomSelectorOption/storeReconciledOptions). No ancestor walk
+    // needed: a single read of this one node is the full resolved
+    // inheritance. Precedence = that snapshot < card-observed facts (a fact
+    // seen on THIS card, e.g. it's a rookie, wins).
+    const parentNode = await ctx.db.get(args.selectorOptionId);
+    const inheritedFeatures: Record<string, string> = parentNode?.features ?? {};
     const mergedFeatures: Record<string, string> = {
       ...inheritedFeatures,
       ...deriveCardObservedFeatures({ attributes: args.attributes }),
@@ -1413,35 +1417,6 @@ async function collectDescendantIds(
   return out;
 }
 
-/**
- * NEO-24: count every cardChecklist row in the subtree rooted at this
- * selectorOption. Used by `<SetFeaturesPanel>` to render the
- * "Will propagate to N cards" preview before the operator commits a
- * feature edit. Read-only query — `withIndex` on by_selector_option
- * keeps it bounded even on large sets.
- */
-export const getDescendantCardCount = query({
-  args: { selectorOptionId: v.id("selectorOptions") },
-  returns: v.number(),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const subtreeIds: Array<Id<"selectorOptions">> = [
-      args.selectorOptionId,
-      ...(await collectDescendantIds(ctx as any, args.selectorOptionId)),
-    ];
-    let count = 0;
-    for (const optId of subtreeIds) {
-      const cards = await ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) =>
-          q.eq("selectorOptionId", optId),
-        )
-        .collect();
-      count += cards.length;
-    }
-    return count;
-  },
-});
 
 /**
  * NEO-38: core materialization routine shared by the public
@@ -1560,25 +1535,31 @@ export async function materializeSelectorOptionFeature(
   };
 }
 
+// NEO-71-74: single-row patch, matching setCardFeature's shape exactly — an
+// edit updates only the row being edited, never children or cards. Every
+// row's `features` is already a complete, self-contained snapshot from its
+// own creation (copy-down); descendants/cards created AFTER this edit pick
+// it up naturally via that same copy-down, but rows that already existed
+// before the edit keep whatever they were seeded with.
 export const setSelectorOptionFeature = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     key: v.string(),
     value: v.string(),
   },
-  returns: v.object({
-    propagatedToCardCount: v.number(),
-    propagatedToNodeCount: v.number(),
-    skippedAsOverridden: v.number(),
-  }),
+  returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return await materializeSelectorOptionFeature(
-      ctx,
-      args.selectorOptionId,
-      args.key,
-      args.value,
-    );
+    validateFeatureValue(args.key, args.value);
+    const row = await ctx.db.get(args.selectorOptionId);
+    if (!row) {
+      throw new Error(`selectorOption ${args.selectorOptionId} not found`);
+    }
+    await ctx.db.patch(args.selectorOptionId, {
+      features: { ...(row.features ?? {}), [args.key]: args.value },
+      lastUpdated: Date.now(),
+    });
+    return null;
   },
 });
 
@@ -3949,103 +3930,41 @@ export const commitCardChecklist = mutation({
     for (const card of existingCards) existingByNumber.set(card.cardNumber, card);
     const processedNumbers = new Set<string>();
 
-    // NEO-38: walk the ancestor chain once and capture the node id at each
-    // level. We need these ids to seed the heuristic at its natural ORIGINATING
-    // level (sport/year/manufacturer/setName/variant) so it materializes down
-    // to descendant nodes + cards, rather than deriving it per-card. This fixes
-    // the bug where a per-card heuristic shadowed authoritative node values.
-    const ancestorNodeIdByLevel: Partial<Record<Level, Id<"selectorOptions">>> =
-      {};
-    // Snapshot each ancestor node's `features` map BEFORE we seed, keyed by
-    // level — used for the "fill-absent" check (only seed a (node,key) whose
-    // own features[key] is currently undefined).
-    const ancestorFeaturesByLevel: Partial<
-      Record<Level, Record<string, string> | undefined>
-    > = {};
-    const setLevelInputs: SetLevelFeatureInputs = { sport: args.sport };
-    {
-      let cursorId: Id<"selectorOptions"> | undefined = args.selectorOptionId;
-      let isLeaf = true;
-      while (cursorId) {
-        const node: any = await ctx.db.get(cursorId);
-        if (!node) break;
-        ancestorNodeIdByLevel[node.level as Level] = node._id;
-        ancestorFeaturesByLevel[node.level as Level] = node.features;
-        if (isLeaf) {
-          setLevelInputs.leafLevel = node.level;
-          setLevelInputs.leafIsInsert = node.metadata?.isInsert ?? undefined;
-          setLevelInputs.leafIsParallel = node.metadata?.isParallel ?? undefined;
-          isLeaf = false;
-        }
-        if (node.level === "year") setLevelInputs.year = node.value;
-        if (node.level === "manufacturer") {
-          setLevelInputs.manufacturer = node.value;
-        }
-        cursorId = node.parentId;
-      }
-    }
-
-    // NEO-38: seed the heuristic at its natural originating level, FILL-ABSENT
-    // only (never overwrite a node that already carries its own value), via
-    // materializeSelectorOptionFeature so it cascades down to descendant nodes
-    // AND existing cards. The leaf (`args.selectorOptionId`) is the variant
-    // node. Mapping (per the plan):
-    //   league      → sport node
-    //   era,vintage → year node
-    //   manufacturer→ manufacturer node
-    //   cardType    → variant node (the leaf)
-    //   isReprint   → setName node (default "false")
-    const heuristic = deriveSetLevelFeatures(setLevelInputs);
-    const seedPlan: Array<{ level: Level; keys: string[] }> = [
-      { level: "sport", keys: ["league"] },
-      { level: "year", keys: ["era", "vintage"] },
-      { level: "manufacturer", keys: ["manufacturer"] },
-      { level: setLevelInputs.leafLevel as Level, keys: ["cardType"] },
-      { level: "setName", keys: ["isReprint"] },
-    ];
-    for (const { level, keys } of seedPlan) {
-      const nodeId = ancestorNodeIdByLevel[level];
-      if (!nodeId) continue; // e.g. no manufacturer ancestor on this chain
-      const nodeFeatures = ancestorFeaturesByLevel[level];
-      for (const key of keys) {
-        const derived = heuristic[key];
-        if (derived === undefined) continue; // heuristic produced nothing here
-        // Fill-absent: only seed when this node has no own value for the key.
-        if (nodeFeatures && nodeFeatures[key] !== undefined) continue;
-        await materializeSelectorOptionFeature(ctx, nodeId, key, derived);
-      }
-    }
-
-    // NEO-38: rebuild the inherited feature map for NEW cards by RE-READING the
-    // ancestor node `features` (post heuristic-seed). Merge top-down (deeper
-    // ancestors override shallower). Existing rows are owned by the
-    // materialization pass above; we don't re-merge onto them here.
-    const inheritedFeatures: Record<string, string> = {};
-    {
-      let cursorId: Id<"selectorOptions"> | undefined = args.selectorOptionId;
-      const chain: Array<Record<string, string> | undefined> = [];
-      while (cursorId) {
-        const node: any = await ctx.db.get(cursorId);
-        if (!node) break;
-        chain.unshift(node.features);
-        cursorId = node.parentId;
-      }
-      for (const f of chain) {
-        if (!f) continue;
-        for (const [k, val] of Object.entries(f)) {
-          inheritedFeatures[k] = val;
-        }
-      }
-    }
+    // NEO-71-74: every selectorOptions row is a complete, self-contained
+    // `features` snapshot at all times (copy-down happens once, at each
+    // row's own creation — see storeSelectorOptions/addCustomSelectorOption/
+    // storeReconciledOptions in this file and convex/setReconciliation.ts).
+    // No ancestor walk or commit-time seeding needed for inheritance
+    // anymore: the leaf node IS the fully resolved snapshot. (This replaces
+    // the old NEO-38 commit-time seed, which also had a real, independent
+    // cost — cascading from an ancestor as high as the sport node touched
+    // that sport's entire catalog subtree on every single checklist commit.)
+    const leafNode = await ctx.db.get(args.selectorOptionId);
     const inheritedFeaturesOrUndefined: Record<string, string> | undefined =
-      Object.keys(inheritedFeatures).length > 0 ? inheritedFeatures : undefined;
+      leafNode?.features && Object.keys(leafNode.features).length > 0
+        ? leafNode.features
+        : undefined;
 
-    // NEO-38: per-card features now come ONLY from inherited (materialized)
-    // ancestor node features + the shared `deriveCardObservedFeatures` helper
-    // (isRookie/isRelic/signedBy/parallelName). The set-level heuristic is no
-    // longer merged per-card — it lives on the nodes. The result is written
-    // only for NEW card rows; existing rows are owned by the materialization
-    // pass / setCardFeature (operator overrides must not be clobbered).
+    // Still need the nearest setName ancestor id below (unrelated to
+    // features — used only for the totalCardCount/lastSyncedAt patch).
+    let setNameAncestorId: Id<"selectorOptions"> | undefined =
+      leafNode?.level === "setName" ? leafNode._id : undefined;
+    if (!setNameAncestorId) {
+      let cursorId: Id<"selectorOptions"> | undefined = leafNode?.parentId;
+      while (cursorId && !setNameAncestorId) {
+        const node: any = await ctx.db.get(cursorId);
+        if (!node) break;
+        if (node.level === "setName") setNameAncestorId = node._id;
+        cursorId = node.parentId;
+      }
+    }
+
+    // NEO-71-74: per-card features come from the leaf node's already-complete
+    // `features` snapshot (`inheritedFeaturesOrUndefined`, read above) merged
+    // with the shared `deriveCardObservedFeatures` helper (isRookie/isRelic/
+    // signedBy/parallelName — observed on this card only). The result is
+    // written only for NEW card rows; existing rows are owned by
+    // `setCardFeature` (operator overrides must not be clobbered here).
 
     // Pre-compute the target sortOrder for every card that will be in this
     // selectorOption after the upsert: incoming richCards (marketplace) PLUS
@@ -4093,10 +4012,10 @@ export const commitCardChecklist = mutation({
           lastUpdated: Date.now(),
         });
       } else {
-        // NEO-38: precedence = materialized ancestor node features (which now
-        // include the heuristic seed) < card-observed facts. A fact seen on
-        // THIS card (e.g. it's a rookie) beats the inherited values. No
-        // per-card set-level derivation anymore.
+        // NEO-71-74: precedence = the leaf node's complete features snapshot
+        // (already resolved at that node's own creation time) < card-observed
+        // facts. A fact seen on THIS card (e.g. it's a rookie) beats the
+        // inherited values.
         const mergedFeatures: Record<string, string> = {
           ...(inheritedFeaturesOrUndefined ?? {}),
           ...deriveCardObservedFeatures(card),
@@ -4199,9 +4118,7 @@ export const commitCardChecklist = mutation({
     // untouched here. Patching the setName row keeps metadata centralized at
     // the canonical level (variantType / insert / parallel rows are
     // version-of-a-set; metadata lives one level up). We reuse the setName id
-    // captured during the ancestor walk.
-    const setNameAncestorId: Id<"selectorOptions"> | undefined =
-      ancestorNodeIdByLevel.setName;
+    // captured earlier in this handler.
     if (setNameAncestorId) {
       const setNameRow = await ctx.db.get(setNameAncestorId);
       if (setNameRow) {

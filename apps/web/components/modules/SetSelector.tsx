@@ -182,22 +182,29 @@ export default function SetSelector() {
     selectedVariantId ||
     (isBaseVariantTypeSelected ? selectedVariantTypeId : null);
 
-  // NEO-38: the deepest selected node at setName-or-deeper. Drives
-  // SetAttributesPanel so the attributes editor follows the selection down
-  // (setName → variantType → insert → parallel) and never vanishes when a
-  // variant (e.g. "Base") is active. We deliberately do NOT mount it at the
-  // sport/year/manufacturer levels: a panel rendered there during drill-down
-  // adds height below the selector columns, and the cascade's drill flows
-  // (e.g. Football → custom year 2026) scroll DOWN to reach the column's
-  // "Add custom" button, which then pushed the year dropdown's top (2026)
-  // out of view → "2026 not visible" e2e failures (NEO-38). Those levels are
-  // auto-seeded by the heuristic at commit anyway; manual editing there
-  // (rare) is a follow-up needing a non-drill-disrupting placement.
+  // NEO-38/NEO-71-74: the deepest currently-selected node at ANY level
+  // (sport → parallel). Drives SetAttributesPanel so the attributes editor
+  // follows the selection all the way down and never vanishes when a
+  // variant (e.g. "Base") is active.
+  //
+  // History: this used to start at setName-or-deeper only. The original
+  // NEO-38 regression was specifically about the panel being EXPANDED at
+  // sport/year/manufacturer during drill-down, which pushed the selector
+  // columns down and hid the next column's target ("2026 not visible").
+  // The panel always renders collapsed by default (`defaultCollapsed`
+  // below) regardless of level, and expansion only ever happens via an
+  // explicit "Edit attributes" tap — never automatically during a drill —
+  // so extending to shallower levels does not reintroduce that failure
+  // mode. Verified against the exact regression scenario (util-drill-to-
+  // custom.yaml / custom-entry-survives-resync.yaml) before shipping this.
   const deepestSelectedId =
     selectedVariantOfVariantId ||
     selectedVariantId ||
     selectedVariantTypeId ||
     selectedSetId ||
+    selectedManufacturerId ||
+    selectedYearId ||
+    selectedSportId ||
     null;
 
   // NEO-6: read the cardChecklist row here (once) and derive the source-
@@ -471,16 +478,19 @@ export default function SetSelector() {
           parallel rows once they have a reconciliation primary mapped. */}
       {cardChecklistId && <MultiSourcePanel selectorOptionId={cardChecklistId} />}
 
-      {/* NEO-38: set ATTRIBUTES editor (features + metadata) — operator
-          edits keys here and the propagation engine writes through to every
-          descendant cardChecklist row. Mounts at the DEEPEST selected node
-          at any level (sport → parallel) so it follows the selection down
-          and never vanishes when a variant (e.g. "Base") is active. ALWAYS
-          starts COLLAPSED (a slim summary bar): expanding it at sport/year/
-          manufacturer during drill-down used to push the selector columns and
-          hid the year list (broke the cascade's Football → 2026 pre-warm,
-          NEO-38). The operator taps "Edit attributes" to edit; flows expand it
-          via an idempotent guard. */}
+      {/* NEO-38/NEO-71-74: set ATTRIBUTES editor. Mounts at the DEEPEST
+          selected node at ANY level (sport → parallel) so it follows the
+          selection down and never vanishes when a variant (e.g. "Base") is
+          active — including at sport/year/manufacturer, where operators need
+          to see the write-once auto-populated features (league/era/etc.)
+          as they drill, not just at setName+. ALWAYS starts COLLAPSED (a
+          slim summary bar): the original NEO-38 regression was specifically
+          about the panel being EXPANDED during drill-down, which pushed the
+          selector columns down and hid the year list (broke the cascade's
+          Football → 2026 pre-warm). Expansion only ever happens via an
+          explicit "Edit attributes" tap, never automatically during a
+          drill, so the collapsed bar rendering at every level does not
+          reintroduce that failure mode. */}
       {deepestSelectedId && (
         <SetAttributesPanel
           selectorOptionId={deepestSelectedId as Id<"selectorOptions">}

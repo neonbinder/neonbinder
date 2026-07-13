@@ -21,8 +21,11 @@ import { FeatureValueControl } from "./FeatureValueControl";
  * list:
  *
  *  1. Editable marketplace FEATURES (`EXPECTED_FEATURES`) — persisted via
- *     `setSelectorOptionFeature`, which fans the change out to every
- *     descendant cardChecklist row that hasn't overridden the key.
+ *     `setSelectorOptionFeature`, a single-row patch on THIS node only
+ *     (NEO-71-74: write-once feature snapshots). A row's `features` is
+ *     already the complete resolved value — computed once via copy-down at
+ *     the node's own creation — so this panel reads it directly, with no
+ *     client-side ancestor-chain merge for feature values.
  *
  *  2. Set METADATA (releaseDate, totalCardCount, block, tcdbSetId,
  *     sourceUrl) — formerly read-only header chips. Now rendered as rows in
@@ -35,8 +38,6 @@ import { FeatureValueControl } from "./FeatureValueControl";
  *     `sourceUrl` is rendered as plain text (never an auto-linked anchor) to
  *     avoid injecting a user-entered URL as a clickable link.
  *
- * Every row makes its source legible: own value vs. inherited-from-{level}.
- *
  * Collapsible so it never pushes the card list off-screen. Collapsed shows
  * a single summary bar (breadcrumb + an "N missing" amber badge + an
  * "Edit attributes" toggle). Default collapsed only when `defaultCollapsed`
@@ -45,12 +46,8 @@ import { FeatureValueControl } from "./FeatureValueControl";
  *
  * Save flow (features):
  *   1. User types a new value into a row.
- *   2. Blur / Enter triggers the mutation.
- *   3. Mutation returns `{ propagatedToCardCount, skippedAsOverridden }`.
- *   4. Toast renders "Updated N cards; skipped M with overrides".
- *
- * "Will propagate to N cards" preview is shown above the edit area as a
- * static count from `getDescendantCardCount`.
+ *   2. Blur / Enter triggers the mutation (patches this row only).
+ *   3. Toast renders "Saved {label}".
  */
 
 type Level =
@@ -96,10 +93,6 @@ export default function SetAttributesPanel({
   const chain = useQuery(api.selectorOptions.getAncestorChain, {
     id: selectorOptionId,
   });
-  const descendantCardCount = useQuery(
-    api.selectorOptions.getDescendantCardCount,
-    { selectorOptionId },
-  );
   const setSelectorOptionFeature = useMutation(
     api.selectorOptions.setSelectorOptionFeature,
   );
@@ -123,22 +116,6 @@ export default function SetAttributesPanel({
     return chain.find((c) => c.level === "sport")?.value;
   }, [chain]);
 
-  // Inherited feature value per key (from strictly-shallower ancestors —
-  // self excluded so the "Inherited:" hint shows the fallback when cleared).
-  // Also remember WHICH level provided it, so each row can label its source.
-  const inheritedFeatureByKey = useMemo(() => {
-    const map: Record<string, { value: string; level: Level }> = {};
-    if (!chain) return map;
-    for (const ancestor of chain) {
-      if (ancestor._id === selectorOptionId) continue;
-      if (!ancestor.features) continue;
-      for (const [k, v] of Object.entries(ancestor.features)) {
-        map[k] = { value: v, level: ancestor.level as Level };
-      }
-    }
-    return map;
-  }, [chain, selectorOptionId]);
-
   // Nearest setName ancestor (root→leaf chain; last setName wins). Supplies
   // inherited metadata for non-setName levels.
   const setNameAncestor = useMemo(() => {
@@ -155,25 +132,30 @@ export default function SetAttributesPanel({
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("set")) return false;
+      if (
+        f.applicableAtLevels &&
+        !f.applicableAtLevels.includes(row?.level as Level)
+      ) {
+        return false;
+      }
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true;
       return f.applicableSports.includes(ancestorSport);
     });
-  }, [ancestorSport]);
+  }, [ancestorSport, row?.level]);
 
-  // Count applicable features with no effective value (own OR inherited).
-  // Drives the collapsed-summary "N missing" amber badge.
+  // Count applicable features with no own value. `row.features` is already
+  // the complete resolved snapshot (write-once, from creation time), so
+  // "own" is the only signal — no inherited fallback to check.
   const missingCount = useMemo(() => {
     if (!row) return 0;
     const features = row.features ?? {};
     return applicable.reduce((acc, feat) => {
       const own = features[feat.key];
       const hasOwn = own !== undefined && own !== "";
-      const inh = inheritedFeatureByKey[feat.key]?.value;
-      const hasInherited = inh !== undefined && inh !== "";
-      return acc + (hasOwn || hasInherited ? 0 : 1);
+      return acc + (hasOwn ? 0 : 1);
     }, 0);
-  }, [row, applicable, inheritedFeatureByKey]);
+  }, [row, applicable]);
 
   if (!row || !chain) return null;
 
@@ -185,23 +167,21 @@ export default function SetAttributesPanel({
   const breadcrumb = chain.map((c) => c.value).join(" › ");
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
 
-  const handleSaveFeature = async (key: string, value: string) => {
+  const handleSaveFeature = async (
+    key: string,
+    label: string,
+    value: string,
+  ) => {
     const trimmed = value.trim();
     if (trimmed.length === 0) return;
     if (features[key] === trimmed) return; // no-op
+    // Optimistic "Saved {label}" confirmation, matching handleSaveMetadata's
+    // pattern — the mutation is now a single-row patch (NEO-71-74), no
+    // propagation counts to report.
+    setToast(`Saved ${label}`);
+    setTimeout(() => setToast(null), 6000);
     try {
-      const result = await setSelectorOptionFeature({
-        selectorOptionId,
-        key,
-        value: trimmed,
-      });
-      setToast(
-        `Updated ${result.propagatedToCardCount} card${result.propagatedToCardCount === 1 ? "" : "s"}` +
-          (result.skippedAsOverridden > 0
-            ? `; skipped ${result.skippedAsOverridden} with overrides`
-            : ""),
-      );
-      setTimeout(() => setToast(null), 6000);
+      await setSelectorOptionFeature({ selectorOptionId, key, value: trimmed });
     } catch (e) {
       setToast(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -288,22 +268,6 @@ export default function SetAttributesPanel({
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
               Set attributes
             </span>
-            <span
-              className="text-xs text-gray-500"
-              aria-label={`Will propagate to ${descendantCardCount ?? "?"} descendant cards`}
-            >
-              {descendantCardCount !== undefined ? (
-                <>
-                  Will propagate to{" "}
-                  <span className="text-[#00D558] font-semibold">
-                    {descendantCardCount}
-                  </span>{" "}
-                  card{descendantCardCount === 1 ? "" : "s"}
-                </>
-              ) : (
-                "Counting…"
-              )}
-            </span>
           </div>
 
           {toast && (
@@ -328,9 +292,7 @@ export default function SetAttributesPanel({
                 key={feat.key}
                 feat={feat}
                 value={features[feat.key]}
-                inherited={inheritedFeatureByKey[feat.key]?.value}
-                inheritedLevel={inheritedFeatureByKey[feat.key]?.level}
-                onSave={(v) => handleSaveFeature(feat.key, v)}
+                onSave={(v) => handleSaveFeature(feat.key, feat.label, v)}
               />
             ))}
 
@@ -546,14 +508,10 @@ function MetadataReadonlyRow({
 function SetFeatureRow({
   feat,
   value,
-  inherited,
-  inheritedLevel,
   onSave,
 }: {
   feat: ExpectedFeature;
   value: string | undefined;
-  inherited: string | undefined;
-  inheritedLevel: Level | undefined;
   onSave: (value: string) => Promise<unknown>;
 }) {
   const label = feat.label;
@@ -561,9 +519,10 @@ function SetFeatureRow({
   // rather than the first input sharing the className (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
 
+  // `value` is this row's own `features[key]` — already the complete
+  // resolved value (write-once, from creation time). No inherited fallback.
   const hasOwn = value !== undefined && value !== "";
-  const isMissing = !hasOwn && (inherited === undefined || inherited === "");
-  const inheritedLabel = inheritedLevel ? LEVEL_LABEL[inheritedLevel] : undefined;
+  const isMissing = !hasOwn;
 
   // "boolean" has no typed target at the set level (no set-level isRookie
   // column) and is filtered out via `hiddenAtLevels` before reaching here —
@@ -586,7 +545,7 @@ function SetFeatureRow({
   }
 
   if (feat.inputType === "derived") {
-    const resolved = value ?? inherited ?? "—";
+    const resolved = value ?? "—";
     return (
       <div
         className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
@@ -630,18 +589,10 @@ function SetFeatureRow({
         value={value ?? ""}
         onSave={onSave}
         ariaLabel={`Value for ${label}`}
-        placeholder={inherited ?? "—"}
+        placeholder="—"
         dataFeatKey={feat.key}
         className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
       />
-      {!hasOwn && inherited !== undefined && inherited !== "" && (
-        <span
-          className="text-[10px] text-gray-500"
-          aria-label={`Inherited value: ${inherited}`}
-        >
-          Inherited{inheritedLabel ? ` from ${inheritedLabel}` : ""}: {inherited}
-        </span>
-      )}
     </label>
   );
 }

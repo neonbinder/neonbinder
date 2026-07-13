@@ -30,6 +30,7 @@ describe("deriveSetLevelFeatures", () => {
       vintage: "false",
       manufacturer: "Topps",
       cardType: "Base",
+      parallelName: "Base",
       isReprint: "false",
     });
   });
@@ -49,6 +50,18 @@ describe("deriveSetLevelFeatures", () => {
         .cardType,
     ).toBe("Parallel");
     expect(deriveSetLevelFeatures({ leafLevel: "variantType" }).cardType).toBe("Base");
+  });
+
+  test("parallelName defaults to Base only at variantType level, never insert/parallel", () => {
+    expect(
+      deriveSetLevelFeatures({ leafLevel: "variantType" }).parallelName,
+    ).toBe("Base");
+    expect(
+      deriveSetLevelFeatures({ leafLevel: "insert" }).parallelName,
+    ).toBeUndefined();
+    expect(
+      deriveSetLevelFeatures({ leafLevel: "parallel" }).parallelName,
+    ).toBeUndefined();
   });
 
   test("season-style year parses the leading year", () => {

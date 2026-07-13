@@ -101,11 +101,14 @@ tags:
 - assertVisible:
     id: "Hide attributes"
 
-# The "Will propagate to N cards" counter is visible when the panel is open at
-# the setName level — confirms the propagation preview is rendered.
-# (Unique assertion folded from set-features-panel.yaml, which was deleted.)
-- assertVisible:
-    text: ".*Will propagate to.*"
+# NEO-71-74 REMOVED the "Will propagate to N cards" propagation preview: feature
+# saves are now a single-row write-once patch with no fan-out, so that counter no
+# longer renders anywhere (grep-confirmed absent from source). The obsolete
+# assertion that used to sit here has been dropped — asserting removed UI would
+# fail against this branch. Auto-populated write-once feature VALUES are proven
+# comprehensively in new-chain-autopopulates-features.yaml (R3 — not duplicated
+# here). This flow keeps its own charter: metadata editing + breadcrumb scope +
+# collapse/expand, all still exercised below.
 
 # The breadcrumb header shows "... › attr-edit-{N}" as leaf.
 # The ancestor chain uses "›" as separator; assert at least one "›" exists.

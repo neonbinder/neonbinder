@@ -368,7 +368,6 @@ export default function CardDetailPanel({
           <div>
             <CardFeaturesEditor
               cardChecklistId={card._id}
-              selectorOptionId={card.selectorOptionId}
               cardFeatures={card.features}
               ancestorSport={ancestorSport}
               cardIsRookie={card.isRookie}

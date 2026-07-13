@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
@@ -11,30 +11,29 @@ import { FeatureValueControl } from "./FeatureValueControl";
 /**
  * NEO-24 — per-card feature override editor.
  *
- * Renders one row per `EXPECTED_FEATURES` entry with the card's
- * current value pre-filled. Save calls `setCardFeature` per row on
- * blur; "Revert to inherited" clears the per-card override so the
- * card falls back to whatever the ancestor chain effectively
- * provides.
+ * Renders one row per `EXPECTED_FEATURES` entry with the card's current
+ * value pre-filled. `cardFeatures` (the card's own `features` map) is
+ * already the complete resolved snapshot (NEO-71-74: write-once feature
+ * snapshots — computed once via copy-down from the selectorOption node at
+ * card-creation time, see `commitCardChecklist`/`addCustomCard`), so this
+ * component reads it directly with no client-side ancestor-chain merge.
+ * Save calls `setCardFeature` per row on blur.
  *
- * Missing-feature highlight (amber) fires when the key has no value
- * on either the card or any ancestor — that's a marketplace-listing
- * blocker the admin should fix before pushing the card to eBay/etc.
+ * Missing-feature highlight (amber) fires when the key has no value on the
+ * card — that's a marketplace-listing blocker the admin should fix before
+ * pushing the card to eBay/etc.
  *
  * Collapsed by default to keep the inline edit form tight; expanded
  * via the "Show features" button. Mobile: rows stack vertically.
  */
 export default function CardFeaturesEditor({
   cardChecklistId,
-  selectorOptionId,
   cardFeatures,
   ancestorSport,
   cardIsRookie,
 }: {
   cardChecklistId: Id<"cardChecklist">;
-  /** Variant the card lives under — feeds the ancestor-chain query. */
-  selectorOptionId: Id<"selectorOptions">;
-  /** The card's own features map (per-card override layer). */
+  /** The card's own features map — already the complete resolved snapshot. */
   cardFeatures: Record<string, string> | undefined;
   /** Sport from the ancestor chain — drives `applicableSports` filtering. */
   ancestorSport?: string;
@@ -44,25 +43,6 @@ export default function CardFeaturesEditor({
   const [expanded, setExpanded] = useState(false);
   const setCardFeature = useMutation(api.selectorOptions.setCardFeature);
   const updateCard = useMutation(api.selectorOptions.updateCard);
-
-  // Ancestor chain → effective inherited value per key. Deeper
-  // ancestors override shallower (mirrors `commitCardChecklist`).
-  const chain = useQuery(
-    api.selectorOptions.getAncestorChain,
-    expanded ? { id: selectorOptionId } : "skip",
-  );
-
-  const inheritedByKey = useMemo(() => {
-    const map: Record<string, string> = {};
-    if (!chain) return map;
-    for (const row of chain) {
-      if (!row.features) continue;
-      for (const [k, v] of Object.entries(row.features)) {
-        map[k] = v;
-      }
-    }
-    return map;
-  }, [chain]);
 
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
@@ -110,25 +90,12 @@ export default function CardFeaturesEditor({
             key={feat.key}
             feat={feat}
             cardValue={cardFeatures?.[feat.key]}
-            inheritedValue={inheritedByKey[feat.key]}
             cardIsRookie={cardIsRookie}
             onSave={async (value) => {
               await setCardFeature({
                 cardChecklistId,
                 key: feat.key,
                 value,
-              });
-            }}
-            onRevert={async () => {
-              // No granular "clear key" mutation in v0; the cheapest
-              // way to drop a key is a full-replacement features
-              // patch via updateCard with the key removed. Existing
-              // overrides on other keys are preserved.
-              const next: Record<string, string> = { ...(cardFeatures ?? {}) };
-              delete next[feat.key];
-              await updateCard({
-                id: cardChecklistId,
-                features: next,
               });
             }}
             onSaveBoolean={async (v) => {
@@ -144,18 +111,14 @@ export default function CardFeaturesEditor({
 function CardFeatureRow({
   feat,
   cardValue,
-  inheritedValue,
   cardIsRookie,
   onSave,
-  onRevert,
   onSaveBoolean,
 }: {
   feat: ExpectedFeature;
   cardValue: string | undefined;
-  inheritedValue: string | undefined;
   cardIsRookie: boolean | undefined;
   onSave: (value: string) => Promise<unknown>;
-  onRevert: () => Promise<unknown>;
   onSaveBoolean: (value: boolean) => Promise<unknown>;
 }) {
   const label = feat.label;
@@ -164,11 +127,12 @@ function CardFeatureRow({
 
   // "boolean"/"derived" rows don't use the string features map at all, so an
   // unset/false value is a valid complete answer, not missing data.
+  // `cardValue` is this card's own resolved value (write-once, complete
+  // snapshot from creation time) — no inherited fallback to check.
   const isMissing =
     feat.inputType !== "boolean" &&
     feat.inputType !== "derived" &&
-    (cardValue === undefined || cardValue === "") &&
-    (inheritedValue === undefined || inheritedValue === "");
+    (cardValue === undefined || cardValue === "");
 
   if (feat.inputType === "boolean") {
     const handleToggle = async (checked: boolean) => {
@@ -208,7 +172,7 @@ function CardFeatureRow({
   }
 
   if (feat.inputType === "derived") {
-    const resolved = cardValue ?? inheritedValue ?? "—";
+    const resolved = cardValue ?? "—";
     return (
       <div
         className="flex flex-col gap-0.5 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
@@ -224,12 +188,7 @@ function CardFeatureRow({
     );
   }
 
-  // Effective displayed value = override if any, else inherited. The wrapper
-  // mirrors this into the (uncontrolled) input whenever the field is idle.
-  const displayed = cardValue ?? inheritedValue ?? "";
-
-  const hasOverride =
-    cardValue !== undefined && cardValue !== "" && cardValue !== inheritedValue;
+  const displayed = cardValue ?? "";
 
   return (
     <label
@@ -253,32 +212,16 @@ function CardFeatureRow({
           )}
           {label}
         </span>
-        {hasOverride && (
-          <button
-            type="button"
-            onClick={onRevert}
-            aria-label={`Revert ${label} to inherited`}
-            className="text-[10px] text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
-          >
-            Revert
-          </button>
-        )}
       </span>
       <FeatureValueControl
         feat={feat}
         value={displayed}
         compareBaseline={cardValue ?? ""}
         onSave={onSave}
-        onEmptyCommit={onRevert}
         ariaLabel={`Value for ${label}`}
-        placeholder={inheritedValue ?? "—"}
+        placeholder="—"
         className="w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none"
       />
-      {!hasOverride && inheritedValue !== undefined && inheritedValue !== "" && (
-        <span className="text-[10px] text-gray-500" aria-label={`Inherited value: ${inheritedValue}`}>
-          Inherited: {inheritedValue}
-        </span>
-      )}
     </label>
   );
 }

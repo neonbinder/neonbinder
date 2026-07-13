@@ -645,21 +645,36 @@ tags:
                 notVisible: "Add Custom Entry"
                 timeout: 10000
 
+      # RE-REVEAL the Sets header/search input BEFORE the search-path guard.
+      # The centerElement scroll to "Add custom Sets" above can push the Sets
+      # column header + "Search sets" input up under the sticky nav (y<66) — and
+      # it is WORSE now that a collapsed SetAttributesPanel renders below the
+      # column at a shallow (sport/year/manufacturer) selected level (NEO-38
+      # deepestSelectedId extension): the extra height below "+ Custom" lets
+      # centerElement drag "+ Custom" higher, carrying the search input off the
+      # top. If "Search sets" is off-screen the guard below wrongly reads false
+      # and falls through to the fragile direct-scroll fallback, which clips a
+      # target inside the column's overflow-y-auto container — the tap lands at
+      # y<0 and CDP throws "Failed to execute JS" (null→kotlin.Int). Centering
+      # the "Sets" header first pulls the search input back to ~y=360, clear of
+      # the nav, so a large real-manufacturer Sets list reliably takes the search
+      # path. optional:true makes this a no-op for short custom-sport Sets columns
+      # (nothing scrolled off / no search input), so short-list callers are
+      # unaffected and still fall through to the direct-scroll path below.
+      - scrollUntilVisible:
+          element:
+            text: "^Sets$"
+          direction: UP
+          centerElement: true
+          timeout: 8000
+          optional: true
+
       # Tap the SET_NAME row — search path if the list grew large (>8 items),
       # direct-scroll path for short lists. Pattern mirrors util-drill-to-custom-set.
       - runFlow:
           when:
             visible: ".*Search sets.*"
           commands:
-            # centerElement on Add-custom-Sets above may leave the Sets header above
-            # the viewport (y≈4 under the nav). Scroll UP to bring "Sets" back into
-            # center so the search input lands at ~y=360, clear of the nav header.
-            - scrollUntilVisible:
-                element:
-                  text: "^Sets$"
-                direction: UP
-                centerElement: true
-                timeout: 10000
             - tapOn:
                 text: ".*Search sets.*"
             - inputText: ${SET_NAME}

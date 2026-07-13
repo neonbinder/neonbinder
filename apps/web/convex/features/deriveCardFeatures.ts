@@ -116,6 +116,13 @@ export function deriveSetLevelFeatures(
     f.cardType = "Insert";
   } else if (inputs.leafLevel === "variantType") {
     f.cardType = "Base";
+    // Parallel/Variety — a base card (no insert/parallel) has no special
+    // variant, so default it to "Base" too. Inserts/Parallels intentionally
+    // do NOT get a generic "Insert"/"Parallel" default here — their real
+    // parallel name (e.g. "Gold Refractor") comes from the card's own
+    // observed cardVariation (deriveCardObservedFeatures), which is
+    // specific harvest data a generic string would only misrepresent.
+    f.parallelName = "Base";
   }
 
   // Reprint — default false; our pipeline has no reprint signal yet, and an
@@ -123,6 +130,54 @@ export function deriveSetLevelFeatures(
   f.isReprint = "false";
 
   return f;
+}
+
+const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
+  sport: ["league"],
+  year: ["era", "vintage"],
+  manufacturer: ["manufacturer"],
+  // variantType (Base) also gets a "Base" parallelName default — see
+  // deriveSetLevelFeatures. insert/parallel intentionally do NOT list
+  // parallelName: deriveSetLevelFeatures never sets it for those levels
+  // (their real value is card-observed, not a node-level default).
+  variantType: ["cardType", "parallelName"],
+  insert: ["cardType"],
+  parallel: ["cardType"],
+  setName: ["isReprint"],
+};
+
+/**
+ * Own-level heuristic contribution for a single selectorOptions node, keyed
+ * by the node's OWN level/value — never an ancestor or descendant. Callers
+ * merge this on top of the immediate parent's `features` (copy-down) to
+ * produce the new row's complete resolved snapshot, once, at creation time
+ * (NEO-71-74: write-once feature snapshots — see convex/selectorOptions.ts).
+ *
+ * `deriveSetLevelFeatures` unconditionally returns `isReprint: "false"` on
+ * every call regardless of input, so a naive per-level reuse would leak it
+ * onto every level — `LEVEL_HEURISTIC_KEYS` filters each level down to only
+ * the key(s) it actually owns.
+ */
+export function deriveOwnLevelFeatures(
+  level: string,
+  value: string,
+  metadata?: { isInsert?: boolean; isParallel?: boolean },
+): Record<string, string> {
+  const keys = LEVEL_HEURISTIC_KEYS[level];
+  if (!keys) return {};
+  const full = deriveSetLevelFeatures({
+    sport: level === "sport" ? value : undefined,
+    year: level === "year" ? value : undefined,
+    manufacturer: level === "manufacturer" ? value : undefined,
+    leafLevel: level,
+    leafIsInsert: metadata?.isInsert,
+    leafIsParallel: metadata?.isParallel,
+  });
+  const picked: Record<string, string> = {};
+  for (const key of keys) {
+    if (full[key] !== undefined) picked[key] = full[key];
+  }
+  return picked;
 }
 
 /**
