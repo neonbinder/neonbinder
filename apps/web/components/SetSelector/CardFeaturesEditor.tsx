@@ -7,6 +7,7 @@ import {
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
 import { FeatureValueControl } from "./FeatureValueControl";
+import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 
 /**
  * NEO-24 — per-card feature override editor.
@@ -19,9 +20,11 @@ import { FeatureValueControl } from "./FeatureValueControl";
  * component reads it directly with no client-side ancestor-chain merge.
  * Save calls `setCardFeature` per row on blur.
  *
- * Missing-feature highlight (amber) fires when the key has no value on the
- * card — that's a marketplace-listing blocker the admin should fix before
- * pushing the card to eBay/etc.
+ * None of these fields are actually required — blank is a perfectly
+ * acceptable, complete answer for most of them (not every card is
+ * autographed, has a memorabilia relic, a known signer, etc). There is
+ * deliberately no "missing"/required warning treatment anywhere here —
+ * every row renders identically whether filled in or blank.
  *
  * Collapsed by default to keep the inline edit form tight; expanded
  * via the "Show features" button. Mobile: rows stack vertically.
@@ -124,15 +127,32 @@ function CardFeatureRow({
   const label = feat.label;
   const [boolBusy, setBoolBusy] = useState(false);
   const [boolError, setBoolError] = useState<string | null>(null);
+  // Unique per-field marker class so Maestro's inputText targets THIS field's
+  // input rather than the FIRST card-feature input sharing the className (see
+  // useFieldTestClass). Mirrors SetFeatureRow — without it, typing into any
+  // text feature (e.g. Signed By) lands in the first text input (Card Type).
+  const fieldClass = useFieldTestClass();
 
-  // "boolean"/"derived" rows don't use the string features map at all, so an
-  // unset/false value is a valid complete answer, not missing data.
-  // `cardValue` is this card's own resolved value (write-once, complete
-  // snapshot from creation time) — no inherited fallback to check.
-  const isMissing =
-    feat.inputType !== "boolean" &&
-    feat.inputType !== "derived" &&
-    (cardValue === undefined || cardValue === "");
+  if (feat.inputType === "checkbox") {
+    return (
+      <label
+        className="flex flex-row items-center gap-2 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
+        aria-label={`Feature ${label}`}
+      >
+        <FeatureValueControl
+          feat={feat}
+          value={cardValue ?? ""}
+          onSave={onSave}
+          ariaLabel={`Value for ${label}`}
+          dataFeatKey={feat.key}
+          className=""
+        />
+        <span className="text-[10px] uppercase tracking-wide text-gray-400">
+          {label}
+        </span>
+      </label>
+    );
+  }
 
   if (feat.inputType === "boolean") {
     const handleToggle = async (checked: boolean) => {
@@ -192,26 +212,11 @@ function CardFeatureRow({
 
   return (
     <label
-      className={`flex flex-col gap-0.5 p-1.5 rounded border text-xs ${
-        isMissing
-          ? "border-amber-500/60 bg-amber-500/5"
-          : "border-gray-700 bg-gray-900/30"
-      }`}
+      className="flex flex-col gap-0.5 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
       aria-label={`Feature ${label}`}
     >
       <span className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400">
-        <span>
-          {isMissing && (
-            <span
-              className="text-amber-500 mr-1"
-              aria-label="Missing required feature"
-              title="Missing required feature"
-            >
-              ⚠
-            </span>
-          )}
-          {label}
-        </span>
+        <span>{label}</span>
       </span>
       <FeatureValueControl
         feat={feat}
@@ -220,7 +225,7 @@ function CardFeatureRow({
         onSave={onSave}
         ariaLabel={`Value for ${label}`}
         placeholder="—"
-        className="w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none"
+        className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
       />
     </label>
   );

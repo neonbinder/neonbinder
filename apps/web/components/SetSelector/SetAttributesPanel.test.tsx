@@ -19,16 +19,23 @@
  *   4. Editing a feature calls `setSelectorOptionFeature(selectorOptionId,
  *      key, value)` and shows a "Saved {label}" toast — no "propagated to N
  *      cards" language (that no longer exists; propagation was removed).
- *   5. `missingCount` counts only applicable rows with no OWN value — no
- *      inherited fallback contributes to "has a value".
+ *   5. There is no "missing"/required warning treatment anywhere — none of
+ *      these fields are actually required, so a blank row renders exactly
+ *      like a filled-in one (the old amber border/⚠ icon/"N missing" badge
+ *      were removed this session).
+ *
+ * releaseDate/totalCardCount/block used to live in a separate `setMetadata`
+ * object editable only at the setName level (a since-removed `setSetMetadata`
+ * mutation). They're now plain features like everything else — this file no
+ * longer mocks that mutation at all.
  *
  * --- Mocking strategy (mirrors EntityColumn.field-class.test.tsx /
  * drill-forms-onDone.test.tsx) ---
  * convex/react's useQuery/useMutation are module-mocked. useQuery is routed
  * by the (string-mocked) query reference so getSelectorOptionById and
  * getAncestorChain can return independently-controlled fixtures per test.
- * useMutation is routed the same way so setSelectorOptionFeature and
- * setSetMetadata resolve to distinct spies.
+ * useMutation is routed the same way so setSelectorOptionFeature resolves to
+ * a spy.
  */
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -45,13 +52,11 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionById: "getSelectorOptionById",
       getAncestorChain: "getAncestorChain",
       setSelectorOptionFeature: "setSelectorOptionFeature",
-      setSetMetadata: "setSetMetadata",
     },
   },
 }));
 
 const mockSetSelectorOptionFeature = vi.fn();
-const mockSetSetMetadata = vi.fn();
 
 let currentRow: unknown;
 let currentChain: unknown;
@@ -65,7 +70,6 @@ vi.mock("convex/react", () => ({
   useMutation: (mutation: string) => {
     if (mutation === "setSelectorOptionFeature")
       return mockSetSelectorOptionFeature;
-    if (mutation === "setSetMetadata") return mockSetSetMetadata;
     return vi.fn();
   },
 }));
@@ -94,7 +98,6 @@ function makeRow(overrides: Partial<{
     level: "setName",
     value: "2024 Topps Chrome",
     features: {},
-    setMetadata: {},
     ...overrides,
   };
 }
@@ -125,7 +128,6 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
   beforeEach(() => {
     vi.clearAllMocks();
     mockSetSelectorOptionFeature.mockResolvedValue(undefined);
-    mockSetSetMetadata.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -254,41 +256,30 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
     expect(screen.queryByText(/updated \d+ cards/i)).toBeNull();
   });
 
-  it("missingCount badge counts only applicable rows with no own value (collapsed view)", () => {
-    // At setName level, applicable features exclude cardType/parallelName
-    // (applicableAtLevels-gated) and isRookie (hiddenAtLevels: ["set"]).
-    // Applicable set-level features: league, era, isReprint, signedBy,
-    // isRelic, vintage(derived, always has "value" via display but is not
-    // counted as missing text-wise... derived is inputType "derived" and
-    // still goes through the generic isMissing check via `own` in
-    // missingCount, not per row-type), manufacturer.
-    currentRow = makeRow({
-      level: "setName",
-      features: {
-        league: "MLB", // present
-        // era missing
-        isReprint: "false", // present (non-empty string)
-        // signedBy missing
-        // isRelic missing
-        // vintage missing
-        manufacturer: "Topps", // present
-      },
-    });
+  it("never shows a missing-count badge or amber warning, even with every field blank", () => {
+    // None of these fields are required — a totally blank row (nothing set
+    // at all) must render with no "N missing" badge and no amber/⚠
+    // treatment on any row, collapsed or expanded.
+    currentRow = makeRow({ level: "setName", features: {} });
     currentChain = makeChain("Baseball");
 
-    // Render collapsed so the missing-count badge is visible (it's only
-    // shown in the collapsed summary bar).
-    render(
+    const { unmount } = render(
       <SetAttributesPanel
         selectorOptionId={SELECTOR_OPTION_ID}
         defaultCollapsed={true}
       />,
     );
+    expect(screen.queryByText(/\d+ missing/i)).toBeNull();
+    unmount();
 
-    // Applicable at setName: league, era, isReprint, signedBy, isRelic,
-    // vintage, manufacturer (7 total; isRookie hidden at "set", cardType /
-    // parallelName gated to variantType/insert/parallel).
-    // Missing: era, signedBy, isRelic, vintage = 4.
-    expect(screen.getByLabelText("4 missing")).toBeTruthy();
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={false}
+      />,
+    );
+    expect(screen.queryByText(/\d+ missing/i)).toBeNull();
+    expect(screen.queryByLabelText("Missing required feature")).toBeNull();
+    expect(screen.queryByText("⚠")).toBeNull();
   });
 });

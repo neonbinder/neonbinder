@@ -19,6 +19,9 @@
  *   5. The boolean "Rookie Card" row is bound to the typed `cardIsRookie`
  *      column (not the features map) and calls `updateCard({ id, isRookie })`.
  *   6. `applicableSports` filtering still works from the `ancestorSport` prop.
+ *   7. There is no "missing"/required warning treatment anywhere — none of
+ *      these fields are actually required (the old amber border/⚠ icon
+ *      were removed this session).
  *
  * --- Mocking strategy (mirrors SetAttributesPanel.test.tsx) ---
  * convex/react's useMutation is module-mocked, routed by the (string-mocked)
@@ -102,31 +105,31 @@ describe("CardFeaturesEditor — write-once feature snapshot reads (NEO-71-74)",
 
   it("renders the card's own features[key] directly", () => {
     renderEditor({
-      cardFeatures: { signedBy: "Mike Trout", isRelic: "Jersey Swatch" },
+      cardFeatures: { signedBy: "Mike Trout", isRelic: "true" },
     });
 
     expect(
       (screen.getByLabelText("Value for Signed By") as HTMLInputElement).value,
     ).toBe("Mike Trout");
+    // Memorabilia Relic is a "checkbox" feature (true/false string in the
+    // features map) — assert checked state, not a text value.
     expect(
       (screen.getByLabelText("Value for Memorabilia Relic") as HTMLInputElement)
-        .value,
-    ).toBe("Jersey Swatch");
+        .checked,
+    ).toBe(true);
   });
 
-  it("renders blank when a key is absent from cardFeatures — no inherited fallback", () => {
+  it("renders blank when a key is absent from cardFeatures — no inherited fallback, no missing warning", () => {
     renderEditor({ cardFeatures: {} });
 
     const signedByInput = screen.getByLabelText(
       "Value for Signed By",
     ) as HTMLInputElement;
     expect(signedByInput.value).toBe("");
-    // Absent value should also flag the missing-feature affordance (several
-    // other rows are also blank with an empty `cardFeatures`, so assert
-    // there's at least one rather than a unique match).
-    expect(screen.getAllByLabelText("Missing required feature").length).toBeGreaterThan(
-      0,
-    );
+    // None of these fields are required — a blank value must never show
+    // the (now-removed) missing-feature warning affordance.
+    expect(screen.queryByLabelText("Missing required feature")).toBeNull();
+    expect(screen.queryByText("⚠")).toBeNull();
   });
 
   it("renders blank when cardFeatures is undefined entirely", () => {

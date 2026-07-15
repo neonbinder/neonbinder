@@ -22,37 +22,73 @@ tags:
 #   per-worker custom sport ("E2E Test Sport <worker>"):
 #     year  "1975-w<worker>"  → derives era="Vintage (1970-79)", vintage="true"
 #     mfr   "WOMfr-<worker>"  → derives manufacturer="WOMfr-<worker>" (verbatim)
-#     set   "WOSet-<worker>"  → derives isReprint="false"
-#     VT    "WOVT-<worker>"   → derives cardType="Base", parallelName="Base"
+#     set   "WOSet2-<worker>" → derives isReprint="false", autographed="None"
+#     VT    "WOVT2-<worker>"  → derives cardType="Base", parallelName="Base"
+#   The sport / year / manufacturer nodes are the suite's PERSISTENT per-worker
+#   custom ancestors (reused across runs); the set + variantType carry a trailing
+#   GENERATION digit ("...2") and are the freshly-created nodes under test. This
+#   is deliberate and load-bearing: feature snapshots are WRITE-ONCE (computed
+#   once at a node's OWN creation, never recomputed), and the global
+#   selectorOptions catalog is NOT wiped by the per-worker /testing/reset (which
+#   only clears the three per-USER tables) — so a set/VT created by an EARLIER
+#   run predates any newly-added setName/variantType-level default (like
+#   autographed="None") and would render it blank ("— Select —") forever.
+#   Bumping the generation digit forces the drill to CREATE the set + VT fresh,
+#   with the CURRENT derivation. When a future setName/variantType-level default
+#   is added and asserted here, bump the digit again (…2→…3). Reusing the
+#   existing year/manufacturer is itself meaningful: it proves copy-down works
+#   when a NEW set is added under a PRE-EXISTING manufacturer — the common
+#   real-world case (an operator adds this year's set under a known maker).
 #   Each node's snapshot is COPIED DOWN into the next as it is created, so the
 #   variantType node's `features` is the ACCUMULATED resolved map
-#   {era, vintage, manufacturer, isReprint, cardType, parallelName}. The panel
-#   at the variantType level therefore shows ALL SIX, and we assert every one:
+#   {era, vintage, manufacturer, isReprint, autographed, cardType,
+#   parallelName}. The panel at the variantType level therefore shows all of
+#   them, and we assert six:
 #     Era = "Vintage (1970-79)"  (copied down from the year — 2 hops)
 #     Vintage = "true"           (copied down from the year — 2 hops)
 #     Manufacturer = "WOMfr-<w>" (copied down from the manufacturer — 1 hop)
-#     Reprint = "false"          (copied down from the set — 1 hop)
+#     Autographed = "None"       (copied down from the set — 1 hop; the "None"
+#                                 default added this session, originating at the
+#                                 setName level exactly like isReprint)
 #     Card Type = "Base"         (own-level derivation at the variantType)
 #     Parallel/Variety = "Base"  (own-level derivation at the variantType — the
 #                                 "Base" default added this session)
 #   Each asserted VALUE is UNIQUELY produced by exactly one origin level (only a
 #   pre-1980 year yields "Vintage (1970-79)"; only the manufacturer node yields
-#   its verbatim name; only the setName level emits isReprint; only a base
-#   variantType emits cardType/parallelName="Base"), so asserting the values at
-#   the leaf proves BOTH that copy-down carried each ancestor's derivation down
-#   AND that own-level derivation ran — i.e. the full write-once mechanism. If
-#   any hop were broken, that feature would render "—" / "— Select —" and its
-#   scrollUntilVisible-with-text below would fail loudly (R2).
+#   its verbatim name; only a setName node emits the autographed="None" default;
+#   only a base variantType emits cardType/parallelName="Base"), so asserting
+#   the values at the leaf proves BOTH that copy-down carried each ancestor's
+#   derivation down AND that own-level derivation ran — i.e. the full write-once
+#   mechanism. If any hop were broken, that feature would render "—" /
+#   "— Select —" and its scrollUntilVisible-with-text below would fail loudly
+#   (R2).
+#
+# WHY REPRINT IS NOT ASSERTED HERE (NEO-71-74): isReprint became a "checkbox"
+#   input type. Its value ("true"/"false") is stored in the features map exactly
+#   like before, and the set node still derives "false" and copies it down — but
+#   a checkbox's boolean STATE is NOT observable in Maestro-web: the injected
+#   view-hierarchy (maestro-web.js `traverse`) emits no `checked` attribute for
+#   any node, and a valueless `<input type=checkbox>` reads `value="on"` for BOTH
+#   checked and unchecked, so neither a `checked:` selector nor a text match can
+#   distinguish "false"→unchecked from "true"→checked. Reprint's SAVE path (the
+#   checkbox → single-row patch → "Saved Reprint" toast) is covered instead by
+#   topps-chrome-add-feature.yaml (R3 — not duplicated here). The setName-origin
+#   1-hop copy-down that Reprint used to prove is now proven DIRECTLY by
+#   Autographed — a `select` default ("None") that originates at the exact same
+#   setName level as isReprint but, unlike a checkbox, IS Maestro-readable (a
+#   select node's text = its selected option) — so dropping Reprint's assertion
+#   loses no structural coverage.
 #
 # HOW EACH VALUE IS ASSERTED (Maestro-web value extraction — VERIFIED against
 # maestro-client.jar!maestro-web.js getNodeText, cli 2.6.0):
 #   - <input>  node text = value || placeholder || ariaLabel  → the input's
-#     CURRENT VALUE is directly matchable (Reprint "false", Card Type "Base",
+#     CURRENT VALUE is directly matchable (Card Type "Base",
 #     Parallel/Variety "Base", Manufacturer "WOMfr-<w>").
 #   - <select> node text = ONLY the SELECTED option's text (un-selected <option>
 #     nodes are omitted from the hierarchy unless the select is focused) → the
 #     SELECTED value is matchable and does NOT false-match other options
-#     (Era "Vintage (1970-79)"; an unset select would read "— Select —").
+#     (Era "Vintage (1970-79)", Autographed "None"; an unset select would read
+#     "— Select —").
 #   - derived <span> node text = its textContent (Vintage "true").
 #   Every control also carries resource-id = its aria-label ("Value for <Label>",
 #   the DO-NOT-RENAME hook in SetFeatureRow), so we assert each with a COMBINED
@@ -114,19 +150,19 @@ tags:
       SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
       YEAR: "1975-w${WORKER_INDEX || 0}"
       MANUFACTURER: "WOMfr-${WORKER_INDEX || 0}"
-      SET_NAME: "WOSet-${WORKER_INDEX || 0}"
-      VARIANT_TYPE: "WOVT-${WORKER_INDEX || 0}"
+      SET_NAME: "WOSet2-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "WOVT2-${WORKER_INDEX || 0}"
 
 # Step 3 — locate the SetAttributesPanel and prove it is scoped to the
 # freshly-created VARIANT TYPE node. The panel header ("Attributes for
-# WOVT-<worker> (Variant)") is a plain <h3> with no aria-label, so its text
+# WOVT2-<worker> (Variant)") is a plain <h3> with no aria-label, so its text
 # content is reliably matchable. This scrollUntilVisible IS the assertion that
 # the panel exists at the right node (R6 — no redundant assertVisible after).
 # centerElement keeps the header/toggle clear of the y>=489 footer-steal zone
 # (R8) so the expand tap below lands.
 - scrollUntilVisible:
     element:
-      text: ".*Attributes for WOVT-${WORKER_INDEX || 0}.*"
+      text: ".*Attributes for WOVT2-${WORKER_INDEX || 0}.*"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
@@ -138,7 +174,7 @@ tags:
 # vintage to have derived — asserting it here guards the precondition for the
 # Vintage value assertion below.
 - assertVisible:
-    text: ".*1975-w${WORKER_INDEX || 0}.*WOVT-${WORKER_INDEX || 0}.*"
+    text: ".*1975-w${WORKER_INDEX || 0}.*WOVT2-${WORKER_INDEX || 0}.*"
 
 # Step 5 — make sure the panel is EXPANDED (it may default collapsed at the
 # variantType level, or a prior retry may have left it either way). Idempotent:
@@ -197,16 +233,7 @@ tags:
     visibilityPercentage: 50
     timeout: 15000
 
-# 6d — Reprint = "false" (emitted at the setName level, copied down 1 hop).
-- scrollUntilVisible:
-    element:
-      id: "Value for Reprint"
-      text: "false"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 15000
-
-# 6e — Card Type = "Base" (own-level derivation at the base variantType).
+# 6d — Card Type = "Base" (own-level derivation at the base variantType).
 - scrollUntilVisible:
     element:
       id: "Value for Card Type"
@@ -215,12 +242,27 @@ tags:
     visibilityPercentage: 50
     timeout: 15000
 
-# 6f — Parallel/Variety = "Base" (own-level derivation at the base variantType —
+# 6e — Parallel/Variety = "Base" (own-level derivation at the base variantType —
 # the "Base" default added this session; a broken default reads "—" and fails).
 - scrollUntilVisible:
     element:
       id: "Value for Parallel/Variety"
       text: "Base"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+
+# 6f — Autographed = "None" (select default originating at the setName node — the
+# exact same origin level as isReprint — copied down 1 hop to the variantType.
+# A <select> node's text is its SELECTED option ("None"), so this matches the
+# node that has BOTH the "Value for Autographed" aria-label AND selected "None";
+# a broken/missing default would leave the select unset ("— Select —") and this
+# scrollUntilVisible-with-text would fail loudly (R2). This is the direct,
+# now-readable replacement for the setName-origin copy-down Reprint used to prove.
+- scrollUntilVisible:
+    element:
+      id: "Value for Autographed"
+      text: "None"
     centerElement: true
     visibilityPercentage: 50
     timeout: 15000

@@ -79,14 +79,17 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toEqual({ manufacturer: "Panini" });
   });
 
-  test("setName -> isReprint", async () => {
+  test("setName -> isReprint, autographed", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const id = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "setName", value: "2024 Topps" },
     );
-    expect(await getFeatures(t, id)).toEqual({ isReprint: "false" });
+    expect(await getFeatures(t, id)).toEqual({
+      isReprint: "false",
+      autographed: "None",
+    });
   });
 
   test("variantType / insert / parallel -> cardType", async () => {
@@ -296,6 +299,7 @@ describe("full copy-down from parent to child", () => {
     expect(insertRow[0].features).toEqual({
       league: "MLB", // copied down from sport
       isReprint: "false", // copied down from setName
+      autographed: "None", // copied down from setName
       cardType: "Insert", // own-level heuristic (level="insert")
     });
   });

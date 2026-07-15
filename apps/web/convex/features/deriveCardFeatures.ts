@@ -85,7 +85,8 @@ function parseYear(year: string | undefined): number | null {
 
 /**
  * Features derivable from the set hierarchy alone (independent of the
- * individual card): league, era, vintage, manufacturer, cardType, isReprint.
+ * individual card): league, era, vintage, manufacturer, cardType, isReprint,
+ * autographed.
  */
 export function deriveSetLevelFeatures(
   inputs: SetLevelFeatureInputs,
@@ -129,6 +130,10 @@ export function deriveSetLevelFeatures(
   // operator can flip it per-set/per-card.
   f.isReprint = "false";
 
+  // Autographed — default "None"; most cards are not autographed, and an
+  // operator (or a future marketplace signal) can flip it per-set/per-card.
+  f.autographed = "None";
+
   return f;
 }
 
@@ -143,7 +148,7 @@ const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
   variantType: ["cardType", "parallelName"],
   insert: ["cardType"],
   parallel: ["cardType"],
-  setName: ["isReprint"],
+  setName: ["isReprint", "autographed"],
 };
 
 /**
@@ -153,10 +158,10 @@ const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
  * produce the new row's complete resolved snapshot, once, at creation time
  * (NEO-71-74: write-once feature snapshots — see convex/selectorOptions.ts).
  *
- * `deriveSetLevelFeatures` unconditionally returns `isReprint: "false"` on
- * every call regardless of input, so a naive per-level reuse would leak it
- * onto every level — `LEVEL_HEURISTIC_KEYS` filters each level down to only
- * the key(s) it actually owns.
+ * `deriveSetLevelFeatures` unconditionally returns `isReprint: "false"` and
+ * `autographed: "None"` on every call regardless of input, so a naive
+ * per-level reuse would leak them onto every level — `LEVEL_HEURISTIC_KEYS`
+ * filters each level down to only the key(s) it actually owns.
  */
 export function deriveOwnLevelFeatures(
   level: string,
@@ -238,5 +243,8 @@ export function deriveBackfillFeatures(
 export function validateFeatureValue(key: string, value: string): void {
   if (key === "era" && !ERA_BUCKET_OPTIONS.includes(value)) {
     throw new Error(`Invalid era value: ${value}`);
+  }
+  if (key === "totalCardCount" && value !== "" && !/^\d+$/.test(value)) {
+    throw new Error(`Invalid totalCardCount value: ${value}`);
   }
 }

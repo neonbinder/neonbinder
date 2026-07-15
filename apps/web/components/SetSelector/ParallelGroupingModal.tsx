@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
 import {
   DndContext,
@@ -574,6 +575,9 @@ export default function ParallelGroupingModal({
     : null;
 
   return createPortal(
+    // NEO-71-74 QA fix: see BaseSetPicker.tsx for why this nested <Theme> is
+    // needed — createPortal(document.body) escapes the root Theme's CSS scope.
+    <Theme>
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       onClick={onClose}
@@ -740,7 +744,8 @@ export default function ParallelGroupingModal({
           </div>
         </div>
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }

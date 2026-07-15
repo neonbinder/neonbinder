@@ -463,7 +463,7 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     expect(c2.features?.parallelName).toBeUndefined();
   });
 
-  test("set-level totalCardCount + lastSyncedAt land on the setName ancestor after commit", async () => {
+  test("set-level totalCardCount lands on the setName ancestor's features after commit", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -488,7 +488,6 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       return { sportId, setNameId };
     });
 
-    const before = Date.now();
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: subtreeIds.setNameId,
       sport: "Baseball",
@@ -551,7 +550,6 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       { id: subtreeIds.setNameId },
     );
     expect(row).not.toBeNull();
-    expect(row!.setMetadata?.totalCardCount).toBe(3);
-    expect(row!.setMetadata?.lastSyncedAt).toBeGreaterThanOrEqual(before);
+    expect(row!.features?.totalCardCount).toBe("3");
   });
 });

@@ -577,20 +577,6 @@ export const storeReconciledOptions = mutation({
           sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
         }),
         metadata: metadataValidator,
-        // NEO-24: reconciler may seed set-level marketplace metadata
-        // (release date, etc) when the data source provides it.
-        // Merge-patched onto existing rows; a fresh row's `features` is
-        // computed automatically below (copy-down + own-level heuristic);
-        // an operator override after that goes through
-        // `setSelectorOptionFeature`.
-        setMetadata: v.optional(v.object({
-          releaseDate: v.optional(v.string()),
-          totalCardCount: v.optional(v.number()),
-          block: v.optional(v.string()),
-          tcdbSetId: v.optional(v.string()),
-          sourceUrl: v.optional(v.string()),
-          lastSyncedAt: v.optional(v.number()),
-        })),
       }),
     ),
   },
@@ -690,14 +676,6 @@ export const storeReconciledOptions = mutation({
         if (item.metadata) {
           patch.metadata = { ...(existing.metadata || {}), ...item.metadata };
         }
-        // NEO-24: merge-patch setMetadata if the reconciler supplied any.
-        // Existing keys are preserved; new keys overlay them.
-        if (item.setMetadata) {
-          patch.setMetadata = {
-            ...(existing.setMetadata || {}),
-            ...item.setMetadata,
-          };
-        }
         await ctx.db.patch(existing._id, patch);
         insertedIds.push(existing._id);
       } else {
@@ -724,7 +702,6 @@ export const storeReconciledOptions = mutation({
           parentId,
           children: [],
           metadata: item.metadata,
-          ...(item.setMetadata ? { setMetadata: item.setMetadata } : {}),
           ...(Object.keys(features).length > 0 ? { features } : {}),
           lastUpdated: Date.now(),
         });

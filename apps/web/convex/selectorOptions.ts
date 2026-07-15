@@ -36,20 +36,6 @@ const metadataValidator = v.optional(v.object({
   isParallel: v.optional(v.boolean()),
 }));
 
-// NEO-24: set-level marketplace-listing metadata. Mirrors the matching
-// optional object on `selectorOptions` in schema.ts. Used by the
-// `setSetMetadata` mutation, the queries that return selectorOptions rows,
-// and the propagation engine.
-const setMetadataObjectValidator = v.object({
-  releaseDate: v.optional(v.string()),
-  totalCardCount: v.optional(v.number()),
-  block: v.optional(v.string()),
-  tcdbSetId: v.optional(v.string()),
-  sourceUrl: v.optional(v.string()),
-  lastSyncedAt: v.optional(v.number()),
-});
-const setMetadataValidator = v.optional(setMetadataObjectValidator);
-
 // NEO-24: marketplace-agnostic feature map (set-level + card-level).
 // Keys come from `convex/features/expectedFeatures.ts`; values are strings.
 const featuresValidator = v.optional(v.record(v.string(), v.string()));
@@ -94,7 +80,6 @@ export const getSelectorOptions = query({
       isCustom: v.optional(v.boolean()),
       createdByUserId: v.optional(v.string()),
       metadata: metadataValidator,
-      setMetadata: setMetadataValidator,
       features: featuresValidator,
       lastUpdated: v.number(),
     }),
@@ -252,7 +237,6 @@ export const getSelectorOptionById = query({
       isCustom: v.optional(v.boolean()),
       createdByUserId: v.optional(v.string()),
       metadata: metadataValidator,
-      setMetadata: setMetadataValidator,
       features: featuresValidator,
       lastUpdated: v.number(),
     }),
@@ -294,7 +278,6 @@ export const findByLevelAndValue = query({
       isCustom: v.optional(v.boolean()),
       createdByUserId: v.optional(v.string()),
       metadata: metadataValidator,
-      setMetadata: setMetadataValidator,
       features: featuresValidator,
       lastUpdated: v.number(),
     }),
@@ -326,11 +309,6 @@ export const getAncestorChain = query({
         sportlotsDisplay: v.optional(v.string()),
       }),
       metadata: metadataValidator,
-      // NEO-38: surface ancestor setMetadata so callers (SetAttributesPanel)
-      // can read the setName-level release date / tcdbSetId etc. without a
-      // second round-trip. These fields are manually edited (no auto-sync).
-      // Shape mirrors the `setMetadata` column on schema.ts.
-      setMetadata: setMetadataValidator,
       // NEO-24: surface ancestor features so callers (commitCardChecklist
       // inheritance merge, SetFeaturesPanel) can resolve effective values
       // without a second round-trip.
@@ -346,14 +324,6 @@ export const getAncestorChain = query({
       value: string;
       platformData: { bsc?: string | string[]; sportlots?: string };
       metadata?: { cardNumberPrefix?: string; isInsert?: boolean; isParallel?: boolean };
-      setMetadata?: {
-        releaseDate?: string;
-        totalCardCount?: number;
-        block?: string;
-        tcdbSetId?: string;
-        sourceUrl?: string;
-        lastSyncedAt?: number;
-      };
       features?: Record<string, string>;
       isCustom?: boolean;
     }> = [];
@@ -368,7 +338,6 @@ export const getAncestorChain = query({
         value: option.value,
         platformData: option.platformData || {},
         metadata: option.metadata,
-        setMetadata: option.setMetadata,
         features: option.features,
         isCustom: option.isCustom,
       });
@@ -449,7 +418,7 @@ export const getCardChecklist = query({
 });
 
 // NEO-85: structural deep-equal for the small plain-value objects/arrays we
-// store on selectorOptions (platformData, setMetadata, children id arrays).
+// store on selectorOptions (platformData, children id arrays).
 // Leaves are string | number | boolean | null; containers are arrays and plain
 // objects. Used to skip no-op ctx.db.patch calls: in Convex, patching a row —
 // even with byte-identical data — invalidates every query that read it, which
@@ -501,13 +470,6 @@ export const storeSelectorOptions = mutation({
           sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
           sportlotsDisplay: v.optional(v.string()),
         }),
-        // NEO-24: optional set-level metadata seed. Merge-patched onto
-        // existing rows; written-through to fresh inserts. Features are
-        // intentionally NOT accepted here — a fresh row's `features` is
-        // computed automatically (copy-down from its parent + own-level
-        // heuristic, see the fresh-insert branch below); an operator
-        // override after that lands via `setSelectorOptionFeature`.
-        setMetadata: v.optional(setMetadataObjectValidator),
       }),
     ),
     parentId: v.optional(v.id("selectorOptions")),
@@ -584,11 +546,6 @@ export const storeSelectorOptions = mutation({
         };
         warnIfIncomplete(existing._id, option.value, mergedPlatformData);
 
-        // NEO-24: merge-patch setMetadata if caller supplied any.
-        const mergedSetMetadata = option.setMetadata
-          ? { ...(existing.setMetadata || {}), ...option.setMetadata }
-          : existing.setMetadata;
-
         // NEO-85: only patch when the merged data actually differs from what's
         // stored. A no-op patch still invalidates every query that read this
         // row, re-rendering + reflowing the SetSelector columns for nothing
@@ -600,19 +557,12 @@ export const storeSelectorOptions = mutation({
           mergedPlatformData,
           existing.platformData,
         );
-        const setMetadataChanged =
-          option.setMetadata !== undefined &&
-          !valuesDeepEqual(mergedSetMetadata, existing.setMetadata);
 
-        if (platformDataChanged || setMetadataChanged) {
-          const patch: Record<string, unknown> = {
+        if (platformDataChanged) {
+          await ctx.db.patch(existing._id, {
             platformData: mergedPlatformData,
             lastUpdated: Date.now(),
-          };
-          if (option.setMetadata) {
-            patch.setMetadata = mergedSetMetadata;
-          }
-          await ctx.db.patch(existing._id, patch);
+          });
         }
         // Always keep the row in the parent's children set, whether or not we
         // patched it — skipping the patch must not drop it from the ordering.
@@ -629,7 +579,6 @@ export const storeSelectorOptions = mutation({
           platformData: option.platformData,
           parentId,
           children: [],
-          ...(option.setMetadata ? { setMetadata: option.setMetadata } : {}),
           ...(Object.keys(features).length > 0 ? { features } : {}),
           lastUpdated: Date.now(),
         });
@@ -682,16 +631,11 @@ export const addCustomSelectorOption = mutation({
     value: v.string(),
     parentId: v.optional(v.id("selectorOptions")),
     userId: v.optional(v.string()),
-    // NEO-24: optional set-level metadata to seed the custom row with.
-    // Features intentionally omitted — a fresh row's `features` is computed
-    // automatically below (copy-down + own-level heuristic); an operator
-    // override after that goes through setSelectorOptionFeature.
-    setMetadata: v.optional(setMetadataObjectValidator),
   },
   returns: v.id("selectorOptions"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const { level, value, parentId, userId, setMetadata } = args;
+    const { level, value, parentId, userId } = args;
 
     // NEO-71-74: fetch the parent once, up front — reused both for the
     // fresh row's copy-down `features` snapshot below and for the
@@ -739,7 +683,6 @@ export const addCustomSelectorOption = mutation({
       children: [],
       isCustom: true,
       createdByUserId: userId,
-      ...(setMetadata ? { setMetadata } : {}),
       ...(Object.keys(features).length > 0 ? { features } : {}),
       lastUpdated: Date.now(),
     });
@@ -1345,10 +1288,10 @@ export const deleteCard = mutation({
 });
 
 // ===========================================================================
-// NEO-24: Feature / setMetadata propagation engine
+// NEO-24: Feature propagation engine
 // ===========================================================================
 //
-// Three mutations work together to maintain the marketplace-agnostic feature
+// Two mutations work together to maintain the marketplace-agnostic feature
 // map:
 //
 //   - setSelectorOptionFeature(selectorOptionId, key, value)
@@ -1358,15 +1301,16 @@ export const deleteCard = mutation({
 //       through. Cards that have already overridden the key are left
 //       untouched and counted as `skippedAsOverridden`. Counts are returned
 //       so the UI can confirm propagation scope before showing a toast.
+//       (Formerly there was a separate `setSetMetadata` mutation for
+//       releaseDate/totalCardCount/block, editable ONLY at the setName
+//       level. Folded into this same feature map/mutation so those fields
+//       can independently override at every set-side level too — e.g. a
+//       parallel released later than its base set with its own release
+//       date.)
 //
 //   - setCardFeature(cardChecklistId, key, value)
 //       Plain per-card patch — no propagation. Use this for explicit
 //       per-card overrides.
-//
-//   - setSetMetadata(selectorOptionId, metadata)
-//       Merge-patches `setMetadata` on the named row. Set-level only; does
-//       NOT propagate (per the audit, setMetadata is set-specific by
-//       construction — release date, total card count, etc).
 //
 // Inheritance at card-creation time happens in `commitCardChecklist`
 // (further down this file): the new card's `features` is the top-down
@@ -1585,26 +1529,6 @@ export const setCardFeature = mutation({
   },
 });
 
-export const setSetMetadata = mutation({
-  args: {
-    selectorOptionId: v.id("selectorOptions"),
-    metadata: setMetadataObjectValidator,
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const row = await ctx.db.get(args.selectorOptionId);
-    if (!row) {
-      throw new Error(`selectorOption ${args.selectorOptionId} not found`);
-    }
-    await ctx.db.patch(args.selectorOptionId, {
-      setMetadata: { ...(row.setMetadata ?? {}), ...args.metadata },
-      lastUpdated: Date.now(),
-    });
-    return null;
-  },
-});
-
 // Returns all `level=insert` rows under a variantType, each with its own
 // `level=parallel` children inlined. Powers ParallelGroupingModal — one
 // round trip pulls the full tree for the modal to render and diff against.
@@ -1627,8 +1551,7 @@ export const getInsertTreeByVariantType = query({
         isCustom: v.optional(v.boolean()),
         createdByUserId: v.optional(v.string()),
         metadata: metadataValidator,
-        setMetadata: setMetadataValidator,
-        features: featuresValidator,
+          features: featuresValidator,
         lastUpdated: v.number(),
       }),
       parallels: v.array(
@@ -1647,8 +1570,7 @@ export const getInsertTreeByVariantType = query({
           isCustom: v.optional(v.boolean()),
           createdByUserId: v.optional(v.string()),
           metadata: metadataValidator,
-          setMetadata: setMetadataValidator,
-          features: featuresValidator,
+              features: featuresValidator,
           lastUpdated: v.number(),
         }),
       ),
@@ -4112,33 +4034,24 @@ export const commitCardChecklist = mutation({
     }
 
     // NEO-24/38: harvest the locally-observable card-count from the BSC/SL
-    // checklist fetch onto the setName ancestor, and stamp lastSyncedAt with
-    // the time of this checklist sync. Other metadata (releaseDate / block /
-    // sourceUrl / tcdbSetId) is manually edited via `setSetMetadata` and left
-    // untouched here. Patching the setName row keeps metadata centralized at
-    // the canonical level (variantType / insert / parallel rows are
-    // version-of-a-set; metadata lives one level up). We reuse the setName id
-    // captured earlier in this handler.
-    if (setNameAncestorId) {
+    // checklist fetch onto the setName ancestor's `totalCardCount` feature.
+    // Only when this commit is itself happening AT the setName level —
+    // otherwise this is a variant/insert/parallel fetch and our card count is
+    // a subset, not the set total. releaseDate/block are purely manual (no
+    // auto-harvest) and live in the same features map, independently editable
+    // at every level via setSelectorOptionFeature (see the comment on that
+    // mutation above for why these were folded out of the old, setName-only
+    // `setMetadata` object).
+    if (setNameAncestorId && args.selectorOptionId === setNameAncestorId) {
       const setNameRow = await ctx.db.get(setNameAncestorId);
       if (setNameRow) {
-        // Only bump totalCardCount when the current commit is itself happening
-        // at the setName level (otherwise this is a variant/insert/parallel
-        // fetch and our card count is a subset, not the set total).
-        const isAtSetNameLevel =
-          args.selectorOptionId === setNameAncestorId;
-        const patch: { setMetadata?: Record<string, unknown>; lastUpdated: number } = {
-          lastUpdated: Date.now(),
-        };
-        const mergedMeta: Record<string, unknown> = {
-          ...(setNameRow.setMetadata ?? {}),
-          lastSyncedAt: Date.now(),
-        };
-        if (isAtSetNameLevel) {
-          mergedMeta.totalCardCount = richCards.length;
+        const newCount = String(richCards.length);
+        if (setNameRow.features?.totalCardCount !== newCount) {
+          await ctx.db.patch(setNameAncestorId, {
+            features: { ...(setNameRow.features ?? {}), totalCardCount: newCount },
+            lastUpdated: Date.now(),
+          });
         }
-        patch.setMetadata = mergedMeta;
-        await ctx.db.patch(setNameAncestorId, patch);
       }
     }
 

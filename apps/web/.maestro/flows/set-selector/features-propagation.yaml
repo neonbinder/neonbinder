@@ -17,14 +17,35 @@ tags:
 #   independently via `setCardFeature`. The panel shows a flat "Saved {label}"
 #   confirmation toast — there is no card count and no propagation to survive.
 #
+# SUBJECT FIELD = "Signed By" (NOT Reprint — see WHY below).
+#
 # WHAT THIS FLOW NOW PROVES (its charter, unchanged in spirit):
-#   1. FEATURE EDITING AT THE SET LEVEL: editing "Value for Reprint" on the set
-#      row saves and shows the new "Saved Reprint" confirmation toast (not the
+#   1. FEATURE EDITING AT THE SET LEVEL: editing "Value for Signed By" on the set
+#      row saves and shows the new "Saved Signed By" confirmation toast (not the
 #      deleted "Updated N cards" propagation toast).
-#   2. NO UNWANTED CASCADE TO CARDS: a card that already holds its OWN Reprint
-#      value ("RprtTest-CARD") is NOT touched when the set-level Reprint is later
-#      edited to a different value ("RprtTest-SET2"). The card still shows its
+#   2. NO UNWANTED CASCADE TO CARDS: a card that already holds its OWN Signed By
+#      value ("SbyTest-CARD") is NOT touched when the set-level Signed By is later
+#      edited to a different value ("SbyTest-SET2"). The card still shows its
 #      own value — proving the set edit is a single-row patch, not a fan-out.
+#
+# WHY THE SUBJECT FIELD IS "Signed By" AND NOT "Reprint" (NEO-71-74):
+#   This no-cascade proof FUNDAMENTALLY needs THREE distinct values to be
+#   unambiguous — a set value ("SET1"), a DIFFERENT card override ("CARD"), and a
+#   SECOND set value ("SET2") — so that Step D can tell "the card kept its own
+#   value" apart from "the cascade overwrote the card." Reprint became a
+#   "checkbox" input type (only "true"/"false"), which collapses those three into
+#   two states AND — worse — a checkbox's boolean state is NOT observable in
+#   Maestro-web at all (maestro-web.js `traverse` emits no `checked` attribute,
+#   and a valueless `<input type=checkbox>` reads `value="on"` for both states),
+#   so "the card still shows CARD" could not be asserted. "Signed By" (signedBy)
+#   is the one remaining FREE-TEXT feature that (a) applies at every set level AND
+#   the card level, (b) accepts an arbitrary free-text sentinel value (needed for
+#   the three distinct SET1/CARD/SET2 markers this proof relies on), and (c) has
+#   the SAME set-vs-card write-once / no-cascade semantics
+#   Reprint used to have. Its input VALUE is directly readable via getNodeText
+#   (`<input>` text = value), so the original three-distinct-string-sentinel
+#   mechanism transfers verbatim — only the field name and sentinel prefix change.
+#   Reprint's own (checkbox) save path is covered by topps-chrome-add-feature.yaml.
 #
 # ISOLATION: uses a per-worker CUSTOM set (fp-{WORKER_INDEX}) under
 # Baseball → 2024 → Topps. Each CI worker owns a separate custom set so
@@ -41,15 +62,15 @@ tags:
 #
 # FLOW:
 #   Step 0: Drill Baseball → 2024 → Topps → custom set fp-{WORKER_INDEX}.
-#   Step A: Set Reprint = "RprtTest-SET1" at the set level → assert "Saved
-#           Reprint" toast (single-row save).
+#   Step A: Set Signed By = "SbyTest-SET1" at the set level → assert "Saved
+#           Signed By" toast (single-row save).
 #   Step B: Drill Insert → fp-insert-{WORKER_INDEX} → add card 992-{ATTEMPT_ID}
-#           → open the card features editor → set the CARD's own Reprint =
-#           "RprtTest-CARD" → assert the card row shows "RprtTest-CARD". Save card.
-#   Step C: Re-drill to the set level → edit Reprint to "RprtTest-SET2" → assert
-#           "Saved Reprint" toast (the set edit that must NOT reach the card).
-#   Step D: Re-open the override card → assert its Reprint STILL shows
-#           "RprtTest-CARD" (NOT "RprtTest-SET2") — no cascade.
+#           → open the card features editor → set the CARD's own Signed By =
+#           "SbyTest-CARD" → assert the card row shows "SbyTest-CARD". Save card.
+#   Step C: Re-drill to the set level → edit Signed By to "SbyTest-SET2" → assert
+#           "Saved Signed By" toast (the set edit that must NOT reach the card).
+#   Step D: Re-open the override card → assert its Signed By STILL shows
+#           "SbyTest-CARD" (NOT "SbyTest-SET2") — no cascade.
 #   Cleanup: delete the test card.
 #
 # PREREQUISITE: cascade setup.yaml must have run so Baseball, 2024, and Topps
@@ -79,13 +100,13 @@ tags:
 - assertVisible: "Variant Types"
 
 # ============================================================
-# STEP A — Set Reprint = "RprtTest-SET1" at the set (setName) level
+# STEP A — Set Signed By = "SbyTest-SET1" at the set (setName) level
 #
 # The SetAttributesPanel renders at the setName level (no card checklist) and
 # defaults EXPANDED for custom sets. handleSaveFeature returns early on a no-op
 # (new value == stored value → no toast), so we write a per-attempt UNIQUE value
-# ("RprtTest-SET1-{ATTEMPT_ID}") — always a real change from whatever a prior run
-# left behind → the "Saved Reprint" toast always fires (wedge-proof; avoids the
+# ("SbyTest-SET1-{ATTEMPT_ID}") — always a real change from whatever a prior run
+# left behind → the "Saved Signed By" toast always fires (wedge-proof; avoids the
 # fixed-sentinel no-op wedge an interrupted run can leave on shared dev).
 # ============================================================
 
@@ -113,7 +134,7 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Value for Reprint"
+      id: "Value for Signed By"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
@@ -121,19 +142,19 @@ tags:
 
 # Single per-attempt UNIQUE write — always a real change → toast always fires.
 - tapOn:
-    id: "Value for Reprint"
+    id: "Value for Signed By"
 - eraseText: 50
-- inputText: "RprtTest-SET1-${ATTEMPT_ID}"
+- inputText: "SbyTest-SET1-${ATTEMPT_ID}"
 - pressKey: Enter
 # Single-row Convex patch — must confirm within the 7s write SLA.
 - extendedWaitUntil:
     visible:
-      text: ".*Saved Reprint.*"
+      text: ".*Saved Signed By.*"
     timeout: 7000
 
 # ============================================================
 # STEP B — Drill to Insert → fp-insert-{WORKER_INDEX}, add a card, give it its
-#          OWN Reprint value.
+#          OWN Signed By value.
 #
 # Card checklist path for custom sets: Set → Insert (variant type) → custom
 # insert entry → CardChecklist (proven path from card-detail-panel.yaml).
@@ -253,28 +274,32 @@ tags:
 - assertVisible:
     id: "Card features editor"
 
-# Give this card its OWN Reprint value (a card-level setCardFeature write). The
-# card's Reprint input starts empty/inherited-at-creation; erase + type the
-# distinct sentinel so the card's own value is unambiguously "RprtTest-CARD".
+# Give this card its OWN Signed By value (a card-level setCardFeature write). The
+# card's Signed By input starts copied-down-at-creation (SbyTest-SET1 from the
+# snapshot); erase + type the distinct sentinel so the card's own value is
+# unambiguously "SbyTest-CARD". The card feature inputs now carry unique per-field
+# marker classes (useFieldTestClass on CardFeatureRow, mirroring SetFeatureRow),
+# so maestro-web's inputText lands in Signed By — NOT the first shared-class text
+# input (Card Type), which is where it wrongly landed before that fix.
 - scrollUntilVisible:
     element:
-      id: "Value for Reprint"
+      id: "Value for Signed By"
     centerElement: true
     timeout: 10000
 - tapOn:
-    id: "Value for Reprint"
-- eraseText: 20
-- inputText: "RprtTest-CARD"
+    id: "Value for Signed By"
+- eraseText: 50
+- inputText: "SbyTest-CARD"
 - pressKey: Enter
 
-# The card row's Reprint input now shows this card's own value. The combined
+# The card row's Signed By input now shows this card's own value. The combined
 # {id, text} selector matches ONLY the node with BOTH that aria-label AND that
-# value (the set panel's Reprint input, if present, holds a different value) —
+# value (the set panel's Signed By input, if present, holds a different value) —
 # unambiguous confirmation the card-level write landed.
 - extendedWaitUntil:
     visible:
-      id: "Value for Reprint"
-      text: ".*RprtTest-CARD.*"
+      id: "Value for Signed By"
+      text: ".*SbyTest-CARD.*"
     timeout: 7000
 
 # Save the card edit (closes the form). Scroll Save button into view first —
@@ -299,11 +324,11 @@ tags:
     timeout: 15000
 
 # ============================================================
-# STEP C — Edit the SET-level Reprint to "RprtTest-SET2"
+# STEP C — Edit the SET-level Signed By to "SbyTest-SET2"
 #
 # Navigate back to the custom set level (idempotent util revisit). This is the
 # set edit that MUST NOT reach our card. A per-attempt UNIQUE value
-# ("RprtTest-SET2-{ATTEMPT_ID}") is always a real change → "Saved Reprint" fires.
+# ("SbyTest-SET2-{ATTEMPT_ID}") is always a real change → "Saved Signed By" fires.
 # ============================================================
 
 - runFlow:
@@ -337,28 +362,28 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Value for Reprint"
+      id: "Value for Signed By"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 10000
 - tapOn:
-    id: "Value for Reprint"
+    id: "Value for Signed By"
 - eraseText: 50
-- inputText: "RprtTest-SET2-${ATTEMPT_ID}"
+- inputText: "SbyTest-SET2-${ATTEMPT_ID}"
 - pressKey: Enter
 - extendedWaitUntil:
     visible:
-      text: ".*Saved Reprint.*"
+      text: ".*Saved Signed By.*"
     timeout: 7000
 
 # ============================================================
-# STEP D — Verify the card STILL shows its own "RprtTest-CARD" (no cascade)
+# STEP D — Verify the card STILL shows its own "SbyTest-CARD" (no cascade)
 #
-# Re-drill to the card via Insert → fp-insert-{N}. The card's own Reprint value
+# Re-drill to the card via Insert → fp-insert-{N}. The card's own Signed By value
 # is read fresh from its snapshot. If the Step C set edit had cascaded (old
-# behaviour), the card would now read "RprtTest-SET2"; under write-once single-
-# row patching it must still read "RprtTest-CARD".
+# behaviour), the card would now read "SbyTest-SET2"; under write-once single-
+# row patching it must still read "SbyTest-CARD".
 # ============================================================
 
 # Variant Types column is above the fold after writing to the panel — scroll UP.
@@ -403,19 +428,19 @@ tags:
 - assertVisible:
     id: "Card features editor"
 
-# THE CORE NO-CASCADE ASSERTION: the card's Reprint input still holds its own
+# THE CORE NO-CASCADE ASSERTION: the card's Signed By input still holds its own
 # value. The combined {id, text} selector matches ONLY the node whose aria-label
-# is "Value for Reprint" AND whose value is "RprtTest-CARD".
+# is "Value for Signed By" AND whose value is "SbyTest-CARD".
 - scrollUntilVisible:
     element:
-      id: "Value for Reprint"
-      text: ".*RprtTest-CARD.*"
+      id: "Value for Signed By"
+      text: ".*SbyTest-CARD.*"
     centerElement: true
     timeout: 10000
 
 # The set-level value must appear NOWHERE on the card view — the set edit did
 # not reach this card (nor the fp-insert node the panel shows here).
-- assertNotVisible: ".*RprtTest-SET2.*"
+- assertNotVisible: ".*SbyTest-SET2.*"
 
 # Close the card edit form before cleanup. Deleting a row while its inline edit
 # form is still open does NOT surface the "Confirm?" delete prompt, so we save +

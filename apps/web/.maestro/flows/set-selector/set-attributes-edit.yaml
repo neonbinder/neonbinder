@@ -20,13 +20,13 @@ tags:
 #      confirming the panel identifies which node it is editing and its ancestry.
 #
 #   2. METADATA EDIT AT SETNAME LEVEL
-#      The editable metadata fields (Release Date, Block, TCDB Set ID, Source URL)
-#      are visible because the panel defaults EXPANDED at the setName level.
-#      Write a value in each field and confirm the corresponding save toast.
+#      The editable metadata fields (Release Date, Total Cards, Block) are
+#      visible because the panel defaults EXPANDED at the setName level.
+#      Write a value in the two string fields and confirm the corresponding
+#      save toast. (TCDB Set ID + Source URL were both removed NEO-71-74;
+#      Block is now the LAST editable metadata row.)
 #        - "Value for Release Date" → "Saved Release Date"
 #        - "Value for Block"       → "Saved Block"
-#        - "Value for TCDB Set ID" → "Saved TCDB Set ID"
-#        - "Value for Source URL"  → "Saved Source URL"
 #
 #   3. COLLAPSED STATE / EXPAND / INHERITED VALUES AT CHILD LEVEL
 #      a. Tap "Hide attributes" to collapse the panel manually. Verify "Edit
@@ -43,9 +43,7 @@ tags:
 #   B. Drill Baseball → 2024 → Topps → custom set (add if absent)
 #   C. Assert breadcrumb scope text at setName level
 #   C.  Edit "Value for Release Date" → assert "Saved Release Date" toast
-#   C2. Edit "Value for Block"        → assert "Saved Block" toast
-#   C3. Edit "Value for TCDB Set ID"  → assert "Saved TCDB Set ID" toast
-#   C4. Edit "Value for Source URL"   → assert "Saved Source URL" toast
+#   C2. Edit "Value for Block"        → assert "Saved Block" toast (last row)
 #   D. Manually collapse panel → assert "Edit attributes" visible
 #   E. Re-expand panel → assert "Hide attributes" visible
 #   F. Drill into custom variant type → assert breadcrumb updates to child scope
@@ -160,10 +158,27 @@ tags:
 
 # ============================================================
 # PART C2 — EDIT "Value for Block" (metadata field rendered below Release Date)
-# Block is already in view from the Part C scroll. Apply the same two-step
-# write pattern: sentinel clear → test value.
+# Block is already in view from the Part C scroll. Two-step write (sentinel
+# clear → test value) — a save only toasts when the value CHANGES, so a
+# single write of the test value is a silent no-op whenever a prior run
+# already left Block on that value (the no-op-write wedge). The sentinel
+# step guarantees a change so "Saved Block" always fires. Same guard used
+# by Release Date above. Block is the LAST editable metadata row, so nothing
+# is edited after this.
 # ============================================================
 
+# Step 1: clearing sentinel — guarantees the DB value changes.
+- tapOn:
+    id: "Value for Block"
+- eraseText: 30
+- inputText: "Series 0"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Block.*"
+    timeout: 7000
+
+# Step 2: the test sentinel value.
 - tapOn:
     id: "Value for Block"
 - eraseText: 30
@@ -175,81 +190,15 @@ tags:
     timeout: 7000
 
 # ============================================================
-# PART C3 — EDIT "Value for TCDB Set ID"
-# TCDB Set ID and Source URL are the two newly-editable rows added in this
-# sprint. They render directly below Block in the same metadata grid.
-# Scroll to "Value for Source URL" (the field below TCDB Set ID) to lift
-# TCDB Set ID fully into the 1024×629 viewport — same technique used for
-# Release Date / Block above.
-# ============================================================
-
-- scrollUntilVisible:
-    element:
-      id: "Value for Source URL"
-    visibilityPercentage: 10
-    waitToSettleTimeoutMs: 1000
-    timeout: 15000
-- assertVisible:
-    id: "Value for TCDB Set ID"
-
-# Step 1: clearing sentinel.
-- tapOn:
-    id: "Value for TCDB Set ID"
-- eraseText: 30
-- inputText: "00000"
-- pressKey: Enter
-- extendedWaitUntil:
-    visible:
-      text: ".*Saved TCDB Set ID.*"
-    timeout: 7000
-
-# Step 2: the test sentinel value.
-- tapOn:
-    id: "Value for TCDB Set ID"
-- eraseText: 30
-- inputText: "12345"
-- pressKey: Enter
-- extendedWaitUntil:
-    visible:
-      text: ".*Saved TCDB Set ID.*"
-    timeout: 7000
-
-# ============================================================
-# PART C4 — EDIT "Value for Source URL"
-# Source URL is now in view from the Part C3 scroll.
-# Apply the same two-step write pattern.
-# ============================================================
-
-- tapOn:
-    id: "Value for Source URL"
-- eraseText: 100
-- inputText: "https://sentinel.example.com"
-- pressKey: Enter
-- extendedWaitUntil:
-    visible:
-      text: ".*Saved Source URL.*"
-    timeout: 7000
-
-- tapOn:
-    id: "Value for Source URL"
-- eraseText: 100
-- inputText: "https://example.com/set"
-- pressKey: Enter
-- extendedWaitUntil:
-    visible:
-      text: ".*Saved Source URL.*"
-    timeout: 7000
-
-# ============================================================
 # PART D — COLLAPSE THE PANEL VIA "Hide attributes"
 # On a custom set (no card checklist) the panel stays expanded; we test the
 # explicit collapse path so that "Edit attributes" / "Hide attributes"
 # toggle behaviour is validated independently of card-checklist presence.
 #
-# After Parts C–C4 the page is scrolled DOWN past Source URL. The
-# "Hide attributes" toggle is at the TOP of the SetAttributesPanel which
-# is now ABOVE the current viewport position. direction: UP (swipe-down
-# gesture) pulls content from above back into view — same technique as
+# After Parts C–C2 the page is scrolled DOWN to Block (the last metadata row).
+# The "Hide attributes" toggle is at the TOP of the SetAttributesPanel, ABOVE
+# the current viewport position. direction: UP (swipe-down gesture) pulls
+# content from above back into view — same technique as
 # features-propagation.yaml uses to scroll back up to "Base".
 # ============================================================
 

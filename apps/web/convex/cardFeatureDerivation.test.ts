@@ -87,6 +87,9 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
     expect(f.vintage).toBe("false");
     expect(f.manufacturer).toBe("Topps");
     expect(f.cardType).toBe("Base");
+    // autographed defaults to "None" at setName creation (like isReprint),
+    // and copies down through variantType to the card the same way.
+    expect(f.autographed).toBe("None");
     // RC attribute → observed rookie (still derived per-card, wins over
     // the inherited snapshot — deriveCardObservedFeatures is unaffected).
     expect(f.isRookie).toBe("true");

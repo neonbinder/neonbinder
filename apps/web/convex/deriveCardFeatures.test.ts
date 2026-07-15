@@ -32,6 +32,7 @@ describe("deriveSetLevelFeatures", () => {
       cardType: "Base",
       parallelName: "Base",
       isReprint: "false",
+      autographed: "None",
     });
   });
 
@@ -62,6 +63,13 @@ describe("deriveSetLevelFeatures", () => {
     expect(
       deriveSetLevelFeatures({ leafLevel: "parallel" }).parallelName,
     ).toBeUndefined();
+  });
+
+  test("autographed defaults to None unconditionally, same as isReprint defaults to false", () => {
+    // No inputs at all — both still seed, matching the "unconditional on
+    // every call" contract LEVEL_HEURISTIC_KEYS relies on to filter per level.
+    expect(deriveSetLevelFeatures({}).isReprint).toBe("false");
+    expect(deriveSetLevelFeatures({}).autographed).toBe("None");
   });
 
   test("season-style year parses the leading year", () => {

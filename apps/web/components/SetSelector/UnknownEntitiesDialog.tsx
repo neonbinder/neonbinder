@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
 
 type UnknownEntitiesDialogProps = {
@@ -115,6 +116,9 @@ export default function UnknownEntitiesDialog({
   if (!isOpen) return null;
 
   return createPortal(
+    // NEO-71-74 QA fix: see BaseSetPicker.tsx for why this nested <Theme> is
+    // needed — createPortal(document.body) escapes the root Theme's CSS scope.
+    <Theme>
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       role="dialog"
@@ -231,22 +235,22 @@ export default function UnknownEntitiesDialog({
             <NeonButton cancel onClick={onCancel} disabled={saving}>
               Cancel (Esc)
             </NeonButton>
-            <button
+            <NeonButton
               ref={confirmButtonRef}
               onClick={handleConfirm}
               disabled={saving}
-              className="px-4 py-2 rounded-md bg-[#00D558] text-black text-sm font-semibold hover:bg-[#00D558]/85 disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
             >
               {saving
                 ? "Saving..."
                 : totalIncluded === 0
                   ? "Skip All & Save"
                   : `Confirm ${totalIncluded} & Save (Enter)`}
-            </button>
+            </NeonButton>
           </div>
         </div>
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }

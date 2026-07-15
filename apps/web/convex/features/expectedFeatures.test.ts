@@ -38,4 +38,15 @@ describe("EXPECTED_FEATURES typed entries", () => {
     const vintage = feature("vintage");
     expect(vintage.inputType).toBe("derived");
   });
+
+  test("autographed is a select with exactly None/On Card/Sticker-Label", () => {
+    const autographed = feature("autographed");
+    expect(autographed.inputType).toBe("select");
+    expect(autographed.options).toEqual(["None", "On Card", "Sticker/Label"]);
+  });
+
+  test("isReprint and isRelic are checkboxes stored in the features map", () => {
+    expect(feature("isReprint").inputType).toBe("checkbox");
+    expect(feature("isRelic").inputType).toBe("checkbox");
+  });
 });

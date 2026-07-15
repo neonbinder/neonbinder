@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -276,6 +277,9 @@ export default function CardDetailPanel({
   const hasImages = Boolean(front || back);
 
   return createPortal(
+    // NEO-71-74 QA fix: see BaseSetPicker.tsx for why this nested <Theme> is
+    // needed — createPortal(document.body) escapes the root Theme's CSS scope.
+    <Theme>
     <div className="fixed inset-0 z-50">
       {/* Backdrop. Clicking it requests close (dirty-guarded). The panel is a
           sibling layered above, so taps inside the panel never reach here —
@@ -619,7 +623,8 @@ export default function CardDetailPanel({
           </div>
         )}
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }

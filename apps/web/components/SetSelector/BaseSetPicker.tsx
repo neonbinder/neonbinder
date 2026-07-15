@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
 import type { PlatformItem } from "./ReconciliationModal";
 
@@ -185,6 +186,16 @@ export default function BaseSetPicker({
   if (!isOpen) return null;
 
   return createPortal(
+    // NEO-71-74 QA fix: createPortal renders straight to document.body, outside
+    // the DOM subtree the app's root <Theme> (src/main.tsx) puts its
+    // `.radix-themes` class + CSS vars on. Without re-establishing Theme scope
+    // here, NeonButton/Radix components render with the right classes but no
+    // resolved radius/spacing/color tokens (border-radius: 0, padding: 0).
+    // A nested <Theme> with no props inherits accentColor/radius/appearance
+    // from the ambient Theme via context and re-applies the class at this
+    // portal root. Same fix applied to every other createPortal(document.body)
+    // dialog in components/SetSelector/.
+    <Theme>
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       onClick={onClose}
@@ -330,7 +341,8 @@ export default function BaseSetPicker({
           </NeonButton>
         </div>
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }
