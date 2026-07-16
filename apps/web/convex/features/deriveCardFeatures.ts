@@ -85,8 +85,8 @@ function parseYear(year: string | undefined): number | null {
 
 /**
  * Features derivable from the set hierarchy alone (independent of the
- * individual card): league, era, vintage, manufacturer, cardType, isReprint,
- * autographed.
+ * individual card): league, era, vintage, season, manufacturer, cardType,
+ * isReprint, autographed, cardSize, cardMaterial, language.
  */
 export function deriveSetLevelFeatures(
   inputs: SetLevelFeatureInputs,
@@ -105,6 +105,12 @@ export function deriveSetLevelFeatures(
     f.era = eraForYear(yearNum);
     f.vintage = eraForYear(yearNum) !== ERA_BUCKETS.MODERN ? "true" : "false";
   }
+
+  // Season — eBay's Season aspect is usually just the Year label verbatim;
+  // an operator overrides it for split-year sports (e.g. year "2021" but
+  // season "2020-21"). Mirrors whatever string the year node carries, valid
+  // 4-digit year or not.
+  if (inputs.year) f.season = inputs.year;
 
   // Manufacturer — straight from the ancestor row.
   const mfr = inputs.manufacturer?.trim();
@@ -134,12 +140,21 @@ export function deriveSetLevelFeatures(
   // operator (or a future marketplace signal) can flip it per-set/per-card.
   f.autographed = "None";
 
+  // Card Size / Material / Language — default to the overwhelming majority
+  // case for the sports cards NB catalogs today; an operator flips these
+  // per-set for the rare oddball (minis, acetate/metal parallels, a
+  // foreign-language release), same "default the common case, override the
+  // exception" pattern as isReprint/autographed above.
+  f.cardSize = "Standard";
+  f.cardMaterial = "Card Stock";
+  f.language = "English";
+
   return f;
 }
 
 const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
   sport: ["league"],
-  year: ["era", "vintage"],
+  year: ["era", "vintage", "season"],
   manufacturer: ["manufacturer"],
   // variantType (Base) also gets a "Base" parallelName default — see
   // deriveSetLevelFeatures. insert/parallel intentionally do NOT list
@@ -148,7 +163,7 @@ const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
   variantType: ["cardType", "parallelName"],
   insert: ["cardType"],
   parallel: ["cardType"],
-  setName: ["isReprint", "autographed"],
+  setName: ["isReprint", "autographed", "cardSize", "cardMaterial", "language"],
 };
 
 /**
@@ -158,8 +173,9 @@ const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
  * produce the new row's complete resolved snapshot, once, at creation time
  * (NEO-71-74: write-once feature snapshots — see convex/selectorOptions.ts).
  *
- * `deriveSetLevelFeatures` unconditionally returns `isReprint: "false"` and
- * `autographed: "None"` on every call regardless of input, so a naive
+ * `deriveSetLevelFeatures` unconditionally returns `isReprint: "false"`,
+ * `autographed: "None"`, `cardSize: "Standard"`, `cardMaterial: "Card Stock"`,
+ * and `language: "English"` on every call regardless of input, so a naive
  * per-level reuse would leak them onto every level — `LEVEL_HEURISTIC_KEYS`
  * filters each level down to only the key(s) it actually owns.
  */
@@ -197,6 +213,8 @@ export function deriveCardObservedFeatures(
   const attrs = card.attributes ?? [];
   if (card.isRookie || attrs.includes("RC")) f.isRookie = "true";
   if (card.isRelic || attrs.includes("RELIC")) f.isRelic = "true";
+  if (attrs.includes("SSP")) f.shortPrint = "SSP";
+  else if (attrs.includes("SP")) f.shortPrint = "SP";
   if (card.autographType && card.autographType.trim()) {
     // We don't know the signer name at this layer, so we record the autograph
     // *type* as the value; downstream treats any non-empty value as a positive

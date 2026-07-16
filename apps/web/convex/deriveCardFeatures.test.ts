@@ -28,11 +28,15 @@ describe("deriveSetLevelFeatures", () => {
       league: "MLB",
       era: "Modern (1980-Now)",
       vintage: "false",
+      season: "2024",
       manufacturer: "Topps",
       cardType: "Base",
       parallelName: "Base",
       isReprint: "false",
       autographed: "None",
+      cardSize: "Standard",
+      cardMaterial: "Card Stock",
+      language: "English",
     });
   });
 
@@ -65,11 +69,21 @@ describe("deriveSetLevelFeatures", () => {
     ).toBeUndefined();
   });
 
-  test("autographed defaults to None unconditionally, same as isReprint defaults to false", () => {
-    // No inputs at all — both still seed, matching the "unconditional on
+  test("isReprint, autographed, cardSize, cardMaterial, language default unconditionally", () => {
+    // No inputs at all — all still seed, matching the "unconditional on
     // every call" contract LEVEL_HEURISTIC_KEYS relies on to filter per level.
-    expect(deriveSetLevelFeatures({}).isReprint).toBe("false");
-    expect(deriveSetLevelFeatures({}).autographed).toBe("None");
+    const f = deriveSetLevelFeatures({});
+    expect(f.isReprint).toBe("false");
+    expect(f.autographed).toBe("None");
+    expect(f.cardSize).toBe("Standard");
+    expect(f.cardMaterial).toBe("Card Stock");
+    expect(f.language).toBe("English");
+  });
+
+  test("season mirrors the year value verbatim, including season-style strings", () => {
+    expect(deriveSetLevelFeatures({ year: "2024" }).season).toBe("2024");
+    expect(deriveSetLevelFeatures({ year: "2023-24" }).season).toBe("2023-24");
+    expect(deriveSetLevelFeatures({}).season).toBeUndefined();
   });
 
   test("season-style year parses the leading year", () => {
@@ -173,6 +187,22 @@ describe("deriveCardObservedFeatures", () => {
 
   test("empty card yields no observed features", () => {
     expect(deriveCardObservedFeatures({})).toEqual({});
+  });
+
+  test("shortPrint derives SP/SSP from the attributes array, preferring SSP", () => {
+    expect(deriveCardObservedFeatures({ attributes: ["SP"] })).toEqual({
+      shortPrint: "SP",
+    });
+    expect(deriveCardObservedFeatures({ attributes: ["SSP"] })).toEqual({
+      shortPrint: "SSP",
+    });
+    // Both tokens present (data-quality edge case) — SSP is the stronger claim.
+    expect(deriveCardObservedFeatures({ attributes: ["SP", "SSP"] })).toEqual({
+      shortPrint: "SSP",
+    });
+    expect(deriveCardObservedFeatures({ attributes: ["RC"] })).toEqual({
+      isRookie: "true",
+    });
   });
 });
 

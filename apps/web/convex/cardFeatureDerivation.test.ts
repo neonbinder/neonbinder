@@ -90,6 +90,14 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
     // autographed defaults to "None" at setName creation (like isReprint),
     // and copies down through variantType to the card the same way.
     expect(f.autographed).toBe("None");
+    // cardSize/cardMaterial/language default the same way at setName
+    // creation and copy down identically.
+    expect(f.cardSize).toBe("Standard");
+    expect(f.cardMaterial).toBe("Card Stock");
+    expect(f.language).toBe("English");
+    // season defaults from the year node and copies down through
+    // manufacturer/setName/variantType the same way.
+    expect(f.season).toBe("2024");
     // RC attribute → observed rookie (still derived per-card, wins over
     // the inherited snapshot — deriveCardObservedFeatures is unaffected).
     expect(f.isRookie).toBe("true");

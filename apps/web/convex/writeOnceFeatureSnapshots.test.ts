@@ -56,7 +56,7 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toEqual({ league: "MLB" });
   });
 
-  test("year -> era, vintage", async () => {
+  test("year -> era, vintage, season", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const id = await asAdmin.mutation(
@@ -66,6 +66,7 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toEqual({
       era: "Vintage (1970-79)",
       vintage: "true",
+      season: "1975",
     });
   });
 
@@ -79,7 +80,7 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toEqual({ manufacturer: "Panini" });
   });
 
-  test("setName -> isReprint, autographed", async () => {
+  test("setName -> isReprint, autographed, cardSize, cardMaterial, language", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const id = await asAdmin.mutation(
@@ -89,6 +90,9 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toEqual({
       isReprint: "false",
       autographed: "None",
+      cardSize: "Standard",
+      cardMaterial: "Card Stock",
+      language: "English",
     });
   });
 
@@ -152,14 +156,16 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toBeFalsy();
   });
 
-  test("non-year value seeds nothing for era/vintage", async () => {
+  test("non-year value seeds nothing for era/vintage, but season still mirrors the raw label", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const id = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "year", value: "TBD" },
     );
-    expect(await getFeatures(t, id)).toBeFalsy();
+    // era/vintage need a parseable 4-digit year; season doesn't — it just
+    // mirrors whatever label the year node carries, parseable or not.
+    expect(await getFeatures(t, id)).toEqual({ season: "TBD" });
   });
 });
 
@@ -193,6 +199,7 @@ describe("full copy-down from parent to child", () => {
       subsetLabel: "Flagship", // arbitrary key, copied down verbatim
       era: "Modern (1980-Now)", // own-level heuristic
       vintage: "false", // own-level heuristic
+      season: "2024", // own-level heuristic
     });
   });
 
@@ -224,6 +231,7 @@ describe("full copy-down from parent to child", () => {
       league: "MLB",
       era: "Vintage (1970-79)",
       vintage: "true",
+      season: "1975",
     });
   });
 
@@ -300,6 +308,9 @@ describe("full copy-down from parent to child", () => {
       league: "MLB", // copied down from sport
       isReprint: "false", // copied down from setName
       autographed: "None", // copied down from setName
+      cardSize: "Standard", // copied down from setName
+      cardMaterial: "Card Stock", // copied down from setName
+      language: "English", // copied down from setName
       cardType: "Insert", // own-level heuristic (level="insert")
     });
   });

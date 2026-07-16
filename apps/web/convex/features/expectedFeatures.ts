@@ -73,7 +73,7 @@ export type ExpectedFeature = {
 };
 
 export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
-  // ---- Marketplace facets (primary) ----
+  // ---- Classification (what is this card) ----
   {
     key: "league",
     label: "League",
@@ -82,38 +82,34 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
     options: LEAGUE_OPTIONS,
   },
   { key: "era", label: "Era", inputType: "select", options: ERA_BUCKET_OPTIONS },
-  { key: "isReprint", label: "Reprint", inputType: "checkbox" },
+  { key: "vintage", label: "Vintage", inputType: "derived" },
+  // eBay "Season" — distinct from Year (matters for split-year sports like
+  // Basketball/Hockey, e.g. a card documenting a 2020-21 season released in
+  // a 2021 product).
+  { key: "season", label: "Season" },
+  { key: "manufacturer", label: "Manufacturer" },
   {
     key: "cardType",
     label: "Card Type",
     applicableAtLevels: ["variantType", "insert", "parallel"],
   },
-
-  // ---- Card attributes (from BSC harvest) ----
-  {
-    key: "autographed",
-    label: "Autographed",
-    inputType: "select",
-    options: ["None", "On Card", "Sticker/Label"],
-  },
-  { key: "signedBy", label: "Signed By" },
-  {
-    key: "isRookie",
-    label: "Rookie Card",
-    inputType: "boolean",
-    boundColumn: "isRookie",
-    hiddenAtLevels: ["set"],
-  },
-  { key: "isRelic", label: "Memorabilia Relic", inputType: "checkbox" },
   {
     key: "parallelName",
     label: "Parallel/Variety",
     applicableAtLevels: ["variantType", "insert", "parallel"],
   },
-
-  // ---- Set-level context ----
-  { key: "vintage", label: "Vintage", inputType: "derived" },
-  { key: "manufacturer", label: "Manufacturer" },
+  // MyCardPost + MySlabs both track short-print status as a discrete facet
+  // (eBay folds it into its generic multi-select Features tag instead).
+  // Auto-derived from the existing `attributes[]` harvest in
+  // `deriveCardObservedFeatures` (attrs.includes("SP")/"SSP"), the same way
+  // `isRookie`/`isRelic` already are — no new harvest work needed.
+  {
+    key: "shortPrint",
+    label: "Short Print",
+    inputType: "select",
+    options: ["None", "SP", "SSP"],
+  },
+  { key: "isReprint", label: "Reprint", inputType: "checkbox" },
 
   // ---- Release metadata (formerly the separate `setMetadata` object,
   // editable ONLY at the setName level). Folded into the same feature
@@ -135,4 +131,47 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
     hint: "Manufacturer sub-release within the set, e.g. Series 1, Series 2, Update",
     hiddenAtLevels: ["card"],
   },
+
+  // ---- Card notable traits (from BSC harvest) ----
+  {
+    key: "autographed",
+    label: "Autographed",
+    inputType: "select",
+    options: ["None", "On Card", "Sticker/Label"],
+  },
+  { key: "signedBy", label: "Signed By" },
+  {
+    key: "isRookie",
+    label: "Rookie Card",
+    inputType: "boolean",
+    boundColumn: "isRookie",
+    hiddenAtLevels: ["set"],
+  },
+  // MySlabs distinguishes Prospect explicitly from Rookie; no existing BSC
+  // signal reliably means "prospect", so this is a genuine manual-entry gap.
+  { key: "isProspect", label: "Prospect Card", inputType: "checkbox" },
+  { key: "isRelic", label: "Memorabilia Relic", inputType: "checkbox" },
+
+  // ---- Physical/production details (eBay item specifics; typically
+  // constant per manufacturer/set, so usually entered once and copied down
+  // rather than needing per-card entry). ----
+  { key: "countryOfOrigin", label: "Country of Origin" },
+  { key: "cardSize", label: "Card Size" },
+  { key: "cardMaterial", label: "Material" },
+  { key: "cardThickness", label: "Card Thickness" },
+  { key: "language", label: "Language" },
+
+  // ---- Special distribution context — eBay's two distinct aspects, kept
+  // separate to match eBay's own schema (both can appear on the same
+  // listing, e.g. a convention-exclusive card commemorating an event). ----
+  { key: "eventTournament", label: "Event/Tournament" },
+  { key: "conventionEvent", label: "Convention/Event" },
+
+  // ---- Rare / edge case — no sports card in NB's catalog has ever carried
+  // a UPC (it's a case/box-level barcode, not a per-card fact), but kept as
+  // a just-in-case field. Bottom of the form since it's virtually always
+  // blank. (Originally slated to come from `setMetadata.tcdbSetId` per
+  // docs/marketplace-listings.md — that never shipped since TCDB is
+  // Cloudflare-blocked — this gives it a direct home independent of that.) ----
+  { key: "upc", label: "UPC" },
 ];

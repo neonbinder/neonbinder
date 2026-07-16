@@ -116,12 +116,16 @@ tags:
     visibilityPercentage: 10
     timeout: 7000
 
-# The setMetadata section renders at the BOTTOM of the panel grid (last, below
-# the feature rows). At set level the metadata labels (Total Cards / Block /
-# TCDB Set ID) always render, so the section is present in either the synced or
-# empty state (not a blank screen). (Was a bare assertVisible below the fold.)
+# The release-metadata rows (Release Date / Total Cards / Block) fold inline
+# into the feature grid after the NEO-71-74 EXPECTED_FEATURES reorder — they
+# now render mid-panel (below the classification rows), NOT as a separate
+# bottom section, and NOT last (card traits / physical specs / UPC follow).
+# TCDB Set ID was removed in NEO-71-74. At set level the "Total Cards" and
+# "Block" labels always render, so this asserts the metadata rows are present
+# (synced or empty). Both sit BELOW "Value for League" (row 1), so the default
+# DOWN scroll from the League row above reaches them.
 - scrollUntilVisible:
     element:
-      text: ".*No set metadata yet.*|.*Released.*|.*Cards.*|.*TCDB.*|.*Block.*"
+      text: ".*Total Cards.*|.*Block.*"
     visibilityPercentage: 10
     timeout: 7000

@@ -23,8 +23,12 @@ tags:
 #      The editable metadata fields (Release Date, Total Cards, Block) are
 #      visible because the panel defaults EXPANDED at the setName level.
 #      Write a value in the two string fields and confirm the corresponding
-#      save toast. (TCDB Set ID + Source URL were both removed NEO-71-74;
-#      Block is now the LAST editable metadata row.)
+#      save toast. (TCDB Set ID + Source URL were both removed NEO-71-74.)
+#      NOTE (post NEO-71-74 EXPECTED_FEATURES reorder): the release-metadata
+#      group renders in order Release Date → Total Cards → Block — so Block is
+#      still directly BELOW Release Date (the only load-bearing adjacency this
+#      flow relies on), but Block is NO LONGER the last row on the panel: card
+#      traits, physical specs, distribution context and UPC now render below it.
 #        - "Value for Release Date" → "Saved Release Date"
 #        - "Value for Block"       → "Saved Block"
 #
@@ -43,7 +47,7 @@ tags:
 #   B. Drill Baseball → 2024 → Topps → custom set (add if absent)
 #   C. Assert breadcrumb scope text at setName level
 #   C.  Edit "Value for Release Date" → assert "Saved Release Date" toast
-#   C2. Edit "Value for Block"        → assert "Saved Block" toast (last row)
+#   C2. Edit "Value for Block"        → assert "Saved Block" toast
 #   D. Manually collapse panel → assert "Edit attributes" visible
 #   E. Re-expand panel → assert "Hide attributes" visible
 #   F. Drill into custom variant type → assert breadcrumb updates to child scope
@@ -163,8 +167,9 @@ tags:
 # single write of the test value is a silent no-op whenever a prior run
 # already left Block on that value (the no-op-write wedge). The sentinel
 # step guarantees a change so "Saved Block" always fires. Same guard used
-# by Release Date above. Block is the LAST editable metadata row, so nothing
-# is edited after this.
+# by Release Date above. This flow edits nothing after Block (though the
+# panel DOES render more rows below it now — card traits, physical specs,
+# distribution, UPC — after the NEO-71-74 EXPECTED_FEATURES reorder).
 # ============================================================
 
 # Step 1: clearing sentinel — guarantees the DB value changes.
@@ -195,9 +200,10 @@ tags:
 # explicit collapse path so that "Edit attributes" / "Hide attributes"
 # toggle behaviour is validated independently of card-checklist presence.
 #
-# After Parts C–C2 the page is scrolled DOWN to Block (the last metadata row).
-# The "Hide attributes" toggle is at the TOP of the SetAttributesPanel, ABOVE
-# the current viewport position. direction: UP (swipe-down gesture) pulls
+# After Parts C–C2 the page is scrolled DOWN to Block (mid-panel, end of the
+# release-metadata group). The "Hide attributes" toggle is at the TOP of the
+# SetAttributesPanel, ABOVE the current viewport position — regardless of how
+# many feature rows now render below Block. direction: UP (swipe-down gesture) pulls
 # content from above back into view — same technique as
 # features-propagation.yaml uses to scroll back up to "Base".
 # ============================================================

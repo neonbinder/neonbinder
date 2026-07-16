@@ -45,8 +45,47 @@ describe("EXPECTED_FEATURES typed entries", () => {
     expect(autographed.options).toEqual(["None", "On Card", "Sticker/Label"]);
   });
 
-  test("isReprint and isRelic are checkboxes stored in the features map", () => {
+  test("isReprint, isRelic, isProspect are checkboxes stored in the features map", () => {
     expect(feature("isReprint").inputType).toBe("checkbox");
     expect(feature("isRelic").inputType).toBe("checkbox");
+    expect(feature("isProspect").inputType).toBe("checkbox");
+  });
+
+  test("shortPrint is a select with exactly None/SP/SSP", () => {
+    const shortPrint = feature("shortPrint");
+    expect(shortPrint.inputType).toBe("select");
+    expect(shortPrint.options).toEqual(["None", "SP", "SSP"]);
+  });
+
+  test("season, upc, countryOfOrigin, cardSize, cardMaterial, cardThickness, language, eventTournament, conventionEvent are free text (no inputType override)", () => {
+    for (const key of [
+      "season",
+      "upc",
+      "countryOfOrigin",
+      "cardSize",
+      "cardMaterial",
+      "cardThickness",
+      "language",
+      "eventTournament",
+      "conventionEvent",
+    ]) {
+      expect(feature(key).inputType).toBeUndefined();
+    }
+  });
+
+  // NEO-24 follow-up: authenticator/in-person/customized are per-physical-copy
+  // facts (a factory-packaged auto needs no third-party authenticator; a
+  // private in-person signing does — that varies by which copy you own, not
+  // by the catalog card), so they were removed from this set/card-level list
+  // in favor of the future `cardInventory` table, not brought back here.
+  test("autographAuthenticator, autographAuthenticationNumber, inPersonAuto, isCustomized are not set/card-level features", () => {
+    for (const key of [
+      "autographAuthenticator",
+      "autographAuthenticationNumber",
+      "inPersonAuto",
+      "isCustomized",
+    ]) {
+      expect(EXPECTED_FEATURES.some((f) => f.key === key)).toBe(false);
+    }
   });
 });
