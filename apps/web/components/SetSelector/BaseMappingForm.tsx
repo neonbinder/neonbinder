@@ -181,9 +181,17 @@ export default function BaseMappingForm({
 
   return (
     <>
-      {/* Inline message panel only shows for terminal states that don't
-          render a picker (errors, no-data fallbacks). Loading lives inside
-          BaseSetPicker via skeletons. */}
+      {/* Inline message panel shows for every terminal state that doesn't
+          render a picker: errors, no-data fallbacks, AND a cancelled picker
+          (NEO-71-74 fix — previously Cancel called onClose() immediately
+          with no recovery UI, and because this component's React `key`
+          doesn't change on cancel, its internal `triggered` ref stayed
+          tripped forever, silently rendering nothing on every later visit —
+          a dead end with no "Re-map Base" button either, since that's
+          correctly gated on baseHasMapping being true, which it never was.
+          Retry is now offered for every message, not just errors, since
+          re-running doSync is always a safe, idempotent action here.
+          Loading lives inside BaseSetPicker via skeletons. */}
       {!pickerOpen && message && (
         <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
           <h3 className="text-sm font-semibold mb-2">Base mapping</h3>
@@ -191,9 +199,7 @@ export default function BaseMappingForm({
             {message}
           </div>
           <div className="flex gap-2">
-            {(message?.startsWith("Error") || message?.startsWith("Failed")) && (
-              <NeonButton onClick={doSync}>Retry</NeonButton>
-            )}
+            <NeonButton onClick={doSync}>Retry</NeonButton>
             <NeonButton cancel onClick={onClose}>
               Close
             </NeonButton>
@@ -206,7 +212,9 @@ export default function BaseMappingForm({
           isOpen={pickerOpen}
           onClose={() => {
             setPickerOpen(false);
-            onClose();
+            setMessage(
+              "Base mapping cancelled — no SportLots set was selected. Click Retry to pick one, or Close to leave it unmapped for now.",
+            );
           }}
           onConfirm={handlePickerConfirm}
           slOptions={pickerData?.slOptions ?? []}

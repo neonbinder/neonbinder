@@ -112,11 +112,13 @@ describe("CardFeaturesEditor — write-once feature snapshot reads (NEO-71-74)",
       (screen.getByLabelText("Value for Signed By") as HTMLInputElement).value,
     ).toBe("Mike Trout");
     // Memorabilia Relic is a "checkbox" feature (true/false string in the
-    // features map) — assert checked state, not a text value.
+    // features map), rendered as a toggle-pill button — assert
+    // aria-pressed, not a checkbox's .checked (it's not an <input> anymore).
     expect(
-      (screen.getByLabelText("Value for Memorabilia Relic") as HTMLInputElement)
-        .checked,
-    ).toBe(true);
+      screen.getByLabelText("Value for Memorabilia Relic").getAttribute(
+        "aria-pressed",
+      ),
+    ).toBe("true");
   });
 
   it("renders blank when a key is absent from cardFeatures — no inherited fallback, no missing warning", () => {

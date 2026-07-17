@@ -50,6 +50,9 @@ export default function CardFeaturesEditor({
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("card")) return false;
+      // Rendered always-visible in CardDetailPanel instead (via the shared
+      // CardFeatureRow this file exports) — avoid a duplicate row here.
+      if (f.key === "autographed") return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true; // Show all when sport unknown
       return f.applicableSports.includes(ancestorSport);
@@ -135,8 +138,8 @@ function CardFeatureRow({
 
   if (feat.inputType === "checkbox") {
     return (
-      <label
-        className="flex flex-row items-center gap-2 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
+      <div
+        className="flex flex-row items-center"
         aria-label={`Feature ${label}`}
       >
         <FeatureValueControl
@@ -147,10 +150,7 @@ function CardFeatureRow({
           dataFeatKey={feat.key}
           className=""
         />
-        <span className="text-[10px] uppercase tracking-wide text-gray-400">
-          {label}
-        </span>
-      </label>
+      </div>
     );
   }
 

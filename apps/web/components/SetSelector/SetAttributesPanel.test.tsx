@@ -156,7 +156,7 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
     expect(screen.queryByText(/Inherited/i)).toBeNull();
   });
 
-  it("does NOT render Card Type or Parallel/Variety rows at sport/year/manufacturer/setName levels", () => {
+  it("does NOT render Card Type or Variation rows at sport/year/manufacturer/setName levels", () => {
     for (const level of ["sport", "year", "manufacturer", "setName"]) {
       currentRow = makeRow({ level, value: `node-${level}`, features: {} });
       currentChain = makeChain("Baseball");
@@ -164,13 +164,13 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
       const { unmount } = renderPanel();
 
       expect(screen.queryByLabelText("Set feature Card Type")).toBeNull();
-      expect(screen.queryByLabelText("Set feature Parallel/Variety")).toBeNull();
+      expect(screen.queryByLabelText("Set feature Variation")).toBeNull();
 
       unmount();
     }
   });
 
-  it("DOES render Card Type and Parallel/Variety rows at variantType/insert/parallel levels", () => {
+  it("DOES render Card Type and Variation rows at variantType/insert/parallel levels", () => {
     for (const level of ["variantType", "insert", "parallel"]) {
       currentRow = makeRow({
         level,
@@ -182,12 +182,12 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
       const { unmount } = renderPanel();
 
       expect(screen.getByLabelText("Set feature Card Type")).toBeTruthy();
-      expect(screen.getByLabelText("Set feature Parallel/Variety")).toBeTruthy();
+      expect(screen.getByLabelText("Set feature Variation")).toBeTruthy();
       expect(
         (screen.getByLabelText("Value for Card Type") as HTMLInputElement).value,
       ).toBe("Base");
       expect(
-        (screen.getByLabelText("Value for Parallel/Variety") as HTMLInputElement)
+        (screen.getByLabelText("Value for Variation") as HTMLInputElement)
           .value,
       ).toBe("Gold");
 

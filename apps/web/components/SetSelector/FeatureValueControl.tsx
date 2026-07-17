@@ -27,6 +27,7 @@ export function FeatureValueControl({
   placeholder,
   className,
   dataFeatKey,
+  label,
 }: {
   feat: ExpectedFeature;
   /** Resolved value to display/edit — caller has already merged own vs. inherited. */
@@ -40,6 +41,8 @@ export function FeatureValueControl({
   placeholder?: string;
   className: string;
   dataFeatKey?: string;
+  /** Checkbox-only: rendered inside the toggle pill itself. Ignored by other input types. */
+  label?: string;
 }) {
   if (feat.inputType === "select") {
     return (
@@ -61,6 +64,7 @@ export function FeatureValueControl({
         onSave={onSave}
         ariaLabel={ariaLabel}
         dataFeatKey={dataFeatKey}
+        label={label ?? feat.label}
       />
     );
   }
@@ -130,22 +134,31 @@ function TextValueControl({
 }
 
 /**
- * Checkbox for "checkbox"-type features. Stores/reads the strings
+ * Toggle-pill for "checkbox"-type features. Stores/reads the strings
  * "true"/"false" in the `features` map — NOT a typed schema column (that's
- * what "boolean"/`boundColumn` is for). Unset/missing renders unchecked,
+ * what "boolean"/`boundColumn` is for). Unset/missing renders un-toggled,
  * matching the "defaults to unchecked" contract; there's no third "unset"
  * visual state, since unchecked already IS a complete, valid answer here.
+ *
+ * Styled to match the RC/AU/RELIC attribute toggles in CardDetailPanel.tsx
+ * (same colors/shape) — brought here so isReprint/isRelic/isProspect get the
+ * same compact, scannable toggle look in both SetAttributesPanel and
+ * CardFeaturesEditor, instead of a plain checkbox input next to a separate
+ * label. The label renders INSIDE the pill now, so callers no longer need
+ * a sibling `<span>{label}</span>` alongside this control.
  */
 function CheckboxValueControl({
   value,
   onSave,
   ariaLabel,
   dataFeatKey,
+  label,
 }: {
   value: string;
   onSave: (value: string) => Promise<unknown>;
   ariaLabel: string;
   dataFeatKey?: string;
+  label?: string;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -166,15 +179,21 @@ function CheckboxValueControl({
 
   return (
     <>
-      <input
-        type="checkbox"
-        checked={checked}
+      <button
+        type="button"
         data-feat-key={dataFeatKey}
         disabled={busy}
-        onChange={(e) => void handleChange(e.target.checked)}
+        onClick={() => void handleChange(!checked)}
         aria-label={ariaLabel}
-        className="accent-[#00D558] w-4 h-4"
-      />
+        aria-pressed={checked}
+        className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+          checked
+            ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
+            : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+        }`}
+      >
+        {label}
+      </button>
       {error && (
         <span className="text-[10px] text-[#FF2EB3]" role="alert">
           {error}

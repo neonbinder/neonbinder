@@ -247,8 +247,8 @@ function SetFeatureRow({
   // answer, so this never shows the amber "missing" treatment.
   if (feat.inputType === "checkbox") {
     return (
-      <label
-        className="flex flex-row items-center gap-2 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
+      <div
+        className="flex flex-row items-center"
         aria-label={`Set feature ${label}`}
       >
         <FeatureValueControl
@@ -259,10 +259,7 @@ function SetFeatureRow({
           dataFeatKey={feat.key}
           className=""
         />
-        <span className="text-[10px] uppercase tracking-wide text-gray-400">
-          {label}
-        </span>
-      </label>
+      </div>
     );
   }
 
