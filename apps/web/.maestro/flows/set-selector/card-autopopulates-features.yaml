@@ -14,9 +14,11 @@ tags:
 #   straight onto the new card row, then merged with facts observed on the card.
 #   This flow proves that copy-down LANDS ON THE CARD by opening a freshly-added
 #   card's inline features editor and asserting the inherited default VALUES are
-#   already populated on the row — Card Size, Material, Card Thickness, Language,
-#   Country of Origin, and Autographed — the physical/production + autographed
-#   defaults this session added to deriveSetLevelFeatures.
+#   already populated on the row — Season, Card Size, Material, Card Thickness,
+#   Language, and Country of Origin — the physical/production defaults this
+#   session added to deriveSetLevelFeatures. (Autographed is ALSO an inherited
+#   default but is now an always-visible control outside this editor — asserted
+#   in card-autograph-always-visible-saves.yaml, not here; see the NOTE below.)
 #
 # WHY A CUSTOM CARD IS THE FAITHFUL PROXY FOR A "FRESHLY-SYNCED" CARD:
 #   The seeding code is BYTE-IDENTICAL between the two card-creation paths in
@@ -90,9 +92,8 @@ tags:
 #   drive the drawer with MANUAL swipes INSIDE its x-range (`swipe start:80%…`)
 #   — the proven technique from signed-by-autofills-from-players.yaml — then a
 #   plain assertVisible of the combined { id, text } (its center is now on-screen).
-#   The near-top defaults (Season, Autographed) are visible in the expanded drawer
-#   with no swipe; the physical block sits below the fold and is lifted in with the
-#   swipes below.
+#   Season is visible near the top of the expanded editor with no swipe; the
+#   physical block sits below the fold and is lifted in with the swipes below.
 # ============================================================================
 
 # ============================================================
@@ -165,11 +166,18 @@ tags:
     id: "Value for Season"
     text: "2026"
 
-# Autographed = "None" (a <select> default originating at the setName node,
-# copied down onto the card; a <select> node's text is its SELECTED option).
-- assertVisible:
-    id: "Value for Autographed"
-    text: "None"
+# NOTE — Autographed is intentionally NOT asserted in this flow anymore.
+# NEO-71-74 promoted the Autographed control OUT of the CardFeaturesEditor
+# (CardFeaturesEditor.tsx filters key==="autographed") to an always-visible
+# grid cell in the CardDetailPanel body (position 7, next to Print run), FAR
+# below the fully-expanded features editor. Asserting it here would require
+# collapsing the editor and swiping to pos 7 mid-flow — cross-region drawer
+# gymnastics that add fragility for no extra mechanism coverage (Season + the
+# physical block below already prove the write-once copy-down lands on the card
+# row). The card's inherited Autographed="None" default is asserted directly, in
+# its correct always-visible position, by card-autograph-always-visible-saves.yaml
+# (which opens a fresh card and reads Value for Autographed = "None" before
+# changing it) — so no coverage is lost (R3: each flow owns distinct facts).
 
 # --- Physical/production block — below the drawer fold; lift it in with a
 # manual in-drawer swipe (x=80% is inside the drawer, clear of the backdrop),

@@ -42,17 +42,33 @@ tags:
 #   NEO-49 work-queue via sole-writer tolerance (no serial lane exists anymore).
 #
 # INTERRUPTED-RUN / RE-RUN SAFETY:
-#   Step 6 defensively NORMALISES autographed to "None" before the action,
+#   The flow NORMALISES autographed to "None" immediately before the flip,
 #   regardless of what a prior (possibly interrupted) run left it as
-#   (unset / None / a leftover "On Card"). Step 7 then overwrites signedBy with
-#   a per-attempt UNIQUE sentinel. So the None→On-Card transition in Step 8
-#   always fires fresh and the sentinel is always distinct from any player name.
-#   The restore in Step 10 puts autographed back to "None". signedBy is left
-#   holding the player name(s) (the auto-fill target — a semantically-correct
-#   value; there is no UI affordance to clear a feature back to empty, an empty
-#   commit is a no-op in useReactiveField), and the next run's Step 7 re-seeds
-#   its own sentinel over it — self-healing. Under sole-writer tolerance this
-#   leftover is inert (no other flow reads a Base card's signedBy).
+#   (unset / None / a leftover "On Card"): unset/None→None is inert, and a
+#   leftover "On Card"→None is a real transition to blank that does NOT auto-fill
+#   (isNowSet=false). It then flips None→"On Card" fresh, so the auto-fill always
+#   fires this run. The Signed By sentinel is a per-attempt UNIQUE value distinct
+#   from any player name. This flow does NOT restore autographed to "None" at the
+#   end (leaving it "On Card" is inert): the next run's own normalise step turns a
+#   leftover "On Card" back to "None" before flipping — self-healing. signedBy is
+#   left holding the player name(s) (a semantically-correct value; there is no UI
+#   affordance to clear a feature back to empty), re-seeded over by the next run's
+#   sentinel step. Under sole-writer tolerance both leftovers are inert (no other
+#   flow reads a Base card's autographed/signedBy).
+#
+# LAYOUT NOTE (NEO-71-74 — why the editor is toggled open/closed mid-flow):
+#   Autographed was promoted OUT of the CardFeaturesEditor (which now filters
+#   key==="autographed") to an ALWAYS-VISIBLE grid cell in the CardDetailPanel
+#   body (position 7, next to Print run) — FAR below the fully-expanded editor.
+#   Signed By, by contrast, is still a row INSIDE the editor. The two controls
+#   can never be on-screen together, and Maestro's page-centre swipe can't drive
+#   the right-anchored drawer's inner scroll — only manual x=80% in-drawer swipes
+#   can. So the flow drives layout deterministically with the editor's own
+#   Show/Hide toggle (a button tap, not a fragile long blind swipe): it EXPANDS
+#   the editor to reach Signed By (1 short swipe down), and COLLAPSES it to reach
+#   Autographed at pos 7 (1 short swipe down — the proven pattern from
+#   card-autograph-always-visible-saves.yaml). A large reset swipe UP (which
+#   clamps at scrollTop 0) returns to the toggle between states.
 #
 # THE ASSERTION (R2 — both a positive player-name match AND a sentinel-overwrite):
 #   Because the target is the FIXED card #300 of the immutable 2024 Topps Chrome
@@ -79,15 +95,16 @@ tags:
 #       when empty (local single-flow run), so the flow needs no setup track.
 #   1-2. Open a real Base card's detail drawer (card #300 — Julio Rodriguez, a
 #        stable single-player card).
-#   3. Expand the card features editor.
-#   4. Manual in-drawer swipe to lift the Autographed / Signed By rows into the
-#      tap band (Maestro's centre-swipe can't drive the drawer's inner scroll).
-#   5. PRECONDITION: normalise Autographed to "None" (defensive) + assert it.
-#   6. PRECONDITION: set Signed By to a unique sentinel + assert it.
-#   7. ACTION: flip Autographed "None" → "On Card" via the native <select>.
-#   8. ASSERT: Autographed now "On Card"; Signed By now shows "Julio …" (the
-#      player) AND is no longer the sentinel — the auto-fill fired.
-#   9. RESTORE: Autographed back to "None"; close the drawer.
+#   3. PRECONDITION (Signed By sentinel): EXPAND the editor, swipe to the Signed By
+#      row, set it to a per-attempt UNIQUE sentinel + assert it landed.
+#   4. Reset to top, COLLAPSE the editor (so pos-7 Autographed is reachable).
+#   5. Swipe to the always-visible Autographed control (pos 7). NORMALISE it to
+#      "None" (defensive) + assert, then FLIP "None"→"On Card" + assert — one
+#      collapsed visit. The flip is the ACTION that triggers the auto-fill.
+#   6. Reset to top, RE-EXPAND the editor, swipe back to Signed By, and assert it
+#      now shows "Julio …" (the player) AND is no longer the sentinel — the
+#      auto-fill fired.
+#   7. Close the drawer (no autographed restore — next run's normalise self-heals).
 #
 # NATIVE <select> INTERACTION (Autographed is inputType "select"):
 #   Maestro-web cannot tap a native <option> (the dropdown is not in the DOM).
@@ -95,7 +112,7 @@ tags:
 #   target option's unique first letter — the browser's type-ahead navigates to
 #   it and fires the <select>'s change event (→ setCardFeature). Our options are
 #   "None"/"On Card"/"Sticker/Label": "N"→None, "O"→On Card (unique first
-#   letters). If this mechanism regressed, Step 6's "Autographed = None" assert
+#   letters). If this mechanism regressed, Step 5's "Autographed = None" assert
 #   fails FIRST — an early, unambiguous signal rather than a deep-flow failure.
 # ============================================================================
 
@@ -188,9 +205,17 @@ tags:
     text: ".*Card #300.*"
 
 # ============================================================
-# STEP 3 — EXPAND THE CARD FEATURES EDITOR
-# The editor is collapsed by default (position 3 in the drawer body, near the
-# top). centerElement keeps the toggle clear of the y>=489 footer-steal zone (R8).
+# STEP 3 — PRECONDITION: SET Signed By TO A UNIQUE SENTINEL (editor expanded)
+# Signed By is a row INSIDE the CardFeaturesEditor, so expand it first. The editor
+# is collapsed by default (position 3 in the drawer body, near the top).
+# centerElement keeps the toggle clear of the y>=489 footer-steal zone (R8). Then
+# ONE manual in-drawer swipe (x=80% — inside the right-anchored ~480px drawer; a
+# viewport-centre swipe lands on the backdrop and can't drive the drawer's inner
+# scroll) lifts the Signed By row into the tap band. A per-attempt UNIQUE sentinel
+# guarantees it differs from the real player name, so Step 6 can prove the flip
+# OVERWROTE it. The card feature inputs carry unique per-field marker classes
+# (useFieldTestClass on CardFeatureRow), so inputText lands in Signed By, not the
+# first shared-class text input.
 # ============================================================
 
 - scrollUntilVisible:
@@ -204,57 +229,9 @@ tags:
 - assertVisible:
     id: "Card features editor"
 
-# ============================================================
-# STEP 4 — LIFT THE Autographed / Signed By ROWS INTO THE TAP BAND
-# The expanded editor fills the drawer down to the Signed By / Rookie rows,
-# which sit low (y~510-570) right above the drawer's sticky Cancel/Save footer.
-# Maestro's scrollUntilVisible swipes from the VIEWPORT centre (x~512), but the
-# 480px right-anchored drawer starts at x~544 — so that swipe lands on the
-# backdrop and cannot drive the drawer's inner scroll (this is exactly why the
-# far-down "Players" section is unreachable, and why the card-has-a-player
-# precondition is asserted differently below — via the Signed By auto-fill
-# itself: no players → names.length 0 → signedBy stays the sentinel → Step 7
-# fails). A MANUAL swipe INSIDE the drawer's x-range (x~80%) scrolls its content
-# up, lifting Autographed + Signed By to the comfortable middle band before we
-# tap them. React preserves the container's scrollTop across the per-row
-# re-renders our edits trigger, so one swipe here holds for the whole sequence.
-# ============================================================
-
 - swipe:
     start: "80%, 60%"
     end: "80%, 38%"
-
-# ============================================================
-# STEP 5 — PRECONDITION: NORMALISE Autographed TO "None"
-# Focus the <select> and type "N" → type-ahead selects "None". Card #300 renders
-# Autographed unset ("— Select —") on a fresh card; a prior run may have left it
-# "None" (onChange then no-ops — SelectValueControl guards next===selected) or a
-# leftover "On Card". Either way this writes/keeps "None". The assert confirms the
-# None precondition AND is the earliest check that the native-<select> type-ahead
-# mechanism works at all. Setting "None" is NOT a real autograph (isNowSet=false),
-# so it does NOT trigger the auto-fill here — that only fires on None→a real
-# format (Step 7).
-# ============================================================
-
-- assertVisible:
-    id: "Value for Autographed"
-- tapOn:
-    id: "Value for Autographed"
-- inputText: "N"
-- extendedWaitUntil:
-    visible:
-      id: "Value for Autographed"
-      text: "None"
-    timeout: 7000
-
-# ============================================================
-# STEP 6 — PRECONDITION: SET Signed By TO A UNIQUE SENTINEL
-# A per-attempt UNIQUE value guarantees it differs from the real player name, so
-# Step 8 can prove the toggle OVERWROTE it (and re-seeds it over any leftover from
-# a prior run — re-run safety). The card feature inputs carry unique per-field
-# marker classes (useFieldTestClass on CardFeatureRow), so inputText lands in
-# Signed By, not the first shared-class text input.
-# ============================================================
 
 - assertVisible:
     id: "Value for Signed By"
@@ -271,39 +248,101 @@ tags:
     timeout: 7000
 
 # ============================================================
-# STEP 7 — THE ACTION: FLIP Autographed "None" → "On Card"
-# Focus the <select>, type "O" → type-ahead selects "On Card" → change event →
-# setCardFeature(key=autographed, value="On Card"). Because autographed was
-# "None" (wasBlank) and the card has playerIds, the mutation auto-seeds
-# signedBy = the player name(s), overwriting the sentinel. Tapping the <select>
-# also blurs the Signed By input, so useReactiveField's focus-guard mirroring is
-# free to write the auto-filled value into the (now idle) input for us to read.
+# STEP 4 — COLLAPSE THE EDITOR so pos-7 Autographed becomes reachable
+# Reset the drawer's inner scroll to the top with a large UP swipe (finger moves
+# DOWN, so content scrolls up and clamps at scrollTop 0 — deterministic). That
+# brings the editor's "Hide features editor" toggle (editor header, near the top)
+# back into view; tap it to COLLAPSE the editor. With the editor collapsed the
+# drawer is short and the always-visible Autographed control at pos 7 sits just
+# past the fold — reachable with a single swipe (Step 5), exactly as
+# card-autograph-always-visible-saves.yaml does it. The hard assert of
+# "Show features editor" gates that the collapse actually happened (R2).
 # ============================================================
 
+- swipe:
+    start: "80%, 25%"
+    end: "80%, 90%"
+- assertVisible:
+    id: "Hide features editor"
+- tapOn:
+    id: "Hide features editor"
+- assertVisible:
+    id: "Show features editor"
+
+# ============================================================
+# STEP 5 — NORMALISE + FLIP Autographed (pos 7, editor collapsed, ONE visit)
+# One short in-drawer swipe lifts the always-visible Autographed grid cell into
+# the tap band. Then, in a single collapsed visit (React preserves scrollTop
+# across the per-row re-render each edit triggers):
+#   (a) NORMALISE to "None" — type "N" → type-ahead selects "None". Card #300 may
+#       render Autographed unset ("— Select —") on a fresh card, or a leftover
+#       from an interrupted prior run. unset/None→None is inert; a leftover
+#       "On Card"→None is a real transition to blank that does NOT auto-fill
+#       (isNowSet=false). The assert is also the earliest check the native-<select>
+#       type-ahead mechanism works at all.
+#   (b) FLIP "None"→"On Card" — type "O". Because autographed was "None" (wasBlank)
+#       and card #300 has playerIds, the mutation auto-seeds signedBy = the player
+#       name(s), OVERWRITING the sentinel. This is the ACTION under test.
+# ============================================================
+
+- swipe:
+    start: "80%, 70%"
+    end: "80%, 35%"
+
+# (a) normalise to None
+- assertVisible:
+    id: "Value for Autographed"
+- tapOn:
+    id: "Value for Autographed"
+- inputText: "N"
+- extendedWaitUntil:
+    visible:
+      id: "Value for Autographed"
+      text: "None"
+    timeout: 7000
+
+# (b) THE ACTION — flip None → On Card (fires the Signed By auto-fill)
 - tapOn:
     id: "Value for Autographed"
 - inputText: "O"
-
-# ============================================================
-# STEP 8 — ASSERTIONS
-#   (a) POSITIVE: the <select> now reads "On Card" — the transition happened.
-#   (b) POSITIVE: Signed By now shows the card's player — card #300 is Julio
-#       Rodriguez (a stable single-player card in the immutable 2024 Topps Chrome
-#       Base set), so the auto-fill seeds signedBy = "Julio …". Matching ".*Julio.*"
-#       is robust to any surname accent/spelling and proves the player NAME landed,
-#       not just "something changed".
-#   (c) CORE R2: Signed By is NO LONGER the sentinel — the None→On-Card transition
-#       overwrote it. The only writer of signedBy on this transition is the
-#       auto-fill (player names), and this flow is the card's sole writer, so a
-#       change off the sentinel to the player name proves the auto-fill fired.
-#   All are single-row Convex writes / DOM mirrors → 7s SLA.
-# ============================================================
-
 - extendedWaitUntil:
     visible:
       id: "Value for Autographed"
       text: "On Card"
     timeout: 7000
+
+# ============================================================
+# STEP 6 — RE-EXPAND THE EDITOR + ASSERT the auto-fill landed on Signed By
+# Reset to top (large UP swipe clamps at scrollTop 0), re-expand the editor, and
+# swipe back to the Signed By row.
+#   (a) POSITIVE: Signed By now shows the card's player — card #300 is Julio
+#       Rodriguez (a stable single-player card in the immutable 2024 Topps Chrome
+#       Base set), so the auto-fill seeds signedBy = "Julio …". Matching ".*Julio.*"
+#       is robust to surname accent/spelling and proves the player NAME landed,
+#       not merely "something changed".
+#   (b) CORE R2: Signed By is NO LONGER the sentinel — the None→On-Card transition
+#       overwrote it. The only writer of signedBy on this transition is the
+#       auto-fill (player names), and this flow is the card's sole writer, so the
+#       change off the sentinel to the player name proves the auto-fill fired.
+#       (Self-serves the "card has players" precondition: no playerIds →
+#       names.length 0 → the mutation's `if (names.length > 0)` guard skips the
+#       write → signedBy stays the sentinel → both (a) and (b) fail loudly.)
+# ============================================================
+
+- swipe:
+    start: "80%, 25%"
+    end: "80%, 90%"
+- assertVisible:
+    id: "Show features editor"
+- tapOn:
+    id: "Show features editor"
+- assertVisible:
+    id: "Card features editor"
+
+- swipe:
+    start: "80%, 60%"
+    end: "80%, 38%"
+
 - extendedWaitUntil:
     visible:
       id: "Value for Signed By"
@@ -314,24 +353,13 @@ tags:
     text: ".*SBSENT-${ATTEMPT_ID}.*"
 
 # ============================================================
-# STEP 9 — RESTORE + CLOSE
-# Put autographed back to "None" (sole-writer: leave the shared card's feature
-# as we found it). signedBy keeps the auto-filled player name(s) — inert leftover
-# (no flow reads a Base card's signedBy; the next run's Step 6 re-seeds its own
-# sentinel). Then Cancel closes the drawer immediately: the feature edits persist
-# per-row via setCardFeature (they are NOT part of the drawer's dirty draft, which
-# only tracks name/title/description/attributes — untouched here), so Cancel does
-# not trip the dirty guard.
+# STEP 7 — CLOSE (no autographed restore — next run's normalise self-heals)
+# Cancel closes the drawer immediately: the feature edits persist per-row via
+# setCardFeature (they are NOT part of the drawer's dirty draft, which only tracks
+# name/title/description/attributes — untouched here), so Cancel does not trip the
+# dirty guard. Leaving autographed "On Card" is inert under sole-writer tolerance;
+# the next run's Step 5 normalise turns it back to "None" before flipping.
 # ============================================================
-
-- tapOn:
-    id: "Value for Autographed"
-- inputText: "N"
-- extendedWaitUntil:
-    visible:
-      id: "Value for Autographed"
-      text: "None"
-    timeout: 7000
 
 - assertVisible:
     id: "Cancel card edit"

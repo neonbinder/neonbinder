@@ -93,8 +93,16 @@ tags:
     start: "80%, 70%"
     end: "80%, 35%"
 
+# Assert BOTH that the control is reachable while the editor is collapsed AND
+# that a freshly-created card's inherited Autographed default is "None" — the
+# setName-level default ("None") copied down onto the card at addCustomCard time
+# (a <select> node's text = its SELECTED option). This is the card-level
+# inherited-default check that card-autopopulates-features.yaml delegates here
+# (that flow can't reach this out-of-editor control without cross-region
+# gymnastics; this flow is already correctly positioned at pos 7).
 - assertVisible:
     id: "Value for Autographed"
+    text: "None"
 
 # ============================================================
 # CHANGE IT TO "On Card" (native <select> type-ahead: focus + type "O")

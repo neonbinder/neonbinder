@@ -58,8 +58,9 @@ tags:
 #                                 default added this session, originating at the
 #                                 setName level exactly like isReprint)
 #     Card Type = "Base"         (own-level derivation at the variantType)
-#     Parallel/Variety = "Base"  (own-level derivation at the variantType — the
-#                                 "Base" default added this session)
+#     Variation = "Base"         (own-level derivation at the variantType — the
+#                                 "Base" default added this session; feature key
+#                                 parallelName, label renamed to "Variation")
 #     Card Thickness = "20pt"    (physical setName default, copied down 1 hop)
 #     Country of Origin = "USA"  (physical setName default, copied down 1 hop)
 #   Each asserted VALUE is UNIQUELY produced by exactly one origin level (only a
@@ -92,7 +93,7 @@ tags:
 # maestro-client.jar!maestro-web.js getNodeText, cli 2.6.0):
 #   - <input>  node text = value || placeholder || ariaLabel  → the input's
 #     CURRENT VALUE is directly matchable (Card Type "Base",
-#     Parallel/Variety "Base", Manufacturer "WOMfr-<w>").
+#     Variation "Base", Manufacturer "WOMfr-<w>").
 #   - <select> node text = ONLY the SELECTED option's text (un-selected <option>
 #     nodes are omitted from the hierarchy unless the select is focused) → the
 #     SELECTED value is matchable and does NOT false-match other options
@@ -251,11 +252,16 @@ tags:
     visibilityPercentage: 50
     timeout: 15000
 
-# 6e — Parallel/Variety = "Base" (own-level derivation at the base variantType —
-# the "Base" default added this session; a broken default reads "—" and fails).
+# 6e — Variation = "Base" (own-level derivation at the base variantType — the
+# "Base" default added this session; a broken default reads "—" and fails). The
+# feature key is `parallelName`; its label was renamed "Parallel/Variety" →
+# "Variation" this session (expectedFeatures.ts), so the aria-label is now
+# "Value for Variation". On the SetAttributesPanel this uniquely identifies the
+# parallelName row (the card-only `cardVariation` input — also labelled
+# "Variation" — is not rendered on the set panel, so no collision here).
 - scrollUntilVisible:
     element:
-      id: "Value for Parallel/Variety"
+      id: "Value for Variation"
       text: "Base"
     centerElement: true
     visibilityPercentage: 50
