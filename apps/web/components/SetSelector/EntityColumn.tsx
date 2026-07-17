@@ -406,6 +406,18 @@ export default function EntityColumn({
   // (no FE sync mode → no onDone handoff to drop). Sync button = forced re-sync
   // via the backend door; "+ Custom" still opens the custom form.
   const newPathContent = () => {
+    // The custom-entry form is an explicit, in-progress user action: once the
+    // operator has opened "+ Custom" and started typing, a BACKGROUND re-sync
+    // (syncStatus flipping to "syncing" — e.g. a concurrent writer churning the
+    // shared selectorOptions catalog, or an auto re-fetch) must NOT swap their
+    // form out for the "Fetching from marketplaces…" panel: doing so unmounts
+    // the <input> mid-edit, discarding whatever they'd typed. So the custom form
+    // takes precedence over the syncing panel. (Previously the syncing check
+    // came first; it silently destroyed a half-typed custom value for real
+    // users, and surfaced as a "stale element reference" crash for the E2E
+    // drill util creating a per-worker custom Sport under CI's 8-shard
+    // concurrency, where these background re-syncs fire constantly.)
+    if (mode === "custom") return customForm;
     if (syncStatus?.status === "syncing") {
       return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
@@ -418,7 +430,6 @@ export default function EntityColumn({
         </div>
       );
     }
-    if (mode === "custom") return customForm;
     const forceSync = () => {
       if (level) void ensureOptions({ level, parentId, force: true });
     };

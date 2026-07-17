@@ -106,11 +106,25 @@ tags:
 
 # ============================================================
 # CHANGE IT TO "On Card" (native <select> type-ahead: focus + type "O")
+#
+# COMMIT WITH Enter — this is the CI-stability fix (RCA below). tapOn a native
+# <select> can leave the browser's option popup OPEN. While that popup is open,
+# type-ahead ("O") only MOVES THE HIGHLIGHT to "On Card"; the <select>'s `change`
+# event does NOT fire until the selection is COMMITTED. Autographed is a
+# CONTROLLED select (value comes from card.features.autographed via setCardFeature
+# → Convex reactivity), so with no `change` there is no setCardFeature write and
+# the displayed value stays "None" — the "On Card" assert then burns its full 7s
+# and fails. This reproduced twice on CI (headless chrome 150 leaves the popup
+# open) but never locally. `pressKey: Enter` commits the highlighted option,
+# firing `change` → setCardFeature → the controlled value flips to "On Card".
+# (signed-by-autofills survives the same select only incidentally: its second
+# tapOn closes any stuck popup before its committing type-ahead.)
 # ============================================================
 
 - tapOn:
     id: "Value for Autographed"
 - inputText: "O"
+- pressKey: Enter
 - extendedWaitUntil:
     visible:
       id: "Value for Autographed"
