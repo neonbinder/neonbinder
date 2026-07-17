@@ -465,10 +465,14 @@ export const fetchBscSelectorOptions = action({
  * Carries everything we can source at *checklist* time. Per-copy fields
  * (grade, condition, cert) belong on a future cardInventory table.
  *
- * Team is intentionally optional and often empty — BSC's bulk-upload
- * catalog endpoint doesn't carry team data (it lives on listings, not
- * the catalog template). Team gets resolved at listing time from the
- * player's career history (Wikidata) or a user prompt.
+ * Team is intentionally optional and usually empty — BSC's bulk-upload
+ * catalog endpoint doesn't carry a real team field of its own (it lives on
+ * listings, not the catalog template). The one exception: Team Checklist
+ * cards embed the team name directly in `players` (e.g. "Kansas City
+ * Royals TC"), which `parsePlayersField` detects and surfaces here. For
+ * every other card, team stays unresolved at checklist time — a future
+ * enrichment (the player's career history via Wikidata, or a user prompt)
+ * would populate it for regular player cards; out of scope for this file.
  */
 const checklistCardValidator = v.object({
   cardNumber: v.string(),
@@ -549,6 +553,85 @@ function parseVariationDescription(raw: unknown): string | undefined {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   return trimmed.replace(/^[A-Z]{2,4}:\s*/, "").trim() || undefined;
+}
+
+/**
+ * Known BSC card-type suffixes that mean "this string names a TEAM, not a
+ * player" — e.g. "Kansas City Royals TC" (Team Checklist). Confirmed live
+ * against a real 2026 Topps Baseball base set (24 TC rows out of 708, incl.
+ * single-word team names like "Athletics"/"Angels" — suffix-stripping must
+ * not assume multi-word). Extensible: add more here if/when a new one is
+ * confirmed against real data — don't guess at unconfirmed tokens.
+ */
+const TEAM_CARD_SUFFIXES = ["TC"];
+
+/**
+ * Parse BSC's raw `players` field (a single string) into clean player
+ * names, any detected team name, and — for multi-player insert cards whose
+ * player list is wrapped in parens with descriptive text around it (e.g.
+ * League Leaders, or other duo/trio insert types) — the surrounding
+ * descriptive text for use in `cardName`.
+ *
+ * Replaces a naive comma/slash split on the whole string, which breaks
+ * on two real BSC conventions (confirmed live against a real 708-card base
+ * set, 49 affected rows — ~7%, not an edge case):
+ *   - Team Checklist cards: "Kansas City Royals TC" was treated as one
+ *     bogus "player" instead of a team.
+ *   - Multi-player insert cards: "National League Leaders RBI (Kyle
+ *     Schwarber, Pete Alonso, Juan Soto) LL" — the blind split cut the
+ *     comma INSIDE the parens, producing two garbage half-strings.
+ */
+export function parsePlayersField(raw: string): {
+  players: string[];
+  teams: string[];
+  namePrefix?: string;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed) return { players: [], teams: [] };
+
+  // 1. Team-card suffix — the whole string names a team, not a player.
+  // Reported into BOTH players and teams: the team entity links via the
+  // existing teamOnCardIds field, and a matching players row is created
+  // too so the card can also link via playerIds (explicit product choice —
+  // see the plan this implements).
+  for (const suffix of TEAM_CARD_SUFFIXES) {
+    const suffixPattern = new RegExp(`\\s+${suffix}$`);
+    if (suffixPattern.test(trimmed)) {
+      const teamName = trimmed.replace(suffixPattern, "").trim();
+      if (teamName) return { players: [teamName], teams: [teamName] };
+    }
+  }
+
+  // 2. Parenthetical player list — e.g. "<description> (<players>) <tag>".
+  // Extract names from INSIDE the parens (safe to comma/slash-split there,
+  // isolated from the surrounding text); combine whatever text sits before
+  // AND after the parens into namePrefix (real data has both — a leading
+  // description like "National League Leaders RBI" AND a trailing tag like
+  // "LL"/"CPC"). Generic on purpose: validated against two different real
+  // insert types, not hardcoded to League Leaders.
+  const parenMatch = trimmed.match(/^(.*)\(([^)]*)\)(.*)$/);
+  if (parenMatch) {
+    const [, before, inside, after] = parenMatch;
+    const players = inside
+      .split(/\s*[/,]\s*/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const namePrefix = `${before.trim()} ${after.trim()}`
+      .trim()
+      .replace(/\s+/g, " ");
+    return {
+      players,
+      teams: [],
+      ...(namePrefix ? { namePrefix } : {}),
+    };
+  }
+
+  // 3. Fallback — today's behavior: a plain single- or multi-player string.
+  const players = trimmed
+    .split(/\s*[/,]\s*/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return { players, teams: [] };
 }
 
 /**
@@ -745,8 +828,10 @@ export const fetchBscChecklist = action({
       //   id, setName, players (string), cardNo, playerAttribute,
       //   playerAttributeDesc, imgFront, imgBack, cardNoOrder,
       //   cardNoSequence, cardNoSort.
-      // No team, year, sport, features, printRun, autograph, sportlots —
-      // those don't exist on the catalog template.
+      // No year, sport, features, printRun, autograph, sportlots — those
+      // don't exist on the catalog template. `team`/`teams` are populated
+      // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
+      // the raw response itself never carries a separate team field.
       const cards = rawCards
         .map((r) => {
           const cardNumberRaw = r.cardNo ?? r.cardNumber ?? r.number;
@@ -755,20 +840,20 @@ export const fetchBscChecklist = action({
             : "";
           if (!cardNumber) return null;
 
-          // `players` is a single comma- or slash-separated string in
-          // the bulk-upload response. Normalize to a trimmed array.
+          // `players` is a single string in the bulk-upload response —
+          // parse it for the team-checklist and multi-player-parenthetical
+          // conventions (see parsePlayersField's own doc comment).
           const playersRaw = typeof r.players === "string" ? r.players : "";
-          const players = playersRaw
-            .split(/\s*[/,]\s*/)
-            .map((p) => p.trim())
-            .filter(Boolean);
+          const { players, teams, namePrefix } = parsePlayersField(playersRaw);
 
           const attributes = parsePlayerAttributeTokens(r.playerAttribute);
           const cardVariation = parseVariationDescription(r.playerAttributeDesc);
 
-          const cardName = players.length
-            ? players.join(" / ")
-            : `Card #${cardNumber}`;
+          const cardName = namePrefix
+            ? `${namePrefix} (${players.join(" / ")})`
+            : players.length
+              ? players.join(" / ")
+              : `Card #${cardNumber}`;
 
           const platformRefRaw = r.id;
           const platformRef = typeof platformRefRaw === "string" || typeof platformRefRaw === "number"
@@ -788,7 +873,7 @@ export const fetchBscChecklist = action({
             cardNumber,
             cardName,
             team: undefined,
-            teams: undefined,
+            teams: teams.length ? teams : undefined,
             players: players.length ? players : undefined,
             attributes: attributes.length ? attributes : undefined,
             printRun: undefined,
