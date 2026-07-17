@@ -708,16 +708,35 @@ tags:
             # The Sets column can be mid-re-render (Convex subscription initial
             # load) on a retry after a previous run saved data — the CDP swipe
             # inside scrollUntilVisible throws MismatchedInputException during
-            # the render. A non-scroll extendedWaitUntil gives the re-render
-            # time to settle before the centering swipe runs.
+            # the render. A non-scroll wait gives the re-render time to settle
+            # before the centering swipe runs.
+            #
+            # optional: true (fix 2026-07-16, neo-71-74) — the Sets column is an
+            # overflow-y-auto list that renders ALL custom sets (not virtualized).
+            # As the per-worker E2E Test Sport N/2026/Topps Sets list accumulates
+            # sets across flows (write-once selectorOptions; /testing/reset never
+            # wipes the catalog), a newly-added set whose name sorts LATE
+            # alphabetically (e.g. "pp-0" after the many "c*-0" sets) lands BELOW
+            # the 629px fold while the list is still short enough that NO
+            # "Search sets" input renders (the search box only appears past ~8
+            # items). A non-optional wait here hard-FAILS on that below-fold set
+            # before the scrollUntilVisible below can reach it (RCA: player-picker
+            # flow, set "pp-0", Sets column showing cag-0/cap-0/clt-0… with pp-0
+            # scrolled out). Making it optional lets a below-fold set fall through
+            # to the scrollUntilVisible (which DOES scroll the column to it and
+            # centers it) — while staying an instant no-op for the common case
+            # where the set is already visible near the top. A genuinely missing
+            # set still fails loudly at the scrollUntilVisible (ElementNotFound).
             - extendedWaitUntil:
                 visible:
                   text: ".*${SET_NAME}.*"
-                timeout: 10000
+                timeout: 5000
+                optional: true
             - scrollUntilVisible:
                 element:
                   text: ".*${SET_NAME}.*"
                 centerElement: true
+                waitToSettleTimeoutMs: 1000
                 timeout: 10000
             - tapOn:
                 text: ".*${SET_NAME}.*"

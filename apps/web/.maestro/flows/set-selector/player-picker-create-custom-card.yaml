@@ -1,0 +1,185 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Player picker — create a brand-new player and attach it to a CUSTOM card (the gap this closes); it persists across reopen"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — SINGLE FEATURE: the Players section of a card's detail panel is now an
+# editable typeahead chip picker with a "+ Create '<name>'" escape hatch (via
+# the now-public players.findOrCreate). Typing a name with no exact match and
+# choosing Create makes a brand-new player and attaches it. This is SPECIFICALLY
+# what lets a manually-added CUSTOM card hold players at all — structurally
+# impossible before (custom cards never went through the marketplace-sync
+# UnknownEntitiesDialog that creates player rows). Players used to be read-only
+# here ("None linked. Add players via the marketplace fetch flow.").
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#   - Precondition: the panel opened (Card name input) and the Player picker is
+#     present (aria "Player picker") — a read-only Players section would have no
+#     "Add player" trigger, so tapping it would fail.
+#   - The typed unique name has NO existing match, so the "+ Create '<name>'"
+#     option MUST appear (id "Create player <name>"); choosing it MUST produce a
+#     chip whose remove button is "Remove player <name>". A create path that
+#     silently no-oped would leave no chip and fail the assert.
+#   - PERSISTENCE ON A CUSTOM CARD (the actual gap): after Save + reopen, the
+#     chip is STILL there — proving the custom card now durably holds a player.
+#
+# R3 — DEDUP: team-picker.yaml covers the sibling TeamPicker; signed-by-autofills
+#   reads playerIds on a REAL card but explicitly notes a custom card CANNOT
+#   acquire playerIds via sync — this flow proves it now can, via manual create.
+#   No other flow exercises PlayerPicker. Drill/add via util-add-custom-card.
+#
+# WHY A UNIQUE NAME ("NBPlayer-${ATTEMPT_ID}"): guarantees no exact match in the
+#   players table (per attempt), so the create option is always offered — even
+#   after prior runs seeded players under this synthetic sport. findOrCreate is
+#   idempotent, so a re-run is harmless.
+#
+# PER-WORKER DATA ISOLATION: E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps ->
+#   pp-<WORKER_INDEX> (custom set, Insert VT, "Base" insert). Fully isolated; the
+#   created players carry sport "E2E Test Sport <WORKER_INDEX>", never colliding
+#   with another worker's picker candidates.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
+# ============================================================
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "pp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "777-${ATTEMPT_ID}"
+      PLAYER_NAME: "Player Picker Card ${ATTEMPT_ID}"
+
+# Open the drawer via the Edit button.
+- assertVisible:
+    id: "Edit card 777-${ATTEMPT_ID}"
+- tapOn:
+    id: "Edit card 777-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# ============================================================
+# REACH THE PLAYERS SECTION (near the bottom of the drawer body)
+# Players is the last editable section, above the read-only "Inherited from set"
+# and the images block. The drawer is right-anchored (~480px, x>=544), so a
+# viewport-centre scroll lands on the backdrop and cannot drive the drawer's
+# inner scroll — we drive it with manual swipes at x=80% (inside the drawer).
+# Scrolling to the bottom parks "Add player" in the upper-middle band (the
+# Inherited + Images blocks sit below it), leaving room for the popover that
+# opens BELOW the trigger.
+# ============================================================
+
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+
+- assertVisible:
+    id: "Player picker"
+- assertVisible:
+    id: "Add player"
+
+# ============================================================
+# CREATE A BRAND-NEW PLAYER AND ATTACH IT
+# ============================================================
+
+- tapOn:
+    id: "Add player"
+- assertVisible:
+    id: "Search players"
+- tapOn:
+    id: "Search players"
+- inputText: "NBPlayer-${ATTEMPT_ID}"
+
+# No existing player matches this unique name, so the "+ Create" row appears.
+- assertVisible:
+    id: "Create player NBPlayer-${ATTEMPT_ID}"
+- tapOn:
+    id: "Create player NBPlayer-${ATTEMPT_ID}"
+
+# The created player is attached as a chip (its remove button proves the chip).
+- assertVisible:
+    id: "Remove player NBPlayer-${ATTEMPT_ID}"
+
+# ============================================================
+# SAVE — playerIds ARE part of the drawer's dirty draft, so the attachment only
+# persists to this card via the Save button. (findOrCreate already created the
+# player ENTITY; Save writes updateCard.playerIds to link it to this card.)
+# The Save button lives in the sticky footer (outside the scroll body / open
+# popover), so tapping it directly commits and closes.
+# ============================================================
+
+- tapOn:
+    id: "Save card edit"
+- assertNotVisible:
+    id: "Card name"
+
+# ============================================================
+# REOPEN + VERIFY PERSISTENCE (a custom card now durably holds a player)
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 777-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Edit card 777-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# Reach the Players section again and confirm the chip survived Save + reopen.
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+
+- assertVisible:
+    id: "Remove player NBPlayer-${ATTEMPT_ID}"
+
+# ============================================================
+# CLOSE + CLEANUP — delete this attempt's test card
+# ============================================================
+
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 777-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 777-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 777-${ATTEMPT_ID}"
+- assertNotVisible: "Player Picker Card ${ATTEMPT_ID}"

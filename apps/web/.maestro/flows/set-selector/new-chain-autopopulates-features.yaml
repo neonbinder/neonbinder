@@ -16,14 +16,18 @@ tags:
 #   that end-to-end: drill a freshly-created chain and confirm a derived feature
 #   value is already populated in the panel, having never touched a single card.
 #
-# THE CONCRETE ASSERTIONS — SIX auto-populated feature VALUES, each proven at
+# THE CONCRETE ASSERTIONS — EIGHT auto-populated feature VALUES, each proven at
 # the deepest (variantType) node where the complete write-once snapshot lands:
 #   We build a fully-custom, per-worker chain rooted at the suite's standard
 #   per-worker custom sport ("E2E Test Sport <worker>"):
 #     year  "1975-w<worker>"  → derives era="Vintage (1970-79)", vintage="true"
 #     mfr   "WOMfr-<worker>"  → derives manufacturer="WOMfr-<worker>" (verbatim)
-#     set   "WOSet2-<worker>" → derives isReprint="false", autographed="None"
-#     VT    "WOVT2-<worker>"  → derives cardType="Base", parallelName="Base"
+#     set   "WOSet3-<worker>" → derives isReprint="false", autographed="None",
+#                               and the physical defaults cardThickness="20pt",
+#                               countryOfOrigin="USA" (plus cardSize/Material/
+#                               language) — all unconditional setName-level
+#                               deriveSetLevelFeatures outputs
+#     VT    "WOVT3-<worker>"  → derives cardType="Base", parallelName="Base"
 #   The sport / year / manufacturer nodes are the suite's PERSISTENT per-worker
 #   custom ancestors (reused across runs); the set + variantType carry a trailing
 #   GENERATION digit ("...2") and are the freshly-created nodes under test. This
@@ -35,15 +39,18 @@ tags:
 #   autographed="None") and would render it blank ("— Select —") forever.
 #   Bumping the generation digit forces the drill to CREATE the set + VT fresh,
 #   with the CURRENT derivation. When a future setName/variantType-level default
-#   is added and asserted here, bump the digit again (…2→…3). Reusing the
+#   is added and asserted here, bump the digit again (…3→…4) — this session
+#   bumped …2→…3 to pick up the new physical setName defaults cardThickness /
+#   countryOfOrigin (asserted in 6g/6h below). Reusing the
 #   existing year/manufacturer is itself meaningful: it proves copy-down works
 #   when a NEW set is added under a PRE-EXISTING manufacturer — the common
 #   real-world case (an operator adds this year's set under a known maker).
 #   Each node's snapshot is COPIED DOWN into the next as it is created, so the
 #   variantType node's `features` is the ACCUMULATED resolved map
 #   {era, vintage, manufacturer, isReprint, autographed, cardType,
-#   parallelName}. The panel at the variantType level therefore shows all of
-#   them, and we assert six:
+#   parallelName, cardThickness, countryOfOrigin, cardSize, cardMaterial,
+#   language}. The panel at the variantType level therefore shows all of
+#   them, and we assert eight:
 #     Era = "Vintage (1970-79)"  (copied down from the year — 2 hops)
 #     Vintage = "true"           (copied down from the year — 2 hops)
 #     Manufacturer = "WOMfr-<w>" (copied down from the manufacturer — 1 hop)
@@ -53,6 +60,8 @@ tags:
 #     Card Type = "Base"         (own-level derivation at the variantType)
 #     Parallel/Variety = "Base"  (own-level derivation at the variantType — the
 #                                 "Base" default added this session)
+#     Card Thickness = "20pt"    (physical setName default, copied down 1 hop)
+#     Country of Origin = "USA"  (physical setName default, copied down 1 hop)
 #   Each asserted VALUE is UNIQUELY produced by exactly one origin level (only a
 #   pre-1980 year yields "Vintage (1970-79)"; only the manufacturer node yields
 #   its verbatim name; only a setName node emits the autographed="None" default;
@@ -150,8 +159,8 @@ tags:
       SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
       YEAR: "1975-w${WORKER_INDEX || 0}"
       MANUFACTURER: "WOMfr-${WORKER_INDEX || 0}"
-      SET_NAME: "WOSet2-${WORKER_INDEX || 0}"
-      VARIANT_TYPE: "WOVT2-${WORKER_INDEX || 0}"
+      SET_NAME: "WOSet3-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "WOVT3-${WORKER_INDEX || 0}"
 
 # Step 3 — locate the SetAttributesPanel and prove it is scoped to the
 # freshly-created VARIANT TYPE node. The panel header ("Attributes for
@@ -162,7 +171,7 @@ tags:
 # (R8) so the expand tap below lands.
 - scrollUntilVisible:
     element:
-      text: ".*Attributes for WOVT2-${WORKER_INDEX || 0}.*"
+      text: ".*Attributes for WOVT3-${WORKER_INDEX || 0}.*"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
@@ -174,7 +183,7 @@ tags:
 # vintage to have derived — asserting it here guards the precondition for the
 # Vintage value assertion below.
 - assertVisible:
-    text: ".*1975-w${WORKER_INDEX || 0}.*WOVT2-${WORKER_INDEX || 0}.*"
+    text: ".*1975-w${WORKER_INDEX || 0}.*WOVT3-${WORKER_INDEX || 0}.*"
 
 # Step 5 — make sure the panel is EXPANDED (it may default collapsed at the
 # variantType level, or a prior retry may have left it either way). Idempotent:
@@ -263,6 +272,34 @@ tags:
     element:
       id: "Value for Autographed"
       text: "None"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+
+# 6g — Card Thickness = "20pt" (a PHYSICAL default originating at the setName
+# node — deriveSetLevelFeatures unconditionally emits cardThickness="20pt" for
+# every set — copied down 1 hop to the variantType, same origin level and hop
+# as Autographed). Plain-text <input>: getNodeText = its value, so the combined
+# { id, text } selector matches the node with BOTH the aria-label AND "20pt".
+# A broken default / broken copy-down would leave the field blank ("—") and
+# this scrollUntilVisible-with-text would fail loudly (R2). This is one of the
+# two physical defaults added this session (the other, Country of Origin, is 6h).
+- scrollUntilVisible:
+    element:
+      id: "Value for Card Thickness"
+      text: "20pt"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+
+# 6h — Country of Origin = "USA" (physical default originating at the setName
+# node — deriveSetLevelFeatures unconditionally emits countryOfOrigin="USA" —
+# copied down 1 hop to the variantType). Plain-text <input>; asserted the same
+# way as 6g. The second physical default added this session.
+- scrollUntilVisible:
+    element:
+      id: "Value for Country of Origin"
+      text: "USA"
     centerElement: true
     visibilityPercentage: 50
     timeout: 15000

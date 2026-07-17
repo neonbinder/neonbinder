@@ -1,0 +1,173 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Card detail — the unified Autographed dropdown is always-visible (not behind Show features) and saves immediately on change"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — SINGLE FEATURE: the Autographed control is now ONE always-visible
+# dropdown in the main panel body (next to Print Run), promoted out of the
+# collapsed "Show features editor" section, and changing it persists IMMEDIATELY
+# (via setCardFeature) — it is NOT part of the drawer's Save button / dirty
+# cycle. (Previously there were two disagreeing autograph controls: a free-text
+# "Autograph" input and a separate "Autographed" dropdown hidden behind
+# "Show features". The free-text one is gone.)
+#
+# R2 — TWO HARD ASSERTIONS, no silent fall-through:
+#   (1) ALWAYS-VISIBLE, NOT GATED BY EXPAND: after opening the panel we assert
+#       "Show features editor" is still the COLLAPSED trigger (we never tap it),
+#       yet "Value for Autographed" is reachable in the main body. Had the
+#       dropdown still lived inside the collapsed CardFeaturesEditor, it would be
+#       absent until "Show features editor" is tapped (which would then flip to
+#       "Hide features editor") — so finding it while the editor is still
+#       collapsed proves it was promoted out.
+#   (2) IMMEDIATE SAVE: change the dropdown to "On Card", then close the drawer
+#       with Cancel (NOT Save). Reopen the card — Autographed still reads
+#       "On Card". Because Cancel discards the drawer's draft, the only way the
+#       value survives is the immediate per-row setCardFeature write. A value
+#       that reverted to blank/None on reopen would fail this assert.
+#
+# R3 — DEDUP: signed-by-autofills-from-players.yaml also flips Autographed, but
+#   (a) on a REAL Topps Chrome card, (b) to prove the Signed-By auto-fill side
+#   effect, and (c) AFTER expanding the features editor. It never proves the
+#   dropdown is always-visible-without-expanding, nor the immediate-persist on a
+#   custom card. This flow owns those two facts. Drill/add via util-add-custom-card.
+#
+# NATIVE <select> INTERACTION: Autographed is inputType "select" (options
+#   None / On Card / Sticker/Label). maestro-web can't tap a native <option>, so
+#   we focus the <select> and type the first letter — the browser's type-ahead
+#   selects the matching option and fires onChange (the proven mechanism from
+#   signed-by-autofills-from-players.yaml). For a <select>, getNodeText returns
+#   the SELECTED option's text, so `{id, text}` asserts the current selection.
+#
+# PER-WORKER DATA ISOLATION: E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps ->
+#   cag-<WORKER_INDEX> (custom set, Insert VT, "Base" insert). Fully isolated.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
+# ============================================================
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "cag-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "778-${ATTEMPT_ID}"
+      PLAYER_NAME: "Autograph Test Player ${ATTEMPT_ID}"
+
+# Open the drawer via the Edit button (the reliable opener).
+- assertVisible:
+    id: "Edit card 778-${ATTEMPT_ID}"
+- tapOn:
+    id: "Edit card 778-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# ============================================================
+# ASSERTION (1) — ALWAYS-VISIBLE, NOT BEHIND "Show features"
+# The features editor is COLLAPSED (its trigger reads "Show features editor").
+# We deliberately do NOT tap it. Autographed must still be reachable.
+# ============================================================
+
+- assertVisible:
+    id: "Show features editor"
+
+# The Autographed row sits in the main body just below the Attributes chips
+# (grid with Print run). With the features editor collapsed it lands just past
+# the fold, so lift it into the tap band with ONE manual in-drawer swipe. The
+# drawer is right-anchored (~480px, x>=544), so we swipe at x=80% — a
+# viewport-centre (x~512) swipe would land on the backdrop and never scroll the
+# drawer's inner container.
+- swipe:
+    start: "80%, 70%"
+    end: "80%, 35%"
+
+- assertVisible:
+    id: "Value for Autographed"
+
+# ============================================================
+# CHANGE IT TO "On Card" (native <select> type-ahead: focus + type "O")
+# ============================================================
+
+- tapOn:
+    id: "Value for Autographed"
+- inputText: "O"
+- extendedWaitUntil:
+    visible:
+      id: "Value for Autographed"
+      text: "On Card"
+    timeout: 7000
+
+# ============================================================
+# CLOSE WITH CANCEL (NOT Save) — the immediate write must already be persisted
+# The Autographed feature is NOT part of the drawer's dirty draft (which only
+# tracks name/title/description/attributes/teams/players/printRun/variation), so
+# Cancel closes immediately without a dirty guard.
+# ============================================================
+
+- assertVisible:
+    id: "Cancel card edit"
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"
+
+# ============================================================
+# REOPEN + ASSERTION (2) — the change survived Cancel => it saved immediately
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 778-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Edit card 778-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# Lift Autographed into view again (same single in-drawer swipe).
+- swipe:
+    start: "80%, 70%"
+    end: "80%, 35%"
+
+- extendedWaitUntil:
+    visible:
+      id: "Value for Autographed"
+      text: "On Card"
+    timeout: 7000
+
+# ============================================================
+# CLOSE + CLEANUP — delete this attempt's test card
+# ============================================================
+
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 778-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 778-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 778-${ATTEMPT_ID}"
+- assertNotVisible: "Autograph Test Player ${ATTEMPT_ID}"
