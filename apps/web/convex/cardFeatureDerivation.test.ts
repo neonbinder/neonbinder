@@ -90,11 +90,13 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
     // autographed defaults to "None" at setName creation (like isReprint),
     // and copies down through variantType to the card the same way.
     expect(f.autographed).toBe("None");
-    // cardSize/cardMaterial/language default the same way at setName
-    // creation and copy down identically.
+    // cardSize/cardMaterial/cardThickness/language/countryOfOrigin default
+    // the same way at setName creation and copy down identically.
     expect(f.cardSize).toBe("Standard");
     expect(f.cardMaterial).toBe("Card Stock");
+    expect(f.cardThickness).toBe("20pt");
     expect(f.language).toBe("English");
+    expect(f.countryOfOrigin).toBe("USA");
     // season defaults from the year node and copies down through
     // manufacturer/setName/variantType the same way.
     expect(f.season).toBe("2024");
@@ -149,5 +151,75 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
     // The operator override reached the card purely via creation-time
     // copy-down — no cascade involved.
     expect((cards[0].features ?? {}).league).toBe("NPB");
+  });
+});
+
+// ===========================================================================
+// NEO-24/71-74 — addCustomCard write-once listingTitle/listingDescription
+// ===========================================================================
+//
+// `generateListingTitle`/`generateListingDescription` (convex/features/
+// generateListing.ts) already have full unit coverage in
+// generateListing.test.ts for their own string-composition logic. These
+// tests instead prove the WIRING into `addCustomCard`: a freshly-added
+// custom card gets non-empty, data-reflecting listingTitle/listingDescription
+// generated from whatever the node's resolved features + the card's own
+// pendingPlayerNames/attributes/cardNumber already establish — using
+// `pendingPlayerNames` as display names since a custom card's players
+// aren't resolved to real player rows yet at add-time.
+describe("addCustomCard generates listingTitle/listingDescription (NEO-24/71-74)", () => {
+  test("a freshly added custom card gets a non-empty listingTitle/listingDescription reflecting its data", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "sport", value: "Baseball" },
+    );
+    const yearId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "year", value: "2024", parentId: sportId },
+    );
+    const mfrId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "manufacturer", value: "Topps", parentId: yearId },
+    );
+    const setNameId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "setName", value: "Chrome", parentId: mfrId },
+    );
+    const variantTypeId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "variantType", value: "Base", parentId: setNameId },
+    );
+
+    await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: variantTypeId,
+      cardNumber: "50",
+      cardName: "Elly De La Cruz",
+      attributes: ["RC"],
+      // Not yet resolved to a real players-table id — addCustomCard uses
+      // this pending name directly for display purposes.
+      players: ["Elly De La Cruz"],
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+
+    expect(card.listingTitle).toBeTruthy();
+    expect(card.listingTitle).toContain("2024");
+    expect(card.listingTitle).toContain("Topps");
+    expect(card.listingTitle).toContain("Chrome");
+    expect(card.listingTitle).toContain("Elly De La Cruz");
+    expect(card.listingTitle).toContain("#50");
+    expect(card.listingTitle).toContain("RC");
+
+    expect(card.listingDescription).toBeTruthy();
+    expect(card.listingDescription).toContain("Elly De La Cruz");
+    expect(card.listingDescription).toContain("#50");
+    expect(card.listingDescription).toContain("Rookie Card");
   });
 });

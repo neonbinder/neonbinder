@@ -27,6 +27,7 @@ import type * as credentials from "../credentials.js";
 import type * as e2eQueue from "../e2eQueue.js";
 import type * as features_deriveCardFeatures from "../features/deriveCardFeatures.js";
 import type * as features_expectedFeatures from "../features/expectedFeatures.js";
+import type * as features_generateListing from "../features/generateListing.js";
 import type * as http from "../http.js";
 import type * as myFunctions from "../myFunctions.js";
 import type * as observability from "../observability.js";
@@ -66,6 +67,7 @@ declare const fullApi: ApiFromModules<{
   e2eQueue: typeof e2eQueue;
   "features/deriveCardFeatures": typeof features_deriveCardFeatures;
   "features/expectedFeatures": typeof features_expectedFeatures;
+  "features/generateListing": typeof features_generateListing;
   http: typeof http;
   myFunctions: typeof myFunctions;
   observability: typeof observability;

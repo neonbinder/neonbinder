@@ -95,7 +95,7 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
   },
   {
     key: "parallelName",
-    label: "Parallel/Variety",
+    label: "Variation",
     applicableAtLevels: ["variantType", "insert", "parallel"],
   },
   // MyCardPost + MySlabs both track short-print status as a discrete facet

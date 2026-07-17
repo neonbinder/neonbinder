@@ -80,7 +80,7 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toEqual({ manufacturer: "Panini" });
   });
 
-  test("setName -> isReprint, autographed, cardSize, cardMaterial, language", async () => {
+  test("setName -> isReprint, autographed, cardSize, cardMaterial, cardThickness, language, countryOfOrigin", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const id = await asAdmin.mutation(
@@ -92,7 +92,9 @@ describe("own-level heuristic on a root (parentless) node", () => {
       autographed: "None",
       cardSize: "Standard",
       cardMaterial: "Card Stock",
+      cardThickness: "20pt",
       language: "English",
+      countryOfOrigin: "USA",
     });
   });
 
@@ -310,7 +312,9 @@ describe("full copy-down from parent to child", () => {
       autographed: "None", // copied down from setName
       cardSize: "Standard", // copied down from setName
       cardMaterial: "Card Stock", // copied down from setName
+      cardThickness: "20pt", // copied down from setName
       language: "English", // copied down from setName
+      countryOfOrigin: "USA", // copied down from setName
       cardType: "Insert", // own-level heuristic (level="insert")
     });
   });

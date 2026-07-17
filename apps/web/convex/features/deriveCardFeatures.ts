@@ -140,14 +140,19 @@ export function deriveSetLevelFeatures(
   // operator (or a future marketplace signal) can flip it per-set/per-card.
   f.autographed = "None";
 
-  // Card Size / Material / Language — default to the overwhelming majority
-  // case for the sports cards NB catalogs today; an operator flips these
-  // per-set for the rare oddball (minis, acetate/metal parallels, a
-  // foreign-language release), same "default the common case, override the
-  // exception" pattern as isReprint/autographed above.
+  // Card Size / Material / Thickness / Language / Country of Origin —
+  // default to the overwhelming majority case for the sports cards NB
+  // catalogs today; an operator flips these per-set for the rare oddball
+  // (minis, acetate/metal parallels, a foreign-language or foreign-printed
+  // release), same "default the common case, override the exception"
+  // pattern as isReprint/autographed above. Country of Origin has no other
+  // signal to derive from yet (no manufacturer->country mapping is reliable
+  // enough to encode) — "USA" is the fallback until a better source exists.
   f.cardSize = "Standard";
   f.cardMaterial = "Card Stock";
+  f.cardThickness = "20pt";
   f.language = "English";
+  f.countryOfOrigin = "USA";
 
   return f;
 }
@@ -163,7 +168,15 @@ const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
   variantType: ["cardType", "parallelName"],
   insert: ["cardType"],
   parallel: ["cardType"],
-  setName: ["isReprint", "autographed", "cardSize", "cardMaterial", "language"],
+  setName: [
+    "isReprint",
+    "autographed",
+    "cardSize",
+    "cardMaterial",
+    "cardThickness",
+    "language",
+    "countryOfOrigin",
+  ],
 };
 
 /**
@@ -175,7 +188,8 @@ const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
  *
  * `deriveSetLevelFeatures` unconditionally returns `isReprint: "false"`,
  * `autographed: "None"`, `cardSize: "Standard"`, `cardMaterial: "Card Stock"`,
- * and `language: "English"` on every call regardless of input, so a naive
+ * `cardThickness: "20pt"`, `language: "English"`, and
+ * `countryOfOrigin: "USA"` on every call regardless of input, so a naive
  * per-level reuse would leak them onto every level — `LEVEL_HEURISTIC_KEYS`
  * filters each level down to only the key(s) it actually owns.
  */
@@ -216,10 +230,15 @@ export function deriveCardObservedFeatures(
   if (attrs.includes("SSP")) f.shortPrint = "SSP";
   else if (attrs.includes("SP")) f.shortPrint = "SP";
   if (card.autographType && card.autographType.trim()) {
-    // We don't know the signer name at this layer, so we record the autograph
-    // *type* as the value; downstream treats any non-empty value as a positive
-    // "signed" signal.
-    f.signedBy = card.autographType.trim();
+    // Map the marketplace-observed autograph type to the `autographed`
+    // select's closed vocabulary (None/On Card/Sticker/Label) — this used to
+    // set `signedBy` directly to the raw autographType string ("On-Card"),
+    // which is the auto FORMAT, not a signer's name. `signedBy` is now
+    // populated separately from the card's actual playerIds, matching the
+    // same "autographed just became non-None -> default signedBy from the
+    // roster" rule the setCardFeature mutation applies for manual edits.
+    const t = card.autographType.trim().toLowerCase();
+    f.autographed = t.includes("sticker") ? "Sticker/Label" : "On Card";
   }
   if (card.cardVariation && card.cardVariation.trim()) {
     f.parallelName = card.cardVariation.trim();

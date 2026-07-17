@@ -36,7 +36,9 @@ describe("deriveSetLevelFeatures", () => {
       autographed: "None",
       cardSize: "Standard",
       cardMaterial: "Card Stock",
+      cardThickness: "20pt",
       language: "English",
+      countryOfOrigin: "USA",
     });
   });
 
@@ -174,9 +176,30 @@ describe("deriveCardObservedFeatures", () => {
     ).toEqual({
       isRookie: "true",
       isRelic: "true",
-      signedBy: "On-Card",
+      // autographType maps to the closed autographed vocabulary now — it no
+      // longer sets signedBy directly (that was the auto FORMAT, not a
+      // signer's name; signedBy is now resolved from playerIds by the caller).
+      autographed: "On Card",
       parallelName: "Gold Refractor",
     });
+  });
+
+  test("autographType containing 'sticker' maps to Sticker/Label", () => {
+    expect(
+      deriveCardObservedFeatures({ autographType: "Sticker" }).autographed,
+    ).toBe("Sticker/Label");
+    expect(
+      deriveCardObservedFeatures({ autographType: "Sticker Auto" }).autographed,
+    ).toBe("Sticker/Label");
+  });
+
+  test("autographType not mentioning sticker maps to On Card", () => {
+    expect(
+      deriveCardObservedFeatures({ autographType: "Cut" }).autographed,
+    ).toBe("On Card");
+    expect(
+      deriveCardObservedFeatures({ autographType: "On-Card" }).autographed,
+    ).toBe("On Card");
   });
 
   test("falls back to attributes array (custom cards)", () => {

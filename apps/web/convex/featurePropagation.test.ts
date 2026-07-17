@@ -453,12 +453,18 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
 
     // Derived from per-card columns — wins over the inherited snapshot.
     expect(c1.features?.isRookie).toBe("true");
-    expect(c1.features?.signedBy).toBe("On-Card");
+    // autographType "On-Card" maps to the closed autographed vocabulary, and
+    // since that's a blank->set transition on insert with a resolved player
+    // on the card, signedBy defaults from the roster (real name), not the
+    // raw autographType string.
+    expect(c1.features?.autographed).toBe("On Card");
+    expect(c1.features?.signedBy).toBe("Mike Trout");
     expect(c1.features?.parallelName).toBe("Gold");
     expect(c1.features?.isRelic).toBeUndefined();
 
     expect(c2.features?.isRelic).toBe("true");
     expect(c2.features?.isRookie).toBeUndefined();
+    expect(c2.features?.autographed).toBeUndefined();
     expect(c2.features?.signedBy).toBeUndefined();
     expect(c2.features?.parallelName).toBeUndefined();
   });
@@ -551,5 +557,177 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     );
     expect(row).not.toBeNull();
     expect(row!.features?.totalCardCount).toBe("3");
+  });
+});
+
+// ===========================================================================
+// NEO-24/71-74 — commitCardChecklist write-once listingTitle/listingDescription
+// ===========================================================================
+//
+// `generateListingTitle`/`generateListingDescription` already have full unit
+// coverage in generateListing.test.ts. These tests prove the WIRING into
+// commitCardChecklist's insert branch: a newly-inserted card gets a
+// non-empty listingTitle/listingDescription generated from the leaf node's
+// features snapshot + the batch-level setName ancestor value (fetched once
+// via findSetNameValue) + real resolved player names (unlike addCustomCard,
+// which uses pendingPlayerNames — here players are already resolved to real
+// ids by this same mutation's findOrCreate pass). Also proves the
+// write-once contract: RE-committing an already-existing card number never
+// regenerates/overwrites an operator-edited listingTitle, matching every
+// other default this session (existing rows are owned by the propagation
+// engine, not by this insert-time generation).
+describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/71-74)", () => {
+  async function seedVariantTypeUnderChromeSet(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const setNameId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Chrome",
+        platformData: {},
+        features: { manufacturer: "Topps", season: "2024" },
+        parentId: sportId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(sportId, { children: [setNameId] });
+      const variantTypeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        features: { manufacturer: "Topps", season: "2024" },
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(setNameId, { children: [variantTypeId] });
+      return { sportId, setNameId, variantTypeId };
+    });
+  }
+
+  test("a freshly committed card gets a non-empty listingTitle/listingDescription reflecting its actual data", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sport: "Baseball",
+      cards: [
+        {
+          cardNumber: "50",
+          cardName: "Elly De La Cruz",
+          team: undefined,
+          teams: [],
+          players: ["Elly De La Cruz"],
+          attributes: ["RC"],
+          isRookie: true,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: "bsc-50" },
+          sourcePlatformIds: undefined,
+          unmatched: undefined,
+        },
+      ],
+      confirmedNewPlayers: ["Elly De La Cruz"],
+      confirmedNewTeams: [],
+    });
+
+    const cards = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(cards).toHaveLength(1);
+    const card = cards[0];
+
+    // year/manufacturer/set — resolved from the leaf's features snapshot +
+    // the batch-level setName ancestor value.
+    expect(card.listingTitle).toBeTruthy();
+    expect(card.listingTitle).toContain("2024");
+    expect(card.listingTitle).toContain("Topps");
+    expect(card.listingTitle).toContain("Chrome");
+    // player — resolved to a REAL name via this mutation's own findOrCreate
+    // pass (unlike addCustomCard, which only has a pending name at add-time).
+    expect(card.listingTitle).toContain("Elly De La Cruz");
+    expect(card.listingTitle).toContain("#50");
+    expect(card.listingTitle).toContain("RC");
+
+    expect(card.listingDescription).toBeTruthy();
+    expect(card.listingDescription).toContain("Elly De La Cruz");
+    expect(card.listingDescription).toContain("Rookie Card");
+  });
+
+  test("re-committing an already-existing card number does NOT regenerate/overwrite an operator-edited listingTitle", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+
+    const commitCard = () =>
+      asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sport: "Baseball",
+        cards: [
+          {
+            cardNumber: "50",
+            cardName: "Elly De La Cruz",
+            team: undefined,
+            teams: [],
+            players: ["Elly De La Cruz"],
+            attributes: [],
+            isRookie: false,
+            isRelic: false,
+            printRun: undefined,
+            autographType: undefined,
+            cardVariation: undefined,
+            platformData: { bsc: "bsc-50" },
+            sourcePlatformIds: undefined,
+            unmatched: undefined,
+          },
+        ],
+        confirmedNewPlayers: ["Elly De La Cruz"],
+        confirmedNewTeams: [],
+      });
+
+    // First commit — inserts the row and generates its listingTitle.
+    await commitCard();
+    const firstPass = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(firstPass).toHaveLength(1);
+    const cardId = firstPass[0]._id;
+    expect(firstPass[0].listingTitle).toBeTruthy();
+
+    // Operator manually overrides the generated title.
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "My Custom Operator Title",
+    });
+
+    // Re-commit the SAME card number — e.g. a marketplace re-sync. The
+    // existing-row patch branch in commitCardChecklist never writes
+    // listingTitle/listingDescription, so the operator's edit must survive.
+    await commitCard();
+
+    const secondPass = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(secondPass).toHaveLength(1);
+    expect(secondPass[0]._id).toBe(cardId);
+    expect(secondPass[0].listingTitle).toBe("My Custom Operator Title");
   });
 });

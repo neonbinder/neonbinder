@@ -18,6 +18,10 @@ import {
   deriveOwnLevelFeatures,
   validateFeatureValue,
 } from "./features/deriveCardFeatures";
+import {
+  generateListingTitle,
+  generateListingDescription,
+} from "./features/generateListing";
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
 const levelValidator = v.union(
@@ -1017,6 +1021,30 @@ const richChecklistCardValidator = v.object({
  * to typical marketplace card numbers (1-500), which matches user
  * expectations for an appended custom slot.
  */
+/**
+ * Walk a selectorOptions node's parent chain to find its setName ancestor's
+ * display value (e.g. "Chrome"). Used only for listing-title/description
+ * generation (NEO-24/71-74) — every other consumer of the ancestor chain
+ * already had its own reason to walk it (e.g. commitCardChecklist's
+ * setNameAncestorId), so this stays a small, focused helper rather than a
+ * general-purpose ancestor-chain utility.
+ */
+async function findSetNameValue(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
+  node: any,
+): Promise<string | undefined> {
+  if (!node) return undefined;
+  if (node.level === "setName") return node.value;
+  let cursorId: Id<"selectorOptions"> | undefined = node.parentId;
+  while (cursorId) {
+    const n = await ctx.db.get(cursorId);
+    if (!n) break;
+    if (n.level === "setName") return n.value;
+    cursorId = n.parentId;
+  }
+  return undefined;
+}
+
 function compareCardNumbers(a: string, b: string): number {
   const aMatch = a.match(/^(\d+)(.*)/);
   const bMatch = b.match(/^(\d+)(.*)/);
@@ -1199,6 +1227,28 @@ export const addCustomCard = mutation({
     const featuresOrUndefined: Record<string, string> | undefined =
       Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
 
+    // NEO-24/71-74: write-once listing title/description, generated once
+    // here at creation time from whatever's already known, then freely
+    // editable afterward (same model as every other default this session —
+    // never regenerated automatically once a row exists). Pending player
+    // names are used as-is for display purposes even though they aren't
+    // resolved to real player rows yet (that happens later, if confirmed,
+    // via commitCardChecklist) — the operator typed a real name, so it's
+    // the right thing to show regardless of reconciliation state.
+    const setNameValue = await findSetNameValue(ctx, parentNode);
+    const listingInputs = {
+      cardNumber: args.cardNumber,
+      playerNames: pendingPlayerNames,
+      year: mergedFeatures.season,
+      manufacturer: mergedFeatures.manufacturer,
+      setName: setNameValue,
+      parallelName: mergedFeatures.parallelName,
+      isRookie: (args.attributes ?? []).includes("RC"),
+      isRelic: (args.attributes ?? []).includes("RELIC"),
+      autographed: mergedFeatures.autographed,
+      shortPrint: mergedFeatures.shortPrint,
+    };
+
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
     // below assigns the correct natural-cardNumber position. This way a
     // user can add #42 to a set already containing #1..#100 and the new
@@ -1220,6 +1270,8 @@ export const addCustomCard = mutation({
         ? { pendingTeamNames }
         : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
+      listingTitle: generateListingTitle(listingInputs),
+      listingDescription: generateListingDescription(listingInputs),
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
@@ -1521,8 +1573,30 @@ export const setCardFeature = mutation({
     if (!card) {
       throw new Error(`cardChecklist ${args.cardChecklistId} not found`);
     }
+    const features = { ...(card.features ?? {}), [args.key]: args.value };
+
+    // Autographed flipping from blank/None to a real format: default Signed
+    // By to the player(s) already attached to this card. Multiple players
+    // (e.g. a dual/triple relic-auto) are all included, comma-separated.
+    // An operator can still edit Signed By afterward — this only seeds it.
+    if (args.key === "autographed") {
+      const wasBlank = (card.features?.autographed ?? "None") === "None";
+      const isNowSet = args.value !== "None";
+      if (wasBlank && isNowSet && card.playerIds && card.playerIds.length > 0) {
+        const players = await Promise.all(
+          card.playerIds.map((id) => ctx.db.get(id)),
+        );
+        const names = players
+          .filter((p): p is NonNullable<typeof p> => p !== null)
+          .map((p) => p.name);
+        if (names.length > 0) {
+          features.signedBy = names.join(", ");
+        }
+      }
+    }
+
     await ctx.db.patch(args.cardChecklistId, {
-      features: { ...(card.features ?? {}), [args.key]: args.value },
+      features,
       lastUpdated: Date.now(),
     });
     return null;
@@ -3880,6 +3954,11 @@ export const commitCardChecklist = mutation({
         cursorId = node.parentId;
       }
     }
+    // Fetched once for the whole batch (not per-card) — used only for
+    // listing-title/description generation on newly-inserted rows below.
+    const setNameValue = setNameAncestorId
+      ? (await ctx.db.get(setNameAncestorId))?.value
+      : undefined;
 
     // NEO-71-74: per-card features come from the leaf node's already-complete
     // `features` snapshot (`inheritedFeaturesOrUndefined`, read above) merged
@@ -3942,8 +4021,49 @@ export const commitCardChecklist = mutation({
           ...(inheritedFeaturesOrUndefined ?? {}),
           ...deriveCardObservedFeatures(card),
         };
+        // A card arriving already-autographed (marketplace data carried an
+        // autographType) gets the same "just became non-None -> default
+        // Signed By from the roster" treatment `setCardFeature` applies for
+        // a manual operator edit — the roster is already resolved as real
+        // IDs at this point (see the player/team findOrCreate pass above).
+        const wasBlank =
+          (inheritedFeaturesOrUndefined?.autographed ?? "None") === "None";
+        const isNowSet =
+          !!mergedFeatures.autographed && mergedFeatures.autographed !== "None";
+
+        // Resolved once, unconditionally — used for the signedBy default
+        // below (only when autographed just turned on) AND unconditionally
+        // for listing-title/description generation further down.
+        let playerNames: string[] = [];
+        if (card.playerIds && card.playerIds.length > 0) {
+          const players = await Promise.all(
+            card.playerIds.map((id) => ctx.db.get(id)),
+          );
+          playerNames = players
+            .filter((p): p is NonNullable<typeof p> => p !== null)
+            .map((p) => p.name);
+        }
+        if (wasBlank && isNowSet && !mergedFeatures.signedBy && playerNames.length > 0) {
+          mergedFeatures.signedBy = playerNames.join(", ");
+        }
         const featuresOrUndefined =
           Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
+
+        // NEO-24/71-74: write-once listing title/description, generated
+        // once here at creation time, then freely editable afterward (same
+        // model as every other default this session).
+        const listingInputs = {
+          cardNumber: card.cardNumber,
+          playerNames,
+          year: mergedFeatures.season,
+          manufacturer: mergedFeatures.manufacturer,
+          setName: setNameValue,
+          parallelName: mergedFeatures.parallelName,
+          isRookie: card.isRookie,
+          isRelic: card.isRelic,
+          autographed: mergedFeatures.autographed,
+          shortPrint: mergedFeatures.shortPrint,
+        };
 
         await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
@@ -3963,6 +4083,8 @@ export const commitCardChecklist = mutation({
           // NEO-24: inherit ancestor + derive per-card on insert. Existing
           // rows are owned by the propagation engine; never clobbered here.
           ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
+          listingTitle: generateListingTitle(listingInputs),
+          listingDescription: generateListingDescription(listingInputs),
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
         });
