@@ -381,6 +381,9 @@ export const getCardChecklist = query({
       team: v.optional(v.string()),
       playerIds: v.optional(v.array(v.id("players"))),
       teamOnCardIds: v.optional(v.array(v.id("teams"))),
+      // NEO-90: set once the BSC per-card team-enrichment queue has
+      // checked this card, regardless of outcome (see schema.ts).
+      teamCheckDoneAt: v.optional(v.number()),
       attributes: v.optional(v.array(v.string())),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
@@ -3681,7 +3684,29 @@ export const fetchCardChecklist = action({
         });
       }
 
-      // 4. Bucket unique player + team names against existing tables.
+      // 4. NEO-90: resolve team names for regular BSC cards that don't
+      //    already have one from the cheap synchronous parse (TC-suffix /
+      //    parenthetical — see parsePlayersField). This is the only place
+      //    that pays a per-card network cost, done once as a single bounded
+      //    fan-out so team names land in the SAME confirm dialog as new
+      //    players below, instead of trickling in via the background
+      //    enrichment queue after save. SportLots-only cards (no BSC ref)
+      //    are skipped — this feature is BSC-only.
+      const needsTeamLookup = out.filter(
+        (c) => !c.teams?.length && !c.team && c.platformData.bsc,
+      );
+      if (needsTeamLookup.length > 0) {
+        const teamNames: Record<string, string> = await ctx.runAction(
+          internal.adapters.buysportscards.fetchBscCardTeamNames,
+          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!) },
+        );
+        for (const c of needsTeamLookup) {
+          const name = teamNames[c.platformData.bsc!];
+          if (name) c.teams = [name];
+        }
+      }
+
+      // 5. Bucket unique player + team names against existing tables.
       //    Skip bucketing entirely if we can't infer sport (sets without
       //    a sport ancestor — shouldn't happen but guard anyway).
       const unknownPlayers: string[] = [];
@@ -3986,6 +4011,11 @@ export const commitCardChecklist = mutation({
     const targetSortOrder = new Map<string, number>();
     allFinalNumbers.forEach((cn, idx) => targetSortOrder.set(cn, idx));
 
+    // NEO-90: cards touched by this commit that have a BSC platform ref
+    // but no team resolved yet get queued for the throttled per-card BSC
+    // team lookup below (see processBscTeamEnrichmentQueue).
+    const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
+
     for (let i = 0; i < richCards.length; i++) {
       const card = richCards[i];
       processedNumbers.add(card.cardNumber);
@@ -4012,6 +4042,13 @@ export const commitCardChecklist = mutation({
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
         });
+        if (
+          mergedPlatformData.bsc &&
+          (!card.teamOnCardIds || card.teamOnCardIds.length === 0) &&
+          !existing.teamCheckDoneAt
+        ) {
+          bscTeamEnrichmentIds.push(existing._id);
+        }
       } else {
         // NEO-71-74: precedence = the leaf node's complete features snapshot
         // (already resolved at that node's own creation time) < card-observed
@@ -4065,7 +4102,7 @@ export const commitCardChecklist = mutation({
           shortPrint: mergedFeatures.shortPrint,
         };
 
-        await ctx.db.insert("cardChecklist", {
+        const newCardId = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
           cardNumber: card.cardNumber,
           cardName: card.cardName,
@@ -4088,6 +4125,12 @@ export const commitCardChecklist = mutation({
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
         });
+        if (
+          card.platformData?.bsc &&
+          (!card.teamOnCardIds || card.teamOnCardIds.length === 0)
+        ) {
+          bscTeamEnrichmentIds.push(newCardId);
+        }
       }
     }
 
@@ -4152,6 +4195,18 @@ export const commitCardChecklist = mutation({
         0,
         internal.adapters.wikidata.processEnrichmentQueue,
         { playerIds: createdPlayerIds, teamIds: createdTeamIds },
+      );
+    }
+
+    // NEO-90: same chained-queue shape, for BSC per-card team resolution.
+    // Cards whose team wasn't already recoverable from the bulk `players`
+    // string (parsePlayersField's TC/parenthetical handling) get resolved
+    // one at a time via BSC's per-card detail endpoint in the background.
+    if (bscTeamEnrichmentIds.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        { cardChecklistIds: bscTeamEnrichmentIds },
       );
     }
 

@@ -279,9 +279,9 @@ export default function TeamPicker({
                 }`}
               >
                 {m.name}
-                {m.city && (
+                {(m.city || m.league) && (
                   <span className="ml-2 text-[10px] text-gray-500">
-                    {m.city}
+                    {[m.city, m.league].filter(Boolean).join(", ")}
                   </span>
                 )}
               </button>

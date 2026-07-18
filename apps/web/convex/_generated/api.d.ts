@@ -11,6 +11,7 @@
 import type * as adapters_base from "../adapters/base.js";
 import type * as adapters_buysportscards from "../adapters/buysportscards.js";
 import type * as adapters_ebay from "../adapters/ebay.js";
+import type * as adapters_espn from "../adapters/espn.js";
 import type * as adapters_gcs from "../adapters/gcs.js";
 import type * as adapters_index from "../adapters/index.js";
 import type * as adapters_mycardpost from "../adapters/mycardpost.js";
@@ -51,6 +52,7 @@ declare const fullApi: ApiFromModules<{
   "adapters/base": typeof adapters_base;
   "adapters/buysportscards": typeof adapters_buysportscards;
   "adapters/ebay": typeof adapters_ebay;
+  "adapters/espn": typeof adapters_espn;
   "adapters/gcs": typeof adapters_gcs;
   "adapters/index": typeof adapters_index;
   "adapters/mycardpost": typeof adapters_mycardpost;

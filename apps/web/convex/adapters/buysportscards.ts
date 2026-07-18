@@ -30,6 +30,23 @@ const BSC_FETCH_BACKOFF_MS = [500, 1000];
 // its original 30s budget so this change doesn't regress large checklists.
 const BSC_CHECKLIST_FETCH_TIMEOUT_MS = 30_000;
 
+// NEO-90: per-card team lookup. Confirmed via live testing that this
+// endpoint answers unauthenticated (it's public catalog data, not a
+// seller-scoped call), so resolveBscCardTeam deliberately skips the
+// bearer-token machinery above rather than depending on the fragile
+// Puppeteer-backed BSC auth flow for a call that doesn't need it.
+const BSC_TEAM_LOOKUP_TIMEOUT_MS = 10_000;
+// Delay between cards in processBscTeamEnrichmentQueue. BSC has no
+// confirmed rate limit, but this stays conservative against the same
+// CDN/bot-detection this file already works around for the bulk
+// endpoint (see bscHeaders below). Much shorter than Wikidata's 3s gap
+// since there's no known limit to respect here — just don't hammer it.
+const BSC_TEAM_ENRICH_DELAY_MS = 300;
+// Bounded fan-out for fetchBscCardTeamNames's synchronous per-card lookups
+// during fetchCardChecklist — matches the existing MAX_SL_FAN_OUT=10
+// precedent in selectorOptions.ts for capping concurrent external calls.
+const BSC_TEAM_LOOKUP_CONCURRENCY = 10;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -899,6 +916,150 @@ export const fetchBscChecklist = action({
         message: `BSC error: ${error instanceof Error ? error.message : "Unknown error"}`,
       };
     }
+  },
+});
+
+/**
+ * NEO-90: call BSC's per-card detail endpoint and return its `teamName`.
+ * `success: false` means the HTTP call itself failed (non-2xx or thrown
+ * error) — distinct from `success: true, teamName: ""`, which means BSC
+ * answered but genuinely has no team on file (an insert/subset card).
+ * Callers that need retry semantics (resolveBscCardTeam) care about this
+ * distinction; `fetchBscCardTeamNames` (the synchronous batch path) treats
+ * both the same — it just won't populate a team either way. Shared by both.
+ */
+async function fetchBscCardTeamNameRaw(
+  bscCardId: string,
+): Promise<{ teamName: string; success: boolean }> {
+  try {
+    const response = await fetch(
+      `${BSC_API_BASE}/marketplace/card/${bscCardId}/card-listing`,
+      {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(BSC_TEAM_LOOKUP_TIMEOUT_MS),
+      },
+    );
+    if (!response.ok) {
+      console.warn(
+        `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId}`,
+      );
+      return { teamName: "", success: false };
+    }
+    const data = await response.json();
+    const teamName =
+      data && typeof data === "object" && typeof (data as { teamName?: unknown }).teamName === "string"
+        ? (data as { teamName: string }).teamName.trim()
+        : "";
+    return { teamName, success: true };
+  } catch (error) {
+    console.warn(
+      `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId}:`,
+      error,
+    );
+    return { teamName: "", success: false };
+  }
+}
+
+/**
+ * NEO-90: resolve a single card's team by calling BSC's per-card detail
+ * endpoint. This is the async backfill/safety-net path — only ever called
+ * from the throttled queue below (sets synced before NEO-90's synchronous
+ * lookup existed, or a card whose synchronous lookup failed at fetch time).
+ * A fresh sync resolves teams inline via `fetchBscCardTeamNames` instead
+ * (see `fetchCardChecklist` in selectorOptions.ts). No-ops (leaves the row
+ * untouched, so a future enqueue will retry) on any fetch/parse failure.
+ */
+export const resolveBscCardTeam = internalAction({
+  args: { cardChecklistId: v.id("cardChecklist") },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const row: { bscCardId: string; needsCheck: boolean } | null =
+      await ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, {
+        cardChecklistId: args.cardChecklistId,
+      });
+    if (!row || !row.needsCheck) return null;
+
+    const { teamName, success } = await fetchBscCardTeamNameRaw(row.bscCardId);
+    // The fetch itself failed — leave the row untouched so a future
+    // enqueue retries it (do NOT distinguish "no team" from "couldn't
+    // check" here; only a successful call is allowed to mark this done).
+    if (!success) return null;
+
+    await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: args.cardChecklistId,
+      teamName,
+    });
+    return null;
+  },
+});
+
+/**
+ * NEO-90: resolve teams for a batch of BSC card ids concurrently, with a
+ * bounded fan-out — called synchronously from `fetchCardChecklist` so team
+ * names surface in the SAME confirm dialog as new players, instead of
+ * trickling in via the background queue after save. Chunks into groups of
+ * `BSC_TEAM_LOOKUP_CONCURRENCY` and awaits each chunk before starting the
+ * next (matches the existing `MAX_SL_FAN_OUT` bounded-fan-out precedent in
+ * selectorOptions.ts — no concurrency-limiting utility exists elsewhere in
+ * this codebase to reuse). Returns only the ids that resolved to a
+ * non-empty team name; a card whose lookup failed or had no team on file
+ * (e.g. an insert/subset card) is simply absent from the result — the
+ * caller treats that the same as "no team" either way.
+ */
+export const fetchBscCardTeamNames = internalAction({
+  args: { bscCardIds: v.array(v.string()) },
+  returns: v.record(v.string(), v.string()),
+  handler: async (_ctx, args): Promise<Record<string, string>> => {
+    const result: Record<string, string> = {};
+    for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
+      const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId)),
+      );
+      chunk.forEach((bscCardId, idx) => {
+        const { teamName } = results[idx];
+        if (teamName) result[bscCardId] = teamName;
+      });
+    }
+    return result;
+  },
+});
+
+/**
+ * NEO-90: chained serial queue for BSC per-card team lookups — same shape
+ * as adapters/wikidata.ts's processEnrichmentQueue. commitCardChecklist
+ * hands the ids of newly-touched cards missing team data to this action
+ * via `scheduler.runAfter(0, ...)`; it pops one id, resolves it, then
+ * reschedules itself with the tail after BSC_TEAM_ENRICH_DELAY_MS. Errors
+ * on a single card are caught/logged — the queue moves on rather than
+ * abandoning the rest of the set.
+ */
+export const processBscTeamEnrichmentQueue = internalAction({
+  args: { cardChecklistIds: v.array(v.id("cardChecklist")) },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const [head, ...tail] = args.cardChecklistIds;
+    if (!head) {
+      console.log(`[bsc-team-enrichment-queue] queue drained.`);
+      return null;
+    }
+
+    try {
+      await ctx.runAction(internal.adapters.buysportscards.resolveBscCardTeam, {
+        cardChecklistId: head,
+      });
+    } catch (error) {
+      console.error(`[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed:`, error);
+    }
+
+    if (tail.length > 0) {
+      await ctx.scheduler.runAfter(
+        BSC_TEAM_ENRICH_DELAY_MS,
+        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        { cardChecklistIds: tail },
+      );
+    }
+    return null;
   },
 });
 

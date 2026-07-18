@@ -20,7 +20,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
@@ -729,5 +729,206 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     expect(secondPass).toHaveLength(1);
     expect(secondPass[0]._id).toBe(cardId);
     expect(secondPass[0].listingTitle).toBe("My Custom Operator Title");
+  });
+});
+
+describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", () => {
+  // Same fixture shape as the listingTitle describe block above — just a
+  // bare sport → variantType leaf (no setName features needed here).
+  async function seedVariantType(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const variantTypeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(sportId, { children: [variantTypeId] });
+      return variantTypeId;
+    });
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  test("a new card with a BSC ref and no team gets its team resolved via the enrichment queue", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedVariantType(t);
+
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL | Request) => {
+        expect(String(url)).toContain("/marketplace/card/bsc-50/card-listing");
+        return new Response(JSON.stringify({ teamName: "Cincinnati Reds" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    );
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sport: "Baseball",
+      cards: [
+        {
+          cardNumber: "50",
+          cardName: "Elly De La Cruz",
+          team: undefined,
+          teams: [], // no team recoverable from the bulk players/teams string
+          players: ["Elly De La Cruz"],
+          attributes: [],
+          isRookie: true,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: "bsc-50" },
+          sourcePlatformIds: undefined,
+          unmatched: undefined,
+        },
+      ],
+      confirmedNewPlayers: ["Elly De La Cruz"],
+      confirmedNewTeams: [],
+    });
+
+    // Drain the scheduled processBscTeamEnrichmentQueue chain.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const cards = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0].teamOnCardIds).toHaveLength(1);
+    expect(cards[0].teamCheckDoneAt).toBeTypeOf("number");
+    const teamRow = await t.run(async (ctx) => ctx.db.get(cards[0].teamOnCardIds![0]));
+    expect(teamRow!.name).toBe("Cincinnati Reds");
+  });
+
+  test("a card whose team is already recoverable from the bulk fetch is NOT re-queued (fetch never called)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedVariantType(t);
+
+    // Only the BSC per-card lookup is under test here — this card's team
+    // is already known, so THAT call must never happen. Wikidata/ESPN team
+    // enrichment legitimately fires (a new "Kansas City Royals" team row
+    // gets created) and is allowed to call fetch; only tag it as a failure
+    // if it's the BSC card-listing endpoint specifically.
+    let bscFetchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        if (String(url).includes("buysportscards.com")) {
+          bscFetchCalled = true;
+          throw new Error("BSC per-card fetch must not be called");
+        }
+        return new Response(null, { status: 500 });
+      }) as unknown as typeof fetch,
+    );
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sport: "Baseball",
+      cards: [
+        {
+          cardNumber: "1",
+          cardName: "Kansas City Royals TC",
+          team: undefined,
+          teams: ["Kansas City Royals"], // already resolved via BSC's bulk players field
+          players: ["Kansas City Royals"],
+          attributes: [],
+          isRookie: false,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: "bsc-1" },
+          sourcePlatformIds: undefined,
+          unmatched: undefined,
+        },
+      ],
+      confirmedNewPlayers: [],
+      confirmedNewTeams: ["Kansas City Royals"],
+    });
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(bscFetchCalled).toBe(false);
+
+    const cards = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(cards[0].teamOnCardIds).toHaveLength(1);
+    // Never queued, so the enrichment marker is never touched.
+    expect(cards[0].teamCheckDoneAt).toBeUndefined();
+  });
+
+  test("a card with no BSC ref at all is not queued for BSC enrichment (fetch never called)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedVariantType(t);
+
+    // Same scoping as the test above — a new player ("Some Player") gets
+    // created here too, and Wikidata player enrichment legitimately fires
+    // for it. Only the BSC card-listing endpoint is under test.
+    let bscFetchCalled = false;
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        if (String(url).includes("buysportscards.com")) {
+          bscFetchCalled = true;
+          throw new Error("BSC per-card fetch must not be called");
+        }
+        return new Response(null, { status: 500 });
+      }) as unknown as typeof fetch,
+    );
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sport: "Baseball",
+      cards: [
+        {
+          cardNumber: "1",
+          cardName: "Some SportLots-only Card",
+          team: undefined,
+          teams: [],
+          players: ["Some Player"],
+          attributes: [],
+          isRookie: false,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { sportlots: "sl-1" }, // no bsc ref
+          sourcePlatformIds: undefined,
+          unmatched: undefined,
+        },
+      ],
+      confirmedNewPlayers: ["Some Player"],
+      confirmedNewTeams: [],
+    });
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(bscFetchCalled).toBe(false);
   });
 });

@@ -163,6 +163,13 @@ export default defineSchema({
     // which can drift in the offseason before sets are released.
     playerIds: v.optional(v.array(v.id("players"))),
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
+    // NEO-90: set once the BSC per-card team-enrichment queue has checked
+    // this card's `platformData.bsc` detail endpoint for a team, regardless
+    // of outcome. Distinct from `teamOnCardIds` being empty, which can also
+    // mean "not checked yet" — without this marker a card that legitimately
+    // has no team (an insert/subset card) would be re-fetched forever on
+    // every future sync. Not touched by `lastUpdated`-driven logic.
+    teamCheckDoneAt: v.optional(v.number()),
     // De-duped union of BSC playerAttribute[] + BSC features[] + variant
     // metadata. Tokens: ["RC","AU","RELIC","SP","SSP","NUM",...]. Drives
     // both the eBay Features aspect and the boolean derivations below.
@@ -272,8 +279,17 @@ export default defineSchema({
       from: v.number(),
       to: v.optional(v.number()),
     })),
+    // NEO-91: hex color strings (e.g. "#008348"), from ESPN's public site
+    // API — Wikidata's P462 was confirmed empty for every real team tested
+    // (including the Boston Celtics), so this is intentionally sourced
+    // elsewhere. Absent for defunct/historical teams ESPN doesn't carry.
+    colors: v.optional(v.object({
+      primary: v.optional(v.string()),
+      secondary: v.optional(v.string()),
+    })),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()),
+      espnId: v.optional(v.string()),
     })),
     lastUpdated: v.number(),
   })

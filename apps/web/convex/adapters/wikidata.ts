@@ -4,6 +4,7 @@ import { internalAction } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
+import { fetchEspnTeamInfo } from "./espn";
 
 /**
  * Wikidata SPARQL adapter — enriches players (HoF, career teams) and
@@ -164,7 +165,12 @@ function yearFromBinding(binding?: SparqlBinding): number | undefined {
  * filter (`wdt:P641`) picks off the right "John Smith" across leagues.
  */
 async function findPlayerQid(name: string, sport: string): Promise<string | null> {
-  const sportQid = SPORT_QIDS[sport];
+  // SPORT_QIDS is keyed lowercase; callers pass NeonBinder's display-cased
+  // sport strings ("Baseball", not "baseball") — normalize so this
+  // actually matches instead of silently no-op'ing on every real sport
+  // value. (Found as a real, pre-existing bug: this meant Wikidata player
+  // enrichment silently never matched anyone.)
+  const sportQid = SPORT_QIDS[sport.toLowerCase()];
   if (!sportQid) return null;
 
   const safeName = sparqlStringLiteral(name);
@@ -189,7 +195,8 @@ async function findPlayerQid(name: string, sport: string): Promise<string | null
 }
 
 async function findTeamQid(name: string, sport: string): Promise<string | null> {
-  const sportQid = SPORT_QIDS[sport];
+  // See the identical note in findPlayerQid above — same case-mismatch bug.
+  const sportQid = SPORT_QIDS[sport.toLowerCase()];
   if (!sportQid) return null;
 
   const safeName = sparqlStringLiteral(name);
@@ -318,6 +325,17 @@ export const enrichPlayer = internalAction({
   },
 });
 
+/**
+ * NEO-91: multi-source. ESPN (adapters/espn.ts) is tried first — reliable
+ * hex colors and city for any CURRENT team, confirmed live against
+ * NBA/NFL/MLB/NHL — but it has zero historical/defunct-franchise coverage.
+ * Wikidata always runs too: it's the only source for `yearsActive`/
+ * `wikidataId`, and the only source for `city`/`league` when ESPN found no
+ * match (a defunct team). When both resolve a city, ESPN's wins (more
+ * likely accurate for anything currently active); ESPN's league (the exact
+ * name from SPORT_TO_ESPN_LEAGUE, not a guess) also wins over Wikidata's
+ * label when present.
+ */
 export const enrichTeam = internalAction({
   args: { teamId: v.id("teams") },
   returns: v.null(),
@@ -325,16 +343,35 @@ export const enrichTeam = internalAction({
     const team = await ctx.runQuery(internal.teams.getInternal, { id: args.teamId });
     if (!team) return null;
 
+    const espnInfo = await fetchEspnTeamInfo(team.sport, team.name);
+
     const qid = await findTeamQid(team.name, team.sport);
     if (!qid) {
-      console.log(`[wikidata.enrichTeam] no Wikidata match for ${team.name} (${team.sport})`);
+      if (!espnInfo) {
+        console.log(`[wikidata.enrichTeam] no match for ${team.name} (${team.sport}) on either source`);
+        return null;
+      }
+      // Wikidata has no entity at all, but ESPN found a current team —
+      // persist what ESPN gave us; no wikidataId to save.
+      await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
+        id: args.teamId,
+        league: espnInfo.league,
+        city: espnInfo.city,
+        colors: { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate },
+        espnId: espnInfo.espnId,
+      });
       return null;
     }
 
+    // P159 (headquarters location) is inconsistent for sports teams —
+    // confirmed empty for Washington Nationals and LA Rams (which instead
+    // had it, if at all, under P276 "location"), present for the Celtics.
+    // Ask for both, prefer P159.
     const detailQuery = `
-      SELECT ?league ?leagueLabel ?city ?cityLabel ?inception ?dissolved WHERE {
+      SELECT ?league ?leagueLabel ?city159 ?city159Label ?city276 ?city276Label ?inception ?dissolved WHERE {
         OPTIONAL { wd:${qid} wdt:P118 ?league . }
-        OPTIONAL { wd:${qid} wdt:P159 ?city . }
+        OPTIONAL { wd:${qid} wdt:P159 ?city159 . }
+        OPTIONAL { wd:${qid} wdt:P276 ?city276 . }
         OPTIONAL { wd:${qid} wdt:P571 ?inception . }
         OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
         SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
@@ -343,28 +380,24 @@ export const enrichTeam = internalAction({
     `;
     const result = await runSparql(detailQuery);
     const row = result?.results.bindings[0];
-    if (!row) {
-      // Persist the wikidataId even if details came back empty so we don't
-      // re-search next time around.
-      await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
-        id: args.teamId,
-        wikidataId: qid,
-      });
-      return null;
-    }
 
-    const fromYear = yearFromBinding(row.inception);
-    const toYear = yearFromBinding(row.dissolved);
+    const wikidataCity = row?.city159Label?.value ?? row?.city276Label?.value;
+    const fromYear = yearFromBinding(row?.inception);
+    const toYear = yearFromBinding(row?.dissolved);
     const yearsActive = fromYear !== undefined
       ? { from: fromYear, to: toYear }
       : undefined;
 
     await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
       id: args.teamId,
-      league: row.leagueLabel?.value,
-      city: row.cityLabel?.value,
+      league: espnInfo?.league ?? row?.leagueLabel?.value,
+      city: espnInfo?.city ?? wikidataCity,
       yearsActive,
+      colors: espnInfo
+        ? { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate }
+        : undefined,
       wikidataId: qid,
+      espnId: espnInfo?.espnId,
     });
     return null;
   },

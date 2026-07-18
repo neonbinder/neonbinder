@@ -1,0 +1,127 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — BSC background enrichment resolves a real team onto an ordinary Base card (NEO-90)"
+tags:
+  - set-selector
+  - regression
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE feature: the NEO-90 background BSC per-card team-enrichment queue.
+#
+# WHAT THIS PROVES
+#   commitCardChecklist (during setup.yaml's Base sync) schedules a throttled
+#   background chain (processBscTeamEnrichmentQueue → resolveBscCardTeam →
+#   applyBscTeamResolution) that resolves a team for every BSC-sourced card
+#   that did NOT already get one synchronously from the bulk `players` string.
+#   An ORDINARY single-player Base card (Julio Rodriguez #300 — not a Team
+#   Checklist / League-Leaders / parenthetical insert) is exactly such a card:
+#   its team is filled in later by a real, unauthenticated HTTP round-trip to
+#   BSC's per-card `card-listing` endpoint, NOT at commit time.
+#
+#   We open that card's detail drawer and assert its "Teams" field shows the
+#   real resolved team. If the enrichment pipeline is broken, the Teams field
+#   stays empty and the wait below fails loudly (R2) — there is no when:/branch
+#   that can green this flow without the team actually appearing.
+#
+# WHY CARD #300 (Julio Rodriguez), and why the exact team name
+#   - It is an ordinary single-player card (no TC / no parenthetical), so it
+#     goes through the NEW async path, not parsePlayersField's synchronous one.
+#   - REACHABILITY (proven empirically): after the drill, react-virtuoso does
+#     NOT mount at the top, and a DOWN scroll walks to the BOTTOM of the list —
+#     so the lowest card numbers (#1…) are unreachable, but the bottom cards
+#     (…#300) settle reliably into view. #300 is the second-to-last row (its
+#     Edit control sits at ~y438, clear of the y≥489 footer-steal band), so it
+#     is the natural, stable, reliably-tappable target. (Targeting #1 was tried
+#     first and confirmed unreachable — the DOWN scroll lands on #295–#300b.)
+#   - Ground truth verified live (unauthenticated) against
+#     GET api-prod.buysportscards.com/marketplace/card/{bscCardId}/card-listing
+#     for #300's real bscCardId (e37718c040123c15fba3b8d3aa83a752):
+#     teamName = "Seattle Mariners". Julio Rodriguez is a lifelong Mariner in
+#     this immutable printed set, so we assert the EXACT team name, per this
+#     suite's fixed-assertion convention. If BSC ever returns a different team
+#     for this card it's a real data regression, not "marketplace drift" — do
+#     not loosen it to hide a bug.
+#
+# READ-ONLY on shared data (data-isolation rule)
+#   This flow READS the shared, global 2024 Topps Chrome Base checklist that
+#   setup.yaml pre-syncs — it never edits it (opens the drawer, asserts, then
+#   Cancels; no Save). Reads don't collide with concurrent workers, so this is
+#   safe to run on the shared real set without a per-worker subtree. (The old
+#   `isolated` serial lane is gone; concurrency safety here comes from being
+#   read-only, not from a lane.)
+#
+# DEPENDS ON: setup.yaml having pre-synced the 2024 Topps Chrome Base checklist
+#   (~335 cards) AND its background team-enrichment queue having drained #300.
+#   If the checklist is empty this flow fails loudly — the fix is to ensure
+#   setup ran, not to paper over it.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── LAUNCH + SIGN IN ────────────────────────────────────────────────────────
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000   # cold sign-in / app load; UI-only waits below use the 7s default
+
+# ── DRILL TO THE PRE-SYNCED BASE CHECKLIST (R9) ─────────────────────────────
+# util-drill-to-base-variant leaves the CardChecklist visible with the
+# "Add Card" header row centered; the card rows render below it.
+- runFlow:
+    file: util-drill-to-base-variant.yaml
+
+# ── REACH CARD #300 (Julio Rodriguez) AND OPEN ITS DETAIL DRAWER ────────────
+# A DOWN scroll from the drill's resting position walks to the bottom of the
+# list, where #300 lives. No centerElement: #300 is in the bottom region and
+# the list can't scroll far enough past it to center it (that loops until
+# timeout) — vis:50 is enough to bring its Edit control into the tappable band,
+# and it lands at ~y438, clear of the footer. waitToSettleTimeoutMs lets
+# Virtuoso finish rendering each windowed row between scroll steps.
+- scrollUntilVisible:
+    element:
+      id: "Edit card 300"
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 30000
+- tapOn:
+    id: "Edit card 300"
+    waitToSettleTimeoutMs: 2000
+
+# Drawer opened — confirm it's the RIGHT card before asserting the feature.
+# Header shows "Card #300"; the "Card name" input value is the player name.
+- assertVisible:
+    id: "Card name"
+- assertVisible:
+    text: ".*Card #300.*"
+- assertVisible:
+    id: "Card name"
+    text: ".*Julio Rodriguez.*"
+
+# ── ASSERT THE ENRICHED TEAM (the NEO-90 feature) ───────────────────────────
+# "Teams" is at the top of the drawer body (position 2, directly under Card
+# name) — visible without scrolling. A resolved team renders as a TeamPicker
+# chip with aria-label "Remove team <name>".
+- assertVisible:
+    text: "Teams"
+# R5 MARKETPLACE EXCEPTION: this team is produced by a LIVE, unauthenticated
+# BSC HTTP round-trip that runs in the BACKGROUND after the checklist commit —
+# it is not part of the synchronous page load, and #300 sits near the END of
+# the serial queue. In CI setup.yaml finishes its Insert + Parallel work
+# minutes after the Base commit, so the whole queue (including #300) has
+# drained by the time this flow starts and the chip is already present; the
+# longer bound only absorbs Convex-scheduler / BSC latency if this flow starts
+# while the tail of the queue is still resolving. This is the one wait allowed
+# past 7s here, precisely because it tracks a real marketplace round-trip whose
+# result is not pre-synced at the instant we read. (The chip may briefly read
+# "Loading…" while the team id→name query resolves; waiting on the exact name
+# covers that too.)
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Seattle Mariners"
+    timeout: 60000
+
+# ── CLOSE (read-only: Cancel, never Save) ───────────────────────────────────
+# Cancel closes immediately with no dirty guard and writes nothing — this flow
+# leaves the shared checklist exactly as it found it (R7).
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"

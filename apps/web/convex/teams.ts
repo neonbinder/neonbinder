@@ -40,8 +40,13 @@ const teamDocValidator = v.object({
     from: v.number(),
     to: v.optional(v.number()),
   })),
+  colors: v.optional(v.object({
+    primary: v.optional(v.string()),
+    secondary: v.optional(v.string()),
+  })),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
+    espnId: v.optional(v.string()),
   })),
   lastUpdated: v.number(),
 });
@@ -224,7 +229,14 @@ export const applyEnrichmentInternal = internalMutation({
       from: v.number(),
       to: v.optional(v.number()),
     })),
+    // NEO-91: from ESPN (adapters/espn.ts) — see schema.ts's doc comment on
+    // `teams.colors` for why this doesn't come from Wikidata.
+    colors: v.optional(v.object({
+      primary: v.optional(v.string()),
+      secondary: v.optional(v.string()),
+    })),
     wikidataId: v.optional(v.string()),
+    espnId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -235,15 +247,21 @@ export const applyEnrichmentInternal = internalMutation({
       league?: string;
       city?: string;
       yearsActive?: { from: number; to?: number };
-      externalIds?: { wikidataId?: string };
+      colors?: { primary?: string; secondary?: string };
+      externalIds?: { wikidataId?: string; espnId?: string };
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
     if (args.league !== undefined) patch.league = args.league;
     if (args.city !== undefined) patch.city = args.city;
     if (args.yearsActive !== undefined) patch.yearsActive = args.yearsActive;
-    if (args.wikidataId !== undefined) {
-      patch.externalIds = { ...(existing.externalIds ?? {}), wikidataId: args.wikidataId };
+    if (args.colors !== undefined) patch.colors = args.colors;
+    if (args.wikidataId !== undefined || args.espnId !== undefined) {
+      patch.externalIds = {
+        ...(existing.externalIds ?? {}),
+        ...(args.wikidataId !== undefined ? { wikidataId: args.wikidataId } : {}),
+        ...(args.espnId !== undefined ? { espnId: args.espnId } : {}),
+      };
     }
     await ctx.db.patch(args.id, patch);
     return null;
