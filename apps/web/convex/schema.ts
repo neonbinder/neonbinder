@@ -227,6 +227,11 @@ export default defineSchema({
     // propagate down only to cards whose key is undefined OR equal to the
     // previous set-level value. Overridden entries stay put.
     features: v.optional(v.record(v.string(), v.string())),
+    // NEO-91: NeonBinder-generated cross-marketplace SKU (see convex/sku.ts
+    // for the generation algorithm + length rationale). Optional since
+    // existing rows predate this field — no backfill planned, this data
+    // gets deleted and resynced fresh.
+    sku: v.optional(v.string()),
     sortOrder: v.number(),
     lastUpdated: v.number(),
   })

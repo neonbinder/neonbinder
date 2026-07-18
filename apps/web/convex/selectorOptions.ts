@@ -22,6 +22,8 @@ import {
   generateListingTitle,
   generateListingDescription,
 } from "./features/generateListing";
+import { generateSku } from "./sku";
+import { findSportForSelectorOption } from "./cardChecklist";
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
 const levelValidator = v.union(
@@ -409,6 +411,8 @@ export const getCardChecklist = query({
       pendingPlayerNames: v.optional(v.array(v.string())),
       pendingTeamNames: v.optional(v.array(v.string())),
       features: featuresValidator,
+      // NEO-91: cross-marketplace SKU (see convex/sku.ts).
+      sku: v.optional(v.string()),
       sortOrder: v.number(),
       lastUpdated: v.number(),
     }),
@@ -1280,6 +1284,18 @@ export const addCustomCard = mutation({
     });
 
     await restampCardChecklistSortOrders(ctx, args.selectorOptionId);
+
+    // NEO-91: same insert-then-patch SKU generation as commitCardChecklist.
+    const sport = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    await ctx.db.patch(id, {
+      sku: generateSku({
+        sport: sport ?? "",
+        year: mergedFeatures.season ?? "",
+        setName: setNameValue ?? "",
+        cardNumber: args.cardNumber,
+        uniqueSuffix: crypto.randomUUID(),
+      }),
+    });
 
     return id;
   },
@@ -4124,6 +4140,19 @@ export const commitCardChecklist = mutation({
           listingDescription: generateListingDescription(listingInputs),
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
+        });
+        // NEO-91: SKU can only be generated once the row exists (the random
+        // suffix — not the id — is what guarantees uniqueness, but the id
+        // has to exist before we can patch it in). Cheap, well-precedented
+        // insert-then-patch pattern already used elsewhere in this file.
+        await ctx.db.patch(newCardId, {
+          sku: generateSku({
+            sport: args.sport,
+            year: mergedFeatures.season ?? "",
+            setName: setNameValue ?? "",
+            cardNumber: card.cardNumber,
+            uniqueSuffix: crypto.randomUUID(),
+          }),
         });
         if (
           card.platformData?.bsc &&

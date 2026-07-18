@@ -185,7 +185,8 @@ describe("applyBscTeamResolution", () => {
     expect(card!.teamOnCardIds).toHaveLength(1);
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
 
-    const teamRow = await t.run(async (ctx) => ctx.db.get(card!.teamOnCardIds![0]));
+    const teamId: Id<"teams"> = card!.teamOnCardIds![0];
+    const teamRow = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(teamRow!.name).toBe("New York Yankees");
     expect(teamRow!.sport).toBe("Baseball");
   });

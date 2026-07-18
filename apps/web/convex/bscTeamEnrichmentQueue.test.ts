@@ -152,7 +152,8 @@ describe("resolveBscCardTeam", () => {
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toHaveLength(1);
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
-    const teamRow = await t.run(async (ctx) => ctx.db.get(card!.teamOnCardIds![0]));
+    const teamId: Id<"teams"> = card!.teamOnCardIds![0];
+    const teamRow = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(teamRow!.name).toBe("New York Yankees");
 
     // Confirmed-unauthenticated endpoint: no Authorization header sent.
