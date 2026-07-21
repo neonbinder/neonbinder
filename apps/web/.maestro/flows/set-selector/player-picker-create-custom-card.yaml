@@ -11,8 +11,10 @@ tags:
 # choosing Create makes a brand-new player and attaches it. This is SPECIFICALLY
 # what lets a manually-added CUSTOM card hold players at all — structurally
 # impossible before (custom cards never went through the marketplace-sync
-# UnknownEntitiesDialog that creates player rows). Players used to be read-only
+# review wizard that creates player rows). Players used to be read-only
 # here ("None linked. Add players via the marketplace fetch flow.").
+# NOTE: this flow does NOT touch the fetch review wizard — the "+ Create"
+# PlayerPicker path is unrelated to and unchanged by NEO-92.
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
 #   - Precondition: the panel opened (Card name input) and the Player picker is

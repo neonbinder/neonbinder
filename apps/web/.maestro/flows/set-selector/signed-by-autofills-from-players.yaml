@@ -25,7 +25,7 @@ tags:
 #   from the preview, so the playerIds-patch branch never runs for them).
 #   Net: a custom card CANNOT acquire playerIds, so the auto-fill can only be
 #   exercised on a real synced card. setup.yaml pre-syncs the 2024 Topps Chrome
-#   Base checklist AND confirms its UnknownEntitiesDialog, so every Base card
+#   Base checklist AND confirms its EntityReviewWizard, so every Base card
 #   has real playerIds — the required precondition.
 #
 # ISOLATION STORY (sole-writer tolerance — same model as
@@ -33,7 +33,7 @@ tags:
 #   This flow is the SOLE writer of the chosen Base card's `autographed` and
 #   `signedBy` FEATURES. No other flow writes a real Base card's autographed/
 #   signedBy: features-propagation writes a per-worker CUSTOM set's Signed By;
-#   the card-checklist flows (skip-some / cancel-dialog / keyboard-only / setup)
+#   the card-checklist flows (link-existing / cancel-dialog / keyboard-only / setup)
 #   run commitCardChecklist which patches real cards' playerIds / attributes /
 #   sortOrder but NEVER their `features` map (grep the existing-card patch in
 #   commitCardChecklist — no `features` key), so a concurrent Base re-sync can
@@ -98,22 +98,25 @@ tags:
 #   3. PRECONDITION (Signed By sentinel): EXPAND the editor, swipe to the Signed By
 #      row, set it to a per-attempt UNIQUE sentinel + assert it landed.
 #   4. Reset to top, COLLAPSE the editor (so pos-7 Autographed is reachable).
-#   5. Swipe to the always-visible Autographed control (pos 7). NORMALISE it to
-#      "None" (defensive) + assert, then FLIP "None"→"On Card" + assert — one
-#      collapsed visit. The flip is the ACTION that triggers the auto-fill.
+#   5. Swipe to the always-visible Autographed pill group (pos 7). NORMALISE to
+#      "None" then FLIP "None"→"On Card" via a fixed 3-tap toggle-pill sequence
+#      (Sticker, Sticker, On Card) — one collapsed visit. The flip is the ACTION
+#      that triggers the auto-fill.
 #   6. Reset to top, RE-EXPAND the editor, swipe back to Signed By, and assert it
 #      now shows "Julio …" (the player) AND is no longer the sentinel — the
 #      auto-fill fired.
 #   7. Close the drawer (no autographed restore — next run's normalise self-heals).
 #
-# NATIVE <select> INTERACTION (Autographed is inputType "select"):
-#   Maestro-web cannot tap a native <option> (the dropdown is not in the DOM).
-#   The documented workaround is to FOCUS the <select> via tapOn, then type the
-#   target option's unique first letter — the browser's type-ahead navigates to
-#   it and fires the <select>'s change event (→ setCardFeature). Our options are
-#   "None"/"On Card"/"Sticker/Label": "N"→None, "O"→On Card (unique first
-#   letters). If this mechanism regressed, Step 5's "Autographed = None" assert
-#   fails FIRST — an early, unambiguous signal rather than a deep-flow failure.
+# TOGGLE-PILL INTERACTION (Autographed is inputType "toggleOptions", NEO-71-74):
+#   Autographed renders as a two-pill exclusive toggle ("Auto (On Card)" / "Auto
+#   (Sticker)"), NOT a native <select>. "None" (options[0]) is the implicit OFF
+#   value with no pill. Clicking an INACTIVE pill sets its value directly; clicking
+#   the ACTIVE pill reverts to "None". Maestro-web cannot read a pill's pressed
+#   state, so the normalise+flip uses a FIXED, state-free 3-tap sequence that is
+#   deterministic because this flow is the card's sole writer (reachable start
+#   states are only {None, On Card}) — see Step 5's header for the full rationale.
+#   The flip's result is asserted via its side-effect (Signed By) in Step 6, not
+#   via any unreadable pill state.
 # ============================================================================
 
 # Step 0 — open the app at the signed-in /set-selector route.
@@ -142,7 +145,7 @@ tags:
 # resolves false immediately). It only runs when the checklist is empty (e.g. a
 # local single-flow run where the setup track did not run): tap "Fetch from
 # Marketplaces" (a live BSC/SL round-trip, ~60s) and CONFIRM the
-# UnknownEntitiesDialog so every real card is saved WITH resolved playerIds —
+# EntityReviewWizard so every real card is saved WITH resolved playerIds —
 # the precondition the auto-fill reads. This keeps the flow self-sufficient
 # without depending on (or re-running) the destructive setup track.
 - runFlow:
@@ -151,22 +154,31 @@ tags:
     commands:
       - tapOn:
           text: ".*Fetch from Marketplaces.*"
-      # First fetch: all players/teams are new → UnknownEntitiesDialog opens.
+      # First fetch: all players/teams are new → EntityReviewWizard opens.
       # A populated-enough set may commit immediately ("Saved N cards.").
       - extendedWaitUntil:
           visible:
             text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
           timeout: 60000
+      # NEO-92 bulk-confirm: this LOCAL-ONLY fallback runs only when the checklist
+      # is empty (setup track did not pre-sync); in CI the setup track populates
+      # it and this whole block is skipped. A fresh real-Base fetch surfaces
+      # HUNDREDS of unknowns, so tap the footer "Add All Remaining as New (N)"
+      # button (one recordAllRemainingAsCreate call marks every not-yet-decided
+      # row as "create", including still-pending ones) rather than draining them,
+      # then confirm & save.
       - runFlow:
           when:
             visible: "Confirm New Players & Teams"
           commands:
+            - tapOn:
+                text: ".*Add All Remaining as New.*"
             - extendedWaitUntil:
                 visible:
-                  text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
-                timeout: 10000
+                  text: ".*Confirm & Save.*"
+                timeout: 30000
             - tapOn:
-                text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+                text: ".*Confirm & Save.*"
             - extendedWaitUntil:
                 notVisible: "Confirm New Players & Teams"
                 timeout: 30000
@@ -272,44 +284,70 @@ tags:
 # ============================================================
 # STEP 5 — NORMALISE + FLIP Autographed (pos 7, editor collapsed, ONE visit)
 # One short in-drawer swipe lifts the always-visible Autographed grid cell into
-# the tap band. Then, in a single collapsed visit (React preserves scrollTop
-# across the per-row re-render each edit triggers):
-#   (a) NORMALISE to "None" — type "N" → type-ahead selects "None". Card #300 may
-#       render Autographed unset ("— Select —") on a fresh card, or a leftover
-#       from an interrupted prior run. unset/None→None is inert; a leftover
-#       "On Card"→None is a real transition to blank that does NOT auto-fill
-#       (isNowSet=false). The assert is also the earliest check the native-<select>
-#       type-ahead mechanism works at all.
-#   (b) FLIP "None"→"On Card" — type "O". Because autographed was "None" (wasBlank)
-#       and card #300 has playerIds, the mutation auto-seeds signedBy = the player
-#       name(s), OVERWRITING the sentinel. This is the ACTION under test.
+# the tap band. Autographed is now a TWO-PILL exclusive toggle group (NEO-71-74:
+# ToggleOptionsValueControl), NOT a native <select>. Two pills render — "Auto
+# (On Card)" (stored value "On Card") and "Auto (Sticker)" (stored value
+# "Sticker/Label"); "None" (options[0]) is the implicit OFF value and has no pill
+# of its own. Click semantics (handleChange): clicking an INACTIVE pill SETS its
+# value directly (regardless of the prior value); clicking the ACTIVE pill reverts
+# to "None".
+#
+# WHY A FIXED 3-TAP SEQUENCE (not a conditional on the current value):
+#   Maestro-web cannot read a pill's pressed-state (aria-pressed is invisible to
+#   the CDP bridge — the same limitation card-detail-panel.yaml documents for the
+#   RC attribute chip), so we cannot branch on "is On Card currently active?".
+#   We don't need to: this flow is the card's SOLE writer of `autographed` and it
+#   only ever sets None or On Card (never Sticker), so the ONLY leftover start
+#   states a prior/interrupted run can leave are {None, On Card}. A fixed sequence
+#   is therefore fully deterministic:
+#     Tap 1 — Auto (Sticker): "Sticker" is INACTIVE in BOTH None and On Card, so
+#       this SETS "Sticker/Label" directly → deterministic "Sticker/Label"
+#       regardless of the leftover start state.
+#     Tap 2 — Auto (Sticker) again: now ACTIVE → reverts to the off value "None" →
+#       deterministic "None". This is the wasBlank precondition the auto-fill needs.
+#     Tap 3 — Auto (On Card): INACTIVE at "None" → SETS "On Card". This None→On Card
+#       transition is THE ACTION under test: because card #300 has playerIds and
+#       autographed was blank, setCardFeature auto-seeds signedBy = the player
+#       name(s), OVERWRITING the sentinel.
+#   Each pill is `disabled={busy}` while its onSave (a single-row Convex patch) is
+#   in flight, so a follow-up tap on a still-disabled pill would no-op. waitToSettleTimeoutMs
+#   on taps 1 and 2 makes Maestro wait for the hierarchy to settle (write done →
+#   button re-enabled → re-render) BEFORE the next tap, so each tap lands on an
+#   enabled pill. Unlike the old <select> (whose selected-option TEXT was readable),
+#   the pills expose no readable state to assert here — the flip's correctness is
+#   asserted AUTHORITATIVELY by Step 6 (Signed By became "Julio …" and is no longer
+#   the sentinel), the same "assert the round-tripped side-effect, not the toggle's
+#   own state" pattern card-detail-panel.yaml uses for the RC chip.
 # ============================================================
 
 - swipe:
     start: "80%, 70%"
     end: "80%, 35%"
 
-# (a) normalise to None
-- assertVisible:
-    id: "Value for Autographed"
-- tapOn:
-    id: "Value for Autographed"
-- inputText: "N"
-- extendedWaitUntil:
-    visible:
-      id: "Value for Autographed"
-      text: "None"
-    timeout: 7000
+# NOTE ON THE PILL id MATCHERS BELOW: Maestro compiles `id:` as a REGEX, so the
+# literal parens in the pill aria-labels ("… Auto (Sticker)") must be ESCAPED
+# (\( \)) — an un-escaped "(Sticker)" is parsed as a regex capture group and
+# matches "Sticker" WITHOUT the parens, so it never matches the real resource-id.
+# The leading/trailing .* keeps the match robust to Maestro's full-vs-substring id
+# semantics. (Confirmed at run time: the un-escaped form failed to find the pill.)
 
-# (b) THE ACTION — flip None → On Card (fires the Signed By auto-fill)
+# Confirm the swipe lifted the Autographed pill group into the tap band.
+- assertVisible:
+    id: ".*Value for Autographed: Auto \\(Sticker\\).*"
+
+# Tap 1 — set Sticker directly (inactive in both {None, On Card}) → deterministic "Sticker/Label".
 - tapOn:
-    id: "Value for Autographed"
-- inputText: "O"
-- extendedWaitUntil:
-    visible:
-      id: "Value for Autographed"
-      text: "On Card"
-    timeout: 7000
+    id: ".*Value for Autographed: Auto \\(Sticker\\).*"
+    waitToSettleTimeoutMs: 2000
+# Tap 2 — Sticker now active → revert to "None" (the wasBlank precondition).
+- tapOn:
+    id: ".*Value for Autographed: Auto \\(Sticker\\).*"
+    waitToSettleTimeoutMs: 2000
+# Tap 3 — THE ACTION: On Card inactive at "None" → SET "On Card". None→On Card
+# fires the Signed By auto-fill. Its result is asserted authoritatively in Step 6.
+- tapOn:
+    id: ".*Value for Autographed: Auto \\(On Card\\).*"
+    waitToSettleTimeoutMs: 2000
 
 # ============================================================
 # STEP 6 — RE-EXPAND THE EDITOR + ASSERT the auto-fill landed on Signed By

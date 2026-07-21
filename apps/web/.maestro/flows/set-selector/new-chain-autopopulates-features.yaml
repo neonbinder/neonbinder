@@ -16,7 +16,7 @@ tags:
 #   that end-to-end: drill a freshly-created chain and confirm a derived feature
 #   value is already populated in the panel, having never touched a single card.
 #
-# THE CONCRETE ASSERTIONS — EIGHT auto-populated feature VALUES, each proven at
+# THE CONCRETE ASSERTIONS — THREE auto-populated feature VALUES, each proven at
 # the deepest (variantType) node where the complete write-once snapshot lands:
 #   We build a fully-custom, per-worker chain rooted at the suite's standard
 #   per-worker custom sport ("E2E Test Sport <worker>"):
@@ -41,7 +41,7 @@ tags:
 #   with the CURRENT derivation. When a future setName/variantType-level default
 #   is added and asserted here, bump the digit again (…3→…4) — this session
 #   bumped …2→…3 to pick up the new physical setName defaults cardThickness /
-#   countryOfOrigin (asserted in 6g/6h below). Reusing the
+#   countryOfOrigin (asserted in 6b/6c below). Reusing the
 #   existing year/manufacturer is itself meaningful: it proves copy-down works
 #   when a NEW set is added under a PRE-EXISTING manufacturer — the common
 #   real-world case (an operator adds this year's set under a known maker).
@@ -49,45 +49,85 @@ tags:
 #   variantType node's `features` is the ACCUMULATED resolved map
 #   {era, vintage, manufacturer, isReprint, autographed, cardType,
 #   parallelName, cardThickness, countryOfOrigin, cardSize, cardMaterial,
-#   language}. The panel at the variantType level therefore shows all of
-#   them, and we assert eight:
-#     Era = "Vintage (1970-79)"  (copied down from the year — 2 hops)
-#     Vintage = "true"           (copied down from the year — 2 hops)
-#     Manufacturer = "WOMfr-<w>" (copied down from the manufacturer — 1 hop)
-#     Autographed = "None"       (copied down from the set — 1 hop; the "None"
-#                                 default added this session, originating at the
-#                                 setName level exactly like isReprint)
-#     Card Type = "Base"         (own-level derivation at the variantType)
-#     Variation = "Base"         (own-level derivation at the variantType — the
-#                                 "Base" default added this session; feature key
-#                                 parallelName, label renamed to "Variation")
+#   language}. Most of those render NO Maestro-observable value node (booleans
+#   are aria-pressed pills, and manufacturer/cardType/parallelName rows were
+#   removed from the panel entirely — see the two WHY-NOT blocks below), so we
+#   assert the THREE that ARE text-readable AND each uniquely trace to a distinct
+#   ancestor origin level:
+#     Era = "Vintage (1970-79)"  (copied down from the year — 2 hops; a <select>
+#                                 whose SELECTED option text is readable. This ALSO
+#                                 proves the year-origin vintage derivation — the
+#                                 vintage boolean itself is an unobservable pill,
+#                                 see the WHY-NOT block below)
 #     Card Thickness = "20pt"    (physical setName default, copied down 1 hop)
 #     Country of Origin = "USA"  (physical setName default, copied down 1 hop)
-#   Each asserted VALUE is UNIQUELY produced by exactly one origin level (only a
-#   pre-1980 year yields "Vintage (1970-79)"; only the manufacturer node yields
-#   its verbatim name; only a setName node emits the autographed="None" default;
-#   only a base variantType emits cardType/parallelName="Base"), so asserting
-#   the values at the leaf proves BOTH that copy-down carried each ancestor's
-#   derivation down AND that own-level derivation ran — i.e. the full write-once
-#   mechanism. If any hop were broken, that feature would render "—" /
-#   "— Select —" and its scrollUntilVisible-with-text below would fail loudly
-#   (R2).
+#   Era uniquely traces to the pre-1980 YEAR (only a pre-1980 year yields
+#   "Vintage (1970-79)"); Card Thickness / Country of Origin uniquely trace to the
+#   setName node (only a setName emits cardThickness="20pt" / countryOfOrigin=
+#   "USA"). So asserting these at the leaf proves BOTH that copy-down carried each
+#   ancestor's derivation down (year 2-hop, setName 1-hop) AND that each ancestor's
+#   OWN-LEVEL derivation ran. If any hop were broken, that feature would render
+#   "—" / "— Select —" and its scrollUntilVisible-with-text below would fail
+#   loudly (R2).
 #
-# WHY REPRINT IS NOT ASSERTED HERE (NEO-71-74): isReprint became a "checkbox"
-#   input type. Its value ("true"/"false") is stored in the features map exactly
-#   like before, and the set node still derives "false" and copies it down — but
-#   a checkbox's boolean STATE is NOT observable in Maestro-web: the injected
-#   view-hierarchy (maestro-web.js `traverse`) emits no `checked` attribute for
-#   any node, and a valueless `<input type=checkbox>` reads `value="on"` for BOTH
-#   checked and unchecked, so neither a `checked:` selector nor a text match can
-#   distinguish "false"→unchecked from "true"→checked. Reprint's SAVE path (the
-#   checkbox → single-row patch → "Saved Reprint" toast) is covered instead by
-#   topps-chrome-add-feature.yaml (R3 — not duplicated here). The setName-origin
-#   1-hop copy-down that Reprint used to prove is now proven DIRECTLY by
-#   Autographed — a `select` default ("None") that originates at the exact same
-#   setName level as isReprint but, unlike a checkbox, IS Maestro-readable (a
-#   select node's text = its selected option) — so dropping Reprint's assertion
-#   loses no structural coverage.
+# WHY MANUFACTURER, CARD TYPE, and VARIATION (parallelName) ARE NOT ASSERTED
+#   (NEO-71-74) — this PR REMOVED all three rows from the SetAttributesPanel (see
+#   the NOTE in convex/features/expectedFeatures.ts: they "only restated
+#   information already visible in the panel's own breadcrumb", or were a set-level
+#   default deriveSetLevelFeatures deliberately never populates for inserts/
+#   parallels). They render NO node at all now, so the old
+#   { id:"Value for Manufacturer" / "Card Type" / "Variation" } assertions can
+#   never match (this flow died on the Manufacturer one before they were dropped
+#   2026-07-20). No coverage is lost in spirit: manufacturer was a 1-hop copy-down
+#   — the SAME hop Card Thickness / Country of Origin still prove from the setName
+#   — and the leaf variantType's own-level derivation (cardType/parallelName) is a
+#   subset of the "own-level derivation ran" claim that Era (year-origin) and the
+#   physical defaults (setName-origin) already carry.
+#
+# WHY VINTAGE, REPRINT, AND AUTOGRAPHED ARE NOT ASSERTED HERE (NEO-71-74) — all
+#   three became Maestro-UNOBSERVABLE toggle controls whose values render no
+#   distinguishable node, so all are dropped:
+#     - vintage (derived at the year, ="true" here) became a boolean TOGGLE-PILL
+#       in the SetAttributesPanel (rendered in the top pill row with SP/SSP/
+#       Reprint/etc; active state = aria-pressed="true", which Maestro-web's
+#       getNodeText does NOT expose — the pill's only node text is the label
+#       "Vintage"). So a `{ id:"Value for Vintage", text:"true" }` assertion can
+#       never match (dropped 2026-07-20 — it was stale from when Vintage rendered
+#       as a "true" <span>). The year-origin derivation it proved is FULLY carried
+#       by Era = "Vintage (1970-79)" (6a): Era and vintage derive together from the
+#       same pre-1980 year via the same 2-hop copy-down, and Era's <select> selected
+#       option IS Maestro-readable, so 6a alone proves the year → era/vintage hop.
+#   The two setName-origin 1-hop copy-downs Reprint/Autographed would have proven
+#   are carried instead by Card Thickness (6e) and Country of Origin (6f) — two
+#   plain-text setName-origin defaults that ARE Maestro-readable (<input> node
+#   text = its value). Concretely:
+#     - isReprint became a "checkbox" input type. Its value ("true"/"false") is
+#       stored in the features map exactly like before, and the set node still
+#       derives "false" and copies it down — but a checkbox's boolean STATE is NOT
+#       observable in Maestro-web: the injected view-hierarchy (maestro-web.js
+#       `traverse`) emits no `checked` attribute for any node, and a valueless
+#       `<input type=checkbox>` reads `value="on"` for BOTH checked and unchecked,
+#       so neither a `checked:` selector nor a text match can distinguish
+#       "false"→unchecked from "true"→checked.
+#     - autographed became a "toggleOptions" input type (options
+#       ["None","On Card","Sticker/Label"], ToggleOptionsValueControl in
+#       FeatureValueControl.tsx). The set node still derives "None" and copies it
+#       down, but options[0]="None" is the implicit OFF value and gets NO pill of
+#       its own — it renders no text node anywhere — and the two pills that DO
+#       render ("Auto (On Card)" / "Auto (Sticker)") look identical regardless of
+#       the current value (Maestro-web cannot read aria-pressed / className /
+#       color). Crucially, unlike signed-by-autofills-from-players.yaml — where a
+#       tap sequence's result is observable via the card-level `signedBy`
+#       auto-fill SIDE-EFFECT — a SET-level Autographed change on this panel has
+#       NO observable side-effect to assert, and any tap would MUTATE the
+#       write-once snapshot on the REUSED per-worker fixture node (destructive to
+#       this flow's own reusable data, R7). So "Autographed = None" is
+#       fundamentally not assertable here by any tap-or-text means.
+#   Reprint's and Autographed's SAVE paths (single-row patch → "Saved <feature>"
+#   toast) are covered instead by topps-chrome-add-feature / signed-by (R3 — not
+#   duplicated here). Because Card Thickness and Country of Origin are the exact
+#   same setName-origin 1-hop copy-down at the exact same origin level, dropping
+#   both toggle assertions loses NO structural coverage.
 #
 # HOW EACH VALUE IS ASSERTED (Maestro-web value extraction — VERIFIED against
 # maestro-client.jar!maestro-web.js getNodeText, cli 2.6.0):
@@ -97,9 +137,7 @@ tags:
 #   - <select> node text = ONLY the SELECTED option's text (un-selected <option>
 #     nodes are omitted from the hierarchy unless the select is focused) → the
 #     SELECTED value is matchable and does NOT false-match other options
-#     (Era "Vintage (1970-79)", Autographed "None"; an unset select would read
-#     "— Select —").
-#   - derived <span> node text = its textContent (Vintage "true").
+#     (Era "Vintage (1970-79)"; an unset select would read "— Select —").
 #   Every control also carries resource-id = its aria-label ("Value for <Label>",
 #   the DO-NOT-RENAME hook in SetFeatureRow), so we assert each with a COMBINED
 #   { id: "Value for <Label>", text: <value> } selector — matching the single
@@ -225,71 +263,14 @@ tags:
     visibilityPercentage: 50
     timeout: 15000
 
-# 6b — Vintage = "true" (derived at the year, copied down 2 hops).
-- scrollUntilVisible:
-    element:
-      id: "Value for Vintage"
-      text: "true"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 15000
-
-# 6c — Manufacturer = "WOMfr-<worker>" (verbatim from the manufacturer node, 1 hop).
-- scrollUntilVisible:
-    element:
-      id: "Value for Manufacturer"
-      text: ".*WOMfr-${WORKER_INDEX || 0}.*"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 15000
-
-# 6d — Card Type = "Base" (own-level derivation at the base variantType).
-- scrollUntilVisible:
-    element:
-      id: "Value for Card Type"
-      text: "Base"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 15000
-
-# 6e — Variation = "Base" (own-level derivation at the base variantType — the
-# "Base" default added this session; a broken default reads "—" and fails). The
-# feature key is `parallelName`; its label was renamed "Parallel/Variety" →
-# "Variation" this session (expectedFeatures.ts), so the aria-label is now
-# "Value for Variation". On the SetAttributesPanel this uniquely identifies the
-# parallelName row (the card-only `cardVariation` input — also labelled
-# "Variation" — is not rendered on the set panel, so no collision here).
-- scrollUntilVisible:
-    element:
-      id: "Value for Variation"
-      text: "Base"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 15000
-
-# 6f — Autographed = "None" (select default originating at the setName node — the
-# exact same origin level as isReprint — copied down 1 hop to the variantType.
-# A <select> node's text is its SELECTED option ("None"), so this matches the
-# node that has BOTH the "Value for Autographed" aria-label AND selected "None";
-# a broken/missing default would leave the select unset ("— Select —") and this
-# scrollUntilVisible-with-text would fail loudly (R2). This is the direct,
-# now-readable replacement for the setName-origin copy-down Reprint used to prove.
-- scrollUntilVisible:
-    element:
-      id: "Value for Autographed"
-      text: "None"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 15000
-
-# 6g — Card Thickness = "20pt" (a PHYSICAL default originating at the setName
+# 6b — Card Thickness = "20pt" (a PHYSICAL default originating at the setName
 # node — deriveSetLevelFeatures unconditionally emits cardThickness="20pt" for
-# every set — copied down 1 hop to the variantType, same origin level and hop
-# as Autographed). Plain-text <input>: getNodeText = its value, so the combined
-# { id, text } selector matches the node with BOTH the aria-label AND "20pt".
-# A broken default / broken copy-down would leave the field blank ("—") and
-# this scrollUntilVisible-with-text would fail loudly (R2). This is one of the
-# two physical defaults added this session (the other, Country of Origin, is 6h).
+# every set — copied down 1 hop to the variantType). Plain-text <input>:
+# getNodeText = its value, so the combined { id, text } selector matches the node
+# with BOTH the aria-label AND "20pt". A broken default / broken copy-down would
+# leave the field blank ("—") and this scrollUntilVisible-with-text would fail
+# loudly (R2). One of the two setName-origin physical defaults (the other,
+# Country of Origin, is 6c).
 - scrollUntilVisible:
     element:
       id: "Value for Card Thickness"
@@ -298,10 +279,10 @@ tags:
     visibilityPercentage: 50
     timeout: 15000
 
-# 6h — Country of Origin = "USA" (physical default originating at the setName
+# 6c — Country of Origin = "USA" (physical default originating at the setName
 # node — deriveSetLevelFeatures unconditionally emits countryOfOrigin="USA" —
 # copied down 1 hop to the variantType). Plain-text <input>; asserted the same
-# way as 6g. The second physical default added this session.
+# way as 6b. The second setName-origin physical default.
 - scrollUntilVisible:
     element:
       id: "Value for Country of Origin"

@@ -1,0 +1,282 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — review wizard 'Link to Existing' links an unknown name to an existing player and creates no duplicate"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE: the NEO-92 EntityReviewWizard's "Link to Existing…" action.
+# The old UnknownEntitiesDialog let a user UNCHECK ("skip") a name — that concept
+# is GONE. Every unknown name must now resolve to "Add as New" or "Link to
+# Existing". This flow proves the LINK path: an unknown name surfaced by a fetch
+# is linked to an ALREADY-EXISTING player, and NO new player entity is minted for
+# the unknown name (the whole point of "link, don't duplicate").
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#   - The wizard opens on the unique unknown UnknownLink-${ATTEMPT_ID} (asserted
+#     by the wizard heading — the current item's name).
+#   - "Link to Existing…" expands the search, and a real existing Base player
+#     (Shohei Ohtani — card #1 of 2024 Topps Chrome Base, always present after the
+#     setup track syncs Base) is selectable ("Link to Shohei Ohtani").
+#   - After Confirm & Save, opening a PlayerPicker and searching the unknown name
+#     shows the "+ Create" option (aria "Create player UnknownLink-…"). That option
+#     renders only when NO case-insensitive exact match exists (PlayerPicker.tsx
+#     hasExactMatch), so its presence PROVES the link created no duplicate entity
+#     for the unknown name. Had the wizard created it instead, an exact match
+#     would suppress "+ Create" and this assert would fail loudly.
+#
+# WHY LINK TO A REAL PLAYER (Shohei Ohtani) rather than a seeded one:
+#   EntityLinkSearch lists api.players.list({sport, limit:500}) for the item's
+#   sport (baseball) and client-filters. A real marquee Base player is guaranteed
+#   present and near the top of that list after setup, giving a deterministic,
+#   bloat-proof link target — no fragile PlayerPicker seeding + sport-matching.
+#   Linking never mutates Ohtani (a custom card doesn't even receive playerIds on
+#   commit) — it only records the link decision, so this is non-destructive.
+#
+# WHY A PRE-CLEAN FETCH FIRST (retry/debris robustness):
+#   entityReviewQueue batches + custom-card pending names are PERSISTENT and keyed
+#   by the shared real Base variant. A prior flow/attempt can leave unresolved
+#   unknowns that would preempt our UnknownLink in the wizard. So we FIRST fetch
+#   and, if a wizard opens, bulk-confirm every pre-existing unknown ("Add All
+#   Remaining as New" → Confirm & Save) — clearing the slate. Only THEN do we add
+#   our UnknownLink card and fetch again, guaranteeing it is the SOLE unknown. This
+#   also makes the flow self-healing across its own retries.
+#
+# R3 — DEDUP: "Add as New" is covered by checklist-keyboard-only and the bulk
+#   pre-clean here; this flow uniquely covers "Link to Existing" (the replacement
+#   for the removed "skip"). Navigation reuses util-drill-to-base-variant.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO A REAL BASE VARIANT
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-base-variant.yaml
+
+# ============================================================
+# STEP 1 — PRE-CLEAN: clear any pre-existing unknowns on this shared Base variant
+# Fetch once; if a wizard opens (leftover unresolved pending names from prior
+# flows/attempts), bulk-confirm them all and save so they stop preempting our
+# UnknownLink below. If there are none, the fetch just commits ("Saved N cards")
+# and the wizard guard is skipped.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- extendedWaitUntil:
+    visible:
+      id: "Sync card checklist"
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*Add All Remaining as New.*"
+          commands:
+            - tapOn:
+                text: ".*Add All Remaining as New.*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm & Save.*"
+          timeout: 30000
+      - tapOn:
+          text: ".*Confirm & Save.*"
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 30000
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 30000
+
+# ============================================================
+# STEP 2 — ADD THE CARD WHOSE UNKNOWN NAME WILL BE LINKED
+# A custom card carrying the per-attempt-unique UnknownLink-${ATTEMPT_ID} in its
+# Players field. That name has no matching entity, so the next fetch surfaces it
+# as the SOLE unknown (Step 1 cleared everything else).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- tapOn: "Add Card"
+- extendedWaitUntil:
+    visible: "Player name"
+- inputText: "8002-${ATTEMPT_ID}"
+- tapOn:
+    id: "Card name"
+- inputText: "Link Main Card ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: "Player(s) — comma separated, optional"
+    centerElement: true
+- tapOn:
+    id: "Players"
+- inputText: "UnknownLink-${ATTEMPT_ID}"
+- assertVisible: "UnknownLink-${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: "Add"
+    centerElement: true
+- tapOn:
+    text: "Add"
+- scrollUntilVisible:
+    element:
+      text: "Link Main Card ${ATTEMPT_ID}"
+    timeout: 15000
+
+# ============================================================
+# STEP 3 — FETCH AND OPEN THE WIZARD ON THE UNKNOWN NAME
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- extendedWaitUntil:
+    visible:
+      id: "Sync card checklist"
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible:
+      text: "Confirm New Players & Teams"
+    timeout: 60000
+
+# The wizard presents the unknown once its background Wikidata lookup completes
+# (or errors) — a live external round-trip, so 30s (outside the 7s UI budget).
+# The wizard heading shows the current item's name: assert it is our unknown.
+- extendedWaitUntil:
+    visible:
+      text: ".*UnknownLink-${ATTEMPT_ID}.*"
+    timeout: 30000
+
+# ============================================================
+# STEP 4 — LINK TO THE EXISTING REAL PLAYER (Shohei Ohtani)
+# "Link to Existing…" expands EntityLinkSearch (aria "Search existing players").
+# Type "Ohtani"; its result button (aria "Link to Shohei Ohtani") selects it and
+# records a "link" decision, resolving this unknown to the existing player id.
+# ============================================================
+
+- tapOn:
+    text: "Link to Existing…"
+- assertVisible:
+    id: "Search existing players"
+- tapOn:
+    id: "Search existing players"
+- inputText: "Ohtani"
+- extendedWaitUntil:
+    visible:
+      id: "Link to Shohei Ohtani"
+    timeout: 15000
+- tapOn:
+    id: "Link to Shohei Ohtani"
+
+# UnknownLink is now linked and is the sole unknown → the final "All reviewed"
+# step appears. (Defensive: if a straggler slipped in, bulk-confirm it — never
+# touches UnknownLink, already decided as a link.)
+- runFlow:
+    when:
+      visible:
+        text: ".*Add All Remaining as New.*"
+    commands:
+      - tapOn:
+          text: ".*Add All Remaining as New.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 30000
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    notVisible: "Confirm New Players & Teams"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 30000
+
+# ============================================================
+# STEP 5 — PROVE NO DUPLICATE WAS CREATED FOR THE UNKNOWN NAME
+# Open the main card's panel, reach its PlayerPicker, and search the unknown
+# name. "+ Create" (aria "Create player UnknownLink-…") renders ONLY when no
+# exact match exists — its presence proves the link minted no entity for that
+# name. If a duplicate had been created, the exact match would suppress "+ Create"
+# and this assert would fail.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 8002-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Edit card 8002-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- tapOn:
+    id: "Add player"
+- tapOn:
+    id: "Search players"
+- inputText: "UnknownLink-${ATTEMPT_ID}"
+# THE CORE R2 ASSERT — no entity by the unknown name exists (link ≠ create).
+- assertVisible:
+    id: "Create player UnknownLink-${ATTEMPT_ID}"
+
+# ============================================================
+# CLOSE + CLEANUP — discard the picker (no save) and delete the test card
+# ============================================================
+
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 8002-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 8002-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 8002-${ATTEMPT_ID}"
+- assertNotVisible: "Link Main Card ${ATTEMPT_ID}"
