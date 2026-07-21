@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { useAction, useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -269,6 +270,9 @@ export default function AttachSetsDialog({
   if (!isOpen) return null;
 
   return createPortal(
+    // NEO-71-74 QA fix: see BaseSetPicker.tsx for why this nested <Theme> is
+    // needed — createPortal(document.body) escapes the root Theme's CSS scope.
+    <Theme>
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
       role="dialog"
@@ -343,7 +347,8 @@ export default function AttachSetsDialog({
           </div>
         </div>
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }

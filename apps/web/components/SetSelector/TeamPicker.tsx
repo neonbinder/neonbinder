@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -12,13 +12,24 @@ import type { Id } from "../../convex/_generated/dataModel";
  * length 1, so the multi-team-rookie / "Traded" subset case is
  * handled without any special branching.
  *
- * Sibling-component reuse target: `<PlayerPicker />` (NEO-25) should
- * mirror this layout; the chip/popover skeleton intentionally stays
- * small so a near-identical clone is the obvious refactor.
+ * Sibling component: `<PlayerPicker />` (NEO-25) mirrors this layout.
+ *
+ * Create-new (added alongside the card-level feature audit, 2026-07-16):
+ * neither marketplace's checklist-sync endpoint carries team data — BSC's
+ * own adapter comment says its catalog endpoint doesn't have it ("lives on
+ * listings, not the catalog template"), while SportLots' adapter comment
+ * assumes BSC supplies it instead — so in practice NEITHER source ever
+ * populates the `teams` table, and this picker's candidate pool was
+ * routinely empty. Building real team resolution (Wikidata career-history
+ * lookup, per BSC's own deferred-to-listing-time plan) is a separate, much
+ * larger effort. This picker instead gets the same "+ Create" escape hatch
+ * PlayerPicker already has via the already-public `teams.findOrCreate` —
+ * an operator is never blocked waiting on sync to populate a team.
  *
  * Keyboard contract (per `feedback_keyboard_navigation`):
  *   Tab/Shift+Tab — cycle chips, × buttons, "+ Add" trigger, popover input
- *   Enter on input — select highlighted match
+ *   Enter on input — select highlighted match (or create, if highlighted
+ *     and no exact match exists)
  *   ↑/↓ on input — move highlight
  *   Esc on input — close popover without selecting
  *   Backspace on empty input — remove last chip
@@ -50,10 +61,12 @@ export default function TeamPicker({
     api.teams.list,
     sport ? { sport, limit: 500 } : { limit: 500 },
   );
+  const findOrCreate = useMutation(api.teams.findOrCreate);
 
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(0);
+  const [creating, setCreating] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
@@ -98,6 +111,29 @@ export default function TeamPicker({
       .slice(0, 8);
     return filtered;
   }, [candidates, query, value]);
+
+  // An exact (case-insensitive) match already exists — no "create" offer,
+  // it'd just be a confusing duplicate-name affordance.
+  const hasExactMatch = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q || !candidates) return true;
+    return candidates.some((c) => c.name.toLowerCase() === q);
+  }, [query, candidates]);
+
+  const showCreateOption =
+    query.trim().length > 0 && !hasExactMatch && !creating;
+
+  const createAndAdd = async () => {
+    const name = query.trim();
+    if (!name || disabled) return;
+    setCreating(true);
+    try {
+      const id = await findOrCreate({ name, sport: sport ?? "" });
+      addChip(id);
+    } finally {
+      setCreating(false);
+    }
+  };
 
   const removeChip = (idToRemove: Id<"teams">) => {
     if (disabled) return;
@@ -178,23 +214,28 @@ export default function TeamPicker({
               ref={inputRef}
               type="text"
               value={query}
-              placeholder="Search teams..."
+              placeholder="Search or add a team..."
               aria-label="Search teams"
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
+                const rowCount = matches.length + (showCreateOption ? 1 : 0);
                 if (e.key === "Escape") {
                   e.preventDefault();
                   closePopover();
                 } else if (e.key === "ArrowDown") {
                   e.preventDefault();
-                  setHighlightIdx((i) => Math.min(i + 1, matches.length - 1));
+                  setHighlightIdx((i) => Math.min(i + 1, rowCount - 1));
                 } else if (e.key === "ArrowUp") {
                   e.preventDefault();
                   setHighlightIdx((i) => Math.max(i - 1, 0));
                 } else if (e.key === "Enter") {
                   e.preventDefault();
-                  const pick = matches[highlightIdx];
-                  if (pick) addChip(pick._id);
+                  if (highlightIdx < matches.length) {
+                    const pick = matches[highlightIdx];
+                    if (pick) addChip(pick._id);
+                  } else if (showCreateOption) {
+                    void createAndAdd();
+                  }
                 } else if (
                   e.key === "Backspace" &&
                   query.length === 0 &&
@@ -238,13 +279,31 @@ export default function TeamPicker({
                 }`}
               >
                 {m.name}
-                {m.city && (
+                {(m.city || m.league) && (
                   <span className="ml-2 text-[10px] text-gray-500">
-                    {m.city}
+                    {[m.city, m.league].filter(Boolean).join(", ")}
                   </span>
                 )}
               </button>
             ))}
+            {showCreateOption && (
+              <button
+                type="button"
+                disabled={creating}
+                onClick={() => void createAndAdd()}
+                onMouseEnter={() => setHighlightIdx(matches.length)}
+                aria-label={`Create team ${query.trim()}`}
+                role="option"
+                aria-selected={highlightIdx === matches.length}
+                className={`w-full text-left px-2 py-1 text-sm rounded border-t border-gray-200 dark:border-gray-700 ${
+                  highlightIdx === matches.length
+                    ? "bg-[#00D558]/20 text-[#00D558]"
+                    : "hover:bg-gray-100 dark:hover:bg-gray-700"
+                }`}
+              >
+                {creating ? "Creating…" : `+ Create "${query.trim()}"`}
+              </button>
+            )}
           </div>
         )}
       </div>

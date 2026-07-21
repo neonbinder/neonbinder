@@ -27,7 +27,7 @@
 155	.maestro/flows/set-selector/variant-metadata-editor-insert.yaml
 139	.maestro/flows/set-selector/cards-parallel-custom.yaml
 125	.maestro/flows/profile/fill-profile-data.yaml
-95	.maestro/flows/set-selector/checklist-fetch-unknown-entities-skip-some.yaml
+95	.maestro/flows/set-selector/checklist-fetch-unknown-entities-link-existing.yaml
 93	.maestro/flows/set-selector/checklist-fetch-cancel-dialog.yaml
 93	.maestro/flows/set-selector/topps-chrome-add-feature.yaml
 87	.maestro/flows/set-selector/checklist-keyboard-only-dialog.yaml

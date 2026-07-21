@@ -28,7 +28,7 @@
  * previous value, any operator/card-observed override is preserved, and a
  * second run is a no-op (idempotent).
  *
- * Set metadata (releaseDate / block / tcdbSetId / sourceUrl) is intentionally
+ * Set metadata (releaseDate / block) is intentionally
  * OUT of scope here — it is manually edited via `setSetMetadata`. This backfill
  * only seeds the heuristic so pre-pipeline data isn't left blank.
  *

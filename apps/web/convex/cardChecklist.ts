@@ -22,9 +22,10 @@
  * (default 100 rows per batch).
  */
 
-import { internalMutation } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 import { normalizeTeamName } from "./teams";
 
 /**
@@ -35,7 +36,7 @@ import { normalizeTeamName } from "./teams";
  * cutoff matches the `commitCardChecklist` ancestor walk so a cycle
  * can't deadlock the mutation.
  */
-async function findSportForSelectorOption(
+export async function findSportForSelectorOption(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   selectorOptionId: Id<"selectorOptions">,
 ): Promise<string | undefined> {
@@ -185,6 +186,198 @@ export const backfillTeamToOnCardIds = internalMutation({
       teamsCreated,
       skippedAmbiguous,
       remaining,
+    };
+  },
+});
+
+/**
+ * NEO-90: apply the result of a BSC per-card team lookup
+ * (`adapters/buysportscards.ts`'s `resolveBscCardTeam`) to a single
+ * cardChecklist row. Idempotent and race-safe: re-checks `teamOnCardIds`
+ * is still empty before writing, since a concurrent edit or an earlier
+ * queue pass may have already resolved it.
+ */
+/**
+ * NEO-90: read-side half of the BSC per-card team lookup — lives here
+ * (not `adapters/buysportscards.ts`, which is a `"use node"` action file
+ * and can't define queries) so `resolveBscCardTeam` can check whether a
+ * card still needs a lookup before making the HTTP call.
+ */
+export const getForBscTeamCheck = internalQuery({
+  args: { cardChecklistId: v.id("cardChecklist") },
+  returns: v.union(
+    v.object({
+      bscCardId: v.string(),
+      needsCheck: v.boolean(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.cardChecklistId);
+    if (!row || !row.platformData?.bsc) return null;
+    const needsCheck =
+      (!row.teamOnCardIds || row.teamOnCardIds.length === 0) &&
+      !row.teamCheckDoneAt;
+    return { bscCardId: row.platformData.bsc, needsCheck };
+  },
+});
+
+export const applyBscTeamResolution = internalMutation({
+  args: {
+    cardChecklistId: v.id("cardChecklist"),
+    /** Empty string means BSC's card-listing endpoint had no team on file. */
+    teamName: v.string(),
+  },
+  returns: v.object({
+    applied: v.boolean(),
+    teamCreated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.cardChecklistId);
+    if (!row) return { applied: false, teamCreated: false };
+
+    if (row.teamOnCardIds && row.teamOnCardIds.length > 0) {
+      if (!row.teamCheckDoneAt) {
+        await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+      }
+      return { applied: false, teamCreated: false };
+    }
+
+    const teamName = args.teamName.trim();
+    if (!teamName) {
+      // No team on file for this card (insert/subset cards like League
+      // Leaders) — remember we checked so it's never re-enqueued.
+      await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+      return { applied: false, teamCreated: false };
+    }
+
+    const sport = await findSportForSelectorOption(ctx, row.selectorOptionId);
+    if (!sport) {
+      // Same ambiguous case backfillTeamToOnCardIds guards against. Leave
+      // teamCheckDoneAt unset so a future retry can still pick this up
+      // once the ancestor chain is fixed.
+      console.warn(
+        `[applyBscTeamResolution] skipping ambiguous row id=${row._id}` +
+          ` selectorOptionId=${row.selectorOptionId}`,
+      );
+      return { applied: false, teamCreated: false };
+    }
+
+    const normalized = normalizeTeamName(teamName);
+    const existing = await ctx.db
+      .query("teams")
+      .withIndex("by_name_normalized_and_sport", (q) =>
+        q.eq("nameNormalized", normalized).eq("sport", sport),
+      )
+      .first();
+
+    let teamId: Id<"teams">;
+    let teamCreated = false;
+    if (existing) {
+      teamId = existing._id;
+    } else {
+      teamId = await ctx.db.insert("teams", {
+        name: teamName,
+        nameNormalized: normalized,
+        sport,
+        lastUpdated: Date.now(),
+      });
+      teamCreated = true;
+    }
+
+    await ctx.db.patch(row._id, {
+      teamOnCardIds: [teamId],
+      teamCheckDoneAt: Date.now(),
+      lastUpdated: Date.now(),
+    });
+
+    return { applied: true, teamCreated };
+  },
+});
+
+/**
+ * NEO-90: one-shot operator trigger to backfill team data for sets synced
+ * BEFORE the BSC per-card enrichment queue existed. No index exists for
+ * "has platformData.bsc, missing teamOnCardIds AND teamCheckDoneAt", so this
+ * pages through the table with a real cursor and filters in JS per page.
+ *
+ * MUST use a cursor (not a blind `.take(N)` re-scanned from the top every
+ * call) — this table keeps growing from ongoing syncs, and a fixed "first N"
+ * window's boundary can land in the middle of a single batch insert (a
+ * commitCardChecklist call inserts many rows with near-identical
+ * `_creationTime`s), permanently stranding whichever rows fall just past the
+ * cutoff no matter how many times the migration reruns. Confirmed this
+ * exact failure mode in practice: 47 of 335 cards in one set sat right at a
+ * `.take(1000)` boundary and were unreachable by any rerun until this fix.
+ * Operator reruns passing the returned `continueCursor` until `isDone`.
+ *
+ * IMPORTANT — do not rerun before the previous call's queue has drained.
+ * Enqueued cards only stop looking "eligible" once `processBscTeamEnrichmentQueue`
+ * actually resolves them (one every BSC_TEAM_ENRICH_DELAY_MS, serially), which
+ * takes `enqueued * BSC_TEAM_ENRICH_DELAY_MS` in the best case. Rerunning
+ * sooner re-scans the same still-pending rows and schedules a second,
+ * overlapping queue for them — harmless (each resolve is idempotent and a
+ * duplicate just no-ops once the other chain gets there first) but wastes a
+ * real live HTTP call to BSC per duplicate. `estimatedDrainMs` below is that
+ * lower bound — wait at least that long before calling again.
+ */
+export const enqueueBscTeamBackfill = internalMutation({
+  args: {
+    /** Cap on rows enqueued per page. Defaults to 200. */
+    batchSize: v.optional(v.number()),
+    /** Pagination cursor from a previous call's `continueCursor`. Omit/null to start from the beginning. */
+    cursor: v.optional(v.union(v.string(), v.null())),
+  },
+  returns: v.object({
+    enqueued: v.number(),
+    /** Eligible rows in THIS page beyond batchSize — bump batchSize if nonzero. */
+    remaining: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+    /** Minimum ms to wait before calling this again — see doc comment above. */
+    estimatedDrainMs: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = args.batchSize ?? 200;
+    const PAGE_SIZE = 1000;
+    const page = await ctx.db
+      .query("cardChecklist")
+      .paginate({ cursor: args.cursor ?? null, numItems: PAGE_SIZE });
+
+    const candidateIds: Id<"cardChecklist">[] = [];
+    let remaining = 0;
+    for (const row of page.page) {
+      const needsCheck =
+        !!row.platformData?.bsc &&
+        (!row.teamOnCardIds || row.teamOnCardIds.length === 0) &&
+        !row.teamCheckDoneAt;
+      if (!needsCheck) continue;
+      if (candidateIds.length < batchSize) {
+        candidateIds.push(row._id);
+      } else {
+        remaining += 1;
+      }
+    }
+
+    if (candidateIds.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        { cardChecklistIds: candidateIds },
+      );
+    }
+
+    // Not imported directly — adapters/buysportscards.ts is a "use node"
+    // action file and this one isn't; cross-runtime imports of a directive
+    // file are unsupported in Convex's bundler. Keep in sync with
+    // BSC_TEAM_ENRICH_DELAY_MS there.
+    const BSC_TEAM_ENRICH_DELAY_MS = 300;
+    return {
+      enqueued: candidateIds.length,
+      remaining,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+      estimatedDrainMs: candidateIds.length * BSC_TEAM_ENRICH_DELAY_MS,
     };
   },
 });

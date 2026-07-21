@@ -3,6 +3,7 @@ import {
   mutation,
   action,
   internalMutation,
+  ActionCtx,
 } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
@@ -14,10 +15,18 @@ import {
   classifyAdapterError,
 } from "./observability";
 import {
-  deriveSetLevelFeatures,
   deriveCardObservedFeatures,
-  type SetLevelFeatureInputs,
+  deriveOwnLevelFeatures,
+  validateFeatureValue,
 } from "./features/deriveCardFeatures";
+import {
+  generateListingTitle,
+  generateListingDescription,
+} from "./features/generateListing";
+import { generateSku } from "./sku";
+import { findSportForSelectorOption } from "./cardChecklist";
+import { normalizePlayerName } from "./players";
+import { normalizeTeamName } from "./teams";
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
 const levelValidator = v.union(
@@ -35,20 +44,6 @@ const metadataValidator = v.optional(v.object({
   isInsert: v.optional(v.boolean()),
   isParallel: v.optional(v.boolean()),
 }));
-
-// NEO-24: set-level marketplace-listing metadata. Mirrors the matching
-// optional object on `selectorOptions` in schema.ts. Used by the
-// `setSetMetadata` mutation, the queries that return selectorOptions rows,
-// and the propagation engine.
-const setMetadataObjectValidator = v.object({
-  releaseDate: v.optional(v.string()),
-  totalCardCount: v.optional(v.number()),
-  block: v.optional(v.string()),
-  tcdbSetId: v.optional(v.string()),
-  sourceUrl: v.optional(v.string()),
-  lastSyncedAt: v.optional(v.number()),
-});
-const setMetadataValidator = v.optional(setMetadataObjectValidator);
 
 // NEO-24: marketplace-agnostic feature map (set-level + card-level).
 // Keys come from `convex/features/expectedFeatures.ts`; values are strings.
@@ -94,7 +89,6 @@ export const getSelectorOptions = query({
       isCustom: v.optional(v.boolean()),
       createdByUserId: v.optional(v.string()),
       metadata: metadataValidator,
-      setMetadata: setMetadataValidator,
       features: featuresValidator,
       lastUpdated: v.number(),
     }),
@@ -252,7 +246,6 @@ export const getSelectorOptionById = query({
       isCustom: v.optional(v.boolean()),
       createdByUserId: v.optional(v.string()),
       metadata: metadataValidator,
-      setMetadata: setMetadataValidator,
       features: featuresValidator,
       lastUpdated: v.number(),
     }),
@@ -294,7 +287,6 @@ export const findByLevelAndValue = query({
       isCustom: v.optional(v.boolean()),
       createdByUserId: v.optional(v.string()),
       metadata: metadataValidator,
-      setMetadata: setMetadataValidator,
       features: featuresValidator,
       lastUpdated: v.number(),
     }),
@@ -326,11 +318,6 @@ export const getAncestorChain = query({
         sportlotsDisplay: v.optional(v.string()),
       }),
       metadata: metadataValidator,
-      // NEO-38: surface ancestor setMetadata so callers (SetAttributesPanel)
-      // can read the setName-level release date / tcdbSetId etc. without a
-      // second round-trip. These fields are manually edited (no auto-sync).
-      // Shape mirrors the `setMetadata` column on schema.ts.
-      setMetadata: setMetadataValidator,
       // NEO-24: surface ancestor features so callers (commitCardChecklist
       // inheritance merge, SetFeaturesPanel) can resolve effective values
       // without a second round-trip.
@@ -346,14 +333,6 @@ export const getAncestorChain = query({
       value: string;
       platformData: { bsc?: string | string[]; sportlots?: string };
       metadata?: { cardNumberPrefix?: string; isInsert?: boolean; isParallel?: boolean };
-      setMetadata?: {
-        releaseDate?: string;
-        totalCardCount?: number;
-        block?: string;
-        tcdbSetId?: string;
-        sourceUrl?: string;
-        lastSyncedAt?: number;
-      };
       features?: Record<string, string>;
       isCustom?: boolean;
     }> = [];
@@ -368,7 +347,6 @@ export const getAncestorChain = query({
         value: option.value,
         platformData: option.platformData || {},
         metadata: option.metadata,
-        setMetadata: option.setMetadata,
         features: option.features,
         isCustom: option.isCustom,
       });
@@ -391,6 +369,108 @@ function isCustomSubtree(
   return chain.some((row) => row.isCustom === true);
 }
 
+/**
+ * Detect unresolved player/team names for a selectorOption and kick off the
+ * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
+ * marketplace path (folds in names observed on freshly-reconciled cards via
+ * `additionalPlayerNames`/`additionalTeamNames`) and the custom-subtree path
+ * (no marketplace cards at all, but its own custom cards can still carry
+ * `pendingPlayerNames`/`pendingTeamNames` that need the exact same
+ * resolution flow — every custom card on this selectorOption is read here
+ * regardless of path, via `getCardChecklist`).
+ *
+ * Before this was extracted, the custom-subtree branch in fetchCardChecklist
+ * short-circuited entirely before reaching any of this — a genuine product
+ * gap, not just a marketplace-adapter concern: a custom-only set's pending
+ * player names could NEVER be resolved via the review wizard, since this was
+ * the only place unknowns were ever computed. Splitting it out lets the
+ * custom-subtree branch call it too, without touching any BSC/SL logic.
+ */
+async function resolveUnknownsAndStartBatch(
+  ctx: ActionCtx,
+  args: {
+    selectorOptionId: Id<"selectorOptions">;
+    sport: string;
+    additionalPlayerNames?: string[];
+    additionalTeamNames?: string[];
+  },
+): Promise<{
+  unknownPlayers: string[];
+  unknownTeams: string[];
+  batchId?: string;
+}> {
+  const unknownPlayers: string[] = [];
+  const unknownTeams: string[] = [];
+  let batchId: string | undefined;
+
+  const playerByNorm = new Map<string, string>();
+  const teamByNorm = new Map<string, string>();
+  const addPlayer = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const norm = normalizePlayerName(trimmed);
+    if (!playerByNorm.has(norm)) playerByNorm.set(norm, trimmed);
+  };
+  const addTeam = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const norm = normalizeTeamName(trimmed);
+    if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
+  };
+
+  for (const p of args.additionalPlayerNames ?? []) addPlayer(p);
+  for (const t of args.additionalTeamNames ?? []) addTeam(t);
+
+  // Custom cards (added via addCustomCard) can declare pending player /
+  // team names that should also be surfaced as unknown until the user
+  // confirms them via the wizard. Without this pass, users who add a
+  // custom card for a brand-new player would never get prompted to
+  // enrich that player via the standard confirmation flow.
+  const customRows = await ctx.runQuery(api.selectorOptions.getCardChecklist, {
+    selectorOptionId: args.selectorOptionId,
+  });
+  for (const r of customRows) {
+    for (const p of r.pendingPlayerNames ?? []) addPlayer(p);
+    for (const t of r.pendingTeamNames ?? []) addTeam(t);
+  }
+
+  for (const name of playerByNorm.values()) {
+    const existing = await ctx.runQuery(api.players.findByNameAndSport, {
+      name,
+      sport: args.sport,
+    });
+    if (!existing) unknownPlayers.push(name);
+  }
+  for (const name of teamByNorm.values()) {
+    const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
+      name,
+      sport: args.sport,
+    });
+    if (!existing) unknownTeams.push(name);
+  }
+
+  // NEO-92: kick off the review-wizard batch (background Wikidata preview
+  // lookups + resumable decision queue) for whatever's unresolved.
+  // startBatch resumes an in-progress batch for this (selectorOptionId,
+  // user) pair rather than restarting it, so re-clicking "Fetch from
+  // Marketplaces" mid-review never discards progress — and is scoped
+  // per-user so two different sessions fetching the SAME set never
+  // share/collide on one batch.
+  if (unknownPlayers.length > 0 || unknownTeams.length > 0) {
+    const callerId = await getCurrentUserId(ctx);
+    if (!callerId) throw new Error("Not authenticated");
+    batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: args.selectorOptionId,
+      createdByUserId: callerId,
+      sport: args.sport,
+      playerNames: unknownPlayers,
+      teamNames: unknownTeams,
+    });
+  }
+
+  return { unknownPlayers, unknownTeams, batchId };
+}
+
 export const getCardChecklist = query({
   args: { selectorOptionId: v.id("selectorOptions") },
   returns: v.array(
@@ -408,6 +488,9 @@ export const getCardChecklist = query({
       team: v.optional(v.string()),
       playerIds: v.optional(v.array(v.id("players"))),
       teamOnCardIds: v.optional(v.array(v.id("teams"))),
+      // NEO-90: set once the BSC per-card team-enrichment queue has
+      // checked this card, regardless of outcome (see schema.ts).
+      teamCheckDoneAt: v.optional(v.number()),
       attributes: v.optional(v.array(v.string())),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
@@ -433,6 +516,8 @@ export const getCardChecklist = query({
       pendingPlayerNames: v.optional(v.array(v.string())),
       pendingTeamNames: v.optional(v.array(v.string())),
       features: featuresValidator,
+      // NEO-91: cross-marketplace SKU (see convex/sku.ts).
+      sku: v.optional(v.string()),
       sortOrder: v.number(),
       lastUpdated: v.number(),
     }),
@@ -449,7 +534,7 @@ export const getCardChecklist = query({
 });
 
 // NEO-85: structural deep-equal for the small plain-value objects/arrays we
-// store on selectorOptions (platformData, setMetadata, children id arrays).
+// store on selectorOptions (platformData, children id arrays).
 // Leaves are string | number | boolean | null; containers are arrays and plain
 // objects. Used to skip no-op ctx.db.patch calls: in Convex, patching a row —
 // even with byte-identical data — invalidates every query that read it, which
@@ -501,12 +586,6 @@ export const storeSelectorOptions = mutation({
           sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
           sportlotsDisplay: v.optional(v.string()),
         }),
-        // NEO-24: optional set-level metadata seed. Merge-patched onto
-        // existing rows; written-through to fresh inserts. Features are
-        // intentionally NOT accepted here — they only land via the
-        // `setSelectorOptionFeature` mutation so the propagation engine
-        // is the single source of truth.
-        setMetadata: v.optional(setMetadataObjectValidator),
       }),
     ),
     parentId: v.optional(v.id("selectorOptions")),
@@ -519,6 +598,14 @@ export const storeSelectorOptions = mutation({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, options, parentId } = args;
+
+    // NEO-71-74: every option in this batch shares one parentId — fetch its
+    // already-complete `features` snapshot once and copy it onto every
+    // fresh insert below (write-once feature snapshots: see
+    // deriveOwnLevelFeatures in convex/features/deriveCardFeatures.ts).
+    const parentFeatures: Record<string, string> | undefined = parentId
+      ? (await ctx.db.get(parentId))?.features
+      : undefined;
 
     // Get existing non-custom options for this level and parent
     const existingOptions = await ctx.db
@@ -575,11 +662,6 @@ export const storeSelectorOptions = mutation({
         };
         warnIfIncomplete(existing._id, option.value, mergedPlatformData);
 
-        // NEO-24: merge-patch setMetadata if caller supplied any.
-        const mergedSetMetadata = option.setMetadata
-          ? { ...(existing.setMetadata || {}), ...option.setMetadata }
-          : existing.setMetadata;
-
         // NEO-85: only patch when the merged data actually differs from what's
         // stored. A no-op patch still invalidates every query that read this
         // row, re-rendering + reflowing the SetSelector columns for nothing
@@ -591,32 +673,29 @@ export const storeSelectorOptions = mutation({
           mergedPlatformData,
           existing.platformData,
         );
-        const setMetadataChanged =
-          option.setMetadata !== undefined &&
-          !valuesDeepEqual(mergedSetMetadata, existing.setMetadata);
 
-        if (platformDataChanged || setMetadataChanged) {
-          const patch: Record<string, unknown> = {
+        if (platformDataChanged) {
+          await ctx.db.patch(existing._id, {
             platformData: mergedPlatformData,
             lastUpdated: Date.now(),
-          };
-          if (option.setMetadata) {
-            patch.setMetadata = mergedSetMetadata;
-          }
-          await ctx.db.patch(existing._id, patch);
+          });
         }
         // Always keep the row in the parent's children set, whether or not we
         // patched it — skipping the patch must not drop it from the ordering.
         insertedIds.push(existing._id);
       } else {
         warnIfIncomplete("new", option.value, option.platformData);
+        const features = {
+          ...(parentFeatures ?? {}),
+          ...deriveOwnLevelFeatures(level, option.value),
+        };
         const id = await ctx.db.insert("selectorOptions", {
           level,
           value: option.value,
           platformData: option.platformData,
           parentId,
           children: [],
-          ...(option.setMetadata ? { setMetadata: option.setMetadata } : {}),
+          ...(Object.keys(features).length > 0 ? { features } : {}),
           lastUpdated: Date.now(),
         });
         insertedIds.push(id);
@@ -668,14 +747,18 @@ export const addCustomSelectorOption = mutation({
     value: v.string(),
     parentId: v.optional(v.id("selectorOptions")),
     userId: v.optional(v.string()),
-    // NEO-24: optional set-level metadata to seed the custom row with.
-    // Features intentionally omitted — go through setSelectorOptionFeature.
-    setMetadata: v.optional(setMetadataObjectValidator),
   },
   returns: v.id("selectorOptions"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const { level, value, parentId, userId, setMetadata } = args;
+    const { level, value, parentId, userId } = args;
+
+    // NEO-71-74: fetch the parent once, up front — reused both for the
+    // fresh row's copy-down `features` snapshot below and for the
+    // children-array update at the end (same read count as before, just
+    // reordered; the insert doesn't touch the parent doc, so this stays
+    // accurate throughout the mutation).
+    const parent = parentId ? await ctx.db.get(parentId) : null;
 
     // Check for duplicate by normalized value
     const existing = await ctx.db
@@ -703,6 +786,11 @@ export const addCustomSelectorOption = mutation({
       return duplicate._id;
     }
 
+    const features = {
+      ...(parent?.features ?? {}),
+      ...deriveOwnLevelFeatures(level, value),
+    };
+
     const id = await ctx.db.insert("selectorOptions", {
       level,
       value,
@@ -711,21 +799,18 @@ export const addCustomSelectorOption = mutation({
       children: [],
       isCustom: true,
       createdByUserId: userId,
-      ...(setMetadata ? { setMetadata } : {}),
+      ...(Object.keys(features).length > 0 ? { features } : {}),
       lastUpdated: Date.now(),
     });
 
     // Update parent's children array
-    if (parentId) {
-      const parent = await ctx.db.get(parentId);
-      if (parent) {
-        const newChildren = [...(parent.children || []), id];
-        // NEO-85: guard the rewrite for consistency with storeSelectorOptions.
-        // `id` is a fresh insert so this practically always differs, but the
-        // guard keeps the no-op-patch discipline uniform across both paths.
-        if (!valuesDeepEqual(parent.children ?? [], newChildren)) {
-          await ctx.db.patch(parentId, { children: newChildren });
-        }
+    if (parentId && parent) {
+      const newChildren = [...(parent.children || []), id];
+      // NEO-85: guard the rewrite for consistency with storeSelectorOptions.
+      // `id` is a fresh insert so this practically always differs, but the
+      // guard keeps the no-op-patch discipline uniform across both paths.
+      if (!valuesDeepEqual(parent.children ?? [], newChildren)) {
+        await ctx.db.patch(parentId, { children: newChildren });
       }
     }
 
@@ -1048,6 +1133,30 @@ const richChecklistCardValidator = v.object({
  * to typical marketplace card numbers (1-500), which matches user
  * expectations for an appended custom slot.
  */
+/**
+ * Walk a selectorOptions node's parent chain to find its setName ancestor's
+ * display value (e.g. "Chrome"). Used only for listing-title/description
+ * generation (NEO-24/71-74) — every other consumer of the ancestor chain
+ * already had its own reason to walk it (e.g. commitCardChecklist's
+ * setNameAncestorId), so this stays a small, focused helper rather than a
+ * general-purpose ancestor-chain utility.
+ */
+async function findSetNameValue(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
+  node: any,
+): Promise<string | undefined> {
+  if (!node) return undefined;
+  if (node.level === "setName") return node.value;
+  let cursorId: Id<"selectorOptions"> | undefined = node.parentId;
+  while (cursorId) {
+    const n = await ctx.db.get(cursorId);
+    if (!n) break;
+    if (n.level === "setName") return n.value;
+    cursorId = n.parentId;
+  }
+  return undefined;
+}
+
 function compareCardNumbers(a: string, b: string): number {
   const aMatch = a.match(/^(\d+)(.*)/);
   const bMatch = b.match(/^(\d+)(.*)/);
@@ -1214,42 +1323,43 @@ export const addCustomCard = mutation({
       ?.map((n) => n.trim())
       .filter((n) => n.length > 0);
 
-    // NEO-38: inherit `features` from the selectorOption ancestor chain via
-    // MATERIALIZED node features. The heuristic (league/era/vintage/
-    // manufacturer/cardType/isReprint) is no longer derived per-card — it is
-    // seeded onto the originating NODES at commit time (see commitCardChecklist)
-    // and cascades down via setSelectorOptionFeature, so by the time a custom
-    // card is added the ancestor nodes already carry the resolved values. We
-    // simply merge each ancestor node's `features` top-down (deeper overrides
-    // shallower). Per-card card-observed facts (rookie/relic from the custom
-    // card's attributes) win over the inherited values.
-    const inheritedFeatures: Record<string, string> = {};
-    {
-      let cursorId: Id<"selectorOptions"> | undefined = args.selectorOptionId;
-      const chain: Array<Record<string, string> | undefined> = [];
-      while (cursorId) {
-        const node: any = await ctx.db.get(cursorId);
-        if (!node) break;
-        chain.unshift(node.features);
-        cursorId = node.parentId;
-      }
-      for (const f of chain) {
-        if (!f) continue;
-        for (const [k, val] of Object.entries(f)) {
-          inheritedFeatures[k] = val;
-        }
-      }
-    }
-    // NEO-38: precedence = materialized ancestor node features < card-observed
-    // facts. The set-level heuristic now lives on the nodes (no per-card
-    // deriveSetLevelFeatures merge), which fixes the bug where a per-card
-    // heuristic shadowed authoritative values written at the node.
+    // NEO-71-74: the selectorOption node this card lives under already
+    // carries a complete, self-contained `features` snapshot (copy-down
+    // happens once, at that node's own creation — see storeSelectorOptions/
+    // addCustomSelectorOption/storeReconciledOptions). No ancestor walk
+    // needed: a single read of this one node is the full resolved
+    // inheritance. Precedence = that snapshot < card-observed facts (a fact
+    // seen on THIS card, e.g. it's a rookie, wins).
+    const parentNode = await ctx.db.get(args.selectorOptionId);
+    const inheritedFeatures: Record<string, string> = parentNode?.features ?? {};
     const mergedFeatures: Record<string, string> = {
       ...inheritedFeatures,
       ...deriveCardObservedFeatures({ attributes: args.attributes }),
     };
     const featuresOrUndefined: Record<string, string> | undefined =
       Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
+
+    // NEO-24/71-74: write-once listing title/description, generated once
+    // here at creation time from whatever's already known, then freely
+    // editable afterward (same model as every other default this session —
+    // never regenerated automatically once a row exists). Pending player
+    // names are used as-is for display purposes even though they aren't
+    // resolved to real player rows yet (that happens later, if confirmed,
+    // via commitCardChecklist) — the operator typed a real name, so it's
+    // the right thing to show regardless of reconciliation state.
+    const setNameValue = await findSetNameValue(ctx, parentNode);
+    const listingInputs = {
+      cardNumber: args.cardNumber,
+      playerNames: pendingPlayerNames,
+      year: mergedFeatures.season,
+      manufacturer: mergedFeatures.manufacturer,
+      setName: setNameValue,
+      parallelName: mergedFeatures.parallelName,
+      isRookie: (args.attributes ?? []).includes("RC"),
+      isRelic: (args.attributes ?? []).includes("RELIC"),
+      autographed: mergedFeatures.autographed,
+      shortPrint: mergedFeatures.shortPrint,
+    };
 
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
     // below assigns the correct natural-cardNumber position. This way a
@@ -1272,11 +1382,25 @@ export const addCustomCard = mutation({
         ? { pendingTeamNames }
         : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
+      listingTitle: generateListingTitle(listingInputs),
+      listingDescription: generateListingDescription(listingInputs),
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
 
     await restampCardChecklistSortOrders(ctx, args.selectorOptionId);
+
+    // NEO-91: same insert-then-patch SKU generation as commitCardChecklist.
+    const sport = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    await ctx.db.patch(id, {
+      sku: generateSku({
+        sport: sport ?? "",
+        year: mergedFeatures.season ?? "",
+        setName: setNameValue ?? "",
+        cardNumber: args.cardNumber,
+        uniqueSuffix: crypto.randomUUID(),
+      }),
+    });
 
     return id;
   },
@@ -1340,10 +1464,10 @@ export const deleteCard = mutation({
 });
 
 // ===========================================================================
-// NEO-24: Feature / setMetadata propagation engine
+// NEO-24: Feature propagation engine
 // ===========================================================================
 //
-// Three mutations work together to maintain the marketplace-agnostic feature
+// Two mutations work together to maintain the marketplace-agnostic feature
 // map:
 //
 //   - setSelectorOptionFeature(selectorOptionId, key, value)
@@ -1353,15 +1477,16 @@ export const deleteCard = mutation({
 //       through. Cards that have already overridden the key are left
 //       untouched and counted as `skippedAsOverridden`. Counts are returned
 //       so the UI can confirm propagation scope before showing a toast.
+//       (Formerly there was a separate `setSetMetadata` mutation for
+//       releaseDate/totalCardCount/block, editable ONLY at the setName
+//       level. Folded into this same feature map/mutation so those fields
+//       can independently override at every set-side level too — e.g. a
+//       parallel released later than its base set with its own release
+//       date.)
 //
 //   - setCardFeature(cardChecklistId, key, value)
 //       Plain per-card patch — no propagation. Use this for explicit
 //       per-card overrides.
-//
-//   - setSetMetadata(selectorOptionId, metadata)
-//       Merge-patches `setMetadata` on the named row. Set-level only; does
-//       NOT propagate (per the audit, setMetadata is set-specific by
-//       construction — release date, total card count, etc).
 //
 // Inheritance at card-creation time happens in `commitCardChecklist`
 // (further down this file): the new card's `features` is the top-down
@@ -1412,35 +1537,6 @@ async function collectDescendantIds(
   return out;
 }
 
-/**
- * NEO-24: count every cardChecklist row in the subtree rooted at this
- * selectorOption. Used by `<SetFeaturesPanel>` to render the
- * "Will propagate to N cards" preview before the operator commits a
- * feature edit. Read-only query — `withIndex` on by_selector_option
- * keeps it bounded even on large sets.
- */
-export const getDescendantCardCount = query({
-  args: { selectorOptionId: v.id("selectorOptions") },
-  returns: v.number(),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const subtreeIds: Array<Id<"selectorOptions">> = [
-      args.selectorOptionId,
-      ...(await collectDescendantIds(ctx as any, args.selectorOptionId)),
-    ];
-    let count = 0;
-    for (const optId of subtreeIds) {
-      const cards = await ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) =>
-          q.eq("selectorOptionId", optId),
-        )
-        .collect();
-      count += cards.length;
-    }
-    return count;
-  },
-});
 
 /**
  * NEO-38: core materialization routine shared by the public
@@ -1466,6 +1562,8 @@ export async function materializeSelectorOptionFeature(
   propagatedToNodeCount: number;
   skippedAsOverridden: number;
 }> {
+  validateFeatureValue(key, value);
+
   const row = await ctx.db.get(selectorOptionId);
   if (!row) {
     throw new Error(`selectorOption ${selectorOptionId} not found`);
@@ -1557,25 +1655,31 @@ export async function materializeSelectorOptionFeature(
   };
 }
 
+// NEO-71-74: single-row patch, matching setCardFeature's shape exactly — an
+// edit updates only the row being edited, never children or cards. Every
+// row's `features` is already a complete, self-contained snapshot from its
+// own creation (copy-down); descendants/cards created AFTER this edit pick
+// it up naturally via that same copy-down, but rows that already existed
+// before the edit keep whatever they were seeded with.
 export const setSelectorOptionFeature = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     key: v.string(),
     value: v.string(),
   },
-  returns: v.object({
-    propagatedToCardCount: v.number(),
-    propagatedToNodeCount: v.number(),
-    skippedAsOverridden: v.number(),
-  }),
+  returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return await materializeSelectorOptionFeature(
-      ctx,
-      args.selectorOptionId,
-      args.key,
-      args.value,
-    );
+    validateFeatureValue(args.key, args.value);
+    const row = await ctx.db.get(args.selectorOptionId);
+    if (!row) {
+      throw new Error(`selectorOption ${args.selectorOptionId} not found`);
+    }
+    await ctx.db.patch(args.selectorOptionId, {
+      features: { ...(row.features ?? {}), [args.key]: args.value },
+      lastUpdated: Date.now(),
+    });
+    return null;
   },
 });
 
@@ -1588,32 +1692,35 @@ export const setCardFeature = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    validateFeatureValue(args.key, args.value);
     const card = await ctx.db.get(args.cardChecklistId);
     if (!card) {
       throw new Error(`cardChecklist ${args.cardChecklistId} not found`);
     }
-    await ctx.db.patch(args.cardChecklistId, {
-      features: { ...(card.features ?? {}), [args.key]: args.value },
-      lastUpdated: Date.now(),
-    });
-    return null;
-  },
-});
+    const features = { ...(card.features ?? {}), [args.key]: args.value };
 
-export const setSetMetadata = mutation({
-  args: {
-    selectorOptionId: v.id("selectorOptions"),
-    metadata: setMetadataObjectValidator,
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const row = await ctx.db.get(args.selectorOptionId);
-    if (!row) {
-      throw new Error(`selectorOption ${args.selectorOptionId} not found`);
+    // Autographed flipping from blank/None to a real format: default Signed
+    // By to the player(s) already attached to this card. Multiple players
+    // (e.g. a dual/triple relic-auto) are all included, comma-separated.
+    // An operator can still edit Signed By afterward — this only seeds it.
+    if (args.key === "autographed") {
+      const wasBlank = (card.features?.autographed ?? "None") === "None";
+      const isNowSet = args.value !== "None";
+      if (wasBlank && isNowSet && card.playerIds && card.playerIds.length > 0) {
+        const players = await Promise.all(
+          card.playerIds.map((id) => ctx.db.get(id)),
+        );
+        const names = players
+          .filter((p): p is NonNullable<typeof p> => p !== null)
+          .map((p) => p.name);
+        if (names.length > 0) {
+          features.signedBy = names.join(", ");
+        }
+      }
     }
-    await ctx.db.patch(args.selectorOptionId, {
-      setMetadata: { ...(row.setMetadata ?? {}), ...args.metadata },
+
+    await ctx.db.patch(args.cardChecklistId, {
+      features,
       lastUpdated: Date.now(),
     });
     return null;
@@ -1642,8 +1749,7 @@ export const getInsertTreeByVariantType = query({
         isCustom: v.optional(v.boolean()),
         createdByUserId: v.optional(v.string()),
         metadata: metadataValidator,
-        setMetadata: setMetadataValidator,
-        features: featuresValidator,
+          features: featuresValidator,
         lastUpdated: v.number(),
       }),
       parallels: v.array(
@@ -1662,8 +1768,7 @@ export const getInsertTreeByVariantType = query({
           isCustom: v.optional(v.boolean()),
           createdByUserId: v.optional(v.string()),
           metadata: metadataValidator,
-          setMetadata: setMetadataValidator,
-          features: featuresValidator,
+              features: featuresValidator,
           lastUpdated: v.number(),
         }),
       ),
@@ -3306,6 +3411,9 @@ export const fetchCardChecklist = action({
     cards: v.array(previewCardValidator),
     unknownPlayers: v.array(v.string()),
     unknownTeams: v.array(v.string()),
+    // NEO-92: present whenever unknownPlayers/unknownTeams is non-empty —
+    // the review wizard subscribes to this batch via entityReviewQueue.
+    batchId: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -3329,6 +3437,7 @@ export const fetchCardChecklist = action({
     }>;
     unknownPlayers: string[];
     unknownTeams: string[];
+    batchId?: string;
   }> => {
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
@@ -3372,14 +3481,30 @@ export const fetchCardChecklist = action({
         console.log(
           `[fetchCardChecklist] custom subtree detected — skipping BSC/SL`,
         );
+        // No marketplace cards exist for a custom subtree (correctly always
+        // `cards: []`), but its own custom cards can still carry unresolved
+        // pendingPlayerNames/pendingTeamNames — resolve those and open the
+        // review wizard for them the same way the marketplace path does.
+        // Without this, a custom-only set's pending names could never be
+        // resolved via the wizard at all (see resolveUnknownsAndStartBatch's
+        // doc comment for why this is a real, previously-unclosed gap).
+        const { unknownPlayers, unknownTeams, batchId } = sport
+          ? await resolveUnknownsAndStartBatch(ctx, {
+              selectorOptionId: args.selectorOptionId,
+              sport,
+            })
+          : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
         return {
           success: true,
           message:
-            "Custom selector subtree — no marketplace data available; add custom cards.",
+            unknownPlayers.length || unknownTeams.length
+              ? `Custom selector subtree — ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation.`
+              : "Custom selector subtree — no marketplace data available; add custom cards.",
           sport,
           cards: [],
-          unknownPlayers: [],
-          unknownTeams: [],
+          unknownPlayers,
+          unknownTeams,
+          batchId,
         };
       }
 
@@ -3700,47 +3825,50 @@ export const fetchCardChecklist = action({
         });
       }
 
-      // 4. Bucket unique player + team names against existing tables.
-      //    Skip bucketing entirely if we can't infer sport (sets without
-      //    a sport ancestor — shouldn't happen but guard anyway).
-      const unknownPlayers: string[] = [];
-      const unknownTeams: string[] = [];
-      if (sport) {
-        const playerSet = new Set<string>();
-        const teamSet = new Set<string>();
-        for (const c of out) {
-          for (const p of c.players ?? []) if (p.trim()) playerSet.add(p.trim());
-          for (const t of c.teams ?? []) if (t.trim()) teamSet.add(t.trim());
-          if (c.team && c.team.trim() && !c.teams?.length) teamSet.add(c.team.trim());
-        }
-
-        // Custom cards (added via addCustomCard) can declare pending player /
-        // team names that should also be surfaced as unknown until the user
-        // confirms them via the dialog. Without this pass, users who add a
-        // custom card for a brand-new player would never get prompted to
-        // enrich that player via the standard confirmation flow.
-        const customRows = await ctx.runQuery(
-          api.selectorOptions.getCardChecklist,
-          { selectorOptionId: args.selectorOptionId },
+      // 4. NEO-90: resolve team names for regular BSC cards that don't
+      //    already have one from the cheap synchronous parse (TC-suffix /
+      //    parenthetical — see parsePlayersField). This is the only place
+      //    that pays a per-card network cost, done once as a single bounded
+      //    fan-out so team names land in the SAME confirm dialog as new
+      //    players below, instead of trickling in via the background
+      //    enrichment queue after save. SportLots-only cards (no BSC ref)
+      //    are skipped — this feature is BSC-only.
+      const needsTeamLookup = out.filter(
+        (c) => !c.teams?.length && !c.team && c.platformData.bsc,
+      );
+      if (needsTeamLookup.length > 0) {
+        const teamNames: Record<string, string> = await ctx.runAction(
+          internal.adapters.buysportscards.fetchBscCardTeamNames,
+          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!) },
         );
-        for (const r of customRows) {
-          for (const p of r.pendingPlayerNames ?? []) {
-            if (p.trim()) playerSet.add(p.trim());
-          }
-          for (const t of r.pendingTeamNames ?? []) {
-            if (t.trim()) teamSet.add(t.trim());
-          }
-        }
-
-        for (const name of playerSet) {
-          const existing = await ctx.runQuery(api.players.findByNameAndSport, { name, sport });
-          if (!existing) unknownPlayers.push(name);
-        }
-        for (const name of teamSet) {
-          const existing = await ctx.runQuery(api.teams.findByNameAndSport, { name, sport });
-          if (!existing) unknownTeams.push(name);
+        for (const c of needsTeamLookup) {
+          const name = teamNames[c.platformData.bsc!];
+          if (name) c.teams = [name];
         }
       }
+
+      // 5. Bucket unique player + team names against existing tables.
+      //    Deduped by NORMALIZED name (not raw trimmed string) — two
+      //    spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr")
+      //    used to produce two separate unknowns + two Wikidata lookups;
+      //    first-seen display spelling wins. Skip bucketing entirely if we
+      //    can't infer sport (sets without a sport ancestor — shouldn't
+      //    happen but guard anyway).
+      const additionalPlayerNames: string[] = [];
+      const additionalTeamNames: string[] = [];
+      for (const c of out) {
+        for (const p of c.players ?? []) additionalPlayerNames.push(p);
+        for (const t of c.teams ?? []) additionalTeamNames.push(t);
+        if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
+      }
+      const { unknownPlayers, unknownTeams, batchId } = sport
+        ? await resolveUnknownsAndStartBatch(ctx, {
+            selectorOptionId: args.selectorOptionId,
+            sport,
+            additionalPlayerNames,
+            additionalTeamNames,
+          })
+        : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
 
       console.log(
         `[fetchCardChecklist] reconciled ${out.length} cards`,
@@ -3754,6 +3882,7 @@ export const fetchCardChecklist = action({
         cards: out,
         unknownPlayers,
         unknownTeams,
+        batchId,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
@@ -3769,22 +3898,23 @@ export const fetchCardChecklist = action({
 });
 
 /**
- * Mutation — commit a fetched checklist preview. Confirmed unknowns are
- * created via findOrCreate (player/team), card playerIds/teamOnCardIds
- * are resolved, the checklist is persisted, and Wikidata enrichment is
- * scheduled in the background for newly created entities.
- *
- * confirmedNewPlayers / confirmedNewTeams: subset of unknownPlayers/
- * unknownTeams the user approved in the dialog. Skipped names are kept
- * as free-text on the card (`team`) and DON'T get an entity row.
+ * Mutation — commit a fetched checklist preview. Every player/team name
+ * that isn't already in our tables was reviewed one-at-a-time in the
+ * NEO-92 review wizard (batchId → entityReviewQueue), which recorded a
+ * `decision` of "create" (seeded from the wizard's own Wikidata preview
+ * lookup) or "link" (an existing player/team the user picked instead —
+ * no new row). There is no skip: every name resolves to one or the other.
+ * Card playerIds/teamOnCardIds are resolved from those decisions, the
+ * checklist is persisted, and the batch's review rows are cleaned up.
  */
 export const commitCardChecklist = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     sport: v.string(),
     cards: v.array(previewCardValidator),
-    confirmedNewPlayers: v.array(v.string()),
-    confirmedNewTeams: v.array(v.string()),
+    // Present whenever the fetch surfaced unknown names (and the wizard
+    // ran); absent on the zero-unknowns fast path.
+    batchId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -3825,8 +3955,8 @@ export const commitCardChecklist = mutation({
 
     // Fold in pending* names from custom cards on this variant. Those rows
     // aren't in args.cards (which is the BSC/SL fetch preview), so without
-    // this pass a confirmedNewPlayers entry pointing at a custom card's
-    // pending player would never get inserted into the players table.
+    // this pass a reviewed custom-card pending player would never get
+    // inserted into the players table.
     const existingForPending = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) =>
@@ -3843,8 +3973,47 @@ export const commitCardChecklist = mutation({
       }
     }
 
-    const confirmedPlayersNorm = new Set(args.confirmedNewPlayers.map(norm));
-    const confirmedTeamsNorm = new Set(args.confirmedNewTeams.map(norm));
+    // NEO-92: load this batch's reviewed decisions (create/link, no skip —
+    // see the wizard). Keyed by kind+normalized-name so a player and a team
+    // that happen to share a normalized name never collide.
+    const reviewRows = args.batchId
+      ? await ctx.db
+          .query("entityReviewQueue")
+          .withIndex("by_selector_option_and_batch", (q) =>
+            q
+              .eq("selectorOptionId", args.selectorOptionId)
+              .eq("batchId", args.batchId!),
+          )
+          .collect()
+      : [];
+    const reviewByKey = new Map<string, (typeof reviewRows)[number]>();
+    for (const row of reviewRows) {
+      reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
+    }
+
+    // Get-or-create a bare team row by name — used to resolve a newly
+    // created player's career-team names (from the wizard's Wikidata
+    // preview) to real team ids. Deliberately minimal (no enrichment
+    // fields) since these are incidental historical teams, not something
+    // the user reviewed directly — same behavior as today's
+    // teams.findOrCreateInternal, inlined here since a mutation can't call
+    // another mutation via ctx.runMutation.
+    const resolveTeamIdByName = async (rawName: string): Promise<Id<"teams">> => {
+      const normalized = norm(rawName);
+      const existing = await ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport", (q) =>
+          q.eq("nameNormalized", normalized).eq("sport", args.sport),
+        )
+        .first();
+      if (existing) return existing._id;
+      return await ctx.db.insert("teams", {
+        name: rawName.trim(),
+        nameNormalized: normalized,
+        sport: args.sport,
+        lastUpdated: Date.now(),
+      });
+    };
 
     const playerIdByName = new Map<string, Id<"players">>();
     const createdPlayerIds: Array<Id<"players">> = [];
@@ -3860,18 +4029,39 @@ export const commitCardChecklist = mutation({
         .first();
       if (existing) {
         playerIdByName.set(name, existing._id);
-      } else if (confirmedPlayersNorm.has(normalized)) {
-        const id = await ctx.db.insert("players", {
-          name: name.trim(),
-          nameNormalized: normalized,
-          primarySport: args.sport,
-          createdByUserId: userId,
-          lastUpdated: Date.now(),
-        });
-        playerIdByName.set(name, id);
-        createdPlayerIds.push(id);
+        continue;
       }
-      // else: user skipped this name — leave unresolved; card keeps free-text
+      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      if (!decision) continue; // not reviewed — shouldn't happen; card keeps this name unresolved
+      if (decision.action === "link") {
+        if (decision.linkedPlayerId) playerIdByName.set(name, decision.linkedPlayerId);
+        continue;
+      }
+      // decision.action === "create" — seed directly from the wizard's own
+      // Wikidata preview lookup (already fetched during review); no more
+      // post-commit processEnrichmentQueue scheduling needed for this row.
+      const enrichment = reviewByKey.get(`player:${normalized}`)?.enrichment;
+      const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [];
+      for (const ct of enrichment?.careerTeams ?? []) {
+        const teamId = await resolveTeamIdByName(ct.name);
+        teamYears.push({ teamId, fromYear: ct.fromYear, toYear: ct.toYear });
+      }
+      const id = await ctx.db.insert("players", {
+        name: name.trim(),
+        nameNormalized: normalized,
+        primarySport: args.sport,
+        createdByUserId: userId,
+        lastUpdated: Date.now(),
+        ...(teamYears.length ? { teamYears } : {}),
+        ...(enrichment?.isHallOfFame !== undefined
+          ? { isHallOfFame: enrichment.isHallOfFame }
+          : {}),
+        ...(enrichment?.wikidataId
+          ? { externalIds: { wikidataId: enrichment.wikidataId } }
+          : {}),
+      });
+      playerIdByName.set(name, id);
+      createdPlayerIds.push(id);
     }
 
     const teamIdByName = new Map<string, Id<"teams">>();
@@ -3886,16 +4076,35 @@ export const commitCardChecklist = mutation({
         .first();
       if (existing) {
         teamIdByName.set(name, existing._id);
-      } else if (confirmedTeamsNorm.has(normalized)) {
-        const id = await ctx.db.insert("teams", {
-          name: name.trim(),
-          nameNormalized: normalized,
-          sport: args.sport,
-          lastUpdated: Date.now(),
-        });
-        teamIdByName.set(name, id);
-        createdTeamIds.push(id);
+        continue;
       }
+      const decision = reviewByKey.get(`team:${normalized}`)?.decision;
+      if (!decision) continue;
+      if (decision.action === "link") {
+        if (decision.linkedTeamId) teamIdByName.set(name, decision.linkedTeamId);
+        continue;
+      }
+      const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
+      const id = await ctx.db.insert("teams", {
+        name: name.trim(),
+        nameNormalized: normalized,
+        sport: args.sport,
+        lastUpdated: Date.now(),
+        ...(enrichment?.league ? { league: enrichment.league } : {}),
+        ...(enrichment?.city ? { city: enrichment.city } : {}),
+        ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
+        ...(enrichment?.colors ? { colors: enrichment.colors } : {}),
+        ...(enrichment?.wikidataId || enrichment?.espnId
+          ? {
+              externalIds: {
+                wikidataId: enrichment?.wikidataId,
+                espnId: enrichment?.espnId,
+              },
+            }
+          : {}),
+      });
+      teamIdByName.set(name, id);
+      createdTeamIds.push(id);
     }
 
     // Resolve per-card playerIds / teamOnCardIds. Cards whose names are
@@ -3945,103 +4154,46 @@ export const commitCardChecklist = mutation({
     for (const card of existingCards) existingByNumber.set(card.cardNumber, card);
     const processedNumbers = new Set<string>();
 
-    // NEO-38: walk the ancestor chain once and capture the node id at each
-    // level. We need these ids to seed the heuristic at its natural ORIGINATING
-    // level (sport/year/manufacturer/setName/variant) so it materializes down
-    // to descendant nodes + cards, rather than deriving it per-card. This fixes
-    // the bug where a per-card heuristic shadowed authoritative node values.
-    const ancestorNodeIdByLevel: Partial<Record<Level, Id<"selectorOptions">>> =
-      {};
-    // Snapshot each ancestor node's `features` map BEFORE we seed, keyed by
-    // level — used for the "fill-absent" check (only seed a (node,key) whose
-    // own features[key] is currently undefined).
-    const ancestorFeaturesByLevel: Partial<
-      Record<Level, Record<string, string> | undefined>
-    > = {};
-    const setLevelInputs: SetLevelFeatureInputs = { sport: args.sport };
-    {
-      let cursorId: Id<"selectorOptions"> | undefined = args.selectorOptionId;
-      let isLeaf = true;
-      while (cursorId) {
-        const node: any = await ctx.db.get(cursorId);
-        if (!node) break;
-        ancestorNodeIdByLevel[node.level as Level] = node._id;
-        ancestorFeaturesByLevel[node.level as Level] = node.features;
-        if (isLeaf) {
-          setLevelInputs.leafLevel = node.level;
-          setLevelInputs.leafIsInsert = node.metadata?.isInsert ?? undefined;
-          setLevelInputs.leafIsParallel = node.metadata?.isParallel ?? undefined;
-          isLeaf = false;
-        }
-        if (node.level === "year") setLevelInputs.year = node.value;
-        if (node.level === "manufacturer") {
-          setLevelInputs.manufacturer = node.value;
-        }
-        cursorId = node.parentId;
-      }
-    }
-
-    // NEO-38: seed the heuristic at its natural originating level, FILL-ABSENT
-    // only (never overwrite a node that already carries its own value), via
-    // materializeSelectorOptionFeature so it cascades down to descendant nodes
-    // AND existing cards. The leaf (`args.selectorOptionId`) is the variant
-    // node. Mapping (per the plan):
-    //   league      → sport node
-    //   era,vintage → year node
-    //   manufacturer→ manufacturer node
-    //   cardType    → variant node (the leaf)
-    //   isReprint   → setName node (default "false")
-    const heuristic = deriveSetLevelFeatures(setLevelInputs);
-    const seedPlan: Array<{ level: Level; keys: string[] }> = [
-      { level: "sport", keys: ["league"] },
-      { level: "year", keys: ["era", "vintage"] },
-      { level: "manufacturer", keys: ["manufacturer"] },
-      { level: setLevelInputs.leafLevel as Level, keys: ["cardType"] },
-      { level: "setName", keys: ["isReprint"] },
-    ];
-    for (const { level, keys } of seedPlan) {
-      const nodeId = ancestorNodeIdByLevel[level];
-      if (!nodeId) continue; // e.g. no manufacturer ancestor on this chain
-      const nodeFeatures = ancestorFeaturesByLevel[level];
-      for (const key of keys) {
-        const derived = heuristic[key];
-        if (derived === undefined) continue; // heuristic produced nothing here
-        // Fill-absent: only seed when this node has no own value for the key.
-        if (nodeFeatures && nodeFeatures[key] !== undefined) continue;
-        await materializeSelectorOptionFeature(ctx, nodeId, key, derived);
-      }
-    }
-
-    // NEO-38: rebuild the inherited feature map for NEW cards by RE-READING the
-    // ancestor node `features` (post heuristic-seed). Merge top-down (deeper
-    // ancestors override shallower). Existing rows are owned by the
-    // materialization pass above; we don't re-merge onto them here.
-    const inheritedFeatures: Record<string, string> = {};
-    {
-      let cursorId: Id<"selectorOptions"> | undefined = args.selectorOptionId;
-      const chain: Array<Record<string, string> | undefined> = [];
-      while (cursorId) {
-        const node: any = await ctx.db.get(cursorId);
-        if (!node) break;
-        chain.unshift(node.features);
-        cursorId = node.parentId;
-      }
-      for (const f of chain) {
-        if (!f) continue;
-        for (const [k, val] of Object.entries(f)) {
-          inheritedFeatures[k] = val;
-        }
-      }
-    }
+    // NEO-71-74: every selectorOptions row is a complete, self-contained
+    // `features` snapshot at all times (copy-down happens once, at each
+    // row's own creation — see storeSelectorOptions/addCustomSelectorOption/
+    // storeReconciledOptions in this file and convex/setReconciliation.ts).
+    // No ancestor walk or commit-time seeding needed for inheritance
+    // anymore: the leaf node IS the fully resolved snapshot. (This replaces
+    // the old NEO-38 commit-time seed, which also had a real, independent
+    // cost — cascading from an ancestor as high as the sport node touched
+    // that sport's entire catalog subtree on every single checklist commit.)
+    const leafNode = await ctx.db.get(args.selectorOptionId);
     const inheritedFeaturesOrUndefined: Record<string, string> | undefined =
-      Object.keys(inheritedFeatures).length > 0 ? inheritedFeatures : undefined;
+      leafNode?.features && Object.keys(leafNode.features).length > 0
+        ? leafNode.features
+        : undefined;
 
-    // NEO-38: per-card features now come ONLY from inherited (materialized)
-    // ancestor node features + the shared `deriveCardObservedFeatures` helper
-    // (isRookie/isRelic/signedBy/parallelName). The set-level heuristic is no
-    // longer merged per-card — it lives on the nodes. The result is written
-    // only for NEW card rows; existing rows are owned by the materialization
-    // pass / setCardFeature (operator overrides must not be clobbered).
+    // Still need the nearest setName ancestor id below (unrelated to
+    // features — used only for the totalCardCount/lastSyncedAt patch).
+    let setNameAncestorId: Id<"selectorOptions"> | undefined =
+      leafNode?.level === "setName" ? leafNode._id : undefined;
+    if (!setNameAncestorId) {
+      let cursorId: Id<"selectorOptions"> | undefined = leafNode?.parentId;
+      while (cursorId && !setNameAncestorId) {
+        const node: any = await ctx.db.get(cursorId);
+        if (!node) break;
+        if (node.level === "setName") setNameAncestorId = node._id;
+        cursorId = node.parentId;
+      }
+    }
+    // Fetched once for the whole batch (not per-card) — used only for
+    // listing-title/description generation on newly-inserted rows below.
+    const setNameValue = setNameAncestorId
+      ? (await ctx.db.get(setNameAncestorId))?.value
+      : undefined;
+
+    // NEO-71-74: per-card features come from the leaf node's already-complete
+    // `features` snapshot (`inheritedFeaturesOrUndefined`, read above) merged
+    // with the shared `deriveCardObservedFeatures` helper (isRookie/isRelic/
+    // signedBy/parallelName — observed on this card only). The result is
+    // written only for NEW card rows; existing rows are owned by
+    // `setCardFeature` (operator overrides must not be clobbered here).
 
     // Pre-compute the target sortOrder for every card that will be in this
     // selectorOption after the upsert: incoming richCards (marketplace) PLUS
@@ -4061,6 +4213,11 @@ export const commitCardChecklist = mutation({
     allFinalNumbers.sort(compareCardNumbers);
     const targetSortOrder = new Map<string, number>();
     allFinalNumbers.forEach((cn, idx) => targetSortOrder.set(cn, idx));
+
+    // NEO-90: cards touched by this commit that have a BSC platform ref
+    // but no team resolved yet get queued for the throttled per-card BSC
+    // team lookup below (see processBscTeamEnrichmentQueue).
+    const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
 
     for (let i = 0; i < richCards.length; i++) {
       const card = richCards[i];
@@ -4088,19 +4245,67 @@ export const commitCardChecklist = mutation({
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
         });
+        if (
+          mergedPlatformData.bsc &&
+          (!card.teamOnCardIds || card.teamOnCardIds.length === 0) &&
+          !existing.teamCheckDoneAt
+        ) {
+          bscTeamEnrichmentIds.push(existing._id);
+        }
       } else {
-        // NEO-38: precedence = materialized ancestor node features (which now
-        // include the heuristic seed) < card-observed facts. A fact seen on
-        // THIS card (e.g. it's a rookie) beats the inherited values. No
-        // per-card set-level derivation anymore.
+        // NEO-71-74: precedence = the leaf node's complete features snapshot
+        // (already resolved at that node's own creation time) < card-observed
+        // facts. A fact seen on THIS card (e.g. it's a rookie) beats the
+        // inherited values.
         const mergedFeatures: Record<string, string> = {
           ...(inheritedFeaturesOrUndefined ?? {}),
           ...deriveCardObservedFeatures(card),
         };
+        // A card arriving already-autographed (marketplace data carried an
+        // autographType) gets the same "just became non-None -> default
+        // Signed By from the roster" treatment `setCardFeature` applies for
+        // a manual operator edit — the roster is already resolved as real
+        // IDs at this point (see the player/team findOrCreate pass above).
+        const wasBlank =
+          (inheritedFeaturesOrUndefined?.autographed ?? "None") === "None";
+        const isNowSet =
+          !!mergedFeatures.autographed && mergedFeatures.autographed !== "None";
+
+        // Resolved once, unconditionally — used for the signedBy default
+        // below (only when autographed just turned on) AND unconditionally
+        // for listing-title/description generation further down.
+        let playerNames: string[] = [];
+        if (card.playerIds && card.playerIds.length > 0) {
+          const players = await Promise.all(
+            card.playerIds.map((id) => ctx.db.get(id)),
+          );
+          playerNames = players
+            .filter((p): p is NonNullable<typeof p> => p !== null)
+            .map((p) => p.name);
+        }
+        if (wasBlank && isNowSet && !mergedFeatures.signedBy && playerNames.length > 0) {
+          mergedFeatures.signedBy = playerNames.join(", ");
+        }
         const featuresOrUndefined =
           Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
 
-        await ctx.db.insert("cardChecklist", {
+        // NEO-24/71-74: write-once listing title/description, generated
+        // once here at creation time, then freely editable afterward (same
+        // model as every other default this session).
+        const listingInputs = {
+          cardNumber: card.cardNumber,
+          playerNames,
+          year: mergedFeatures.season,
+          manufacturer: mergedFeatures.manufacturer,
+          setName: setNameValue,
+          parallelName: mergedFeatures.parallelName,
+          isRookie: card.isRookie,
+          isRelic: card.isRelic,
+          autographed: mergedFeatures.autographed,
+          shortPrint: mergedFeatures.shortPrint,
+        };
+
+        const newCardId = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
           cardNumber: card.cardNumber,
           cardName: card.cardName,
@@ -4118,9 +4323,30 @@ export const commitCardChecklist = mutation({
           // NEO-24: inherit ancestor + derive per-card on insert. Existing
           // rows are owned by the propagation engine; never clobbered here.
           ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
+          listingTitle: generateListingTitle(listingInputs),
+          listingDescription: generateListingDescription(listingInputs),
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
         });
+        // NEO-91: SKU can only be generated once the row exists (the random
+        // suffix — not the id — is what guarantees uniqueness, but the id
+        // has to exist before we can patch it in). Cheap, well-precedented
+        // insert-then-patch pattern already used elsewhere in this file.
+        await ctx.db.patch(newCardId, {
+          sku: generateSku({
+            sport: args.sport,
+            year: mergedFeatures.season ?? "",
+            setName: setNameValue ?? "",
+            cardNumber: card.cardNumber,
+            uniqueSuffix: crypto.randomUUID(),
+          }),
+        });
+        if (
+          card.platformData?.bsc &&
+          (!card.teamOnCardIds || card.teamOnCardIds.length === 0)
+        ) {
+          bscTeamEnrichmentIds.push(newCardId);
+        }
       }
     }
 
@@ -4176,48 +4402,56 @@ export const commitCardChecklist = mutation({
       }
     }
 
-    // Schedule Wikidata enrichment as a single chained queue rather than
-    // N parallel actions. processEnrichmentQueue serializes requests
-    // globally (one entity at a time, with INTER_ENTITY_DELAY_MS between
-    // each) so a 300-player fetch doesn't burst-429 Wikidata.
-    if (createdPlayerIds.length > 0 || createdTeamIds.length > 0) {
+    // NEO-92: no post-commit Wikidata scheduling needed anymore — every
+    // created player/team was already enriched during the review wizard
+    // (reviewByKey's `enrichment`, seeded above at insert time). Delete this
+    // batch's now-consumed entityReviewQueue rows SYNCHRONOUSLY, in this same
+    // transaction — using `reviewRows`, already read above to resolve
+    // decisions, so this adds writes only, no extra reads. Deliberately NOT
+    // scheduled async (the original design): a scheduled cleanup left a real
+    // race — a re-fetch of the same selectorOptionId landing in the gap
+    // between this mutation returning and the scheduled delete actually
+    // running would find every row already decided and wrongly resume the
+    // dead batch (startBatch) instead of starting fresh. Deleting inline
+    // closes that window entirely: by the time this mutation returns, the
+    // batch's rows are gone, so a subsequent fetch can never observe them.
+    if (args.batchId) {
+      for (const row of reviewRows) {
+        await ctx.db.delete(row._id);
+      }
+    }
+
+    // NEO-90: same chained-queue shape, for BSC per-card team resolution.
+    // Cards whose team wasn't already recoverable from the bulk `players`
+    // string (parsePlayersField's TC/parenthetical handling) get resolved
+    // one at a time via BSC's per-card detail endpoint in the background.
+    if (bscTeamEnrichmentIds.length > 0) {
       await ctx.scheduler.runAfter(
         0,
-        internal.adapters.wikidata.processEnrichmentQueue,
-        { playerIds: createdPlayerIds, teamIds: createdTeamIds },
+        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        { cardChecklistIds: bscTeamEnrichmentIds },
       );
     }
 
     // NEO-24/38: harvest the locally-observable card-count from the BSC/SL
-    // checklist fetch onto the setName ancestor, and stamp lastSyncedAt with
-    // the time of this checklist sync. Other metadata (releaseDate / block /
-    // sourceUrl / tcdbSetId) is manually edited via `setSetMetadata` and left
-    // untouched here. Patching the setName row keeps metadata centralized at
-    // the canonical level (variantType / insert / parallel rows are
-    // version-of-a-set; metadata lives one level up). We reuse the setName id
-    // captured during the ancestor walk.
-    const setNameAncestorId: Id<"selectorOptions"> | undefined =
-      ancestorNodeIdByLevel.setName;
-    if (setNameAncestorId) {
+    // checklist fetch onto the setName ancestor's `totalCardCount` feature.
+    // Only when this commit is itself happening AT the setName level —
+    // otherwise this is a variant/insert/parallel fetch and our card count is
+    // a subset, not the set total. releaseDate/block are purely manual (no
+    // auto-harvest) and live in the same features map, independently editable
+    // at every level via setSelectorOptionFeature (see the comment on that
+    // mutation above for why these were folded out of the old, setName-only
+    // `setMetadata` object).
+    if (setNameAncestorId && args.selectorOptionId === setNameAncestorId) {
       const setNameRow = await ctx.db.get(setNameAncestorId);
       if (setNameRow) {
-        // Only bump totalCardCount when the current commit is itself happening
-        // at the setName level (otherwise this is a variant/insert/parallel
-        // fetch and our card count is a subset, not the set total).
-        const isAtSetNameLevel =
-          args.selectorOptionId === setNameAncestorId;
-        const patch: { setMetadata?: Record<string, unknown>; lastUpdated: number } = {
-          lastUpdated: Date.now(),
-        };
-        const mergedMeta: Record<string, unknown> = {
-          ...(setNameRow.setMetadata ?? {}),
-          lastSyncedAt: Date.now(),
-        };
-        if (isAtSetNameLevel) {
-          mergedMeta.totalCardCount = richCards.length;
+        const newCount = String(richCards.length);
+        if (setNameRow.features?.totalCardCount !== newCount) {
+          await ctx.db.patch(setNameAncestorId, {
+            features: { ...(setNameRow.features ?? {}), totalCardCount: newCount },
+            lastUpdated: Date.now(),
+          });
         }
-        patch.setMetadata = mergedMeta;
-        await ctx.db.patch(setNameAncestorId, patch);
       }
     }
 

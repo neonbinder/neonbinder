@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import TeamPicker from "./TeamPicker";
-import CardFeaturesEditor from "./CardFeaturesEditor";
+import PlayerPicker from "./PlayerPicker";
+import CardFeaturesEditor, { CardFeatureRow } from "./CardFeaturesEditor";
+import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+
+const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
+  (f) => f.key === "autographed",
+)!;
 
 /**
  * NEO-25: right-anchored card detail panel. Replaces the old per-row edit
@@ -14,13 +21,20 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
  * `card._id`, so switching cards (arrow nav / prev-next) remounts it with fresh
  * draft state (no manual reset effect).
  *
- * Editable: cardName, teams, attributes (chip toggles → derives isRookie /
- * isRelic), printRun, cardVariation, autographType, listingTitle,
+ * Editable: cardName, teams, players, attributes (chip toggles → derives
+ * isRelic, and isRookie via an OR with the checkbox below — see NEO-71
+ * comment at the isRookie write site), printRun, cardVariation, listingTitle,
  * listingDescription. Per-card feature overrides live in the embedded
  * CardFeaturesEditor (persists immediately via setCardFeature, so they're NOT
- * part of this panel's dirty/Save cycle).
+ * part of this panel's dirty/Save cycle) — this now includes a Rookie
+ * checkbox (NEO-71) that writes `cardChecklist.isRookie` directly and
+ * independently of the RC chip above. The Autographed dropdown is the same
+ * `features.autographed` control, promoted out of that collapsed editor to
+ * always-visible here (previously a redundant free-text `autographType`
+ * input lived here instead — removed so there's one source of truth for
+ * "is this card autographed", not two disagreeing controls).
  *
- * Display-only: card images (imageUrls or placeholder), players, and the
+ * Display-only: card images (imageUrls or placeholder), and the
  * inherited-from-set hierarchy (sport→…→variant). Per-card override of the
  * hierarchy levels themselves is deferred to NEO-21 (cross-release home set).
  */
@@ -51,7 +65,6 @@ type CardDetailCard = {
   isRookie?: boolean;
   isRelic?: boolean;
   printRun?: number;
-  autographType?: string;
   cardVariation?: string;
   listingTitle?: string;
   listingDescription?: string;
@@ -103,6 +116,7 @@ export default function CardDetailPanel({
   hasNext,
 }: CardDetailPanelProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
+  const setCardFeature = useMutation(api.selectorOptions.setCardFeature);
   const cardNameInputRef = useRef<HTMLInputElement | null>(null);
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // field rather than the first input in the drawer (see useFieldTestClass).
@@ -118,7 +132,9 @@ export default function CardDetailPanel({
     card.printRun != null ? String(card.printRun) : "",
   );
   const [cardVariation, setCardVariation] = useState(card.cardVariation ?? "");
-  const [autographType, setAutographType] = useState(card.autographType ?? "");
+  const [playerIds, setPlayerIds] = useState<Array<Id<"players">>>(
+    card.playerIds ?? [],
+  );
   const [listingTitle, setListingTitle] = useState(card.listingTitle ?? "");
   const [listingDescription, setListingDescription] = useState(
     card.listingDescription ?? "",
@@ -130,21 +146,14 @@ export default function CardDetailPanel({
     null | "close" | "prev" | "next"
   >(null);
 
-  // Player display names (read-only). Skipped when the card has no players.
-  const playerIds = card.playerIds ?? [];
-  const playerRows = useQuery(
-    api.players.getManyByIds,
-    playerIds.length > 0 ? { ids: playerIds } : "skip",
-  );
-
   // ----- dirty tracking (features are excluded — they persist immediately) -
   const dirty =
     cardName !== card.cardName ||
     !arraysEqual(teamIds, card.teamOnCardIds ?? []) ||
+    !arraysEqual(playerIds, card.playerIds ?? []) ||
     !arraysEqual(attributes, card.attributes ?? []) ||
     printRun !== (card.printRun != null ? String(card.printRun) : "") ||
     cardVariation !== (card.cardVariation ?? "") ||
-    autographType !== (card.autographType ?? "") ||
     listingTitle !== (card.listingTitle ?? "") ||
     listingDescription !== (card.listingDescription ?? "");
 
@@ -164,17 +173,23 @@ export default function CardDetailPanel({
         id: card._id,
         cardName,
         teamOnCardIds: teamIds,
+        playerIds,
         // Full-replacement: send the entire desired token array. Derive the
         // denormalized booleans from it so they can't drift (matches
         // fetchCardChecklist / commitCardChecklist semantics).
         attributes,
-        isRookie: attributes.includes("RC"),
+        // NEO-71: the embedded CardFeaturesEditor's Rookie checkbox writes
+        // isRookie directly and can autosave between this panel's mount and
+        // this Save click. OR (never AND-downgrade) so Save can still turn
+        // isRookie on via the RC chip, but can never silently revert a
+        // `true` the checkbox already set — `card` is the live reactive
+        // prop, so it reflects the checkbox's write by the time Save fires.
+        isRookie: attributes.includes("RC") || card.isRookie === true,
         isRelic: attributes.includes("RELIC"),
         ...(parsedPrintRun != null && !Number.isNaN(parsedPrintRun)
           ? { printRun: parsedPrintRun }
           : {}),
         cardVariation,
-        autographType,
         // "" clears the stored value; undefined would leave it untouched.
         listingTitle,
         listingDescription,
@@ -267,6 +282,9 @@ export default function CardDetailPanel({
   const hasImages = Boolean(front || back);
 
   return createPortal(
+    // NEO-71-74 QA fix: see BaseSetPicker.tsx for why this nested <Theme> is
+    // needed — createPortal(document.body) escapes the root Theme's CSS scope.
+    <Theme>
     <div className="fixed inset-0 z-50">
       {/* Backdrop. Clicking it requests close (dirty-guarded). The panel is a
           sibling layered above, so taps inside the panel never reach here —
@@ -359,9 +377,9 @@ export default function CardDetailPanel({
           <div>
             <CardFeaturesEditor
               cardChecklistId={card._id}
-              selectorOptionId={card.selectorOptionId}
               cardFeatures={card.features}
               ancestorSport={ancestorSport}
+              cardIsRookie={card.isRookie}
             />
           </div>
 
@@ -444,7 +462,13 @@ export default function CardDetailPanel({
             </div>
           </div>
 
-          {/* Print run / autograph */}
+          {/* Print run / autograph. Autographed is the same features.autographed
+              control CardFeaturesEditor uses elsewhere (via the shared
+              CardFeatureRow), promoted to always-visible here instead of
+              hidden behind "Show features" — this used to be a separate
+              free-text autographType input with its own On-Card/Sticker/Cut
+              vocabulary, disagreeing with this dropdown's None/On Card/
+              Sticker/Label options. Removed in favor of one control. */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
@@ -460,23 +484,23 @@ export default function CardDetailPanel({
                 min={0}
               />
             </div>
-            <div>
-              <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
-                Autograph
-              </label>
-              <input
-                type="text"
-                value={autographType}
-                onChange={(e) => setAutographType(e.target.value)}
-                className={`${fieldClass("autographType")} w-full p-1.5 border rounded text-sm dark:bg-gray-700 dark:border-gray-600`}
-                placeholder="On-Card / Sticker / Cut"
-                aria-label="Autograph type"
-              />
-            </div>
+            <CardFeatureRow
+              feat={AUTOGRAPHED_FEATURE}
+              cardValue={card.features?.autographed}
+              cardIsRookie={undefined}
+              onSave={async (value) => {
+                await setCardFeature({
+                  cardChecklistId: card._id,
+                  key: "autographed",
+                  value,
+                });
+              }}
+              onSaveBoolean={async () => {}}
+            />
           </div>
           <div>
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
-              Variation / parallel
+              Variation
             </label>
             <input
               type="text"
@@ -488,29 +512,16 @@ export default function CardDetailPanel({
             />
           </div>
 
-          {/* Players (read-only) */}
+          {/* Players */}
           <div>
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Players
             </label>
-            {playerIds.length === 0 ? (
-              <p className="text-xs text-gray-400">
-                None linked. Add players via the marketplace fetch flow.
-              </p>
-            ) : !playerRows ? (
-              <p className="text-xs text-gray-400">Loading…</p>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {playerRows.map((p) => (
-                  <span
-                    key={p._id}
-                    className="text-xs px-2 py-0.5 rounded-full bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-600"
-                  >
-                    {p.name}
-                  </span>
-                ))}
-              </div>
-            )}
+            <PlayerPicker
+              value={playerIds}
+              onChange={setPlayerIds}
+              sport={ancestorSport}
+            />
           </div>
 
           {/* Inherited from set (read-only). Per-card override of these levels
@@ -610,7 +621,8 @@ export default function CardDetailPanel({
           </div>
         )}
       </div>
-    </div>,
+    </div>
+    </Theme>,
     document.body,
   );
 }

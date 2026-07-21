@@ -16,12 +16,29 @@
  * Feature keys mirror `EXPECTED_FEATURES` in ./expectedFeatures.ts.
  */
 
-const SPORT_TO_LEAGUE: Record<string, string> = {
+export const SPORT_TO_LEAGUE: Record<string, string> = {
   Baseball: "MLB",
   Basketball: "NBA",
   Football: "NFL",
   Hockey: "NHL",
 };
+
+/** Selectable options for the League feature (NEO-72). */
+export const LEAGUE_OPTIONS: ReadonlyArray<string> = Object.values(SPORT_TO_LEAGUE);
+
+/**
+ * eBay-standard "Era" item-specific buckets, named so the Era select
+ * (NEO-73) and `eraForYear` can never drift apart.
+ */
+export const ERA_BUCKETS = {
+  PRE_WWII: "Pre-WWII (Pre-1942)",
+  POST_WWII: "Post-WWII (1942-69)",
+  VINTAGE: "Vintage (1970-79)",
+  MODERN: "Modern (1980-Now)",
+} as const;
+
+/** Selectable options for the Era feature (NEO-73). */
+export const ERA_BUCKET_OPTIONS: ReadonlyArray<string> = Object.values(ERA_BUCKETS);
 
 export type SetLevelFeatureInputs = {
   /** Sport-level value, e.g. "Baseball". */
@@ -51,10 +68,10 @@ export type CardObservedInputs = {
  * (NEO-25 product decision — eBay-standard buckets.)
  */
 export function eraForYear(year: number): string {
-  if (year <= 1941) return "Pre-WWII (Pre-1942)";
-  if (year <= 1969) return "Post-WWII (1942-69)";
-  if (year <= 1979) return "Vintage (1970-79)";
-  return "Modern (1980-Now)";
+  if (year <= 1941) return ERA_BUCKETS.PRE_WWII;
+  if (year <= 1969) return ERA_BUCKETS.POST_WWII;
+  if (year <= 1979) return ERA_BUCKETS.VINTAGE;
+  return ERA_BUCKETS.MODERN;
 }
 
 /** Parse a leading 4-digit year out of a year/season string ("2023-24" → 2023). */
@@ -68,7 +85,8 @@ function parseYear(year: string | undefined): number | null {
 
 /**
  * Features derivable from the set hierarchy alone (independent of the
- * individual card): league, era, vintage, manufacturer, cardType, isReprint.
+ * individual card): league, era, vintage, season, manufacturer, cardType,
+ * isReprint, autographed, cardSize, cardMaterial, language.
  */
 export function deriveSetLevelFeatures(
   inputs: SetLevelFeatureInputs,
@@ -85,8 +103,14 @@ export function deriveSetLevelFeatures(
   const yearNum = parseYear(inputs.year);
   if (yearNum !== null) {
     f.era = eraForYear(yearNum);
-    f.vintage = yearNum <= 1979 ? "true" : "false";
+    f.vintage = eraForYear(yearNum) !== ERA_BUCKETS.MODERN ? "true" : "false";
   }
+
+  // Season — eBay's Season aspect is usually just the Year label verbatim;
+  // an operator overrides it for split-year sports (e.g. year "2021" but
+  // season "2020-21"). Mirrors whatever string the year node carries, valid
+  // 4-digit year or not.
+  if (inputs.year) f.season = inputs.year;
 
   // Manufacturer — straight from the ancestor row.
   const mfr = inputs.manufacturer?.trim();
@@ -99,13 +123,96 @@ export function deriveSetLevelFeatures(
     f.cardType = "Insert";
   } else if (inputs.leafLevel === "variantType") {
     f.cardType = "Base";
+    // Parallel/Variety — a base card (no insert/parallel) has no special
+    // variant, so default it to "Base" too. Inserts/Parallels intentionally
+    // do NOT get a generic "Insert"/"Parallel" default here — their real
+    // parallel name (e.g. "Gold Refractor") comes from the card's own
+    // observed cardVariation (deriveCardObservedFeatures), which is
+    // specific harvest data a generic string would only misrepresent.
+    f.parallelName = "Base";
   }
 
   // Reprint — default false; our pipeline has no reprint signal yet, and an
   // operator can flip it per-set/per-card.
   f.isReprint = "false";
 
+  // Autographed — default "None"; most cards are not autographed, and an
+  // operator (or a future marketplace signal) can flip it per-set/per-card.
+  f.autographed = "None";
+
+  // Card Size / Material / Thickness / Language / Country of Origin —
+  // default to the overwhelming majority case for the sports cards NB
+  // catalogs today; an operator flips these per-set for the rare oddball
+  // (minis, acetate/metal parallels, a foreign-language or foreign-printed
+  // release), same "default the common case, override the exception"
+  // pattern as isReprint/autographed above. Country of Origin has no other
+  // signal to derive from yet (no manufacturer->country mapping is reliable
+  // enough to encode) — "USA" is the fallback until a better source exists.
+  f.cardSize = "Standard";
+  f.cardMaterial = "Card Stock";
+  f.cardThickness = "20pt";
+  f.language = "English";
+  f.countryOfOrigin = "USA";
+
   return f;
+}
+
+const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
+  sport: ["league"],
+  year: ["era", "vintage", "season"],
+  manufacturer: ["manufacturer"],
+  // variantType (Base) also gets a "Base" parallelName default — see
+  // deriveSetLevelFeatures. insert/parallel intentionally do NOT list
+  // parallelName: deriveSetLevelFeatures never sets it for those levels
+  // (their real value is card-observed, not a node-level default).
+  variantType: ["cardType", "parallelName"],
+  insert: ["cardType"],
+  parallel: ["cardType"],
+  setName: [
+    "isReprint",
+    "autographed",
+    "cardSize",
+    "cardMaterial",
+    "cardThickness",
+    "language",
+    "countryOfOrigin",
+  ],
+};
+
+/**
+ * Own-level heuristic contribution for a single selectorOptions node, keyed
+ * by the node's OWN level/value — never an ancestor or descendant. Callers
+ * merge this on top of the immediate parent's `features` (copy-down) to
+ * produce the new row's complete resolved snapshot, once, at creation time
+ * (NEO-71-74: write-once feature snapshots — see convex/selectorOptions.ts).
+ *
+ * `deriveSetLevelFeatures` unconditionally returns `isReprint: "false"`,
+ * `autographed: "None"`, `cardSize: "Standard"`, `cardMaterial: "Card Stock"`,
+ * `cardThickness: "20pt"`, `language: "English"`, and
+ * `countryOfOrigin: "USA"` on every call regardless of input, so a naive
+ * per-level reuse would leak them onto every level — `LEVEL_HEURISTIC_KEYS`
+ * filters each level down to only the key(s) it actually owns.
+ */
+export function deriveOwnLevelFeatures(
+  level: string,
+  value: string,
+  metadata?: { isInsert?: boolean; isParallel?: boolean },
+): Record<string, string> {
+  const keys = LEVEL_HEURISTIC_KEYS[level];
+  if (!keys) return {};
+  const full = deriveSetLevelFeatures({
+    sport: level === "sport" ? value : undefined,
+    year: level === "year" ? value : undefined,
+    manufacturer: level === "manufacturer" ? value : undefined,
+    leafLevel: level,
+    leafIsInsert: metadata?.isInsert,
+    leafIsParallel: metadata?.isParallel,
+  });
+  const picked: Record<string, string> = {};
+  for (const key of keys) {
+    if (full[key] !== undefined) picked[key] = full[key];
+  }
+  return picked;
 }
 
 /**
@@ -120,11 +227,18 @@ export function deriveCardObservedFeatures(
   const attrs = card.attributes ?? [];
   if (card.isRookie || attrs.includes("RC")) f.isRookie = "true";
   if (card.isRelic || attrs.includes("RELIC")) f.isRelic = "true";
+  if (attrs.includes("SSP")) f.shortPrint = "SSP";
+  else if (attrs.includes("SP")) f.shortPrint = "SP";
   if (card.autographType && card.autographType.trim()) {
-    // We don't know the signer name at this layer, so we record the autograph
-    // *type* as the value; downstream treats any non-empty value as a positive
-    // "signed" signal.
-    f.signedBy = card.autographType.trim();
+    // Map the marketplace-observed autograph type to the `autographed`
+    // select's closed vocabulary (None/On Card/Sticker/Label) — this used to
+    // set `signedBy` directly to the raw autographType string ("On-Card"),
+    // which is the auto FORMAT, not a signer's name. `signedBy` is now
+    // populated separately from the card's actual playerIds, matching the
+    // same "autographed just became non-None -> default signedBy from the
+    // roster" rule the setCardFeature mutation applies for manual edits.
+    const t = card.autographType.trim().toLowerCase();
+    f.autographed = t.includes("sticker") ? "Sticker/Label" : "On Card";
   }
   if (card.cardVariation && card.cardVariation.trim()) {
     f.parallelName = card.cardVariation.trim();
@@ -147,4 +261,27 @@ export function deriveBackfillFeatures(
     ...deriveCardObservedFeatures(cardInputs),
     ...(existing ?? {}),
   };
+}
+
+/**
+ * Server-side guard for the constrained select-type features (NEO-72/73):
+ * rejects an era write that doesn't match the fixed bucket set, in case a
+ * caller bypasses the `<select>` UI. No-op for every other feature key.
+ *
+ * NOT applied to "league": unlike era's closed 4-bucket taxonomy, league is
+ * open-ended in the real world (NPB, KBO, CPBL, minor-league systems, etc.).
+ * `LEAGUE_OPTIONS` covers only the 4 primary US leagues for the frontend
+ * `<select>`'s common case; an operator overriding league via
+ * `setSelectorOptionFeature` for an international/niche set (e.g. "NPB" for
+ * a Japanese release — a pre-existing, tested capability predating this
+ * guard) legitimately needs values outside that list. Hard-rejecting here
+ * would silently break real product functionality, not just a bypassed UI.
+ */
+export function validateFeatureValue(key: string, value: string): void {
+  if (key === "era" && !ERA_BUCKET_OPTIONS.includes(value)) {
+    throw new Error(`Invalid era value: ${value}`);
+  }
+  if (key === "totalCardCount" && value !== "" && !/^\d+$/.test(value)) {
+    throw new Error(`Invalid totalCardCount value: ${value}`);
+  }
 }

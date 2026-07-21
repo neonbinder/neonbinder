@@ -265,7 +265,7 @@ tags:
 # LOAD CARDS — Base variant of 2024 Topps Chrome.
 # Base is terminal (no Variants column); selecting it opens BaseMappingForm,
 # then the CardChecklist. Fetch the checklist and confirm the first-run
-# UnknownEntitiesDialog so players/teams persist and cards save.
+# EntityReviewWizard so players/teams persist and cards save.
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn: "Base"
@@ -312,7 +312,7 @@ tags:
 - tapOn:
     text: ".*Fetch from Marketplaces.*|Refresh"
 
-# First fetch: all players/teams are new → UnknownEntitiesDialog opens.
+# First fetch: all players/teams are new → EntityReviewWizard opens.
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -321,12 +321,24 @@ tags:
     when:
       visible: "Confirm New Players & Teams"
     commands:
+      # NEO-92 bulk-confirm: this setup flow WIPES players first (global reset
+      # above), so a fresh real-set fetch surfaces HUNDREDS of unknowns. Rather
+      # than draining them one at a time (each gated by the 3s/item Wikidata
+      # queue), tap the footer "Add All Remaining as New (N)" button — one
+      # recordAllRemainingAsCreate call marks every not-yet-decided row (including
+      # still-pending ones) as "create". The button is visible as soon as the
+      # wizard opens (any undecided items), so no per-item Wikidata wait is needed.
+      - tapOn:
+          text: ".*Add All Remaining as New.*"
+      # allDecided flips true after the bulk mutation patches every row; the final
+      # "Confirm & Save" step then renders. 30s covers the bulk row patch on a
+      # freshly-reset real set (hundreds of rows) — a sanctioned setup-track write.
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
-          timeout: 10000
+            text: ".*Confirm & Save.*"
+          timeout: 30000
       - tapOn:
-          text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+          text: ".*Confirm & Save.*"
       - extendedWaitUntil:
           notVisible: "Confirm New Players & Teams"
           timeout: 30000
@@ -449,12 +461,24 @@ tags:
     when:
       visible: "Confirm New Players & Teams"
     commands:
+      # NEO-92 bulk-confirm: this setup flow WIPES players first (global reset
+      # above), so a fresh real-set fetch surfaces HUNDREDS of unknowns. Rather
+      # than draining them one at a time (each gated by the 3s/item Wikidata
+      # queue), tap the footer "Add All Remaining as New (N)" button — one
+      # recordAllRemainingAsCreate call marks every not-yet-decided row (including
+      # still-pending ones) as "create". The button is visible as soon as the
+      # wizard opens (any undecided items), so no per-item Wikidata wait is needed.
+      - tapOn:
+          text: ".*Add All Remaining as New.*"
+      # allDecided flips true after the bulk mutation patches every row; the final
+      # "Confirm & Save" step then renders. 30s covers the bulk row patch on a
+      # freshly-reset real set (hundreds of rows) — a sanctioned setup-track write.
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
-          timeout: 10000
+            text: ".*Confirm & Save.*"
+          timeout: 30000
       - tapOn:
-          text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+          text: ".*Confirm & Save.*"
       - extendedWaitUntil:
           notVisible: "Confirm New Players & Teams"
           timeout: 30000
@@ -565,12 +589,24 @@ tags:
     when:
       visible: "Confirm New Players & Teams"
     commands:
+      # NEO-92 bulk-confirm: this setup flow WIPES players first (global reset
+      # above), so a fresh real-set fetch surfaces HUNDREDS of unknowns. Rather
+      # than draining them one at a time (each gated by the 3s/item Wikidata
+      # queue), tap the footer "Add All Remaining as New (N)" button — one
+      # recordAllRemainingAsCreate call marks every not-yet-decided row (including
+      # still-pending ones) as "create". The button is visible as soon as the
+      # wizard opens (any undecided items), so no per-item Wikidata wait is needed.
+      - tapOn:
+          text: ".*Add All Remaining as New.*"
+      # allDecided flips true after the bulk mutation patches every row; the final
+      # "Confirm & Save" step then renders. 30s covers the bulk row patch on a
+      # freshly-reset real set (hundreds of rows) — a sanctioned setup-track write.
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
-          timeout: 10000
+            text: ".*Confirm & Save.*"
+          timeout: 30000
       - tapOn:
-          text: ".*Confirm [0-9]+ & Save.*|Skip All & Save"
+          text: ".*Confirm & Save.*"
       - extendedWaitUntil:
           notVisible: "Confirm New Players & Teams"
           timeout: 30000

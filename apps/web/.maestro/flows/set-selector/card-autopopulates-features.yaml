@@ -1,0 +1,242 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Write-once feature snapshots — a freshly-created CARD ROW auto-populates its own features with the inherited physical/production defaults from its ancestor chain"
+tags:
+  - regression
+  - set-selector
+---
+# ============================================================================
+# R1 — ONE FEATURE UNDER TEST (NEO-71-74 write-once feature snapshots, CARD
+#   LEVEL): when a card is created under a set leaf, its OWN `cardChecklist.
+#   features` map is seeded ONCE at creation as
+#       { ...leafNode.features, ...deriveCardObservedFeatures(card) }
+#   i.e. the leaf selectorOption's already-resolved write-once snapshot copied
+#   straight onto the new card row, then merged with facts observed on the card.
+#   This flow proves that copy-down LANDS ON THE CARD by opening a freshly-added
+#   card's inline features editor and asserting the inherited default VALUES are
+#   already populated on the row — Season, Card Size, Material, Card Thickness,
+#   Language, and Country of Origin — the physical/production defaults this
+#   session added to deriveSetLevelFeatures. (Autographed is ALSO an inherited
+#   default but is now an always-visible control outside this editor — asserted
+#   in card-autograph-always-visible-saves.yaml, not here; see the NOTE below.)
+#
+# WHY A CUSTOM CARD IS THE FAITHFUL PROXY FOR A "FRESHLY-SYNCED" CARD:
+#   The seeding code is BYTE-IDENTICAL between the two card-creation paths in
+#   convex/selectorOptions.ts:
+#     - addCustomCard:          features = { ...parentNode.features,
+#                                            ...deriveCardObservedFeatures(...) }
+#     - commitCardChecklist (marketplace INSERT branch):
+#                               features = { ...inheritedFeaturesOrUndefined,
+#                                            ...deriveCardObservedFeatures(card) }
+#     where inheritedFeaturesOrUndefined === leafNode.features === parentNode.features.
+#   The INHERITED portion (every default this flow asserts) is the SAME leaf
+#   snapshot copied the SAME way; a marketplace card merely adds extra observed
+#   facts (isRookie/printRun/…) on top. So a custom card under a fresh leaf
+#   exercises the exact inheritance path a synced card uses.
+#   A genuinely marketplace-SYNCED card can NOT prove this here: (a) a per-worker
+#   custom subtree short-circuits the BSC/SL adapters (isCustomSubtree gate,
+#   NEO-22) so it never receives synced cards, and (b) the real shared sets
+#   (2024 Topps Chrome Base) were synced on shared dev BEFORE these defaults
+#   existed — their leaf snapshots predate the defaults (write-once: never
+#   recomputed), so their synced cards render these fields blank locally — and
+#   editing a real shared set concurrently violates the data-isolation rule.
+#   Hence the per-worker custom card is the collision-free, locally-green proxy.
+#
+# R3 — DEDUP: no existing flow asserts a CARD ROW's inherited feature VALUES.
+#   new-chain-autopopulates-features asserts auto-populated values on the SET
+#   (SetAttributesPanel) node, never on a card, and only covers Card Thickness /
+#   Country of Origin of the physical set (NOT Card Size / Material / Language).
+#   card-features-editor-toggle only round-trips the Show/Hide toggle;
+#   card-detail-panel only edits name/title/RC; features-propagation propagates a
+#   MANUALLY-set feature; signed-by-autofills mutates Autographed on a real card.
+#   None assert that a brand-new card row already carries the inherited defaults.
+#   The drill + add-card + delete machinery is reused via util-add-custom-card
+#   (shared logic, not duplicated — R3/R9).
+#
+# R9 — all drilling goes through util-add-custom-card → util-drill-to-custom-set
+#   → util-drill-to-custom (no hand-rolled drill).
+#
+# PER-WORKER DATA ISOLATION: every node is per-WORKER_INDEX custom data —
+#   E2E Test Sport ${WORKER_INDEX} → 2026 → Topps → cap-<WORKER_INDEX> (custom
+#   set, Insert VT, "Base" insert). Concurrent work-queue runners share no docs,
+#   zero cross-worker contention. Nothing destructive (R7); no shared real set is
+#   edited. The card carries a per-attempt-unique number so re-runs never collide,
+#   and it is DELETED at the end (cleanup).
+#
+# WRITE-ONCE FRESHNESS NOTE: the set basename "cap-<worker>" is introduced by
+#   THIS flow and has never existed in the suite, so its FIRST creation happens
+#   with the CURRENT derivation and carries every default asserted below (and all
+#   its descendants — VT / insert — created in the same drill inherit them). If a
+#   NEW setName-level default is ever added and asserted here, BUMP the basename
+#   (cap → cap2 …) so the set is recreated fresh with the new default — same
+#   generation-bump discipline as new-chain-autopopulates-features. (We do NOT
+#   assert Season here: it originates at the YEAR node "2026", a persistent
+#   per-worker node whose creation predates this flow — its freshness isn't
+#   guaranteed, and the year→card copy path is the SAME copy path the six
+#   setName-origin defaults below already prove, so asserting it adds no mechanism
+#   coverage. isReprint is likewise omitted: it became a checkbox whose boolean
+#   state is unreadable in Maestro-web — see new-chain's header.)
+#
+# HOW EACH VALUE IS ASSERTED (Maestro-web value extraction, cli 2.6.0):
+#   The "Edit card" button opens the right-anchored CardDetailPanel DRAWER, whose
+#   body embeds this CardFeaturesEditor. Every CardFeatureRow control carries
+#   resource-id = its aria-label ("Value for <Label>"). A plain-text <input>'s
+#   node text = its value; a <select>'s node text = its SELECTED option. So each
+#   assertion is a COMBINED { id: "Value for <Label>", text: <value> } selector.
+#
+# DRAWER INNER-SCROLL (why NOT scrollUntilVisible here): the drawer is right-
+#   anchored (~480px wide at the 1024px CI viewport, x≈544–1024). Maestro's
+#   scrollUntilVisible swipes from the VIEWPORT centre (x≈512), which lands on the
+#   BACKDROP left of the drawer and does NOT scroll the drawer's inner container —
+#   so a feature row below the drawer fold is unreachable that way. Instead we
+#   drive the drawer with MANUAL swipes INSIDE its x-range (`swipe start:80%…`)
+#   — the proven technique from signed-by-autofills-from-players.yaml — then a
+#   plain assertVisible of the combined { id, text } (its center is now on-screen).
+#   Season is visible near the top of the expanded editor with no swipe; the
+#   physical block sits below the fold and is lifted in with the swipes below.
+# ============================================================================
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+# Cold sign-in / app load only; every other wait uses Maestro's 7s default (R5).
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO PER-WORKER FRESH CUSTOM SET + ADD ONE CUSTOM CARD
+# E2E Test Sport ${WORKER_INDEX} → 2026 → Topps → cap-<WORKER_INDEX> →
+# Insert → "Base" (custom insert). util-add-custom-card drills the hierarchy
+# (creating each fresh level with the current write-once derivation), adds the
+# "Base" insert idempotently, opens the CardChecklist, submits the card, and
+# returns with the "Edit card <CARD_NUMBER>" button scrolled into view.
+# ATTEMPT_ID ("w<worker>-a<attempt>-<rand>") makes the card number unique per
+# attempt so a retry never collides with a row a prior attempt left behind.
+# ============================================================
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "cap-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "777-${ATTEMPT_ID}"
+      PLAYER_NAME: "Autopop Card Player ${ATTEMPT_ID}"
+
+# ============================================================
+# OPEN THE INLINE CARD EDIT FORM + EXPAND THE FEATURES EDITOR
+# ============================================================
+
+# Assert visibility before tapping — surfaces a failed scroll as a clear
+# assertion error rather than the null kotlin.Int bounds crash.
+- assertVisible:
+    id: "Edit card 777-${ATTEMPT_ID}"
+# waitToSettleTimeoutMs mitigates the virtualisation race — parallel workers'
+# live-query refetches can shift this row between Maestro's lookup and dispatch.
+- tapOn:
+    id: "Edit card 777-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# Expand the CardFeaturesEditor (collapsed by default). The editor renders one
+# row per EXPECTED_FEATURES entry with the card's OWN features value pre-filled.
+- assertVisible:
+    id: "Show features editor"
+- tapOn:
+    id: "Show features editor"
+- assertVisible:
+    id: "Card features editor"
+
+# ============================================================
+# THE ASSERTIONS — the card row already carries the inherited write-once
+# defaults from its ancestor chain (leaf snapshot copied onto the card at
+# addCustomCard time). Each is a combined { id, text } value assertion that
+# fails loudly (R2) if no node has BOTH the aria-label AND the value (a broken
+# copy-down leaves the field blank "—" / an unset select "— Select —").
+# ============================================================
+
+# --- Visible in the expanded drawer with no swipe (near-top rows) ---
+
+# Season = "2026" (year-origin default, copied down onto the card row).
+- assertVisible:
+    id: "Value for Season"
+    text: "2026"
+
+# NOTE — Autographed is intentionally NOT asserted in this flow anymore.
+# NEO-71-74 promoted the Autographed control OUT of the CardFeaturesEditor
+# (CardFeaturesEditor.tsx filters key==="autographed") to an always-visible
+# grid cell in the CardDetailPanel body (position 7, next to Print run), FAR
+# below the fully-expanded features editor. Asserting it here would require
+# collapsing the editor and swiping to pos 7 mid-flow — cross-region drawer
+# gymnastics that add fragility for no extra mechanism coverage (Season + the
+# physical block below already prove the write-once copy-down lands on the card
+# row). The card's inherited Autographed="None" default is asserted directly, in
+# its correct always-visible position, by card-autograph-always-visible-saves.yaml
+# (which opens a fresh card and reads Value for Autographed = "None" before
+# changing it) — so no coverage is lost (R3: each flow owns distinct facts).
+
+# --- Physical/production block — below the drawer fold; lift it in with a
+# manual in-drawer swipe (x=80% is inside the drawer, clear of the backdrop),
+# then assert. countryOfOrigin/cardSize/cardMaterial are consecutive grid rows,
+# so one swipe brings all three into the viewport band. ---
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 40%"
+
+# Country of Origin = "USA" (physical setName default, copied down onto the card).
+- assertVisible:
+    id: "Value for Country of Origin"
+    text: "USA"
+
+# Card Size = "Standard" (physical setName default).
+- assertVisible:
+    id: "Value for Card Size"
+    text: "Standard"
+
+# Material = "Card Stock" (label is "Material"; key cardMaterial).
+- assertVisible:
+    id: "Value for Material"
+    text: "Card Stock"
+
+# --- A second swipe reveals the last two physical rows (cardThickness/language). ---
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 40%"
+
+# Card Thickness = "20pt".
+- assertVisible:
+    id: "Value for Card Thickness"
+    text: "20pt"
+
+# Language = "English".
+- assertVisible:
+    id: "Value for Language"
+    text: "English"
+
+# ============================================================
+# CLEANUP — cancel edit and delete this attempt's test card
+# ============================================================
+
+- assertVisible:
+    id: "Cancel card edit"
+- tapOn:
+    id: "Cancel card edit"
+# Cancel collapses the edit form and resets the Virtuoso scroll position — the
+# row may not be in the viewport. centerElement keeps the delete button clear of
+# the sticky header/footer before the tap (R8).
+- scrollUntilVisible:
+    element:
+      id: "Delete card 777-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 777-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 777-${ATTEMPT_ID}"
+- assertNotVisible: "Autopop Card Player ${ATTEMPT_ID}"

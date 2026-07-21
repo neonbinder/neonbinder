@@ -30,6 +30,23 @@ const BSC_FETCH_BACKOFF_MS = [500, 1000];
 // its original 30s budget so this change doesn't regress large checklists.
 const BSC_CHECKLIST_FETCH_TIMEOUT_MS = 30_000;
 
+// NEO-90: per-card team lookup. Confirmed via live testing that this
+// endpoint answers unauthenticated (it's public catalog data, not a
+// seller-scoped call), so resolveBscCardTeam deliberately skips the
+// bearer-token machinery above rather than depending on the fragile
+// Puppeteer-backed BSC auth flow for a call that doesn't need it.
+const BSC_TEAM_LOOKUP_TIMEOUT_MS = 10_000;
+// Delay between cards in processBscTeamEnrichmentQueue. BSC has no
+// confirmed rate limit, but this stays conservative against the same
+// CDN/bot-detection this file already works around for the bulk
+// endpoint (see bscHeaders below). Much shorter than Wikidata's 3s gap
+// since there's no known limit to respect here — just don't hammer it.
+const BSC_TEAM_ENRICH_DELAY_MS = 300;
+// Bounded fan-out for fetchBscCardTeamNames's synchronous per-card lookups
+// during fetchCardChecklist — matches the existing MAX_SL_FAN_OUT=10
+// precedent in selectorOptions.ts for capping concurrent external calls.
+const BSC_TEAM_LOOKUP_CONCURRENCY = 10;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -465,10 +482,14 @@ export const fetchBscSelectorOptions = action({
  * Carries everything we can source at *checklist* time. Per-copy fields
  * (grade, condition, cert) belong on a future cardInventory table.
  *
- * Team is intentionally optional and often empty — BSC's bulk-upload
- * catalog endpoint doesn't carry team data (it lives on listings, not
- * the catalog template). Team gets resolved at listing time from the
- * player's career history (Wikidata) or a user prompt.
+ * Team is intentionally optional and usually empty — BSC's bulk-upload
+ * catalog endpoint doesn't carry a real team field of its own (it lives on
+ * listings, not the catalog template). The one exception: Team Checklist
+ * cards embed the team name directly in `players` (e.g. "Kansas City
+ * Royals TC"), which `parsePlayersField` detects and surfaces here. For
+ * every other card, team stays unresolved at checklist time — a future
+ * enrichment (the player's career history via Wikidata, or a user prompt)
+ * would populate it for regular player cards; out of scope for this file.
  */
 const checklistCardValidator = v.object({
   cardNumber: v.string(),
@@ -549,6 +570,85 @@ function parseVariationDescription(raw: unknown): string | undefined {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
   return trimmed.replace(/^[A-Z]{2,4}:\s*/, "").trim() || undefined;
+}
+
+/**
+ * Known BSC card-type suffixes that mean "this string names a TEAM, not a
+ * player" — e.g. "Kansas City Royals TC" (Team Checklist). Confirmed live
+ * against a real 2026 Topps Baseball base set (24 TC rows out of 708, incl.
+ * single-word team names like "Athletics"/"Angels" — suffix-stripping must
+ * not assume multi-word). Extensible: add more here if/when a new one is
+ * confirmed against real data — don't guess at unconfirmed tokens.
+ */
+const TEAM_CARD_SUFFIXES = ["TC"];
+
+/**
+ * Parse BSC's raw `players` field (a single string) into clean player
+ * names, any detected team name, and — for multi-player insert cards whose
+ * player list is wrapped in parens with descriptive text around it (e.g.
+ * League Leaders, or other duo/trio insert types) — the surrounding
+ * descriptive text for use in `cardName`.
+ *
+ * Replaces a naive comma/slash split on the whole string, which breaks
+ * on two real BSC conventions (confirmed live against a real 708-card base
+ * set, 49 affected rows — ~7%, not an edge case):
+ *   - Team Checklist cards: "Kansas City Royals TC" was treated as one
+ *     bogus "player" instead of a team.
+ *   - Multi-player insert cards: "National League Leaders RBI (Kyle
+ *     Schwarber, Pete Alonso, Juan Soto) LL" — the blind split cut the
+ *     comma INSIDE the parens, producing two garbage half-strings.
+ */
+export function parsePlayersField(raw: string): {
+  players: string[];
+  teams: string[];
+  namePrefix?: string;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed) return { players: [], teams: [] };
+
+  // 1. Team-card suffix — the whole string names a team, not a player.
+  // Reported into BOTH players and teams: the team entity links via the
+  // existing teamOnCardIds field, and a matching players row is created
+  // too so the card can also link via playerIds (explicit product choice —
+  // see the plan this implements).
+  for (const suffix of TEAM_CARD_SUFFIXES) {
+    const suffixPattern = new RegExp(`\\s+${suffix}$`);
+    if (suffixPattern.test(trimmed)) {
+      const teamName = trimmed.replace(suffixPattern, "").trim();
+      if (teamName) return { players: [teamName], teams: [teamName] };
+    }
+  }
+
+  // 2. Parenthetical player list — e.g. "<description> (<players>) <tag>".
+  // Extract names from INSIDE the parens (safe to comma/slash-split there,
+  // isolated from the surrounding text); combine whatever text sits before
+  // AND after the parens into namePrefix (real data has both — a leading
+  // description like "National League Leaders RBI" AND a trailing tag like
+  // "LL"/"CPC"). Generic on purpose: validated against two different real
+  // insert types, not hardcoded to League Leaders.
+  const parenMatch = trimmed.match(/^(.*)\(([^)]*)\)(.*)$/);
+  if (parenMatch) {
+    const [, before, inside, after] = parenMatch;
+    const players = inside
+      .split(/\s*[/,]\s*/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const namePrefix = `${before.trim()} ${after.trim()}`
+      .trim()
+      .replace(/\s+/g, " ");
+    return {
+      players,
+      teams: [],
+      ...(namePrefix ? { namePrefix } : {}),
+    };
+  }
+
+  // 3. Fallback — today's behavior: a plain single- or multi-player string.
+  const players = trimmed
+    .split(/\s*[/,]\s*/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return { players, teams: [] };
 }
 
 /**
@@ -745,8 +845,10 @@ export const fetchBscChecklist = action({
       //   id, setName, players (string), cardNo, playerAttribute,
       //   playerAttributeDesc, imgFront, imgBack, cardNoOrder,
       //   cardNoSequence, cardNoSort.
-      // No team, year, sport, features, printRun, autograph, sportlots —
-      // those don't exist on the catalog template.
+      // No year, sport, features, printRun, autograph, sportlots — those
+      // don't exist on the catalog template. `team`/`teams` are populated
+      // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
+      // the raw response itself never carries a separate team field.
       const cards = rawCards
         .map((r) => {
           const cardNumberRaw = r.cardNo ?? r.cardNumber ?? r.number;
@@ -755,20 +857,20 @@ export const fetchBscChecklist = action({
             : "";
           if (!cardNumber) return null;
 
-          // `players` is a single comma- or slash-separated string in
-          // the bulk-upload response. Normalize to a trimmed array.
+          // `players` is a single string in the bulk-upload response —
+          // parse it for the team-checklist and multi-player-parenthetical
+          // conventions (see parsePlayersField's own doc comment).
           const playersRaw = typeof r.players === "string" ? r.players : "";
-          const players = playersRaw
-            .split(/\s*[/,]\s*/)
-            .map((p) => p.trim())
-            .filter(Boolean);
+          const { players, teams, namePrefix } = parsePlayersField(playersRaw);
 
           const attributes = parsePlayerAttributeTokens(r.playerAttribute);
           const cardVariation = parseVariationDescription(r.playerAttributeDesc);
 
-          const cardName = players.length
-            ? players.join(" / ")
-            : `Card #${cardNumber}`;
+          const cardName = namePrefix
+            ? `${namePrefix} (${players.join(" / ")})`
+            : players.length
+              ? players.join(" / ")
+              : `Card #${cardNumber}`;
 
           const platformRefRaw = r.id;
           const platformRef = typeof platformRefRaw === "string" || typeof platformRefRaw === "number"
@@ -788,7 +890,7 @@ export const fetchBscChecklist = action({
             cardNumber,
             cardName,
             team: undefined,
-            teams: undefined,
+            teams: teams.length ? teams : undefined,
             players: players.length ? players : undefined,
             attributes: attributes.length ? attributes : undefined,
             printRun: undefined,
@@ -814,6 +916,150 @@ export const fetchBscChecklist = action({
         message: `BSC error: ${error instanceof Error ? error.message : "Unknown error"}`,
       };
     }
+  },
+});
+
+/**
+ * NEO-90: call BSC's per-card detail endpoint and return its `teamName`.
+ * `success: false` means the HTTP call itself failed (non-2xx or thrown
+ * error) — distinct from `success: true, teamName: ""`, which means BSC
+ * answered but genuinely has no team on file (an insert/subset card).
+ * Callers that need retry semantics (resolveBscCardTeam) care about this
+ * distinction; `fetchBscCardTeamNames` (the synchronous batch path) treats
+ * both the same — it just won't populate a team either way. Shared by both.
+ */
+async function fetchBscCardTeamNameRaw(
+  bscCardId: string,
+): Promise<{ teamName: string; success: boolean }> {
+  try {
+    const response = await fetch(
+      `${BSC_API_BASE}/marketplace/card/${bscCardId}/card-listing`,
+      {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(BSC_TEAM_LOOKUP_TIMEOUT_MS),
+      },
+    );
+    if (!response.ok) {
+      console.warn(
+        `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId}`,
+      );
+      return { teamName: "", success: false };
+    }
+    const data = await response.json();
+    const teamName =
+      data && typeof data === "object" && typeof (data as { teamName?: unknown }).teamName === "string"
+        ? (data as { teamName: string }).teamName.trim()
+        : "";
+    return { teamName, success: true };
+  } catch (error) {
+    console.warn(
+      `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId}:`,
+      error,
+    );
+    return { teamName: "", success: false };
+  }
+}
+
+/**
+ * NEO-90: resolve a single card's team by calling BSC's per-card detail
+ * endpoint. This is the async backfill/safety-net path — only ever called
+ * from the throttled queue below (sets synced before NEO-90's synchronous
+ * lookup existed, or a card whose synchronous lookup failed at fetch time).
+ * A fresh sync resolves teams inline via `fetchBscCardTeamNames` instead
+ * (see `fetchCardChecklist` in selectorOptions.ts). No-ops (leaves the row
+ * untouched, so a future enqueue will retry) on any fetch/parse failure.
+ */
+export const resolveBscCardTeam = internalAction({
+  args: { cardChecklistId: v.id("cardChecklist") },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const row: { bscCardId: string; needsCheck: boolean } | null =
+      await ctx.runQuery(internal.cardChecklist.getForBscTeamCheck, {
+        cardChecklistId: args.cardChecklistId,
+      });
+    if (!row || !row.needsCheck) return null;
+
+    const { teamName, success } = await fetchBscCardTeamNameRaw(row.bscCardId);
+    // The fetch itself failed — leave the row untouched so a future
+    // enqueue retries it (do NOT distinguish "no team" from "couldn't
+    // check" here; only a successful call is allowed to mark this done).
+    if (!success) return null;
+
+    await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: args.cardChecklistId,
+      teamName,
+    });
+    return null;
+  },
+});
+
+/**
+ * NEO-90: resolve teams for a batch of BSC card ids concurrently, with a
+ * bounded fan-out — called synchronously from `fetchCardChecklist` so team
+ * names surface in the SAME confirm dialog as new players, instead of
+ * trickling in via the background queue after save. Chunks into groups of
+ * `BSC_TEAM_LOOKUP_CONCURRENCY` and awaits each chunk before starting the
+ * next (matches the existing `MAX_SL_FAN_OUT` bounded-fan-out precedent in
+ * selectorOptions.ts — no concurrency-limiting utility exists elsewhere in
+ * this codebase to reuse). Returns only the ids that resolved to a
+ * non-empty team name; a card whose lookup failed or had no team on file
+ * (e.g. an insert/subset card) is simply absent from the result — the
+ * caller treats that the same as "no team" either way.
+ */
+export const fetchBscCardTeamNames = internalAction({
+  args: { bscCardIds: v.array(v.string()) },
+  returns: v.record(v.string(), v.string()),
+  handler: async (_ctx, args): Promise<Record<string, string>> => {
+    const result: Record<string, string> = {};
+    for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
+      const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
+      const results = await Promise.all(
+        chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId)),
+      );
+      chunk.forEach((bscCardId, idx) => {
+        const { teamName } = results[idx];
+        if (teamName) result[bscCardId] = teamName;
+      });
+    }
+    return result;
+  },
+});
+
+/**
+ * NEO-90: chained serial queue for BSC per-card team lookups — same shape
+ * as adapters/wikidata.ts's processEnrichmentQueue. commitCardChecklist
+ * hands the ids of newly-touched cards missing team data to this action
+ * via `scheduler.runAfter(0, ...)`; it pops one id, resolves it, then
+ * reschedules itself with the tail after BSC_TEAM_ENRICH_DELAY_MS. Errors
+ * on a single card are caught/logged — the queue moves on rather than
+ * abandoning the rest of the set.
+ */
+export const processBscTeamEnrichmentQueue = internalAction({
+  args: { cardChecklistIds: v.array(v.id("cardChecklist")) },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const [head, ...tail] = args.cardChecklistIds;
+    if (!head) {
+      console.log(`[bsc-team-enrichment-queue] queue drained.`);
+      return null;
+    }
+
+    try {
+      await ctx.runAction(internal.adapters.buysportscards.resolveBscCardTeam, {
+        cardChecklistId: head,
+      });
+    } catch (error) {
+      console.error(`[bsc-team-enrichment-queue] resolveBscCardTeam ${head} failed:`, error);
+    }
+
+    if (tail.length > 0) {
+      await ctx.scheduler.runAfter(
+        BSC_TEAM_ENRICH_DELAY_MS,
+        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        { cardChecklistIds: tail },
+      );
+    }
+    return null;
   },
 });
 

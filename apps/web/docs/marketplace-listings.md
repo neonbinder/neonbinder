@@ -1,7 +1,7 @@
 # Marketplace Listings Metadata Audit
 
 **Status:** Audit doc for NEO-24 (marketplace listing metadata) + NEO-26 (team field refactor)  
-**Related tickets:** [NEO-24](https://linear.app/neonbinder/issue/NEO-24), [NEO-26](https://linear.app/neonbinder/issue/NEO-26), [NEO-27](https://linear.app/neonbinder/issue/NEO-27)  
+**Related tickets:** [NEO-24](https://linear.app/neonbinder/issue/NEO-24), [NEO-26](https://linear.app/neonbinder/issue/NEO-26), [NEO-27](https://linear.app/neonbinder/issue/NEO-27), [NEO-91](https://linear.app/neonbinder/issue/NEO-91) (SportLots per-card matching fix + cross-marketplace SKU)  
 **Date:** 2026-05-25  
 **Scope:** What fields are required or recommended by each marketplace to create a listing, and where those fields currently live (or should live) in the NeonBinder schema after NEO-24.
 
@@ -526,6 +526,46 @@ This audit does NOT cover:
 
 ---
 
+## 10. SportLots per-card matching + cross-marketplace SKU (NEO-91)
+
+### The bug: SL per-card checklist fetch matched nothing, for every variant type
+
+Every synced card showed a "BSC" badge but never an "SL" badge — not just for Base variants, for every variant type. Root cause, confirmed by tracing the code (not speculation): `fetchSportLotsChecklist` (`convex/adapters/sportlots.ts`) resolved the SportLots set to query via `args.platformFilters?.setName`. But SL has no `setName`-level concept — it combines set+variant at the `variantType`/`insert`/`parallel` ancestor level, and that's the only level `platformFilters` ever carries an SL id under (see `fetchCardChecklist`'s own comment on this in `convex/selectorOptions.ts`). So `platformFilters.setName` was always `undefined`, `setRadioId` silently fell through to the raw display string (e.g. `"2026 Topps Heritage"`), SportLots didn't recognize it, and the per-card fetch returned zero rows every time.
+
+**Fix:** resolve `setRadioId` from whichever of `variantType`/`insert`/`parallel` is present (deepest wins), matching the precedence `fetchCardChecklist`'s own `fetchSl` closure already uses when picking a `sourceId`. Falls back to the old `setName`-based path only if none of those are present, so any caller not yet passing the newer keys keeps working.
+
+### Live-verified findings (using a real, logged-in SportLots session)
+
+These grounded the fix and the SKU design in SportLots' actual behavior rather than the read-only adapter's regex alone:
+
+- NeonBinder's already-stored SL id for "2026 Topps Heritage" (`369519`) is exactly correct — selecting it on SL's own `dealsets.tpl` page lands on the right set. The bug was purely in how the per-card fetch resolved that id, not in the id itself.
+- **SportLots' `listcards.tpl` per-row form fields are purely positional.** Each row's inputs are named `<letter><setRadioId>-<N>`, where `N` is a sequential counter (5, 10, 15, 20…) tied to the current page/pagination state — there is no persistent SportLots-side "record ID" for a specific card row. Any future code that submits a listing (not just reads a checklist) will need to re-parse the live page (page + row position) at submission time; the row's identity can't be cached across requests.
+- **Confirmed real duplicate card numbers within a single SL set for variations** — e.g. "#10 Aaron Judge", "#10 Aaron Judge [ VAR All-Star Logo ]", and "#10 Aaron Judge [ VAR Image ]" all share card number 10 on SL's own page. Card number alone is not a unique key on SL's side.
+- **NeonBinder previously discarded the one piece of data that disambiguates those duplicates.** `cardChecklist.platformData.sportlots` was populated only from the bare `cardNumber` (via `sl.platformRef`), and once a BSC↔SL match was found, `commitCardChecklist` always preferred `bsc.cardName` for the merged row — so SL's own more-specific description text never survived. Verified every consumer of this field before changing its meaning: it's read in exactly one place at runtime (`components/SetSelector/CardChecklistItem.tsx`, a bare truthiness check for the "SL" badge — nothing reads its actual value), it's an unconstrained `v.string()`, and the BSC↔SL matching logic itself is keyed off separate in-memory fields (`cardNumber`/`sportlotsRef`), not `platformRef` — so repurposing it was safe with zero schema change. Fix: feed the raw, un-tokenized description (`fullDescription`, already computed locally then discarded) into `platformRef` instead of the bare card number. Every matched card now carries an exact, unambiguous reference to which specific SL row it matched.
+- **Checked whether SL's "Bin" field could carry any kind of cross-reference: it can't.** `dbin` has `maxLength: 5`, confirmed via direct DOM inspection on the live add-inventory form. No other free-text field on that flow is long enough either. SportLots categorically cannot carry a NeonBinder SKU — this is a hard platform constraint, not a design gap.
+
+### Cross-marketplace SKU
+
+NeonBinder now generates its own canonical SKU per card (`convex/sku.ts`), intended to become the identifier used across every marketplace that supports one (eBay, MySlabs, MyCardPost all key listings off a seller-defined SKU; BSC's `platformData.bsc` is an opaque catalog hash, not a real SKU, and is BSC-specific anyway).
+
+**Format:** `NB-{sportCode:2}-{year:4}-{setSlug:≤12}-{cardNumber:≤10}-{suffix:6}` — e.g. `NB-BB-2026-TOPHER-042-A1B2C3`. Worst-case length is a fixed 41 characters (every component is truncated to a hard cap). The human-readable prefix is for legibility only; the random 6-character suffix is the sole uniqueness guarantee (two parallels sharing a visible card number, or two custom cards, could otherwise collide on the prefix alone).
+
+**Verified per-marketplace length limits before finalizing the format:**
+
+| Marketplace | Confirmed limit | SKU fits? |
+|---|---|---|
+| eBay (Sell Inventory API `sku`) | 50 characters ([eBay docs](https://developer.ebay.com/api-docs/sell/inventory/types/slr:InventoryItemWithSkuLocale)) | Yes — 41 ≤ 50, 9 chars of headroom |
+| SportLots | No field ≥ 5 characters (`dbin` maxLength) | **No — confirmed impossible, not attempted** |
+| MySlabs | No listing-creation code exists yet | Unknown — verify when that adapter gets built |
+| MyCardPost | No listing-creation code exists yet | Unknown — verify when that adapter gets built |
+| BSC | No listing-creation code exists yet | Unknown — verify when that adapter gets built |
+
+Generated at card-creation time (`commitCardChecklist`'s insert branch, and `addCustomCard`) via an insert-then-patch pattern — Convex only returns a row's `_id` after `ctx.db.insert`, and the SKU's uniqueness doesn't depend on the id (the random suffix does), but the row has to exist before it can be patched. Stored as `cardChecklist.sku` (optional — existing pre-NEO-91 rows don't get backfilled; that data is being deleted and resynced fresh instead).
+
+**Out of scope for this pass:** no eBay/MySlabs/MyCardPost/BSC listing-creation code — none of those adapters exist yet. This work only makes sure a SKU exists and is ready to hand to whichever gets built next.
+
+---
+
 ## Summary table: Path forward
 
 | Stage | Responsibility | Key files | Success criteria |
@@ -535,6 +575,7 @@ This audit does NOT cover:
 | **Stage 3** | BSC/SL harvest + TCDB fallback | `convex/adapters/buysportscards.ts`, `convex/adapters/tcdb.ts` (Puppeteer) | ✓ BSC fetch persists `printRun`, `autographType`, `attributes`; TCDB enrichment deployed to Cloud Run |
 | **Stage 4** | NEO-26 team refactor + UI | `CardChecklistItem.tsx`, `TeamPicker.tsx`, `SetFeaturesPanel.tsx` | ✓ Team picker multi-select; features panel with propagation preview |
 | **Stage 5** | Tests | `maestro/` + unit tests | ✓ All flows + propagation tests green |
+| **NEO-91** | SL per-card matching fix + cross-marketplace SKU | `convex/adapters/sportlots.ts`, `convex/sku.ts` | ✓ SL badge appears where SportLots genuinely matched; every new card gets a bounded-length `sku` |
 
 ---
 

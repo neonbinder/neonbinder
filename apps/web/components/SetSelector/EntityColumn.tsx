@@ -47,6 +47,35 @@ export type EntityColumnProps = {
   onLoadingChange?: (loading: boolean) => void;
 };
 
+// Gap left between a newly-revealed column's edge and the scroll row's true
+// visible boundary, so it doesn't land flush against the edge. Matches the
+// gap-4/pl-4 16px spacing unit already used for this row in SetSelector.tsx.
+const REVEAL_SCROLL_BUFFER_PX = 16;
+
+// Scrolls `column`'s own [data-set-selector-scroll] ancestor just far enough
+// that `column` clears the ancestor's visible right/left edge. No-op if no
+// such ancestor exists (e.g. an isolated unit-test render).
+function scrollColumnIntoView(column: HTMLElement) {
+  const scrollContainer = column.closest<HTMLElement>(
+    "[data-set-selector-scroll]",
+  );
+  if (!scrollContainer) return;
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const columnRect = column.getBoundingClientRect();
+  const overflowRight = columnRect.right - containerRect.right;
+  if (overflowRight > 0) {
+    // Instant, not smooth: Maestro reads layout bounds and taps immediately,
+    // so an animated scroll lets it tap a column before it settles — the
+    // e2e nav-tap that parked the prior NEO-63 attempt.
+    scrollContainer.scrollLeft += overflowRight + REVEAL_SCROLL_BUFFER_PX;
+  } else {
+    const overflowLeft = containerRect.left - columnRect.left;
+    if (overflowLeft > 0) {
+      scrollContainer.scrollLeft -= overflowLeft + REVEAL_SCROLL_BUFFER_PX;
+    }
+  }
+}
+
 export default function EntityColumn({
   selector,
   renderForm,
@@ -75,7 +104,21 @@ export default function EntityColumn({
   const fieldClass = useFieldTestClass();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const wasVisibleRef = useRef(isVisible);
+  // NEO-71-74 follow-up: always start false, regardless of this column's
+  // isVisible prop at mount. Columns 6/7 (Variant / Variant of Variant) are
+  // conditionally MOUNTED (not just conditionally rendered null like columns
+  // 1-5) and remount already-visible — seeding this from `isVisible` made the
+  // false->true reveal transition unobservable for them, so their scroll-into-
+  // view never fired on any reveal. Starting false means every column's first
+  // visible render is treated as a reveal that needs to scroll, which is a
+  // harmless no-op for the always-mounted columns (they start hidden already).
+  const wasVisibleRef = useRef(false);
+  // True from the moment this column is revealed until its content has
+  // genuinely settled (real items loaded, not mid-sync) — see the two
+  // effects below. Scopes the settle re-check to only the column that was
+  // JUST revealed, so it doesn't re-fire (and yank scroll position) for an
+  // older, already-viewed column whose content happens to change later.
+  const settleTargetRef = useRef(false);
 
   // Query the items at this column's level so we can auto-trigger sync
   // when the column opens empty. Skipped when no level is provided
@@ -122,20 +165,57 @@ export default function EntityColumn({
   const prevModeRef = useRef<"idle" | "sync" | "custom">(mode);
 
   useEffect(() => {
+    // NEO-71-74 follow-up: manual scroll math instead of native
+    // scrollIntoView({inline:"center"}). "center" was chosen over the
+    // original "end" by NEO-63 specifically to stop new columns landing
+    // under the fixed right nav (mis-taps that navigated to /inventory) —
+    // but "center" only centers the column, it doesn't guarantee the
+    // column's own trailing edge actually clears the viewport, so it could
+    // still render clipped (confirmed: reproduces at any viewport width
+    // once enough columns accumulate, and unconditionally for columns 6/7
+    // whose reveal effect never fired at all before the wasVisibleRef fix
+    // above).
+    //
+    // The fixed nav is `position: fixed` (binder-tabs.tsx) — it contributes
+    // zero width to layout. Its gutter is reserved entirely via
+    // `binder-layout.tsx`'s `lg:pr-[170px]` padding on an ancestor several
+    // levels above the scroll row, which (being padding on a border-box
+    // element) already narrows the scroll row's own rendered box. So
+    // measuring purely against the scroll row's own boundingClientRect is
+    // automatically nav-safe — no separate nav-width constant needed.
     if (isVisible && !wasVisibleRef.current && containerRef.current) {
-      containerRef.current.scrollIntoView({
-        // "auto" (instant), not "smooth": Maestro reads layout bounds and taps
-        // immediately, so a smooth-scroll animation lets it tap a column before
-        // it settles — the e2e nav-tap that parked the prior NEO-63 attempt.
-        behavior: "auto",
-        block: "nearest",
-        // "center", not "end": keep the active column off both edges (clear of
-        // the fixed nav on the right) when it is first revealed.
-        inline: "center",
-      });
+      scrollColumnIntoView(containerRef.current);
+      // The column is content-driven width (min-w-[260px] max-w-[340px]),
+      // and on first reveal its item list is frequently still loading (its
+      // own "Loading <level>…" placeholder from EntitySelector, gated on
+      // this same `items` query being undefined), so the call above can
+      // measure a narrower box than the column settles into once real
+      // content (e.g. long set names) arrives — leaving the now-wider
+      // column clipped with no further scroll ever firing, since this
+      // effect only re-runs on the next false->true transition. Flag this
+      // reveal as pending a settle re-check; the effect below fires it once
+      // the column's content actually stabilizes.
+      settleTargetRef.current = true;
     }
     wasVisibleRef.current = isVisible;
   }, [isVisible]);
+
+  // Fires the settle re-check exactly once per reveal, at the actual moment
+  // this column's content stabilizes — not a guessed delay. `items` goes
+  // undefined -> array the instant EntitySelector's "Loading <level>…"
+  // placeholder (gated on that same undefined) is replaced by the real
+  // list; `mode` leaving "sync" is this file's own existing signal (see the
+  // hasSyncedRef effect below) that an in-flight marketplace fetch has
+  // finished. Waiting on both means a cold column that loads empty and
+  // triggers a sync still gets caught once the fetched results land, not
+  // just the initial (still-empty) resolution.
+  useEffect(() => {
+    if (!settleTargetRef.current || !containerRef.current) return;
+    if (items === undefined) return;
+    if (mode === "sync") return;
+    scrollColumnIntoView(containerRef.current);
+    settleTargetRef.current = false;
+  }, [items, mode]);
 
   // Latch "first sync done" for this column: either the items query has
   // returned data, or a sync cycle has completed (sync → idle). Freeze-on-
@@ -326,6 +406,18 @@ export default function EntityColumn({
   // (no FE sync mode → no onDone handoff to drop). Sync button = forced re-sync
   // via the backend door; "+ Custom" still opens the custom form.
   const newPathContent = () => {
+    // The custom-entry form is an explicit, in-progress user action: once the
+    // operator has opened "+ Custom" and started typing, a BACKGROUND re-sync
+    // (syncStatus flipping to "syncing" — e.g. a concurrent writer churning the
+    // shared selectorOptions catalog, or an auto re-fetch) must NOT swap their
+    // form out for the "Fetching from marketplaces…" panel: doing so unmounts
+    // the <input> mid-edit, discarding whatever they'd typed. So the custom form
+    // takes precedence over the syncing panel. (Previously the syncing check
+    // came first; it silently destroyed a half-typed custom value for real
+    // users, and surfaced as a "stale element reference" crash for the E2E
+    // drill util creating a per-worker custom Sport under CI's 8-shard
+    // concurrency, where these background re-syncs fire constantly.)
+    if (mode === "custom") return customForm;
     if (syncStatus?.status === "syncing") {
       return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
@@ -338,7 +430,6 @@ export default function EntityColumn({
         </div>
       );
     }
-    if (mode === "custom") return customForm;
     const forceSync = () => {
       if (level) void ensureOptions({ level, parentId, force: true });
     };

@@ -101,21 +101,9 @@ export default defineSchema({
       isInsert: v.optional(v.boolean()),
       isParallel: v.optional(v.boolean()),
     })),
-    // Set-level metadata, entered MANUALLY in the Set Builder (admin edits via
-    // `setSetMetadata`). Set-level only — does NOT propagate to descendant
-    // cardChecklist rows (those use `features`). (Previously auto-populated by
-    // TCDB enrichment; that scraping was removed — automation tracked separately.)
-    setMetadata: v.optional(v.object({
-      releaseDate: v.optional(v.string()),       // ISO date string when known
-      totalCardCount: v.optional(v.number()),    // declared set size
-      block: v.optional(v.string()),             // e.g. "Series 1", "Update"
-      tcdbSetId: v.optional(v.string()),         // TCDB SID (manually entered)
-      sourceUrl: v.optional(v.string()),         // reference URL (manually entered)
-      lastSyncedAt: v.optional(v.number()),      // legacy: last auto-sync epoch (no longer written)
-    })),
     // NEO-24: marketplace-agnostic feature map. Keys come from
     // `convex/features/expectedFeatures.ts` (e.g. "league", "era",
-    // "isReprint", "cardType"). Values are strings ("MLB", "Modern",
+    // "isReprint"). Values are strings ("MLB", "Modern",
     // "true"/"false", "Base Card"). When set at a higher level
     // (sport/year/manufacturer/setName/variant), the propagation engine
     // writes the value down to every descendant `cardChecklist` row that
@@ -175,6 +163,13 @@ export default defineSchema({
     // which can drift in the offseason before sets are released.
     playerIds: v.optional(v.array(v.id("players"))),
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
+    // NEO-90: set once the BSC per-card team-enrichment queue has checked
+    // this card's `platformData.bsc` detail endpoint for a team, regardless
+    // of outcome. Distinct from `teamOnCardIds` being empty, which can also
+    // mean "not checked yet" — without this marker a card that legitimately
+    // has no team (an insert/subset card) would be re-fetched forever on
+    // every future sync. Not touched by `lastUpdated`-driven logic.
+    teamCheckDoneAt: v.optional(v.number()),
     // De-duped union of BSC playerAttribute[] + BSC features[] + variant
     // metadata. Tokens: ["RC","AU","RELIC","SP","SSP","NUM",...]. Drives
     // both the eBay Features aspect and the boolean derivations below.
@@ -232,6 +227,11 @@ export default defineSchema({
     // propagate down only to cards whose key is undefined OR equal to the
     // previous set-level value. Overridden entries stay put.
     features: v.optional(v.record(v.string(), v.string())),
+    // NEO-91: NeonBinder-generated cross-marketplace SKU (see convex/sku.ts
+    // for the generation algorithm + length rationale). Optional since
+    // existing rows predate this field — no backfill planned, this data
+    // gets deleted and resynced fresh.
+    sku: v.optional(v.string()),
     sortOrder: v.number(),
     lastUpdated: v.number(),
   })
@@ -284,8 +284,17 @@ export default defineSchema({
       from: v.number(),
       to: v.optional(v.number()),
     })),
+    // NEO-91: hex color strings (e.g. "#008348"), from ESPN's public site
+    // API — Wikidata's P462 was confirmed empty for every real team tested
+    // (including the Boston Celtics), so this is intentionally sourced
+    // elsewhere. Absent for defunct/historical teams ESPN doesn't carry.
+    colors: v.optional(v.object({
+      primary: v.optional(v.string()),
+      secondary: v.optional(v.string()),
+    })),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()),
+      espnId: v.optional(v.string()),
     })),
     lastUpdated: v.number(),
   })
@@ -293,6 +302,79 @@ export default defineSchema({
     // Same compound-index optimization as players above. See its comment.
     .index("by_name_normalized_and_sport", ["nameNormalized", "sport"])
     .index("by_sport", ["sport"]),
+
+  // NEO-92: per-fetch review queue backing the step-through "new players &
+  // teams" wizard (replaces the old single-screen checkbox dialog). One row
+  // per unknown name surfaced by fetchCardChecklist. A background chained
+  // action (processEntityReviewQueue in adapters/wikidata.ts) works through
+  // "pending" rows one at a time, patching status/enrichment as each
+  // Wikidata lookup completes — the wizard subscribes reactively and
+  // presents rows in COMPLETION order (whichever finishes first), not
+  // original fetch order. `decision` is patched by the user's own action in
+  // the wizard (recordDecision) — durable across a page refresh, unlike
+  // keeping it only in React state. There is deliberately no "skip" decision
+  // variant: every name must resolve to create-or-link.
+  //
+  // `createdByUserId` scopes batch resumption per (selectorOptionId, user):
+  // startBatch only resumes a batch created by the SAME user. Two different
+  // admin sessions (or the same admin in two tabs) reviewing the same set
+  // concurrently each get their own private queue rather than silently
+  // sharing/colliding on one. Confirmed necessary, not just theoretical: two
+  // concurrent Maestro CI workers (each a distinct test user) sharing one
+  // real marketplace set produced two distinct observed bugs before this
+  // field existed — a dropped Cancel tap (one worker's commit collapsed
+  // another's wizard footer mid-click) and a wrong-item-shown wizard (one
+  // worker's unknown name preempted another's in shared queue order).
+  entityReviewQueue: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    batchId: v.string(),
+    createdByUserId: v.string(),
+    kind: v.union(v.literal("player"), v.literal("team")),
+    name: v.string(),
+    sport: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("ready"),
+      v.literal("error"),
+    ),
+    enrichment: v.optional(v.object({
+      wikidataId: v.optional(v.string()),
+      // player-only. Team NAMES, not ids — resolving to real team rows via
+      // teams.findOrCreateInternal is deferred to commit time (only once
+      // "create" is the confirmed decision), so a lookup during mere
+      // preview can never orphan a team row for a player the user ends up
+      // linking to someone else or never creates.
+      careerTeams: v.optional(v.array(v.object({
+        name: v.string(),
+        fromYear: v.number(),
+        toYear: v.optional(v.number()),
+      }))),
+      isHallOfFame: v.optional(v.boolean()),
+      // team-only
+      league: v.optional(v.string()),
+      city: v.optional(v.string()),
+      yearsActive: v.optional(v.object({
+        from: v.number(),
+        to: v.optional(v.number()),
+      })),
+      colors: v.optional(v.object({
+        primary: v.optional(v.string()),
+        secondary: v.optional(v.string()),
+      })),
+      espnId: v.optional(v.string()),
+    })),
+    decision: v.optional(v.union(
+      v.object({ action: v.literal("create") }),
+      v.object({
+        action: v.literal("link"),
+        linkedPlayerId: v.optional(v.id("players")),
+        linkedTeamId: v.optional(v.id("teams")),
+      }),
+    )),
+  })
+    .index("by_selector_option", ["selectorOptionId"])
+    .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])
+    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"]),
 
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({
