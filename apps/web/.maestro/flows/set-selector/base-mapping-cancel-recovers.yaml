@@ -119,12 +119,30 @@ tags:
 - assertVisible: "Retry"
 
 # ── RETRY — prove the picker REOPENS with real SL options (dead-end fixed) ────
-# Retry re-runs doSync(): re-fetches SL options and reopens the picker. This is
-# the second live SL base-set round-trip.
-- tapOn: "Retry"
-- extendedWaitUntil:
-    visible: "Select Base Set"
-    timeout: 7000
+# Retry re-runs doSync(): setPickerOpen(true) fires SYNCHRONOUSLY (before the SL
+# fetch is awaited), so the "Select Base Set" title reappears in <500ms — the 7s
+# key is a pure UI-open wait, NOT the marketplace round-trip.
+#
+# Result-keyed retry (same maestro-web tap-drop class handled on the "Base" tap
+# above): under the parallel CI queue, cross-worker mutations to the GLOBAL
+# selectorOptions table open frequent reactive-refetch windows. If the Retry tap
+# lands in one, EITHER the tap is dropped mid-reflow (NEO-85 coordinate-staleness)
+# OR doSync early-returns because its getAncestorChain useQuery is transiently
+# undefined (the same transient-undefined the parent SetSelector guards with
+# stableVariantTypeFlagsRef) — both leave the message panel unchanged and the
+# picker closed. A single re-tap recovers a TRANSIENT miss. maxRetries:1 KEEPS R2:
+# a genuine permanent dead-end (the frozen `triggered` ref the fix removed) would
+# fail BOTH attempts — the picker would never reopen — so this still FAILS loudly
+# if the fix regresses. See the product-hardening note below.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Retry"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
 # Loaded picker again = real SL options came back (not perpetual skeletons, not
 # a fallback message). Proves Retry actually recovers, not just that SOME UI
 # reappears. This absorbs the second SL round-trip.
