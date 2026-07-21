@@ -76,6 +76,7 @@ async function insertRow(
     ctx.db.insert("entityReviewQueue", {
       selectorOptionId: opts.selectorOptionId,
       batchId: opts.batchId,
+      createdByUserId: "user_review_001",
       kind: opts.kind,
       name: opts.name,
       sport: opts.sport ?? "Baseball",
@@ -96,6 +97,7 @@ describe("startBatch", () => {
 
     const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
+      createdByUserId: "user_review_001",
       sport: "Baseball",
       playerNames: ["Mike Trout", "Aaron Judge"],
       teamNames: ["Los Angeles Angels"],
@@ -126,6 +128,7 @@ describe("startBatch", () => {
 
     const firstBatchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
+      createdByUserId: "user_review_001",
       sport: "Baseball",
       playerNames: ["Mike Trout"],
       teamNames: [],
@@ -146,6 +149,7 @@ describe("startBatch", () => {
     // SAME batchId and leave the already-decided row alone, not discard it.
     const secondBatchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
+      createdByUserId: "user_review_001",
       sport: "Baseball",
       playerNames: ["Someone Else Entirely"],
       teamNames: [],
@@ -162,6 +166,85 @@ describe("startBatch", () => {
     expect(rowsAfter).toHaveLength(1);
     expect(rowsAfter[0].name).toBe("Mike Trout");
     expect(rowsAfter[0].decision).toEqual({ action: "create" });
+  });
+
+  test("scopes batches per user — two different users fetching the SAME selectorOptionId get separate, non-colliding batches", async () => {
+    // Regression coverage for a real bug: concurrent CI workers (each a
+    // distinct test user) fetching the same shared real marketplace set
+    // used to resume/collide on ONE global batch keyed only by
+    // selectorOptionId — causing a dropped Cancel tap (one user's commit
+    // collapsed another's wizard footer mid-click) and a wrong-item-shown
+    // wizard (one user's unknown name preempted another's in shared queue
+    // order). Scoping by (selectorOptionId, createdByUserId) fixes both.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchIdForUserA = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_a",
+      sport: "Baseball",
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+    const batchIdForUserB = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_b",
+      sport: "Baseball",
+      playerNames: ["Aaron Judge"],
+      teamNames: [],
+    });
+
+    expect(batchIdForUserB).not.toBe(batchIdForUserA);
+
+    const rowsForUserA = await t.run(async (ctx) =>
+      ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_selector_option_and_batch", (q) =>
+          q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchIdForUserA),
+        )
+        .collect(),
+    );
+    const rowsForUserB = await t.run(async (ctx) =>
+      ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_selector_option_and_batch", (q) =>
+          q.eq("selectorOptionId", selectorOptionId).eq("batchId", batchIdForUserB),
+        )
+        .collect(),
+    );
+    expect(rowsForUserA.map((r) => r.name)).toEqual(["Mike Trout"]);
+    expect(rowsForUserB.map((r) => r.name)).toEqual(["Aaron Judge"]);
+
+    // Each user resuming their own fetch gets their OWN batch back, not the
+    // other user's.
+    const resumedForUserA = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_a",
+      sport: "Baseball",
+      playerNames: ["Someone New"],
+      teamNames: [],
+    });
+    expect(resumedForUserA).toBe(batchIdForUserA);
+  });
+
+  test("getBatch never exposes createdByUserId to the client", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sport: "Baseball",
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("createdByUserId");
   });
 
   test("schedules processEntityReviewQueue for a non-empty name list (rows eventually leave 'pending')", async () => {
@@ -182,6 +265,7 @@ describe("startBatch", () => {
     try {
       const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
         selectorOptionId,
+        createdByUserId: "user_review_001",
         sport: "Baseball",
         playerNames: ["Mike Trout"],
         teamNames: [],
@@ -217,6 +301,7 @@ describe("startBatch", () => {
 
     const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
+      createdByUserId: "user_review_001",
       sport: "Baseball",
       playerNames: [],
       teamNames: [],

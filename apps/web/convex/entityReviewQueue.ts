@@ -7,7 +7,7 @@ import {
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { requireAdmin } from "./auth";
+import { getCurrentUserId, requireAdmin } from "./auth";
 
 /**
  * NEO-92: backs the step-through "new players & teams" review wizard that
@@ -57,7 +57,24 @@ const decisionValidator = v.union(
   }),
 );
 
+// `createdByUserId` is audit/scoping-only — see toPublicRow below. Mirrors
+// the players.ts/teams.ts pattern: internalQuery reads the full row,
+// public query strips this field before it reaches the client.
 const rowValidator = v.object({
+  _id: v.id("entityReviewQueue"),
+  _creationTime: v.number(),
+  selectorOptionId: v.id("selectorOptions"),
+  batchId: v.string(),
+  createdByUserId: v.string(),
+  kind: v.union(v.literal("player"), v.literal("team")),
+  name: v.string(),
+  sport: v.string(),
+  status: v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
+  enrichment: v.optional(enrichmentValidator),
+  decision: v.optional(decisionValidator),
+});
+
+const publicRowValidator = v.object({
   _id: v.id("entityReviewQueue"),
   _creationTime: v.number(),
   selectorOptionId: v.id("selectorOptions"),
@@ -70,31 +87,49 @@ const rowValidator = v.object({
   decision: v.optional(decisionValidator),
 });
 
+function toPublicRow<T extends { createdByUserId: string }>(
+  row: T,
+): Omit<T, "createdByUserId"> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { createdByUserId: _omit, ...rest } = row;
+  return rest;
+}
+
 /**
- * Start (or resume) a review batch for a selectorOption. Called from
- * fetchCardChecklist's action via ctx.runMutation — internal, no public
- * surface needed since only that action calls it.
+ * Start (or resume) a review batch for a selectorOption, scoped to the
+ * calling user. Called from fetchCardChecklist's action via ctx.runMutation
+ * — internal, no public surface needed since only that action calls it.
  *
- * If a batch already exists for this selectorOptionId, resume it (return
- * its id, touch nothing) rather than deleting + restarting: a batch only
- * exists while mid-review (commit and cancel both delete their batch's rows
- * on completion), so finding one means a previous tab/click is still
- * reviewing it — silently discarding that progress would be a real bug.
- * This holds even once every row is decided but not yet committed (the
- * wizard's final "All reviewed — save?" screen) — a page refresh in that
- * state should resume the same fully-decided batch, not lose it.
+ * If a batch already exists for this (selectorOptionId, createdByUserId)
+ * pair, resume it (return its id, touch nothing) rather than deleting +
+ * restarting: a batch only exists while mid-review (commit and cancel both
+ * delete their batch's rows on completion), so finding one means this SAME
+ * user's previous tab/click is still reviewing it — silently discarding
+ * that progress would be a real bug. This holds even once every row is
+ * decided but not yet committed (the wizard's final "All reviewed — save?"
+ * screen) — a page refresh in that state should resume the same
+ * fully-decided batch, not lose it.
  *
- * Safe to key this purely on "any row exists" (not "any UNDECIDED row")
- * because commitCardChecklist deletes a batch's rows SYNCHRONOUSLY, in the
- * same transaction as the commit itself — there is no async window where a
- * fully-decided batch could be observed here after it's already been
- * committed. See the delete site in commitCardChecklist for why that
- * matters (an earlier scheduled-delete version of this had exactly that
- * race).
+ * Scoping by user (not just selectorOptionId) is what makes this safe under
+ * concurrent access to the same set: two different users (or, in Maestro
+ * E2E, two different CI workers each authenticated as a distinct test
+ * account) fetching the SAME real marketplace variant each get their own
+ * private batch instead of sharing/colliding on one. This isn't only a test
+ * concern — two admin sessions (or the same admin in two tabs) reviewing
+ * the same set concurrently should behave the same way.
+ *
+ * Safe to key resumption purely on "any row exists for this user" (not "any
+ * UNDECIDED row") because commitCardChecklist deletes a batch's rows
+ * SYNCHRONOUSLY, in the same transaction as the commit itself — there is no
+ * async window where a fully-decided batch could be observed here after
+ * it's already been committed. See the delete site in commitCardChecklist
+ * for why that matters (an earlier scheduled-delete version of this had
+ * exactly that race).
  */
 export const startBatch = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
+    createdByUserId: v.string(),
     sport: v.string(),
     playerNames: v.array(v.string()),
     teamNames: v.array(v.string()),
@@ -103,8 +138,10 @@ export const startBatch = internalMutation({
   handler: async (ctx, args): Promise<string> => {
     const existing = await ctx.db
       .query("entityReviewQueue")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId),
+      .withIndex("by_selector_option_and_user", (q) =>
+        q
+          .eq("selectorOptionId", args.selectorOptionId)
+          .eq("createdByUserId", args.createdByUserId),
       )
       .first();
     if (existing) return existing.batchId;
@@ -116,6 +153,7 @@ export const startBatch = internalMutation({
         await ctx.db.insert("entityReviewQueue", {
           selectorOptionId: args.selectorOptionId,
           batchId,
+          createdByUserId: args.createdByUserId,
           kind: "player",
           name,
           sport: args.sport,
@@ -128,6 +166,7 @@ export const startBatch = internalMutation({
         await ctx.db.insert("entityReviewQueue", {
           selectorOptionId: args.selectorOptionId,
           batchId,
+          createdByUserId: args.createdByUserId,
           kind: "team",
           name,
           sport: args.sport,
@@ -156,15 +195,16 @@ export const getBatch = query({
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
   },
-  returns: v.array(rowValidator),
+  returns: v.array(publicRowValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return await ctx.db
+    const rows = await ctx.db
       .query("entityReviewQueue")
       .withIndex("by_selector_option_and_batch", (q) =>
         q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
       )
       .collect();
+    return rows.map(toPublicRow);
   },
 });
 

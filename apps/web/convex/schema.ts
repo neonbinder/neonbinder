@@ -314,9 +314,21 @@ export default defineSchema({
   // the wizard (recordDecision) — durable across a page refresh, unlike
   // keeping it only in React state. There is deliberately no "skip" decision
   // variant: every name must resolve to create-or-link.
+  //
+  // `createdByUserId` scopes batch resumption per (selectorOptionId, user):
+  // startBatch only resumes a batch created by the SAME user. Two different
+  // admin sessions (or the same admin in two tabs) reviewing the same set
+  // concurrently each get their own private queue rather than silently
+  // sharing/colliding on one. Confirmed necessary, not just theoretical: two
+  // concurrent Maestro CI workers (each a distinct test user) sharing one
+  // real marketplace set produced two distinct observed bugs before this
+  // field existed — a dropped Cancel tap (one worker's commit collapsed
+  // another's wizard footer mid-click) and a wrong-item-shown wizard (one
+  // worker's unknown name preempted another's in shared queue order).
   entityReviewQueue: defineTable({
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
+    createdByUserId: v.string(),
     kind: v.union(v.literal("player"), v.literal("team")),
     name: v.string(),
     sport: v.string(),
@@ -361,7 +373,8 @@ export default defineSchema({
     )),
   })
     .index("by_selector_option", ["selectorOptionId"])
-    .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"]),
+    .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])
+    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"]),
 
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({

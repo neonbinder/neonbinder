@@ -3786,11 +3786,16 @@ export const fetchCardChecklist = action({
         // NEO-92: kick off the review-wizard batch (background Wikidata
         // preview lookups + resumable decision queue) for whatever's
         // unresolved. startBatch resumes an in-progress batch for this
-        // selectorOptionId rather than restarting it, so re-clicking
-        // "Fetch from Marketplaces" mid-review never discards progress.
+        // (selectorOptionId, user) pair rather than restarting it, so
+        // re-clicking "Fetch from Marketplaces" mid-review never discards
+        // progress — and is scoped per-user so two different sessions
+        // fetching the SAME real set never share/collide on one batch.
         if (unknownPlayers.length > 0 || unknownTeams.length > 0) {
+          const callerId = await getCurrentUserId(ctx);
+          if (!callerId) throw new Error("Not authenticated");
           batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
             selectorOptionId: args.selectorOptionId,
+            createdByUserId: callerId,
             sport,
             playerNames: unknownPlayers,
             teamNames: unknownTeams,

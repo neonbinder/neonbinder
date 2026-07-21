@@ -259,6 +259,7 @@ describe("processEntityReviewQueue", () => {
       ctx.db.insert("entityReviewQueue", {
         selectorOptionId,
         batchId: "batch-1",
+        createdByUserId: "user_review_001",
         kind: opts.kind,
         name: opts.name,
         sport: "Baseball",

@@ -123,6 +123,7 @@ async function insertReviewRow(
     ctx.db.insert("entityReviewQueue", {
       selectorOptionId: opts.selectorOptionId,
       batchId: opts.batchId,
+      createdByUserId: "user_review_001",
       kind: opts.kind,
       name: opts.name,
       sport: opts.sport ?? "Baseball",
