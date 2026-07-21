@@ -24,6 +24,8 @@ import {
 } from "./features/generateListing";
 import { generateSku } from "./sku";
 import { findSportForSelectorOption } from "./cardChecklist";
+import { normalizePlayerName } from "./players";
+import { normalizeTeamName } from "./teams";
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
 const levelValidator = v.union(
@@ -3306,6 +3308,9 @@ export const fetchCardChecklist = action({
     cards: v.array(previewCardValidator),
     unknownPlayers: v.array(v.string()),
     unknownTeams: v.array(v.string()),
+    // NEO-92: present whenever unknownPlayers/unknownTeams is non-empty —
+    // the review wizard subscribes to this batch via entityReviewQueue.
+    batchId: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -3329,6 +3334,7 @@ export const fetchCardChecklist = action({
     }>;
     unknownPlayers: string[];
     unknownTeams: string[];
+    batchId?: string;
   }> => {
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
@@ -3723,22 +3729,40 @@ export const fetchCardChecklist = action({
       }
 
       // 5. Bucket unique player + team names against existing tables.
-      //    Skip bucketing entirely if we can't infer sport (sets without
-      //    a sport ancestor — shouldn't happen but guard anyway).
+      //    Deduped by NORMALIZED name (not raw trimmed string) — two
+      //    spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr")
+      //    used to produce two separate unknowns + two Wikidata lookups;
+      //    first-seen display spelling wins. Skip bucketing entirely if we
+      //    can't infer sport (sets without a sport ancestor — shouldn't
+      //    happen but guard anyway).
       const unknownPlayers: string[] = [];
       const unknownTeams: string[] = [];
+      let batchId: string | undefined;
       if (sport) {
-        const playerSet = new Set<string>();
-        const teamSet = new Set<string>();
+        const playerByNorm = new Map<string, string>();
+        const teamByNorm = new Map<string, string>();
+        const addPlayer = (raw: string) => {
+          const trimmed = raw.trim();
+          if (!trimmed) return;
+          const norm = normalizePlayerName(trimmed);
+          if (!playerByNorm.has(norm)) playerByNorm.set(norm, trimmed);
+        };
+        const addTeam = (raw: string) => {
+          const trimmed = raw.trim();
+          if (!trimmed) return;
+          const norm = normalizeTeamName(trimmed);
+          if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
+        };
+
         for (const c of out) {
-          for (const p of c.players ?? []) if (p.trim()) playerSet.add(p.trim());
-          for (const t of c.teams ?? []) if (t.trim()) teamSet.add(t.trim());
-          if (c.team && c.team.trim() && !c.teams?.length) teamSet.add(c.team.trim());
+          for (const p of c.players ?? []) addPlayer(p);
+          for (const t of c.teams ?? []) addTeam(t);
+          if (c.team && !c.teams?.length) addTeam(c.team);
         }
 
         // Custom cards (added via addCustomCard) can declare pending player /
         // team names that should also be surfaced as unknown until the user
-        // confirms them via the dialog. Without this pass, users who add a
+        // confirms them via the wizard. Without this pass, users who add a
         // custom card for a brand-new player would never get prompted to
         // enrich that player via the standard confirmation flow.
         const customRows = await ctx.runQuery(
@@ -3746,21 +3770,31 @@ export const fetchCardChecklist = action({
           { selectorOptionId: args.selectorOptionId },
         );
         for (const r of customRows) {
-          for (const p of r.pendingPlayerNames ?? []) {
-            if (p.trim()) playerSet.add(p.trim());
-          }
-          for (const t of r.pendingTeamNames ?? []) {
-            if (t.trim()) teamSet.add(t.trim());
-          }
+          for (const p of r.pendingPlayerNames ?? []) addPlayer(p);
+          for (const t of r.pendingTeamNames ?? []) addTeam(t);
         }
 
-        for (const name of playerSet) {
+        for (const name of playerByNorm.values()) {
           const existing = await ctx.runQuery(api.players.findByNameAndSport, { name, sport });
           if (!existing) unknownPlayers.push(name);
         }
-        for (const name of teamSet) {
+        for (const name of teamByNorm.values()) {
           const existing = await ctx.runQuery(api.teams.findByNameAndSport, { name, sport });
           if (!existing) unknownTeams.push(name);
+        }
+
+        // NEO-92: kick off the review-wizard batch (background Wikidata
+        // preview lookups + resumable decision queue) for whatever's
+        // unresolved. startBatch resumes an in-progress batch for this
+        // selectorOptionId rather than restarting it, so re-clicking
+        // "Fetch from Marketplaces" mid-review never discards progress.
+        if (unknownPlayers.length > 0 || unknownTeams.length > 0) {
+          batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
+            selectorOptionId: args.selectorOptionId,
+            sport,
+            playerNames: unknownPlayers,
+            teamNames: unknownTeams,
+          });
         }
       }
 
@@ -3776,6 +3810,7 @@ export const fetchCardChecklist = action({
         cards: out,
         unknownPlayers,
         unknownTeams,
+        batchId,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
@@ -3791,22 +3826,23 @@ export const fetchCardChecklist = action({
 });
 
 /**
- * Mutation — commit a fetched checklist preview. Confirmed unknowns are
- * created via findOrCreate (player/team), card playerIds/teamOnCardIds
- * are resolved, the checklist is persisted, and Wikidata enrichment is
- * scheduled in the background for newly created entities.
- *
- * confirmedNewPlayers / confirmedNewTeams: subset of unknownPlayers/
- * unknownTeams the user approved in the dialog. Skipped names are kept
- * as free-text on the card (`team`) and DON'T get an entity row.
+ * Mutation — commit a fetched checklist preview. Every player/team name
+ * that isn't already in our tables was reviewed one-at-a-time in the
+ * NEO-92 review wizard (batchId → entityReviewQueue), which recorded a
+ * `decision` of "create" (seeded from the wizard's own Wikidata preview
+ * lookup) or "link" (an existing player/team the user picked instead —
+ * no new row). There is no skip: every name resolves to one or the other.
+ * Card playerIds/teamOnCardIds are resolved from those decisions, the
+ * checklist is persisted, and the batch's review rows are cleaned up.
  */
 export const commitCardChecklist = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     sport: v.string(),
     cards: v.array(previewCardValidator),
-    confirmedNewPlayers: v.array(v.string()),
-    confirmedNewTeams: v.array(v.string()),
+    // Present whenever the fetch surfaced unknown names (and the wizard
+    // ran); absent on the zero-unknowns fast path.
+    batchId: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -3847,8 +3883,8 @@ export const commitCardChecklist = mutation({
 
     // Fold in pending* names from custom cards on this variant. Those rows
     // aren't in args.cards (which is the BSC/SL fetch preview), so without
-    // this pass a confirmedNewPlayers entry pointing at a custom card's
-    // pending player would never get inserted into the players table.
+    // this pass a reviewed custom-card pending player would never get
+    // inserted into the players table.
     const existingForPending = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) =>
@@ -3865,8 +3901,47 @@ export const commitCardChecklist = mutation({
       }
     }
 
-    const confirmedPlayersNorm = new Set(args.confirmedNewPlayers.map(norm));
-    const confirmedTeamsNorm = new Set(args.confirmedNewTeams.map(norm));
+    // NEO-92: load this batch's reviewed decisions (create/link, no skip —
+    // see the wizard). Keyed by kind+normalized-name so a player and a team
+    // that happen to share a normalized name never collide.
+    const reviewRows = args.batchId
+      ? await ctx.db
+          .query("entityReviewQueue")
+          .withIndex("by_selector_option_and_batch", (q) =>
+            q
+              .eq("selectorOptionId", args.selectorOptionId)
+              .eq("batchId", args.batchId!),
+          )
+          .collect()
+      : [];
+    const reviewByKey = new Map<string, (typeof reviewRows)[number]>();
+    for (const row of reviewRows) {
+      reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
+    }
+
+    // Get-or-create a bare team row by name — used to resolve a newly
+    // created player's career-team names (from the wizard's Wikidata
+    // preview) to real team ids. Deliberately minimal (no enrichment
+    // fields) since these are incidental historical teams, not something
+    // the user reviewed directly — same behavior as today's
+    // teams.findOrCreateInternal, inlined here since a mutation can't call
+    // another mutation via ctx.runMutation.
+    const resolveTeamIdByName = async (rawName: string): Promise<Id<"teams">> => {
+      const normalized = norm(rawName);
+      const existing = await ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport", (q) =>
+          q.eq("nameNormalized", normalized).eq("sport", args.sport),
+        )
+        .first();
+      if (existing) return existing._id;
+      return await ctx.db.insert("teams", {
+        name: rawName.trim(),
+        nameNormalized: normalized,
+        sport: args.sport,
+        lastUpdated: Date.now(),
+      });
+    };
 
     const playerIdByName = new Map<string, Id<"players">>();
     const createdPlayerIds: Array<Id<"players">> = [];
@@ -3882,18 +3957,39 @@ export const commitCardChecklist = mutation({
         .first();
       if (existing) {
         playerIdByName.set(name, existing._id);
-      } else if (confirmedPlayersNorm.has(normalized)) {
-        const id = await ctx.db.insert("players", {
-          name: name.trim(),
-          nameNormalized: normalized,
-          primarySport: args.sport,
-          createdByUserId: userId,
-          lastUpdated: Date.now(),
-        });
-        playerIdByName.set(name, id);
-        createdPlayerIds.push(id);
+        continue;
       }
-      // else: user skipped this name — leave unresolved; card keeps free-text
+      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      if (!decision) continue; // not reviewed — shouldn't happen; card keeps this name unresolved
+      if (decision.action === "link") {
+        if (decision.linkedPlayerId) playerIdByName.set(name, decision.linkedPlayerId);
+        continue;
+      }
+      // decision.action === "create" — seed directly from the wizard's own
+      // Wikidata preview lookup (already fetched during review); no more
+      // post-commit processEnrichmentQueue scheduling needed for this row.
+      const enrichment = reviewByKey.get(`player:${normalized}`)?.enrichment;
+      const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [];
+      for (const ct of enrichment?.careerTeams ?? []) {
+        const teamId = await resolveTeamIdByName(ct.name);
+        teamYears.push({ teamId, fromYear: ct.fromYear, toYear: ct.toYear });
+      }
+      const id = await ctx.db.insert("players", {
+        name: name.trim(),
+        nameNormalized: normalized,
+        primarySport: args.sport,
+        createdByUserId: userId,
+        lastUpdated: Date.now(),
+        ...(teamYears.length ? { teamYears } : {}),
+        ...(enrichment?.isHallOfFame !== undefined
+          ? { isHallOfFame: enrichment.isHallOfFame }
+          : {}),
+        ...(enrichment?.wikidataId
+          ? { externalIds: { wikidataId: enrichment.wikidataId } }
+          : {}),
+      });
+      playerIdByName.set(name, id);
+      createdPlayerIds.push(id);
     }
 
     const teamIdByName = new Map<string, Id<"teams">>();
@@ -3908,16 +4004,35 @@ export const commitCardChecklist = mutation({
         .first();
       if (existing) {
         teamIdByName.set(name, existing._id);
-      } else if (confirmedTeamsNorm.has(normalized)) {
-        const id = await ctx.db.insert("teams", {
-          name: name.trim(),
-          nameNormalized: normalized,
-          sport: args.sport,
-          lastUpdated: Date.now(),
-        });
-        teamIdByName.set(name, id);
-        createdTeamIds.push(id);
+        continue;
       }
+      const decision = reviewByKey.get(`team:${normalized}`)?.decision;
+      if (!decision) continue;
+      if (decision.action === "link") {
+        if (decision.linkedTeamId) teamIdByName.set(name, decision.linkedTeamId);
+        continue;
+      }
+      const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
+      const id = await ctx.db.insert("teams", {
+        name: name.trim(),
+        nameNormalized: normalized,
+        sport: args.sport,
+        lastUpdated: Date.now(),
+        ...(enrichment?.league ? { league: enrichment.league } : {}),
+        ...(enrichment?.city ? { city: enrichment.city } : {}),
+        ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
+        ...(enrichment?.colors ? { colors: enrichment.colors } : {}),
+        ...(enrichment?.wikidataId || enrichment?.espnId
+          ? {
+              externalIds: {
+                wikidataId: enrichment?.wikidataId,
+                espnId: enrichment?.espnId,
+              },
+            }
+          : {}),
+      });
+      teamIdByName.set(name, id);
+      createdTeamIds.push(id);
     }
 
     // Resolve per-card playerIds / teamOnCardIds. Cards whose names are
@@ -4215,16 +4330,23 @@ export const commitCardChecklist = mutation({
       }
     }
 
-    // Schedule Wikidata enrichment as a single chained queue rather than
-    // N parallel actions. processEnrichmentQueue serializes requests
-    // globally (one entity at a time, with INTER_ENTITY_DELAY_MS between
-    // each) so a 300-player fetch doesn't burst-429 Wikidata.
-    if (createdPlayerIds.length > 0 || createdTeamIds.length > 0) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.adapters.wikidata.processEnrichmentQueue,
-        { playerIds: createdPlayerIds, teamIds: createdTeamIds },
-      );
+    // NEO-92: no post-commit Wikidata scheduling needed anymore — every
+    // created player/team was already enriched during the review wizard
+    // (reviewByKey's `enrichment`, seeded above at insert time). Delete this
+    // batch's now-consumed entityReviewQueue rows SYNCHRONOUSLY, in this same
+    // transaction — using `reviewRows`, already read above to resolve
+    // decisions, so this adds writes only, no extra reads. Deliberately NOT
+    // scheduled async (the original design): a scheduled cleanup left a real
+    // race — a re-fetch of the same selectorOptionId landing in the gap
+    // between this mutation returning and the scheduled delete actually
+    // running would find every row already decided and wrongly resume the
+    // dead batch (startBatch) instead of starting fresh. Deleting inline
+    // closes that window entirely: by the time this mutation returns, the
+    // batch's rows are gone, so a subsequent fetch can never observe them.
+    if (args.batchId) {
+      for (const row of reviewRows) {
+        await ctx.db.delete(row._id);
+      }
     }
 
     // NEO-90: same chained-queue shape, for BSC per-card team resolution.

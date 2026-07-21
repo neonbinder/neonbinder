@@ -103,7 +103,7 @@ export default defineSchema({
     })),
     // NEO-24: marketplace-agnostic feature map. Keys come from
     // `convex/features/expectedFeatures.ts` (e.g. "league", "era",
-    // "isReprint", "cardType"). Values are strings ("MLB", "Modern",
+    // "isReprint"). Values are strings ("MLB", "Modern",
     // "true"/"false", "Base Card"). When set at a higher level
     // (sport/year/manufacturer/setName/variant), the propagation engine
     // writes the value down to every descendant `cardChecklist` row that
@@ -302,6 +302,66 @@ export default defineSchema({
     // Same compound-index optimization as players above. See its comment.
     .index("by_name_normalized_and_sport", ["nameNormalized", "sport"])
     .index("by_sport", ["sport"]),
+
+  // NEO-92: per-fetch review queue backing the step-through "new players &
+  // teams" wizard (replaces the old single-screen checkbox dialog). One row
+  // per unknown name surfaced by fetchCardChecklist. A background chained
+  // action (processEntityReviewQueue in adapters/wikidata.ts) works through
+  // "pending" rows one at a time, patching status/enrichment as each
+  // Wikidata lookup completes — the wizard subscribes reactively and
+  // presents rows in COMPLETION order (whichever finishes first), not
+  // original fetch order. `decision` is patched by the user's own action in
+  // the wizard (recordDecision) — durable across a page refresh, unlike
+  // keeping it only in React state. There is deliberately no "skip" decision
+  // variant: every name must resolve to create-or-link.
+  entityReviewQueue: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    batchId: v.string(),
+    kind: v.union(v.literal("player"), v.literal("team")),
+    name: v.string(),
+    sport: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("ready"),
+      v.literal("error"),
+    ),
+    enrichment: v.optional(v.object({
+      wikidataId: v.optional(v.string()),
+      // player-only. Team NAMES, not ids — resolving to real team rows via
+      // teams.findOrCreateInternal is deferred to commit time (only once
+      // "create" is the confirmed decision), so a lookup during mere
+      // preview can never orphan a team row for a player the user ends up
+      // linking to someone else or never creates.
+      careerTeams: v.optional(v.array(v.object({
+        name: v.string(),
+        fromYear: v.number(),
+        toYear: v.optional(v.number()),
+      }))),
+      isHallOfFame: v.optional(v.boolean()),
+      // team-only
+      league: v.optional(v.string()),
+      city: v.optional(v.string()),
+      yearsActive: v.optional(v.object({
+        from: v.number(),
+        to: v.optional(v.number()),
+      })),
+      colors: v.optional(v.object({
+        primary: v.optional(v.string()),
+        secondary: v.optional(v.string()),
+      })),
+      espnId: v.optional(v.string()),
+    })),
+    decision: v.optional(v.union(
+      v.object({ action: v.literal("create") }),
+      v.object({
+        action: v.literal("link"),
+        linkedPlayerId: v.optional(v.id("players")),
+        linkedTeamId: v.optional(v.id("teams")),
+      }),
+    )),
+  })
+    .index("by_selector_option", ["selectorOptionId"])
+    .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"]),
 
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({

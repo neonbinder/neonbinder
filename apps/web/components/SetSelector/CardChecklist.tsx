@@ -8,7 +8,7 @@ import CardChecklistItem from "./CardChecklistItem";
 import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
-import UnknownEntitiesDialog from "./UnknownEntitiesDialog";
+import EntityReviewWizard from "./EntityReviewWizard";
 import ChecklistSourceFilter, {
   type SourceChips,
   type SourceFilter,
@@ -31,11 +31,15 @@ type CardChecklistProps = {
 /**
  * Preview shape returned by fetchCardChecklist. We hold this in component
  * state between fetch (action) and commit (mutation) so the user can
- * confirm new players/teams in UnknownEntitiesDialog before the entities
- * are persisted.
+ * review new players/teams in EntityReviewWizard before the entities are
+ * persisted. `batchId` is present whenever there are unknowns — it's what
+ * the wizard subscribes to (entityReviewQueue.getBatch) and what
+ * commitCardChecklist reads back to resolve each name's create/link
+ * decision.
  */
 type FetchPreview = {
   sport: string;
+  batchId?: string;
   cards: Array<{
     cardNumber: string;
     cardName: string;
@@ -146,12 +150,13 @@ export default function CardChecklist({
       }
       const preview: FetchPreview = {
         sport: result.sport,
+        batchId: result.batchId,
         cards: result.cards,
         unknownPlayers: result.unknownPlayers,
         unknownTeams: result.unknownTeams,
       };
       if (preview.unknownPlayers.length === 0 && preview.unknownTeams.length === 0) {
-        await runCommit(preview, [], []);
+        await runCommit(preview);
         setSyncMessage(`Saved ${result.cards.length} cards.`);
       } else {
         // Stash preview; dialog handles the rest.
@@ -167,25 +172,19 @@ export default function CardChecklist({
     }
   };
 
-  const runCommit = async (
-    preview: FetchPreview,
-    confirmedPlayers: string[],
-    confirmedTeams: string[],
-  ) => {
+  const runCommit = async (preview: FetchPreview) => {
     setCommitting(true);
     try {
       const result = await commitChecklist({
         selectorOptionId: variantId,
         sport: preview.sport,
         cards: preview.cards,
-        confirmedNewPlayers: confirmedPlayers,
-        confirmedNewTeams: confirmedTeams,
+        batchId: preview.batchId,
       });
-      const enrichmentNote =
-        result.createdPlayerIds.length || result.createdTeamIds.length
-          ? ` (${result.createdPlayerIds.length} players + ${result.createdTeamIds.length} teams enriching from Wikidata in background)`
-          : "";
-      setSyncMessage(`Saved ${result.count} cards.${enrichmentNote}`);
+      // NEO-92: no more "enriching in background" note — every created
+      // player/team was already enriched during the review wizard, before
+      // this commit ran.
+      setSyncMessage(`Saved ${result.count} cards.`);
     } catch (error) {
       setSyncMessage(
         `Commit failed: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -195,12 +194,9 @@ export default function CardChecklist({
     }
   };
 
-  const handleConfirmUnknowns = async (
-    confirmedPlayers: string[],
-    confirmedTeams: string[],
-  ) => {
+  const handleWizardConfirm = async () => {
     if (!pendingPreview) return;
-    await runCommit(pendingPreview, confirmedPlayers, confirmedTeams);
+    await runCommit(pendingPreview);
     setPendingPreview(null);
   };
 
@@ -515,18 +511,20 @@ export default function CardChecklist({
         />
       )}
 
-      <UnknownEntitiesDialog
-        isOpen={pendingPreview !== null}
-        unknownPlayers={pendingPreview?.unknownPlayers ?? []}
-        unknownTeams={pendingPreview?.unknownTeams ?? []}
-        sport={pendingPreview?.sport ?? ""}
-        saving={committing}
-        onConfirm={handleConfirmUnknowns}
-        onCancel={() => {
-          setPendingPreview(null);
-          setSyncMessage("Fetch cancelled — no cards saved.");
-        }}
-      />
+      {pendingPreview?.batchId && (
+        <EntityReviewWizard
+          isOpen={pendingPreview !== null}
+          selectorOptionId={variantId}
+          batchId={pendingPreview.batchId}
+          cardCount={pendingPreview.cards.length}
+          saving={committing}
+          onConfirm={handleWizardConfirm}
+          onCancel={() => {
+            setPendingPreview(null);
+            setSyncMessage("Fetch cancelled — no cards saved.");
+          }}
+        />
+      )}
     </div>
   );
 }

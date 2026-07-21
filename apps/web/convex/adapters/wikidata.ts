@@ -225,13 +225,127 @@ async function findTeamQid(name: string, sport: string): Promise<string | null> 
 }
 
 /**
+ * Player enrichment result, shared by both consumers:
+ *  - `enrichPlayer` (id-based, post-creation) resolves `careerTeams` names
+ *    to real team ids via teams.findOrCreateInternal before persisting.
+ *  - `processEntityReviewQueue` (NEO-92, name-based, pre-creation preview)
+ *    stores `careerTeams` as bare names — resolving to real team rows is
+ *    deferred to commit time (only once "create" is the confirmed decision)
+ *    so a mere preview lookup can never orphan a team row for a player the
+ *    user ends up linking to someone else or never creates at all.
+ */
+export interface PlayerLookupResult {
+  wikidataId: string;
+  careerTeams: Array<{ name: string; fromYear: number; toYear?: number }>;
+  isHallOfFame?: boolean;
+}
+
+export interface TeamLookupResult {
+  wikidataId?: string;
+  league?: string;
+  city?: string;
+  yearsActive?: { from: number; to?: number };
+  colors?: { primary?: string; secondary?: string };
+  espnId?: string;
+}
+
+/**
+ * Pure(-ish) lookup — no db writes. Given a player's name + sport, finds
+ * its Wikidata QID and pulls career teams (as names) + HoF status. Returns
+ * null if no Wikidata match is found (common for minor leaguers/prospects).
+ *
+ * teamYears: each P54 (member of sports team) statement may carry
+ * P580 (start time) and P582 (end time) qualifiers.
+ */
+export async function lookupPlayerEnrichment(
+  name: string,
+  sport: string,
+): Promise<PlayerLookupResult | null> {
+  const qid = await findPlayerQid(name, sport);
+  if (!qid) {
+    console.log(`[wikidata.lookupPlayerEnrichment] no Wikidata match for ${name} (${sport})`);
+    return null;
+  }
+
+  // HOF_QIDS is keyed lowercase, same as SPORT_QIDS above (see the identical
+  // note on findPlayerQid) — callers pass display-cased sport strings
+  // ("Baseball"), so this lookup must normalize too. Found as a real,
+  // pre-existing bug while adding NEO-92 coverage: without `.toLowerCase()`
+  // here, `isHallOfFame` silently never resolved for any real caller (every
+  // production call site passes display-cased sport), even though the QID
+  // lookup two lines up already got this right.
+  const hofQid = HOF_QIDS[sport.toLowerCase()];
+
+  const detailQuery = `
+    SELECT ?team ?teamLabel ?start ?end ?award WHERE {
+      OPTIONAL {
+        wd:${qid} p:P54 ?membership .
+        ?membership ps:P54 ?team .
+        OPTIONAL { ?membership pq:P580 ?start . }
+        OPTIONAL { ?membership pq:P582 ?end . }
+      }
+      OPTIONAL { wd:${qid} wdt:P166 ?award . }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+  `;
+  const result = await runSparql(detailQuery);
+  if (!result) return null;
+
+  const careerTeams: Array<{ name: string; fromYear: number; toYear?: number }> = [];
+  let isHallOfFame: boolean | undefined;
+  const seenTeams = new Set<string>();
+
+  for (const row of result.results.bindings) {
+    if (row.team && row.teamLabel) {
+      const teamWdId = qidFromIri(row.team.value);
+      if (!seenTeams.has(teamWdId)) {
+        seenTeams.add(teamWdId);
+        const fromYear = yearFromBinding(row.start);
+        if (fromYear !== undefined) {
+          // Wikidata's label service returns the bare QID as the label
+          // when no label exists in the requested language (en).
+          // Q127635 turned up via the Yakult Swallows lineage — a real
+          // NPB team that simply hasn't had its English label added on
+          // Wikidata yet. Rather than create a team named "Q127635",
+          // skip the membership and leave a breadcrumb so we can
+          // backfill once an English label appears upstream.
+          const labelLooksLikeQid = /^Q\d+$/.test(row.teamLabel.value);
+          if (labelLooksLikeQid) {
+            console.warn(
+              `[wikidata.lookupPlayerEnrichment] skipped team membership for ${name}: ` +
+              `Wikidata entity ${teamWdId} has no en label (label service returned QID).`,
+            );
+          } else {
+            careerTeams.push({
+              name: row.teamLabel.value,
+              fromYear,
+              toYear: yearFromBinding(row.end),
+            });
+          }
+        }
+      }
+    }
+    if (hofQid && row.award && qidFromIri(row.award.value) === hofQid) {
+      isHallOfFame = true;
+    }
+  }
+
+  // No HoF row matched, but the player IS in our HoF-aware sports — we
+  // can confidently say not-HoF. Otherwise leave undefined so unsupported
+  // sports don't claim a definitive answer.
+  if (isHallOfFame === undefined && hofQid) {
+    isHallOfFame = false;
+  }
+
+  return { wikidataId: qid, careerTeams, isHallOfFame };
+}
+
+/**
  * Internal action — given a player record, look up its Wikidata QID,
  * pull career teams + HoF status, and persist via applyEnrichmentInternal.
  *
- * teamYears: each P54 (member of sports team) statement may carry
- * P580 (start time) and P582 (end time) qualifiers. We resolve each
- * referenced team name through teams.findOrCreate so the teamYears
- * array points at our own teams table, not Wikidata QIDs. This is the
+ * Resolves each `careerTeams` name through teams.findOrCreateInternal so
+ * `teamYears` points at our own teams table, not Wikidata QIDs. This is the
  * single most expensive enrichment call (one entity lookup + N team
  * resolutions per player); the calling action treats it as best-effort.
  */
@@ -242,84 +356,23 @@ export const enrichPlayer = internalAction({
     const player = await ctx.runQuery(internal.players.getInternal, { id: args.playerId });
     if (!player) return null;
 
-    const qid = await findPlayerQid(player.name, player.primarySport);
-    if (!qid) {
-      console.log(`[wikidata.enrichPlayer] no Wikidata match for ${player.name} (${player.primarySport})`);
-      return null;
-    }
-
-    const hofQid = HOF_QIDS[player.primarySport];
-
-    const detailQuery = `
-      SELECT ?team ?teamLabel ?start ?end ?award WHERE {
-        OPTIONAL {
-          wd:${qid} p:P54 ?membership .
-          ?membership ps:P54 ?team .
-          OPTIONAL { ?membership pq:P580 ?start . }
-          OPTIONAL { ?membership pq:P582 ?end . }
-        }
-        OPTIONAL { wd:${qid} wdt:P166 ?award . }
-        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-      }
-    `;
-    const result = await runSparql(detailQuery);
+    const result = await lookupPlayerEnrichment(player.name, player.primarySport);
     if (!result) return null;
 
     const teamYears: Array<{ teamId: import("../_generated/dataModel").Id<"teams">; fromYear: number; toYear?: number }> = [];
-    let isHallOfFame: boolean | undefined;
-    const seenTeams = new Set<string>();
-
-    for (const row of result.results.bindings) {
-      if (row.team && row.teamLabel) {
-        const teamWdId = qidFromIri(row.team.value);
-        if (!seenTeams.has(teamWdId)) {
-          seenTeams.add(teamWdId);
-          const fromYear = yearFromBinding(row.start);
-          if (fromYear !== undefined) {
-            // Wikidata's label service returns the bare QID as the label
-            // when no label exists in the requested language (en).
-            // Q127635 turned up via the Yakult Swallows lineage — a real
-            // NPB team that simply hasn't had its English label added on
-            // Wikidata yet. Rather than create a team named "Q127635",
-            // skip the membership and leave a breadcrumb so we can
-            // backfill once an English label appears upstream.
-            const labelLooksLikeQid = /^Q\d+$/.test(row.teamLabel.value);
-            if (labelLooksLikeQid) {
-              console.warn(
-                `[wikidata.enrichPlayer] skipped team membership for ${player.name}: ` +
-                `Wikidata entity ${teamWdId} has no en label (label service returned QID).`,
-              );
-            } else {
-              const teamId = await ctx.runMutation(internal.teams.findOrCreateInternal, {
-                name: row.teamLabel.value,
-                sport: player.primarySport,
-              });
-              teamYears.push({
-                teamId,
-                fromYear,
-                toYear: yearFromBinding(row.end),
-              });
-            }
-          }
-        }
-      }
-      if (hofQid && row.award && qidFromIri(row.award.value) === hofQid) {
-        isHallOfFame = true;
-      }
-    }
-
-    // No HoF row matched, but the player IS in our HoF-aware sports — we
-    // can confidently say not-HoF. Otherwise leave undefined so unsupported
-    // sports don't claim a definitive answer.
-    if (isHallOfFame === undefined && hofQid) {
-      isHallOfFame = false;
+    for (const ct of result.careerTeams) {
+      const teamId = await ctx.runMutation(internal.teams.findOrCreateInternal, {
+        name: ct.name,
+        sport: player.primarySport,
+      });
+      teamYears.push({ teamId, fromYear: ct.fromYear, toYear: ct.toYear });
     }
 
     await ctx.runMutation(internal.players.applyEnrichmentInternal, {
       id: args.playerId,
       teamYears: teamYears.length ? teamYears : undefined,
-      isHallOfFame,
-      wikidataId: qid,
+      isHallOfFame: result.isHallOfFame,
+      wikidataId: result.wikidataId,
     });
     return null;
   },
@@ -336,6 +389,69 @@ export const enrichPlayer = internalAction({
  * name from SPORT_TO_ESPN_LEAGUE, not a guess) also wins over Wikidata's
  * label when present.
  */
+/**
+ * Pure(-ish) lookup — no db writes. Already side-effect-free (unlike the
+ * player lookup, a team has no nested "career teams" to defer). Tries ESPN
+ * first (reliable colors/city/league for CURRENT teams), then Wikidata
+ * (sole source of yearsActive/wikidataId, and the only source for
+ * city/league when ESPN found no match — a defunct team). Returns null
+ * only when NEITHER source matches.
+ */
+export async function lookupTeamEnrichment(
+  name: string,
+  sport: string,
+): Promise<TeamLookupResult | null> {
+  const espnInfo = await fetchEspnTeamInfo(sport, name);
+
+  const qid = await findTeamQid(name, sport);
+  if (!qid) {
+    if (!espnInfo) {
+      console.log(`[wikidata.lookupTeamEnrichment] no match for ${name} (${sport}) on either source`);
+      return null;
+    }
+    return {
+      league: espnInfo.league,
+      city: espnInfo.city,
+      colors: { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate },
+      espnId: espnInfo.espnId,
+    };
+  }
+
+  // P159 (headquarters location) is inconsistent for sports teams —
+  // confirmed empty for Washington Nationals and LA Rams (which instead
+  // had it, if at all, under P276 "location"), present for the Celtics.
+  // Ask for both, prefer P159.
+  const detailQuery = `
+    SELECT ?league ?leagueLabel ?city159 ?city159Label ?city276 ?city276Label ?inception ?dissolved WHERE {
+      OPTIONAL { wd:${qid} wdt:P118 ?league . }
+      OPTIONAL { wd:${qid} wdt:P159 ?city159 . }
+      OPTIONAL { wd:${qid} wdt:P276 ?city276 . }
+      OPTIONAL { wd:${qid} wdt:P571 ?inception . }
+      OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    LIMIT 1
+  `;
+  const result = await runSparql(detailQuery);
+  const row = result?.results.bindings[0];
+
+  const wikidataCity = row?.city159Label?.value ?? row?.city276Label?.value;
+  const fromYear = yearFromBinding(row?.inception);
+  const toYear = yearFromBinding(row?.dissolved);
+  const yearsActive = fromYear !== undefined ? { from: fromYear, to: toYear } : undefined;
+
+  return {
+    wikidataId: qid,
+    league: espnInfo?.league ?? row?.leagueLabel?.value,
+    city: espnInfo?.city ?? wikidataCity,
+    yearsActive,
+    colors: espnInfo
+      ? { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate }
+      : undefined,
+    espnId: espnInfo?.espnId,
+  };
+}
+
 export const enrichTeam = internalAction({
   args: { teamId: v.id("teams") },
   returns: v.null(),
@@ -343,61 +459,17 @@ export const enrichTeam = internalAction({
     const team = await ctx.runQuery(internal.teams.getInternal, { id: args.teamId });
     if (!team) return null;
 
-    const espnInfo = await fetchEspnTeamInfo(team.sport, team.name);
-
-    const qid = await findTeamQid(team.name, team.sport);
-    if (!qid) {
-      if (!espnInfo) {
-        console.log(`[wikidata.enrichTeam] no match for ${team.name} (${team.sport}) on either source`);
-        return null;
-      }
-      // Wikidata has no entity at all, but ESPN found a current team —
-      // persist what ESPN gave us; no wikidataId to save.
-      await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
-        id: args.teamId,
-        league: espnInfo.league,
-        city: espnInfo.city,
-        colors: { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate },
-        espnId: espnInfo.espnId,
-      });
-      return null;
-    }
-
-    // P159 (headquarters location) is inconsistent for sports teams —
-    // confirmed empty for Washington Nationals and LA Rams (which instead
-    // had it, if at all, under P276 "location"), present for the Celtics.
-    // Ask for both, prefer P159.
-    const detailQuery = `
-      SELECT ?league ?leagueLabel ?city159 ?city159Label ?city276 ?city276Label ?inception ?dissolved WHERE {
-        OPTIONAL { wd:${qid} wdt:P118 ?league . }
-        OPTIONAL { wd:${qid} wdt:P159 ?city159 . }
-        OPTIONAL { wd:${qid} wdt:P276 ?city276 . }
-        OPTIONAL { wd:${qid} wdt:P571 ?inception . }
-        OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
-        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-      }
-      LIMIT 1
-    `;
-    const result = await runSparql(detailQuery);
-    const row = result?.results.bindings[0];
-
-    const wikidataCity = row?.city159Label?.value ?? row?.city276Label?.value;
-    const fromYear = yearFromBinding(row?.inception);
-    const toYear = yearFromBinding(row?.dissolved);
-    const yearsActive = fromYear !== undefined
-      ? { from: fromYear, to: toYear }
-      : undefined;
+    const result = await lookupTeamEnrichment(team.name, team.sport);
+    if (!result) return null;
 
     await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
       id: args.teamId,
-      league: espnInfo?.league ?? row?.leagueLabel?.value,
-      city: espnInfo?.city ?? wikidataCity,
-      yearsActive,
-      colors: espnInfo
-        ? { primary: espnInfo.colorPrimary, secondary: espnInfo.colorAlternate }
-        : undefined,
-      wikidataId: qid,
-      espnId: espnInfo?.espnId,
+      league: result.league,
+      city: result.city,
+      yearsActive: result.yearsActive,
+      colors: result.colors,
+      wikidataId: result.wikidataId,
+      espnId: result.espnId,
     });
     return null;
   },
@@ -457,6 +529,56 @@ export const processEnrichmentQueue = internalAction({
         INTER_ENTITY_DELAY_MS,
         internal.adapters.wikidata.processEnrichmentQueue,
         { playerIds: nextPlayerIds, teamIds: nextTeamIds },
+      );
+    }
+    return null;
+  },
+});
+
+/**
+ * NEO-92: chained serial queue for the pre-creation review-wizard preview
+ * (see entityReviewQueue.ts). Same shape/pacing as processEnrichmentQueue
+ * above (same Wikidata rate-limit constraint applies) but processes
+ * `entityReviewQueue` rows by name+sport instead of already-created
+ * player/team ids — nothing is written to `players`/`teams` here, only the
+ * review row's own `status`/`enrichment` fields. The wizard's reactive
+ * `getBatch` query is what turns each patch into a visible UI update.
+ */
+export const processEntityReviewQueue = internalAction({
+  args: {
+    ids: v.array(v.id("entityReviewQueue")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const [head, ...tail] = args.ids;
+    if (!head) return null;
+
+    const row = await ctx.runQuery(internal.entityReviewQueue.getInternal, { id: head });
+    if (row) {
+      try {
+        const result =
+          row.kind === "player"
+            ? await lookupPlayerEnrichment(row.name, row.sport)
+            : await lookupTeamEnrichment(row.name, row.sport);
+        await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
+          id: head,
+          status: result ? "ready" : "error",
+          enrichment: result ?? undefined,
+        });
+      } catch (error) {
+        console.error(`[entity-review-queue] lookup for ${head} failed:`, error);
+        await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
+          id: head,
+          status: "error",
+        });
+      }
+    }
+
+    if (tail.length > 0) {
+      await ctx.scheduler.runAfter(
+        INTER_ENTITY_DELAY_MS,
+        internal.adapters.wikidata.processEntityReviewQueue,
+        { ids: tail },
       );
     }
     return null;

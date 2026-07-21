@@ -96,8 +96,6 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: ["Elly De La Cruz"],
-      confirmedNewTeams: [],
     });
 
     const cards = await t.run(async (ctx) =>
@@ -156,8 +154,6 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: [],
-      confirmedNewTeams: [],
     });
 
     const committedCards = await t.run(async (ctx) =>
@@ -200,8 +196,6 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
             unmatched: undefined,
           },
         ],
-        confirmedNewPlayers: [],
-        confirmedNewTeams: [],
       });
 
     const findCard50 = async () => {

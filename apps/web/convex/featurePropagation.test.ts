@@ -321,8 +321,6 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: ["Mike Trout", "Aaron Judge"],
-      confirmedNewTeams: [],
     });
 
     const cards = await t.run(async (ctx) =>
@@ -391,6 +389,17 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       return { sportId, setNameId, variantTypeId };
     });
 
+    // NEO-92: commitCardChecklist only resolves a card's players/teams to
+    // real ids when the name is already in the players/teams table (or the
+    // name was reviewed via a batchId's entityReviewQueue decision — not
+    // exercised here). This test asserts `signedBy`/`listingTitle`-style
+    // behavior that depends on a REAL resolved playerId (see
+    // `playerNames`/`wasBlank && isNowSet` in commitCardChecklist), so
+    // pre-seed both players directly via the same findOrCreate mutation the
+    // old confirmedNewPlayers path used to call under the hood.
+    await asAdmin.mutation(api.players.findOrCreate, { name: "Mike Trout", sport: "Baseball" });
+    await asAdmin.mutation(api.players.findOrCreate, { name: "Aaron Judge", sport: "Baseball" });
+
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: subtreeIds.variantTypeId,
       sport: "Baseball",
@@ -430,8 +439,6 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: ["Mike Trout", "Aaron Judge"],
-      confirmedNewTeams: [],
     });
 
     const cards = await t.run(async (ctx) =>
@@ -547,8 +554,6 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: ["A", "B", "C"],
-      confirmedNewTeams: [],
     });
 
     const row = await asAdmin.query(
@@ -615,6 +620,12 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
 
+    // Real listingTitle generation reads `playerNames` off the card's
+    // RESOLVED playerIds (see commitCardChecklist) — pre-seed the player so
+    // it resolves instead of going through the (unexercised here) batchId
+    // review-decision path.
+    await asAdmin.mutation(api.players.findOrCreate, { name: "Elly De La Cruz", sport: "Baseball" });
+
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sport: "Baseball",
@@ -636,8 +647,6 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: ["Elly De La Cruz"],
-      confirmedNewTeams: [],
     });
 
     const cards = await t.run(async (ctx) =>
@@ -693,8 +702,6 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
             unmatched: undefined,
           },
         ],
-        confirmedNewPlayers: ["Elly De La Cruz"],
-        confirmedNewTeams: [],
       });
 
     // First commit — inserts the row and generates its listingTitle.
@@ -802,8 +809,6 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: ["Elly De La Cruz"],
-      confirmedNewTeams: [],
     });
 
     // Drain the scheduled processBscTeamEnrichmentQueue chain.
@@ -828,10 +833,13 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     const variantTypeId = await seedVariantType(t);
 
     // Only the BSC per-card lookup is under test here — this card's team
-    // is already known, so THAT call must never happen. Wikidata/ESPN team
-    // enrichment legitimately fires (a new "Kansas City Royals" team row
-    // gets created) and is allowed to call fetch; only tag it as a failure
-    // if it's the BSC card-listing endpoint specifically.
+    // is already known, so THAT call must never happen. NEO-92: since
+    // commitCardChecklist no longer auto-enriches newly-created entities
+    // (Wikidata/ESPN lookups now happen pre-commit, during the review
+    // wizard, only for names it doesn't already recognize), pre-seed
+    // "Kansas City Royals" directly so it resolves to a real team id
+    // without needing a batchId/decision — nothing besides the guarded BSC
+    // endpoint should ever call fetch in this test.
     let bscFetchCalled = false;
     vi.stubGlobal(
       "fetch",
@@ -843,6 +851,8 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
         return new Response(null, { status: 500 });
       }) as unknown as typeof fetch,
     );
+
+    await asAdmin.mutation(api.teams.findOrCreate, { name: "Kansas City Royals", sport: "Baseball" });
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -865,8 +875,6 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: [],
-      confirmedNewTeams: ["Kansas City Royals"],
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);
@@ -888,9 +896,10 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const variantTypeId = await seedVariantType(t);
 
-    // Same scoping as the test above — a new player ("Some Player") gets
-    // created here too, and Wikidata player enrichment legitimately fires
-    // for it. Only the BSC card-listing endpoint is under test.
+    // Same scoping as the test above — "Some Player" isn't pre-seeded and
+    // has no batchId/decision, so commitCardChecklist just leaves it
+    // unresolved (no player row created, no fetch of any kind triggered).
+    // Only the BSC card-listing endpoint is under test.
     let bscFetchCalled = false;
     vi.stubGlobal(
       "fetch",
@@ -924,8 +933,6 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
           unmatched: undefined,
         },
       ],
-      confirmedNewPlayers: ["Some Player"],
-      confirmedNewTeams: [],
     });
 
     await t.finishAllScheduledFunctions(vi.runAllTimers);

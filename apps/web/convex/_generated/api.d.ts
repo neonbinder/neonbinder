@@ -26,6 +26,7 @@ import type * as browserAudience from "../browserAudience.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as credentials from "../credentials.js";
 import type * as e2eQueue from "../e2eQueue.js";
+import type * as entityReviewQueue from "../entityReviewQueue.js";
 import type * as features_deriveCardFeatures from "../features/deriveCardFeatures.js";
 import type * as features_expectedFeatures from "../features/expectedFeatures.js";
 import type * as features_generateListing from "../features/generateListing.js";
@@ -68,6 +69,7 @@ declare const fullApi: ApiFromModules<{
   cardChecklist: typeof cardChecklist;
   credentials: typeof credentials;
   e2eQueue: typeof e2eQueue;
+  entityReviewQueue: typeof entityReviewQueue;
   "features/deriveCardFeatures": typeof features_deriveCardFeatures;
   "features/expectedFeatures": typeof features_expectedFeatures;
   "features/generateListing": typeof features_generateListing;
