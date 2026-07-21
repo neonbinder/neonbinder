@@ -467,6 +467,40 @@ describe("EntityReviewWizard — cancel", () => {
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
   });
 
+  it("still closes the wizard (calls onCancel) even when cancelBatch rejects", async () => {
+    // Robustness: onCancel() lives in handleCancel's finally block, so a
+    // transient cancelBatch rejection (network/auth) must NOT strand the dialog
+    // permanently open — the finally is the only thing that guarantees the
+    // wizard clears its pending-preview state.
+    //
+    // The component's caller invokes `void handleCancel()`, so the rejection
+    // propagates out unawaited (an unhandled rejection — pre-existing behavior,
+    // identical before and after this fix). Swallow that one expected rejection
+    // locally so it doesn't surface as a false-positive test error.
+    const expectedRejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      expectedRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      mockCancelBatch.mockRejectedValueOnce(new Error("network down"));
+      currentRows = [makeRow({ status: "ready" })];
+      const { onCancel } = renderWizard();
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+
+      await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+      // Give the microtask that re-throws out of `void handleCancel()` a tick to
+      // land on our listener before we detach it.
+      await new Promise((r) => setTimeout(r, 0));
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+    expect(expectedRejections).toHaveLength(1);
+    expect((expectedRejections[0] as Error).message).toBe("network down");
+  });
+
   it("pressing Escape also cancels", async () => {
     currentRows = [makeRow({ status: "ready" })];
     const { onCancel } = renderWizard();

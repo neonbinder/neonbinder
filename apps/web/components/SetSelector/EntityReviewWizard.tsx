@@ -109,9 +109,14 @@ export default function EntityReviewWizard({
     try {
       await cancelBatch({ selectorOptionId, batchId });
     } finally {
+      // onCancel() lives in finally so the wizard always closes and the parent
+      // always clears its pending-preview state — even if cancelBatch rejects
+      // (transient network/auth error). Leaving it after the try/finally would
+      // let a rejection (swallowed by the caller's `void handleCancel()`) strand
+      // the dialog permanently open.
       setCancelling(false);
+      onCancel();
     }
-    onCancel();
   };
 
   const handleBulkCreate = async () => {

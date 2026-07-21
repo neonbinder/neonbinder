@@ -1,47 +1,58 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Card detail — the unified Autographed dropdown is always-visible (not behind Show features) and saves immediately on change"
+name: "Card detail — the unified Autographed control is always-visible (promoted out of Show features), not gated behind the features editor"
 tags:
   - set-selector
   - regression
 ---
-# R1 — SINGLE FEATURE: the Autographed control is now ONE always-visible
-# dropdown in the main panel body (next to Print Run), promoted out of the
-# collapsed "Show features editor" section, and changing it persists IMMEDIATELY
-# (via setCardFeature) — it is NOT part of the drawer's Save button / dirty
-# cycle. (Previously there were two disagreeing autograph controls: a free-text
-# "Autograph" input and a separate "Autographed" dropdown hidden behind
-# "Show features". The free-text one is gone.)
+# R1 — SINGLE FEATURE: the Autographed control now lives as an ALWAYS-VISIBLE
+# cell in the main CardDetailPanel body (position 7, next to Print run), promoted
+# OUT of the collapsed "Show features editor" section. Previously it was hidden
+# inside CardFeaturesEditor and only appeared after expanding it; the whole point
+# of the NEO-71-74 redesign is that an operator sees and can set Autographed
+# without ever opening the features editor.
 #
-# R2 — TWO HARD ASSERTIONS, no silent fall-through:
-#   (1) ALWAYS-VISIBLE, NOT GATED BY EXPAND: after opening the panel we assert
-#       "Show features editor" is still the COLLAPSED trigger (we never tap it),
-#       yet "Value for Autographed" is reachable in the main body. Had the
-#       dropdown still lived inside the collapsed CardFeaturesEditor, it would be
-#       absent until "Show features editor" is tapped (which would then flip to
-#       "Hide features editor") — so finding it while the editor is still
-#       collapsed proves it was promoted out.
-#   (2) IMMEDIATE SAVE: change the dropdown to "On Card", then close the drawer
-#       with Cancel (NOT Save). Reopen the card — Autographed still reads
-#       "On Card". Because Cancel discards the drawer's draft, the only way the
-#       value survives is the immediate per-row setCardFeature write. A value
-#       that reverted to blank/None on reopen would fail this assert.
+# R2 — ONE HARD ASSERTION, no silent fall-through:
+#   ALWAYS-VISIBLE, NOT GATED BY EXPAND. After opening the drawer we assert
+#   "Show features editor" is still the COLLAPSED trigger (we never tap it), yet
+#   the Autographed pill group is reachable in the main body. Had the control
+#   still lived inside the collapsed CardFeaturesEditor, the pill would be ABSENT
+#   until "Show features editor" is tapped (which would then flip to "Hide
+#   features editor") — so finding the pill while the editor is still collapsed
+#   proves it was promoted out. If the promotion regressed, the pill assert fails
+#   loudly.
 #
-# R3 — DEDUP: signed-by-autofills-from-players.yaml also flips Autographed, but
-#   (a) on a REAL Topps Chrome card, (b) to prove the Signed-By auto-fill side
-#   effect, and (c) AFTER expanding the features editor. It never proves the
-#   dropdown is always-visible-without-expanding, nor the immediate-persist on a
-#   custom card. This flow owns those two facts. Drill/add via util-add-custom-card.
+# WHY THE OLD "IMMEDIATE SAVE ON CHANGE" ASSERTION WAS DROPPED (NEO-71-74 redesign):
+#   This flow was originally written when Autographed was a native <select>
+#   (options None / On Card / Sticker) whose SELECTED-option TEXT was readable via
+#   getNodeText — so it could change the value, close with Cancel, reopen, and
+#   read the value back to prove the per-row setCardFeature write persisted
+#   independently of the drawer's Save/dirty cycle. Autographed is now a
+#   ToggleOptionsValueControl (two exclusive pills — "Auto (On Card)" /
+#   "Auto (Sticker)"; "None" = options[0] has NO pill and no visible text node).
+#   Maestro-web cannot read a pill's pressed state (aria-pressed is invisible to
+#   the CDP bridge) and "None" has no text node, so a changed value CANNOT be
+#   read back — there is nothing to assert across the Cancel/reopen. The one
+#   observable proxy for an Autographed write, the None→set Signed By auto-fill,
+#   requires the card to carry real playerIds; this flow's per-worker CUSTOM card
+#   (added via util-add-custom-card → pendingPlayerNames) never acquires playerIds
+#   (only real marketplace-synced cards do — see signed-by-autofills-from-players.yaml),
+#   so that proxy cannot fire here either. Rather than fake a pass or attach a
+#   real player just to re-derive the auto-fill (which signed-by-autofills-from-players.yaml
+#   already owns — that would be cross-flow duplication, R3), we keep the still-
+#   fully-provable R1 fact (always-visible-without-expanding) and drop the now-
+#   unobservable persistence assertion. Same honest call already validated on
+#   new-chain-autopopulates-features.yaml this session.
 #
-# NATIVE <select> INTERACTION: Autographed is inputType "select" (options
-#   None / On Card / Sticker/Label). maestro-web can't tap a native <option>, so
-#   we focus the <select> and type the first letter — the browser's type-ahead
-#   selects the matching option and fires onChange (the proven mechanism from
-#   signed-by-autofills-from-players.yaml). For a <select>, getNodeText returns
-#   the SELECTED option's text, so `{id, text}` asserts the current selection.
+# R3 — DEDUP: signed-by-autofills-from-players.yaml also touches Autographed, but
+#   (a) on a REAL Topps Chrome card with playerIds, (b) to prove the Signed-By
+#   auto-fill side effect, and (c) AFTER expanding the features editor. It never
+#   proves the pill is reachable WHILE the features editor is collapsed on a
+#   custom card. This flow owns exactly that one fact. Drill/add via util-add-custom-card.
 #
 # PER-WORKER DATA ISOLATION: E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps ->
 #   cag-<WORKER_INDEX> (custom set, Insert VT, "Base" insert). Fully isolated.
+#   No Autographed write happens, so there is no interrupted-run wedge to worry about.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -75,9 +86,9 @@ tags:
     id: "Card name"
 
 # ============================================================
-# ASSERTION (1) — ALWAYS-VISIBLE, NOT BEHIND "Show features"
+# ASSERTION — ALWAYS-VISIBLE, NOT BEHIND "Show features"
 # The features editor is COLLAPSED (its trigger reads "Show features editor").
-# We deliberately do NOT tap it. Autographed must still be reachable.
+# We deliberately do NOT tap it. The Autographed pill must still be reachable.
 # ============================================================
 
 - assertVisible:
@@ -85,97 +96,29 @@ tags:
 
 # The Autographed row sits in the main body just below the Attributes chips
 # (grid with Print run). With the features editor collapsed it lands just past
-# the fold, so lift it into the tap band with ONE manual in-drawer swipe. The
-# drawer is right-anchored (~480px, x>=544), so we swipe at x=80% — a
-# viewport-centre (x~512) swipe would land on the backdrop and never scroll the
-# drawer's inner container.
+# the fold, so lift it into view with ONE manual in-drawer swipe. The drawer is
+# right-anchored (~480px, x>=544), so we swipe at x=80% — a viewport-centre
+# (x~512) swipe would land on the backdrop and never scroll the drawer's inner
+# container.
 - swipe:
     start: "80%, 70%"
     end: "80%, 35%"
 
-# Assert BOTH that the control is reachable while the editor is collapsed AND
-# that a freshly-created card's inherited Autographed default is "None" — the
-# setName-level default ("None") copied down onto the card at addCustomCard time
-# (a <select> node's text = its SELECTED option). This is the card-level
-# inherited-default check that card-autopopulates-features.yaml delegates here
-# (that flow can't reach this out-of-editor control without cross-region
-# gymnastics; this flow is already correctly positioned at pos 7).
+# The pill aria-label contains literal parens ("… Auto (On Card)"); Maestro
+# compiles `id:` as a REGEX, so the parens are ESCAPED (\( \)) — an un-escaped
+# "(On Card)" is parsed as a capture group and never matches the real resource-id.
+# The leading/trailing .* keeps the match robust to Maestro's full-vs-substring id
+# semantics. Finding this pill while "Show features editor" is still the collapsed
+# trigger PROVES the control was promoted out of the features editor.
 - assertVisible:
-    id: "Value for Autographed"
-    text: "None"
-
-# ============================================================
-# CHANGE IT TO "On Card" (native <select> type-ahead: focus + type "O")
-#
-# COMMIT WITH Enter — this is the CI-stability fix (RCA below). tapOn a native
-# <select> can leave the browser's option popup OPEN. While that popup is open,
-# type-ahead ("O") only MOVES THE HIGHLIGHT to "On Card"; the <select>'s `change`
-# event does NOT fire until the selection is COMMITTED. Autographed is a
-# CONTROLLED select (value comes from card.features.autographed via setCardFeature
-# → Convex reactivity), so with no `change` there is no setCardFeature write and
-# the displayed value stays "None" — the "On Card" assert then burns its full 7s
-# and fails. This reproduced twice on CI (headless chrome 150 leaves the popup
-# open) but never locally. `pressKey: Enter` commits the highlighted option,
-# firing `change` → setCardFeature → the controlled value flips to "On Card".
-# (signed-by-autofills survives the same select only incidentally: its second
-# tapOn closes any stuck popup before its committing type-ahead.)
-# ============================================================
-
-- tapOn:
-    id: "Value for Autographed"
-- inputText: "O"
-- pressKey: Enter
-- extendedWaitUntil:
-    visible:
-      id: "Value for Autographed"
-      text: "On Card"
-    timeout: 7000
-
-# ============================================================
-# CLOSE WITH CANCEL (NOT Save) — the immediate write must already be persisted
-# The Autographed feature is NOT part of the drawer's dirty draft (which only
-# tracks name/title/description/attributes/teams/players/printRun/variation), so
-# Cancel closes immediately without a dirty guard.
-# ============================================================
-
-- assertVisible:
-    id: "Cancel card edit"
-- tapOn:
-    id: "Cancel card edit"
-- assertNotVisible:
-    id: "Card name"
-
-# ============================================================
-# REOPEN + ASSERTION (2) — the change survived Cancel => it saved immediately
-# ============================================================
-
-- scrollUntilVisible:
-    element:
-      id: "Edit card 778-${ATTEMPT_ID}"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 10000
-- tapOn:
-    id: "Edit card 778-${ATTEMPT_ID}"
-    waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
-
-# Lift Autographed into view again (same single in-drawer swipe).
-- swipe:
-    start: "80%, 70%"
-    end: "80%, 35%"
-
-- extendedWaitUntil:
-    visible:
-      id: "Value for Autographed"
-      text: "On Card"
-    timeout: 7000
+    id: ".*Value for Autographed: Auto \\(On Card\\).*"
 
 # ============================================================
 # CLOSE + CLEANUP — delete this attempt's test card
 # ============================================================
 
+- assertVisible:
+    id: "Cancel card edit"
 - tapOn:
     id: "Cancel card edit"
 - assertNotVisible:

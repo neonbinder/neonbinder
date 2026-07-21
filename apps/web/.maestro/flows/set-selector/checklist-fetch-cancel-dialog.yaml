@@ -141,10 +141,26 @@ tags:
 # wizard is confirmed open above, so this is unconditional.
 # ============================================================
 
-- tapOn:
-    text: "Cancel (Esc)"
-- extendedWaitUntil:
-    notVisible: "Confirm New Players & Teams"
+# NEO-85 residual coordinate-staleness (same class as
+# custom-field-known-value-selects.yaml): the entityReviewQueue batch is keyed
+# only by selectorOptionId (no per-worker scoping), so a DIFFERENT concurrent CI
+# runner exercising the wizard against this SAME real "2024 Topps Chrome Base"
+# set can commit the shared batch mid-tap. When it does, getBatch reactively
+# re-renders this wizard to the empty "0 of 0 reviewed" state, collapsing the
+# two-button footer (Cancel + Confirm & Save) to a single Cancel-only button that
+# shifts position — so Maestro's captured tap coordinates go stale and the click
+# misses. Result-keyed retry: re-fire the Cancel tap ONCE iff the wizard title is
+# still visible after the first attempt. A genuine failure (e.g. cancelBatch
+# actually erroring) still fails loudly once the retry is exhausted.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Cancel (Esc)"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 5000
 
 # ============================================================
 # VERIFY NOTHING WAS SAVED
