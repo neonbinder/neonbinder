@@ -3,6 +3,7 @@ import {
   mutation,
   action,
   internalMutation,
+  ActionCtx,
 } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
@@ -366,6 +367,108 @@ function isCustomSubtree(
   chain: Array<{ isCustom?: boolean }>,
 ): boolean {
   return chain.some((row) => row.isCustom === true);
+}
+
+/**
+ * Detect unresolved player/team names for a selectorOption and kick off the
+ * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
+ * marketplace path (folds in names observed on freshly-reconciled cards via
+ * `additionalPlayerNames`/`additionalTeamNames`) and the custom-subtree path
+ * (no marketplace cards at all, but its own custom cards can still carry
+ * `pendingPlayerNames`/`pendingTeamNames` that need the exact same
+ * resolution flow — every custom card on this selectorOption is read here
+ * regardless of path, via `getCardChecklist`).
+ *
+ * Before this was extracted, the custom-subtree branch in fetchCardChecklist
+ * short-circuited entirely before reaching any of this — a genuine product
+ * gap, not just a marketplace-adapter concern: a custom-only set's pending
+ * player names could NEVER be resolved via the review wizard, since this was
+ * the only place unknowns were ever computed. Splitting it out lets the
+ * custom-subtree branch call it too, without touching any BSC/SL logic.
+ */
+async function resolveUnknownsAndStartBatch(
+  ctx: ActionCtx,
+  args: {
+    selectorOptionId: Id<"selectorOptions">;
+    sport: string;
+    additionalPlayerNames?: string[];
+    additionalTeamNames?: string[];
+  },
+): Promise<{
+  unknownPlayers: string[];
+  unknownTeams: string[];
+  batchId?: string;
+}> {
+  const unknownPlayers: string[] = [];
+  const unknownTeams: string[] = [];
+  let batchId: string | undefined;
+
+  const playerByNorm = new Map<string, string>();
+  const teamByNorm = new Map<string, string>();
+  const addPlayer = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const norm = normalizePlayerName(trimmed);
+    if (!playerByNorm.has(norm)) playerByNorm.set(norm, trimmed);
+  };
+  const addTeam = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    const norm = normalizeTeamName(trimmed);
+    if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
+  };
+
+  for (const p of args.additionalPlayerNames ?? []) addPlayer(p);
+  for (const t of args.additionalTeamNames ?? []) addTeam(t);
+
+  // Custom cards (added via addCustomCard) can declare pending player /
+  // team names that should also be surfaced as unknown until the user
+  // confirms them via the wizard. Without this pass, users who add a
+  // custom card for a brand-new player would never get prompted to
+  // enrich that player via the standard confirmation flow.
+  const customRows = await ctx.runQuery(api.selectorOptions.getCardChecklist, {
+    selectorOptionId: args.selectorOptionId,
+  });
+  for (const r of customRows) {
+    for (const p of r.pendingPlayerNames ?? []) addPlayer(p);
+    for (const t of r.pendingTeamNames ?? []) addTeam(t);
+  }
+
+  for (const name of playerByNorm.values()) {
+    const existing = await ctx.runQuery(api.players.findByNameAndSport, {
+      name,
+      sport: args.sport,
+    });
+    if (!existing) unknownPlayers.push(name);
+  }
+  for (const name of teamByNorm.values()) {
+    const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
+      name,
+      sport: args.sport,
+    });
+    if (!existing) unknownTeams.push(name);
+  }
+
+  // NEO-92: kick off the review-wizard batch (background Wikidata preview
+  // lookups + resumable decision queue) for whatever's unresolved.
+  // startBatch resumes an in-progress batch for this (selectorOptionId,
+  // user) pair rather than restarting it, so re-clicking "Fetch from
+  // Marketplaces" mid-review never discards progress — and is scoped
+  // per-user so two different sessions fetching the SAME set never
+  // share/collide on one batch.
+  if (unknownPlayers.length > 0 || unknownTeams.length > 0) {
+    const callerId = await getCurrentUserId(ctx);
+    if (!callerId) throw new Error("Not authenticated");
+    batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: args.selectorOptionId,
+      createdByUserId: callerId,
+      sport: args.sport,
+      playerNames: unknownPlayers,
+      teamNames: unknownTeams,
+    });
+  }
+
+  return { unknownPlayers, unknownTeams, batchId };
 }
 
 export const getCardChecklist = query({
@@ -3378,14 +3481,30 @@ export const fetchCardChecklist = action({
         console.log(
           `[fetchCardChecklist] custom subtree detected — skipping BSC/SL`,
         );
+        // No marketplace cards exist for a custom subtree (correctly always
+        // `cards: []`), but its own custom cards can still carry unresolved
+        // pendingPlayerNames/pendingTeamNames — resolve those and open the
+        // review wizard for them the same way the marketplace path does.
+        // Without this, a custom-only set's pending names could never be
+        // resolved via the wizard at all (see resolveUnknownsAndStartBatch's
+        // doc comment for why this is a real, previously-unclosed gap).
+        const { unknownPlayers, unknownTeams, batchId } = sport
+          ? await resolveUnknownsAndStartBatch(ctx, {
+              selectorOptionId: args.selectorOptionId,
+              sport,
+            })
+          : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
         return {
           success: true,
           message:
-            "Custom selector subtree — no marketplace data available; add custom cards.",
+            unknownPlayers.length || unknownTeams.length
+              ? `Custom selector subtree — ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation.`
+              : "Custom selector subtree — no marketplace data available; add custom cards.",
           sport,
           cards: [],
-          unknownPlayers: [],
-          unknownTeams: [],
+          unknownPlayers,
+          unknownTeams,
+          batchId,
         };
       }
 
@@ -3735,73 +3854,21 @@ export const fetchCardChecklist = action({
       //    first-seen display spelling wins. Skip bucketing entirely if we
       //    can't infer sport (sets without a sport ancestor — shouldn't
       //    happen but guard anyway).
-      const unknownPlayers: string[] = [];
-      const unknownTeams: string[] = [];
-      let batchId: string | undefined;
-      if (sport) {
-        const playerByNorm = new Map<string, string>();
-        const teamByNorm = new Map<string, string>();
-        const addPlayer = (raw: string) => {
-          const trimmed = raw.trim();
-          if (!trimmed) return;
-          const norm = normalizePlayerName(trimmed);
-          if (!playerByNorm.has(norm)) playerByNorm.set(norm, trimmed);
-        };
-        const addTeam = (raw: string) => {
-          const trimmed = raw.trim();
-          if (!trimmed) return;
-          const norm = normalizeTeamName(trimmed);
-          if (!teamByNorm.has(norm)) teamByNorm.set(norm, trimmed);
-        };
-
-        for (const c of out) {
-          for (const p of c.players ?? []) addPlayer(p);
-          for (const t of c.teams ?? []) addTeam(t);
-          if (c.team && !c.teams?.length) addTeam(c.team);
-        }
-
-        // Custom cards (added via addCustomCard) can declare pending player /
-        // team names that should also be surfaced as unknown until the user
-        // confirms them via the wizard. Without this pass, users who add a
-        // custom card for a brand-new player would never get prompted to
-        // enrich that player via the standard confirmation flow.
-        const customRows = await ctx.runQuery(
-          api.selectorOptions.getCardChecklist,
-          { selectorOptionId: args.selectorOptionId },
-        );
-        for (const r of customRows) {
-          for (const p of r.pendingPlayerNames ?? []) addPlayer(p);
-          for (const t of r.pendingTeamNames ?? []) addTeam(t);
-        }
-
-        for (const name of playerByNorm.values()) {
-          const existing = await ctx.runQuery(api.players.findByNameAndSport, { name, sport });
-          if (!existing) unknownPlayers.push(name);
-        }
-        for (const name of teamByNorm.values()) {
-          const existing = await ctx.runQuery(api.teams.findByNameAndSport, { name, sport });
-          if (!existing) unknownTeams.push(name);
-        }
-
-        // NEO-92: kick off the review-wizard batch (background Wikidata
-        // preview lookups + resumable decision queue) for whatever's
-        // unresolved. startBatch resumes an in-progress batch for this
-        // (selectorOptionId, user) pair rather than restarting it, so
-        // re-clicking "Fetch from Marketplaces" mid-review never discards
-        // progress — and is scoped per-user so two different sessions
-        // fetching the SAME real set never share/collide on one batch.
-        if (unknownPlayers.length > 0 || unknownTeams.length > 0) {
-          const callerId = await getCurrentUserId(ctx);
-          if (!callerId) throw new Error("Not authenticated");
-          batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
-            selectorOptionId: args.selectorOptionId,
-            createdByUserId: callerId,
-            sport,
-            playerNames: unknownPlayers,
-            teamNames: unknownTeams,
-          });
-        }
+      const additionalPlayerNames: string[] = [];
+      const additionalTeamNames: string[] = [];
+      for (const c of out) {
+        for (const p of c.players ?? []) additionalPlayerNames.push(p);
+        for (const t of c.teams ?? []) additionalTeamNames.push(t);
+        if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
       }
+      const { unknownPlayers, unknownTeams, batchId } = sport
+        ? await resolveUnknownsAndStartBatch(ctx, {
+            selectorOptionId: args.selectorOptionId,
+            sport,
+            additionalPlayerNames,
+            additionalTeamNames,
+          })
+        : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
 
       console.log(
         `[fetchCardChecklist] reconciled ${out.length} cards`,
