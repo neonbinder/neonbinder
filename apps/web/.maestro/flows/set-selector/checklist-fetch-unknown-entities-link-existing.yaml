@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Checklist — review wizard 'Link to Existing' links an unknown name to an existing player and creates no duplicate"
+name: "Checklist — review wizard 'Link to Existing' links an unknown name to an existing player and creates no duplicate (per-worker custom set)"
 tags:
   - set-selector
   - regression
@@ -14,10 +14,11 @@ tags:
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
 #   - The wizard opens on the unique unknown UnknownLink-${ATTEMPT_ID} (asserted
-#     by the wizard heading — the current item's name).
+#     by the wizard heading — the current item's name; the wizard renders exactly
+#     ONE item at a time, so a visible name IS the current item).
 #   - "Link to Existing…" expands the search, and a real existing Base player
 #     (Shohei Ohtani — card #1 of 2024 Topps Chrome Base, always present after the
-#     setup track syncs Base) is selectable ("Link to Shohei Ohtani").
+#     setup track syncs the Baseball roster) is selectable ("Link to Shohei Ohtani").
 #   - After Confirm & Save, opening a PlayerPicker and searching the unknown name
 #     shows the "+ Create" option (aria "Create player UnknownLink-…"). That option
 #     renders only when NO case-insensitive exact match exists (PlayerPicker.tsx
@@ -25,26 +26,57 @@ tags:
 #     for the unknown name. Had the wizard created it instead, an exact match
 #     would suppress "+ Create" and this assert would fail loudly.
 #
-# WHY LINK TO A REAL PLAYER (Shohei Ohtani) rather than a seeded one:
-#   EntityLinkSearch lists api.players.list({sport, limit:500}) for the item's
-#   sport (baseball) and client-filters. A real marquee Base player is guaranteed
-#   present and near the top of that list after setup, giving a deterministic,
-#   bloat-proof link target — no fragile PlayerPicker seeding + sport-matching.
-#   Linking never mutates Ohtani (a custom card doesn't even receive playerIds on
-#   commit) — it only records the link decision, so this is non-destructive.
+# ── DATA-ISOLATION MIGRATION (was: shared real "2024 Topps Chrome Base") ──
+#   This flow used to fetch on the SHARED real "2024 Topps Chrome Base" variant.
+#   fetchCardChecklist's custom-card pending-name pass reads ALL custom cards on a
+#   selectorOptionId GLOBALLY (no author scoping), so a concurrent runner's custom
+#   card on that same shared variant seeded THIS flow's wizard batch with a foreign
+#   unknown name — the cross-runner contamination that made a different flow flake
+#   every run. The fix is to move the whole flow onto a PER-WORKER CUSTOM SET, so
+#   the selectorOptionId is private to this worker and its custom-card pending-name
+#   source can only ever contain this worker's own cards.
 #
-# WHY A PRE-CLEAN FETCH FIRST (retry/debris robustness):
-#   entityReviewQueue batches + custom-card pending names are PERSISTENT and keyed
-#   by the shared real Base variant. A prior flow/attempt can leave unresolved
-#   unknowns that would preempt our UnknownLink in the wizard. So we FIRST fetch
-#   and, if a wizard opens, bulk-confirm every pre-existing unknown ("Add All
-#   Remaining as New" → Confirm & Save) — clearing the slate. Only THEN do we add
-#   our UnknownLink card and fetch again, guaranteeing it is the SOLE unknown. This
-#   also makes the flow self-healing across its own retries.
+#   WHY A CUSTOM SET UNDER *REAL* Baseball/2024/Topps (not a synthetic sport):
+#     A custom SET node makes the whole subtree custom (isCustomSubtree → BSC/SL
+#     skipped, NEO-22), so the wizard opens ONLY from this worker's own custom
+#     cards' pending names — never from a marketplace fetch. But because the SPORT
+#     ancestor is the REAL "Baseball", fetchCardChecklist derives sport="baseball"
+#     (selectorOptions.ts lowercases the sport ancestor's value), and the wizard's
+#     EntityLinkSearch lists api.players.list({sport:"baseball"}). That means the
+#     real, setup-synced Baseball roster (incl. Shohei Ohtani) is available as a
+#     link target — exactly as on the old real-Base path, with ZERO change to the
+#     link step. A fully-synthetic "E2E Test Sport N" would give sport="e2e test
+#     sport n" with an EMPTY roster and no real player to link to; and seeding one
+#     via PlayerPicker "+ Create" is casing-broken (it would create the player in
+#     primarySport="Baseball" — the raw ancestor value — which the wizard's
+#     lowercased "baseball" query never returns). Ohtani is the correct target.
 #
-# R3 — DEDUP: "Add as New" is covered by checklist-keyboard-only and the bulk
-#   pre-clean here; this flow uniquely covers "Link to Existing" (the replacement
-#   for the removed "skip"). Navigation reuses util-drill-to-base-variant.
+#   NEO-92 backend enablement (convex/selectorOptions.ts): the custom-subtree
+#   branch of fetchCardChecklist now calls the shared resolveUnknownsAndStartBatch
+#   helper, so a custom subtree's own custom cards' pendingPlayerNames DO open the
+#   review wizard (previously this branch returned no unknowns unconditionally).
+#   That is what makes this migration possible at all.
+#
+# PRE-CLEAN IS NOW PRIVATE (self-heal, not cross-runner): the old flow bulk-
+#   confirmed pre-existing unknowns on the SHARED variant to survive OTHER runners'
+#   contamination. That cross-runner risk is gone (private subtree). But one
+#   same-worker gap remains: ATTEMPT_ID is unique per RETRY (w<n>-a<attempt>-<rand>)
+#   and setup.yaml's global reset runs once per CI run, so a mid-flow failure
+#   BETWEEN wizard-open and commit leaves THIS worker's own pending unknown on the
+#   subtree; a retry's fresh UnknownLink-${ATTEMPT_ID} would then sit BEHIND that
+#   debris in the one-at-a-time wizard and the heading assert would target the wrong
+#   item. So Step 1 does a PRIVATE fetch-and-bulk-confirm-if-wizard-opens pass on
+#   THIS worker's own subtree before adding the new card — clearing any leftover
+#   debris (its pending names get committed as real players + cleared from the
+#   custom card). On the clean attempt-1 path the subtree is empty, so the fetch
+#   just commits "Saved 0 cards" (no wizard) — a quick custom-subtree round-trip
+#   (no BSC/SL), not a marketplace fetch. This makes a retry self-heal exactly the
+#   way attempt-1 already runs cleanly.
+#
+# R3 — DEDUP: "Add as New" is covered by checklist-keyboard-only; this flow
+#   uniquely covers "Link to Existing" (the replacement for the removed "skip").
+#   Navigation reuses util-drill-to-custom (R9), same Baseball/2024/Topps custom-set
+#   pattern as team-picker.yaml / set-attributes-edit.yaml.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -56,29 +88,46 @@ tags:
     timeout: 45000
 
 # ============================================================
-# DRILL TO A REAL BASE VARIANT
+# DRILL TO A PER-WORKER CUSTOM SET UNDER REAL Baseball/2024/Topps
+# Real Baseball/2024/Topps ancestors (sport stays "baseball" → real roster is the
+# link target) + a custom Set/VariantType/Variant (isCustomSubtree → the wizard
+# opens only from this worker's own custom cards). lce-<worker> is unique per
+# worker → private selectorOptionId, no cross-runner contention.
 # ============================================================
 
 - runFlow:
-    file: util-drill-to-base-variant.yaml
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "lce-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
 
 # ============================================================
-# STEP 1 — PRE-CLEAN: clear any pre-existing unknowns on this shared Base variant
-# Fetch once; if a wizard opens (leftover unresolved pending names from prior
-# flows/attempts), bulk-confirm them all and save so they stop preempting our
-# UnknownLink below. If there are none, the fetch just commits ("Saved N cards")
-# and the wizard guard is skipped.
+# STEP 1 — PRIVATE SELF-HEAL PRE-CLEAN (this worker's own subtree only)
+# Fetch once BEFORE adding this attempt's card. If a wizard opens, it can only be
+# leftover debris from THIS worker's own prior failed attempt (the subtree is
+# private — no other runner can write here), so bulk-confirm every pre-existing
+# unknown ("Add All Remaining as New" → Confirm & Save) to commit + clear it. That
+# guarantees this attempt's UnknownLink-${ATTEMPT_ID} is the SOLE unknown below,
+# self-healing a retry exactly like the clean attempt-1 path. On attempt-1 the
+# subtree is empty → the fetch commits "Saved 0 cards" (no wizard) and the guard
+# is skipped — a quick custom-subtree round-trip, no BSC/SL.
+#
+# The Sync button (aria "Sync card checklist") is the empty-state "Fetch from
+# Marketplaces" button when the checklist is empty (attempt-1) OR the header
+# "Refresh" button when debris cards exist (retry) — exactly one renders at a
+# time, so targeting it by aria-label is unambiguous. centerElement keeps it in
+# the tap band clear of the sticky binder-header (top) and footer (y≥489).
 # ============================================================
 
 - scrollUntilVisible:
     element:
-      text: "Add Card"
-    direction: UP
-    centerElement: true
-    visibilityPercentage: 50
-- extendedWaitUntil:
-    visible:
       id: "Sync card checklist"
+    centerElement: true
+    timeout: 10000
 - tapOn:
     id: "Sync card checklist"
 - extendedWaitUntil:
@@ -113,20 +162,20 @@ tags:
 # ============================================================
 # STEP 2 — ADD THE CARD WHOSE UNKNOWN NAME WILL BE LINKED
 # A custom card carrying the per-attempt-unique UnknownLink-${ATTEMPT_ID} in its
-# Players field. That name has no matching entity, so the next fetch surfaces it
-# as the SOLE unknown (Step 1 cleared everything else).
+# Players field (→ cardChecklist.pendingPlayerNames). That name matches no player
+# entity, so the next fetch surfaces it as the SOLE unknown (Step 1 cleared any
+# debris; nothing else can be in this private subtree's batch).
 # ============================================================
 
-- scrollUntilVisible:
-    element:
-      text: "Add Card"
-    direction: UP
-    centerElement: true
-    visibilityPercentage: 50
 - tapOn: "Add Card"
+# "Player name" is the card-name input's placeholder; it renders once the
+# autoFocused "#" (Card number) input is present.
 - extendedWaitUntil:
     visible: "Player name"
 - inputText: "8002-${ATTEMPT_ID}"
+# Address inputs by aria-label (Maestro's `id:` = accessibility-tree identifier);
+# placeholders overlap ("Player name" vs "Player(s) — comma separated, optional")
+# so a text matcher cannot disambiguate them (NEO-13).
 - tapOn:
     id: "Card name"
 - inputText: "Link Main Card ${ATTEMPT_ID}"
@@ -151,6 +200,11 @@ tags:
 
 # ============================================================
 # STEP 3 — FETCH AND OPEN THE WIZARD ON THE UNKNOWN NAME
+# The custom card exists → the checklist header shows the "Refresh" button
+# (aria "Sync card checklist"). Tapping it runs fetchCardChecklist, which on this
+# custom subtree resolves the card's pending player name into an unknown and opens
+# the review wizard. Scroll UP to "Add Card" (same flex row as the Sync button)
+# and center it so the Sync button lands clear of the sticky binder-header.
 # ============================================================
 
 - scrollUntilVisible:
@@ -171,7 +225,7 @@ tags:
 
 # The wizard presents the unknown once its background Wikidata lookup completes
 # (or errors) — a live external round-trip, so 30s (outside the 7s UI budget).
-# The wizard heading shows the current item's name: assert it is our unknown.
+# The wizard shows the CURRENT item's name; assert it is our unknown.
 - extendedWaitUntil:
     visible:
       text: ".*UnknownLink-${ATTEMPT_ID}.*"
@@ -179,9 +233,10 @@ tags:
 
 # ============================================================
 # STEP 4 — LINK TO THE EXISTING REAL PLAYER (Shohei Ohtani)
-# "Link to Existing…" expands EntityLinkSearch (aria "Search existing players").
-# Type "Ohtani"; its result button (aria "Link to Shohei Ohtani") selects it and
-# records a "link" decision, resolving this unknown to the existing player id.
+# "Link to Existing…" expands EntityLinkSearch (aria "Search existing players"),
+# which lists api.players.list({sport:"baseball"}) — the real setup-synced Baseball
+# roster. Type "Ohtani"; its result button (aria "Link to Shohei Ohtani") selects
+# it and records a "link" decision, resolving this unknown to the existing player id.
 # ============================================================
 
 - tapOn:
@@ -198,16 +253,9 @@ tags:
 - tapOn:
     id: "Link to Shohei Ohtani"
 
-# UnknownLink is now linked and is the sole unknown → the final "All reviewed"
-# step appears. (Defensive: if a straggler slipped in, bulk-confirm it — never
-# touches UnknownLink, already decided as a link.)
-- runFlow:
-    when:
-      visible:
-        text: ".*Add All Remaining as New.*"
-    commands:
-      - tapOn:
-          text: ".*Add All Remaining as New.*"
+# UnknownLink is now linked and is the SOLE unknown on this private subtree → the
+# wizard reaches the final "All reviewed" step. Confirm & Save commits (0 cards on
+# a custom subtree — no marketplace cards — so the message reads "Saved 0 cards").
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"
@@ -223,11 +271,11 @@ tags:
 
 # ============================================================
 # STEP 5 — PROVE NO DUPLICATE WAS CREATED FOR THE UNKNOWN NAME
-# Open the main card's panel, reach its PlayerPicker, and search the unknown
-# name. "+ Create" (aria "Create player UnknownLink-…") renders ONLY when no
-# exact match exists — its presence proves the link minted no entity for that
-# name. If a duplicate had been created, the exact match would suppress "+ Create"
-# and this assert would fail.
+# Open the card's panel, reach its PlayerPicker, and search the unknown name.
+# "+ Create" (aria "Create player UnknownLink-…") renders ONLY when no exact match
+# exists — its presence proves the link minted no entity for that name. If a
+# duplicate had been created, the exact match would suppress "+ Create" and this
+# assert would fail.
 # ============================================================
 
 - scrollUntilVisible:
@@ -241,6 +289,9 @@ tags:
     waitToSettleTimeoutMs: 2000
 - assertVisible:
     id: "Card name"
+# The drawer is right-anchored (~480px); a viewport-centre scroll lands on the
+# backdrop, so drive its inner scroll with manual swipes at x=80% to reach the
+# Players section near the bottom (same idiom as player-picker-create-custom-card).
 - swipe:
     start: "80%, 80%"
     end: "80%, 20%"
