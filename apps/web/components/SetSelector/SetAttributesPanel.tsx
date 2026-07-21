@@ -107,22 +107,26 @@ export default function SetAttributesPanel({
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("set")) return false;
-      if (
-        f.applicableAtLevels &&
-        !f.applicableAtLevels.includes(row?.level as Level)
-      ) {
-        return false;
-      }
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true;
       return f.applicableSports.includes(ancestorSport);
     });
-  }, [ancestorSport, row?.level]);
+  }, [ancestorSport]);
 
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
   const features = row.features ?? {};
+
+  // Toggle-pill features (checkbox + toggleOptions) render together in one
+  // wrapping row instead of scattered through the 2-column grid at their
+  // config-order position.
+  const toggleFeatures = applicable.filter(
+    (f) => f.inputType === "checkbox" || f.inputType === "toggleOptions",
+  );
+  const otherFeatures = applicable.filter(
+    (f) => f.inputType !== "checkbox" && f.inputType !== "toggleOptions",
+  );
 
   // Breadcrumb: "Attributes for {leaf} ({levelLabel}) — a › b › c".
   const breadcrumb = chain.map((c) => c.value).join(" › ");
@@ -208,8 +212,25 @@ export default function SetAttributesPanel({
             </div>
           )}
 
+          {toggleFeatures.length > 0 && (
+            <div
+              className="flex flex-wrap items-center gap-2"
+              role="group"
+              aria-label="Set attribute toggles"
+            >
+              {toggleFeatures.map((feat) => (
+                <SetFeatureRow
+                  key={feat.key}
+                  feat={feat}
+                  value={features[feat.key]}
+                  onSave={(v) => handleSaveFeature(feat.key, feat.label, v)}
+                />
+              ))}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {applicable.map((feat) => (
+            {otherFeatures.map((feat) => (
               <SetFeatureRow
                 key={feat.key}
                 feat={feat}
@@ -244,8 +265,10 @@ function SetFeatureRow({
   // "checkbox" features store "true"/"false" strings in the `features` map
   // (unlike "boolean", which is bound to a real schema column and isn't
   // meaningful at the set level). Unchecked/unset is itself a complete
-  // answer, so this never shows the amber "missing" treatment.
-  if (feat.inputType === "checkbox") {
+  // answer, so this never shows the amber "missing" treatment. "toggleOptions"
+  // renders the same bare-pill way (no label/box chrome) so it sits
+  // indistinguishably in the shared toggle row.
+  if (feat.inputType === "checkbox" || feat.inputType === "toggleOptions") {
     return (
       <div
         className="flex flex-row items-center"
@@ -279,23 +302,6 @@ function SetFeatureRow({
           {label}
         </span>
         <span className="text-gray-300">{value ?? "—"}</span>
-      </div>
-    );
-  }
-
-  if (feat.inputType === "derived") {
-    const resolved = value ?? "—";
-    return (
-      <div
-        className="flex flex-col gap-0.5 p-2 rounded border text-xs border-gray-700 bg-gray-900/30"
-        aria-label={`Set feature ${label}`}
-      >
-        <span className="text-[10px] uppercase tracking-wide text-gray-400">
-          {label}
-        </span>
-        <span aria-label={`Value for ${label}`} className="text-gray-300">
-          {resolved}
-        </span>
       </div>
     );
   }

@@ -10,11 +10,12 @@
  *
  *   1. Feature values render directly from `row.features[key]` — no
  *      "Inherited from X" text anywhere (that UI was deleted this session).
- *   2. The `applicable` filter honors the new `applicableAtLevels` field:
- *      `cardType`/`parallelName` (both scoped to
- *      ["variantType","insert","parallel"]) are absent at
- *      sport/year/manufacturer/setName and present at
- *      variantType/insert/parallel.
+ *   2. `manufacturer`/`cardType`/`parallelName` are gone from
+ *      EXPECTED_FEATURES entirely (confirmed-redundant — see
+ *      expectedFeatures.ts) and never render at ANY level, not just hidden
+ *      at some. The `applicableAtLevels` field that used to gate them was
+ *      removed from the `ExpectedFeature` type along with the corresponding
+ *      filter logic — there is no such field/logic left to test.
  *   3. `applicableSports` filtering still works (League hidden for Pokemon).
  *   4. Editing a feature calls `setSelectorOptionFeature(selectorOptionId,
  *      key, value)` and shows a "Saved {label}" toast — no "propagated to N
@@ -23,6 +24,18 @@
  *      these fields are actually required, so a blank row renders exactly
  *      like a filled-in one (the old amber border/⚠ icon/"N missing" badge
  *      were removed this session).
+ *   6. Toggle-like features (`inputType === "checkbox" || "toggleOptions"`)
+ *      are partitioned out of the 2-column grid and rendered together in one
+ *      shared `role="group" aria-label="Set attribute toggles"` row — Vintage
+ *      (now an editable checkbox, no longer read-only "derived" text),
+ *      Reprint, Case Hit (new), Autographed (now toggle pills, not a
+ *      `<select>`), and Short Print (same) all live there; plain text/select
+ *      fields like Season stay in the grid below.
+ *   7. `block`/`upc` are gone from EXPECTED_FEATURES entirely too (case/
+ *      box-level facts, not set- or card-level ones) — covered in
+ *      expectedFeatures.test.ts, not re-tested here.
+ *   8. `signedBy` is now `hiddenAtLevels: ["set"]` — card-level only, since a
+ *      whole set signed by one person is vanishingly rare.
  *
  * releaseDate/totalCardCount/block used to live in a separate `setMetadata`
  * object editable only at the setName level (a since-removed `setSetMetadata`
@@ -38,7 +51,14 @@
  * a spy.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -170,7 +190,14 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
     }
   });
 
-  it("DOES render Card Type and Variation rows at variantType/insert/parallel levels", () => {
+  it("does NOT render Card Type or Variation rows at variantType/insert/parallel levels either — both were removed entirely, not just hidden at other levels", () => {
+    // Old behavior gated these two rows to variantType/insert/parallel via
+    // `applicableAtLevels`. Both the field and the gating logic are gone now
+    // (manufacturer/cardType/parallelName were removed from EXPECTED_FEATURES
+    // entirely — see expectedFeatures.ts), so these rows must be absent here
+    // too, even though a stray `cardType`/`parallelName` key is still present
+    // in the row's `features` map (e.g. from data written before the
+    // removal) — nothing reads those keys anymore.
     for (const level of ["variantType", "insert", "parallel"]) {
       currentRow = makeRow({
         level,
@@ -181,18 +208,26 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
 
       const { unmount } = renderPanel();
 
-      expect(screen.getByLabelText("Set feature Card Type")).toBeTruthy();
-      expect(screen.getByLabelText("Set feature Variation")).toBeTruthy();
-      expect(
-        (screen.getByLabelText("Value for Card Type") as HTMLInputElement).value,
-      ).toBe("Base");
-      expect(
-        (screen.getByLabelText("Value for Variation") as HTMLInputElement)
-          .value,
-      ).toBe("Gold");
+      expect(screen.queryByLabelText("Set feature Card Type")).toBeNull();
+      expect(screen.queryByLabelText("Set feature Variation")).toBeNull();
+      expect(screen.queryByLabelText("Value for Card Type")).toBeNull();
+      expect(screen.queryByLabelText("Value for Variation")).toBeNull();
 
       unmount();
     }
+  });
+
+  it("does not render Signed By at the set level — card-level only, a whole set signed by one person is vanishingly rare", () => {
+    currentRow = makeRow({
+      level: "setName",
+      features: { signedBy: "Mike Trout" },
+    });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    expect(screen.queryByLabelText("Set feature Signed By")).toBeNull();
+    expect(screen.queryByLabelText("Value for Signed By")).toBeNull();
   });
 
   it("hides League for a non stick-and-ball sport (Pokemon) via applicableSports + ancestorSport", () => {
@@ -218,37 +253,41 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
   it("calls setSelectorOptionFeature(selectorOptionId, key, value) and shows a 'Saved {label}' toast on edit, without any propagation language", async () => {
     currentRow = makeRow({
       level: "setName",
-      features: { signedBy: "" },
+      features: { season: "" },
     });
     currentChain = makeChain("Baseball");
 
     renderPanel();
 
-    const signedByInput = screen.getByLabelText(
-      "Value for Signed By",
+    // signedBy is card-level only (hiddenAtLevels: ["set"]) — a whole set
+    // being signed by one person is vanishingly rare — so this generic
+    // "edit a text feature at the set level" test uses "season" instead,
+    // which is still a plain text feature applicable at every set level.
+    const seasonInput = screen.getByLabelText(
+      "Value for Season",
     ) as HTMLInputElement;
 
     await act(async () => {
       // Real focus() + synthetic focus (sets both document.activeElement and
       // the hook's internal focusedRef — see useReactiveField.test.tsx).
-      signedByInput.focus();
-      fireEvent.focus(signedByInput);
-      signedByInput.value = "Mike Trout";
-      fireEvent.input(signedByInput, { target: { value: "Mike Trout" } });
-      signedByInput.blur();
-      fireEvent.blur(signedByInput);
+      seasonInput.focus();
+      fireEvent.focus(seasonInput);
+      seasonInput.value = "2020-21";
+      fireEvent.input(seasonInput, { target: { value: "2020-21" } });
+      seasonInput.blur();
+      fireEvent.blur(seasonInput);
     });
 
     await waitFor(() => {
       expect(mockSetSelectorOptionFeature).toHaveBeenCalledWith({
         selectorOptionId: SELECTOR_OPTION_ID,
-        key: "signedBy",
-        value: "Mike Trout",
+        key: "season",
+        value: "2020-21",
       });
     });
 
     await waitFor(() => {
-      expect(screen.getByText("Saved Signed By")).toBeTruthy();
+      expect(screen.getByText("Saved Season")).toBeTruthy();
     });
 
     // The old propagation-count toast copy must never appear.
@@ -281,5 +320,85 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
     expect(screen.queryByText(/\d+ missing/i)).toBeNull();
     expect(screen.queryByLabelText("Missing required feature")).toBeNull();
     expect(screen.queryByText("⚠")).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------
+  // Toggle-pill row grouping (NEO-71-74 redesign): checkbox + toggleOptions
+  // features render together in one shared row, above the 2-column grid of
+  // remaining text/select fields.
+  // ---------------------------------------------------------------------
+
+  it("groups every checkbox/toggleOptions feature into the 'Set attribute toggles' row, excluding plain text/select fields", () => {
+    currentRow = makeRow({ level: "setName", features: {} });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    const toggleGroup = screen.getByRole("group", {
+      name: "Set attribute toggles",
+    });
+
+    // Vintage/Reprint/Case Hit (checkboxes) + Autographed/Short Print pills
+    // (toggleOptions) all live inside the shared toggle row.
+    for (const label of [
+      "Value for Vintage",
+      "Value for Reprint",
+      "Value for Case Hit",
+      "Value for Autographed: Auto (On Card)",
+      "Value for Autographed: Auto (Sticker)",
+      "Value for Short Print: SP",
+      "Value for Short Print: SSP",
+    ]) {
+      expect(within(toggleGroup).getByLabelText(label)).toBeTruthy();
+    }
+
+    // A plain text field (no inputType override) must NOT be in the toggle
+    // row — it stays in the 2-column grid below.
+    expect(within(toggleGroup).queryByLabelText("Value for Season")).toBeNull();
+    expect(screen.getByLabelText("Value for Season")).toBeTruthy();
+  });
+
+  it("Vintage renders as an interactive toggle pill (not static read-only text) and saves via setSelectorOptionFeature", async () => {
+    currentRow = makeRow({ level: "setName", features: { vintage: "false" } });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    const vintageToggle = screen.getByLabelText("Value for Vintage");
+    // The old "derived" inputType rendered a bare read-only <span>; the new
+    // checkbox inputType renders an actual <button> pill.
+    expect(vintageToggle.tagName).toBe("BUTTON");
+    expect(vintageToggle.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(vintageToggle);
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionFeature).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        key: "vintage",
+        value: "true",
+      });
+    });
+  });
+
+  it("Case Hit is a new checkbox toggle that saves via setSelectorOptionFeature", async () => {
+    currentRow = makeRow({ level: "setName", features: {} });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    const caseHitToggle = screen.getByLabelText("Value for Case Hit");
+    expect(caseHitToggle.tagName).toBe("BUTTON");
+    expect(caseHitToggle.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(caseHitToggle);
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionFeature).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        key: "isCaseHit",
+        value: "true",
+      });
+    });
   });
 });

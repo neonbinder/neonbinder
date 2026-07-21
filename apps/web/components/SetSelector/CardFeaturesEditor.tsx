@@ -191,23 +191,6 @@ function CardFeatureRow({
     );
   }
 
-  if (feat.inputType === "derived") {
-    const resolved = cardValue ?? "—";
-    return (
-      <div
-        className="flex flex-col gap-0.5 p-1.5 rounded border text-xs border-gray-700 bg-gray-900/30"
-        aria-label={`Feature ${label}`}
-      >
-        <span className="text-[10px] uppercase tracking-wide text-gray-400">
-          {label}
-        </span>
-        <span aria-label={`Value for ${label}`} className="text-gray-300">
-          {resolved}
-        </span>
-      </div>
-    );
-  }
-
   const displayed = cardValue ?? "";
 
   return (

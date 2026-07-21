@@ -69,6 +69,19 @@ export function FeatureValueControl({
     );
   }
 
+  if (feat.inputType === "toggleOptions") {
+    return (
+      <ToggleOptionsValueControl
+        options={feat.options ?? []}
+        toggleLabels={feat.toggleLabels}
+        value={value}
+        onSave={onSave}
+        ariaLabel={ariaLabel}
+        dataFeatKey={dataFeatKey}
+      />
+    );
+  }
+
   return (
     <TextValueControl
       value={value}
@@ -194,6 +207,80 @@ function CheckboxValueControl({
       >
         {label}
       </button>
+      {error && (
+        <span className="text-[10px] text-[#FF2EB3]" role="alert">
+          {error}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * Mutually-exclusive toggle-pill group for "toggleOptions"-type features
+ * (Autographed's On Card/Sticker, Short Print's SP/SSP). `options[0]` is the
+ * implicit "off" value (e.g. "None") and never gets its own pill — clicking
+ * the currently-active pill again reverts to it. Same pill styling as
+ * `CheckboxValueControl` so a toggleOptions feature sits visually
+ * indistinguishable from a checkbox one in a shared toggle row.
+ */
+function ToggleOptionsValueControl({
+  options,
+  toggleLabels,
+  value,
+  onSave,
+  ariaLabel,
+  dataFeatKey,
+}: {
+  options: ReadonlyArray<string>;
+  toggleLabels?: ReadonlyArray<string>;
+  value: string;
+  onSave: (value: string) => Promise<unknown>;
+  ariaLabel: string;
+  dataFeatKey?: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const offValue = options[0] ?? "";
+
+  const handleChange = async (option: string, active: boolean) => {
+    setBusy(true);
+    try {
+      await onSave(active ? offValue : option);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="flex items-center gap-1">
+        {options.slice(1).map((opt, i) => {
+          const active = value === opt;
+          const pillLabel = toggleLabels?.[i + 1] ?? opt;
+          return (
+            <button
+              key={opt}
+              type="button"
+              data-feat-key={dataFeatKey ? `${dataFeatKey}-${opt}` : undefined}
+              disabled={busy}
+              onClick={() => void handleChange(opt, active)}
+              aria-label={`${ariaLabel}: ${pillLabel}`}
+              aria-pressed={active}
+              className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                active
+                  ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
+                  : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
+              }`}
+            >
+              {pillLabel}
+            </button>
+          );
+        })}
+      </div>
       {error && (
         <span className="text-[10px] text-[#FF2EB3]" role="alert">
           {error}

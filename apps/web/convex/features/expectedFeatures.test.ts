@@ -34,15 +34,51 @@ describe("EXPECTED_FEATURES typed entries", () => {
     expect(isRookie.hiddenAtLevels).toContain("set");
   });
 
-  test("vintage is derived (read-only, not user-selected)", () => {
+  test("vintage is an editable checkbox toggle, not a read-only derived display", () => {
+    // NEO-71-74 redesign: the "derived" inputType (a read-only <span>) was
+    // deleted from the ExpectedFeature type entirely — vintage was its only
+    // user. It's still auto-populated at creation time from the year's era
+    // bucket, but now renders as an actual toggle pill so an operator can
+    // correct the odd edge case (e.g. a reprint/throwback set) per-node.
     const vintage = feature("vintage");
-    expect(vintage.inputType).toBe("derived");
+    expect(vintage.inputType).toBe("checkbox");
   });
 
-  test("autographed is a select with exactly None/On Card/Sticker-Label", () => {
+  test("isCaseHit is a new checkbox toggle, same pattern as isReprint/isProspect/isRelic", () => {
+    const isCaseHit = feature("isCaseHit");
+    expect(isCaseHit.inputType).toBe("checkbox");
+  });
+
+  test("manufacturer, cardType, and set-level parallelName have been removed entirely", () => {
+    // Confirmed-redundant: manufacturer duplicates the panel's own
+    // breadcrumb, cardType just restates the breadcrumb's leaf level, and
+    // set-level parallelName is never actually populated by the derivation
+    // code for insert/parallel levels (the real per-card variation comes
+    // from that card's own cardVariation field). Removed rather than hidden.
+    for (const key of ["manufacturer", "cardType", "parallelName"]) {
+      expect(EXPECTED_FEATURES.find((f) => f.key === key)).toBeUndefined();
+    }
+  });
+
+  test("block and upc have been removed entirely (case/box-level facts, not set- or card-level ones)", () => {
+    for (const key of ["block", "upc"]) {
+      expect(EXPECTED_FEATURES.find((f) => f.key === key)).toBeUndefined();
+    }
+  });
+
+  test("autographed is a toggleOptions control with exactly None/On Card/Sticker-Label, displayed as None/Auto (On Card)/Auto (Sticker)", () => {
     const autographed = feature("autographed");
-    expect(autographed.inputType).toBe("select");
+    expect(autographed.inputType).toBe("toggleOptions");
     expect(autographed.options).toEqual(["None", "On Card", "Sticker/Label"]);
+    // toggleLabels overrides the pill button TEXT only — the stored value
+    // (options[1]/[2], "On Card"/"Sticker/Label") is unchanged. The "Auto"
+    // prefix makes the pills unambiguous sitting in the shared toggle row
+    // alongside unrelated toggles like Reprint/Case Hit.
+    expect(autographed.toggleLabels).toEqual([
+      "None",
+      "Auto (On Card)",
+      "Auto (Sticker)",
+    ]);
   });
 
   test("isReprint, isRelic, isProspect are checkboxes stored in the features map", () => {
@@ -51,16 +87,16 @@ describe("EXPECTED_FEATURES typed entries", () => {
     expect(feature("isProspect").inputType).toBe("checkbox");
   });
 
-  test("shortPrint is a select with exactly None/SP/SSP", () => {
+  test("shortPrint is a toggleOptions control with exactly None/SP/SSP, no toggleLabels override needed", () => {
     const shortPrint = feature("shortPrint");
-    expect(shortPrint.inputType).toBe("select");
+    expect(shortPrint.inputType).toBe("toggleOptions");
     expect(shortPrint.options).toEqual(["None", "SP", "SSP"]);
+    expect(shortPrint.toggleLabels).toBeUndefined();
   });
 
-  test("season, upc, countryOfOrigin, cardSize, cardMaterial, cardThickness, language, eventTournament, conventionEvent are free text (no inputType override)", () => {
+  test("season, countryOfOrigin, cardSize, cardMaterial, cardThickness, language, eventTournament, conventionEvent are free text (no inputType override)", () => {
     for (const key of [
       "season",
-      "upc",
       "countryOfOrigin",
       "cardSize",
       "cardMaterial",

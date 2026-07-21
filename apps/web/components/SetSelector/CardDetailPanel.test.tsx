@@ -8,7 +8,17 @@
  *     shared `CardFeatureRow` (exported from CardFeaturesEditor.tsx) bound
  *     to `card.features?.autographed`, saved immediately via
  *     `setCardFeature({ cardChecklistId, key: "autographed", value })` —
- *     NOT part of this panel's dirty/Save cycle.
+ *     NOT part of this panel's dirty/Save cycle. Later (NEO-71-74) the
+ *     control itself changed from a `<select>` dropdown to two mutually
+ *     exclusive toggle pills ("Auto (On Card)"/"Auto (Sticker)" — the "Auto"
+ *     prefix was added so the pills read unambiguously in the shared toggle
+ *     row) — same `setCardFeature` wiring, same stored values ("On Card"/
+ *     "Sticker/Label"), just a different control. `CardFeatureRow`'s
+ *     checkbox-branch condition only
+ *     checks `inputType === "checkbox"` (not "toggleOptions"), so Autographed
+ *     still falls through to the same labeled-box "default" branch as
+ *     before — the "Autographed" label above the control is unchanged, only
+ *     the control is now 2 pills instead of a dropdown.
  *   - Replaced the read-only "Players" section with a full
  *     `<PlayerPicker value={playerIds} onChange={setPlayerIds} .../>`, with
  *     `playerIds` now part of this panel's dirty-tracking and `handleSave`'s
@@ -16,10 +26,11 @@
  *   - Renamed the "Variation / parallel" label to just "Variation".
  *
  * This file locks in:
- *   1. The Autographed control renders as a <select> (not a text input) and
- *      calls setCardFeature on change — never updateCard — and does NOT mark
- *      the panel dirty (the Save button stays enabled/disabled independent
- *      of it, and no discard-confirm appears on close after changing it).
+ *   1. The Autographed control renders as two toggle pills ("Auto (On Card)" /
+ *      "Auto (Sticker)"), NOT a <select> or a text input, and clicking a pill
+ *      calls setCardFeature — never updateCard — and does NOT mark the
+ *      panel dirty (the Save button stays enabled/disabled independent of
+ *      it, and no discard-confirm appears on close after changing it).
  *   2. The Players picker renders with the card's playerIds; adding/removing
  *      a player marks the panel dirty; Save calls updateCard with the
  *      updated playerIds array.
@@ -168,24 +179,38 @@ describe("CardDetailPanel", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Autographed control: select, not text; setCardFeature; excluded from
-  // dirty-tracking.
+  // Autographed control: toggle pills, not a <select>; setCardFeature;
+  // excluded from dirty-tracking.
   // -------------------------------------------------------------------------
 
-  it("renders the Autographed control as a <select>, not a text input", () => {
+  it("renders the Autographed control as toggle pills, not a <select>", () => {
     renderPanel({ card: makeCard({ features: { autographed: "On Card" } }) });
 
-    const control = screen.getByLabelText("Value for Autographed");
-    expect(control.tagName).toBe("SELECT");
-    expect((control as HTMLSelectElement).value).toBe("On Card");
+    // No <select> anymore — the base "Value for Autographed" aria-label is
+    // no longer unique on its own (it's now a prefix shared by both pills:
+    // "Value for Autographed: Auto (On Card)" / "Value for Autographed: Auto (Sticker)").
+    expect(screen.queryByRole("combobox")).toBeNull();
+
+    const onCardPill = screen.getByLabelText(
+      "Value for Autographed: Auto (On Card)",
+    );
+    const stickerPill = screen.getByLabelText(
+      "Value for Autographed: Auto (Sticker)",
+    );
+    expect(onCardPill.tagName).toBe("BUTTON");
+    expect(stickerPill.tagName).toBe("BUTTON");
+    expect(onCardPill.getAttribute("aria-pressed")).toBe("true");
+    expect(stickerPill.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("changing Autographed calls setCardFeature (not updateCard) with the card id, key, and new value", async () => {
+  it("clicking the 'Auto (On Card)' pill calls setCardFeature (not updateCard) with the card id, key, and new value", async () => {
     renderPanel({ card: makeCard({ features: { autographed: "None" } }) });
 
-    const select = screen.getByLabelText("Value for Autographed") as HTMLSelectElement;
+    const onCardPill = screen.getByLabelText(
+      "Value for Autographed: Auto (On Card)",
+    );
     await act(async () => {
-      fireEvent.change(select, { target: { value: "On Card" } });
+      fireEvent.click(onCardPill);
     });
 
     await waitFor(() => {
@@ -198,14 +223,36 @@ describe("CardDetailPanel", () => {
     expect(mockUpdateCard).not.toHaveBeenCalled();
   });
 
+  it("clicking the 'Auto (Sticker)' pill calls setCardFeature with the stored value 'Sticker/Label' (the display label differs, the stored value doesn't)", async () => {
+    renderPanel({ card: makeCard({ features: { autographed: "None" } }) });
+
+    const stickerPill = screen.getByLabelText(
+      "Value for Autographed: Auto (Sticker)",
+    );
+    await act(async () => {
+      fireEvent.click(stickerPill);
+    });
+
+    await waitFor(() => {
+      expect(mockSetCardFeature).toHaveBeenCalledWith({
+        cardChecklistId: CARD_ID,
+        key: "autographed",
+        value: "Sticker/Label",
+      });
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
   it("changing Autographed does NOT mark the panel dirty — the dirty-guarded close exits immediately, no discard-confirm", async () => {
     const { onClose } = renderPanel({
       card: makeCard({ features: { autographed: "None" } }),
     });
 
-    const select = screen.getByLabelText("Value for Autographed") as HTMLSelectElement;
+    const onCardPill = screen.getByLabelText(
+      "Value for Autographed: Auto (On Card)",
+    );
     await act(async () => {
-      fireEvent.change(select, { target: { value: "On Card" } });
+      fireEvent.click(onCardPill);
     });
     await waitFor(() => {
       expect(mockSetCardFeature).toHaveBeenCalled();

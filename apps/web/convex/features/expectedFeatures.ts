@@ -35,12 +35,24 @@ export type ExpectedFeature = {
    *   NOT the `features` map. Reserved for card-level facets that need a
    *   real queryable column (e.g. `isRookie`); use "checkbox" instead for
    *   any new true/false facet that doesn't need one.
-   * "derived" — read-only computed value; not editable anywhere, sourced
-   *   from whatever the derivation pipeline already wrote into `features`.
+   * "toggleOptions" — mutually-exclusive toggle-pill group over `options`,
+   *   stored as a single string in the `features` map (like "select"). By
+   *   convention `options[0]` is the implicit "off" value (e.g. "None") and
+   *   is never rendered as its own pill — only `options.slice(1)` render,
+   *   and clicking the currently-active one again reverts to `options[0]`.
+   *   Use for closed-vocabulary facets where the options are naturally
+   *   exclusive toggles rather than a dropdown (e.g. Autographed's
+   *   On Card/Sticker, Short Print's SP/SSP).
    */
-  inputType?: "text" | "select" | "checkbox" | "boolean" | "derived";
-  /** Required when inputType === "select". */
+  inputType?: "text" | "select" | "checkbox" | "boolean" | "toggleOptions";
+  /** Required when inputType === "select" or "toggleOptions". */
   options?: ReadonlyArray<string>;
+  /**
+   * "toggleOptions" only — overrides the pill button text, index-aligned
+   * with `options` (index 0 is unused since that entry never renders a
+   * pill). Omit to use `options` values verbatim as button labels.
+   */
+  toggleLabels?: ReadonlyArray<string>;
   /**
    * Required when inputType === "boolean". Names the typed schema column
    * this checkbox reads/writes directly, bypassing the `features` map.
@@ -52,24 +64,6 @@ export type ExpectedFeature = {
   hint?: string;
   /** Levels at which this row shouldn't render at all (no typed target / not meaningful there). */
   hiddenAtLevels?: ReadonlyArray<"card" | "set">;
-  /**
-   * Restricts a "set"-side row to specific selectorOptions levels within
-   * SetAttributesPanel, instead of every non-card level. Only needed for
-   * features that are level-SPECIFIC within the set hierarchy (e.g.
-   * `cardType`/`parallelName` only ever derive at variantType/insert/
-   * parallel — rendering them at sport/year/manufacturer/setName would be
-   * misleading, since they simply don't apply there). Omit for features
-   * that apply at every set-side level (e.g. `league`, `era`).
-   */
-  applicableAtLevels?: ReadonlyArray<
-    | "sport"
-    | "year"
-    | "manufacturer"
-    | "setName"
-    | "variantType"
-    | "insert"
-    | "parallel"
-  >;
 };
 
 export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
@@ -82,22 +76,22 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
     options: LEAGUE_OPTIONS,
   },
   { key: "era", label: "Era", inputType: "select", options: ERA_BUCKET_OPTIONS },
-  { key: "vintage", label: "Vintage", inputType: "derived" },
+  // Auto-derived from the year's era bucket at creation time (see
+  // deriveSetLevelFeatures), but a plain toggle here so an operator can
+  // correct the odd edge case (e.g. a reprint/throwback set) per-node.
+  { key: "vintage", label: "Vintage", inputType: "checkbox" },
   // eBay "Season" — distinct from Year (matters for split-year sports like
   // Basketball/Hockey, e.g. a card documenting a 2020-21 season released in
   // a 2021 product).
   { key: "season", label: "Season" },
-  { key: "manufacturer", label: "Manufacturer" },
-  {
-    key: "cardType",
-    label: "Card Type",
-    applicableAtLevels: ["variantType", "insert", "parallel"],
-  },
-  {
-    key: "parallelName",
-    label: "Variation",
-    applicableAtLevels: ["variantType", "insert", "parallel"],
-  },
+  // NOTE: no "manufacturer"/"cardType"/set-level "Variation" (parallelName)
+  // rows — all three only ever restated information already visible in the
+  // panel's own breadcrumb (manufacturer, and the leaf level itself for
+  // cardType), or were a set-level default that deriveSetLevelFeatures
+  // deliberately never populates for inserts/parallels (parallelName — the
+  // real per-card variation name always comes from that card's own
+  // `cardVariation`, edited on the card itself, not here). Removed rather
+  // than hidden: nothing else reads these three as UI-editable.
   // MyCardPost + MySlabs both track short-print status as a discrete facet
   // (eBay folds it into its generic multi-select Features tag instead).
   // Auto-derived from the existing `attributes[]` harvest in
@@ -106,10 +100,11 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
   {
     key: "shortPrint",
     label: "Short Print",
-    inputType: "select",
+    inputType: "toggleOptions",
     options: ["None", "SP", "SSP"],
   },
   { key: "isReprint", label: "Reprint", inputType: "checkbox" },
+  { key: "isCaseHit", label: "Case Hit", inputType: "checkbox" },
 
   // ---- Release metadata (formerly the separate `setMetadata` object,
   // editable ONLY at the setName level). Folded into the same feature
@@ -117,7 +112,7 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
   // (e.g. a "Panini Rewards" parallel released after the base set) can carry
   // its own value independent of its parent — a plain set-level-only field
   // can't represent that. Hidden at "card": a single card doesn't have its
-  // own release date/block/card-count distinct from its set/parallel. ----
+  // own release date/card-count distinct from its set/parallel. ----
   { key: "releaseDate", label: "Release Date", hiddenAtLevels: ["card"] },
   {
     key: "totalCardCount",
@@ -125,21 +120,23 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
     numeric: true,
     hiddenAtLevels: ["card"],
   },
-  {
-    key: "block",
-    label: "Block",
-    hint: "Manufacturer sub-release within the set, e.g. Series 1, Series 2, Update",
-    hiddenAtLevels: ["card"],
-  },
+  // NOTE: no "Block" row — a manufacturer sub-release like "Series 1"/
+  // "Series 2" isn't its own set (e.g. Topps Series 1 and Series 2 are both
+  // just "Topps", not two separate sets), so it doesn't belong as a facet
+  // here. Revisit once set data models multi-part releases properly.
 
   // ---- Card notable traits (from BSC harvest) ----
   {
     key: "autographed",
     label: "Autographed",
-    inputType: "select",
+    inputType: "toggleOptions",
     options: ["None", "On Card", "Sticker/Label"],
+    toggleLabels: ["None", "Auto (On Card)", "Auto (Sticker)"],
   },
-  { key: "signedBy", label: "Signed By" },
+  // Card-level only — a whole set/insert/parallel being signed by the same
+  // single person is vanishingly rare (this describes an individual card's
+  // autograph, not a set-wide fact).
+  { key: "signedBy", label: "Signed By", hiddenAtLevels: ["set"] },
   {
     key: "isRookie",
     label: "Rookie Card",
@@ -167,11 +164,6 @@ export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
   { key: "eventTournament", label: "Event/Tournament" },
   { key: "conventionEvent", label: "Convention/Event" },
 
-  // ---- Rare / edge case — no sports card in NB's catalog has ever carried
-  // a UPC (it's a case/box-level barcode, not a per-card fact), but kept as
-  // a just-in-case field. Bottom of the form since it's virtually always
-  // blank. (Originally slated to come from `setMetadata.tcdbSetId` per
-  // docs/marketplace-listings.md — that never shipped since TCDB is
-  // Cloudflare-blocked — this gives it a direct home independent of that.) ----
-  { key: "upc", label: "UPC" },
+  // NOTE: no "UPC" row — a UPC is a case/box-level barcode, not a fact
+  // about the set or any individual card, so it doesn't belong here.
 ];
