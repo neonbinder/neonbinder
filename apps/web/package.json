@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "module": "./dist-design-system/index.es.js",
+  "types": "./dist-design-system/index.d.ts",
   "scripts": {
     "dev": "vite",
     "dev:backend": "./dev-backend.sh",
@@ -12,7 +14,7 @@
     "tunnel": "cloudflared tunnel --url http://localhost:8080",
     "predev:all": "./setup-env.sh",
     "build": "vite build",
-    "build:design-system": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
+    "build:design-system": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json && mkdir -p .design-sync/.cache && printf 'import \"../../app/globals.css\";\\n' > .design-sync/.cache/css-entry.ts && vite build --config vite.lib.css.config.ts",
     "preview": "vite preview",
     "lint": "eslint .",
     "test:unit": "vitest run",
