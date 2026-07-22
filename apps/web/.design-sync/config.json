@@ -1,0 +1,13 @@
+{
+  "projectId": "9e902530-4c7c-4d40-8f11-482ba22ab49a",
+  "shape": "package",
+  "pkg": "neonbinder",
+  "globalName": "NeonBinderPrimitives",
+  "buildCmd": "npm run build:design-system",
+  "cssEntry": "dist-design-system/neonbinder.css",
+  "extraFonts": ["public/Neon.ttf"],
+  "readmeHeader": ".design-sync/conventions.md",
+  "overrides": {
+    "Input": { "cardMode": "column" }
+  }
+}
