@@ -12,6 +12,7 @@
     "tunnel": "cloudflared tunnel --url http://localhost:8080",
     "predev:all": "./setup-env.sh",
     "build": "vite build",
+    "build:design-system": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
     "preview": "vite preview",
     "lint": "eslint .",
     "test:unit": "vitest run",

@@ -15,6 +15,7 @@
 
 # vite
 /dist/
+/dist-design-system/
 
 # next.js (legacy)
 /.next/

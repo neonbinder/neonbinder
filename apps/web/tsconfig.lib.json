@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "isolatedModules": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist-design-system",
+    "rootDir": "components/primitives"
+  },
+  "include": ["components/primitives/**/*.ts", "components/primitives/**/*.tsx"]
+}
