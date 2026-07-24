@@ -86,10 +86,11 @@ export default function MultiSourcePanel({
   const primaryBsc = row.primaryPlatformId?.bsc ?? bscIds[0];
   const primarySl = row.primaryPlatformId?.sportlots ?? slIds[0];
 
-  // Show the panel only when at least one side has a primary — otherwise
-  // there's nothing to attach extras to yet.
-  const hasAnyPrimary = !!primaryBsc || !!primarySl;
-  if (!hasAnyPrimary) return null;
+  // Hide only for genuinely custom user-created rows, which have no
+  // marketplace concept at all. Marketplace-backed rows stay reachable even
+  // after every id has been removed (NEO-71-74), so a cleared/bad primary
+  // mapping can always be re-attached via "Attach more…" below.
+  if (row.isCustom) return null;
 
   return (
     <div className="border border-gray-700 rounded-lg bg-gray-900/60 p-4">
@@ -119,8 +120,13 @@ export default function MultiSourcePanel({
           ids={bscIds}
           labels={row.platformLabels?.bsc ?? {}}
           primaryId={primaryBsc}
-          onDetach={(id) =>
-            detach({ selectorOptionId, side: "bsc", id })
+          onDetach={(id, opts) =>
+            detach({
+              selectorOptionId,
+              side: "bsc",
+              id,
+              confirmPrimary: opts?.confirmPrimary,
+            })
           }
           onRename={(id, label) =>
             rename({ selectorOptionId, side: "bsc", id, label })
@@ -131,8 +137,13 @@ export default function MultiSourcePanel({
           ids={slIds}
           labels={row.platformLabels?.sportlots ?? {}}
           primaryId={primarySl}
-          onDetach={(id) =>
-            detach({ selectorOptionId, side: "sportlots", id })
+          onDetach={(id, opts) =>
+            detach({
+              selectorOptionId,
+              side: "sportlots",
+              id,
+              confirmPrimary: opts?.confirmPrimary,
+            })
           }
           onRename={(id, label) =>
             rename({ selectorOptionId, side: "sportlots", id, label })
@@ -165,7 +176,10 @@ function SideColumn({
   ids: string[];
   labels: Record<string, string>;
   primaryId: string | undefined;
-  onDetach: (id: string) => Promise<unknown>;
+  onDetach: (
+    id: string,
+    opts?: { confirmPrimary?: boolean },
+  ) => Promise<unknown>;
   onRename: (id: string, label: string) => Promise<unknown>;
 }) {
   const chips = useMemo(() => {
@@ -199,16 +213,21 @@ function SideColumn({
   );
 }
 
+type ChipMode = "idle" | "editing" | "confirming";
+
 function Chip({
   chip,
   onDetach,
   onRename,
 }: {
   chip: { id: string; label: string; isPrimary: boolean };
-  onDetach: (id: string) => Promise<unknown>;
+  onDetach: (
+    id: string,
+    opts?: { confirmPrimary?: boolean },
+  ) => Promise<unknown>;
   onRename: (id: string, label: string) => Promise<unknown>;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [mode, setMode] = useState<ChipMode>("idle");
   const [draft, setDraft] = useState(chip.label);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -217,14 +236,14 @@ function Chip({
     if (busy) return;
     const trimmed = draft.trim();
     if (!trimmed || trimmed === chip.label) {
-      setEditing(false);
+      setMode("idle");
       setDraft(chip.label);
       return;
     }
     setBusy(true);
     try {
       await onRename(chip.id, trimmed);
-      setEditing(false);
+      setMode("idle");
       setErr(null);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -238,12 +257,49 @@ function Chip({
     setBusy(true);
     setErr(null);
     try {
-      await onDetach(chip.id);
+      await onDetach(chip.id, { confirmPrimary: chip.isPrimary });
+      setMode("idle");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   };
+
+  if (mode === "confirming") {
+    return (
+      <li
+        className="flex items-center gap-2 px-3 py-1.5 rounded border border-[#FF2EB3] bg-[#FF2EB3]/10"
+        role="alert"
+      >
+        <span className="flex-1 min-w-0 truncate text-sm text-gray-100">
+          Remove primary mapping “{chip.label}”?
+        </span>
+        <button
+          type="button"
+          onClick={handleDetach}
+          disabled={busy}
+          aria-label={`Confirm remove primary ${chip.label}`}
+          className="text-xs font-semibold text-[#FF2EB3] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1"
+        >
+          Confirm
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("idle")}
+          disabled={busy}
+          aria-label={`Cancel remove primary ${chip.label}`}
+          className="text-xs text-gray-400 hover:text-gray-200 focus:text-gray-200 focus:outline-none px-1"
+        >
+          Cancel
+        </button>
+        {err && (
+          <span className="text-[10px] text-[#FF2EB3]" role="alert">
+            {err}
+          </span>
+        )}
+      </li>
+    );
+  }
 
   return (
     <li
@@ -261,7 +317,7 @@ function Chip({
           Primary
         </span>
       )}
-      {editing ? (
+      {mode === "editing" ? (
         <input
           type="text"
           value={draft}
@@ -273,7 +329,7 @@ function Chip({
               void commitRename();
             } else if (e.key === "Escape") {
               e.preventDefault();
-              setEditing(false);
+              setMode("idle");
               setDraft(chip.label);
             }
           }}
@@ -286,7 +342,7 @@ function Chip({
           type="button"
           onClick={() => {
             setDraft(chip.label);
-            setEditing(true);
+            setMode("editing");
           }}
           aria-label={`Rename label for ${chip.id}`}
           className="flex-1 min-w-0 text-left truncate text-sm text-gray-100 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
@@ -297,7 +353,17 @@ function Chip({
       <span className="text-[10px] text-gray-500 truncate" aria-hidden>
         {chip.id}
       </span>
-      {!chip.isPrimary && (
+      {chip.isPrimary ? (
+        <button
+          type="button"
+          onClick={() => setMode("confirming")}
+          disabled={busy}
+          aria-label={`Remove primary ${chip.label}`}
+          className="text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none px-1"
+        >
+          ×
+        </button>
+      ) : (
         <button
           type="button"
           onClick={handleDetach}

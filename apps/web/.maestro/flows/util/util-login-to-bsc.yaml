@@ -10,13 +10,13 @@ tags:
 #   /testing/seed-credentials. This util forces a "Test Credentials" call
 #   (which re-runs the Puppeteer BSC login and refreshes the sellerId in the
 #   DB) regardless of whether credentials were already present. If the sellerId
-#   is stale or absent, BSC fetch returns 0 cards and the UnknownEntitiesDialog
+#   is stale or absent, BSC fetch returns 0 cards and the EntityReviewWizard
 #   never opens — causing all data-dependent checklist flows to fail silently.
 #
 # WHEN TO CALL:
 #   Call this util (via runFlow) before util-drill-to-base-variant in any flow that:
 #     - Triggers "Fetch from Marketplaces" and expects real BSC card data
-#     - Depends on the UnknownEntitiesDialog appearing (needs cards returned by BSC)
+#     - Depends on the EntityReviewWizard appearing (needs cards returned by BSC)
 #
 # CALLER CONTRACT:
 #   - Caller must have called launchApp and waited for sign-in redirect.

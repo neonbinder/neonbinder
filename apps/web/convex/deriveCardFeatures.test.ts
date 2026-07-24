@@ -10,6 +10,9 @@ import {
   deriveCardObservedFeatures,
   deriveBackfillFeatures,
   eraForYear,
+  validateFeatureValue,
+  ERA_BUCKET_OPTIONS,
+  LEAGUE_OPTIONS,
 } from "./features/deriveCardFeatures";
 
 describe("deriveSetLevelFeatures", () => {
@@ -25,9 +28,17 @@ describe("deriveSetLevelFeatures", () => {
       league: "MLB",
       era: "Modern (1980-Now)",
       vintage: "false",
+      season: "2024",
       manufacturer: "Topps",
       cardType: "Base",
+      parallelName: "Base",
       isReprint: "false",
+      autographed: "None",
+      cardSize: "Standard",
+      cardMaterial: "Card Stock",
+      cardThickness: "20pt",
+      language: "English",
+      countryOfOrigin: "USA",
     });
   });
 
@@ -46,6 +57,35 @@ describe("deriveSetLevelFeatures", () => {
         .cardType,
     ).toBe("Parallel");
     expect(deriveSetLevelFeatures({ leafLevel: "variantType" }).cardType).toBe("Base");
+  });
+
+  test("parallelName defaults to Base only at variantType level, never insert/parallel", () => {
+    expect(
+      deriveSetLevelFeatures({ leafLevel: "variantType" }).parallelName,
+    ).toBe("Base");
+    expect(
+      deriveSetLevelFeatures({ leafLevel: "insert" }).parallelName,
+    ).toBeUndefined();
+    expect(
+      deriveSetLevelFeatures({ leafLevel: "parallel" }).parallelName,
+    ).toBeUndefined();
+  });
+
+  test("isReprint, autographed, cardSize, cardMaterial, language default unconditionally", () => {
+    // No inputs at all — all still seed, matching the "unconditional on
+    // every call" contract LEVEL_HEURISTIC_KEYS relies on to filter per level.
+    const f = deriveSetLevelFeatures({});
+    expect(f.isReprint).toBe("false");
+    expect(f.autographed).toBe("None");
+    expect(f.cardSize).toBe("Standard");
+    expect(f.cardMaterial).toBe("Card Stock");
+    expect(f.language).toBe("English");
+  });
+
+  test("season mirrors the year value verbatim, including season-style strings", () => {
+    expect(deriveSetLevelFeatures({ year: "2024" }).season).toBe("2024");
+    expect(deriveSetLevelFeatures({ year: "2023-24" }).season).toBe("2023-24");
+    expect(deriveSetLevelFeatures({}).season).toBeUndefined();
   });
 
   test("season-style year parses the leading year", () => {
@@ -79,6 +119,49 @@ describe("eraForYear (eBay-standard buckets)", () => {
     expect(deriveSetLevelFeatures({ year: "1979" }).vintage).toBe("true");
     expect(deriveSetLevelFeatures({ year: "1980" }).vintage).toBe("false");
   });
+
+  test("ERA_BUCKET_OPTIONS has exactly the 4 known bucket strings", () => {
+    expect(ERA_BUCKET_OPTIONS).toEqual([
+      "Pre-WWII (Pre-1942)",
+      "Post-WWII (1942-69)",
+      "Vintage (1970-79)",
+      "Modern (1980-Now)",
+    ]);
+  });
+});
+
+describe("validateFeatureValue (NEO-72/73 server-side guard)", () => {
+  test("accepts every LEAGUE_OPTIONS value", () => {
+    for (const league of LEAGUE_OPTIONS) {
+      expect(() => validateFeatureValue("league", league)).not.toThrow();
+    }
+  });
+
+  test("accepts every ERA_BUCKET_OPTIONS value", () => {
+    for (const era of ERA_BUCKET_OPTIONS) {
+      expect(() => validateFeatureValue("era", era)).not.toThrow();
+    }
+  });
+
+  test("rejects an off-list era value", () => {
+    expect(() => validateFeatureValue("era", "Junk Wax")).toThrow();
+  });
+
+  // league is intentionally NOT validated against LEAGUE_OPTIONS server-side
+  // (unlike era's closed bucket taxonomy): operators legitimately override it
+  // to values outside the 4-primary-league frontend <select> for
+  // international/niche sets (e.g. "NPB" for Japanese releases — see
+  // cardFeatureDerivation.test.ts's operator-override test, which predates
+  // this file). Hard-rejecting here broke that real, tested capability.
+  test("does NOT reject an off-list league value", () => {
+    expect(() => validateFeatureValue("league", "NPB")).not.toThrow();
+    expect(() => validateFeatureValue("league", "XFL")).not.toThrow();
+  });
+
+  test("is a no-op for every other key, even nonsense values", () => {
+    expect(() => validateFeatureValue("manufacturer", "anything")).not.toThrow();
+    expect(() => validateFeatureValue("isReprint", "true")).not.toThrow();
+  });
 });
 
 describe("deriveCardObservedFeatures", () => {
@@ -93,9 +176,30 @@ describe("deriveCardObservedFeatures", () => {
     ).toEqual({
       isRookie: "true",
       isRelic: "true",
-      signedBy: "On-Card",
+      // autographType maps to the closed autographed vocabulary now — it no
+      // longer sets signedBy directly (that was the auto FORMAT, not a
+      // signer's name; signedBy is now resolved from playerIds by the caller).
+      autographed: "On Card",
       parallelName: "Gold Refractor",
     });
+  });
+
+  test("autographType containing 'sticker' maps to Sticker/Label", () => {
+    expect(
+      deriveCardObservedFeatures({ autographType: "Sticker" }).autographed,
+    ).toBe("Sticker/Label");
+    expect(
+      deriveCardObservedFeatures({ autographType: "Sticker Auto" }).autographed,
+    ).toBe("Sticker/Label");
+  });
+
+  test("autographType not mentioning sticker maps to On Card", () => {
+    expect(
+      deriveCardObservedFeatures({ autographType: "Cut" }).autographed,
+    ).toBe("On Card");
+    expect(
+      deriveCardObservedFeatures({ autographType: "On-Card" }).autographed,
+    ).toBe("On Card");
   });
 
   test("falls back to attributes array (custom cards)", () => {
@@ -106,6 +210,22 @@ describe("deriveCardObservedFeatures", () => {
 
   test("empty card yields no observed features", () => {
     expect(deriveCardObservedFeatures({})).toEqual({});
+  });
+
+  test("shortPrint derives SP/SSP from the attributes array, preferring SSP", () => {
+    expect(deriveCardObservedFeatures({ attributes: ["SP"] })).toEqual({
+      shortPrint: "SP",
+    });
+    expect(deriveCardObservedFeatures({ attributes: ["SSP"] })).toEqual({
+      shortPrint: "SSP",
+    });
+    // Both tokens present (data-quality edge case) — SSP is the stronger claim.
+    expect(deriveCardObservedFeatures({ attributes: ["SP", "SSP"] })).toEqual({
+      shortPrint: "SSP",
+    });
+    expect(deriveCardObservedFeatures({ attributes: ["RC"] })).toEqual({
+      isRookie: "true",
+    });
   });
 });
 

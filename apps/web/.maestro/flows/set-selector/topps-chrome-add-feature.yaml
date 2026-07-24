@@ -1,36 +1,59 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Topps Chrome — write a feature value via SetAttributesPanel and verify propagation toast + persistence (sole-writer)"
+name: "Topps Chrome — toggle the Reprint checkbox feature via SetAttributesPanel and verify save toast + re-hydration across reload (sole-writer)"
 tags:
   - regression
   - set-selector
 ---
-# Writes a feature value on the REAL 2024 Topps Chrome set and verifies:
-#   1. The "Updated N cards" propagation toast fires after saving on Enter.
-#   2. The value persists: re-opening the panel (page reload + re-drill) shows
-#      the value in the "Value for League" input.
+# Toggles the "Reprint" CHECKBOX feature on the REAL 2024 Topps Chrome set and
+# verifies:
+#   1. Toggling the checkbox fires the "Saved Reprint" confirmation toast — i.e.
+#      the new CheckboxValueControl → onSave → setSelectorOptionFeature single-row
+#      patch path works end-to-end on real synced data.
+#   2. Re-hydration across reload: after a full page reload + re-drill, the panel
+#      re-renders the Reprint checkbox row from the persisted snapshot and it is
+#      still interactive — toggling it again fires the toast again.
+#
+# NEO-71-74 CHECKBOX CONTRACT: isReprint changed from inputType "text" to the new
+# "checkbox" input type. It renders as a real <input type="checkbox"> (via
+# CheckboxValueControl) storing the strings "true"/"false" in the features map.
+# You TOGGLE it with tapOn (each tap flips the stored value → always a real change
+# from the stored value → the "Saved Reprint" toast always fires — no two-step
+# CLEAR→value dance is needed the way the old text field required).
+#
+# WHY THIS PROVES RE-HYDRATION AND NOT A LITERAL BOOLEAN VALUE (Maestro-web
+# limitation — a genuine tooling finding, not a flow shortcut): a checkbox's
+# CHECKED state is NOT observable in Maestro-web. maestro-web.js `traverse` emits
+# no `checked` attribute for any node (so a `checked:` selector never matches),
+# and a valueless <input type=checkbox> reports `value="on"` for BOTH checked and
+# unchecked (so getNodeText / a `text:` match cannot distinguish "true" from
+# "false"). Therefore the exact persisted boolean cannot be read back after a
+# reload. What CAN be proven — and what this flow asserts — is that the feature
+# row survives the reload, re-renders from the persisted snapshot, and remains
+# saveable (re-toggle → toast). The write-once copy-down that Reprint used to
+# demonstrate is proven (for its unreadable checkbox value) via Manufacturer
+# (same 1-hop) in new-chain-autopopulates-features.yaml, and the string-sentinel
+# / no-cascade coverage now lives in features-propagation.yaml on "Signed By".
 #
 # ISOLATION STORY (sole-writer tolerance):
-#   This flow is the SOLE writer of Topps Chrome's League feature. No other
-#   flow writes that datum: topps-chrome-marketplace-read.yaml (#36) is
-#   read-only and only checks the row exists; features-propagation.yaml writes
-#   a per-worker custom set (never touches the real Topps Chrome League value);
-#   card checklist flows read Base badges, not League. Because only one instance
-#   of this flow is enqueued per run it never races itself. It writes a FIXED
-#   value via a two-step CLEAR→MLB, so its own write is always a real change
-#   → deterministic toast + convergent end-state. Therefore it is safe under
-#   the NEO-49 work-queue via idempotent sole-writer tolerance — no serial lane
-#   is needed (the isolated lane no longer exists).
+#   This flow is the SOLE writer of Topps Chrome's Reprint feature. No other flow
+#   writes that datum: topps-chrome-marketplace-read.yaml is read-only and only
+#   checks the row exists; features-propagation.yaml writes a per-worker custom
+#   set's Signed By (never touches the real Topps Chrome Reprint value); card
+#   checklist flows read Base badges, not Reprint. Because only one instance of
+#   this flow is enqueued per run it never races itself. Each tap flips the value,
+#   and the flow taps exactly twice (once per session) → net self-restoring, so it
+#   leaves Topps Chrome's Reprint exactly as it found it. Safe under the NEO-49
+#   work-queue via sole-writer tolerance — no serial lane needed (none exists).
 #
-# PROPAGATION TOAST TIMING:
-#   The "Updated N cards" toast is a Convex mutation write — 7s like every
-#   other Convex call. Measured warm propagation to Topps Chrome cards ≈ 0.4–1s;
-#   a >7s propagation is a product finding, not a pad to inflate.
+# SAVE TOAST TIMING:
+#   The "Saved Reprint" toast is optimistic (fires before the Convex write
+#   awaits) but the single-row write still lands well within Convex's 7s SLA;
+#   a >7s save is a product finding, not a pad to inflate.
 #
 # PREREQUISITE (implicit): Topps Chrome with variant types and card checklist
-# rows must already exist in the shared Convex deployment. Like
-# topps-chrome-marketplace-read.yaml, this flow relies on that data being
-# present (seeded by the cascade setup track).
+# rows must already exist in the shared Convex deployment (seeded by the cascade
+# setup track), same as topps-chrome-marketplace-read.yaml.
 
 - launchApp
 - extendedWaitUntil:
@@ -74,52 +97,32 @@ tags:
     id: "Hide attributes"
 
 # ============================================================
-# WRITE A FEATURE VALUE — "Value for League"
-# Two-step write to avoid the same-value no-op:
-#   Step 1: a clearing sentinel ("TChrome-CLEAR") that is definitively NOT
-#           the final intended value — guarantees the DB value changes.
-#   Step 2: the test sentinel ("TChrome-MLB") — the actual value to assert.
-#
-# The first write always triggers the propagation engine (DB had a different
-# value). The second write is then always a real change from "TChrome-CLEAR".
-# This matches the pattern in features-propagation.yaml (PropTest-X → PropTest-MLB).
+# TOGGLE THE REPRINT CHECKBOX — "Value for Reprint"
+# A single tap flips the stored value ("true"⇄"false"), which is ALWAYS a real
+# change from the stored value, so handleSaveFeature does NOT hit its no-op guard
+# (features[key] !== new value) and the "Saved Reprint" toast always fires.
 # ============================================================
 
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Reprint"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 
-# Step 1: clearing sentinel write.
 - tapOn:
-    id: "Value for League"
-- eraseText: 20
-- inputText: "TChrome-CLEAR"
-- pressKey: Enter
+    id: "Value for Reprint"
 
 - extendedWaitUntil:
     visible:
-      text: ".*Updated [0-9]+ cards.*"
-    timeout: 7000
-
-# Step 2: the test sentinel value.
-- tapOn:
-    id: "Value for League"
-- eraseText: 20
-- inputText: "TChrome-MLB"
-- pressKey: Enter
-
-- extendedWaitUntil:
-    visible:
-      text: ".*Updated [0-9]+ cards.*"
+      text: ".*Saved Reprint.*"
     timeout: 7000
 
 # ============================================================
-# VERIFY VALUE PERSISTS — reload the page and re-drill
-# Navigate away and back to confirm "TChrome-MLB" was durably written.
+# VERIFY RE-HYDRATION ACROSS RELOAD — reload the page and re-drill
+# Navigate away and back; confirm the Reprint checkbox row re-renders from the
+# persisted snapshot and remains interactive (re-toggle → toast).
 # util-drill-to-2024-topps-chrome navigates to /set-selector itself.
 # ============================================================
 
@@ -146,16 +149,23 @@ tags:
             id: "Hide attributes"
           timeout: 5000
 
-# Scroll to League and verify "TChrome-MLB" is still there.
+# Scroll to the re-hydrated Reprint checkbox row. The scroll IS the assertion
+# that the feature row survived the reload (R6 — no redundant assertVisible of
+# the same element after).
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Reprint"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 
-# The input should now show "TChrome-MLB" (persisted from the earlier write).
-# Maestro assertVisible with a full-match regex — partial match via ".*".
-- assertVisible:
-    text: ".*TChrome-MLB.*"
+# Re-toggle it — this second flip restores the original value AND proves the
+# re-hydrated checkbox is still wired to the save path (toast fires again).
+- tapOn:
+    id: "Value for Reprint"
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved Reprint.*"
+    timeout: 7000

@@ -19,6 +19,7 @@
 import { act, render } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import type { EntityColumnProps } from "./EntityColumn";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
@@ -49,18 +50,18 @@ vi.mock("convex/react", () => ({
 
 import EntityColumn from "./EntityColumn";
 
+const vtProps: EntityColumnProps = {
+  selector: <div>selector</div>,
+  renderForm: () => <div>legacy-form</div>,
+  addButtonText: "Sync Variant Types",
+  isVisible: true,
+  level: "variantType",
+  useEnsureSync: true,
+  syncingLabel: "Syncing Variant Types",
+};
+
 function renderVT() {
-  return render(
-    <EntityColumn
-      selector={<div>selector</div>}
-      renderForm={() => <div>legacy-form</div>}
-      addButtonText="Sync Variant Types"
-      isVisible={true}
-      level="variantType"
-      useEnsureSync
-      syncingLabel="Syncing Variant Types"
-    />,
-  );
+  return render(<EntityColumn {...vtProps} />);
 }
 
 describe("EntityColumn — ensureSync new path (NEO-47)", () => {
@@ -99,5 +100,124 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
     await act(async () => {});
     expect(getByText("Couldn't sync options.")).toBeTruthy();
     expect(getByText("+ Custom")).toBeTruthy();
+  });
+
+  // The Sport aggregator level's selectorSyncStatus row is a single GLOBAL
+  // record shared across every concurrent session (no parentId → no per-user
+  // scoping). A concurrent admin/E2E worker running a real "Sync Sports" flips
+  // it to "syncing" for EVERYONE. These pin the freeze-on-interaction carve-out
+  // that stops that global flip from evicting an in-progress session's idle UI.
+  describe("concurrent global-sync eviction (freeze-on-interaction)", () => {
+    // Fires one of the capture-phase interaction listeners on the column root,
+    // exactly as a real scroll / pointerdown / keydown would.
+    function interact(root: Element | null) {
+      root?.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    }
+
+    // Mounts loading, then resolves items to a populated list — mirroring the
+    // real lifecycle (items undefined → data). That post-mount transition is
+    // what latches "first sync done" so a subsequent interaction can freeze the
+    // column; a column mounted already-populated has its latch cleared by the
+    // parentId-reset effect and would never freeze (an existing subtlety this
+    // test deliberately steps around by transitioning like production does).
+    async function mountThenPopulate(
+      rerender: (ui: React.ReactElement) => void,
+    ) {
+      state.items = [{ _id: "vt1", value: "Base", level: "variantType" }];
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+    }
+
+    it("keeps + Custom for an interacted, already-synced column when a background sync flips status to syncing", async () => {
+      state.items = undefined; // loading
+      state.status = null;
+      const { container, getByText, queryByText, rerender } = renderVT();
+      await act(async () => {});
+      await mountThenPopulate(rerender); // items resolve → first sync latched
+      expect(getByText("+ Custom")).toBeTruthy();
+
+      // This session engages the column (about to click "+ Custom").
+      await act(async () => {
+        interact(container.firstElementChild);
+      });
+
+      // A DIFFERENT session's "Sync" flips the shared global row to syncing.
+      state.status = { status: "syncing" };
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+
+      // Idle UI must survive — the background sync must not swallow the
+      // interaction by swapping in the "Fetching from marketplaces…" panel.
+      expect(getByText("+ Custom")).toBeTruthy();
+      expect(queryByText("Syncing Variant Types")).toBeNull();
+    });
+
+    it("still shows the syncing panel for the session that clicked Sync itself", async () => {
+      state.items = undefined;
+      state.status = null;
+      const { getByText, queryByText, rerender } = renderVT();
+      await act(async () => {});
+      await mountThenPopulate(rerender);
+
+      // Real click = pointerdown (sets hasInteracted) then click (runs
+      // forceSync → setSelfRequestedSync). Both must be present so this test
+      // proves selfRequestedSync overrides hasInteracted, not just that
+      // hasInteracted happens to be false.
+      const syncBtn = getByText("Sync Variant Types");
+      await act(async () => {
+        syncBtn.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+        syncBtn.click();
+      });
+      expect(mockEnsure).toHaveBeenCalledWith(
+        expect.objectContaining({ level: "variantType", force: true }),
+      );
+
+      // The operator's own sync now reports progress via the shared row.
+      state.status = { status: "syncing" };
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+      expect(getByText("Syncing Variant Types")).toBeTruthy();
+      expect(queryByText("+ Custom")).toBeNull();
+    });
+
+    it("re-hides the panel once the self-requested sync ends, so a later background sync no longer evicts", async () => {
+      state.items = undefined;
+      state.status = null;
+      const { getByText, queryByText, rerender } = renderVT();
+      await act(async () => {});
+      await mountThenPopulate(rerender);
+
+      const syncBtn = getByText("Sync Variant Types");
+      await act(async () => {
+        syncBtn.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+        syncBtn.click();
+      });
+
+      // Own sync in flight → panel shows.
+      state.status = { status: "syncing" };
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+      expect(getByText("Syncing Variant Types")).toBeTruthy();
+
+      // Own sync completes (row cleared) → selfRequestedSync latch resets.
+      state.status = null;
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+      expect(getByText("+ Custom")).toBeTruthy();
+
+      // A subsequent BACKGROUND sync (someone else) must NOT re-evict, because
+      // this session is still interacted but no longer self-requesting.
+      state.status = { status: "syncing" };
+      await act(async () => {
+        rerender(<EntityColumn {...vtProps} />);
+      });
+      expect(getByText("+ Custom")).toBeTruthy();
+      expect(queryByText("Syncing Variant Types")).toBeNull();
+    });
   });
 });

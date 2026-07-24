@@ -62,13 +62,10 @@ tags:
           visible: "Years"
 
 # ── YEAR ──────────────────────────────────────────────────────────────────────
+# The app auto-scrolls the newly-revealed Year column fully into view
+# (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
 - extendedWaitUntil:
     visible: ".*Search years.*"
-- scrollUntilVisible:
-    element:
-      text: ".*Search years.*"
-    centerElement: true
-    waitToSettleTimeoutMs: 0
 # 250ms settle on the search-box tap — input needs to be focused before inputText
 # fires, and a 0ms settle can drop the first character on a reactive page.
 - tapOn:
@@ -89,13 +86,10 @@ tags:
           visible: "Manufacturers"
 
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
+# App auto-scrolls the newly-revealed Manufacturer column fully into view — no
+# test-side right-scroll needed.
 - extendedWaitUntil:
     visible: ".*Search manufacturers.*"
-- scrollUntilVisible:
-    element:
-      text: ".*Search manufacturers.*"
-    centerElement: true
-    waitToSettleTimeoutMs: 0
 - tapOn:
     text: ".*Search manufacturers.*"
     waitToSettleTimeoutMs: 250
@@ -116,13 +110,10 @@ tags:
           visible: "Sets"
 
 # ── SET ───────────────────────────────────────────────────────────────────────
+# App auto-scrolls the newly-revealed Sets column fully into view — no test-side
+# right-scroll needed.
 - extendedWaitUntil:
     visible: ".*Search sets.*"
-- scrollUntilVisible:
-    element:
-      text: ".*Search sets.*"
-    centerElement: true
-    waitToSettleTimeoutMs: 0
 - tapOn:
     text: ".*Search sets.*"
     waitToSettleTimeoutMs: 250
@@ -142,12 +133,12 @@ tags:
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
 # The Variant Types column is confirmed by the Set retry above. "Base" appears
-# after the variant-type sync completes. 60s is the sanctioned
-# ceiling for override / cold paths (BSC + SL fetch); warm Topps Chrome satisfies
-# this in <7s. DO NOT increase this timeout without explicit user approval.
-- scrollUntilVisible:
-    element:
-      text: "Base"
-    centerElement: true
+# after the variant-type sync completes. The app auto-scrolls the newly-revealed
+# Variant Types column fully into view (EntityColumn reveal-scroll, de5423a), so
+# "Base" is visible with NO test-side scroll — a plain non-scrolling wait proves
+# the contract. 60s is the sanctioned ceiling for override / cold paths (BSC + SL
+# fetch); warm Topps Chrome satisfies this in <7s. DO NOT increase this timeout
+# without explicit user approval.
+- extendedWaitUntil:
+    visible: "Base"
     timeout: 60000
-    waitToSettleTimeoutMs: 0

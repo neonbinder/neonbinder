@@ -170,8 +170,20 @@ tags:
 
 # ============================================================
 # STEP 9 — SUBMIT THE NEW CARD
+# The "Submit new card" (Add) button sits at the bottom of the add-card form,
+# whose bounds (y~610 in the 1024x629 CI viewport) land in the footer-steal
+# zone (y>=489). centerElement: true drives the button to y~315 so Maestro's
+# own scroll-before-tap CDP call has content to scroll to — WITHOUT it,
+# scrollToPoint gets an empty JS result ("No content to map...end-of-input")
+# and the tap crashes with "null cannot be cast to non-null type kotlin.Int".
+# Mirrors the guard on Steps 2/3/4 in this same file.
 # ============================================================
 
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
 - tapOn:
     id: "Submit new card"
 

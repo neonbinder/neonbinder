@@ -1,0 +1,161 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Base-set picker Cancel recovers — message + working Retry, no dead-end (NEO-71-74)"
+tags:
+  - set-selector
+  - regression
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE feature: cancelling the "Select Base Set" picker for a first-time
+# (unmapped) Base variantType now leaves a RECOVERY message panel with a
+# working "Retry" — NOT a permanent dead-end.
+#
+# THE BUG (fixed in BaseMappingForm.tsx, NEO-71-74):
+#   Accidentally clicking Cancel on the BaseSetPicker used to call the parent's
+#   onClose() immediately with zero recovery UI. Because the parent
+#   (SetSelector.tsx) doesn't change this component's React `key` on cancel, the
+#   SAME instance persisted with its internal `triggered` ref permanently
+#   tripped — so it silently rendered NOTHING on every future visit, and the
+#   "Re-map Base" manual button ALSO never showed (it's gated on baseHasMapping,
+#   which requires platformData.sportlots — never set because nothing was
+#   confirmed). Permanent stuck state: no picker, no Re-map button, no retry.
+#   The fix: the picker's cancel handler now sets a `message` state instead of
+#   calling onClose(), reusing the terminal message panel (Retry + Close).
+#   Retry re-runs doSync() → re-fetches SL options → reopens the picker.
+#
+# WHY THE FIRST-TIME (AUTO-OPEN) PATH, not "Re-map Base":
+#   The dead-end is SPECIFIC to the unmapped auto-open path — that's the only
+#   path where baseHasMapping stays false, so the component can never unmount
+#   and its `triggered` ref freezes. The Re-map path was ALWAYS recoverable
+#   (baseHasMapping is true → cancel just returns the "Re-map Base" button), so
+#   a Re-map-based test would pass even if this exact freeze regressed. R2 says
+#   the flow must FAIL if the feature breaks — so we reproduce the real path.
+#
+# DATA-ISOLATION + R7 (non-destructive):
+#   selectorOptions is GLOBAL (no per-user scoping) and this needs a REAL set
+#   with live SportLots base options (a synthetic custom subtree has no SL data,
+#   so the picker would never open — auto-take BSC fallback instead). We use
+#   2024 Topps BIG LEAGUE — a real set that NO other flow touches:
+#     - setup.yaml maps 2024 Topps CHROME (mapped → auto-open won't fire)
+#     - sets-base.yaml CONFIRMS 2024 Topps HERITAGE (mapped globally → same)
+#   and we NEVER click Confirm, so platformData.sportlots is never written —
+#   Big League's Base stays unmapped (its natural pre-sync state). Nothing is
+#   mutated, nothing is left degraded for a concurrent worker or a re-run.
+#
+# R9 — all drilling via util-drill-to-2024-topps-chrome (SET override).
+# R4 — enters via the sign-in redirect; NO in-body login. SL creds are seeded
+#   by the Phase-0 worker-bootstrap; BaseMappingForm's getSiteToken lazily
+#   re-auths on cache-miss, so no explicit marketplace login is needed here
+#   (same as sets-base.yaml).
+# R5 — every wait is the 7s default EXCEPT the two live SportLots base-set
+#   round-trips (tap Base, and Retry) which get the marketplace budget, and the
+#   cold variant-type sync absorbed inside the drill util.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- assertVisible: "Set Selector"
+
+# ── DRILL Baseball → 2024 → Topps → Topps Big League (R9) ────────────────────
+# Cold variant-type sync for this fresh set is absorbed inside the util (its
+# sanctioned 60s "Base" ceiling).
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SET: "Topps Big League"
+
+# ── SELECT "Base" → auto-opens BaseSetPicker (unmapped → autoOpen=true) ──────
+# Center before tapping so the row clears the 1024×629 footer-steal zone (R8).
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+# NEO-85 residual coordinate-staleness (same maestro-web tap-drop class handled
+# across the drill utils): read the "Base" row bounds, the still-settling Variant
+# Types column reflows, the click lands stale → nothing selected. Result-keyed
+# retry: re-fire ONCE iff the picker never opens. 7s keys on the picker OPEN,
+# which fires in ~343ms (setPickerOpen(true) runs BEFORE the SL fetch is awaited)
+# — this is a pure UI-open wait, NOT the marketplace round-trip.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Base"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
+
+# PATH-A GATE — prove SL returned options and the picker STAYED open. doSync
+# closes the picker (BSC fallback) if slOptions is empty, so a LOADED picker is
+# itself proof of real SL options. The Confirm button reads "Loading…" while the
+# fetch is in flight and flips to "Confirm Base Set" only once the SL list has
+# rendered — waiting on that text absorbs the live SL base-set round-trip.
+- extendedWaitUntil:
+    visible: "Confirm Base Set"
+    timeout: 60000
+- assertVisible:
+    text: ".*SportLots base.*"
+
+# ── CANCEL the picker — the exact accidental action from the bug report ──────
+# The picker is a fixed z-50 portal overlay covering the whole viewport (its
+# own footer sits above the app footer, so no footer-steal — a direct tap is
+# correct; a fixed modal can't be scrolled). Rule 8 fixed-element exception.
+- tapOn: "Cancel"
+
+# ── ASSERT THE FIX: recovery message panel, NOT a frozen/blank dead-end ──────
+# Before the fix this Cancel left NOTHING rendered (silent dead-end). Now the
+# terminal message panel shows the cancelled-mapping wording with a Retry.
+# scrollUntilVisible locates the inline panel (it renders below the columns);
+# the scroll IS the assertion (R6). center it so the adjacent Retry button
+# below the message lands in the tappable band (R8).
+- scrollUntilVisible:
+    element:
+      text: ".*Base mapping cancelled.*"
+    centerElement: true
+# The picker is truly gone (message panel only renders when !pickerOpen) — this
+# distinguishes the recovery panel from a still-open picker.
+- assertNotVisible: "Confirm Base Set"
+# The recovery affordance the fix adds — the whole point of no-more-dead-end.
+- assertVisible: "Retry"
+
+# ── RETRY — prove the picker REOPENS with real SL options (dead-end fixed) ────
+# Retry re-runs doSync(): setPickerOpen(true) fires SYNCHRONOUSLY (before the SL
+# fetch is awaited), so the "Select Base Set" title reappears in <500ms — the 7s
+# key is a pure UI-open wait, NOT the marketplace round-trip.
+#
+# Result-keyed retry (same maestro-web tap-drop class handled on the "Base" tap
+# above): under the parallel CI queue, cross-worker mutations to the GLOBAL
+# selectorOptions table open frequent reactive-refetch windows. If the Retry tap
+# lands in one, EITHER the tap is dropped mid-reflow (NEO-85 coordinate-staleness)
+# OR doSync early-returns because its getAncestorChain useQuery is transiently
+# undefined (the same transient-undefined the parent SetSelector guards with
+# stableVariantTypeFlagsRef) — both leave the message panel unchanged and the
+# picker closed. A single re-tap recovers a TRANSIENT miss. maxRetries:1 KEEPS R2:
+# a genuine permanent dead-end (the frozen `triggered` ref the fix removed) would
+# fail BOTH attempts — the picker would never reopen — so this still FAILS loudly
+# if the fix regresses. See the product-hardening note below.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Retry"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000
+# Loaded picker again = real SL options came back (not perpetual skeletons, not
+# a fallback message). Proves Retry actually recovers, not just that SOME UI
+# reappears. This absorbs the second SL round-trip.
+- extendedWaitUntil:
+    visible: "Confirm Base Set"
+    timeout: 60000
+- assertVisible:
+    text: ".*SportLots base.*"
+
+# We intentionally do NOT Confirm — leaving Big League's Base unmapped keeps the
+# flow non-destructive (R7) and collision-free on the GLOBAL selectorOptions.
+# We also don't test "Close" here: in the unmapped auto-open path Close is a
+# no-op (baseHasMapping is still false, so the message panel simply re-renders
+# rather than returning to a "Re-map Base" button) — that clean return only
+# exists on the already-mapped Re-map path, which is out of scope for this
+# first-time-mapping dead-end regression.

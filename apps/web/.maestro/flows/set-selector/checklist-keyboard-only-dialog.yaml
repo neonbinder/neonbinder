@@ -1,42 +1,42 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Checklist — confirm dialog using keyboard Enter on auto-focused button"
+name: "Checklist — keyboard-only confirm of the review wizard's final Save step via Enter"
 tags:
   - set-selector
 ---
-# Feature test: the UnknownEntitiesDialog confirm button is auto-focused on open
-# and responds to the Enter key, allowing keyboard-only confirmation.
+# R1 — ONE FEATURE: a keyboard user can complete the NEO-92 EntityReviewWizard
+# and commit with the Enter key. After every unknown name is decided, the wizard
+# shows a final "All reviewed — save N cards?" step whose "Confirm & Save (Enter)"
+# button is AUTO-FOCUSED (confirmButtonRef.focus() on the allDecided transition),
+# and the wizard's keydown handler fires onConfirm on Enter when allDecided. This
+# proves the keyboard path end-to-end without touching the mouse for the commit.
 #
 # WHAT THIS TESTS:
-#   - The confirm button is auto-focused on dialog open (confirmButtonRef.focus())
-#   - Pressing Enter fires the button's click handler via the dialog's keydown listener
-#   - Cards are saved after the keyboard-only interaction
+#   1. The wizard opens after a fetch that surfaces one unknown player.
+#   2. The single unknown is reviewed ("Add as New Player") — reaching the final
+#      "All reviewed" step (this tap is the one click; the commit is keyboard).
+#   3. The final "Confirm & Save (Enter)" button is auto-focused, so pressing
+#      Enter immediately fires onConfirm and commits — no prior navigation.
+#   4. Cards are saved after the keyboard-only confirmation.
 #
-# MAESTRO KEYBOARD CONSTRAINTS:
-#   - `pressKey: Tab` is NOT supported on Maestro web — throws IllegalStateException.
-#     Tab traversal through checkboxes cannot be tested via Maestro.
-#   - `pressKey: Escape` does NOT reach document-level keydown — cannot test Esc.
-#   - `pressKey: Enter` IS supported and fires the focused element's click handler.
-#     The confirm button uses confirmButtonRef.current?.focus() on mount, so Enter
-#     on open immediately fires handleConfirm without any prior Tab navigation.
+# MAESTRO KEYBOARD CONSTRAINTS (carried forward, re-verified for the wizard):
+#   - `pressKey: Tab` is NOT supported on Maestro web. Not needed: the wizard
+#     shows one item at a time, so there is no multi-control Tab traversal to
+#     drive (the old checkbox-list keyboard model is gone).
+#   - `pressKey: Escape` does NOT reach the wizard's div-level keydown handler
+#     (Maestro can't originate a document/element keydown that bubbles there
+#     unless the element is focused), so the Escape-cancels path is exercised
+#     manually, not here. The link-search sub-panel's own Escape (on its focused
+#     input) and the throughout-available Cancel button are covered by
+#     checklist-fetch-cancel-dialog.yaml and the link-existing flow.
+#   - `pressKey: Enter` IS supported and fires the focused element's handler.
+#     On the final step the confirm button is auto-focused, so Enter goes
+#     straight to onConfirm — the mechanism the old dialog relied on, unchanged.
 #
-# INTERACTION MODEL TESTED HERE:
-#   1. Dialog opens — confirm button is auto-focused.
-#   2. User presses Enter → handleConfirm fires via the button's click handler.
-#   3. Dialog closes and cards are saved.
-#
-# COVERAGE NOTE:
-#   Tab traversal + Space to toggle checkboxes cannot be covered by Maestro web
-#   due to the Tab key limitation. That coverage is exercised manually. The key
-#   keyboard path — Enter to confirm without touching the mouse — is covered here.
-#
-# PER-ATTEMPT ISOLATION:
-#   TEST_USERNAME = neontester-r<RUNNER_INDEX> (stable per CI runner, NOT
-#   timestamped). KOPlayer-${ATTEMPT_ID} is unique per attempt because the runner
-#   injects ATTEMPT_ID="w<worker>-a<attempt>-<RANDOM>". This guarantees a fresh
-#   UNKNOWN player on every attempt so the UnknownEntitiesDialog always opens —
-#   regardless of what prior runs have written to the `players` table. An empty
-#   DB is NOT required. Mirrors the pattern used in team-picker.yaml.
+# PER-ATTEMPT ISOLATION: KOPlayer-${ATTEMPT_ID} is unique per attempt, so the
+#   wizard always opens with exactly this one fresh unknown regardless of prior
+#   runs. Real-Base sole-preview pattern (the wizard can only be exercised on a
+#   real marketplace set — a custom subtree short-circuits the fetch to empty).
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -56,10 +56,8 @@ tags:
 
 # ============================================================
 # ADD A CUSTOM CARD WITH A UNIQUE PLAYER NAME
-# Guarantees the dialog opens regardless of what other tests have
-# already committed to the global `players` table. The custom card's
-# player goes through fetchCardChecklist reconciliation via the
-# cardChecklist.pendingPlayerNames field.
+# Guarantees the wizard opens with exactly one fresh unknown, so reviewing it
+# reaches the final "All reviewed" step immediately (the cleanest keyboard case).
 # ============================================================
 
 - scrollUntilVisible:
@@ -67,22 +65,12 @@ tags:
       text: "Add Card"
     centerElement: true
 - tapOn: "Add Card"
-# Wait for the form to open. "Player name" is the card-name input's
-# placeholder (still rendered visually) and appears after the auto-focused
-# Card number input is on screen.
 - extendedWaitUntil:
     visible: "Player name"
 - inputText: "9002-${ATTEMPT_ID}"
-# Address inputs by aria-label (via Maestro's `id:` selector, which matches
-# the accessibility-tree identifier). Placeholders overlap ("Player name",
-# "Player(s) — comma separated, optional") and Maestro's text matcher cannot
-# disambiguate them reliably — see NEO-13 root cause.
 - tapOn:
     id: "Card name"
 - inputText: "Keyboard Dialog Test ${ATTEMPT_ID}"
-# The Players input is the 4th row of the form — below the fold on the
-# default 1024x629 headless viewport. Scroll anchor uses the visible
-# placeholder text; tap target uses the aria-label via `id:`.
 - scrollUntilVisible:
     element:
       text: "Player(s) — comma separated, optional"
@@ -90,42 +78,23 @@ tags:
 - tapOn:
     id: "Players"
 - inputText: "KOPlayer-${ATTEMPT_ID}"
-# Defensive: confirm the typed player name landed on the form before
-# submitting. If a future regression breaks input targeting again, this
-# fails immediately at the form step instead of 60s later at the dialog
-# assertion.
+# Defensive: confirm the typed player name landed before submitting.
 - assertVisible: "KOPlayer-${ATTEMPT_ID}"
-# Anchor the form-submit tap on the viewport so the test does not depend on
-# how much vertical space the checklist above the form consumes. Maestro
-# text matchers are full-match, so plain "Add" binds to the submit button
-# (text exactly "Add") and not to the "Add Card" form header. The form can
-# slide below the 629px viewport once the checklist accumulates prior cards
-# — see NEO-15 for the failure pattern.
+# Plain "Add" (full-match) binds to the submit button, not the "Add Card" header.
 - scrollUntilVisible:
     element:
       text: "Add"
     centerElement: true
 - tapOn:
     text: "Add"
-# After submit the form closes and the new card row renders in the
-# virtualized checklist (react-virtuoso). Where the row lands depends on
-# the checklist's existing length, so scroll to anchor on the new card's
-# title rather than assuming it lands inside the current viewport.
 - scrollUntilVisible:
     element:
       text: "Keyboard Dialog Test ${ATTEMPT_ID}"
 
-# Defensive: under parallel-worker load the addCustomCard mutation has
-# been observed to commit server-side (new card appears in list above)
-# while the client-side `setShowAddForm(false)` doesn't fire — likely a
-# Convex WebSocket reconnect drops the mutation response. When that
-# happens, the Add Card form stays mounted at the bottom of the page,
-# and the header's "Add Card" + "Sync card checklist" buttons stay
-# hidden (they only render when `!showAddForm`). Tapping the form's
-# Cancel button forces `setShowAddForm(false)` without going through
-# the mutation, restoring the header buttons. If the form already
-# closed (the happy path), the `when: visible: Cancel` gate makes this
-# step a no-op.
+# Defensive: under parallel load addCustomCard has been observed to commit
+# server-side while the client's setShowAddForm(false) doesn't fire, leaving the
+# Add Card form open and the header buttons hidden. Tapping the form's Cancel
+# restores them. If the form already closed (happy path) this is a no-op.
 - runFlow:
     when:
       visible: "Cancel"
@@ -144,28 +113,8 @@ tags:
 # TRIGGER THE FETCH
 # ============================================================
 
-# If a prior flow on this worker has already populated the checklist, the
-# button label is "Refresh" instead of "Fetch from Marketplaces" — both
-# drive fetchCardChecklist, so match either.
-# Tap the CardChecklist's Fetch/Refresh button by its aria-label. After
-# scrollUntilVisible above (which scrolls down to find the new custom
-# card at the bottom of the list), the Sync button may be obscured by
-# the sticky page header (z-20, ~64px tall) or pushed below the fold by
-# the NEO-6 MultiSourcePanel ("Multi-source sets" header + BSC/SL chips +
-# "Attach more…" button) that now renders between the variant-types row
-# and the CardChecklist.
-#
-# Scroll anchor strategy: after the add-card preamble scrolled DOWN to
-# find the new custom card row, the Sync button ("Refresh") can end up at
-# the very top of the DOM. When centerElement is applied to the Sync button
-# itself, the 1024x629 headless viewport places it at y~17-49, fully
-# inside the 64px-tall sticky binder-header (z-20). The header overlay
-# absorbs the tap and fetchCardChecklist never fires (CI failure on aff6ff8).
-#
-# Fix: scroll UP to "Add Card" (the CardChecklist header button). "Add Card"
-# and "Sync card checklist" are in the same flex row — centering "Add Card"
-# at mid-viewport (~y=315) puts the Sync button at the same y. This is the
-# same pattern used in multi-source-panel-opens-dialog.yaml (line 167-172).
+# Scroll UP to "Add Card" (same flex row as "Sync card checklist") and center it
+# so the Sync button lands in the tap band clear of the sticky binder-header.
 - scrollUntilVisible:
     element:
       text: "Add Card"
@@ -177,26 +126,46 @@ tags:
       id: "Sync card checklist"
 - tapOn:
     id: "Sync card checklist"
-# The custom-card preamble guarantees an unknown player, so the dialog
-# always opens. 60s covers the backend marketplace fetch (BSC ~30s ceiling
-# + SL in parallel).
+# The wizard shows the same title as the old dialog. 60s covers the marketplace
+# fetch. KOPlayer-${ATTEMPT_ID} guarantees the wizard opens.
 - extendedWaitUntil:
-    visible: "Confirm New Players & Teams"
+    visible:
+      text: "Confirm New Players & Teams"
     timeout: 60000
 
 # ============================================================
-# KEYBOARD CONFIRMATION — Enter fires the auto-focused confirm button
-# The confirm button is auto-focused on dialog open (confirmButtonRef.focus()).
-# pressKey: Enter fires the click handler on the currently focused element.
-# No Tab navigation is needed — Enter goes straight to confirm.
+# REACH THE FINAL "All reviewed" STEP (the COMMIT is what's keyboard-driven)
+# The keyboard assertion is the final Enter-confirm below; getting there just
+# requires every unknown decided. Decide them all at once via the bulk
+# "Add All Remaining as New (N)" button, which is visible whenever any item is
+# undecided and marks every remaining row (including still-pending ones) as
+# "create" in a single call — so no per-item Wikidata wait, and robust to
+# however many unknowns the fetch surfaced. If the (persistent) batch was
+# already fully decided by a prior run, the button is absent and the final step
+# is already showing — the guard skips and we proceed straight to Enter.
 # ============================================================
 
-# Wait for the confirm button to render with actual count — this also gives
-# the auto-focus event time to complete before pressing Enter.
+- runFlow:
+    when:
+      visible:
+        text: ".*Add All Remaining as New.*"
+    commands:
+      - tapOn:
+          text: ".*Add All Remaining as New.*"
+
+# ============================================================
+# KEYBOARD CONFIRMATION — Enter on the auto-focused final Save button
+# Once every unknown is decided the wizard shows the final step and auto-focuses
+# "Confirm & Save (Enter)" (confirmButtonRef.focus() on the allDecided
+# transition). Wait for that button (30s covers the bulk decision patching many
+# rows), then press Enter — the wizard's keydown handler fires onConfirm, the
+# keyboard-only commit.
+# ============================================================
+
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm [0-9]+ & Save.*"
-
+      text: ".*Confirm & Save.*"
+    timeout: 30000
 - pressKey: Enter
 
 # ============================================================
@@ -205,17 +174,11 @@ tags:
 
 - extendedWaitUntil:
     notVisible: "Confirm New Players & Teams"
-
-# Wait for the save confirmation. The commitCardChecklist mutation runs after
-# the dialog confirm, writing cards in batches.
-# DELIBERATE CARVE-OUT: 30s — this is the only non-fetch long wait in this
-# flow. commitCardChecklist writes the full ~335-card Topps Chrome checklist
-# on a cold commit (~16.5s measured); this is a bulk WRITE exception, not a
-# per-element UI wait. Analogous to the 60s marketplace-fetch carve-out.
+# commitCardChecklist writes the full real-Base checklist on a cold commit — a
+# bulk WRITE, sanctioned longer wait (analogous to the marketplace-fetch carve-out).
 - extendedWaitUntil:
     visible:
       text: ".*Saved [0-9]+ cards.*"
     timeout: 30000
-
 - assertVisible:
     text: ".*#[0-9].*"

@@ -1,0 +1,155 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Team picker — create a brand-new team via '+ Create' and attach it to a card; it persists across reopen"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — SINGLE FEATURE: the TeamPicker "Add team" popover now offers a
+# "+ Create '<name>'" option (via the now-used teams.findOrCreate) when the
+# typed name has no exact match — creating a brand-new team and attaching it on
+# the spot. This closes a real gap: NEITHER BSC nor SportLots checklist sync
+# ever populates the `teams` table (each adapter's own comment assumes the OTHER
+# supplies team data), so "Add team" routinely had zero candidates and no way to
+# add one. An operator can now type any team name and create+attach it.
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#   - Precondition: the panel + Team picker (aria "Team picker") + "Add team"
+#     trigger are present.
+#   - The typed UNIQUE name has no existing match, so "+ Create '<name>'" MUST
+#     appear (id "Create team <name>"); choosing it MUST produce a chip whose
+#     remove button is "Remove team <name>". A no-op create leaves no chip → fail.
+#   - PERSISTENCE: after Save + reopen, the chip is STILL there — the created
+#     team durably attached to the card.
+#
+# R3 — DEDUP: team-picker.yaml covers picking EXISTING (seeded) teams, remove,
+#   keyboard Enter, "No matches", cancel-revert, and save+reload — but NOT the
+#   create-new path (it depends on seeded Baseball teams and must not pollute
+#   that shared pool). This flow owns create-new, on an ISOLATED per-worker
+#   custom sport so it neither depends on nor pollutes the Baseball seed. Mirrors
+#   player-picker-create-custom-card.yaml (the sibling PlayerPicker). Drill/add
+#   via util-add-custom-card.
+#
+# WHY A UNIQUE NAME ("NBTeam-${ATTEMPT_ID}"): guarantees no exact match in the
+#   candidate pool (teams under the synthetic sport), so Create is always
+#   offered. findOrCreate is idempotent, so a re-run is harmless.
+#
+# PER-WORKER DATA ISOLATION: E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps ->
+#   tpc-<WORKER_INDEX> (custom set, Insert VT, "Base" insert). The created teams
+#   carry sport "E2E Test Sport <WORKER_INDEX>", never colliding with another
+#   worker or with the real Baseball teams team-picker.yaml relies on.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
+# ============================================================
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "tpc-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "776-${ATTEMPT_ID}"
+      PLAYER_NAME: "Team Create Card ${ATTEMPT_ID}"
+
+# Open the drawer via the Edit button.
+- assertVisible:
+    id: "Edit card 776-${ATTEMPT_ID}"
+- tapOn:
+    id: "Edit card 776-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# ============================================================
+# CREATE A BRAND-NEW TEAM AND ATTACH IT
+# Teams is the SECOND section of the drawer body (right below Card name), so the
+# "Add team" trigger is near the top — no scroll needed, and the popover opens
+# below it with room.
+# ============================================================
+
+- assertVisible:
+    id: "Team picker"
+- assertVisible:
+    id: "Add team"
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- inputText: "NBTeam-${ATTEMPT_ID}"
+
+# No existing team matches this unique name → the "+ Create" row appears.
+- assertVisible:
+    id: "Create team NBTeam-${ATTEMPT_ID}"
+- tapOn:
+    id: "Create team NBTeam-${ATTEMPT_ID}"
+
+# The created team is attached as a chip (its remove button proves the chip).
+- assertVisible:
+    id: "Remove team NBTeam-${ATTEMPT_ID}"
+
+# ============================================================
+# SAVE — teamOnCardIds ARE part of the drawer's dirty draft, so the attachment
+# only persists to this card via the Save button (findOrCreate created the team
+# ENTITY; Save writes updateCard.teamOnCardIds to link it). The Save button is in
+# the sticky footer (outside the scroll body / open popover), so tapping it
+# directly commits and closes.
+# ============================================================
+
+- tapOn:
+    id: "Save card edit"
+- assertNotVisible:
+    id: "Card name"
+
+# ============================================================
+# REOPEN + VERIFY PERSISTENCE
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 776-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Edit card 776-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# The chip survived Save + reopen (its label resolves from the created team row).
+- assertVisible:
+    id: "Remove team NBTeam-${ATTEMPT_ID}"
+
+# ============================================================
+# CLOSE + CLEANUP — delete this attempt's test card
+# ============================================================
+
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 776-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 776-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 776-${ATTEMPT_ID}"
+- assertNotVisible: "Team Create Card ${ATTEMPT_ID}"

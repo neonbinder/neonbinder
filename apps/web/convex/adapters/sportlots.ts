@@ -772,11 +772,32 @@ export const fetchSportLotsChecklist = action({
         };
       }
 
-      // Look up the set's platformData.sportlots (the radio button ID)
-      let setRadioId = args.platformFilters?.setName || args.parentFilters.setName || "";
+      // Look up the set's platformData.sportlots (the radio button ID).
+      // SL has no setName-level concept — it combines set+variant at the
+      // insert/parallel level (see fetchCardChecklist's own comment on this
+      // in selectorOptions.ts), so the resolved id lives under one of
+      // variantType/insert/parallel, never setName. Deepest level wins,
+      // matching fetchSl's own variantSlIds precedence in selectorOptions.ts.
+      // Bug fix (NEO-91): this used to read only platformFilters.setName,
+      // which is never populated, so setRadioId always fell through to the
+      // raw display string and SL's per-card fetch silently matched nothing.
+      let setRadioId =
+        args.platformFilters?.parallel
+        || args.platformFilters?.insert
+        || args.platformFilters?.variantType
+        || args.platformFilters?.setName
+        || args.parentFilters.setName
+        || "";
 
       // Fall back to DB lookup if we don't have a pre-resolved platform value
-      if (!args.platformFilters?.setName && args.parentFilters.setName) {
+      // at any of those levels.
+      if (
+        !args.platformFilters?.parallel
+        && !args.platformFilters?.insert
+        && !args.platformFilters?.variantType
+        && !args.platformFilters?.setName
+        && args.parentFilters.setName
+      ) {
         const platformValue = await resolveSportLotsPlatformValue(
           ctx, "setName", args.parentFilters.setName,
         );
@@ -872,7 +893,14 @@ export const fetchSportLotsChecklist = action({
           attributes: attributes.length ? attributes : undefined,
           printRun,
           autographType: attributes.includes("AU") ? "Unknown" : undefined,
-          platformRef: cardNumber,
+          // NEO-91: the raw, un-tokenized description (not the bare card
+          // number) — this is what lands in cardChecklist.platformData.
+          // sportlots. SL reuses the same cardNumber across variation rows
+          // ("#10 Aaron Judge" vs "#10 Aaron Judge [ VAR All-Star Logo ]"),
+          // so only the full text disambiguates which SL row this card
+          // actually matched. sportlotsRef stays the bare number — that's
+          // still the correct key for BSC↔SL reconciliation matching below.
+          platformRef: fullDescription,
           sportlotsRef: cardNumber,
         });
       }

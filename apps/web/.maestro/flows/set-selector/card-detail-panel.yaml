@@ -38,9 +38,10 @@ tags:
 #   4. Card title  ← visible near top; no scroll needed after header
 #   5. Card description
 #   6. Attributes chips (Toggle RC / AU / RELIC / SP / SSP / NUM)  ← may need scroll
-#   7. Print run / Autograph type
+#   7. grid[ Print run | Autographed dropdown ]  (Autographed is always-visible
+#      here now — promoted out of the collapsed features editor, NEO-71-74)
 #   8. Card variation
-#   9. Players (read-only)
+#   9. Players (PlayerPicker — editable, NEO-25)
 #  10. Inherited from set (read-only)
 #  11. Images / "No image yet" placeholder
 #
@@ -111,14 +112,24 @@ tags:
 - inputText: "Renamed Detail Player ${ATTEMPT_ID}"
 
 # ============================================================
-# EDIT: type a Card title (listingTitle) and Card description
+# EDIT: type into the Card title (listingTitle) and Card description
 # These fields are at positions 4 and 5 in the drawer body — directly
 # below the (collapsed) features editor. The header + Card name + Teams +
 # features button consume roughly 220px; Card title starts at ~220px from
-# the top of the scroll area, well above the 629px fold. No scroll
-# required, but we use extendedWaitUntil to surface any load delay.
-# We interact with these BEFORE scrolling down to the attribute chips
-# so we never have to scroll back UP to reach them.
+# the top of the scroll area, well above the 629px fold. No scroll required.
+# We interact with these BEFORE scrolling down to the attribute chips so we
+# never have to scroll back UP to reach them.
+#
+# NEO-24/NEO-25 AUTO-TITLE: Card title and description are NO LONGER empty on a
+# freshly-created card — generateListingTitle/Description (addCustomCard) now
+# pre-fill both (e.g. title "2026 Topps cd-0 #888-…"). A Maestro-web tap on a
+# pre-filled input drops the caret roughly at the clicked character (mid-string),
+# so inputText INSERTS our marker contiguously into the existing value rather
+# than appending to an empty field — the final value is a concatenation. We type
+# a unique, contiguous marker and assert it as a SUBSTRING (regex-contains) on
+# reopen, which still proves listingTitle editing round-trips to the DB (R2)
+# without depending on a clean-slate exact match we can no longer produce (there
+# is no reliable full-clear of a mid-caret pre-filled input in maestro-web).
 # ============================================================
 
 - assertVisible:
@@ -256,10 +267,14 @@ tags:
     text: ".*Renamed Detail Player ${ATTEMPT_ID}.*"
 
 # Card title is at position 4 in the drawer body — near the top, above the
-# attribute chips. Assert it without scrolling (it's visible from mount).
+# attribute chips. Assert it without scrolling (it's visible from mount). The
+# value is the auto-generated title with our typed marker inserted contiguously,
+# so we match the marker as a SUBSTRING of the Card title input's value (a
+# <input>'s node text = its value). This fails loudly (R2) if the listingTitle
+# edit did NOT persist — the marker would be absent on reopen.
 - assertVisible:
     id: "Card title"
-- assertVisible: "2024 Topps Chrome NEO-25 Test Title ${ATTEMPT_ID}"
+    text: ".*2024 Topps Chrome NEO-25 Test Title ${ATTEMPT_ID}.*"
 
 # The RC chip should be active (aria-pressed="true"). Attributes are at
 # position 6 — below Card title — so scroll down to bring the row into view.

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
+import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 
 // ===== LEVEL VALIDATOR =====
 const levelValidator = v.union(
@@ -576,19 +577,6 @@ export const storeReconciledOptions = mutation({
           sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
         }),
         metadata: metadataValidator,
-        // NEO-24: reconciler may seed set-level marketplace metadata
-        // (release date, etc) when the data source provides it.
-        // Merge-patched onto existing rows; features are NOT touched here
-        // — those go through `setSelectorOptionFeature` so propagation
-        // semantics stay centralized.
-        setMetadata: v.optional(v.object({
-          releaseDate: v.optional(v.string()),
-          totalCardCount: v.optional(v.number()),
-          block: v.optional(v.string()),
-          tcdbSetId: v.optional(v.string()),
-          sourceUrl: v.optional(v.string()),
-          lastSyncedAt: v.optional(v.number()),
-        })),
       }),
     ),
   },
@@ -600,6 +588,14 @@ export const storeReconciledOptions = mutation({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, parentId, reconciledItems } = args;
+
+    // NEO-71-74: reconciledItems share one parentId — fetch its
+    // already-complete `features` snapshot once and copy it onto every
+    // fresh insert below (write-once feature snapshots: see
+    // deriveOwnLevelFeatures in convex/features/deriveCardFeatures.ts).
+    const parentFeatures: Record<string, string> | undefined = parentId
+      ? (await ctx.db.get(parentId))?.features
+      : undefined;
 
     // Get existing options for this level and parent
     const existingOptions = await ctx.db
@@ -680,14 +676,6 @@ export const storeReconciledOptions = mutation({
         if (item.metadata) {
           patch.metadata = { ...(existing.metadata || {}), ...item.metadata };
         }
-        // NEO-24: merge-patch setMetadata if the reconciler supplied any.
-        // Existing keys are preserved; new keys overlay them.
-        if (item.setMetadata) {
-          patch.setMetadata = {
-            ...(existing.setMetadata || {}),
-            ...item.setMetadata,
-          };
-        }
         await ctx.db.patch(existing._id, patch);
         insertedIds.push(existing._id);
       } else {
@@ -699,6 +687,11 @@ export const storeReconciledOptions = mutation({
         if (bscIds[0]) newPrimary.bsc = bscIds[0];
         if (slIds[0]) newPrimary.sportlots = slIds[0];
 
+        const features = {
+          ...(parentFeatures ?? {}),
+          ...deriveOwnLevelFeatures(level, item.value, item.metadata),
+        };
+
         const id = await ctx.db.insert("selectorOptions", {
           level,
           value: item.value,
@@ -709,7 +702,7 @@ export const storeReconciledOptions = mutation({
           parentId,
           children: [],
           metadata: item.metadata,
-          ...(item.setMetadata ? { setMetadata: item.setMetadata } : {}),
+          ...(Object.keys(features).length > 0 ? { features } : {}),
           lastUpdated: Date.now(),
         });
         insertedIds.push(id);

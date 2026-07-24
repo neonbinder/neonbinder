@@ -1,0 +1,292 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Write-once feature snapshots — a freshly-built set chain auto-populates its SetAttributesPanel feature values with NO card-checklist step"
+tags:
+  - regression
+  - set-selector
+---
+# ============================================================================
+# R1 — ONE FEATURE UNDER TEST (NEO-71-74 write-once feature snapshots):
+#   When an operator builds a brand-new Sport→Year→Manufacturer→Set→VariantType
+#   chain, every node gets a COMPLETE `features` snapshot computed ONCE at
+#   creation time (parent's already-resolved features copied down + whatever
+#   this node's own level/value derives). The SetAttributesPanel then displays
+#   `row.features[key]` DIRECTLY — no live inheritance, and crucially NO card
+#   checklist fetch/commit is needed to make the values appear. This flow proves
+#   that end-to-end: drill a freshly-created chain and confirm a derived feature
+#   value is already populated in the panel, having never touched a single card.
+#
+# THE CONCRETE ASSERTIONS — THREE auto-populated feature VALUES, each proven at
+# the deepest (variantType) node where the complete write-once snapshot lands:
+#   We build a fully-custom, per-worker chain rooted at the suite's standard
+#   per-worker custom sport ("E2E Test Sport <worker>"):
+#     year  "1975-w<worker>"  → derives era="Vintage (1970-79)", vintage="true"
+#     mfr   "WOMfr-<worker>"  → derives manufacturer="WOMfr-<worker>" (verbatim)
+#     set   "WOSet3-<worker>" → derives isReprint="false", autographed="None",
+#                               and the physical defaults cardThickness="20pt",
+#                               countryOfOrigin="USA" (plus cardSize/Material/
+#                               language) — all unconditional setName-level
+#                               deriveSetLevelFeatures outputs
+#     VT    "WOVT3-<worker>"  → derives cardType="Base", parallelName="Base"
+#   The sport / year / manufacturer nodes are the suite's PERSISTENT per-worker
+#   custom ancestors (reused across runs); the set + variantType carry a trailing
+#   GENERATION digit ("...2") and are the freshly-created nodes under test. This
+#   is deliberate and load-bearing: feature snapshots are WRITE-ONCE (computed
+#   once at a node's OWN creation, never recomputed), and the global
+#   selectorOptions catalog is NOT wiped by the per-worker /testing/reset (which
+#   only clears the three per-USER tables) — so a set/VT created by an EARLIER
+#   run predates any newly-added setName/variantType-level default (like
+#   autographed="None") and would render it blank ("— Select —") forever.
+#   Bumping the generation digit forces the drill to CREATE the set + VT fresh,
+#   with the CURRENT derivation. When a future setName/variantType-level default
+#   is added and asserted here, bump the digit again (…3→…4) — this session
+#   bumped …2→…3 to pick up the new physical setName defaults cardThickness /
+#   countryOfOrigin (asserted in 6b/6c below). Reusing the
+#   existing year/manufacturer is itself meaningful: it proves copy-down works
+#   when a NEW set is added under a PRE-EXISTING manufacturer — the common
+#   real-world case (an operator adds this year's set under a known maker).
+#   Each node's snapshot is COPIED DOWN into the next as it is created, so the
+#   variantType node's `features` is the ACCUMULATED resolved map
+#   {era, vintage, manufacturer, isReprint, autographed, cardType,
+#   parallelName, cardThickness, countryOfOrigin, cardSize, cardMaterial,
+#   language}. Most of those render NO Maestro-observable value node (booleans
+#   are aria-pressed pills, and manufacturer/cardType/parallelName rows were
+#   removed from the panel entirely — see the two WHY-NOT blocks below), so we
+#   assert the THREE that ARE text-readable AND each uniquely trace to a distinct
+#   ancestor origin level:
+#     Era = "Vintage (1970-79)"  (copied down from the year — 2 hops; a <select>
+#                                 whose SELECTED option text is readable. This ALSO
+#                                 proves the year-origin vintage derivation — the
+#                                 vintage boolean itself is an unobservable pill,
+#                                 see the WHY-NOT block below)
+#     Card Thickness = "20pt"    (physical setName default, copied down 1 hop)
+#     Country of Origin = "USA"  (physical setName default, copied down 1 hop)
+#   Era uniquely traces to the pre-1980 YEAR (only a pre-1980 year yields
+#   "Vintage (1970-79)"); Card Thickness / Country of Origin uniquely trace to the
+#   setName node (only a setName emits cardThickness="20pt" / countryOfOrigin=
+#   "USA"). So asserting these at the leaf proves BOTH that copy-down carried each
+#   ancestor's derivation down (year 2-hop, setName 1-hop) AND that each ancestor's
+#   OWN-LEVEL derivation ran. If any hop were broken, that feature would render
+#   "—" / "— Select —" and its scrollUntilVisible-with-text below would fail
+#   loudly (R2).
+#
+# WHY MANUFACTURER, CARD TYPE, and VARIATION (parallelName) ARE NOT ASSERTED
+#   (NEO-71-74) — this PR REMOVED all three rows from the SetAttributesPanel (see
+#   the NOTE in convex/features/expectedFeatures.ts: they "only restated
+#   information already visible in the panel's own breadcrumb", or were a set-level
+#   default deriveSetLevelFeatures deliberately never populates for inserts/
+#   parallels). They render NO node at all now, so the old
+#   { id:"Value for Manufacturer" / "Card Type" / "Variation" } assertions can
+#   never match (this flow died on the Manufacturer one before they were dropped
+#   2026-07-20). No coverage is lost in spirit: manufacturer was a 1-hop copy-down
+#   — the SAME hop Card Thickness / Country of Origin still prove from the setName
+#   — and the leaf variantType's own-level derivation (cardType/parallelName) is a
+#   subset of the "own-level derivation ran" claim that Era (year-origin) and the
+#   physical defaults (setName-origin) already carry.
+#
+# WHY VINTAGE, REPRINT, AND AUTOGRAPHED ARE NOT ASSERTED HERE (NEO-71-74) — all
+#   three became Maestro-UNOBSERVABLE toggle controls whose values render no
+#   distinguishable node, so all are dropped:
+#     - vintage (derived at the year, ="true" here) became a boolean TOGGLE-PILL
+#       in the SetAttributesPanel (rendered in the top pill row with SP/SSP/
+#       Reprint/etc; active state = aria-pressed="true", which Maestro-web's
+#       getNodeText does NOT expose — the pill's only node text is the label
+#       "Vintage"). So a `{ id:"Value for Vintage", text:"true" }` assertion can
+#       never match (dropped 2026-07-20 — it was stale from when Vintage rendered
+#       as a "true" <span>). The year-origin derivation it proved is FULLY carried
+#       by Era = "Vintage (1970-79)" (6a): Era and vintage derive together from the
+#       same pre-1980 year via the same 2-hop copy-down, and Era's <select> selected
+#       option IS Maestro-readable, so 6a alone proves the year → era/vintage hop.
+#   The two setName-origin 1-hop copy-downs Reprint/Autographed would have proven
+#   are carried instead by Card Thickness (6e) and Country of Origin (6f) — two
+#   plain-text setName-origin defaults that ARE Maestro-readable (<input> node
+#   text = its value). Concretely:
+#     - isReprint became a "checkbox" input type. Its value ("true"/"false") is
+#       stored in the features map exactly like before, and the set node still
+#       derives "false" and copies it down — but a checkbox's boolean STATE is NOT
+#       observable in Maestro-web: the injected view-hierarchy (maestro-web.js
+#       `traverse`) emits no `checked` attribute for any node, and a valueless
+#       `<input type=checkbox>` reads `value="on"` for BOTH checked and unchecked,
+#       so neither a `checked:` selector nor a text match can distinguish
+#       "false"→unchecked from "true"→checked.
+#     - autographed became a "toggleOptions" input type (options
+#       ["None","On Card","Sticker/Label"], ToggleOptionsValueControl in
+#       FeatureValueControl.tsx). The set node still derives "None" and copies it
+#       down, but options[0]="None" is the implicit OFF value and gets NO pill of
+#       its own — it renders no text node anywhere — and the two pills that DO
+#       render ("Auto (On Card)" / "Auto (Sticker)") look identical regardless of
+#       the current value (Maestro-web cannot read aria-pressed / className /
+#       color). Crucially, unlike signed-by-autofills-from-players.yaml — where a
+#       tap sequence's result is observable via the card-level `signedBy`
+#       auto-fill SIDE-EFFECT — a SET-level Autographed change on this panel has
+#       NO observable side-effect to assert, and any tap would MUTATE the
+#       write-once snapshot on the REUSED per-worker fixture node (destructive to
+#       this flow's own reusable data, R7). So "Autographed = None" is
+#       fundamentally not assertable here by any tap-or-text means.
+#   Reprint's and Autographed's SAVE paths (single-row patch → "Saved <feature>"
+#   toast) are covered instead by topps-chrome-add-feature / signed-by (R3 — not
+#   duplicated here). Because Card Thickness and Country of Origin are the exact
+#   same setName-origin 1-hop copy-down at the exact same origin level, dropping
+#   both toggle assertions loses NO structural coverage.
+#
+# HOW EACH VALUE IS ASSERTED (Maestro-web value extraction — VERIFIED against
+# maestro-client.jar!maestro-web.js getNodeText, cli 2.6.0):
+#   - <input>  node text = value || placeholder || ariaLabel  → the input's
+#     CURRENT VALUE is directly matchable (Card Type "Base",
+#     Variation "Base", Manufacturer "WOMfr-<w>").
+#   - <select> node text = ONLY the SELECTED option's text (un-selected <option>
+#     nodes are omitted from the hierarchy unless the select is focused) → the
+#     SELECTED value is matchable and does NOT false-match other options
+#     (Era "Vintage (1970-79)"; an unset select would read "— Select —").
+#   Every control also carries resource-id = its aria-label ("Value for <Label>",
+#   the DO-NOT-RENAME hook in SetFeatureRow), so we assert each with a COMBINED
+#   { id: "Value for <Label>", text: <value> } selector — matching the single
+#   node that has BOTH that aria-label AND that value. This is unambiguous (no
+#   collision with a breadcrumb "Base" or a sibling row) and fails if the value
+#   is wrong/absent. scrollUntilVisible carries the assertion (each panel row can
+#   sit below the 629px fold), so the scroll IS the value check (R6 — no
+#   redundant assertVisible of the same element after it).
+#
+#   (League is intentionally NOT asserted here: it derives ONLY at the sport
+#   level and ONLY for the four real stick-and-ball sports, so a custom-sport
+#   root never yields a league value — by design, keeping this flow fully
+#   per-worker-isolated and env-independent. League auto-population at the sport
+#   level is proven separately in sport-level-league-autopopulates.yaml against
+#   the real "Baseball" sport.)
+#
+# R3 — DEDUP: no existing flow tests auto-populated feature snapshots on a
+#   freshly-created chain. set-attributes-edit tests metadata editing + the
+#   breadcrumb; features-propagation tests propagating a MANUALLY-set feature;
+#   topps-chrome-add-feature adds a feature on the real synced set. None assert
+#   that a brand-new chain's feature values appear automatically. This is unique.
+#
+# R9 — all drilling goes through util-drill-to-custom.yaml (no hand-rolled drill).
+#   Rooting at the custom sport keeps every level on the well-tested clean
+#   Add-custom drill path (the same path util-drill-to-custom-set relies on),
+#   avoiding the real-sport "search-then-add-custom-year" path which is not
+#   otherwise exercised in the suite.
+#
+# DATA ISOLATION (fully per-worker custom subtree):
+#   Every node the flow touches is per-WORKER_INDEX custom data — the sport root
+#   ("E2E Test Sport <worker>") down through year / manufacturer / set /
+#   variantType (all "-<worker>"). Concurrent work-queue runners share NO docs
+#   (not even a sport root), so there is zero cross-worker contention. Nothing
+#   destructive (R7); no shared real set is edited.
+#
+# NO CARD CHECKLIST (task requirement): this flow drills only to the
+#   variantType level and never opens a Variant, so there is no card checklist,
+#   no "Fetch from Marketplaces", and no commitCardChecklist anywhere — which is
+#   the whole point: the features resolve BEFORE any card is ever touched.
+# ============================================================================
+
+# Step 1 — open the app at the signed-in /set-selector route.
+- launchApp
+# Cold sign-in / app load only (Clerk auth + rate-limit backoff on the Nth
+# concurrent sign-in). Every other wait below uses Maestro's 7s default (R5).
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# Step 2 — drill a freshly-created, fully-custom chain: per-worker custom sport
+# → a CUSTOM pre-1980 year (forces a NON-Modern era so vintage derives "true")
+# → custom manufacturer → custom set → custom variant type. util-drill-to-custom
+# adds each level if absent (idempotent across retries) and lands with the
+# variantType selected + the SetAttributesPanel mounted at that node.
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "1975-w${WORKER_INDEX || 0}"
+      MANUFACTURER: "WOMfr-${WORKER_INDEX || 0}"
+      SET_NAME: "WOSet3-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "WOVT3-${WORKER_INDEX || 0}"
+
+# Step 3 — locate the SetAttributesPanel and prove it is scoped to the
+# freshly-created VARIANT TYPE node. The panel header ("Attributes for
+# WOVT2-<worker> (Variant)") is a plain <h3> with no aria-label, so its text
+# content is reliably matchable. This scrollUntilVisible IS the assertion that
+# the panel exists at the right node (R6 — no redundant assertVisible after).
+# centerElement keeps the header/toggle clear of the y>=489 footer-steal zone
+# (R8) so the expand tap below lands.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for WOVT3-${WORKER_INDEX || 0}.*"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# Step 4 — prove the drill actually built the whole fresh chain: the breadcrumb
+# (a plain element, text content matchable) shows the custom pre-1980 YEAR and
+# the leaf VARIANT TYPE in the ancestry. The year MUST be in the chain for era /
+# vintage to have derived — asserting it here guards the precondition for the
+# Vintage value assertion below.
+- assertVisible:
+    text: ".*1975-w${WORKER_INDEX || 0}.*WOVT3-${WORKER_INDEX || 0}.*"
+
+# Step 5 — make sure the panel is EXPANDED (it may default collapsed at the
+# variantType level, or a prior retry may have left it either way). Idempotent:
+# tap "Edit attributes" only when it's showing (collapsed); if already expanded,
+# "Edit attributes" is absent and this is skipped. Either way the hard
+# assertVisible "Hide attributes" that follows GATES that the panel is open
+# before we assert any value (R2 — no silent fall-through).
+- runFlow:
+    when:
+      visible:
+        id: "Edit attributes"
+    commands:
+      - tapOn:
+          id: "Edit attributes"
+      - assertVisible:
+          id: "Hide attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# Step 6 — THE FEATURE ASSERTIONS. Each auto-populated feature VALUE is proven
+# with a COMBINED { id: "Value for <Label>", text: <value> } selector, driven
+# via scrollUntilVisible so the row is brought into the 1024x629 viewport AND
+# its value asserted in one step (the scroll fails loudly if no node has BOTH
+# the aria-label and the value — R2/R6). No card checklist was ever touched.
+#
+# Note on the Era select's text pattern: the selected <option> text is
+# "Vintage (1970-79)"; the literal parentheses are regex metacharacters, so we
+# match on the unambiguous inner substring ".*1970-79.*" (unique on this panel)
+# rather than escaping. centerElement keeps each row clear of the y>=489 footer
+# zone; visibilityPercentage:50 tolerates a partially-clipped row.
+
+# 6a — Era = "Vintage (1970-79)" (copied down from the pre-1980 year, 2 hops).
+- scrollUntilVisible:
+    element:
+      id: "Value for Era"
+      text: ".*1970-79.*"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+
+# 6b — Card Thickness = "20pt" (a PHYSICAL default originating at the setName
+# node — deriveSetLevelFeatures unconditionally emits cardThickness="20pt" for
+# every set — copied down 1 hop to the variantType). Plain-text <input>:
+# getNodeText = its value, so the combined { id, text } selector matches the node
+# with BOTH the aria-label AND "20pt". A broken default / broken copy-down would
+# leave the field blank ("—") and this scrollUntilVisible-with-text would fail
+# loudly (R2). One of the two setName-origin physical defaults (the other,
+# Country of Origin, is 6c).
+- scrollUntilVisible:
+    element:
+      id: "Value for Card Thickness"
+      text: "20pt"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+
+# 6c — Country of Origin = "USA" (physical default originating at the setName
+# node — deriveSetLevelFeatures unconditionally emits countryOfOrigin="USA" —
+# copied down 1 hop to the variantType). Plain-text <input>; asserted the same
+# way as 6b. The second setName-origin physical default.
+- scrollUntilVisible:
+    element:
+      id: "Value for Country of Origin"
+      text: "USA"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000

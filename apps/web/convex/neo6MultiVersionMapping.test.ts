@@ -12,6 +12,9 @@
  *  - detachPlatformId happy path
  *  - detachPlatformId primary-protected (explicit primaryPlatformId)
  *  - detachPlatformId primary-protected (implicit first-element fallback)
+ *  - detachPlatformId confirmPrimary override (explicit primary, extras remain)
+ *  - detachPlatformId confirmPrimary override (sole implicit primary, side emptied)
+ *  - detachPlatformId confirmPrimary does not bypass admin gate
  *  - renamePlatformLabel happy path
  *  - renamePlatformLabel rejects empty/whitespace label
  *  - renamePlatformLabel rejects unattached id
@@ -497,6 +500,112 @@ describe("detachPlatformId", () => {
         id: "bsc-implicit-primary",
       }),
     ).rejects.toThrow(/Refusing to detach the reconciliation primary/);
+  });
+
+  // -------------------------------------------------------------------------
+  // confirmPrimary: explicit primaryPlatformId, extras remain
+  // -------------------------------------------------------------------------
+  test("should detach the explicit primaryPlatformId and clear it when confirmPrimary is true", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const parentId = await insertParent(t);
+    const rowId = await insertVariantWithExtras(t, parentId);
+
+    const result = await asAdmin.mutation(api.selectorOptions.detachPlatformId, {
+      selectorOptionId: rowId,
+      side: "sportlots",
+      id: "primary-id",
+      confirmPrimary: true,
+    });
+
+    expect(result.success).toBe(true);
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    const slIds = Array.isArray(row!.platformData.sportlots)
+      ? row!.platformData.sportlots
+      : row!.platformData.sportlots
+        ? [row!.platformData.sportlots]
+        : [];
+
+    // Detached id is gone.
+    expect(slIds).not.toContain("primary-id");
+    // Remaining extras untouched.
+    expect(slIds).toContain("extra-id-1");
+    expect(slIds).toContain("extra-id-2");
+
+    // primaryPlatformId for this side is cleared (absent/undefined) so the
+    // row falls back to `current[0]` for its new effective primary.
+    expect(row!.primaryPlatformId?.sportlots).toBeUndefined();
+
+    // The detached id's label entry (there was none for "primary-id" to
+    // begin with, but confirm no stray entry was created) is absent...
+    expect(row!.platformLabels?.sportlots?.["primary-id"]).toBeUndefined();
+    // ...and the surviving extra's label is untouched.
+    expect(row!.platformLabels?.sportlots?.["extra-id-1"]).toBe("Series 2");
+    expect(row!.platformLabels?.sportlots?.["extra-id-2"]).toBe("Series 3");
+  });
+
+  // -------------------------------------------------------------------------
+  // confirmPrimary: implicit (array[0]) primary, no extras — side goes empty
+  // -------------------------------------------------------------------------
+  test("should detach the sole implicit primary and leave the side empty when confirmPrimary is true", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const parentId = await insertParent(t);
+    // Seed a row WITHOUT an explicit primaryPlatformId and with only one id
+    // on the bsc side — the implicit primary is also the only element.
+    const rowId: Id<"selectorOptions"> = await t.run(async (ctx) => {
+      return ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Black Refractor",
+        platformData: { bsc: "bsc-sole-primary" },
+        platformLabels: { bsc: { "bsc-sole-primary": "Sole Primary" } },
+        // NOTE: no primaryPlatformId field — array[0] is the implicit primary.
+        parentId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const result = await asAdmin.mutation(api.selectorOptions.detachPlatformId, {
+      selectorOptionId: rowId,
+      side: "bsc",
+      id: "bsc-sole-primary",
+      confirmPrimary: true,
+    });
+
+    expect(result.success).toBe(true);
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+
+    // The side is now fully empty.
+    expect(row!.platformData.bsc).toBeUndefined();
+    // No effective primary remains.
+    expect(row!.primaryPlatformId?.bsc).toBeUndefined();
+    // No dangling label entry for the detached id.
+    expect(row!.platformLabels?.bsc?.["bsc-sole-primary"]).toBeUndefined();
+  });
+
+  // -------------------------------------------------------------------------
+  // confirmPrimary does not bypass the admin gate
+  // -------------------------------------------------------------------------
+  test("should throw when non-admin caller passes confirmPrimary: true", async () => {
+    const t = convexTest(schema, modules);
+    const asUser = t.withIdentity(NON_ADMIN_IDENTITY);
+
+    const parentId = await insertParent(t);
+    const rowId = await insertVariantWithExtras(t, parentId);
+
+    await expect(
+      asUser.mutation(api.selectorOptions.detachPlatformId, {
+        selectorOptionId: rowId,
+        side: "sportlots",
+        id: "primary-id",
+        confirmPrimary: true,
+      }),
+    ).rejects.toThrow();
   });
 });
 

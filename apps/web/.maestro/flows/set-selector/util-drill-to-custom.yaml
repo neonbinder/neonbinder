@@ -329,12 +329,8 @@ tags:
             visible:
               text: ".*Search years.*"
           commands:
-            - scrollUntilVisible:
-                element:
-                  text: ".*Search years.*"
-                direction: right
-                centerElement: true
-                timeout: 10000
+            # App auto-scrolls the newly-revealed Years column fully into view
+            # (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
             - tapOn:
                 text: ".*Search years.*"
             - inputText: ${YEAR}
@@ -481,12 +477,8 @@ tags:
             visible:
               text: ".*Search manufacturers.*"
           commands:
-            - scrollUntilVisible:
-                element:
-                  text: ".*Search manufacturers.*"
-                direction: right
-                centerElement: true
-                timeout: 10000
+            # App auto-scrolls the newly-revealed Manufacturers column fully into
+            # view (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
             - tapOn:
                 text: ".*Search manufacturers.*"
             - inputText: ${MANUFACTURER}
@@ -653,21 +645,36 @@ tags:
                 notVisible: "Add Custom Entry"
                 timeout: 10000
 
+      # RE-REVEAL the Sets header/search input BEFORE the search-path guard.
+      # The centerElement scroll to "Add custom Sets" above can push the Sets
+      # column header + "Search sets" input up under the sticky nav (y<66) — and
+      # it is WORSE now that a collapsed SetAttributesPanel renders below the
+      # column at a shallow (sport/year/manufacturer) selected level (NEO-38
+      # deepestSelectedId extension): the extra height below "+ Custom" lets
+      # centerElement drag "+ Custom" higher, carrying the search input off the
+      # top. If "Search sets" is off-screen the guard below wrongly reads false
+      # and falls through to the fragile direct-scroll fallback, which clips a
+      # target inside the column's overflow-y-auto container — the tap lands at
+      # y<0 and CDP throws "Failed to execute JS" (null→kotlin.Int). Centering
+      # the "Sets" header first pulls the search input back to ~y=360, clear of
+      # the nav, so a large real-manufacturer Sets list reliably takes the search
+      # path. optional:true makes this a no-op for short custom-sport Sets columns
+      # (nothing scrolled off / no search input), so short-list callers are
+      # unaffected and still fall through to the direct-scroll path below.
+      - scrollUntilVisible:
+          element:
+            text: "^Sets$"
+          direction: UP
+          centerElement: true
+          timeout: 8000
+          optional: true
+
       # Tap the SET_NAME row — search path if the list grew large (>8 items),
       # direct-scroll path for short lists. Pattern mirrors util-drill-to-custom-set.
       - runFlow:
           when:
             visible: ".*Search sets.*"
           commands:
-            # centerElement on Add-custom-Sets above may leave the Sets header above
-            # the viewport (y≈4 under the nav). Scroll UP to bring "Sets" back into
-            # center so the search input lands at ~y=360, clear of the nav header.
-            - scrollUntilVisible:
-                element:
-                  text: "^Sets$"
-                direction: UP
-                centerElement: true
-                timeout: 10000
             - tapOn:
                 text: ".*Search sets.*"
             - inputText: ${SET_NAME}
@@ -701,16 +708,35 @@ tags:
             # The Sets column can be mid-re-render (Convex subscription initial
             # load) on a retry after a previous run saved data — the CDP swipe
             # inside scrollUntilVisible throws MismatchedInputException during
-            # the render. A non-scroll extendedWaitUntil gives the re-render
-            # time to settle before the centering swipe runs.
+            # the render. A non-scroll wait gives the re-render time to settle
+            # before the centering swipe runs.
+            #
+            # optional: true (fix 2026-07-16, neo-71-74) — the Sets column is an
+            # overflow-y-auto list that renders ALL custom sets (not virtualized).
+            # As the per-worker E2E Test Sport N/2026/Topps Sets list accumulates
+            # sets across flows (write-once selectorOptions; /testing/reset never
+            # wipes the catalog), a newly-added set whose name sorts LATE
+            # alphabetically (e.g. "pp-0" after the many "c*-0" sets) lands BELOW
+            # the 629px fold while the list is still short enough that NO
+            # "Search sets" input renders (the search box only appears past ~8
+            # items). A non-optional wait here hard-FAILS on that below-fold set
+            # before the scrollUntilVisible below can reach it (RCA: player-picker
+            # flow, set "pp-0", Sets column showing cag-0/cap-0/clt-0… with pp-0
+            # scrolled out). Making it optional lets a below-fold set fall through
+            # to the scrollUntilVisible (which DOES scroll the column to it and
+            # centers it) — while staying an instant no-op for the common case
+            # where the set is already visible near the top. A genuinely missing
+            # set still fails loudly at the scrollUntilVisible (ElementNotFound).
             - extendedWaitUntil:
                 visible:
                   text: ".*${SET_NAME}.*"
-                timeout: 10000
+                timeout: 5000
+                optional: true
             - scrollUntilVisible:
                 element:
                   text: ".*${SET_NAME}.*"
                 centerElement: true
+                waitToSettleTimeoutMs: 1000
                 timeout: 10000
             - tapOn:
                 text: ".*${SET_NAME}.*"

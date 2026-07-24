@@ -1,0 +1,146 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Regression — Show/Hide features editor toggle expands then collapses the CardFeaturesEditor, then the card deletes cleanly"
+tags:
+  - regression
+  - set-selector
+---
+# R1 — SINGLE FEATURE: the card edit form's "Show features editor" / "Hide
+# features editor" toggle round-trips (expand reveals the editor, collapse hides
+# it and the "Show" button returns), and the test card deletes cleanly afterward.
+#
+# HISTORY (why this file was repurposed, not a fresh flow):
+#   This was card-features-missing.yaml, which asserted a freshly-added card
+#   showed an amber "Missing required feature" (⚠) highlight in the
+#   CardFeaturesEditor. NEO-71-74 REMOVED the entire "missing required feature"
+#   concept from the product — blank is now a complete answer for every feature
+#   field, so the ⚠ icon, the amber border, and the "N missing" summary badge no
+#   longer exist. That assertion was deleted (not replaced — there is no missing
+#   warning to test anymore). The flow's remaining, still-valid coverage is the
+#   Show/Hide editor TOGGLE plus the delete-card cleanup, which is what it now
+#   proves.
+#
+# R3 — DEDUP: the COLLAPSE half of this toggle ("Hide features editor" hides the
+#   editor and the "Show" button reappears) is exercised by NO other flow.
+#   features-propagation.yaml taps "Show features editor" (to edit values) but
+#   never collapses it; card-detail-panel.yaml only names it in a comment. So the
+#   expand→collapse→expand round-trip is unique to this flow. The drill + add-card
+#   + delete machinery is reused via util-add-custom-card.yaml (shared logic, not
+#   duplicated).
+#
+# WHY REGRESSION (not smoke):
+#   Requires a confirmed CardChecklist. The assertion itself is cheap, but the
+#   setup — drilling to a custom set with a card present — takes several steps.
+#
+# PER-WORKER DATA ISOLATION:
+#   Drills to E2E Test Sport ${WORKER_INDEX} → 2026 → Topps → cft-<WORKER_INDEX>
+#   (custom set, Insert VT, "Base" insert). Each worker owns its own checklist, so
+#   concurrent workers never touch the same rows.
+#
+# WHAT THIS TESTS:
+#   - "Show features editor" button is present in the collapsed card edit form
+#   - Tapping it reveals the "Card features editor" section (EXPAND)
+#   - Tapping "Hide features editor" collapses the section away (COLLAPSE)
+#   - The "Show features editor" button returns after collapse
+#   - Cancel edit + delete card removes the test row cleanly
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+
+# ============================================================
+# DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
+# E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps -> cft-<WORKER_INDEX> ->
+# Insert -> "Base" (custom insert).
+# util-add-custom-card drills the hierarchy, adds "Base" idempotently,
+# opens the CardChecklist, submits card 991-${ATTEMPT_ID}, and returns
+# with the "Edit card 991-${ATTEMPT_ID}" button scrolled into view.
+# ============================================================
+
+# Per-attempt-unique card number + player name. ATTEMPT_ID is injected
+# as "w<worker>-a<attempt>-<RANDOM>" so attempt-2 never collides with a
+# row left behind by attempt-1 in the per-worker cardChecklist.
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "cft-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "991-${ATTEMPT_ID}"
+      PLAYER_NAME: "Features Toggle Player ${ATTEMPT_ID}"
+
+# Assert visibility before tapping — surfaces a failed scroll as a clear
+# assertion error rather than the null kotlin.Int bounds crash.
+- assertVisible:
+    id: "Edit card 991-${ATTEMPT_ID}"
+
+# Open the edit form. `waitToSettleTimeoutMs` mitigates the
+# virtualisation race — parallel workers' live-query refetches can
+# shift this row between Maestro's element lookup and tap dispatch.
+- tapOn:
+    id: "Edit card 991-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- assertVisible:
+    id: "Card name"
+
+# ============================================================
+# EXPAND — "Show features editor" reveals the CardFeaturesEditor
+# ============================================================
+
+# The "Show features" button is visible (collapsed by default).
+- assertVisible:
+    id: "Show features editor"
+
+# Click it to expand the CardFeaturesEditor.
+- tapOn:
+    id: "Show features editor"
+
+# The "Card features editor" section appears — the EXPAND half of the toggle.
+- assertVisible:
+    id: "Card features editor"
+
+# ============================================================
+# COLLAPSE — "Hide features editor" hides it again (unique coverage)
+# ============================================================
+
+# The "Hide ▴" button collapses the editor.
+- tapOn:
+    id: "Hide features editor"
+- assertNotVisible:
+    id: "Card features editor"
+
+# Verify the "Show features ▾" button reappears — the toggle round-trips.
+- assertVisible:
+    id: "Show features editor"
+
+# ============================================================
+# CLEANUP — cancel edit and delete this attempt's test card
+# ============================================================
+
+# Assert the Cancel button is visible before tapping — sticky footer
+# button is always in viewport (not scrollable), so assertVisible is safe.
+- assertVisible:
+    id: "Cancel card edit"
+- tapOn:
+    id: "Cancel card edit"
+# Scroll the delete button into view — the Cancel above collapses the edit
+# form, resetting the Virtuoso scroll position. The card row may not be
+# in the viewport when the form closes. centerElement: true keeps it well
+# clear of the sticky header and footer before the tap.
+- scrollUntilVisible:
+    element:
+      id: "Delete card 991-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 991-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 991-${ATTEMPT_ID}"
+- assertNotVisible: "Features Toggle Player ${ATTEMPT_ID}"

@@ -16,9 +16,17 @@ tags:
 #   - BSC platform badge appears on marketplace-sourced cards
 #   - RC badge appears for rookie cards (common in 2024 Topps Chrome Base)
 #
-# NOTE: "SL" badge requires a SportLots platform mapping written by the
-# ReconciliationModal. That mapping is set up by the setup track, but SL
-# badge appearance is not asserted here — that belongs in a reconciliation flow.
+# NOTE: the "SL" platform badge (a SportLots per-card match) DOES now render on
+# real Base cards after the NEO-91 fix to fetchSportLotsChecklist — verified live
+# on shared dev: 2024 Topps Chrome Base cards #1-88 (e.g. #1 Ohtani, #4 Freeman)
+# show BOTH "SL" and "BSC" (before NEO-91, zero cards carried
+# platformData.sportlots, so no "SL" badge existed anywhere). It is NOT asserted
+# here because the SL-matched cards are #1-88 — the TOP of the checklist — while
+# the CardChecklist virtuoso opens at the BOTTOM (initialTopMostItemIndex = last
+# card) and Maestro's page-level scroll cannot drive the inner virtuoso up to the
+# top, so a top card is unreachable in the 1024x629 headless viewport. A
+# row-level "SL" badge assertion is therefore not currently feasible in Maestro
+# (the fix is covered by unit tests + live verification instead). See NEO-91.
 # Print-run ("/N") belongs to parallel variant types, not Base; not asserted.
 #
 # FLOW: launch → drill to Base (setup pre-synced) → verify rich fields on rows.

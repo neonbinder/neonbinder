@@ -105,7 +105,8 @@ export default function CardChecklistItem({
 
   return (
     <div
-      className={`flex items-center gap-3 p-2.5 border rounded-md dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 group ${
+      onClick={() => onEdit(card._id)}
+      className={`flex items-center gap-3 p-2.5 border rounded-md dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 group cursor-pointer ${
         isSelected
           ? "ring-2 ring-[#00B7FF] border-[#00B7FF] bg-blue-50/40 dark:bg-blue-900/10"
           : ""
@@ -114,14 +115,14 @@ export default function CardChecklistItem({
       <span className="text-sm font-mono text-gray-500 dark:text-gray-400 w-12 text-right shrink-0">
         #{card.cardNumber}
       </span>
-      {/* Clicking the card body opens the detail panel. Kept as a plain div
-          (not a button) so we don't add a focusable tab-stop per row into the
+      {/* Clicking anywhere on the row opens the detail panel (the whole row
+          now carries the onClick above — previously only this inner name/
+          subtitle div did, so clicking the card number, badges, or empty
+          row space silently did nothing). Kept as a plain div (not a
+          button) so we don't add a focusable tab-stop per row into the
           virtualized list — the always-rendered "Edit" button is the
           keyboard/Maestro-targeted opener. */}
-      <div
-        onClick={() => onEdit(card._id)}
-        className="flex-1 min-w-0 cursor-pointer"
-      >
+      <div className="flex-1 min-w-0">
         <div className="text-sm font-medium truncate">{card.cardName}</div>
         {subParts.length > 0 && (
           <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
@@ -194,7 +195,10 @@ export default function CardChecklistItem({
           to clutter the row. */}
       <div className="flex gap-1 shrink-0">
         <button
-          onClick={() => onEdit(card._id)}
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit(card._id);
+          }}
           aria-label={`Edit card ${card.cardNumber}`}
           className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-blue-600 dark:text-gray-400 dark:hover:text-blue-400"
           title="Edit"
@@ -203,7 +207,10 @@ export default function CardChecklistItem({
         </button>
         {confirmDelete ? (
           <button
-            onClick={handleDelete}
+            onClick={(e) => {
+              e.stopPropagation();
+              void handleDelete();
+            }}
             aria-label={`Confirm delete card ${card.cardNumber}`}
             className="px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
           >
@@ -211,7 +218,10 @@ export default function CardChecklistItem({
           </button>
         ) : (
           <button
-            onClick={() => setConfirmDelete(true)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setConfirmDelete(true);
+            }}
             onBlur={() => setConfirmDelete(false)}
             aria-label={`Delete card ${card.cardNumber}`}
             className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"

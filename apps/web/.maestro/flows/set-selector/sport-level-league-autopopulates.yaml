@@ -1,0 +1,123 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Write-once feature snapshots — the SPORT-level attributes panel auto-populates League from the sport, with NO card-checklist step"
+tags:
+  - regression
+  - set-selector
+---
+# ============================================================================
+# R1 — ONE FEATURE UNDER TEST (NEO-71-74 write-once, sport-level slice):
+#   When a sport node is created (marketplace sync or +Custom), its write-once
+#   `features` snapshot derives League from the sport name for the four real
+#   stick-and-ball sports (Baseball→MLB, Basketball→NBA, Football→NFL,
+#   Hockey→NHL). The SetAttributesPanel — which now mounts at the SPORT level
+#   too (NEO-38 deepestSelectedId extension) — reads that snapshot directly, so
+#   drilling to "Baseball" and expanding its attributes shows League = "MLB"
+#   WITHOUT ever opening a set, variant, or card checklist. This flow proves
+#   that one derivation end-to-end.
+#
+# THE CONCRETE ASSERTION — League = "MLB" at the Baseball sport panel:
+#   League is an aria-labelled <select>; Maestro-web surfaces a <select>'s text
+#   as ONLY its SELECTED option (verified against maestro-web.js getNodeText —
+#   un-selected <option>s are omitted from the hierarchy), and the control's
+#   resource-id is its aria-label "Value for League". So the COMBINED selector
+#   { id: "Value for League", text: "MLB" } matches the single node whose League
+#   select has "MLB" selected. If the sport snapshot lacked league, the select
+#   would read "— Select —" and the assertion fails loudly (R2).
+#
+# WHY THIS IS A SEPARATE FLOW FROM new-chain-autopopulates-features.yaml:
+#   League derives ONLY at the sport level and ONLY for the four real sports, so
+#   it cannot be exercised on the per-worker CUSTOM sport that the sibling flow
+#   uses for full isolation. It genuinely requires the shared, real "Baseball"
+#   sport. This flow only READS Baseball's already-derived snapshot (it selects
+#   the sport — a UI-only action — and never writes to the shared node), so it
+#   is safe to run concurrently with any other flow (no write contention, R7).
+#
+# ALSO COVERS THE NEO-38 REGRESSION SURFACE (sport-level panel rendering):
+#   The historical NEO-38 regression was that rendering SetAttributesPanel at
+#   sport/year/manufacturer during drill-down pushed the selector columns down
+#   and hid the next column's scroll target. This flow proves the drill to
+#   Baseball still opens the next column ("Years") with the panel mounted at the
+#   sport level (Step 3 hard-asserts "Years"), i.e. the collapsed panel does not
+#   break the cascade.
+#
+# R3 — DEDUP: topps-chrome-marketplace-read asserts the League ROW is *present*
+#   on a real SET; no flow asserts the League VALUE auto-populated at the SPORT
+#   level. Unique.
+#
+# R9 — the drill goes through util-drill-to-custom.yaml (SPORT only). Baseball
+#   is real-synced (setup seeds it), so the util's well-tested search-input path
+#   selects it — no custom-add, no CDP-fragile custom-year path.
+#
+# NO CARD CHECKLIST (task requirement): the flow stops at the sport level and
+#   never opens a set/variant, so there is no checklist and no commit step —
+#   the League value resolves before any card exists.
+#
+# ENV NOTE: on a fresh Convex preview (CI) the Sports auto-sync creates the
+#   Baseball node AFTER write-once shipped, so its snapshot carries league="MLB".
+#   A long-lived shared dev deployment whose Baseball row predates write-once may
+#   lack league until runCardFeaturesBackfill runs (re-sync does not recompute an
+#   existing row's snapshot). If this flow reads "— Select —" locally, that is
+#   the stale-node data state, not a code regression — see the flow report.
+# ============================================================================
+
+# Step 1 — open the app at the signed-in /set-selector route.
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# Step 2 — drill to the real "Baseball" sport ONLY (util stops at the deepest
+# provided level = sport). Returns with Baseball selected and the Years column
+# open. Baseball is seeded by setup, so this is a pure select (no add / write).
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+
+# Step 3 — NEO-38 structural check: the Years column opened with the panel now
+# mounted at the sport level. If the (collapsed) panel had pushed content and
+# broken the cascade, Years would be absent. Hard-assert it (R2).
+- assertVisible: "Years"
+
+# Step 4 — locate the SetAttributesPanel and prove it is scoped to the SPORT
+# node. The header ("Attributes for Baseball (Sport)") is a plain <h3> — its
+# text is reliably matchable. The scroll IS the scope assertion (R6). "Sport)"
+# (with the trailing paren shown) disambiguates from any breadcrumb "Baseball".
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for Baseball.*Sport.*"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# Step 5 — expand the panel (collapsed by default at the sport level).
+# Idempotent: tap "Edit attributes" only when showing; the hard assert of
+# "Hide attributes" after GATES that the panel is open before we read any value
+# (R2 — no silent fall-through if the toggle were missing).
+- runFlow:
+    when:
+      visible:
+        id: "Edit attributes"
+    commands:
+      - tapOn:
+          id: "Edit attributes"
+      - assertVisible:
+          id: "Hide attributes"
+- assertVisible:
+    id: "Hide attributes"
+
+# Step 6 — THE FEATURE ASSERTION. The League <select> shows "MLB", derived from
+# the sport name onto the sport node's write-once snapshot — no card ever
+# touched. The combined { id, text } selector matches the League control whose
+# selected option is "MLB"; a missing snapshot reads "— Select —" and fails.
+# scrollUntilVisible brings the row into the 629px viewport and carries the
+# assertion (R6). centerElement clears the y>=489 footer zone.
+- scrollUntilVisible:
+    element:
+      id: "Value for League"
+      text: "MLB"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000

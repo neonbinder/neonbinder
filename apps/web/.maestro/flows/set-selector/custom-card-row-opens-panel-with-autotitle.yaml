@@ -1,0 +1,131 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Card row — clicking the card NUMBER (not the name or Edit button) opens the detail panel, which shows an auto-generated Card title"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — SINGLE FEATURE: clicking anywhere on a card row (here the card-number
+# cell, which is neither the card-name text nor the Edit/Del buttons) opens that
+# card's detail panel. Previously ONLY the name/subtitle text was clickable; the
+# card number, badges, and empty row space did nothing (CardChecklistItem now
+# carries the onClick on the whole row).
+#
+# R2 — THE ASSERTION (proves the feature AND that the RIGHT card opened):
+#   After tapping the card-number cell we assert the drawer's "Card title" input
+#   holds an AUTO-GENERATED value containing this exact card's number (#<num>).
+#   This is a two-in-one, deliberate check:
+#     (a) The panel opened at all (row-body click works) — a broken onClick
+#         leaves no drawer, so "Card title" never appears and the flow FAILS.
+#     (b) The panel that opened is THIS card's (the title carries THIS card's
+#         number), so the row-body click routed to the correct row — not a
+#         stale/adjacent one.
+#     (c) It simultaneously covers the "new cards get a non-empty auto-generated
+#         listing title" behavior: addCustomCard now writes generateListingTitle
+#         at creation (write-once), so a freshly-added custom card's title is
+#         non-empty and always ends with " #<cardNumber>" (the card number is the
+#         one token generateListingTitle never truncates away). The OLD behavior
+#         left listingTitle empty — that would fail this assert.
+#
+# R3 — DEDUP: no other flow opens the panel by clicking the row body — every
+#   other set-selector flow opens via the "Edit card N" aria-labelled button.
+#   card-detail-panel.yaml TYPES a listing title then verifies persistence; it
+#   never asserts the AUTO-GENERATED title at creation. Drill + add-card + delete
+#   machinery is reused via util-add-custom-card.yaml (shared logic).
+#
+# R4 — Enters via the sign-in redirect URL; no in-body login. util-add-custom-card
+#   runs inside this session.
+#
+# PER-WORKER DATA ISOLATION (data-isolation rule): drills to the per-worker
+#   synthetic subtree E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps ->
+#   clt-<WORKER_INDEX> (custom set, Insert VT, "Base" insert). Concurrent workers
+#   never touch the same rows or the same custom-set docs.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
+# util-add-custom-card drills the hierarchy, adds "Base" idempotently, opens the
+# CardChecklist, submits card 779-${ATTEMPT_ID} with a player name (which becomes
+# the card name AND feeds the auto-generated title), and returns with the
+# "Edit card 779-${ATTEMPT_ID}" button scrolled into view.
+# ============================================================
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "clt-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "779-${ATTEMPT_ID}"
+      PLAYER_NAME: "Row Click Player ${ATTEMPT_ID}"
+
+# ============================================================
+# OPEN THE PANEL BY CLICKING THE CARD-NUMBER CELL (the feature)
+# The row renders "#<cardNumber>" in a left-aligned mono cell that is NOT the
+# card-name text and NOT the Edit/Del buttons. Scroll it into the safe band
+# (centerElement, R8) then tap it. The whole row's onClick fires onEdit.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "#779-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+- tapOn:
+    text: "#779-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+
+# ============================================================
+# VERIFY: the drawer opened for THIS card, with an auto-generated title
+# ============================================================
+
+# Drawer opened (row-body click worked) — the "Card name" input appears.
+- assertVisible:
+    id: "Card name"
+# Header confirms it is THIS card's panel.
+- assertVisible:
+    text: ".*Card #779-${ATTEMPT_ID}.*"
+
+# The auto-generated "Card title" input (position 4 in the drawer body — visible
+# near the top, no scroll needed) is NON-EMPTY and contains this card's number.
+# For an <input>, Maestro getNodeText returns its VALUE, so a text: match here
+# reads the generated title string, not a label. A blank (pre-NEO-24) title has
+# no "#779-..." and would fail this assert.
+- assertVisible:
+    id: "Card title"
+    text: ".*#779-${ATTEMPT_ID}.*"
+
+# ============================================================
+# CLOSE + CLEANUP — delete this attempt's test card
+# We made no edits, so Cancel closes immediately (no dirty guard).
+# ============================================================
+
+- assertVisible:
+    id: "Cancel card edit"
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 779-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 779-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 779-${ATTEMPT_ID}"
+- assertNotVisible: "Row Click Player ${ATTEMPT_ID}"

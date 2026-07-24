@@ -1,73 +1,108 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Features propagate from set to cards via SetAttributesPanel, per-card override survives re-propagation (per-worker custom set)"
+name: "Set-level feature edit saves that single row (Saved toast) and does NOT cascade to a card with its own value (per-worker custom set)"
 tags:
   - set-selector
   - regression
 ---
-# Full propagation lifecycle test for NEO-24.
+# NEO-71-74 write-once feature snapshots — single-row edit, NO cascade.
+#
+# WHAT CHANGED (why this flow was rewritten):
+#   The old NEO-24 propagation engine cascaded a set-level feature edit down to
+#   every descendant card and toasted "Updated N cards", and cards showed an
+#   "Inherited:" label + a "Revert to inherited" button. NEO-71-74 REMOVED all
+#   of that. `setSelectorOptionFeature` (convex/selectorOptions.ts) now patches
+#   ONLY the single row being edited and returns null; every card carries a
+#   complete `features` snapshot copied down ONCE at creation time and edited
+#   independently via `setCardFeature`. The panel shows a flat "Saved {label}"
+#   confirmation toast — there is no card count and no propagation to survive.
+#
+# SUBJECT FIELD = "Country of Origin" (NOT Signed By, NOT Reprint — see WHY below).
+#
+# WHAT THIS FLOW NOW PROVES (its charter, unchanged in spirit):
+#   1. FEATURE EDITING AT THE SET LEVEL: editing "Value for Country of Origin" on
+#      the set row saves and shows the new "Saved Country of Origin" confirmation
+#      toast (not the deleted "Updated N cards" propagation toast).
+#   2. NO UNWANTED CASCADE TO CARDS: a card that already holds its OWN Country of
+#      Origin value ("CooTest-CARD") is NOT touched when the set-level Country of
+#      Origin is later edited to a different value ("CooTest-SET2"). The card still
+#      shows its own value — proving the set edit is a single-row patch, not a fan-out.
+#
+# WHY THE SUBJECT FIELD IS "Country of Origin" AND NOT "Signed By" OR "Reprint"
+# (NEO-71-74):
+#   This no-cascade proof FUNDAMENTALLY needs THREE distinct values to be
+#   unambiguous — a set value ("SET1"), a DIFFERENT card override ("CARD"), and a
+#   SECOND set value ("SET2") — so that Step D can tell "the card kept its own
+#   value" apart from "the cascade overwrote the card." That rules out every
+#   boolean/closed-vocabulary control: Reprint became a "checkbox" (only
+#   "true"/"false", AND a checkbox's state is unobservable in Maestro-web —
+#   maestro-web.js `traverse` emits no `checked` attribute and a valueless
+#   `<input type=checkbox>` reads `value="on"` for both states); Vintage/Case Hit/
+#   Prospect/Relic are likewise checkboxes; Short Print/Autographed are
+#   toggleOptions pills (aria-pressed, unreadable); League/Era are constrained
+#   `<select>`s (can't hold an arbitrary sentinel). "Signed By" (signedBy) — the
+#   field this flow used before — is FREE-TEXT but is `hiddenAtLevels: ["set"]`
+#   in expectedFeatures.ts, so the SetAttributesPanel renders NO "Value for Signed
+#   By" row at all (Step A could never find it → the flow died at Step A).
+#   "Country of Origin" (countryOfOrigin) is the free-text feature that (a) has NO
+#   hiddenAtLevels, so it renders at BOTH the set level (proven by
+#   new-chain-autopopulates-features.yaml, which asserts it on the SetAttributes
+#   panel) AND the card level (proven by card-autopopulates-features.yaml, and by
+#   CardFeaturesEditor's own filter which only drops hiddenAtLevels-card /
+#   autographed / sport-mismatched features), (b) accepts an arbitrary free-text
+#   sentinel value (needed for the three distinct SET1/CARD/SET2 markers this proof
+#   relies on — it is a plain eBay item-specific text `<input>`, not a constrained
+#   list), and (c) has the SAME set-vs-card write-once / no-cascade semantics every
+#   feature now shares. Its input VALUE is directly readable via getNodeText
+#   (`<input>` text = value), so the three-distinct-string-sentinel mechanism the
+#   flow was built around transfers verbatim — only the field name and sentinel
+#   prefix change (Sby→Coo). (Country of Origin carries a setName-level default
+#   "USA", but Step A overwrites it before the card is ever created, and Step B
+#   overwrites the card's own copy with "CooTest-CARD" regardless of what it
+#   inherited — so the default never confounds the three sentinels.)
+#   Reprint's own (checkbox) save path is covered by topps-chrome-add-feature.yaml.
 #
 # ISOLATION: uses a per-worker CUSTOM set (fp-{WORKER_INDEX}) under
-# Baseball → 2024 → Topps. Each of the 3 CI workers owns a separate custom
-# set so concurrent workers cannot interfere. The real 2024 Topps Chrome set
-# is never touched — that path is owned exclusively by topps-chrome-*.yaml
-# and topps-chrome-add-feature.yaml.
+# Baseball → 2024 → Topps. Each CI worker owns a separate custom set so
+# concurrent workers cannot interfere. The real 2024 Topps Chrome set is never
+# touched — that path is owned exclusively by topps-chrome-*.yaml.
 #
-# DRILL DELEGATION: Step 0 and Step D both call util-drill-to-custom.yaml
-# with Baseball/2024/Topps/fp-{N}. The util is idempotent (handles fp-{N}
-# already existing on Step D revisit) and returns at the Variant Types column.
-# Baseball/2024/Topps are pre-seeded by cascade setup.yaml.
+# DRILL DELEGATION (R9): every drill goes through util-drill-to-custom.yaml
+# (idempotent — handles fp-{N} already existing on revisit) and returns at the
+# Variant Types column. Baseball/2024/Topps are pre-seeded by cascade setup.yaml.
 #
-# CARD CHECKLIST PATH:
-#   Custom sets reach CardChecklist via: Set → Insert (VT) →
-#   custom insert entry. fp-{N} → Insert → fp-insert-{N} → CardChecklist
-#   This mirrors card-detail-panel.yaml's proven "cd-{N} → Insert → Base" path.
-#   The SetAttributesPanel sets features on the SET level (fp-{N}) and they
-#   propagate to all descendant cards in the checklist of fp-insert-{N}.
-#
-# WHAT THIS TESTS:
-#   1. SetAttributesPanel: setting a feature at the set (setName) level saves
-#      and shows a toast with "Updated N cards" (propagation engine ran).
-#   2. A card inherits the set-level value: opening CardFeaturesEditor on a
-#      child card shows "Inherited: PropTest-MLB" under the League row.
-#   3. Per-card override: typing a different value saves the override on just
-#      that card. The row changes from "Inherited" to the new value.
-#   4. Re-propagation at the set level to a new value updates non-overridden
-#      cards but the overridden card retains its own value.
-#   5. Revert: after reverting the override the card inherits the new set value.
+# CARD CHECKLIST PATH: custom sets reach CardChecklist via Set → Insert (VT) →
+# custom insert entry: fp-{N} → Insert → fp-insert-{N} → CardChecklist. Mirrors
+# card-detail-panel.yaml's proven "cd-{N} → Insert → Base" path.
 #
 # FLOW:
-#   Step 0: Drill to Baseball → 2024 → Topps → custom set fp-{WORKER_INDEX}
-#           via util-drill-to-custom.yaml.
-#   Step A: Set League = "PropTest-MLB" at the set level → assert toast.
-#   Step B: Drill to Insert → fp-insert-{WORKER_INDEX} → add card #992-{ATTEMPT_ID}
-#           → open CardFeaturesEditor → verify "Inherited: PropTest-MLB".
-#   Step C: Override League to "PropTest-NL" on that card.
-#   Step D: Back at set level → update League to "PropTest-AL" → verify toast.
-#           Re-drill via util-drill-to-custom.yaml (idempotent revisit).
-#   Step E: Re-open override card → verify it still shows "PropTest-NL".
-#   Step F: Revert override → card now inherits "PropTest-AL".
+#   Step 0: Drill Baseball → 2024 → Topps → custom set fp-{WORKER_INDEX}.
+#   Step A: Set Country of Origin = "CooTest-SET1" at the set level → assert "Saved
+#           Country of Origin" toast (single-row save).
+#   Step B: Drill Insert → fp-insert-{WORKER_INDEX} → add card 992-{ATTEMPT_ID}
+#           → open the card features editor → set the CARD's own Country of Origin =
+#           "CooTest-CARD" → assert the card row shows "CooTest-CARD". Save card.
+#   Step C: Re-drill to the set level → edit Country of Origin to "CooTest-SET2" →
+#           assert "Saved Country of Origin" toast (the set edit that must NOT
+#           reach the card).
+#   Step D: Re-open the override card → assert its Country of Origin STILL shows
+#           "CooTest-CARD" (NOT "CooTest-SET2") — no cascade.
 #   Cleanup: delete the test card.
 #
-# PREREQUISITE: cascade setup.yaml must have run (requires:setup-done) so
-# Baseball, 2024, and Topps all exist in the shared Convex DB.
+# PREREQUISITE: cascade setup.yaml must have run so Baseball, 2024, and Topps
+# exist in the shared Convex DB.
 
 - launchApp
-# Wait for the Clerk testing-token sign-in + redirect to /set-selector to
-# fully complete before calling the util. The util issues its own openLink
-# /set-selector which only works within an already-authenticated session.
-# Without this wait the openLink fires before Clerk finishes the token
-# exchange and the browser is redirected back to the sign-in page.
+# Wait for the Clerk testing-token sign-in + redirect to /set-selector to fully
+# complete before calling the util (its own openLink /set-selector only works
+# within an already-authenticated session).
 - extendedWaitUntil:
     visible: "Set Selector"
     timeout: 45000
 
 # ============================================================
 # STEP 0 — DRILL TO PER-WORKER CUSTOM SET under Baseball/2024/Topps
-#
-# util-drill-to-custom.yaml handles: openLink /set-selector + wait + all 4
-# levels. Returns at Variant Types column with Add-custom-Variant-Types
-# in viewport. Idempotent: fp-{N} already exists → select path only.
+# Returns at the Variant Types column. Idempotent on revisit.
 # ============================================================
 
 - runFlow:
@@ -81,16 +116,14 @@ tags:
 - assertVisible: "Variant Types"
 
 # ============================================================
-# STEP A — Set League = "PropTest-MLB" at the set (setName) level
+# STEP A — Set Country of Origin = "CooTest-SET1" at the set (setName) level
 #
-# The SetAttributesPanel renders at the setName level (no card checklist).
-# Panel defaults EXPANDED for custom sets with no card checklist.
-#
-# Two-step write: PropTest-X → PropTest-MLB.
-#   - PropTest-X forces a real DB write even if a prior run left PropTest-MLB.
-#   - PropTest-MLB is then always a genuine change from PropTest-X.
-#   - For a fresh set with no cards yet, "Updated 0 cards" is fine.
-#     Cards added in Step B will inherit PropTest-MLB via the stored set value.
+# The SetAttributesPanel renders at the setName level (no card checklist) and
+# defaults EXPANDED for custom sets. handleSaveFeature returns early on a no-op
+# (new value == stored value → no toast), so we write a per-attempt UNIQUE value
+# ("CooTest-SET1-{ATTEMPT_ID}") — always a real change from whatever a prior run
+# left behind → the "Saved Country of Origin" toast always fires (wedge-proof; avoids the
+# fixed-sentinel no-op wedge an interrupted run can leave on shared dev).
 # ============================================================
 
 - scrollUntilVisible:
@@ -117,45 +150,31 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Country of Origin"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 10000
 
-# First write: clearing sentinel — guarantees DB value changes.
+# Single per-attempt UNIQUE write — always a real change → toast always fires.
 - tapOn:
-    id: "Value for League"
-- eraseText: 20
-- inputText: "PropTest-X"
+    id: "Value for Country of Origin"
+- eraseText: 50
+- inputText: "CooTest-SET1-${ATTEMPT_ID}"
 - pressKey: Enter
-# 7s timeout: 0–1 card propagation write; must land in 7s (Convex write SLA).
+# Single-row Convex patch — must confirm within the 7s write SLA.
 - extendedWaitUntil:
     visible:
-      text: ".*Updated [0-9]+ cards.*"
-    timeout: 7000
-
-# Second write: the canonical test value.
-- tapOn:
-    id: "Value for League"
-- eraseText: 20
-- inputText: "PropTest-MLB"
-- pressKey: Enter
-- extendedWaitUntil:
-    visible:
-      text: ".*Updated [0-9]+ cards.*"
+      text: ".*Saved Country of Origin.*"
     timeout: 7000
 
 # ============================================================
-# STEP B — Drill to Insert → fp-insert-{WORKER_INDEX}, add a card, verify
-#          inherited value.
+# STEP B — Drill to Insert → fp-insert-{WORKER_INDEX}, add a card, give it its
+#          OWN Country of Origin value.
 #
-# Card checklist path for custom sets: Set → Insert (variant type) →
-# custom insert entry → CardChecklist. This is the proven path used by
-# card-detail-panel.yaml (cd-{N} → Insert → "Base").
-#
-# The Variant Types column is above the fold after Step A wrote to the panel.
-# Scroll UP (swipe-down gesture) to bring the column back into view.
+# Card checklist path for custom sets: Set → Insert (variant type) → custom
+# insert entry → CardChecklist (proven path from card-detail-panel.yaml).
+# After Step A the Variant Types column is above the fold — scroll UP.
 # ============================================================
 
 - scrollUntilVisible:
@@ -189,8 +208,8 @@ tags:
 # Wait for the Inserts column header to confirm selection.
 - assertVisible: "Inserts"
 
-# Add a custom insert entry "fp-insert-{WORKER_INDEX}" if absent.
-# This is the variant that will hold the card checklist.
+# Add a custom insert entry "fp-insert-{WORKER_INDEX}" if absent — the variant
+# that holds the card checklist.
 - scrollUntilVisible:
     element:
       id: "Add custom Inserts"
@@ -216,12 +235,9 @@ tags:
     timeout: 10000
 - tapOn: "fp-insert-${WORKER_INDEX || 0}"
 
-# Wait for CardChecklist to render (custom subtree — no BSC/SL calls,
-# short-circuits quickly). Use "Open add card form" as the signal — this is
-# the reliable indicator on custom sets. "Fetch from Marketplaces" and
-# "No cards in this checklist yet." are NOT reliable here: the custom subtree
-# gate short-circuits adapter calls, and the checklist renders the add-form
-# button directly. Mirror card-detail-panel.yaml's proven pattern.
+# Wait for CardChecklist to render — "Open add card form" is the reliable signal
+# on custom sets (adapter calls short-circuit; no BSC/SL round-trip). Mirrors
+# card-detail-panel.yaml.
 - scrollUntilVisible:
     element:
       id: "Open add card form"
@@ -236,6 +252,15 @@ tags:
 - inputText: "992-${ATTEMPT_ID}"
 - tapOn: "Player name"
 - inputText: "Propagation Test Player ${ATTEMPT_ID}"
+# Scroll the "Submit new card" button into center before tapping — it sits in
+# the y=610-642 footer-steal band on the 1024×629 CI viewport; centerElement
+# lands it near y≈315 so its own scroll-before-tap CDP call has content to
+# scroll to (without it the tap crashes "null cannot be cast to kotlin.Int").
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
 - tapOn:
     id: "Submit new card"
 
@@ -259,50 +284,44 @@ tags:
 - assertVisible:
     id: "Card name"
 
-# Expand CardFeaturesEditor.
+# Expand the card features editor.
 - tapOn:
     id: "Show features editor"
 - assertVisible:
     id: "Card features editor"
 
-# The card inherits the set-level League value. The "Inherited: PropTest-MLB"
-# label appears below the input when the card has no override.
-# (Step A wrote PropTest-MLB to the set before this card existed; the
-# propagation engine stores the value on the set entity. Cards created
-# afterward look up the set value and display it as "Inherited: PropTest-MLB".)
-- assertVisible:
-    text: ".*PropTest-MLB.*"
-
-# ============================================================
-# STEP C — Override League to "PropTest-NL" on this card
-# ============================================================
-
+# Give this card its OWN Country of Origin value (a card-level setCardFeature write). The
+# card's Country of Origin input starts copied-down-at-creation (CooTest-SET1 from the
+# snapshot); erase + type the distinct sentinel so the card's own value is
+# unambiguously "CooTest-CARD". The card feature inputs now carry unique per-field
+# marker classes (useFieldTestClass on CardFeatureRow, mirroring SetFeatureRow),
+# so maestro-web's inputText lands in Country of Origin — NOT the first shared-class text
+# input (Card Type), which is where it wrongly landed before that fix.
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Country of Origin"
     centerElement: true
     timeout: 10000
 - tapOn:
-    id: "Value for League"
-- eraseText: 20
-- inputText: "PropTest-NL"
+    id: "Value for Country of Origin"
+- eraseText: 50
+- inputText: "CooTest-CARD"
 - pressKey: Enter
 
-# After save-on-Enter the "Inherited:" label disappears (card has its own value).
+# The card row's Country of Origin input now shows this card's own value. The combined
+# {id, text} selector matches ONLY the node with BOTH that aria-label AND that
+# value (the set panel's Country of Origin input, if present, holds a different value) —
+# unambiguous confirmation the card-level write landed.
 - extendedWaitUntil:
-    notVisible: ".*Inherited: PropTest-MLB.*"
-    timeout: 10000
-
-# The League input now shows "PropTest-NL".
-- assertVisible:
-    id: "Value for League"
+    visible:
+      id: "Value for Country of Origin"
+      text: ".*CooTest-CARD.*"
+    timeout: 7000
 
 # Save the card edit (closes the form). Scroll Save button into view first —
 # with features expanded it may be below the 1024×629 headless viewport.
-# waitToSettleTimeoutMs: 3000 — the pressKey: Enter above triggered a Convex
-# write; the DOM re-renders while writing. Scrolling too soon causes CDP
-# MismatchedInputException crashes (page mid-re-render). 3s settle gives
-# React time to finish before the scroll runs.
+# waitToSettleTimeoutMs: 3000 — the pressKey Enter above triggered a Convex
+# write; scrolling mid-re-render causes CDP crashes, so let React settle.
 - scrollUntilVisible:
     element:
       id: "Save card edit"
@@ -321,12 +340,11 @@ tags:
     timeout: 15000
 
 # ============================================================
-# STEP D — Re-propagate at set level: League → "PropTest-AL"
+# STEP C — Edit the SET-level Country of Origin to "CooTest-SET2"
 #
-# Navigate back to the custom set level via util-drill-to-custom.yaml.
-# The util performs its own openLink /set-selector; items pre-exist from
-# Step 0 so it follows the idempotent select path. Returns at Variant Types.
-# This tests that re-propagation skips our overridden card.
+# Navigate back to the custom set level (idempotent util revisit). This is the
+# set edit that MUST NOT reach our card. A per-attempt UNIQUE value
+# ("CooTest-SET2-{ATTEMPT_ID}") is always a real change → "Saved Country of Origin" fires.
 # ============================================================
 
 - runFlow:
@@ -339,8 +357,6 @@ tags:
 
 - assertVisible: "Variant Types"
 
-# SetAttributesPanel renders at setName level. Panel defaults EXPANDED for
-# custom sets. Scroll to the toggle to locate the panel area.
 - scrollUntilVisible:
     element:
       id: "Edit attributes"
@@ -349,7 +365,7 @@ tags:
     waitToSettleTimeoutMs: 1000
     timeout: 15000
 
-# IDEMPOTENT EXPAND for Step D re-navigation.
+# IDEMPOTENT EXPAND for the Step C re-navigation.
 - runFlow:
     when:
       visible:
@@ -362,31 +378,31 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Value for League"
+      id: "Value for Country of Origin"
     centerElement: true
     visibilityPercentage: 10
     waitToSettleTimeoutMs: 1000
     timeout: 10000
 - tapOn:
-    id: "Value for League"
-- eraseText: 20
-- inputText: "PropTest-AL"
+    id: "Value for Country of Origin"
+- eraseText: 50
+- inputText: "CooTest-SET2-${ATTEMPT_ID}"
 - pressKey: Enter
-
-# Toast: at least 1 card updated (the non-overridden cards get "PropTest-AL").
-# Our override card (#992) has "PropTest-NL" — it is in skippedAsOverridden.
-# 7s timeout: propagation over 0–1 non-overridden cards (Convex write SLA).
 - extendedWaitUntil:
     visible:
-      text: ".*Updated [0-9]+ cards.*"
+      text: ".*Saved Country of Origin.*"
     timeout: 7000
 
 # ============================================================
-# STEP E — Verify override card still shows "PropTest-NL", not "PropTest-AL"
+# STEP D — Verify the card STILL shows its own "CooTest-CARD" (no cascade)
+#
+# Re-drill to the card via Insert → fp-insert-{N}. The card's own Country of Origin value
+# is read fresh from its snapshot. If the Step C set edit had cascaded (old
+# behaviour), the card would now read "CooTest-SET2"; under write-once single-
+# row patching it must still read "CooTest-CARD".
 # ============================================================
 
-# Variant Types column is above the fold after writing to the panel.
-# Scroll UP (swipe-down gesture) to bring it back into view.
+# Variant Types column is above the fold after writing to the panel — scroll UP.
 - scrollUntilVisible:
     element:
       text: "Insert"
@@ -395,7 +411,6 @@ tags:
     timeout: 15000
 - tapOn: "Insert"
 
-# Wait for the Inserts column header to confirm selection.
 - assertVisible: "Inserts"
 
 - scrollUntilVisible:
@@ -418,7 +433,6 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     timeout: 30000
-
 - tapOn:
     id: "Edit card 992-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -430,48 +444,36 @@ tags:
 - assertVisible:
     id: "Card features editor"
 
-# The override card should show "PropTest-NL" in the League input, NOT "PropTest-AL".
-# The card has an override so no "Inherited:" label shows — just "PropTest-NL".
-- assertVisible:
-    id: "Value for League"
-
-# The "Revert League to inherited" button is visible (card has an override).
-- assertVisible:
-    id: "Revert League to inherited"
-
-# No "Inherited: PropTest-AL" should be visible (override is active).
-- assertNotVisible: ".*Inherited: PropTest-AL.*"
-
-# ============================================================
-# STEP F — Revert the override; card should now inherit "PropTest-AL"
-# ============================================================
-
-- tapOn:
-    id: "Revert League to inherited"
-
-# After revert, "Inherited: PropTest-AL" label appears (card falls back to set value).
-- extendedWaitUntil:
-    visible: ".*Inherited: PropTest-AL.*"
+# THE CORE NO-CASCADE ASSERTION: the card's Country of Origin input still holds its own
+# value. The combined {id, text} selector matches ONLY the node whose aria-label
+# is "Value for Country of Origin" AND whose value is "CooTest-CARD".
+- scrollUntilVisible:
+    element:
+      id: "Value for Country of Origin"
+      text: ".*CooTest-CARD.*"
+    centerElement: true
     timeout: 10000
 
-# The "Revert" button disappears (no more override on League).
-- assertNotVisible:
-    id: "Revert League to inherited"
+# The set-level value must appear NOWHERE on the card view — the set edit did
+# not reach this card (nor the fp-insert node the panel shows here).
+- assertNotVisible: ".*CooTest-SET2.*"
 
-# Save and close.
-# waitToSettleTimeoutMs: 3000 — tapOn: "Revert League to inherited" above
-# fires a Convex write; scroll during re-render causes CDP crashes.
+# Close the card edit form before cleanup. Deleting a row while its inline edit
+# form is still open does NOT surface the "Confirm?" delete prompt, so we save +
+# close the form and re-materialize the card row first (mirrors the pre-cleanup
+# handoff the old flow did). No pending write here (Step D only reads), so a
+# short settle suffices.
 - scrollUntilVisible:
     element:
       id: "Save card edit"
     centerElement: true
     visibilityPercentage: 50
-    waitToSettleTimeoutMs: 3000
+    waitToSettleTimeoutMs: 1000
     timeout: 20000
 - tapOn:
     id: "Save card edit"
 
-# Confirm the form closed and the row is still visible.
+# Re-materialize the card row (Virtuoso may reset scroll on form close).
 - scrollUntilVisible:
     element:
       text: "Propagation Test Player ${ATTEMPT_ID}"
@@ -482,6 +484,12 @@ tags:
 # CLEANUP — delete this attempt's test card
 # ============================================================
 
+- scrollUntilVisible:
+    element:
+      id: "Delete card 992-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
 - tapOn:
     id: "Delete card 992-${ATTEMPT_ID}"
 - assertVisible: "Confirm?"

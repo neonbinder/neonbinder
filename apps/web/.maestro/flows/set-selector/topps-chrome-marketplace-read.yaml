@@ -15,12 +15,16 @@ tags:
 #
 # WHAT THIS VERIFIES:
 #   1. BSC/SportLots sync (run by the setup track) persisted feature data on the
-#      real Topps Chrome set — League rows and the "Will propagate to N cards"
-#      counter are visible.
+#      real Topps Chrome set — the League feature row is rendered.
 #   2. The panel heading, breadcrumb, and at least one populated metadata field
 #      are present — the panel renders correctly with real marketplace data.
 #   3. At least one feature input row (aria-label "Value for League") is rendered,
 #      confirming the features list is populated from the BSC/SL sync.
+#
+# NEO-71-74: the "Will propagate to N cards" preview counter this flow used to
+# assert has been DELETED (feature saves are now single-row write-once patches
+# with no fan-out preview). That assertion is dropped below; the League feature
+# row + metadata section remain the proof that marketplace data is readable.
 #
 # PREREQUISITE (implicit): the setup track must have run at least once on this
 # Convex deployment so Topps Chrome is in selectorOptions. On a brand-new
@@ -92,9 +96,8 @@ tags:
 # scrollUntilVisible (the scroll IS the assertion: it fails loudly if the
 # element never appears — R6, no redundant trailing assertVisible), walking
 # the panel TOP->BOTTOM so every scroll moves DOWN monotonically:
-#   1) "Will propagate to N cards" (first row of the expanded body)
-#   2) the "Value for League" feature input (mid)
-#   3) the setMetadata section labels (bottom of the grid)
+#   1) the "Value for League" feature input (top of the feature grid)
+#   2) the setMetadata section labels (bottom of the grid)
 # NO centerElement: a plain scroll lands the target in the safe mid/lower
 # band; centering is unnecessary for a read-only assert (no tap follows), and
 # the panel is the page's last content so there's nothing below to center
@@ -103,33 +106,26 @@ tags:
 # visibility, so a plain scroll is correct for these asserts.
 # ============================================================
 
-# "Will propagate to N cards" preview counter — first row of the expanded body,
-# visible when feature rows exist. (Was a bare assertVisible that timed out on
-# cold CI: the counter renders below the fold and assertVisible does not scroll
-# — NEO-39 first-attempt fix.)
-- scrollUntilVisible:
-    element:
-      text: ".*Will propagate to.*"
-    visibilityPercentage: 10
-    timeout: 7000
-
 # At least one feature input row — the League feature is the primary
 # marketplace-derived feature on Baseball sets. Its input (aria-label
 # "Value for League") confirms the features list is populated from the BSC/SL
-# sync. It sits below the "Will propagate to" counter, so this scrolls further
-# down from the previous step.
+# sync. It is the first row of the expanded feature grid.
 - scrollUntilVisible:
     element:
       id: "Value for League"
     visibilityPercentage: 10
     timeout: 7000
 
-# The setMetadata section renders at the BOTTOM of the panel grid (last, below
-# the feature rows). At set level the metadata labels (Total Cards / Block /
-# TCDB Set ID) always render, so the section is present in either the synced or
-# empty state (not a blank screen). (Was a bare assertVisible below the fold.)
+# The release-metadata rows (Release Date / Total Cards / Block) fold inline
+# into the feature grid after the NEO-71-74 EXPECTED_FEATURES reorder — they
+# now render mid-panel (below the classification rows), NOT as a separate
+# bottom section, and NOT last (card traits / physical specs / UPC follow).
+# TCDB Set ID was removed in NEO-71-74. At set level the "Total Cards" and
+# "Block" labels always render, so this asserts the metadata rows are present
+# (synced or empty). Both sit BELOW "Value for League" (row 1), so the default
+# DOWN scroll from the League row above reaches them.
 - scrollUntilVisible:
     element:
-      text: ".*No set metadata yet.*|.*Released.*|.*Cards.*|.*TCDB.*|.*Block.*"
+      text: ".*Total Cards.*|.*Block.*"
     visibilityPercentage: 10
     timeout: 7000
