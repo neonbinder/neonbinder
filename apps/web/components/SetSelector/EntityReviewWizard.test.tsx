@@ -54,6 +54,10 @@ vi.mock("../../convex/_generated/api", () => ({
       recordDecision: "entityReviewQueue.recordDecision",
       cancelBatch: "entityReviewQueue.cancelBatch",
     },
+    // CareerTeamEntry (rendered for player rows) reads teams.list for its
+    // typeahead; the useQuery mock below returns undefined for it, which is
+    // fine — free-text entry doesn't depend on the suggestion list.
+    teams: { list: "teams.list" },
   },
 }));
 
@@ -367,6 +371,111 @@ describe("EntityReviewWizard — decision actions", () => {
         action: "link",
         linkedPlayerId: undefined,
         linkedTeamId: "linked-id-123",
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Manual career-team entry (player rows only)
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — manual career-team entry", () => {
+  it("shows the manual career-team control for a player row", () => {
+    currentRows = [makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } })];
+    renderWizard();
+
+    expect(screen.getByLabelText("Career team name")).toBeTruthy();
+    expect(screen.getByLabelText("From year")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add career team" })).toBeTruthy();
+  });
+
+  it("does NOT show the manual career-team control for a team row", () => {
+    currentRows = [makeRow({ kind: "team", status: "ready", enrichment: { league: "MLB" } })];
+    renderWizard();
+
+    expect(screen.queryByLabelText("Career team name")).toBeNull();
+  });
+
+  it("is available even when the player has no Wikidata match (the Daulton Varsho case)", () => {
+    currentRows = [makeRow({ kind: "player", status: "error", enrichment: undefined })];
+    renderWizard();
+
+    expect(screen.getByText("No Wikidata match found.")).toBeTruthy();
+    // Manual entry is not gated to the enrichment-present branch.
+    expect(screen.getByLabelText("Career team name")).toBeTruthy();
+  });
+
+  it("stages an entry as a removable chip, then removes it", () => {
+    currentRows = [makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } })];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Toronto Blue Jays" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2023" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    // Chip appears, and the mini-form cleared.
+    expect(screen.getByText(/Toronto Blue Jays \(2023–present\)/)).toBeTruthy();
+    expect((screen.getByLabelText("Career team name") as HTMLInputElement).value).toBe("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove Toronto Blue Jays" }));
+    expect(screen.queryByText(/Toronto Blue Jays/)).toBeNull();
+  });
+
+  it("does not add an entry when the year is out of bounds (Add stays disabled)", () => {
+    currentRows = [makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } })];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Ancient Club" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "1200" } });
+
+    const addButton = screen.getByRole("button", { name: "Add career team" }) as HTMLButtonElement;
+    expect(addButton.disabled).toBe(true);
+    fireEvent.click(addButton);
+    expect(screen.queryByText(/Ancient Club/)).toBeNull();
+  });
+
+  it("'Add as New Player' passes staged manualCareerTeams to recordDecision", async () => {
+    const row = makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Arizona Diamondbacks" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2020" } });
+    fireEvent.change(screen.getByLabelText("To year (optional)"), { target: { value: "2022" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "create",
+        manualCareerTeams: [
+          { name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 },
+        ],
+      });
+    });
+  });
+
+  it("'Add as New Player' with no staged entries passes manualCareerTeams: undefined", async () => {
+    const row = makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "create",
+        manualCareerTeams: undefined,
       });
     });
   });

@@ -6,6 +6,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import EntityLinkSearch from "./EntityLinkSearch";
+import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 
 /**
  * NEO-92: step-through review wizard, replaces the old single-screen
@@ -74,6 +75,11 @@ export default function EntityReviewWizard({
   );
 
   const [linkingOpen, setLinkingOpen] = useState(false);
+  // Manual career-team entries the admin has staged for the CURRENT player
+  // row (only ever populated for a player). Held here (not in CareerTeamEntry)
+  // so it resets per-row alongside linkingOpen and is passed through to
+  // recordDecision on "Add as New Player".
+  const [stagedCareerTeams, setStagedCareerTeams] = useState<CareerTeamDraft[]>([]);
   const [cancelling, setCancelling] = useState(false);
   const [bulkCreating, setBulkCreating] = useState(false);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
@@ -95,6 +101,7 @@ export default function EntityReviewWizard({
   // the wrong row.
   useEffect(() => {
     setLinkingOpen(false);
+    setStagedCareerTeams([]);
   }, [current?._id]);
 
   // Focus the final Save button as soon as it appears so Enter immediately
@@ -131,8 +138,16 @@ export default function EntityReviewWizard({
 
   if (!isOpen || rows === undefined) return null;
 
-  const handleCreate = async (reviewRowId: Id<"entityReviewQueue">) => {
-    await recordDecision({ reviewRowId, action: "create" });
+  const handleCreate = async (
+    reviewRowId: Id<"entityReviewQueue">,
+    manualCareerTeams?: CareerTeamDraft[],
+  ) => {
+    await recordDecision({
+      reviewRowId,
+      action: "create",
+      manualCareerTeams:
+        manualCareerTeams && manualCareerTeams.length ? manualCareerTeams : undefined,
+    });
   };
   const handleLink = async (
     reviewRowId: Id<"entityReviewQueue">,
@@ -265,7 +280,52 @@ export default function EntityReviewWizard({
                   />
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <NeonButton onClick={() => void handleCreate(current._id)}>
+                    {current.kind === "player" && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs text-gray-400">
+                          Add career team history manually
+                          <span className="text-gray-500"> (optional)</span>:
+                        </p>
+                        {stagedCareerTeams.length > 0 && (
+                          <ul className="flex flex-wrap gap-1.5" aria-label="Staged career teams">
+                            {stagedCareerTeams.map((ct, idx) => (
+                              <li key={`${ct.name}-${ct.fromYear}-${idx}`}>
+                                <span className="inline-flex items-center gap-1 rounded-full border border-gray-700 bg-gray-800 px-2 py-0.5 text-xs text-gray-200">
+                                  {ct.name} ({ct.fromYear}
+                                  {ct.toYear ? `–${ct.toYear}` : "–present"})
+                                  <button
+                                    type="button"
+                                    aria-label={`Remove ${ct.name}`}
+                                    onClick={() =>
+                                      setStagedCareerTeams((prev) =>
+                                        prev.filter((_, i) => i !== idx),
+                                      )
+                                    }
+                                    className="text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
+                                  >
+                                    ×
+                                  </button>
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        <CareerTeamEntry
+                          sport={current.sport}
+                          onAdd={(entry) =>
+                            setStagedCareerTeams((prev) => [...prev, entry])
+                          }
+                        />
+                      </div>
+                    )}
+                    <NeonButton
+                      onClick={() =>
+                        void handleCreate(
+                          current._id,
+                          current.kind === "player" ? stagedCareerTeams : undefined,
+                        )
+                      }
+                    >
                       Add as New {kindLabel(current.kind)}
                     </NeonButton>
                     <button

@@ -48,14 +48,39 @@ const enrichmentValidator = v.object({
   espnId: v.optional(v.string()),
 });
 
+// Manual career-team entries the admin can add for a player row in the
+// wizard (see recordDecision). Kept as a standalone validator so both the
+// stored `decision` shape and recordDecision's args validate identically.
+const manualCareerTeamValidator = v.object({
+  name: v.string(),
+  fromYear: v.number(),
+  toYear: v.optional(v.number()),
+});
+
 const decisionValidator = v.union(
-  v.object({ action: v.literal("create") }),
+  v.object({
+    action: v.literal("create"),
+    manualCareerTeams: v.optional(v.array(manualCareerTeamValidator)),
+  }),
   v.object({
     action: v.literal("link"),
     linkedPlayerId: v.optional(v.id("players")),
     linkedTeamId: v.optional(v.id("teams")),
   }),
 );
+
+// Earliest plausible year for a career-team entry — 1869 (first openly
+// professional baseball club). A deliberately loose lower bound: the point is
+// to reject nonsense (year 0, negative, a mistyped 5-digit year), not to
+// encode sport-specific history.
+const MIN_CAREER_YEAR = 1869;
+
+// Upper bound on how many career-team entries an admin can attach to a single
+// player row in the wizard. Not a security boundary (this path is admin-gated)
+// — a guard rail against an unbounded write reaching players.teamYears in
+// commitCardChecklist. A real player's career spans a handful of teams; 64 is
+// generous headroom.
+const MAX_MANUAL_CAREER_TEAMS = 64;
 
 // `createdByUserId` is audit/scoping-only — see toPublicRow below. Mirrors
 // the players.ts/teams.ts pattern: internalQuery reads the full row,
@@ -226,6 +251,10 @@ export const recordDecision = mutation({
     action: v.union(v.literal("create"), v.literal("link")),
     linkedPlayerId: v.optional(v.id("players")),
     linkedTeamId: v.optional(v.id("teams")),
+    // Only meaningful for a player-row "create" decision — extra career-team
+    // history the admin typed by hand in the wizard (Wikidata found nothing,
+    // or missed a team). Validated below before it's trusted.
+    manualCareerTeams: v.optional(v.array(manualCareerTeamValidator)),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -235,7 +264,56 @@ export const recordDecision = mutation({
     if (!row) throw new Error("Review row not found");
 
     if (args.action === "create") {
-      await ctx.db.patch(args.reviewRowId, { decision: { action: "create" } });
+      // Defense in depth: this is admin-gated, but still validate the shape
+      // so a malformed year can never reach the players.teamYears write in
+      // commitCardChecklist. Loose bounds — reject nonsense, not history.
+      const maxYear = new Date().getFullYear() + 1;
+      const manualCareerTeams = args.manualCareerTeams ?? [];
+      // Cap the array length so an admin (or a compromised admin session)
+      // can't attach an unbounded number of career-team rows to a single
+      // player — a real player has a handful, 64 is generous headroom.
+      if (manualCareerTeams.length > MAX_MANUAL_CAREER_TEAMS) {
+        throw new Error(
+          `Too many manual career-team entries (${manualCareerTeams.length}); the maximum is ${MAX_MANUAL_CAREER_TEAMS}`,
+        );
+      }
+      for (const ct of manualCareerTeams) {
+        // Reject an empty/whitespace-only team name before it can reach the
+        // get-or-create team resolution in commitCardChecklist (which would
+        // otherwise mint a blank-named team). Mirrors how card-name
+        // collection elsewhere trims and filters empties.
+        if (ct.name.trim().length === 0) {
+          throw new Error("Career-team name cannot be empty");
+        }
+        if (
+          !Number.isInteger(ct.fromYear) ||
+          ct.fromYear < MIN_CAREER_YEAR ||
+          ct.fromYear > maxYear
+        ) {
+          throw new Error(
+            `Invalid career-team fromYear ${ct.fromYear} for "${ct.name}" (expected an integer in ${MIN_CAREER_YEAR}–${maxYear})`,
+          );
+        }
+        if (ct.toYear !== undefined) {
+          if (
+            !Number.isInteger(ct.toYear) ||
+            ct.toYear > maxYear ||
+            ct.toYear < ct.fromYear
+          ) {
+            throw new Error(
+              `Invalid career-team toYear ${ct.toYear} for "${ct.name}" (expected an integer between fromYear ${ct.fromYear} and ${maxYear})`,
+            );
+          }
+        }
+      }
+      await ctx.db.patch(args.reviewRowId, {
+        decision: {
+          action: "create",
+          // Omit the key entirely when empty, matching how `enrichment` is
+          // treated optionally elsewhere in this file.
+          ...(manualCareerTeams.length ? { manualCareerTeams } : {}),
+        },
+      });
       return null;
     }
 

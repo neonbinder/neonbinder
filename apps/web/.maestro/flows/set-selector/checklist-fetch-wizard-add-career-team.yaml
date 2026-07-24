@@ -1,0 +1,317 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — review wizard: admin manually adds career-team history to a player row (chip appears, invalid input is a no-op, wizard advances on Add as New)"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE: the NEO-92 follow-up CareerTeamEntry sub-component, rendered
+# inline in the EntityReviewWizard ONLY for a player row (kind === "player"). It
+# lets the admin hand-add {team, fromYear, toYear?} career-history entries — in
+# ADDITION to whatever the background Wikidata lookup found — before choosing
+# "Add as New Player". This flow proves that manual-entry mini-form end to end.
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#   - The wizard opens on the unique unknown CareerPlayer-${ATTEMPT_ID} (asserted
+#     by the wizard heading — the current item's name; the wizard renders exactly
+#     ONE item at a time, so a visible name IS the current item). Because that
+#     item is a PLAYER, the manual career-team affordance ("Add career team
+#     history manually", aria "Career team name") is asserted PRESENT before the
+#     feature action — the R2 precondition guard.
+#   - VALIDATION IS ENFORCED, garbage not silently accepted: with a team name but
+#     NO from-year, "+ Add" (aria "Add career team") is disabled, so tapping it is
+#     a no-op — asserted by the team name STILL sitting in the input (a successful
+#     add clears the form) and NO staged-chip list rendering yet.
+#   - A VALID add (name + from-year + to-year) makes a chip appear with the exact
+#     text "CareerTeam-… (2001–2005)" inside the "Staged career teams" list, and
+#     clears the mini-form.
+#   - The to-year-OPTIONAL branch renders "… (2010–present)"; the per-chip Remove
+#     control (aria "Remove {name}") deletes a staged entry.
+#   - "Add as New Player" (carrying the one kept staged entry) advances the wizard
+#     PAST the player row to the final "All reviewed" step; Confirm & Save commits
+#     with no error ("Saved 0 cards"). Because recordDecision re-validates the
+#     manual years server-side and commit's resolveTeamIdByName get-or-creates the
+#     staged team, a clean "Saved 0 cards" also proves the staged entry round-trips
+#     through the decision write AND commit-time team resolution without throwing.
+#
+# ── PERSISTED-STATE ASSERTION GAP (reported to owner, NOT worked around) ──
+#   The manually-staged team IS persisted at commit: resolveTeamIdByName inserts
+#   it into `teams` and it is attached to the new player's `teamYears`
+#   (selectorOptions.ts ~L4053-4065). But there is NO in-app UI surface to assert
+#   it against today:
+#     (a) No page renders a player's teamYears / career history at all (verified —
+#         teamYears has no consumer outside this wizard).
+#     (b) The obvious inverse-check — open the card's TeamPicker and find the new
+#         team as an existing row — DOES NOT WORK because of a sport-casing split:
+#         commit creates the team with sport="baseball" (lowercased sport ancestor,
+#         selectorOptions.ts:3459) while CardDetailPanel's TeamPicker queries
+#         teams.list({sport: ancestorSport}) with the RAW "Baseball"
+#         (CardChecklist.tsx:79). "baseball" ≠ "Baseball" → the created team is
+#         never in that picker's candidate pool. (This is the same casing hazard
+#         already documented in checklist-fetch-unknown-entities-link-existing.)
+#   So the assertable CEILING for this feature is the wizard chip + successful
+#   advance/commit, which this flow asserts fully. Adding a UI surface for a
+#   player's career-team history (or aligning the sport casing so the created team
+#   shows in the card's TeamPicker) is a PRODUCT change — flagged, not invented.
+#
+# ── DATA ISOLATION (per-worker custom set — same story as link-existing) ──
+#   The whole flow runs on a PER-WORKER CUSTOM SET (cte-${WORKER_INDEX}) under real
+#   Baseball/2024/Topps. A custom SET node makes the subtree custom (isCustomSubtree
+#   → BSC/SL skipped) so the wizard opens ONLY from THIS worker's own custom card's
+#   pending player name — never a shared marketplace fetch — and the selectorOptionId
+#   is private to this worker, so no concurrent runner can seed this wizard's batch.
+#   Because the SPORT ancestor is real "Baseball", fetchCardChecklist derives
+#   sport="baseball" (selectorOptions.ts lowercases it), so the wizard row / the
+#   CareerTeamEntry combobox both operate in sport "baseball" (its team-suggestion
+#   pool — routinely empty, no marketplace populates teams — is irrelevant here:
+#   the mini-form deliberately accepts a name matching nothing and creates it).
+#
+# R3 — DEDUP: "Add as New" and "Link to Existing" are covered by
+#   checklist-keyboard-only / checklist-fetch-unknown-entities-link-existing. This
+#   flow UNIQUELY covers the manual career-team entry sub-component. Navigation
+#   reuses util-drill-to-custom (R9), same Baseball/2024/Topps custom-set pattern.
+#
+# NOTE — no separate `smoke` variant: exercising this feature REQUIRES the full
+#   fetch → live-Wikidata-gated wizard path (minutes, external round-trip), so there
+#   is no fast happy-path subset that qualifies as a smoke test. It lives with its
+#   siblings under set-selector/regression.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO A PER-WORKER CUSTOM SET UNDER REAL Baseball/2024/Topps
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "cte-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ============================================================
+# STEP 1 — PRIVATE SELF-HEAL PRE-CLEAN (this worker's own subtree only)
+# Fetch once BEFORE adding this attempt's card. If a wizard opens it can only be
+# leftover debris from THIS worker's own prior failed attempt (private subtree —
+# no other runner can write here), so bulk-confirm every pre-existing unknown and
+# commit, guaranteeing this attempt's CareerPlayer-${ATTEMPT_ID} is the SOLE unknown
+# below. On the clean attempt-1 path the subtree is empty → the fetch just commits
+# "Saved 0 cards" (no wizard) — a quick custom-subtree round-trip (no BSC/SL).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*Add All Remaining as New.*"
+          commands:
+            - tapOn:
+                text: ".*Add All Remaining as New.*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm & Save.*"
+          timeout: 30000
+      - tapOn:
+          text: ".*Confirm & Save.*"
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 30000
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 30000
+
+# ============================================================
+# STEP 2 — ADD THE CARD WHOSE UNKNOWN PLAYER OPENS THE WIZARD
+# A custom card carrying the per-attempt-unique CareerPlayer-${ATTEMPT_ID} in its
+# Players field (→ cardChecklist.pendingPlayerNames). That name matches no player
+# entity, so the next fetch surfaces it as the SOLE unknown player row.
+# ============================================================
+
+- tapOn: "Add Card"
+- extendedWaitUntil:
+    visible: "Player name"
+- inputText: "8003-${ATTEMPT_ID}"
+- tapOn:
+    id: "Card name"
+- inputText: "Career Main Card ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: "Player(s) — comma separated, optional"
+    centerElement: true
+- tapOn:
+    id: "Players"
+- inputText: "CareerPlayer-${ATTEMPT_ID}"
+- assertVisible: "CareerPlayer-${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: "Add"
+    centerElement: true
+- tapOn:
+    text: "Add"
+- scrollUntilVisible:
+    element:
+      text: "Career Main Card ${ATTEMPT_ID}"
+    timeout: 15000
+
+# ============================================================
+# STEP 3 — FETCH AND OPEN THE WIZARD ON THE UNKNOWN PLAYER
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- extendedWaitUntil:
+    visible:
+      id: "Sync card checklist"
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible:
+      text: "Confirm New Players & Teams"
+    timeout: 60000
+
+# The wizard presents the unknown once its background Wikidata lookup completes
+# (or errors) — a live external round-trip, so 30s (outside the 7s UI budget).
+# The wizard shows the CURRENT item's name; assert it is our unknown PLAYER.
+- extendedWaitUntil:
+    visible:
+      text: ".*CareerPlayer-${ATTEMPT_ID}.*"
+    timeout: 30000
+
+# ============================================================
+# STEP 4 — THE FEATURE: MANUAL CAREER-TEAM ENTRY (player row only)
+# R2 precondition guard: the player row must render the manual-entry affordance.
+# ============================================================
+
+# Maestro text matchers are full-node-anchored regexes; the <p>'s text is
+# "Add career team history manually (optional):", so wrap with .* to match it
+# as a substring.
+- assertVisible:
+    text: ".*Add career team history manually.*"
+- assertVisible:
+    id: "Career team name"
+
+# ── 4a. VALIDATION: name but NO from-year → "+ Add" disabled → tap is a no-op ──
+# Type only the team name, then tap "+ Add" (aria "Add career team"). Because
+# from-year is empty the button is disabled, so nothing is staged: the name is
+# STILL in the input (a successful add clears the form) and no staged-chip list
+# has rendered. This proves garbage is not silently accepted.
+- tapOn:
+    id: "Career team name"
+- inputText: "CareerTeam-${ATTEMPT_ID}"
+- tapOn:
+    id: "Add career team"
+- assertVisible:
+    id: "Career team name"
+    text: ".*CareerTeam-${ATTEMPT_ID}.*"
+- assertNotVisible:
+    id: "Staged career teams"
+
+# ── 4b. VALID add (name already typed + from-year + to-year) → chip appears ──
+- tapOn:
+    id: "From year"
+- inputText: "2001"
+- tapOn:
+    id: "To year \\(optional\\)"
+- inputText: "2005"
+- tapOn:
+    id: "Add career team"
+# Chip text: "{name} ({fromYear}–{toYear})" — the separator is an en-dash (U+2013),
+# matched here with "." to avoid a literal-unicode YAML matcher; parens escaped.
+- assertVisible:
+    text: ".*CareerTeam-${ATTEMPT_ID} \\(2001.2005\\).*"
+
+# ── 4c. to-year OPTIONAL branch ("–present") + the per-chip Remove control ──
+# Add a second, throwaway entry with NO to-year → chip reads "… (2010–present)",
+# then remove it (aria "Remove {name}") so only the first entry is committed.
+- tapOn:
+    id: "Career team name"
+- inputText: "TempTeam-${ATTEMPT_ID}"
+- tapOn:
+    id: "From year"
+- inputText: "2010"
+- tapOn:
+    id: "Add career team"
+- assertVisible:
+    text: ".*TempTeam-${ATTEMPT_ID} \\(2010.present\\).*"
+- tapOn:
+    id: "Remove TempTeam-${ATTEMPT_ID}"
+- assertNotVisible:
+    text: ".*TempTeam-${ATTEMPT_ID}.*"
+# The kept entry is still staged.
+- assertVisible:
+    text: ".*CareerTeam-${ATTEMPT_ID} \\(2001.2005\\).*"
+
+# ============================================================
+# STEP 5 — ADD AS NEW PLAYER (carrying the staged team) → WIZARD ADVANCES
+# recordDecision(create, manualCareerTeams) re-validates the years server-side.
+# CareerPlayer is the SOLE unknown on this private subtree → the wizard reaches the
+# final "All reviewed" step. Confirm & Save commits (0 marketplace cards on a custom
+# subtree) — a clean "Saved 0 cards" proves the staged entry survived recordDecision
+# AND commit-time resolveTeamIdByName (team get-or-create) without error.
+# ============================================================
+
+- tapOn: "Add as New Player"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 30000
+# The player row is gone (advanced past it) — the manual-entry affordance no longer
+# shows, confirming the create decision took effect and moved the wizard forward.
+# (.* wrap so this genuinely asserts the substring is absent — a bare, anchored
+# regex would false-pass since it never full-matches the "(optional):" node.)
+- assertNotVisible:
+    text: ".*Add career team history manually.*"
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    notVisible: "Confirm New Players & Teams"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 30000
+
+# ============================================================
+# CLEANUP — delete this attempt's test card so the subtree stays clean
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 8003-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Delete card 8003-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 8003-${ATTEMPT_ID}"
+- assertNotVisible: "Career Main Card ${ATTEMPT_ID}"

@@ -980,15 +980,28 @@ export const attachPlatformIds = mutation({
 });
 
 /**
- * Detach a single non-primary platform ID. Refuses to detach the
- * reconciliation primary (operator must re-run set reconciliation to
- * change that). Removes the associated label entry as well.
+ * Detach a single platform ID. Refuses to detach the reconciliation primary
+ * unless the caller passes `confirmPrimary: true` — the operator UI shows an
+ * explicit inline confirm step before doing so (NEO-71-74: a bad
+ * reconciliation match, e.g. a set that doesn't actually exist on the
+ * marketplace, previously had no removal path at all once it landed as
+ * primary). Removes the associated label entry as well.
+ *
+ * When the primary is detached with confirmation, `primaryPlatformId[side]`
+ * is explicitly cleared so the `?? current[0]` fallback used everywhere else
+ * in this file and in setReconciliation.ts correctly recomputes the new
+ * effective primary from whatever remains (or empty, if nothing remains).
+ * Known limitation: `storeReconciledOptions`'s refresh-without-clobber path
+ * has no memory of a rejected id, so if this exact row's Sync button is
+ * clicked again later, the reconciler could re-derive and reinstate the
+ * same rejected id as primary. Accepted tradeoff — see NEO-71-74 plan notes.
  */
 export const detachPlatformId = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     side: platformSideValidator,
     id: v.string(),
+    confirmPrimary: v.optional(v.boolean()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -1005,10 +1018,11 @@ export const detachPlatformId = mutation({
     const current = pdSideToArray(row.platformData[args.side]);
     const primary =
       row.primaryPlatformId?.[args.side] ?? current[0];
-    if (args.id === primary) {
+    const isPrimary = args.id === primary;
+    if (isPrimary && !args.confirmPrimary) {
       throw new Error(
         `Refusing to detach the reconciliation primary (${args.side}=${args.id}). ` +
-          `Re-run set reconciliation to change the primary.`,
+          `Pass confirmPrimary to detach it anyway, or re-run set reconciliation to change the primary.`,
       );
     }
     if (!current.includes(args.id)) {
@@ -1028,6 +1042,13 @@ export const detachPlatformId = mutation({
       delete labelsPatch[args.side];
     }
 
+    let primaryPatch: { bsc?: string; sportlots?: string } | undefined;
+    if (isPrimary) {
+      primaryPatch = { ...(row.primaryPlatformId ?? {}) };
+      delete primaryPatch[args.side];
+      if (Object.keys(primaryPatch).length === 0) primaryPatch = undefined;
+    }
+
     await ctx.db.patch(row._id, {
       platformData: {
         ...row.platformData,
@@ -1035,6 +1056,10 @@ export const detachPlatformId = mutation({
       },
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      // Only touch primaryPlatformId when we actually detached the primary —
+      // leave it untouched otherwise (matches the rest of this mutation's
+      // minimal-patch convention).
+      ...(isPrimary ? { primaryPlatformId: primaryPatch } : {}),
       lastUpdated: Date.now(),
     });
     return { success: true, message: "Detached" };
@@ -4041,11 +4066,37 @@ export const commitCardChecklist = mutation({
       // Wikidata preview lookup (already fetched during review); no more
       // post-commit processEnrichmentQueue scheduling needed for this row.
       const enrichment = reviewByKey.get(`player:${normalized}`)?.enrichment;
-      const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [];
+      // Merge the wizard's Wikidata preview career-teams with any the admin
+      // added by hand in the review wizard (decision.manualCareerTeams). Both
+      // are {name, fromYear, toYear?} — resolve every name to a real team id
+      // via get-or-create, then dedupe by teamId since two sources could name
+      // the same team. When they collide, the MANUAL entry wins: an admin
+      // adding an entry for a team Wikidata also returned is an explicit
+      // correction of that team's fromYear/toYear, so it must override the
+      // Wikidata years rather than be silently discarded. Wikidata entries are
+      // written into the map first, then manual entries `.set()` over any
+      // colliding teamId (keeping the map's original insertion order for that
+      // team, but with the manual years).
+      const manualCareerTeams =
+        decision.action === "create" ? (decision.manualCareerTeams ?? []) : [];
+      const teamYearsById = new Map<
+        Id<"teams">,
+        { fromYear: number; toYear?: number }
+      >();
       for (const ct of enrichment?.careerTeams ?? []) {
         const teamId = await resolveTeamIdByName(ct.name);
-        teamYears.push({ teamId, fromYear: ct.fromYear, toYear: ct.toYear });
+        teamYearsById.set(teamId, { fromYear: ct.fromYear, toYear: ct.toYear });
       }
+      for (const ct of manualCareerTeams) {
+        const teamId = await resolveTeamIdByName(ct.name);
+        teamYearsById.set(teamId, { fromYear: ct.fromYear, toYear: ct.toYear });
+      }
+      const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> =
+        Array.from(teamYearsById.entries()).map(([teamId, years]) => ({
+          teamId,
+          fromYear: years.fromYear,
+          toYear: years.toYear,
+        }));
       const id = await ctx.db.insert("players", {
         name: name.trim(),
         nameNormalized: normalized,

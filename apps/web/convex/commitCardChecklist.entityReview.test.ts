@@ -111,7 +111,10 @@ async function insertReviewRow(
     kind: "player" | "team";
     name: string;
     sport?: string;
-    decision: { action: "create" } | {
+    decision: {
+      action: "create";
+      manualCareerTeams?: Array<{ name: string; fromYear: number; toYear?: number }>;
+    } | {
       action: "link";
       linkedPlayerId?: Id<"players">;
       linkedTeamId?: Id<"teams">;
@@ -201,6 +204,156 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
         .first(),
     );
     expect(card!.playerIds).toEqual([player!._id]);
+  });
+
+  test("merges enrichment.careerTeams with decision.manualCareerTeams into teamYears (manual appended after Wikidata)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Daulton Varsho",
+      decision: {
+        action: "create",
+        manualCareerTeams: [
+          { name: "Toronto Blue Jays", fromYear: 2023 },
+        ],
+      },
+      enrichment: {
+        careerTeams: [{ name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 }],
+      },
+    });
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sport: "Baseball",
+      cards: [makeCard({ cardNumber: "1", cardName: "Daulton Varsho", players: ["Daulton Varsho"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport", (q) =>
+          q.eq("nameNormalized", "daulton varsho").eq("primarySport", "Baseball"),
+        )
+        .first(),
+    );
+    expect(player!.teamYears).toHaveLength(2);
+    // Wikidata entry first, manual entry appended after.
+    const t0 = await t.run(async (ctx) => ctx.db.get(player!.teamYears![0].teamId));
+    const t1 = await t.run(async (ctx) => ctx.db.get(player!.teamYears![1].teamId));
+    expect(t0!.name).toBe("Arizona Diamondbacks");
+    expect(player!.teamYears![0]).toMatchObject({ fromYear: 2020, toYear: 2022 });
+    expect(t1!.name).toBe("Toronto Blue Jays");
+    expect(player!.teamYears![1].fromYear).toBe(2023);
+    expect(player!.teamYears![1].toYear).toBeUndefined();
+  });
+
+  test("Daulton Varsho case: no Wikidata careerTeams — teamYears comes purely from manual entries", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+
+    // enrichment absent entirely (the "No Wikidata match found" path) — the
+    // ONLY source of career-team history is what the admin typed by hand.
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Daulton Varsho",
+      decision: {
+        action: "create",
+        manualCareerTeams: [
+          { name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 },
+          { name: "Toronto Blue Jays", fromYear: 2023 },
+        ],
+      },
+      // no enrichment key at all
+    });
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sport: "Baseball",
+      cards: [makeCard({ cardNumber: "1", cardName: "Daulton Varsho", players: ["Daulton Varsho"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport", (q) =>
+          q.eq("nameNormalized", "daulton varsho").eq("primarySport", "Baseball"),
+        )
+        .first(),
+    );
+    expect(player!.teamYears).toHaveLength(2);
+    expect(player!.teamYears![0].fromYear).toBe(2020);
+    expect(player!.teamYears![1].fromYear).toBe(2023);
+  });
+
+  test("dedupes by resolved teamId when Wikidata and manual name the SAME team — the MANUAL correction wins", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Mike Trout",
+      decision: {
+        action: "create",
+        // Same team the enrichment already carries, but spelled with a
+        // different word order — norm() collapses both to the same
+        // nameNormalized, so resolveTeamIdByName returns the SAME teamId. The
+        // admin is deliberately CORRECTING Wikidata's years (2011–2018 →
+        // 2011–2019), so the manual years must win, not be discarded.
+        manualCareerTeams: [{ name: "Angels Los Angeles", fromYear: 2011, toYear: 2019 }],
+      },
+      enrichment: {
+        careerTeams: [{ name: "Los Angeles Angels", fromYear: 2011, toYear: 2018 }],
+      },
+    });
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sport: "Baseball",
+      cards: [makeCard({ cardNumber: "1", cardName: "Mike Trout", players: ["Mike Trout"] })],
+      batchId: "batch-1",
+    });
+
+    const player = await t.run(async (ctx) =>
+      ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport", (q) =>
+          q.eq("nameNormalized", "mike trout").eq("primarySport", "Baseball"),
+        )
+        .first(),
+    );
+    // One entry, not two — the duplicate team was collapsed...
+    expect(player!.teamYears).toHaveLength(1);
+    // ...and the surviving years are the admin's correction, NOT Wikidata's.
+    expect(player!.teamYears![0].fromYear).toBe(2011);
+    expect(player!.teamYears![0].toYear).toBe(2019); // manual correction wins (was 2018 from Wikidata)
+
+    // The surviving entry still points at the one team row that name resolves to.
+    const team = await t.run(async (ctx) => ctx.db.get(player!.teamYears![0].teamId));
+    expect(team!.name).toBe("Los Angeles Angels"); // created by the Wikidata pass (first to resolve it)
+
+    // And only one teams row was ever created for that name.
+    const angelsRows = await t.run(async (ctx) =>
+      ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport", (q) =>
+          q.eq("nameNormalized", "angeles angels los").eq("sport", "Baseball"),
+        )
+        .collect(),
+    );
+    expect(angelsRows).toHaveLength(1);
   });
 
   test("a team 'create' decision inserts a new team with league/city/yearsActive/colors/espnId from its enrichment", async () => {

@@ -32,6 +32,32 @@ export type ListingCardInputs = {
 const EBAY_TITLE_MAX = 80;
 
 /**
+ * A set node's `value` often already embeds its manufacturer's name as a
+ * literal prefix word — either verbatim for a flagship base product
+ * (manufacturer "Topps", setName "Topps" — see expectedFeatures.ts's note
+ * that manufacturer sub-releases like Series 1/2 aren't separate sets), or
+ * as part of a full product name (manufacturer "Topps", setName
+ * "Topps Heritage"). Joining manufacturer and setName as independent tokens
+ * in either case would duplicate the word ("Topps Topps" / "Topps Topps
+ * Heritage"), so collapse them into a single token whenever setName already
+ * starts with manufacturer as a whole word.
+ */
+function manufacturerAndSetTokens(inputs: ListingCardInputs): string[] {
+  const manufacturer = inputs.manufacturer?.trim();
+  const setName = inputs.setName?.trim();
+  if (manufacturer && setName && startsWithWord(setName, manufacturer)) {
+    return [setName];
+  }
+  return [manufacturer, setName].filter((value): value is string => Boolean(value));
+}
+
+function startsWithWord(value: string, prefix: string): boolean {
+  if (!value.toLowerCase().startsWith(prefix.toLowerCase())) return false;
+  const boundaryChar = value[prefix.length];
+  return boundaryChar === undefined || /\s/.test(boundaryChar);
+}
+
+/**
  * eBay-style SEO title, target length ~80 chars (eBay's own hard cap). Core
  * identifying tokens (year/manufacturer/set/player/card#) always included;
  * optional high-value keywords (parallel, RC, AUTO, RELIC, SP/SSP, print
@@ -42,8 +68,7 @@ const EBAY_TITLE_MAX = 80;
 export function generateListingTitle(inputs: ListingCardInputs): string {
   const identityParts: string[] = [];
   if (inputs.year) identityParts.push(inputs.year);
-  if (inputs.manufacturer) identityParts.push(inputs.manufacturer);
-  if (inputs.setName) identityParts.push(inputs.setName);
+  identityParts.push(...manufacturerAndSetTokens(inputs));
   const playerPart =
     inputs.playerNames && inputs.playerNames.length > 0
       ? inputs.playerNames.join(" & ")
@@ -95,12 +120,14 @@ export function generateListingTitle(inputs: ListingCardInputs): string {
 
 /**
  * Full prose description, assembled from whatever facts are present —
- * absent fields are skipped entirely rather than rendered as blanks.
+ * absent fields are skipped entirely rather than rendered as blanks. Each
+ * fact renders as its own line (the field is a multi-line textarea) rather
+ * than one run-on paragraph.
  */
 export function generateListingDescription(inputs: ListingCardInputs): string {
   const sentences: string[] = [];
 
-  const setParts = [inputs.year, inputs.manufacturer, inputs.setName].filter(
+  const setParts = [inputs.year, ...manufacturerAndSetTokens(inputs)].filter(
     Boolean,
   );
   const isParallel =
@@ -139,5 +166,5 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
     sentences.push(`Serial numbered to ${inputs.printRun}.`);
   }
 
-  return sentences.join(" ");
+  return sentences.join("\n");
 }

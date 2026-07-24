@@ -88,6 +88,40 @@ describe("generateListingTitle", () => {
     expect(title.endsWith("#1")).toBe(true);
   });
 
+  test("setName matching manufacturer is not duplicated (e.g. Topps flagship base product)", () => {
+    const title = generateListingTitle({
+      cardNumber: "2",
+      playerNames: ["Daulton Varsho"],
+      year: "2026",
+      manufacturer: "Topps",
+      setName: "Topps",
+    });
+    expect(title).toBe("2026 Topps Daulton Varsho #2");
+    expect(title).not.toContain("Topps Topps");
+  });
+
+  test("setName carrying manufacturer as a prefix word is not duplicated (e.g. Topps Heritage)", () => {
+    const title = generateListingTitle({
+      cardNumber: "390",
+      playerNames: ["Colson Montgomery"],
+      year: "2026",
+      manufacturer: "Topps",
+      setName: "Topps Heritage",
+    });
+    expect(title).toBe("2026 Topps Heritage Colson Montgomery #390");
+    expect(title).not.toContain("Topps Topps");
+  });
+
+  test("setName sharing a prefix that is NOT a whole word is left alone", () => {
+    const title = generateListingTitle({
+      cardNumber: "1",
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Toppsmania",
+    });
+    expect(title).toBe("2024 Topps Toppsmania #1");
+  });
+
   test("hard cap truncates the descriptive prefix (never the card number) when even the core overflows 80 chars", () => {
     const title = generateListingTitle({
       cardNumber: "99999",
@@ -127,6 +161,23 @@ describe("generateListingDescription", () => {
     expect(desc).toContain("Serial numbered to 50.");
   });
 
+  test("each fact renders on its own line rather than one run-on paragraph", () => {
+    const desc = generateListingDescription({
+      cardNumber: "50",
+      playerNames: ["Elly De La Cruz"],
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Chrome",
+      isRookie: true,
+      autographed: "On Card",
+    });
+    expect(desc.split("\n")).toEqual([
+      "2024 Topps Chrome card of Elly De La Cruz, #50.",
+      "This is a Rookie Card.",
+      "Autographed (On Card).",
+    ]);
+  });
+
   test("base card with no special attributes gets a minimal description", () => {
     const desc = generateListingDescription({
       cardNumber: "1",
@@ -149,6 +200,30 @@ describe("generateListingDescription", () => {
         playerNames: ["Mike Trout"],
       }),
     ).toBe("Card #1 of Mike Trout.");
+  });
+
+  test("setName matching manufacturer is not duplicated (e.g. Topps flagship base product)", () => {
+    const desc = generateListingDescription({
+      cardNumber: "2",
+      playerNames: ["Daulton Varsho"],
+      year: "2026",
+      manufacturer: "Topps",
+      setName: "Topps",
+    });
+    expect(desc).toBe("2026 Topps card of Daulton Varsho, #2.");
+    expect(desc).not.toContain("Topps Topps");
+  });
+
+  test("setName carrying manufacturer as a prefix word is not duplicated (e.g. Topps Heritage)", () => {
+    const desc = generateListingDescription({
+      cardNumber: "390",
+      playerNames: ["Colson Montgomery"],
+      year: "2026",
+      manufacturer: "Topps",
+      setName: "Topps Heritage",
+    });
+    expect(desc).toBe("2026 Topps Heritage card of Colson Montgomery, #390.");
+    expect(desc).not.toContain("Topps Topps");
   });
 
   test("autographed None does not add an autograph sentence", () => {

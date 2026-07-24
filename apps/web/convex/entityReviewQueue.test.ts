@@ -530,6 +530,201 @@ describe("recordDecision", () => {
     ).rejects.toThrow();
   });
 
+  test("a 'create' decision with valid manualCareerTeams stores them on the row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      manualCareerTeams: [
+        { name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 },
+        { name: "Toronto Blue Jays", fromYear: 2023 }, // open-ended (still active)
+      ],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({
+      action: "create",
+      manualCareerTeams: [
+        { name: "Arizona Diamondbacks", fromYear: 2020, toYear: 2022 },
+        { name: "Toronto Blue Jays", fromYear: 2023 },
+      ],
+    });
+  });
+
+  test("a 'create' decision with an empty/absent manualCareerTeams omits the key entirely", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Mike Trout",
+    });
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      manualCareerTeams: [],
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    // Byte-identical to the no-manual-entries path — an empty array must not
+    // leave a stray `manualCareerTeams: []` on the stored decision.
+    expect(row!.decision).toEqual({ action: "create" });
+  });
+
+  test("rejects a manualCareerTeams entry whose fromYear is out of bounds (too old)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        manualCareerTeams: [{ name: "Ancient Club", fromYear: 1800 }],
+      }),
+    ).rejects.toThrow(/fromYear/);
+  });
+
+  test("rejects a manualCareerTeams entry whose fromYear is in the future", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        manualCareerTeams: [
+          { name: "Future Club", fromYear: new Date().getFullYear() + 5 },
+        ],
+      }),
+    ).rejects.toThrow(/fromYear/);
+  });
+
+  test("rejects a manualCareerTeams entry whose toYear precedes its fromYear", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        manualCareerTeams: [
+          { name: "Backwards Club", fromYear: 2022, toYear: 2019 },
+        ],
+      }),
+    ).rejects.toThrow(/toYear/);
+  });
+
+  test("rejects a manualCareerTeams array longer than the 64-entry cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Journeyman",
+    });
+
+    // 65 entries — one past the cap. Every entry is individually valid, so
+    // this proves the length check fires independently of the per-entry
+    // year checks.
+    const tooMany = Array.from({ length: 65 }, (_, i) => ({
+      name: `Team ${i}`,
+      fromYear: 2000,
+      toYear: 2001,
+    }));
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        manualCareerTeams: tooMany,
+      }),
+    ).rejects.toThrow(/maximum is 64/);
+  });
+
+  test("accepts a manualCareerTeams array exactly at the 64-entry cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Journeyman",
+    });
+
+    const exactlyCap = Array.from({ length: 64 }, (_, i) => ({
+      name: `Team ${i}`,
+      fromYear: 2000,
+      toYear: 2001,
+    }));
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      manualCareerTeams: exactlyCap,
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.decision).toEqual({ action: "create", manualCareerTeams: exactlyCap });
+  });
+
+  test("rejects a manualCareerTeams entry whose name is empty or whitespace-only", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const rowId = await insertRow(t, {
+      selectorOptionId,
+      batchId: "b1",
+      kind: "player",
+      name: "Daulton Varsho",
+    });
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        // Whitespace-only — must be rejected before it can mint a blank team
+        // via get-or-create in commitCardChecklist.
+        manualCareerTeams: [{ name: "   ", fromYear: 2020, toYear: 2022 }],
+      }),
+    ).rejects.toThrow(/name cannot be empty/);
+  });
+
   test("throws for an unauthenticated caller", async () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);

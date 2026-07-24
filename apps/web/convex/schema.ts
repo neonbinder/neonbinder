@@ -364,7 +364,21 @@ export default defineSchema({
       espnId: v.optional(v.string()),
     })),
     decision: v.optional(v.union(
-      v.object({ action: v.literal("create") }),
+      v.object({
+        action: v.literal("create"),
+        // player-only: career-team entries the admin added by hand in the
+        // review wizard (in addition to whatever Wikidata found), for the
+        // case where Wikidata returned nothing or missed a team. Team NAMES,
+        // not ids — resolved to real team rows via get-or-create at commit
+        // time (same as enrichment.careerTeams above). Harmless-but-unused if
+        // ever present on a team-kind create decision; the team-kind UI path
+        // never populates it.
+        manualCareerTeams: v.optional(v.array(v.object({
+          name: v.string(),
+          fromYear: v.number(),
+          toYear: v.optional(v.number()),
+        }))),
+      }),
       v.object({
         action: v.literal("link"),
         linkedPlayerId: v.optional(v.id("players")),
