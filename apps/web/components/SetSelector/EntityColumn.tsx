@@ -95,6 +95,12 @@ export default function EntityColumn({
   // Set once the user engages this column after its first sync — see the
   // freeze-on-interaction effect below. Frozen columns stop auto-syncing.
   const [hasInteracted, setHasInteracted] = useState(false);
+  // True only while THIS session's own explicit "Sync <X>" click is in flight
+  // (useEnsureSync path). Lets us still show the "Fetching from marketplaces…"
+  // panel for the sync the operator personally requested, even though that same
+  // click also flips hasInteracted true (which otherwise suppresses the panel —
+  // see newPathContent). Reset the moment the reactive status leaves "syncing".
+  const [selfRequestedSync, setSelfRequestedSync] = useState(false);
 
   // Unique per-instance class for the custom-entry input so Maestro web's
   // inputText resolves to THIS column's box. Maestro's createXPathFromElement
@@ -232,6 +238,7 @@ export default function EntityColumn({
   // require a new first-sync before interaction can freeze the column again.
   useEffect(() => {
     setHasInteracted(false);
+    setSelfRequestedSync(false);
     hasSyncedRef.current = false;
   }, [parentId]);
 
@@ -268,6 +275,16 @@ export default function EntityColumn({
       el.removeEventListener("touchstart", onInteract, opts);
     };
   }, [isVisible]);
+
+  // Clear the "I asked for this sync" latch as soon as the reactive status
+  // leaves "syncing" (finished / errored / cleared). Without this, a later
+  // BACKGROUND sync triggered by someone else would incorrectly re-show the
+  // panel for this session just because it once clicked Sync. Deps on the raw
+  // status string so it does NOT fire on the render where forceSync sets the
+  // latch true (status hasn't flipped to "syncing" yet), avoiding a self-reset.
+  useEffect(() => {
+    if (syncStatus?.status !== "syncing") setSelfRequestedSync(false);
+  }, [syncStatus?.status]);
 
   // Auto-sync: when this column is visible, not frozen by interaction, in idle
   // mode, the items query has resolved to an empty list, and we haven't already
@@ -418,7 +435,20 @@ export default function EntityColumn({
     // drill util creating a per-worker custom Sport under CI's 8-shard
     // concurrency, where these background re-syncs fire constantly.)
     if (mode === "custom") return customForm;
-    if (syncStatus?.status === "syncing") {
+    // Same freeze-on-interaction philosophy the legacy path already applies to
+    // auto-sync (see the effect above), extended to this rendering branch: the
+    // selectorSyncStatus row for a no-parentId aggregator level (Sport) is a
+    // SINGLE GLOBAL record shared by every concurrent session — so one admin (or
+    // an E2E worker) running a real marketplace "Sync Sports" flips it to
+    // "syncing" for EVERYONE. Once THIS session has already engaged an
+    // already-populated column (scroll/pointerdown/keydown flips hasInteracted —
+    // e.g. it's mid-interaction, about to click "+ Custom"), a concurrent/
+    // background sync must NOT evict its idle buttons back to the panel and
+    // swallow that interaction. selfRequestedSync carves out the one case we DO
+    // still want the panel: the operator clicking "Sync <X>" themselves.
+    // A never-touched column mid-INITIAL sync keeps the panel (hasInteracted is
+    // still false — the interaction effect no-ops until the first sync lands).
+    if (syncStatus?.status === "syncing" && (!hasInteracted || selfRequestedSync)) {
       return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
           <h2 className="text-xl font-semibold mb-4">
@@ -431,7 +461,11 @@ export default function EntityColumn({
       );
     }
     const forceSync = () => {
-      if (level) void ensureOptions({ level, parentId, force: true });
+      if (!level) return;
+      // Mark this as a sync THIS session explicitly asked for, so the panel
+      // above still shows even though the click also set hasInteracted true.
+      setSelfRequestedSync(true);
+      void ensureOptions({ level, parentId, force: true });
     };
     return (
       <>
