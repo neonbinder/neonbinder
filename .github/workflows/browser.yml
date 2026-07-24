@@ -386,9 +386,8 @@ jobs:
           env_vars: ENVIRONMENT=dev
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
-          # Pin warm-instance scaling: Terraform sets minScale=1 but ignores
-          # changes, so a deploy without these reverts to cold-start.
-          flags: '--min-instances=1 --max-instances=20'
+          # Cost control (NEO-95): min-instances=0 intentionally, allow cold start.
+          flags: '--min-instances=0 --max-instances=20'
       - id: capture-new
         name: Capture new dev revision + tagged URL
         env:
@@ -529,7 +528,7 @@ jobs:
           env_vars: ENVIRONMENT=prod
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
-          flags: '--min-instances=1 --max-instances=20'
+          flags: '--min-instances=0 --max-instances=20'
       - id: capture-new
         name: Capture new prod revision + tagged URL
         env:
