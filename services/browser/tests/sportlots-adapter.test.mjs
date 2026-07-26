@@ -468,3 +468,100 @@ describe("SportlotsAdapter.cleanup — pure-HTTP no-op safety", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-43 — synthetic canary mode
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter.login — NEO-43 canary mode", () => {
+  it("BYPASSES a still-valid cached cookie and POSTs the real signin form", async () => {
+    // CACHED_TOKEN_TTL_MS is 30 DAYS. A canary that honoured the cache would
+    // exercise the real SportLots login roughly once a month — blind to
+    // exactly the login hang this ticket exists to detect.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        password: "pw",
+        token: "sl_session=cached; path=/",
+        expiresAt: Date.now() + 29 * 24 * 60 * 60 * 1000, // comfortably valid
+      },
+    });
+    const stub = scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-canary", { canary: true });
+      assert.equal(result.success, true);
+      assert.equal(
+        stub.loginCalls(),
+        1,
+        "canary must POST the real signin form even with a valid cached cookie",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT write the fresh cookie back to Secret Manager", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: { username: "user@example.com", password: "pw" },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]));
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-canary", { canary: true });
+      assert.equal(result.success, true);
+      assert.deepEqual(updates, [], "canary must never call updateCredentials");
+    } finally {
+      restore();
+    }
+  });
+
+  it("caps retries at 2 attempts instead of 5 so a scheduled probe can't burst", async () => {
+    // NEO-29: a burst of serialized marketplace logins is what tripped bot
+    // protection. A canary firing on a schedule with the full 5-attempt
+    // budget would recreate that shape automatically, forever.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = scriptedLoginFetch([response({ status: 500 })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-canary", { canary: true });
+      assert.equal(result.success, false);
+      assert.equal(stub.loginCalls(), 2, "canary retry budget must be 2, not MAX_ATTEMPTS (5)");
+    } finally {
+      restore();
+    }
+  });
+
+  it("without the flag, behaviour is unchanged: full 5-attempt budget and the cookie IS stored", async () => {
+    // Regression guard — the flag must be purely additive.
+    const burstStub = scriptedLoginFetch([response({ status: 500 })]);
+    let restore = stubFetch(burstStub);
+    try {
+      const A = loadSportlotsAdapter();
+      const r = await new A(null).login("sportlots-credentials-user_test");
+      assert.equal(r.success, false);
+      assert.equal(burstStub.loginCalls(), 5, "non-canary must retain the full 5-attempt budget");
+    } finally {
+      restore();
+    }
+
+    const updates = [];
+    const B = loadSportlotsAdapter({
+      credentials: { username: "user@example.com", password: "pw" },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    restore = stubFetch(scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]));
+    try {
+      const r = await new B(null).login("sportlots-credentials-user_test");
+      assert.equal(r.success, true);
+      assert.equal(updates.length, 1, "non-canary success must still store the cookie");
+      assert.ok(updates[0].creds.token.includes("sl_session=abc123"));
+    } finally {
+      restore();
+    }
+  });
+});

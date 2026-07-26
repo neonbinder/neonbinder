@@ -1,6 +1,12 @@
 import { SecretsManagerService } from "../services/secrets-manager";
 import { LoginDiagnostic } from "../services/login-diagnostic";
+import { LoginOptions } from "../observability";
 import puppeteer, { Browser, Page } from "puppeteer";
+
+// Re-exported so adapters can import LoginOptions alongside AdapterResponse
+// from their existing "./base-adapter" import. `export type` keeps it erased
+// at runtime — no require() of ../observability is emitted into dist.
+export type { LoginOptions };
 
 export interface LoginCredentials {
   username: string;
@@ -49,7 +55,15 @@ export abstract class BaseAdapter {
   }
 
   abstract getHomeUrl(): string;
-abstract login(key: string): Promise<AdapterResponse>;
+
+  /**
+   * @param opts NEO-43 login options. `opts.canary` puts the adapter in
+   * synthetic-probe mode: it MUST skip the cached-token short-circuit and
+   * MUST NOT write a freshly-obtained token back to Secret Manager. See
+   * LoginOptions in ../observability for why both halves are mandatory.
+   * Omitting opts preserves the pre-NEO-43 behaviour exactly.
+   */
+  abstract login(key: string, opts?: LoginOptions): Promise<AdapterResponse>;
 
   protected async navigateToHome(): Promise<void> {
     try {

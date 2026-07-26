@@ -159,3 +159,111 @@ export function classifyAdapterError(raw: string | undefined): string | undefine
   if (s.includes("network") || s.includes("fetch failed")) return "network";
   return "other";
 }
+
+// ---------------------------------------------------------------------------
+// NEO-43 — marketplace login (credential-test) instrumentation
+// ---------------------------------------------------------------------------
+//
+// Events: "credential_test_failed" (pre-existing) and "credential_test_succeeded"
+// (added by NEO-43 so a failure RATE is computable — an absolute failure count
+// reads as "outage" at today's volume and as "Tuesday" at 100x the users).
+//
+// Both are emitted from the SAME two functions (authenticateBsc /
+// authenticateSportlots in credentials.ts) so numerator and denominator cover
+// one population. That population is wider than "a user pressed Test": those
+// functions are also driven by background token refresh (refreshSiteToken, and
+// the BSC/SportLots adapters' own re-auth paths), so a single seller with a
+// permanently-bad stored password emits a steady drip of failures forever.
+// That is why the PostHog alert aggregates on UNIQUE USERS, not event count.
+//
+// SECURITY: the console line below is an explicit field allowlist, never a
+// spread of `props`. `props` can carry the login diagnostic's `snippet` — up
+// to 1500 chars of marketplace page text.
+
+export type CredentialTestProperties = {
+  platform: "buysportscards" | "sportlots";
+  /** Free-text failure detail. PostHog-only; high cardinality, do NOT group on it. */
+  reason?: string;
+  /** Low-cardinality stable tag — group and alert on THIS, not on `reason`. */
+  error_class?: string;
+  duration_ms?: number;
+  /** camelCase: pre-existing property name on credential_test_failed, kept for continuity. */
+  challengeDetected?: boolean;
+  url?: string;
+  title?: string;
+  snippet?: string;
+};
+
+/**
+ * Allowlist + clamp a login diagnostic that crossed the browser-service
+ * boundary, before it reaches PostHog.
+ *
+ * The previous code spread `result.diagnostic` unmodified into the event
+ * properties, which trusted a remote service to have done its own redaction
+ * and truncation. That holds today (buildLoginDiagnostic caps snippet at
+ * MAX_SNIPPET_CHARS), but a regression there — or a future adapter that
+ * hand-builds a diagnostic — would leak silently and permanently into
+ * analytics. Defense in depth at the trust boundary.
+ */
+export function sanitizeLoginDiagnostic(
+  d: { url?: string; title?: string; challengeDetected?: boolean; snippet?: string } | undefined,
+): Pick<CredentialTestProperties, "url" | "title" | "challengeDetected" | "snippet"> {
+  if (!d || typeof d !== "object") return {};
+  const clamp = (v: unknown, max: number): string | undefined =>
+    typeof v === "string" && v.length > 0 ? v.slice(0, max) : undefined;
+  return {
+    challengeDetected: typeof d.challengeDetected === "boolean" ? d.challengeDetected : undefined,
+    url: clamp(d.url, 200),
+    title: clamp(d.title, 200),
+    // Mirrors MAX_SNIPPET_CHARS in services/browser/src/services/login-diagnostic.ts.
+    snippet: clamp(d.snippet, 1500),
+  };
+}
+
+/**
+ * Fire-and-forget capture of a credential-test outcome. Mirrors
+ * recordAdapterCall: dual-writes a structured console line so the signal
+ * survives an unset POSTHOG_API_KEY (which internal.posthog.captureEvent
+ * swallows silently), then captures to PostHog.
+ *
+ * NOTE the console line lands in CONVEX logs, not GCP Cloud Logging — this
+ * project has no Convex log sink. It is a fallback channel for humans, not a
+ * feed for the NEO-43 Cloud Monitoring log-based metrics; those read the
+ * browser service's own `browser_login_call` lines instead.
+ *
+ * Never throws — observability must not be able to fail the login it observes.
+ */
+export async function recordCredentialTest(
+  ctx: ActionCtx,
+  distinctId: string,
+  success: boolean,
+  props: CredentialTestProperties,
+): Promise<void> {
+  try {
+    console.log(
+      JSON.stringify({
+        msg: "credential_login_call",
+        platform: props.platform,
+        success,
+        error_class: props.error_class,
+        duration_ms: props.duration_ms,
+        challenge_detected: props.challengeDetected,
+        // snippet/title/url deliberately omitted — page-derived text.
+      }),
+    );
+  } catch {
+    // unreachable but defensive
+  }
+  try {
+    await ctx.runAction(internal.posthog.captureEvent, {
+      distinctId,
+      event: success ? "credential_test_succeeded" : "credential_test_failed",
+      properties: props,
+    });
+  } catch (err) {
+    console.error(
+      "[observability.recordCredentialTest] PostHog capture failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}

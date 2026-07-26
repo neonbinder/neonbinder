@@ -671,3 +671,94 @@ describe("BSCAdapter — browser-free invariant", () => {
     restore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-43 — synthetic canary mode
+// ---------------------------------------------------------------------------
+
+describe("BSCAdapter.login — NEO-43 canary mode", () => {
+  it("BYPASSES a still-valid cached token and runs the full B2C exchange", async () => {
+    // The whole point of the canary: a cache hit costs ~1.1s and proves only
+    // that an old token is still accepted. It does NOT exercise the B2C
+    // exchange, which is the part that actually breaks.
+    const BSCAdapter = loadBSCAdapter({
+      credentials: {
+        username: "seller@example.com",
+        password: "secret",
+        token: "bare-token-abc123",
+        expiresAt: Date.now() + 60 * 60 * 1000, // comfortably valid
+      },
+    });
+
+    const router = makeB2CRouter();
+    const restore = stubFetch(router);
+    const adapter = new BSCAdapter(undefined);
+    const result = await adapter.login("bsc-credentials-canary", { canary: true });
+    restore();
+
+    assert.equal(result.success, true);
+    const urls = router.calls.map((c) => c.url);
+    assert.ok(
+      urls.some((u) => u.includes("/oauth2/v2.0/authorize")),
+      "canary must run the real B2C authorize step even with a valid cached token",
+    );
+    assert.ok(urls.some((u) => u.includes("/oauth2/v2.0/token")), "canary must run the token exchange");
+  });
+
+  it("does NOT write the fresh token back to Secret Manager", async () => {
+    // Every write-back adds a new, permanently-enabled Secret Manager version
+    // at $0.06/version/month. At canary cadence that dwarfs the rest of this
+    // infrastructure. It also keeps the canary key permanently cache-free.
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: { username: "seller@example.com", password: "secret" },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+
+    const restore = stubFetch(makeB2CRouter());
+    const adapter = new BSCAdapter(undefined);
+    const result = await adapter.login("bsc-credentials-canary", { canary: true });
+    restore();
+
+    assert.equal(result.success, true);
+    assert.deepEqual(updates, [], "canary must never call updateCredentials");
+  });
+
+  it("without the flag, behaviour is unchanged: cache is honoured and the token IS stored", async () => {
+    // Regression guard — the flag must be purely additive.
+    const cacheUpdates = [];
+    const CachedAdapter = loadBSCAdapter({
+      credentials: {
+        username: "seller@example.com",
+        password: "secret",
+        token: "bare-token-abc123",
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      },
+      updateCredentials: (key, creds) => cacheUpdates.push({ key, creds }),
+    });
+    const cacheCalls = [];
+    let restore = stubFetch(async (url) => {
+      cacheCalls.push(String(url));
+      return makeResponse({ status: 200, json: { sellerProfile: { sellerStoreName: "S", sellerId: "sid1" } } });
+    });
+    const cached = await new CachedAdapter(undefined).login("bsc-credentials-user1");
+    restore();
+    assert.equal(cached.success, true);
+    assert.ok(
+      cacheCalls.every((u) => u.includes("api-prod.buysportscards.com")),
+      "non-canary login with a valid token must short-circuit to the profile check only",
+    );
+
+    const freshUpdates = [];
+    const FreshAdapter = loadBSCAdapter({
+      credentials: { username: "seller@example.com", password: "secret" },
+      updateCredentials: (key, creds) => freshUpdates.push({ key, creds }),
+    });
+    restore = stubFetch(makeB2CRouter());
+    const fresh = await new FreshAdapter(undefined).login("bsc-credentials-user1");
+    restore();
+    assert.equal(fresh.success, true);
+    assert.equal(freshUpdates.length, 1, "non-canary fresh login must still store the token");
+    assert.equal(freshUpdates[0].creds.token, "fresh-access-token");
+  });
+});
