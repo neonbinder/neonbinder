@@ -174,3 +174,30 @@ describe("challengeFlag", () => {
     assert.equal(challengeFlag({ challengeDetected: "yes" }), false);
   });
 });
+
+describe("canary flag coercion (NEO-43)", () => {
+  // The HTTP layer coerces with `req.body.canary === true` rather than
+  // destructuring with a default. Without that, a non-boolean truthy value
+  // would be logged as canary=<that value> while the adapter — which checks
+  // `opts?.canary === true` — treated the request as a NORMAL login. A normal
+  // login on the canary key writes a token back to Secret Manager, silently
+  // defeating the cache bypass and resuming the version churn.
+  //
+  // This pins the coercion rule itself, mirroring the expression in index.ts.
+  const coerce = (body) => body.canary === true;
+
+  it("accepts only a real boolean true", () => {
+    assert.equal(coerce({ canary: true }), true);
+  });
+
+  it("rejects the STRING \"true\" — the case that would desync log from behaviour", () => {
+    assert.equal(coerce({ canary: "true" }), false);
+  });
+
+  it("rejects other truthy values and treats absent as false", () => {
+    assert.equal(coerce({ canary: 1 }), false);
+    assert.equal(coerce({ canary: {} }), false);
+    assert.equal(coerce({}), false);
+    assert.equal(coerce({ canary: false }), false);
+  });
+});

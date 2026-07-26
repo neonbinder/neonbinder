@@ -97,7 +97,14 @@ app.get("/sites", (_req: Request, res: Response<SitesResponse>) => {
 // Site-specific login endpoints
 app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res: Response<LoginResponse | ErrorResponse>) => {
   const startMs = Date.now();
-  const { key, canary = false } = req.body;
+  const { key } = req.body;
+  // NEO-43: coerce, don't trust. A non-boolean `canary` (e.g. the string
+  // "true") would otherwise make the log line claim canary=true while the
+  // adapter — which checks `opts?.canary === true` — treated the request as
+  // normal. A "normal" run on the canary key writes a token BACK to Secret
+  // Manager, silently defeating the cache bypass the canary depends on and
+  // resuming the version churn it exists to avoid.
+  const canary = req.body.canary === true;
   if (!key) {
     logBrowserOp({
       msg: "browser_login_call",
@@ -186,7 +193,14 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
 // BSC login endpoint: accepts username/password, stores in GCP, logs in via Puppeteer
 app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Response<LoginResponse | ErrorResponse>) => {
   const startMs = Date.now();
-  const { key, canary = false } = req.body;
+  const { key } = req.body;
+  // NEO-43: coerce, don't trust. A non-boolean `canary` (e.g. the string
+  // "true") would otherwise make the log line claim canary=true while the
+  // adapter — which checks `opts?.canary === true` — treated the request as
+  // normal. A "normal" run on the canary key writes a token BACK to Secret
+  // Manager, silently defeating the cache bypass the canary depends on and
+  // resuming the version churn it exists to avoid.
+  const canary = req.body.canary === true;
   if (!key) {
     logBrowserOp({
       msg: "browser_login_call",
