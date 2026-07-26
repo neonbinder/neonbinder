@@ -52,8 +52,9 @@ SportLots at all. This is why the hang policy matches `499|502|503|504` and
 deliberately excludes `500`.
 
 (Worth fixing upstream — a credential rejection should be a `401`. Tracked as
-a follow-up. Once done, the hang policy can widen to `>=500` and gain crash
-coverage.)
+**NEO-98**. Until then the hang policy has **no crash coverage**: a genuine
+container crash returning 500 mid-request is indistinguishable from a typo'd
+password. Once NEO-98 lands, widen the policy to `>=500`.)
 
 ### 2.3 Cloud Run's built-in request metrics have no path label
 
@@ -352,11 +353,15 @@ falling through to the app router. Do not "fix" it.
 
 ## 8. Known gaps
 
-- **eBay is not covered.** `apps/web/convex/adapters/ebay.ts` `testCredentials`
-  is a placeholder that returns `success: true` without contacting eBay.
-  Instrumenting it would inject fabricated successes into the rate
-  denominator. Tracked as a follow-up.
-- **BSC returns 500 for a bad password** (§2.2). Follow-up.
+- **eBay is not covered — NEO-97.** `apps/web/convex/adapters/ebay.ts`
+  `testCredentials` is a placeholder that returns `success: true` without
+  contacting eBay. Instrumenting it would inject *fabricated successes* into
+  the failure-rate denominator, making the alert progressively less sensitive
+  as eBay usage grew. Deliberately excluded, not overlooked.
+- **BSC returns 500 for a bad password — NEO-98** (§2.2). Costs us crash
+  coverage on the hang policy.
+- **No crash coverage on the hang policy**, as a direct consequence of
+  NEO-98. Revisit together.
 - **PostHog config is not IaC.** PostHog exposes REST endpoints for insights
   and alerts, so a checked-in JSON plus an idempotent apply script is
   possible. Its own ticket.
