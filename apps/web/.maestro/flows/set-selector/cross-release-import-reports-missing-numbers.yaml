@@ -1,0 +1,201 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Cross-release — the import names every card number it could not find in the chosen source set"
+tags:
+  - set-selector
+  - regression
+---
+# ============================================================================
+# R1 — ONE FEATURE: the cross-release import never silently drops a number.
+#   If the operator asks for cards the chosen source set does not have (nearly
+#   always because that set has not been fetched yet), the import must say
+#   exactly WHICH numbers were missing — a bare "0 linked" would leave the
+#   operator with no idea what to fix. This flow proves the missing numbers are
+#   spelled out in full.
+#
+# THE CONCRETE ASSERTION (R2): after asking for 8801-8803 from a source set
+#   that is empty, the panel reads
+#     "Not found in source set: 8801, 8802, 8803 — fetch or commit that set first."
+#   Every requested number is named. A swallowed error, a bare count, or a
+#   truncated list all fail. There is no conditional path around it.
+#
+# THIS ALSO LOCKS IN KEYBOARD OPERABILITY (standing project rule):
+#   The FIRST submit below is made with the Enter key from the card-number box,
+#   not by clicking the button — and it can only produce a result panel if
+#   pressing Enter really did submit the form. So the keyboard path is proved
+#   by the same assertion, with no extra steps. (Note: the modal also closes on
+#   Escape, but Maestro's web driver can only send Enter and Backspace — every
+#   other key is rejected outright — so Escape is not testable here and the
+#   Cancel button is used to close instead. Same limitation is recorded in
+#   checklist-keyboard-only-dialog.yaml.)
+#
+# WHY THE SUBMIT HAPPENS TWICE:
+#   1st submit — only the Sport has been chosen, so the "source" is far too
+#     broad to hold cards. This is the cheap moment to press Enter, because
+#     only two dropdowns are on screen and the card-number box is comfortably
+#     within the modal (a fixed overlay cannot be scrolled by Maestro).
+#     A source MUST be chosen first: the submit button is disabled until then,
+#     and a browser ignores Enter when a form's submit button is disabled.
+#   2nd submit — now drilled all the way down to a real, empty variant, i.e.
+#     the exact situation the message is written for ("this set has not been
+#     fetched"). Choosing any level wipes the previous panel, and the flow
+#     asserts the panel is gone before submitting again, so the second
+#     assertion cannot be satisfied by the first submit's leftovers.
+#
+# DATA SAFETY (R7): both submits find nothing, so nothing is written anywhere.
+#   This flow creates no links and needs no cleanup. Everything happens inside
+#   this worker's private playground ("E2E Test Sport <worker>" / 2026 / Topps):
+#     xbs-<worker>  the SOURCE set — deliberately left with an empty checklist
+#     xbg-<worker>  the GUEST set  — the checklist we try to import into
+#
+# R3 — DEDUP: no other flow asserts the missing-number message or the keyboard
+#   submit. The successful-import path is owned by
+#   cross-release-card-appears-in-guest-checklist.yaml.
+# R9 — all set navigation goes through util-drill-to-custom.yaml; the modal's
+#   dropdown drill goes through util-pick-cross-list-source.yaml.
+# ============================================================================
+
+# Step 1 — open the app, signed in, on the Set Selector.
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# Step 2 — MAKE SURE THE SOURCE SET EXISTS, AND IS EMPTY
+# Opening it is enough to create it (idempotent). Nothing ever adds a card
+# here, and a custom set never fetches from a marketplace, so its checklist
+# stays permanently empty — the cleanest possible "these numbers aren't here".
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xbs-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ============================================================
+# Step 3 — OPEN THE GUEST CHECKLIST WE'RE IMPORTING INTO
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xbg-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ============================================================
+# Step 4 — OPEN "ADD CROSS-RELEASE CARDS"
+# ============================================================
+- scrollUntilVisible:
+    element:
+      id: "Open add cross-release cards form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Open add cross-release cards form"
+- extendedWaitUntil:
+    visible:
+      id: "Add cross-release cards"
+    timeout: 7000
+
+# ============================================================
+# Step 5 — CHOOSE JUST THE SPORT (enables the submit button)
+# Two taps: the dropdown, then the choice scoped to that dropdown — the page
+# behind the modal shows the same sport name, so the scoping is required.
+# ============================================================
+- extendedWaitUntil:
+    visible:
+      id: "Source Sport"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible:
+      id: "Source Sport"
+      text: "Loading.*"
+    timeout: 7000
+- tapOn:
+    id: "Source Sport"
+- tapOn:
+    text: "E2E Test Sport ${WORKER_INDEX || 0}"
+    childOf:
+      id: "Source Sport"
+- extendedWaitUntil:
+    visible:
+      id: "Source Sport"
+      text: "E2E Test Sport ${WORKER_INDEX || 0}"
+    timeout: 7000
+
+# ============================================================
+# Step 6 — TYPE THREE CARD NUMBERS AS A RANGE, AND SUBMIT WITH ENTER
+# "8801-8803" also proves the range shorthand expands: the message below names
+# three separate numbers, which can only happen if the range was unpacked.
+# ============================================================
+- tapOn:
+    id: "Card numbers to cross-list"
+- inputText: "8801-8803"
+- assertVisible:
+    id: "Card numbers to cross-list"
+    text: "8801-8803"
+- pressKey: Enter
+
+# ── ASSERTION 1: Enter submitted, and every missing number is named ──────────
+- extendedWaitUntil:
+    visible:
+      text: ".*Not found in source set: 8801, 8802, 8803.*"
+    timeout: 7000
+
+# ============================================================
+# Step 7 — NOW DRILL ALL THE WAY DOWN TO THE REAL (EMPTY) SOURCE VARIANT
+# This is the situation the message is actually written for: the operator
+# picked the right set, but nobody has fetched its checklist yet.
+# ============================================================
+- runFlow:
+    file: util-pick-cross-list-source.yaml
+    env:
+      SOURCE_SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      SOURCE_YEAR: "2026"
+      SOURCE_MANUFACTURER: "Topps"
+      SOURCE_SET: "xbs-${WORKER_INDEX || 0}"
+      SOURCE_VARIANT_TYPE: "Insert"
+      SOURCE_VARIANT: "Base"
+
+# Choosing a source clears the previous result panel. Confirming it is gone is
+# what stops the assertion after the next submit from passing on stale text.
+- extendedWaitUntil:
+    notVisible:
+      text: ".*Not found in source set.*"
+    timeout: 7000
+
+# ============================================================
+# Step 8 — SUBMIT AGAINST THE CHOSEN SOURCE VARIANT
+# The submit button lives in the modal's own always-visible footer, so it is
+# tapped directly (R8 fixed-overlay exception).
+# ============================================================
+- tapOn:
+    id: "Link cross-release cards"
+
+# ── ASSERTION 2: the same three numbers are named, now against the variant ───
+- extendedWaitUntil:
+    visible:
+      text: ".*Not found in source set: 8801, 8802, 8803.*"
+    timeout: 7000
+# ...and nothing was quietly linked behind the message.
+- assertVisible:
+    text: ".*Linked 0 cards.*"
+
+# ============================================================
+# Step 9 — CLOSE
+# ============================================================
+- tapOn:
+    id: "Cancel cross-release import"
+- extendedWaitUntil:
+    notVisible:
+      id: "Add cross-release cards"
+    timeout: 7000

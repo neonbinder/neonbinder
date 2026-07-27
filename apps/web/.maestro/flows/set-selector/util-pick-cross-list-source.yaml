@@ -1,0 +1,211 @@
+appId: com.neonbinder.web
+name: "Util — pick the source (home) set inside the Add Cross-Release Cards modal"
+tags:
+  - util
+---
+# Reusable sub-flow: with the "Add Cross-Release Cards" modal ALREADY OPEN,
+# work down its stack of "Source ..." dropdowns until the home set the cards
+# were physically printed in is selected.
+#
+# WHY THIS IS A UTIL (R3/R9): the modal's drill is its own little hierarchy
+# walk, and three flows plus util-cross-list-cards.yaml need it. Keeping it in
+# one file means the (fiddly) dropdown mechanics below are described once.
+#
+# CALLER CONTRACT:
+#   - The modal is open (its heading "Add Cross-Release Cards" is on screen).
+#   - Nothing below Sport has been picked yet, OR a partial pick exists —
+#     re-picking a level is harmless (the app clears every deeper level when a
+#     level changes), so this util is safe to run after a partial drill.
+#
+# RETURN CONTRACT:
+#   - All six levels are selected; the deepest (Insert) shows SOURCE_VARIANT.
+#   - The modal is still open and "Link Cards" is enabled.
+#   - Any previous result/error banner has been cleared (the app clears it on
+#     every pick), so a caller asserting a result after this is asserting a
+#     FRESH submit, never a stale banner.
+#
+# INPUTS (all required — callers pass them explicitly so nothing is guessed):
+#   SOURCE_SPORT, SOURCE_YEAR, SOURCE_MANUFACTURER, SOURCE_SET,
+#   SOURCE_VARIANT_TYPE, SOURCE_VARIANT
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# HOW A DROPDOWN IS OPERATED HERE, AND WHY (read before editing):
+#
+#   Each level is a real browser dropdown. Maestro drives these in two taps:
+#     1. tap the dropdown itself (this focuses it, which is what makes its
+#        choices appear to Maestro at all), then
+#     2. tap the choice, scoped with `childOf:` to that dropdown.
+#
+#   `childOf:` is NOT optional. The set-selector page is still behind the modal
+#   and shows the very same words ("2026", "Topps", "Insert", "Base") in its
+#   columns, so an unscoped tap on "Base" would land on the page behind the
+#   modal instead of inside it.
+#
+#   Each level is gated twice before it is tapped:
+#     a) wait for the dropdown to exist — a level only appears once the level
+#        above it has been chosen AND its choices have come back from the
+#        server, and
+#     b) wait for it to stop reading "Loading…" — a dropdown that is still
+#        loading is greyed out and ignores taps.
+#   Then, after the pick, the dropdown is asserted to actually READ the value
+#   we chose. That last assert is the load-bearing one (R2): if the pick did
+#   not take, the flow fails right there instead of quietly linking from the
+#   wrong set.
+#
+#   NOTE ON THE DEEPEST TWO LEVELS: the modal hides "Insert"/"Parallel" when
+#   the chosen parent has no children there. Our per-worker custom subtree is
+#   Sport → Year → Manufacturer → Set → Variant ("Insert") → Insert ("Base"),
+#   so exactly six dropdowns render and "Parallel" never appears.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Sanity gate — we really are inside the modal before touching anything.
+- extendedWaitUntil:
+    visible:
+      id: "Add cross-release cards"
+    timeout: 7000
+
+# ============================================================
+# LEVEL 1 — SPORT
+# ============================================================
+- extendedWaitUntil:
+    visible:
+      id: "Source Sport"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible:
+      id: "Source Sport"
+      text: "Loading.*"
+    timeout: 7000
+- tapOn:
+    id: "Source Sport"
+- tapOn:
+    text: ${SOURCE_SPORT}
+    childOf:
+      id: "Source Sport"
+- extendedWaitUntil:
+    visible:
+      id: "Source Sport"
+      text: ${SOURCE_SPORT}
+    timeout: 7000
+
+# ============================================================
+# LEVEL 2 — YEAR
+# ============================================================
+- extendedWaitUntil:
+    visible:
+      id: "Source Year"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible:
+      id: "Source Year"
+      text: "Loading.*"
+    timeout: 7000
+- tapOn:
+    id: "Source Year"
+- tapOn:
+    text: ${SOURCE_YEAR}
+    childOf:
+      id: "Source Year"
+- extendedWaitUntil:
+    visible:
+      id: "Source Year"
+      text: ${SOURCE_YEAR}
+    timeout: 7000
+
+# ============================================================
+# LEVEL 3 — MANUFACTURER
+# ============================================================
+- extendedWaitUntil:
+    visible:
+      id: "Source Manufacturer"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible:
+      id: "Source Manufacturer"
+      text: "Loading.*"
+    timeout: 7000
+- tapOn:
+    id: "Source Manufacturer"
+- tapOn:
+    text: ${SOURCE_MANUFACTURER}
+    childOf:
+      id: "Source Manufacturer"
+- extendedWaitUntil:
+    visible:
+      id: "Source Manufacturer"
+      text: ${SOURCE_MANUFACTURER}
+    timeout: 7000
+
+# ============================================================
+# LEVEL 4 — SET
+# ============================================================
+- extendedWaitUntil:
+    visible:
+      id: "Source Set"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible:
+      id: "Source Set"
+      text: "Loading.*"
+    timeout: 7000
+- tapOn:
+    id: "Source Set"
+- tapOn:
+    text: ${SOURCE_SET}
+    childOf:
+      id: "Source Set"
+- extendedWaitUntil:
+    visible:
+      id: "Source Set"
+      text: ${SOURCE_SET}
+    timeout: 7000
+
+# ============================================================
+# LEVEL 5 — VARIANT
+# ============================================================
+- extendedWaitUntil:
+    visible:
+      id: "Source Variant"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible:
+      id: "Source Variant"
+      text: "Loading.*"
+    timeout: 7000
+- tapOn:
+    id: "Source Variant"
+- tapOn:
+    text: ${SOURCE_VARIANT_TYPE}
+    childOf:
+      id: "Source Variant"
+- extendedWaitUntil:
+    visible:
+      id: "Source Variant"
+      text: ${SOURCE_VARIANT_TYPE}
+    timeout: 7000
+
+# ============================================================
+# LEVEL 6 — INSERT (the actual checklist the cards live in)
+# This dropdown only appears once the app has confirmed the chosen Variant
+# really has entries underneath it, which is why it gets the same two gates.
+# ============================================================
+- extendedWaitUntil:
+    visible:
+      id: "Source Insert"
+    timeout: 7000
+- extendedWaitUntil:
+    notVisible:
+      id: "Source Insert"
+      text: "Loading.*"
+    timeout: 7000
+- tapOn:
+    id: "Source Insert"
+- tapOn:
+    text: ${SOURCE_VARIANT}
+    childOf:
+      id: "Source Insert"
+- extendedWaitUntil:
+    visible:
+      id: "Source Insert"
+      text: ${SOURCE_VARIANT}
+    timeout: 7000
