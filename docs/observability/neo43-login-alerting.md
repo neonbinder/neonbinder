@@ -291,6 +291,34 @@ shared-HTTP-state bug on our side before. Not urgent. Swapping later is one
 Do **not** use "disable the secret" as a kill switch — that makes the canary
 fail loudly and generates exactly the false alarms you are trying to stop.
 
+### Triggering a canary run on demand
+
+**A paused job cannot be triggered.** `gcloud scheduler jobs run` fails with
+`FAILED_PRECONDITION: Job.state must be ENABLED for RunJob`. Resume, run, then
+re-pause — and put the re-pause in the same command so a mid-script failure
+cannot leave the canary running:
+
+```bash
+gcloud scheduler jobs resume neonbinder-login-canary-bsc --location=us-central1 --project=neonbinder
+for i in 1 2 3; do
+  gcloud scheduler jobs run neonbinder-login-canary-bsc --location=us-central1 --project=neonbinder
+  sleep 12
+done
+gcloud scheduler jobs pause neonbinder-login-canary-bsc --location=us-central1 --project=neonbinder
+gcloud scheduler jobs describe neonbinder-login-canary-bsc --location=us-central1 --project=neonbinder --format='value(state)'
+```
+
+Note this only matters while the canary is paused; in steady state it is
+ENABLED and `jobs run` works directly.
+
+**Testing the alert path end-to-end without touching a marketplace:** point the
+canary at a credential key whose secret has **no enabled version**. The login
+then fails inside Secret Manager *before any marketplace contact* — observed
+`duration_ms` of 75-309ms, versus ~3000ms for a real BSC exchange — and
+classifies as `error_class="other"`, which the failure policy does **not**
+exclude. Three runs inside five minutes trips the `>2` threshold. This is how
+delivery was first proven on 2026-07-27.
+
 `retry_count = 0` (and the canary's reduced SportLots retry budget) is
 deliberate — for **monitoring correctness**, not anti-abuse. Retries would let
 the canary quietly succeed on attempt 2 and report nothing, hiding an
@@ -323,57 +351,112 @@ rejecting us while the service looks perfectly healthy". Cloud Monitoring is
 the fast path (~5 min). PostHog's check cadence is **hourly at best** — do not
 expect paging latency from it.
 
-### Prerequisites
+It also catches one thing Cloud Monitoring **structurally cannot see**: a login
+that hangs past Convex's 60s abort writes no `browser_login_call` line at all
+(see §2.1), so the `credential_test_failed` event with `error_class="timeout"`
+is its only record.
 
-1. `neonbinder@neonbinder.io` must be a **member** of the PostHog project —
-   alerts pick recipients from a member list, you cannot type an arbitrary
-   address.
-2. **Confirm dev Convex does not write into the same project**, or a dev E2E
-   run will page you. The cheapest prod-only guarantee is leaving
-   `POSTHOG_API_KEY` unset in dev, which is already the de-facto behaviour
-   (`apps/web/convex/posthog.ts` no-ops without it).
-3. PostHog alerts have historically **not supported insights with a
-   breakdown** — hence one insight + one alert *per platform*. Verify in the
-   UI; collapse to one if that has changed.
+### ⚠️ One project serves every environment — read this first
 
-### Alert 1 — failure burst (works on today's data)
+The PostHog account tier allows **one project**. Prod, dev, and every per-PR
+preview all write into the same event stream: previews inherit
+`POSTHOG_API_KEY` from the project-level preview defaults
+(`npx convex env default list --type preview`).
+
+**Without a discriminator the alert below is unusable.** It counts *unique
+users who failed login*; the E2E suite runs **8 workers as 8 distinct Clerk
+users**, and `credentials-lifecycle` fails a login on purpose as part of its
+save → fail → recover → clear cycle. Every PR would page you.
+
+The discriminator is the **`deployment`** property, emitted by
+`deploymentName()` in `apps/web/convex/observability.ts` and derived from
+`CONVEX_CLOUD_URL` (which Convex sets automatically, so it cannot drift out of
+sync with where the code is running). Prod is **`first-starfish-800`**.
+
+**Every insight in this section must filter `deployment = first-starfish-800`.**
+
+### ⚠️ There is no prod history
+
+`POSTHOG_API_KEY` was **never set on the prod Convex deployment** until
+2026-07-27. `apps/web/convex/posthog.ts` no-ops silently without it, so until
+that date *all* server-side events — `credential_test_failed`,
+`adapter_sync_call`, `selector_sync_failed`, `set_reconciliation_fetch_failed`
+— were emitted **only from dev**.
+
+Consequences:
+- Every event in the project older than 2026-07-27 is **dev traffic**.
+- The `deployment` property only exists on events emitted after that deploy.
+- **Do not calibrate prod thresholds from historical data.** It describes dev.
+
+### Before building anything
+
+In PostHog → **Activity** (live events), open a recent `adapter_sync_call` or
+`credential_test_*` and confirm it carries a `deployment` property. If it is
+missing, the Convex prod deploy has not finished — wait rather than building on
+absent data.
+
+### Alert 1 — failure burst (build this now, one per platform)
 
 | | |
 |---|---|
-| Insight | Trends on `credential_test_failed`, filtered to one platform |
-| Aggregation | **Unique users** (not event count — see §3) |
-| Window | Last 24 hours, hourly interval |
-| Condition | value **above 2** |
+| Insight | Trends on `credential_test_failed` |
+| Filters | `platform = buysportscards` **AND `deployment = first-starfish-800`** |
+| Aggregation | **Unique users** — not event count |
+| Interval | Daily, last 30 days |
+| Alert | value **above 2**, checked hourly |
 | Recipient | `neonbinder@neonbinder.io` |
 
-Three distinct users failing the same platform in a day is a marketplace-level
-break, and is close to unfakeable by one bad account.
+Then duplicate with `platform = sportlots`. (PostHog uses `buysportscards`;
+the browser service uses `bsc` — see §3.)
 
-### Alert 2 — failure rate (needs ~7 days of data)
+**Unique users, not event count** — these events also fire on *background token
+refresh*, not only when someone clicks Test. One seller with a permanently-bad
+stored password emits failures indefinitely and would pin a count-based alert
+forever. "Three different people failed BSC today" is a marketplace problem;
+"one person failed 400 times" is that person.
 
-Two series, `A = credential_test_failed`, `B = credential_test_succeeded`,
-both filtered to one platform; formula `A / (A + B)`; daily; above `0.5`.
+**One insight per platform** — PostHog has historically not supported alerts on
+insights carrying a *breakdown*. Verify in the UI; collapse to a single
+broken-down insight only if that has changed.
 
-PostHog cannot backfill a denominator, so this only becomes meaningful about a
-week after `credential_test_succeeded` ships. Treat as advisory until traffic
-grows — at low volume a 1-of-1 failure day reads as 100%.
+`>2` is a starting estimate, not a measured threshold — see calibration below.
+
+### Alert 2 — failure rate (wait ~1 week)
+
+Two series, both filtered to one platform **and prod**:
+`A = credential_test_failed`, `B = credential_test_succeeded`; formula
+`A / (A + B)`; daily; alert above `0.5`.
+
+This is the version that survives growth: an absolute count meaning "outage"
+today means "Tuesday" at 100x the users. PostHog cannot backfill a denominator,
+so it only becomes meaningful about a week after prod starts emitting. Treat it
+as advisory at low volume, where one failure out of one reads as 100%.
 
 ### Alert 3 — hang detector (optional)
 
-Alert 1 plus `error_class = timeout`, threshold above 0, daily.
+Alert 1 plus `error_class = timeout`, threshold above 0, daily. See the note at
+the top of this section on why this is not redundant with Cloud Monitoring.
 
 ### Calibrate rather than guess
 
-Run `credential_test_failed`, last 90 days, daily interval, broken down by
-`platform` (breakdowns are fine on an *insight*; the restriction is only on
-*alerts*). Take the p95 daily unique-user count per platform and set the
-threshold one step above.
+Once there is real prod data, run `credential_test_failed` filtered to
+`deployment = first-starfish-800`, daily interval, broken down by `platform`
+(breakdowns are fine on an *insight* — the restriction is only on *alerts*).
+Take the p95 daily unique-user count per platform and set the threshold one
+step above.
 
 **Record the observed numbers and the date here when you do:**
 
 | Date | Platform | p95 daily unique users | Threshold set |
 |---|---|---|---|
-| _(not yet calibrated — thresholds above are initial estimates)_ | | | |
+| _(not yet calibrated — thresholds above are initial estimates, and prod data only began 2026-07-27)_ | | | |
+
+### While you are in here: existing insights blend environments
+
+Turning on prod telemetry means any pre-existing insight or dashboard in this
+project silently started mixing prod, dev and preview traffic on 2026-07-27.
+`adapter_sync_call` carries `deployment` too, so adding the same filter to the
+marketplace-diagnostics views makes them mean what they appear to mean.
 
 ### A note on the ingest host
 
