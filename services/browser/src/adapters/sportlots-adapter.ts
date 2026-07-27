@@ -11,9 +11,15 @@ const SL_LOGIN_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
 const MAX_ATTEMPTS = 5;
 const BACKOFFS_MS = [500, 1000, 2000, 4000];
 
-// NEO-43: the synthetic canary runs a reduced retry budget so a scheduled
-// probe can never turn one SportLots hiccup into the serialized login burst
-// that tripped bot protection in NEO-29.
+// NEO-43: the synthetic canary runs a reduced retry budget.
+//
+// NOT for rate-limit or anti-abuse reasons — neither SportLots nor BSC
+// throttles logins, and there is no such thing as BSC "bot protection". That
+// belief has been raised and disproven repeatedly on this project; don't
+// reintroduce it. The reason here is monitoring correctness: a canary exists
+// to REPORT failures, and retrying five times masks a marketplace that is
+// intermittently failing — which is precisely the signal we want to see. Two
+// attempts tolerates one dropped connection without hiding a pattern.
 const CANARY_MAX_ATTEMPTS = 2;
 
 // Conservative TTL for cached SL session cookies. SL sessions empirically
@@ -111,13 +117,11 @@ export class SportlotsAdapter extends BaseAdapter {
       );
     }
 
-    // NEO-43: the canary runs a reduced retry budget. NEO-29 showed that a
-    // burst of serialized marketplace logins is what trips bot protection —
-    // "the retry caused the failures it was meant to fix". A canary firing on
-    // a schedule with the full 5-attempt budget would recreate that exact
-    // shape automatically, forever. Canary flakiness is absorbed by the alert
-    // policy requiring two consecutive failed RUNS, not by retrying harder
-    // inside one run.
+    // NEO-43: reduced retry budget for the canary — see CANARY_MAX_ATTEMPTS.
+    // Retrying hard would hide an intermittently-failing marketplace behind a
+    // green canary; a monitoring probe must surface that, not paper over it.
+    // Genuine one-off blips are absorbed by the alert policy, which needs
+    // repeated failures before it fires.
     const maxAttempts = canary ? CANARY_MAX_ATTEMPTS : MAX_ATTEMPTS;
 
     let last: AdapterResponse = { success: false, error: "Login did not run" };
