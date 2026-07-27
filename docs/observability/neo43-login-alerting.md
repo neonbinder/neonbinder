@@ -434,12 +434,28 @@ falling through to the app router. Do not "fix" it.
   contacting eBay. Instrumenting it would inject *fabricated successes* into
   the failure-rate denominator, making the alert progressively less sensitive
   as eBay usage grew. Deliberately excluded, not overlooked.
-- **SportLots' no-cookies branch uses a heuristic — NEO-100.** When
-  SportLots returns no session cookies, a rejection is inferred from its
-  `not a valid email address` tell, falling back to "did SportLots render any
-  body at all". A structural fix would parse SportLots' error markup, which we
-  do not have documented. The fallback errs toward 502 (pages), so the failure
-  mode is a spurious page, not a missed one.
+- **SportLots' refusal format is a `?message=` redirect, not a login page.**
+  Not a gap — a thing to know before you debug this. Every failed SportLots
+  login is a ~115-byte JS-redirect stub:
+
+  ```html
+  <html><head> </head> <body onload='window.location =
+    "\?message=Not a valid Email Address";'> </body> </html>
+  ```
+
+  Observed messages: `Not a valid Email Address` (malformed) and `Invalid
+  email address supplied` (unknown account — and also a wrong or empty
+  password; SportLots deliberately does not distinguish those). The adapter
+  matches the extracted message against `CREDENTIAL_REJECTION_PATTERNS`.
+
+  **An unrecognised message is NOT treated as a rejection — it returns 502 and
+  pages.** So if you get paged for a SportLots 502 and the diagnostic shows a
+  `?message=` you don't recognise, the likely cause is that **SportLots
+  changed their login flow**, not an outage. Add the new message to
+  `CREDENTIAL_REJECTION_PATTERNS` in
+  `services/browser/src/services/login-diagnostic.ts` if it is a credential
+  message. That failure direction is deliberate: the alternative would let a
+  changed login flow masquerade as a wave of seller typos.
 - **PostHog config is not IaC.** PostHog exposes REST endpoints for insights
   and alerts, so a checked-in JSON plus an idempotent apply script is
   possible. Its own ticket.
