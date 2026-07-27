@@ -261,3 +261,40 @@ describe("recordCredentialTest — never breaks the login it observes", () => {
     expect(result.success).toBe(true);
   });
 });
+
+describe("deployment tag (NEO-43) — one PostHog project serves all environments", () => {
+  test("credential events carry the emitting deployment", async () => {
+    // Without this, a per-PR E2E run (8 workers as 8 distinct Clerk users,
+    // with credentials-lifecycle failing a login on purpose) is
+    // indistinguishable from 8 real sellers failing in prod — which would
+    // fire the unique-users alert on every PR.
+    process.env.CONVEX_CLOUD_URL = "https://first-starfish-800.convex.cloud";
+    const t = convexTest(schema, modules);
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) =>
+      String(url).includes("/login/bsc")
+        ? jsonResponse({ success: true, message: "ok" })
+        : (() => { throw new Error(`unexpected fetch: ${url}`); })()) as FetchStub);
+
+    await t.withIdentity({ subject: USER }).action(internal.credentials.authenticateBsc, {});
+
+    expect(only("credential_test_succeeded").properties.deployment).toBe("first-starfish-800");
+    delete process.env.CONVEX_CLOUD_URL;
+  });
+
+  test("deploymentName parses the slug, and degrades to undefined rather than guessing", async () => {
+    const { deploymentName } = await import("./observability");
+
+    process.env.CONVEX_CLOUD_URL = "https://first-starfish-800.convex.cloud";
+    expect(deploymentName()).toBe("first-starfish-800");
+
+    process.env.CONVEX_CLOUD_URL = "https://pr-123-abc.convex.cloud";
+    expect(deploymentName()).toBe("pr-123-abc");
+
+    delete process.env.CONVEX_CLOUD_URL;
+    expect(deploymentName()).toBeUndefined();
+
+    process.env.CONVEX_CLOUD_URL = "not-a-url";
+    expect(deploymentName()).toBeUndefined();
+    delete process.env.CONVEX_CLOUD_URL;
+  });
+});

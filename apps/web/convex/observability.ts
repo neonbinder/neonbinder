@@ -106,6 +106,10 @@ export async function recordAdapterCall(
   } catch {
     // auth context may not be available (internal callers, cron jobs)
   }
+  // NEO-43: tag the emitting deployment. One PostHog project serves prod, dev
+  // and every per-PR preview, so without this every insight and dashboard
+  // silently blends environments. See deploymentName().
+  const deployment = deploymentName();
   // Also emit a structured console line for cases where PostHog is misconfigured —
   // Cloud Run / Convex logs are the fallback channel.
   try {
@@ -113,6 +117,7 @@ export async function recordAdapterCall(
       JSON.stringify({
         msg: "adapter_sync_call",
         ...props,
+        deployment,
       }),
     );
   } catch {
@@ -122,7 +127,7 @@ export async function recordAdapterCall(
     await ctx.runAction(internal.posthog.captureEvent, {
       distinctId,
       event: "adapter_sync_call",
-      properties: props,
+      properties: { ...props, deployment },
     });
   } catch (err) {
     console.error(
@@ -179,6 +184,28 @@ export function classifyAdapterError(raw: string | undefined): string | undefine
 // SECURITY: the console line below is an explicit field allowlist, never a
 // spread of `props`. `props` can carry the login diagnostic's `snippet` — up
 // to 1500 chars of marketplace page text.
+
+/**
+ * Which Convex deployment emitted this event — "first-starfish-800" for prod,
+ * a per-PR slug for a preview, the dev slug for dev.
+ *
+ * NEO-43: the PostHog account is limited to ONE project, so prod, dev and
+ * every per-PR preview report into the SAME event stream. Without this tag
+ * they are indistinguishable, which makes environment-scoped alerting
+ * impossible — and concretely would make a "N unique users failed login"
+ * alert fire on every PR, because the E2E suite runs 8 workers as 8 distinct
+ * Clerk users and `credentials-lifecycle` fails a login on purpose.
+ *
+ * CONVEX_CLOUD_URL is set automatically by Convex on every deployment, so
+ * this needs no new environment variable and cannot drift out of sync with
+ * where the code is actually running. Returns undefined rather than guessing
+ * if the URL shape is unexpected.
+ */
+export function deploymentName(): string | undefined {
+  const url = process.env.CONVEX_CLOUD_URL;
+  if (!url) return undefined;
+  return /^https?:\/\/([^.]+)\./.exec(url)?.[1];
+}
 
 export type CredentialTestProperties = {
   platform: "buysportscards" | "sportlots";
@@ -239,6 +266,7 @@ export async function recordCredentialTest(
   success: boolean,
   props: CredentialTestProperties,
 ): Promise<void> {
+  const deployment = deploymentName();
   try {
     console.log(
       JSON.stringify({
@@ -248,6 +276,7 @@ export async function recordCredentialTest(
         error_class: props.error_class,
         duration_ms: props.duration_ms,
         challenge_detected: props.challengeDetected,
+        deployment,
         // snippet/title/url deliberately omitted — page-derived text.
       }),
     );
@@ -258,7 +287,7 @@ export async function recordCredentialTest(
     await ctx.runAction(internal.posthog.captureEvent, {
       distinctId,
       event: success ? "credential_test_succeeded" : "credential_test_failed",
-      properties: props,
+      properties: { ...props, deployment },
     });
   } catch (err) {
     console.error(
