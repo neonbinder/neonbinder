@@ -13,36 +13,35 @@ tags:
 #   operator with no idea what to fix. This flow proves the missing numbers are
 #   spelled out in full.
 #
-# THE CONCRETE ASSERTION (R2): after asking for 8801-8803 from a source set
-#   that is empty, the panel reads
+# THE CONCRETE ASSERTION (R2): after asking for 8801-8803 from a real but empty
+#   source set, the panel reads
 #     "Not found in source set: 8801, 8802, 8803 — fetch or commit that set first."
-#   Every requested number is named. A swallowed error, a bare count, or a
-#   truncated list all fail. There is no conditional path around it.
+#   and, alongside it, "Linked 0 cards." — so nothing was quietly linked behind
+#   the message. Every requested number is named. A swallowed error, a bare
+#   count, or a truncated list all fail. There is no conditional path around it.
+#
+# "8801-8803" ALSO PROVES THE RANGE SHORTHAND EXPANDS: the message names three
+#   separate numbers, which can only happen if the range was unpacked first.
 #
 # THIS ALSO LOCKS IN KEYBOARD OPERABILITY (standing project rule):
-#   The FIRST submit below is made with the Enter key from the card-number box,
-#   not by clicking the button — and it can only produce a result panel if
-#   pressing Enter really did submit the form. So the keyboard path is proved
-#   by the same assertion, with no extra steps. (Note: the modal also closes on
-#   Escape, but Maestro's web driver can only send Enter and Backspace — every
-#   other key is rejected outright — so Escape is not testable here and the
-#   Cancel button is used to close instead. Same limitation is recorded in
-#   checklist-keyboard-only-dialog.yaml.)
+#   The submit below is made with the Enter key from the card-number box, not by
+#   clicking the button — and a result panel can only appear if pressing Enter
+#   really did submit. So the keyboard path is proved by the same assertion,
+#   with no extra steps. (The modal also closes on Escape, but Maestro's web
+#   driver can only send Enter and Backspace — every other key is rejected
+#   outright — so Escape is not testable here and the Cancel button is used to
+#   close instead. Same limitation is recorded in checklist-keyboard-only-dialog.)
 #
-# WHY THE SUBMIT HAPPENS TWICE:
-#   1st submit — only the Sport has been chosen, so the "source" is far too
-#     broad to hold cards. This is the cheap moment to press Enter, because
-#     only two dropdowns are on screen and the card-number box is comfortably
-#     within the modal (a fixed overlay cannot be scrolled by Maestro).
-#     A source MUST be chosen first: the submit button is disabled until then,
-#     and a browser ignores Enter when a form's submit button is disabled.
-#   2nd submit — now drilled all the way down to a real, empty variant, i.e.
-#     the exact situation the message is written for ("this set has not been
-#     fetched"). Choosing any level wipes the previous panel, and the flow
-#     asserts the panel is gone before submitting again, so the second
-#     assertion cannot be satisfied by the first submit's leftovers.
+# WHY THE SOURCE IS DRILLED ALL THE WAY DOWN:
+#   The import only accepts a source at variant level or deeper — a checklist of
+#   cards only ever hangs off one of those. Naming something shallower (just a
+#   sport, say) is refused outright as a bad request, which is a DIFFERENT
+#   message about a DIFFERENT problem and would not exercise this feature at
+#   all. So the flow picks a real, correctly-shaped source that simply happens
+#   to be empty — exactly the situation the missing-numbers message is written
+#   for ("the operator picked the right set, but nobody has fetched it yet").
 #
-# DATA SAFETY (R7): both submits find nothing, so nothing is written anywhere.
+# DATA SAFETY (R7): the submit finds nothing, so nothing is written anywhere.
 #   This flow creates no links and needs no cleanup. Everything happens inside
 #   this worker's private playground ("E2E Test Sport <worker>" / 2026 / Topps):
 #     xbs-<worker>  the SOURCE set — deliberately left with an empty checklist
@@ -50,9 +49,14 @@ tags:
 #
 # R3 — DEDUP: no other flow asserts the missing-number message or the keyboard
 #   submit. The successful-import path is owned by
-#   cross-release-card-appears-in-guest-checklist.yaml.
+#   cross-release-card-appears-in-guest-checklist.yaml. This flow opens and
+#   submits the modal by hand rather than through util-cross-list-cards.yaml for
+#   one reason only: that util submits by clicking, and the keyboard submit is
+#   half of what is being proved here. The drill itself is still the shared one.
 # R9 — all set navigation goes through util-drill-to-custom.yaml; the modal's
-#   dropdown drill goes through util-pick-cross-list-source.yaml.
+#   own drill through util-pick-cross-list-source.yaml.
+# R5 — every wait is the 7s default except page-load / scroll budgets. No
+#   marketplace is contacted: a custom subtree never triggers a fetch.
 # ============================================================================
 
 # Step 1 — open the app, signed in, on the Set Selector.
@@ -107,54 +111,10 @@ tags:
     timeout: 7000
 
 # ============================================================
-# Step 5 — CHOOSE JUST THE SPORT (enables the submit button)
-# Two taps: the dropdown, then the choice scoped to that dropdown — the page
-# behind the modal shows the same sport name, so the scoping is required.
-# ============================================================
-- extendedWaitUntil:
-    visible:
-      id: "Source Sport"
-    timeout: 7000
-- extendedWaitUntil:
-    notVisible:
-      id: "Source Sport"
-      text: "Loading.*"
-    timeout: 7000
-- tapOn:
-    id: "Source Sport"
-- tapOn:
-    text: "E2E Test Sport ${WORKER_INDEX || 0}"
-    childOf:
-      id: "Source Sport"
-- extendedWaitUntil:
-    visible:
-      id: "Source Sport"
-      text: "E2E Test Sport ${WORKER_INDEX || 0}"
-    timeout: 7000
-
-# ============================================================
-# Step 6 — TYPE THREE CARD NUMBERS AS A RANGE, AND SUBMIT WITH ENTER
-# "8801-8803" also proves the range shorthand expands: the message below names
-# three separate numbers, which can only happen if the range was unpacked.
-# ============================================================
-- tapOn:
-    id: "Card numbers to cross-list"
-- inputText: "8801-8803"
-- assertVisible:
-    id: "Card numbers to cross-list"
-    text: "8801-8803"
-- pressKey: Enter
-
-# ── ASSERTION 1: Enter submitted, and every missing number is named ──────────
-- extendedWaitUntil:
-    visible:
-      text: ".*Not found in source set: 8801, 8802, 8803.*"
-    timeout: 7000
-
-# ============================================================
-# Step 7 — NOW DRILL ALL THE WAY DOWN TO THE REAL (EMPTY) SOURCE VARIANT
-# This is the situation the message is actually written for: the operator
-# picked the right set, but nobody has fetched its checklist yet.
+# Step 5 — NAME THE (EMPTY) SOURCE SET
+# Returns once the modal shows its green "Source set: …" confirmation, which is
+# also what enables the submit — a browser ignores Enter while a form's submit
+# button is disabled, so this has to happen before the keyboard step below.
 # ============================================================
 - runFlow:
     file: util-pick-cross-list-source.yaml
@@ -166,22 +126,18 @@ tags:
       SOURCE_VARIANT_TYPE: "Insert"
       SOURCE_VARIANT: "Base"
 
-# Choosing a source clears the previous result panel. Confirming it is gone is
-# what stops the assertion after the next submit from passing on stale text.
-- extendedWaitUntil:
-    notVisible:
-      text: ".*Not found in source set.*"
-    timeout: 7000
-
 # ============================================================
-# Step 8 — SUBMIT AGAINST THE CHOSEN SOURCE VARIANT
-# The submit button lives in the modal's own always-visible footer, so it is
-# tapped directly (R8 fixed-overlay exception).
+# Step 6 — TYPE THREE CARD NUMBERS AS A RANGE, AND SUBMIT WITH ENTER
 # ============================================================
 - tapOn:
-    id: "Link cross-release cards"
+    id: "Card numbers to cross-list"
+- inputText: "8801-8803"
+- assertVisible:
+    id: "Card numbers to cross-list"
+    text: "8801-8803"
+- pressKey: Enter
 
-# ── ASSERTION 2: the same three numbers are named, now against the variant ───
+# ── ASSERTION: Enter submitted, and every missing number is named ────────────
 - extendedWaitUntil:
     visible:
       text: ".*Not found in source set: 8801, 8802, 8803.*"
@@ -191,7 +147,7 @@ tags:
     text: ".*Linked 0 cards.*"
 
 # ============================================================
-# Step 9 — CLOSE
+# Step 7 — CLOSE
 # ============================================================
 - tapOn:
     id: "Cancel cross-release import"

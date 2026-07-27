@@ -3,59 +3,81 @@ name: "Util — pick the source (home) set inside the Add Cross-Release Cards mo
 tags:
   - util
 ---
-# Reusable sub-flow: with the "Add Cross-Release Cards" modal ALREADY OPEN,
-# work down its stack of "Source ..." dropdowns until the home set the cards
-# were physically printed in is selected.
+# Reusable sub-flow: with the "Add Cross-Release Cards" modal ALREADY OPEN, walk
+# its one-question-at-a-time wizard down to the set the cards were physically
+# printed in, and leave that set confirmed as the source.
 #
-# WHY THIS IS A UTIL (R3/R9): the modal's drill is its own little hierarchy
-# walk, and three flows plus util-cross-list-cards.yaml need it. Keeping it in
-# one file means the (fiddly) dropdown mechanics below are described once.
+# WHY THIS IS A UTIL (R3/R9): the modal has its own little hierarchy walk, and
+# three flows plus util-cross-list-cards.yaml need it. Keeping it in one file
+# means the wizard's mechanics are described once.
 #
 # CALLER CONTRACT:
-#   - The modal is open (its heading "Add Cross-Release Cards" is on screen).
-#   - Nothing below Sport has been picked yet, OR a partial pick exists —
-#     re-picking a level is harmless (the app clears every deeper level when a
-#     level changes), so this util is safe to run after a partial drill.
+#   - The modal is open (its title "Add Cross-Release Cards" is on screen).
+#   - Nothing has been picked yet. The modal wipes every answer each time it is
+#     opened, so this is simply "the modal was just opened".
 #
 # RETURN CONTRACT:
-#   - All six levels are selected; the deepest (Insert) shows SOURCE_VARIANT.
-#   - The modal is still open and "Link Cards" is enabled.
-#   - Any previous result/error banner has been cleared (the app clears it on
-#     every pick), so a caller asserting a result after this is asserting a
-#     FRESH submit, never a stale banner.
+#   - The green "Source set: <SOURCE_VARIANT>" banner is showing, which is the
+#     modal's own confirmation that it has a usable source — "Link Cards" stays
+#     greyed out until then. Asserting that banner is the load-bearing check
+#     (R2): if any answer along the way went astray the flow dies here, never
+#     quietly linking from the wrong set.
+#   - The modal is still open, and any previous result/error banner has been
+#     cleared (the modal clears it on every answer), so a caller asserting a
+#     result after this is always asserting a FRESH submit, never leftovers.
 #
 # INPUTS (all required — callers pass them explicitly so nothing is guessed):
 #   SOURCE_SPORT, SOURCE_YEAR, SOURCE_MANUFACTURER, SOURCE_SET,
 #   SOURCE_VARIANT_TYPE, SOURCE_VARIANT
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# HOW A DROPDOWN IS OPERATED HERE, AND WHY (read before editing):
+# HOW ONE QUESTION IS ANSWERED, AND WHY (read before editing):
 #
-#   Each level is a real browser dropdown. Maestro drives these in two taps:
-#     1. tap the dropdown itself (this focuses it, which is what makes its
-#        choices appear to Maestro at all), then
-#     2. tap the choice, scoped with `childOf:` to that dropdown.
+#   The wizard asks for one level at a time and offers a plain button per
+#   choice, named "Pick <Level> <value>" — so answering is a single tap. There
+#   is no need to scope the tap to a panel: those button names exist only inside
+#   the modal, never in the set-selector columns behind it.
 #
-#   `childOf:` is NOT optional. The set-selector page is still behind the modal
-#   and shows the very same words ("2026", "Topps", "Insert", "Base") in its
-#   columns, so an unscoped tap on "Base" would land on the page behind the
-#   modal instead of inside it.
+#   THE ONE COMPLICATION — LONG LISTS. The list of choices lives in its own
+#   little scrolling box roughly four rows tall, and Maestro cannot scroll a box
+#   inside a floating panel: a choice below the fourth row is technically
+#   "there" but the tap would land on whatever is actually drawn at that spot.
+#   The modal's own answer to that is a "Filter <Level> options" box, which it
+#   shows whenever a level offers more than eight choices. Typing the answer
+#   into it collapses the list to the single matching row, which is then always
+#   the first row and always safely on screen.
 #
-#   Each level is gated twice before it is tapped:
-#     a) wait for the dropdown to exist — a level only appears once the level
-#        above it has been chosen AND its choices have come back from the
-#        server, and
-#     b) wait for it to stop reading "Loading…" — a dropdown that is still
-#        loading is greyed out and ignores taps.
-#   Then, after the pick, the dropdown is asserted to actually READ the value
-#   we chose. That last assert is the load-bearing one (R2): if the pick did
-#   not take, the flow fails right there instead of quietly linking from the
-#   wrong set.
+#   So each level is answered one of two ways, and WHICH one is not a guess:
 #
-#   NOTE ON THE DEEPEST TWO LEVELS: the modal hides "Insert"/"Parallel" when
-#   the chosen parent has no children there. Our per-worker custom subtree is
+#   * SPORT and SET are asked against lists we do not control the length of —
+#     Sport lists every sport in the catalogue (seventeen-plus once real
+#     marketplace data is loaded) and Set lists every set this worker has ever
+#     built under its own Topps. Both are normally well past eight, so both get
+#     the filter box. Because "normally" is not "always" on a freshly-seeded
+#     deployment, the filter step is guarded — if the box isn't there, the list
+#     is short and the plain tap below handles it on its own.
+#
+#     THAT GUARD IS THE ONLY DELIBERATE PAUSE IN THIS FILE (R10). It costs
+#     nothing when the box is present, which is the normal case; on a sparse
+#     deployment it spends one wait deciding the list is short. It is buying a
+#     correct answer, not padding a timeout.
+#
+#   * YEAR, MANUFACTURER, VARIANT and INSERT are asked inside this worker's own
+#     private playground, where each of those levels holds one or two choices —
+#     never anywhere near the eight that would bring up a filter box, and far
+#     too few to overflow. They are answered with a plain tap, no guard, no
+#     wait.
+#
+#   After every answer the flow checks the modal's breadcrumb now shows it. The
+#   breadcrumb is the modal's own record of what it heard, so this catches a
+#   mis-landed tap at the exact step it happened instead of three levels later.
+#
+#   ABOUT THE LAST TWO QUESTIONS: Insert and Parallel are optional levels — the
+#   modal will happily use a Variant as the source. Our playground is
 #   Sport → Year → Manufacturer → Set → Variant ("Insert") → Insert ("Base"),
-#   so exactly six dropdowns render and "Parallel" never appears.
+#   and the cards live in that "Base" insert, so we always answer Insert. "Base"
+#   has no parallels beneath it, so the modal stops asking and confirms the
+#   source by itself — which is the green banner this util ends on.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Sanity gate — we really are inside the modal before touching anything.
@@ -65,147 +87,86 @@ tags:
     timeout: 7000
 
 # ============================================================
-# LEVEL 1 — SPORT
+# QUESTION 1 — WHICH SPORT?
+# Long list (every sport in the catalogue) → filter first.
 # ============================================================
-- extendedWaitUntil:
-    visible:
-      id: "Source Sport"
-    timeout: 7000
-- extendedWaitUntil:
-    notVisible:
-      id: "Source Sport"
-      text: "Loading.*"
-    timeout: 7000
+- runFlow:
+    when:
+      visible:
+        id: "Filter Sport options"
+    commands:
+      - tapOn:
+          id: "Filter Sport options"
+      - inputText: ${SOURCE_SPORT}
 - tapOn:
-    id: "Source Sport"
-- tapOn:
+    id: "Pick Sport ${SOURCE_SPORT}"
+- assertVisible:
+    id: "Change Sport"
     text: ${SOURCE_SPORT}
-    childOf:
-      id: "Source Sport"
-- extendedWaitUntil:
-    visible:
-      id: "Source Sport"
-      text: ${SOURCE_SPORT}
-    timeout: 7000
 
 # ============================================================
-# LEVEL 2 — YEAR
+# QUESTION 2 — WHICH YEAR?
+# Only this worker's own years live under its own sport — a short list.
 # ============================================================
-- extendedWaitUntil:
-    visible:
-      id: "Source Year"
-    timeout: 7000
-- extendedWaitUntil:
-    notVisible:
-      id: "Source Year"
-      text: "Loading.*"
-    timeout: 7000
 - tapOn:
-    id: "Source Year"
-- tapOn:
+    id: "Pick Year ${SOURCE_YEAR}"
+- assertVisible:
+    id: "Change Year"
     text: ${SOURCE_YEAR}
-    childOf:
-      id: "Source Year"
-- extendedWaitUntil:
-    visible:
-      id: "Source Year"
-      text: ${SOURCE_YEAR}
-    timeout: 7000
 
 # ============================================================
-# LEVEL 3 — MANUFACTURER
+# QUESTION 3 — WHICH MANUFACTURER?
 # ============================================================
-- extendedWaitUntil:
-    visible:
-      id: "Source Manufacturer"
-    timeout: 7000
-- extendedWaitUntil:
-    notVisible:
-      id: "Source Manufacturer"
-      text: "Loading.*"
-    timeout: 7000
 - tapOn:
-    id: "Source Manufacturer"
-- tapOn:
+    id: "Pick Manufacturer ${SOURCE_MANUFACTURER}"
+- assertVisible:
+    id: "Change Manufacturer"
     text: ${SOURCE_MANUFACTURER}
-    childOf:
-      id: "Source Manufacturer"
-- extendedWaitUntil:
-    visible:
-      id: "Source Manufacturer"
-      text: ${SOURCE_MANUFACTURER}
-    timeout: 7000
 
 # ============================================================
-# LEVEL 4 — SET
+# QUESTION 4 — WHICH SET?
+# Every set this worker has ever built sits here, so this list grows run after
+# run → filter first (see the guard note above).
 # ============================================================
-- extendedWaitUntil:
-    visible:
-      id: "Source Set"
-    timeout: 7000
-- extendedWaitUntil:
-    notVisible:
-      id: "Source Set"
-      text: "Loading.*"
-    timeout: 7000
+- runFlow:
+    when:
+      visible:
+        id: "Filter Set options"
+    commands:
+      - tapOn:
+          id: "Filter Set options"
+      - inputText: ${SOURCE_SET}
 - tapOn:
-    id: "Source Set"
-- tapOn:
+    id: "Pick Set ${SOURCE_SET}"
+- assertVisible:
+    id: "Change Set"
     text: ${SOURCE_SET}
-    childOf:
-      id: "Source Set"
-- extendedWaitUntil:
-    visible:
-      id: "Source Set"
-      text: ${SOURCE_SET}
-    timeout: 7000
 
 # ============================================================
-# LEVEL 5 — VARIANT
+# QUESTION 5 — WHICH VARIANT?
 # ============================================================
-- extendedWaitUntil:
-    visible:
-      id: "Source Variant"
-    timeout: 7000
-- extendedWaitUntil:
-    notVisible:
-      id: "Source Variant"
-      text: "Loading.*"
-    timeout: 7000
 - tapOn:
-    id: "Source Variant"
-- tapOn:
+    id: "Pick Variant ${SOURCE_VARIANT_TYPE}"
+- assertVisible:
+    id: "Change Variant"
     text: ${SOURCE_VARIANT_TYPE}
-    childOf:
-      id: "Source Variant"
-- extendedWaitUntil:
-    visible:
-      id: "Source Variant"
-      text: ${SOURCE_VARIANT_TYPE}
-    timeout: 7000
 
 # ============================================================
-# LEVEL 6 — INSERT (the actual checklist the cards live in)
-# This dropdown only appears once the app has confirmed the chosen Variant
-# really has entries underneath it, which is why it gets the same two gates.
+# QUESTION 6 — WHICH INSERT? (the actual checklist the cards live in)
+# The modal also offers "Use <Variant> as the source set" here, because stopping
+# one level up would be a valid answer too. We deliberately go the extra level:
+# the cards hang off the insert, not off the variant.
 # ============================================================
-- extendedWaitUntil:
-    visible:
-      id: "Source Insert"
-    timeout: 7000
-- extendedWaitUntil:
-    notVisible:
-      id: "Source Insert"
-      text: "Loading.*"
-    timeout: 7000
 - tapOn:
-    id: "Source Insert"
-- tapOn:
+    id: "Pick Insert ${SOURCE_VARIANT}"
+- assertVisible:
+    id: "Change Insert"
     text: ${SOURCE_VARIANT}
-    childOf:
-      id: "Source Insert"
+
+# ── RETURN CONTRACT: the modal says it has a source it can use ───────────────
+# Nothing sits below "Base", so the modal stops asking and confirms on its own.
+# Until this banner shows, "Link Cards" is greyed out — so this single check is
+# what proves the whole drill landed.
 - extendedWaitUntil:
-    visible:
-      id: "Source Insert"
-      text: ${SOURCE_VARIANT}
+    visible: "Source set: ${SOURCE_VARIANT}"
     timeout: 7000

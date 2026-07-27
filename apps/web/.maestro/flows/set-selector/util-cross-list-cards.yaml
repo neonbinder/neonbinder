@@ -29,14 +29,13 @@ tags:
 #                           playground: "E2E Test Sport <worker>" / 2026 /
 #                           Topps / <SOURCE_SET> / Insert / Base.
 #
-# ORDER OF OPERATIONS — WHY THE NUMBERS ARE TYPED FIRST:
-#   The modal is a fixed overlay, and Maestro cannot scroll inside a fixed
-#   overlay (its scrolling moves the page behind, not the panel). Each source
-#   level the operator picks adds another dropdown to the panel and pushes the
-#   card-number box further down. Typing the numbers while only the first
-#   dropdown is showing keeps that box comfortably on screen, and the box keeps
-#   what was typed while the rest of the drill happens. The submit button lives
-#   in the modal's own footer, which never scrolls away.
+# ORDER OF OPERATIONS — SOURCE FIRST, THEN THE NUMBERS:
+#   This is the order the operator actually works in, and the modal is built for
+#   it: the card-number box is pinned below the list of choices and stays on
+#   screen the whole way down, and once the source is settled the modal puts the
+#   cursor straight into that box. (An older version of this util typed the
+#   numbers first to dodge a layout problem in the previous design — that is no
+#   longer needed and the natural order reads better.)
 
 # ============================================================
 # STEP 1 — OPEN THE MODAL FROM THE CHECKLIST TOOLBAR
@@ -57,19 +56,8 @@ tags:
     timeout: 7000
 
 # ============================================================
-# STEP 2 — TYPE THE CARD NUMBERS
-# Asserting the box actually READS what was typed (rather than just existing)
-# means a dropped keystroke fails here, not later as a confusing "0 linked".
-# ============================================================
-- tapOn:
-    id: "Card numbers to cross-list"
-- inputText: ${CARD_NUMBERS}
-- assertVisible:
-    id: "Card numbers to cross-list"
-    text: ${CARD_NUMBERS}
-
-# ============================================================
-# STEP 3 — PICK THE SET THE CARDS WERE PRINTED IN
+# STEP 2 — SAY WHICH SET THE CARDS WERE PRINTED IN
+# Returns once the modal shows its green "Source set: …" confirmation.
 # ============================================================
 - runFlow:
     file: util-pick-cross-list-source.yaml
@@ -82,9 +70,21 @@ tags:
       SOURCE_VARIANT: ${SOURCE_VARIANT || 'Base'}
 
 # ============================================================
+# STEP 3 — TYPE THE CARD NUMBERS
+# Asserting the box actually READS what was typed (rather than just existing)
+# means a dropped keystroke fails here, not later as a confusing "0 linked".
+# ============================================================
+- tapOn:
+    id: "Card numbers to cross-list"
+- inputText: ${CARD_NUMBERS}
+- assertVisible:
+    id: "Card numbers to cross-list"
+    text: ${CARD_NUMBERS}
+
+# ============================================================
 # STEP 4 — SUBMIT
 # The submit button lives in the modal's own footer, which is always on screen
-# — a fixed overlay is tapped directly, never scrolled to (R8 fixed-element
+# — a floating panel is tapped directly, never scrolled to (R8 fixed-element
 # exception, same as the Base-set picker's Cancel).
 # ============================================================
 - tapOn:
