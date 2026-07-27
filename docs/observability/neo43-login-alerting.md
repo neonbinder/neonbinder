@@ -144,9 +144,20 @@ Prod only. Dev deliberately has none: its E2E suites fail logins on purpose.
 | Policy | Fires when | Threshold rationale |
 |---|---|---|
 | login failures | >2 non-caller-error failures in 5m, per platform | Excludes `invalid_credentials` / `bad_key_format` / `missing_key`. Paging on caller errors makes an alert ignored within a week. Per-platform because BSC and SportLots break independently — the originating incident was SL hanging while BSC was healthy |
-| login hang | any `499\|502\|503\|504` on `/login/*` in 5m | Zero legitimate baseline. 499 = Convex's 60s abort (the seller saw a failure), 504 = Cloud Run timeout, 503 = container died |
-| login latency | p99 > 45s over 10m, per platform | Baselines: BSC fresh ~4.4s, BSC cached ~1.1s, SL + retries ≤12s. But `prod-login-probe` does a real login against a **cold** revision on every push to main, at 20-30s — so 30s would false-positive on every deploy. 60s is Convex's hard abort. 45s fires while degrading, not after failing |
-| canary absence | no canary login within 3h | The only alert that fires when the service is **hung** rather than erroring. Keep at ~3× the canary interval; retighten in the same PR that tightens the schedules |
+| login hang | any `499\|502\|503\|504` on `/login/*` in 5m | Zero legitimate baseline. 499 = Convex's 60s abort (the seller saw a failure), 504 = Cloud Run timeout, 503 = container died. **See the caveat below — this status set is unverified.** |
+| login latency | p99 > 45s over 10m, per platform | **Measured** from prod logs (2026-07-26, 30d): BSC 2.5-3.3s, SL 1.2-1.5s. But `prod-login-probe` does a real login against a **cold** revision on every push to main, at 20-30s — so 30s would false-positive on every deploy. 60s is Convex's hard abort. 45s fires while degrading, not after failing |
+| canary absence | no canary login within 90m | The only alert that fires when the service is **hung** rather than erroring. Keep at ~3× the canary interval (3 missed runs at the 30-min cadence); retighten in the same PR that changes the schedules |
+
+> ⚠️ **The hang policy's status set is an unverified hypothesis.** An audit of 30
+> days of prod request logs (2026-07-26) found 19 requests to `/login/*`, **all
+> HTTP 200** — not one non-2xx. So we have no observed example of what Cloud Run
+> actually records when Convex aborts at 60s. If it isn't 499, this policy would
+> silently never fire.
+>
+> Mitigation: the underlying metric `browser_login_http_status` captures **all**
+> statuses `>= 400`, not just the four the policy matches, so the data to correct
+> this accumulates for free. **First time a real non-2xx appears on `/login/*`,
+> check it against the policy's regex and fix the set.**
 
 Three settings that are load-bearing at this traffic level, all easy to
 "clean up" and thereby break:
@@ -168,7 +179,14 @@ with no channel opens an incident **nobody ever sees**.
 ## 5. The synthetic canary
 
 Cloud Scheduler → `POST /login/{bsc,sportlots}` with an OIDC token, on a
-dedicated credential key, hourly and staggered 15 minutes apart.
+dedicated credential key, **every 30 minutes and staggered 15 minutes apart**.
+
+The stagger is about *our* side, not the marketplaces'. Concurrent SportLots
+logins from the same egress IP have previously produced `"Not a valid Email
+Address"` / zero-cookie failures here — a shared-HTTP-state bug on our end.
+Keeping the two platforms (and the canary vs. CI's deploy-time login probes)
+from overlapping means a canary failure reads as "the marketplace broke"
+rather than "we raced ourselves".
 
 Between deploys, the canary is the *only* thing exercising marketplace login
 in prod. It is also what makes the absence policy meaningful: without a
@@ -213,11 +231,16 @@ The `canary` userId segment corresponds to no Clerk user, so collision with a
 real seller is impossible. It is also the rate-limit bucket key, so the canary
 can never consume a seller's 60/min budget.
 
-**Prefer a dedicated marketplace account over the shared `MAESTRO_*` one.** If
-the canary trips bot protection on the shared account it breaks
-`preview-login-probe`, `dev-login-probe` **and** `prod-login-probe` — i.e.
-every browser deploy. That is the monitoring causing an outage. Swapping
-accounts later is one `gcloud secrets versions add`, no code or Terraform.
+**On which marketplace account to use.** The shared `MAESTRO_*` account is
+workable. Neither BSC nor SportLots rate-limits or "bot protects" logins, so
+there is no throttling risk from the extra volume — see the note at the end of
+this section.
+
+A dedicated account is still mildly preferable, for our own reasons: it keeps
+canary traffic from interleaving with CI's deploy-time login probes on the same
+credentials, which matters because concurrent logins have exposed a
+shared-HTTP-state bug on our side before. Not urgent. Swapping later is one
+`gcloud secrets versions add` — no code, no Terraform.
 
 ### Kill switches, in escalating order
 
@@ -233,10 +256,28 @@ accounts later is one `gcloud secrets versions add`, no code or Terraform.
 Do **not** use "disable the secret" as a kill switch — that makes the canary
 fail loudly and generates exactly the false alarms you are trying to stop.
 
-`retry_count = 0` is deliberate. NEO-29: retrying a failed marketplace login
-turned one hiccup into a sustained burst of serialized logins that tripped bot
-protection — the retry caused the failures it was meant to fix. A retrying
-canary would recreate that shape on a schedule, forever.
+`retry_count = 0` (and the canary's reduced SportLots retry budget) is
+deliberate — for **monitoring correctness**, not anti-abuse. Retries would let
+the canary quietly succeed on attempt 2 and report nothing, hiding an
+intermittently-failing marketplace behind a green probe. That is the opposite
+of what a probe is for. One attempt per run means every failure is visible;
+genuine one-off blips are absorbed by the alert policy, which needs repeated
+failures before it fires.
+
+> ### ⚠️ Neither BSC nor SportLots throttles logins
+>
+> **There is no such thing as "BSC bot protection", and neither site
+> rate-limits.** BSC's login is simply *sometimes flaky* — and BSC shipped a fix
+> for that on 2026-07-26.
+>
+> This belief has been raised and disproven repeatedly on this project. It still
+> survives in a pre-existing NEO-29 comment in `apps/web/convex/credentials.ts`
+> (~line 682-690) blaming "BSC's bot protection" for a burst of failures — **that
+> comment is wrong**; don't cite it or let it justify timid design.
+>
+> If you catch yourself writing a rationale that depends on a marketplace
+> punishing us for login volume, stop: the premise is false. Diagnose from Cloud
+> Run and Convex logs instead.
 
 ---
 
