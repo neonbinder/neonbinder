@@ -210,6 +210,9 @@ export class SportlotsAdapter extends BaseAdapter {
         return {
           success: false,
           error: "Invalid credentials format",
+          // NEO-98: stored secret is incomplete, so SportLots never gets
+          // asked. Caller-data problem, not a service fault — 422, no page.
+          credentialRejected: true,
         };
       }
 
@@ -282,11 +285,30 @@ export class SportlotsAdapter extends BaseAdapter {
           { email: credentials.username, password: credentials.password },
         );
         log(`no-cookies diagnostic: challengeDetected=${diagnostic.challengeDetected}`);
+        // NEO-98: this branch is genuinely two different events wearing one
+        // error string, and it matters because it IS the real seller-typo
+        // path for SportLots — SL answers a bad password with HTTP 200 and
+        // re-serves the login page, it does not use a status code.
+        //
+        // Prefer SL's own tell ("Not a valid Email Address" et al). Fall back
+        // to "did SL render anything at all", which separates a served page
+        // from the blank/slow body this branch's retry exists for.
+        //
+        // challengeDetected vetoes both: if SL served us a block page, that is
+        // us being bot-blocked and it must page, whatever else the page says.
+        // The veto no longer swallows ordinary typos, because NEO-98 moved
+        // SL's typo tell out of CHALLENGE_PATTERNS and into
+        // CREDENTIAL_REJECTION_PATTERNS — see login-diagnostic.ts.
+        const credentialRejected =
+          (diagnostic.credentialRejectionDetected === true ||
+            responseBody.trim().length > 0) &&
+          diagnostic.challengeDetected !== true;
         return {
           success: false,
           error: "No session cookies received. Check credentials.",
           retryable: true,
           diagnostic,
+          credentialRejected,
         };
       }
 
@@ -312,10 +334,15 @@ export class SportlotsAdapter extends BaseAdapter {
           { email: credentials.username, password: credentials.password },
         );
         log(`validation-failed diagnostic: challengeDetected=${diagnostic.challengeDetected}`);
+        // NEO-98: SL handed us cookies and then bounced them straight back to
+        // the login form. It processed the sign-in and declined to grant a
+        // session — a rejection, not an outage. (Unless we were challenged,
+        // which is us being blocked.)
         return {
           success: false,
           error: "SportLots login validation failed. Cookies did not authenticate.",
           diagnostic,
+          credentialRejected: diagnostic.challengeDetected !== true,
         };
       }
 

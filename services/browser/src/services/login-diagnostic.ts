@@ -23,8 +23,18 @@ export interface LoginDiagnostic {
   url?: string;
   /** page.title() for BSC; omitted/empty for SL. */
   title?: string;
-  /** True if the text matches a known challenge/blocked/invalid signal. */
+  /** True if the text matches a known challenge/blocked signal. */
   challengeDetected?: boolean;
+  /**
+   * NEO-98: true if the text carries a marketplace's own "we refused these
+   * credentials" tell (e.g. SportLots' "Not a valid Email Address").
+   *
+   * Deliberately SEPARATE from challengeDetected. Being bot-blocked and
+   * having a seller mistype a password are opposite findings — one pages us,
+   * the other must never page — and collapsing them into one boolean is what
+   * this field exists to prevent.
+   */
+  credentialRejectionDetected?: boolean;
   /** Redacted, <= MAX_SNIPPET_CHARS of visible text / body. */
   snippet?: string;
 }
@@ -41,8 +51,21 @@ const REDACTED = "[REDACTED]";
 /**
  * Signals that the login failed because the marketplace served a challenge /
  * block page rather than authenticating. Matched case-insensitively against
- * the captured visible text. "not a valid email address" is the SportLots
- * tell described in the diagnostics requirements.
+ * the captured visible text.
+ *
+ * NEO-98: "not a valid email address" USED to live in this list. It was moved
+ * to CREDENTIAL_REJECTION_PATTERNS below, because the meaning of this flag
+ * changed underneath it. When the list was written (NEO-18) it answered the
+ * broad question "why did this login fail". NEO-43 then repurposed the same
+ * boolean as an ALERTING discriminator — per observability.ts it is now "the
+ * only signal that separates 'the marketplace is blocking us' (page us) from
+ * 'the seller mistyped their password' (do nothing)".
+ *
+ * Under that meaning, the SportLots typo tell sitting in this list inverted
+ * the exact distinction the flag exists to make: an ordinary mistyped email
+ * reported challengeDetected=true, i.e. "we are being blocked, page someone".
+ *
+ * Keep this list to genuine block/bot signals only.
  */
 const CHALLENGE_PATTERNS: RegExp[] = [
   /captcha/i,
@@ -56,7 +79,20 @@ const CHALLENGE_PATTERNS: RegExp[] = [
   /temporarily blocked/i,
   /too many (attempts|requests)/i,
   /rate limit/i,
+];
+
+/**
+ * NEO-98: signals that the marketplace itself evaluated the credentials and
+ * refused them — the seller's problem, never ours.
+ *
+ * SportLots answers a bad login with HTTP 200 and a re-served login page
+ * carrying this text, never a status code, so this is the only positive
+ * evidence available that a rejection (not an outage) occurred.
+ */
+const CREDENTIAL_REJECTION_PATTERNS: RegExp[] = [
   /not a valid email address/i,
+  /invalid (email|username|password|login)/i,
+  /incorrect (email|username|password)/i,
 ];
 
 /** Escape a string for safe use inside a RegExp. */
@@ -127,6 +163,19 @@ function detectChallenge(rawText: string, extra?: string): boolean {
 }
 
 /**
+ * NEO-98: decide credentialRejectionDetected. Scans pre-redaction text for the
+ * same reason detectChallenge does — none of these patterns overlap with
+ * secret values, and redaction must not be able to mask the signal.
+ *
+ * Note it only scans rawText, NOT the url/title. A URL containing the word
+ * "login" or "invalid" says nothing about whether the password was refused,
+ * whereas a challenge genuinely can show up in a title or a /challenge path.
+ */
+function detectCredentialRejection(rawText: string): boolean {
+  return CREDENTIAL_REJECTION_PATTERNS.some((re) => re.test(rawText));
+}
+
+/**
  * Build a sanitized {@link LoginDiagnostic}.
  *
  * @param input.url        page.url() (BSC) or login POST URL (SL).
@@ -153,7 +202,10 @@ export function buildLoginDiagnostic(
     ? truncate(redactSecrets(rawText, secrets))
     : undefined;
 
-  const diagnostic: LoginDiagnostic = { challengeDetected };
+  const diagnostic: LoginDiagnostic = {
+    challengeDetected,
+    credentialRejectionDetected: detectCredentialRejection(rawText),
+  };
   if (input.url) diagnostic.url = input.url;
   if (input.title) diagnostic.title = redactSecrets(input.title, secrets);
   if (snippet) diagnostic.snippet = snippet;

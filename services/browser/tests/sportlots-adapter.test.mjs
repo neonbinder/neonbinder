@@ -196,6 +196,10 @@ describe("SportlotsAdapter.login retry loop", () => {
       assert.equal(result.success, false);
       assert.equal(stub.loginCalls(), 1, "should give up after one attempt — validation failure is permanent");
       assert.match(result.error, /login validation failed/);
+      // NEO-98: SL handed us cookies and then bounced them straight back to
+      // the login form — it processed the sign-in and declined a session.
+      // A rejection (422), not an outage.
+      assert.equal(result.credentialRejected, true);
     } finally {
       restore();
     }
@@ -214,8 +218,96 @@ describe("SportlotsAdapter.login retry loop", () => {
       const result = await adapter.login("sportlots-credentials-user_test");
       assert.equal(result.success, false);
       assert.match(result.error, /Invalid credentials format/);
+      // NEO-98: SportLots never gets asked — the stored secret is incomplete.
+      // Caller-data problem, so 422 and no page.
+      assert.equal(result.credentialRejected, true);
     } finally {
       restore();
+    }
+  });
+});
+
+describe("SportlotsAdapter — NEO-98 rejection vs upstream fault", () => {
+  // The no-cookies branch is genuinely two different events wearing one error
+  // string, and it matters more here than anywhere else: SportLots answers a
+  // bad password with HTTP 200 and a re-served login page, never a status
+  // code, so this branch IS the real seller-typo path. Its own comment also
+  // says it is "most often a blank/slow body from SL". The only discriminator
+  // available at that point is whether SL sent us a page at all.
+
+  it("flags a rejection when SL served a page but no session cookies", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter();
+    // A real SL bad-password response: 200, a rendered page, no cookies.
+    const stub = scriptedLoginFetch([
+      response({ status: 200, body: "<html><body>Not a valid Email Address</body></html>" }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.credentialRejected, true, "a rendered no-session page is a rejection → 422");
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT flag a rejection when SL returned an empty body", async () => {
+    // The blank/slow response this branch's retry exists for. Must stay
+    // pageable (502) — this is the direction that matters, because silently
+    // calling an SL outage 'user error' is exactly the blindness NEO-98 is
+    // meant to remove.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = scriptedLoginFetch([response({ status: 200, body: "   " })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.credentialRejected, true, "empty body is an upstream fault → 502");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a challenge page VETOES the rejection flag even though a page was served", async () => {
+    // The invariant documented on AdapterResponse.credentialRejected: being
+    // bot-blocked is our problem. A Cloudflare interstitial is a non-empty
+    // body with no cookies, so without the veto it would look exactly like a
+    // typo and quietly stop paging — the failure mode NEO-98 exists to close.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = scriptedLoginFetch([
+      response({ status: 200, body: "<html><body>Attention Required! Cloudflare</body></html>" }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.diagnostic.challengeDetected, true, "sanity: should read as a challenge");
+      assert.notEqual(result.credentialRejected, true, "a block page must stay pageable → 502");
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT flag a rejection on upstream 5xx or rate limiting", async () => {
+    for (const status of [500, 503, 429]) {
+      const SportlotsAdapter = loadSportlotsAdapter();
+      const stub = scriptedLoginFetch([response({ status })]);
+      const restore = stubFetch(stub);
+      try {
+        const adapter = new SportlotsAdapter(null);
+        const result = await adapter.login("sportlots-credentials-user_test");
+        assert.equal(result.success, false);
+        assert.notEqual(
+          result.credentialRejected,
+          true,
+          `HTTP ${status} from SportLots is an outage, not a typo`,
+        );
+      } finally {
+        restore();
+      }
     }
   });
 });

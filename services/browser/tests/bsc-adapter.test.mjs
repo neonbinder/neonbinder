@@ -350,6 +350,33 @@ describe("BSCAdapter.login — failure branches", () => {
     assert.doesNotMatch(blob, /hunter2/, "diagnostic must redact the password");
     assert.equal(updates.length, 0, "must NOT persist any token on an auth failure");
     assert.ok(!router.calls.some((c) => c.url.includes("/token")), "must not reach the token endpoint after a credential rejection");
+    // NEO-98: the ONE branch of the B2C exchange that is a real rejection —
+    // B2C parsed our submission and answered with its own non-200 envelope.
+    // This is what earns HTTP 422 (and therefore never pages).
+    assert.equal(result.credentialRejected, true, "a B2C {\"status\":\"400\"} IS a credential rejection");
+  });
+
+  it("does NOT flag a credential rejection when the SelfAsserted body is unparseable", async () => {
+    // NEO-98: an unparseable body means B2C returned something that is not its
+    // envelope at all — an error page, a redirect, a WAF interstitial. That is
+    // an integration fault (502, pages), not the seller mistyping a password.
+    // Getting this wrong is the expensive direction: it would classify a BSC
+    // outage as user error and Cloud Monitoring would go blind to it.
+    const BSCAdapter = loadBSCAdapter({
+      credentials: { username: "seller@example.com", password: "hunter2" },
+      updateCredentials: null,
+    });
+    const router = makeB2CRouter({
+      selfAsserted: () => makeResponse({ status: 200, body: "<html>502 Bad Gateway</html>" }),
+    });
+    const restore = stubFetch(router);
+
+    const adapter = new BSCAdapter(undefined);
+    const result = await adapter.login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.notEqual(result.credentialRejected, true, "unparseable B2C body must stay pageable");
   });
 
   it("returns a structured failure when /authorize yields no sign-in form (missing SETTINGS)", async () => {
@@ -370,6 +397,9 @@ describe("BSCAdapter.login — failure branches", () => {
     assert.equal(result.error, "Authentication failed");
     assert.ok(result.diagnostic, "should attach a diagnostic from the unexpected /authorize page");
     assert.ok(!router.calls.some((c) => c.url.includes("/SelfAsserted")), "must not POST credentials when there is no form");
+    // NEO-98: BSC never saw the password — we could not even get the form.
+    // Unambiguously our-side/upstream, so it must stay pageable (502).
+    assert.notEqual(result.credentialRejected, true, "no sign-in form is an outage, not a typo");
   });
 
   it("returns a generic failure when the token exchange fails", async () => {
@@ -390,6 +420,10 @@ describe("BSCAdapter.login — failure branches", () => {
     assert.equal(result.success, false);
     assert.equal(result.error, "Authentication failed", "must not surface the raw B2C error_description");
     assert.equal(updates.length, 0, "no token to persist when exchange fails");
+    // NEO-98: B2C already ACCEPTED the credentials by this point (SelfAsserted
+    // returned 200 and /confirmed handed back a code). A failure here is our
+    // token exchange breaking, so it must page.
+    assert.notEqual(result.credentialRejected, true, "token-exchange failure is not a credential rejection");
   });
 
   it("returns a structured failure (not a throw) when /confirmed returns no auth code", async () => {

@@ -101,12 +101,40 @@ describe("buildLoginDiagnostic redaction", () => {
     assert.ok(diag.snippet.length <= 1500, `snippet length was ${diag.snippet.length}`);
   });
 
-  it("detects the SportLots 'Not a valid Email Address' signal", () => {
+  it("detects the SportLots 'Not a valid Email Address' signal as a REJECTION, not a challenge", () => {
+    // NEO-98 moved this tell out of CHALLENGE_PATTERNS. It is still detected —
+    // just under the flag that means what it actually is.
+    //
+    // Why the split matters: NEO-43 repurposed challengeDetected as an
+    // ALERTING discriminator ("the marketplace is blocking us" → page, vs
+    // "the seller mistyped" → do nothing). With the typo tell inside the
+    // challenge list, an ordinary mistyped email reported "we are being
+    // blocked" — the precise inversion of the distinction the flag exists to
+    // draw, and it would have paged on seller error.
     const diag = buildLoginDiagnostic(
       { url: "https://www.sportlots.com/cust/custbin/signin.tpl", rawText: "Not a valid Email Address" },
       { email: EMAIL, password: PASSWORD },
     );
-    assert.equal(diag.challengeDetected, true);
+    assert.equal(diag.credentialRejectionDetected, true, "must be flagged as a credential rejection");
+    assert.equal(diag.challengeDetected, false, "must NOT be reported as a bot challenge");
+  });
+
+  it("keeps genuine block signals out of the credential-rejection flag", () => {
+    // The other direction of the same split: a Cloudflare interstitial is our
+    // problem and must stay pageable, never be excused as a seller typo.
+    for (const text of [
+      "Attention Required! | Cloudflare",
+      "Please complete the CAPTCHA",
+      "Unusual activity detected",
+    ]) {
+      const diag = buildLoginDiagnostic({ rawText: text }, {});
+      assert.equal(diag.challengeDetected, true, `${text} should be a challenge`);
+      assert.equal(
+        diag.credentialRejectionDetected,
+        false,
+        `${text} must not read as a credential rejection`,
+      );
+    }
   });
 
   it("detects common challenge signals case-insensitively", () => {
