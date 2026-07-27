@@ -434,7 +434,7 @@ falling through to the app router. Do not "fix" it.
   contacting eBay. Instrumenting it would inject *fabricated successes* into
   the failure-rate denominator, making the alert progressively less sensitive
   as eBay usage grew. Deliberately excluded, not overlooked.
-- **SportLots' no-cookies branch uses a heuristic — NEO-98 follow-up.** When
+- **SportLots' no-cookies branch uses a heuristic — NEO-100.** When
   SportLots returns no session cookies, a rejection is inferred from its
   `not a valid email address` tell, falling back to "did SportLots render any
   body at all". A structural fix would parse SportLots' error markup, which we
