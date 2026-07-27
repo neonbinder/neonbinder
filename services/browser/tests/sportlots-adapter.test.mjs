@@ -227,26 +227,54 @@ describe("SportlotsAdapter.login retry loop", () => {
   });
 });
 
-describe("SportlotsAdapter — NEO-98 rejection vs upstream fault", () => {
-  // The no-cookies branch is genuinely two different events wearing one error
-  // string, and it matters more here than anywhere else: SportLots answers a
-  // bad password with HTTP 200 and a re-served login page, never a status
-  // code, so this branch IS the real seller-typo path. Its own comment also
-  // says it is "most often a blank/slow body from SL". The only discriminator
-  // available at that point is whether SL sent us a page at all.
+describe("SportlotsAdapter — NEO-98/NEO-100 rejection vs upstream fault", () => {
+  // The no-cookies branch is two different events wearing one error string,
+  // and it matters more here than anywhere else: SportLots answers a refused
+  // login with HTTP 200, never a status code, so this branch IS the real
+  // seller-typo path.
+  //
+  // The bodies below are VERBATIM captures from the live SportLots endpoint
+  // (2026-07-27), not invented fixtures. That matters: the whole response is
+  // ~115 bytes and carries the reason in a `?message=` JS redirect, which is
+  // nothing like the "re-served login page" one would reasonably assume.
 
-  it("flags a rejection when SL served a page but no session cookies", async () => {
+  // Malformed email.
+  const SL_REJECT_MALFORMED =
+    `<html><head> </head> <body onload='window.location = "\\?message=Not a valid Email Address";'> </body> </html>`;
+  // Well-formed but unknown account — and also what an incorrect/empty
+  // password returns. SportLots does not distinguish the two (no account
+  // enumeration), which is why one pattern covers both.
+  const SL_REJECT_UNKNOWN =
+    `<html><head> </head> <body onload='window.location = "\\?message=Invalid email address supplied";'> </body> </html>`;
+
+  it("flags a rejection on SportLots' real refusal envelopes", async () => {
+    for (const body of [SL_REJECT_MALFORMED, SL_REJECT_UNKNOWN]) {
+      const SportlotsAdapter = loadSportlotsAdapter();
+      const stub = scriptedLoginFetch([response({ status: 200, body })]);
+      const restore = stubFetch(stub);
+      try {
+        const adapter = new SportlotsAdapter(null);
+        const result = await adapter.login("sportlots-credentials-user_test");
+        assert.equal(result.success, false);
+        assert.equal(result.credentialRejected, true, `should be a rejection → 422: ${body.slice(0, 60)}`);
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it("does NOT retry a rejection SportLots already stated explicitly", async () => {
+    // NEO-100: replaying a login SportLots has explicitly refused just spends
+    // four more round trips to reach the same answer, and puts four more
+    // failed attempts on the seller's account.
     const SportlotsAdapter = loadSportlotsAdapter();
-    // A real SL bad-password response: 200, a rendered page, no cookies.
-    const stub = scriptedLoginFetch([
-      response({ status: 200, body: "<html><body>Not a valid Email Address</body></html>" }),
-    ]);
+    const stub = scriptedLoginFetch([response({ status: 200, body: SL_REJECT_UNKNOWN })]);
     const restore = stubFetch(stub);
     try {
       const adapter = new SportlotsAdapter(null);
       const result = await adapter.login("sportlots-credentials-user_test");
       assert.equal(result.success, false);
-      assert.equal(result.credentialRejected, true, "a rendered no-session page is a rejection → 422");
+      assert.equal(stub.loginCalls(), 1, "a confirmed rejection must not be retried");
     } finally {
       restore();
     }
@@ -265,6 +293,27 @@ describe("SportlotsAdapter — NEO-98 rejection vs upstream fault", () => {
       const result = await adapter.login("sportlots-credentials-user_test");
       assert.equal(result.success, false);
       assert.notEqual(result.credentialRejected, true, "empty body is an upstream fault → 502");
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT flag a rejection on an UNRECOGNISED message, and still retries it", async () => {
+    // NEO-100's key safety property. If SportLots changes its login flow and
+    // starts emitting a message we don't know, that must surface as a 502 and
+    // page — never be absorbed as a wave of seller typos, which is precisely
+    // how a broken integration would hide. Under the old body-emptiness
+    // heuristic this exact response was classified as a rejection.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const body = `<html><head> </head> <body onload='window.location = "\\?message=Scheduled maintenance in progress";'> </body> </html>`;
+    const stub = scriptedLoginFetch([response({ status: 200, body })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.credentialRejected, true, "unknown message must stay pageable → 502");
+      assert.ok(stub.loginCalls() > 1, "and must still be retried, since it may be transient");
     } finally {
       restore();
     }

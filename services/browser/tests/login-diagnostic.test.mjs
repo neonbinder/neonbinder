@@ -24,6 +24,7 @@ const { buildLoginDiagnostic } = require("../dist/services/login-diagnostic");
 
 const EMAIL = "dev@neonbinder.io";
 const PASSWORD = "sup3r-s3cret-pw!";
+const SL_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
 const BEARER_TOKEN = "eyJhbGciOiJ.someheader.SIGNATUREvalue1234";
 
 describe("buildLoginDiagnostic redaction", () => {
@@ -117,6 +118,43 @@ describe("buildLoginDiagnostic redaction", () => {
     );
     assert.equal(diag.credentialRejectionDetected, true, "must be flagged as a credential rejection");
     assert.equal(diag.challengeDetected, false, "must NOT be reported as a bot challenge");
+  });
+
+  it("detects SportLots' real ?message= refusal envelopes (captured live 2026-07-27)", () => {
+    // Verbatim from the live endpoint — the entire response is ~115 bytes.
+    const bodies = {
+      "Not a valid Email Address": `<html><head> </head> <body onload='window.location = "\\?message=Not a valid Email Address";'> </body> </html>`,
+      "Invalid email address supplied": `<html><head> </head> <body onload='window.location = "\\?message=Invalid email address supplied";'> </body> </html>`,
+    };
+    for (const [msg, rawText] of Object.entries(bodies)) {
+      const diag = buildLoginDiagnostic({ url: SL_URL, rawText }, { email: EMAIL, password: PASSWORD });
+      assert.equal(diag.credentialRejectionDetected, true, `should detect: ${msg}`);
+      assert.equal(diag.challengeDetected, false, `should not be a challenge: ${msg}`);
+    }
+  });
+
+  it("does NOT treat an unrecognised ?message= as a credential rejection", () => {
+    // The safe default. An unknown message means SportLots changed something,
+    // which should surface as a 502 and page — not be filed as user error.
+    const rawText = `<html><head> </head> <body onload='window.location = "\\?message=Scheduled maintenance in progress";'> </body> </html>`;
+    const diag = buildLoginDiagnostic({ url: SL_URL, rawText }, { email: EMAIL, password: PASSWORD });
+    assert.equal(diag.credentialRejectionDetected, false);
+  });
+
+  it("when the envelope is present, ignores rejection words in surrounding boilerplate", () => {
+    // Narrowing to the extracted message is what buys this. A maintenance page
+    // whose footer says "forgot your password?" must not read as a rejection.
+    const rawText =
+      `<html><body onload='window.location = "\\?message=Scheduled maintenance in progress";'>` +
+      `<footer>Trouble signing in? Incorrect password? Contact support.</footer></body></html>`;
+    const diag = buildLoginDiagnostic({ url: SL_URL, rawText }, { email: EMAIL, password: PASSWORD });
+    assert.equal(diag.credentialRejectionDetected, false, "the envelope is authoritative, not the boilerplate");
+  });
+
+  it("percent-decodes the message before matching", () => {
+    const rawText = `<html><body onload='window.location = "\\?message=Invalid%20email%20address%20supplied";'></body></html>`;
+    const diag = buildLoginDiagnostic({ url: SL_URL, rawText }, { email: EMAIL, password: PASSWORD });
+    assert.equal(diag.credentialRejectionDetected, true);
   });
 
   it("keeps genuine block signals out of the credential-rejection flag", () => {

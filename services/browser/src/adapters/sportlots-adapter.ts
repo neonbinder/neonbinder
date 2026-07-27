@@ -285,28 +285,30 @@ export class SportlotsAdapter extends BaseAdapter {
           { email: credentials.username, password: credentials.password },
         );
         log(`no-cookies diagnostic: challengeDetected=${diagnostic.challengeDetected}`);
-        // NEO-98: this branch is genuinely two different events wearing one
-        // error string, and it matters because it IS the real seller-typo
-        // path for SportLots — SL answers a bad password with HTTP 200 and
-        // re-serves the login page, it does not use a status code.
+        // NEO-98/NEO-100: this branch is two different events wearing one
+        // error string, and it matters because it IS the real seller-typo path
+        // for SportLots — SL answers a refused login with HTTP 200, never a
+        // status code.
         //
-        // Prefer SL's own tell ("Not a valid Email Address" et al). Fall back
-        // to "did SL render anything at all", which separates a served page
-        // from the blank/slow body this branch's retry exists for.
+        // It signals the reason in a `?message=` JS redirect, so we match that
+        // rather than guessing. An unrecognised message is NOT a rejection: it
+        // stays a 502 and pages, because a changed SportLots login flow must
+        // not be able to masquerade as a wave of seller typos.
         //
-        // challengeDetected vetoes both: if SL served us a block page, that is
-        // us being bot-blocked and it must page, whatever else the page says.
-        // The veto no longer swallows ordinary typos, because NEO-98 moved
-        // SL's typo tell out of CHALLENGE_PATTERNS and into
-        // CREDENTIAL_REJECTION_PATTERNS — see login-diagnostic.ts.
+        // challengeDetected vetoes: if SL served a block page, that is us being
+        // bot-blocked and it must page whatever else the page says.
         const credentialRejected =
-          (diagnostic.credentialRejectionDetected === true ||
-            responseBody.trim().length > 0) &&
+          diagnostic.credentialRejectionDetected === true &&
           diagnostic.challengeDetected !== true;
         return {
           success: false,
           error: "No session cookies received. Check credentials.",
-          retryable: true,
+          // NEO-100: only retry when we DON'T know it was a rejection. The
+          // retry exists for the blank/slow body case; replaying a login
+          // SportLots has already explicitly refused just spends four more
+          // round trips (and four more failed attempts against their account)
+          // to arrive at the same answer.
+          retryable: !credentialRejected,
           diagnostic,
           credentialRejected,
         };

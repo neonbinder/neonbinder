@@ -82,18 +82,44 @@ const CHALLENGE_PATTERNS: RegExp[] = [
 ];
 
 /**
- * NEO-98: signals that the marketplace itself evaluated the credentials and
- * refused them — the seller's problem, never ours.
+ * NEO-98/NEO-100: signals that the marketplace itself evaluated the
+ * credentials and refused them — the seller's problem, never ours.
  *
- * SportLots answers a bad login with HTTP 200 and a re-served login page
- * carrying this text, never a status code, so this is the only positive
- * evidence available that a rejection (not an outage) occurred.
+ * SportLots never uses a status code for this. It answers a refused login
+ * with HTTP 200 and a ~115-byte JS-redirect stub that carries the reason in a
+ * query param, captured live against the real endpoint on 2026-07-27:
+ *
+ *   <html><head> </head> <body onload='window.location =
+ *     "\?message=Not a valid Email Address";'> </body> </html>
+ *
+ * Observed messages:
+ *   "Not a valid Email Address"       — malformed email
+ *   "Invalid email address supplied"  — well-formed but unknown account, and
+ *                                       also an empty/incorrect password
+ *
+ * SportLots deliberately returns the same message for "no such account" and
+ * "wrong password" (good practice on their part — it prevents account
+ * enumeration), so those do not need separate patterns.
+ *
+ * The remaining entries are defensive: variants SportLots or a future adapter
+ * plausibly emits. An unrecognised message is NOT treated as a rejection —
+ * see detectCredentialRejection.
  */
 const CREDENTIAL_REJECTION_PATTERNS: RegExp[] = [
   /not a valid email address/i,
-  /invalid (email|username|password|login)/i,
+  /invalid email address supplied/i,
+  /invalid (email|username|password|login|credentials)/i,
   /incorrect (email|username|password)/i,
+  /no such (user|account)/i,
+  /account (is )?(locked|disabled|suspended)/i,
 ];
+
+/**
+ * NEO-100: SportLots' failure envelope — `?message=<reason>` inside the
+ * onload redirect above. Bounded to stop at the closing quote/semicolon so a
+ * larger page can't drag unrelated text into the match.
+ */
+const REDIRECT_MESSAGE_RE = /[?&]message=([^"'&;]+)/i;
 
 /** Escape a string for safe use inside a RegExp. */
 function escapeRegExp(value: string): string {
@@ -163,16 +189,42 @@ function detectChallenge(rawText: string, extra?: string): boolean {
 }
 
 /**
- * NEO-98: decide credentialRejectionDetected. Scans pre-redaction text for the
- * same reason detectChallenge does — none of these patterns overlap with
- * secret values, and redaction must not be able to mask the signal.
+ * NEO-98/NEO-100: decide credentialRejectionDetected. Scans pre-redaction text
+ * for the same reason detectChallenge does — none of these patterns overlap
+ * with secret values, and redaction must not be able to mask the signal.
  *
- * Note it only scans rawText, NOT the url/title. A URL containing the word
- * "login" or "invalid" says nothing about whether the password was refused,
- * whereas a challenge genuinely can show up in a title or a /challenge path.
+ * When the `?message=` envelope is present, match ONLY the extracted message.
+ * That envelope is the marketplace's own authoritative statement of why it
+ * refused, so narrowing to it stops incidental page boilerplate (a maintenance
+ * notice that happens to contain the word "password") from reading as a
+ * rejection.
+ *
+ * An envelope carrying an UNRECOGNISED message returns false, i.e. 502, i.e.
+ * it pages. That is deliberate and is the safe direction: a surprising new
+ * SportLots message should get looked at, not silently filed as user error.
+ * The opposite default would let a changed login flow masquerade as a wave of
+ * seller typos.
+ *
+ * Only rawText is scanned, never url/title — a URL containing "login" or
+ * "invalid" says nothing about whether the password was refused, whereas a
+ * challenge genuinely can show up in a page title or a /challenge path.
+ *
+ * Returns a BOOLEAN only. The extracted message is never stored or logged: a
+ * marketplace is free to echo the submitted identifier back inside it.
  */
 function detectCredentialRejection(rawText: string): boolean {
-  return CREDENTIAL_REJECTION_PATTERNS.some((re) => re.test(rawText));
+  const enveloped = rawText.match(REDIRECT_MESSAGE_RE);
+  const haystack = enveloped ? decodeMessage(enveloped[1]) : rawText;
+  return CREDENTIAL_REJECTION_PATTERNS.some((re) => re.test(haystack));
+}
+
+/** Best-effort percent/plus decoding; falls back to the raw value. */
+function decodeMessage(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    return value;
+  }
 }
 
 /**
