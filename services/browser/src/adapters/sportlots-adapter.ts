@@ -1,4 +1,4 @@
-import { BaseAdapter, AdapterResponse } from "./base-adapter";
+import { BaseAdapter, AdapterResponse, LoginOptions } from "./base-adapter";
 import { SecretsManagerService } from "../services/secrets-manager";
 import { buildLoginDiagnostic } from "../services/login-diagnostic";
 
@@ -10,6 +10,17 @@ const SL_LOGIN_URL = "https://www.sportlots.com/cust/custbin/signin.tpl";
 // Total max added sleep ≈ 7.5s; well inside Cloud Run's default timeout.
 const MAX_ATTEMPTS = 5;
 const BACKOFFS_MS = [500, 1000, 2000, 4000];
+
+// NEO-43: the synthetic canary runs a reduced retry budget.
+//
+// NOT for rate-limit or anti-abuse reasons — neither SportLots nor BSC
+// throttles logins, and there is no such thing as BSC "bot protection". That
+// belief has been raised and disproven repeatedly on this project; don't
+// reintroduce it. The reason here is monitoring correctness: a canary exists
+// to REPORT failures, and retrying five times masks a marketplace that is
+// intermittently failing — which is precisely the signal we want to see. Two
+// attempts tolerates one dropped connection without hiding a pattern.
+const CANARY_MAX_ATTEMPTS = 2;
 
 // Conservative TTL for cached SL session cookies. SL sessions empirically
 // last much longer (~24h), but we'd rather invalidate eagerly than serve
@@ -51,13 +62,21 @@ export class SportlotsAdapter extends BaseAdapter {
    * cookie body) and bails immediately on permanent ones (4xx non-429,
    * invalid credentials, validation seeing a login page).
    */
-  async login(key: string): Promise<AdapterResponse> {
+  async login(key: string, opts?: LoginOptions): Promise<AdapterResponse> {
     const secretsManager = new SecretsManagerService();
+    const canary = opts?.canary === true;
 
     // Cache hit path: try the stored cookie before hitting the login form.
+    //
+    // NEO-43: the canary skips this. CACHED_TOKEN_TTL_MS is 30 DAYS, so a
+    // canary that honoured the cache would POST the real SportLots signin
+    // form roughly once a month and spend every other run validating a stale
+    // cookie — precisely blind to the multi-minute SL login hang that
+    // prompted this ticket.
     try {
       const credentials = await secretsManager.getCredentials(key);
       if (
+        !canary &&
         credentials.token &&
         credentials.expiresAt &&
         credentials.expiresAt > Date.now()
@@ -98,16 +117,23 @@ export class SportlotsAdapter extends BaseAdapter {
       );
     }
 
+    // NEO-43: reduced retry budget for the canary — see CANARY_MAX_ATTEMPTS.
+    // Retrying hard would hide an intermittently-failing marketplace behind a
+    // green canary; a monitoring probe must surface that, not paper over it.
+    // Genuine one-off blips are absorbed by the alert policy, which needs
+    // repeated failures before it fires.
+    const maxAttempts = canary ? CANARY_MAX_ATTEMPTS : MAX_ATTEMPTS;
+
     let last: AdapterResponse = { success: false, error: "Login did not run" };
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (attempt > 1) {
         console.log(
-          `[SportLots Adapter] retry attempt ${attempt}/${MAX_ATTEMPTS} — previous error: ${last.error}`,
+          `[SportLots Adapter] retry attempt ${attempt}/${maxAttempts} — previous error: ${last.error}`,
         );
       }
-      last = await this.attemptLogin(key, attempt);
+      last = await this.attemptLogin(key, attempt, canary);
       if (last.success) return last;
-      if (!last.retryable || attempt === MAX_ATTEMPTS) return last;
+      if (!last.retryable || attempt === maxAttempts) return last;
       await sleepWithJitter(BACKOFFS_MS[attempt - 1]);
     }
     return last;
@@ -171,7 +197,7 @@ export class SportlotsAdapter extends BaseAdapter {
    * outer loop to retry (transient upstream issues, empty body); leaves it
    * undefined on permanent errors so the caller bails immediately.
    */
-  private async attemptLogin(key: string, attempt: number): Promise<AdapterResponse> {
+  private async attemptLogin(key: string, attempt: number, canary = false): Promise<AdapterResponse> {
     const t0 = Date.now();
     const log = (msg: string) =>
       console.log(`[SportLots Adapter] ${msg} (t+${Date.now() - t0}ms, attempt ${attempt}/${MAX_ATTEMPTS})`);
@@ -295,14 +321,23 @@ export class SportlotsAdapter extends BaseAdapter {
 
       // Store the cookie + TTL so login() can short-circuit on the next
       // call. Without expiresAt, the cache-hit branch above can never fire.
+      //
+      // NEO-43: the canary must NOT write back — every write adds a new,
+      // permanently-enabled Secret Manager version, and skipping it keeps the
+      // canary key permanently cache-free so each run is guaranteed to
+      // exercise the real signin form. See LoginOptions in ../observability.
       const expiresAt = Date.now() + CACHED_TOKEN_TTL_MS;
-      await secretsManager.updateCredentials(key, {
-        username: credentials.username,
-        password: credentials.password,
-        token: cookieString,
-        expiresAt,
-      });
-      log("login success; token stored");
+      if (canary) {
+        log("login success; canary run — skipping token write-back");
+      } else {
+        await secretsManager.updateCredentials(key, {
+          username: credentials.username,
+          password: credentials.password,
+          token: cookieString,
+          expiresAt,
+        });
+        log("login success; token stored");
+      }
 
       return {
         success: true,

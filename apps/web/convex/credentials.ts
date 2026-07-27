@@ -7,6 +7,11 @@ import { getCurrentUserId } from "./auth";
 import { GoogleAuth, IdTokenClient } from "google-auth-library";
 import { randomUUID } from "crypto";
 import { oidcAudienceFor } from "./browserAudience";
+import {
+  classifyAdapterError,
+  recordCredentialTest,
+  sanitizeLoginDiagnostic,
+} from "./observability";
 
 const MAX_INPUT_LENGTH = 256;
 const SUPPORTED_SITES = ["buysportscards", "sportlots"];
@@ -678,7 +683,7 @@ async function loginWithRetry(
   loginUrl: string,
   key: string,
   label: string,
-): Promise<{ success: boolean; data: { success: boolean; message?: string; storeName?: string; sellerId?: string } | null; detail: string; diagnostic?: LoginDiagnostic }> {
+): Promise<{ success: boolean; data: { success: boolean; message?: string; storeName?: string; sellerId?: string } | null; detail: string; diagnostic?: LoginDiagnostic; errorClass?: string }> {
   // Retry ONLY on 503 (browser service busy serializing Puppeteer logins) —
   // back off and wait our turn. Do NOT retry an actual login failure: a real
   // marketplace login takes ~30s, and retrying it just fires another login at
@@ -733,6 +738,12 @@ async function loginWithRetry(
       const err = (await response.json().catch(() => ({ error: response.statusText }))) as {
         error?: string;
         diagnostic?: LoginDiagnostic;
+        // NEO-43: stable tag classified by the browser service at the true
+        // point of failure, using the same vocabulary as its browser_login_call
+        // log line. Preferred over re-deriving one here — BSC's caller-facing
+        // error is the deliberately generic "Authentication failed", which
+        // classifyAdapterError can only bucket as "other".
+        error_class?: string;
       };
       if (err.diagnostic) diagnostic = err.diagnostic;
       detail = err.error || response.statusText;
@@ -740,7 +751,7 @@ async function loginWithRetry(
         `[${label}] login failed: ${detail}` +
           (diagnostic?.challengeDetected ? " [challenge page detected]" : ""),
       );
-      return { success: false, data: null, detail, diagnostic };
+      return { success: false, data: null, detail, diagnostic, errorClass: err.error_class };
     } catch (e) {
       // Network/timeout to the browser service — do not retry (avoid hammering).
       detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
@@ -774,17 +785,22 @@ export const authenticateBsc = internalAction({
       // Log in via the browser service (it reads credentials from Secret
       // Manager internally). Retries transient failures/delays with backoff.
       console.log("[authenticateBsc] Calling browser service POST /login/bsc");
+      const startedAt = Date.now();
       const result = await loginWithRetry(`${url}/login/bsc`, key, "authenticateBsc");
+      const durationMs = Date.now() - startedAt;
       if (!result.success || !result.data) {
-        await ctx.runAction(internal.posthog.captureEvent, {
-          distinctId: userId,
-          event: "credential_test_failed",
-          properties: {
-            platform: "buysportscards",
-            reason: result.detail,
-            ...(result.diagnostic ?? {}),
-          },
-        }).catch(() => {});
+        await recordCredentialTest(ctx, userId, false, {
+          platform: "buysportscards",
+          reason: result.detail,
+          // Prefer the browser service's own tag; fall back to local
+          // classification for failures it never got to answer — notably the
+          // 60s AbortSignal timeout, which is the HANG case. A true hang
+          // produces no browser_login_call log line at all, so this event is
+          // the only record of it.
+          error_class: result.errorClass ?? classifyAdapterError(result.detail),
+          duration_ms: durationMs,
+          ...sanitizeLoginDiagnostic(result.diagnostic),
+        });
         return {
           success: false,
           message: "BSC login failed. Please check your credentials and try again.",
@@ -806,6 +822,13 @@ export const authenticateBsc = internalAction({
         });
       }
 
+      // NEO-43: the success counterpart. Without it only an absolute failure
+      // count is computable, never a rate.
+      await recordCredentialTest(ctx, userId, true, {
+        platform: "buysportscards",
+        duration_ms: durationMs,
+      });
+
       return {
         success: true,
         message: "BSC account authenticated successfully! Token stored.",
@@ -813,11 +836,11 @@ export const authenticateBsc = internalAction({
       };
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Unknown error";
-      await ctx.runAction(internal.posthog.captureEvent, {
-        distinctId: userId,
-        event: "credential_test_failed",
-        properties: { platform: "buysportscards", reason: detail },
-      }).catch(() => {});
+      await recordCredentialTest(ctx, userId, false, {
+        platform: "buysportscards",
+        reason: detail,
+        error_class: classifyAdapterError(detail),
+      });
       console.error("Failed to authenticate BSC");
       return {
         success: false,
@@ -853,22 +876,30 @@ export const authenticateSportlots = internalAction({
 
       // Log in via the browser service (it reads credentials from Secret
       // Manager internally). Retries transient failures/delays with backoff.
+      const startedAt = Date.now();
       const result = await loginWithRetry(`${browserUrl()}/login/sportlots`, key, "authenticateSportlots");
+      const durationMs = Date.now() - startedAt;
       if (!result.success) {
-        await ctx.runAction(internal.posthog.captureEvent, {
-          distinctId: userId,
-          event: "credential_test_failed",
-          properties: {
-            platform: "sportlots",
-            reason: result.detail,
-            ...(result.diagnostic ?? {}),
-          },
-        }).catch(() => {});
+        await recordCredentialTest(ctx, userId, false, {
+          platform: "sportlots",
+          reason: result.detail,
+          // See the BSC branch: browser-service tag first, local
+          // classification as the fallback that catches the 60s hang.
+          error_class: result.errorClass ?? classifyAdapterError(result.detail),
+          duration_ms: durationMs,
+          ...sanitizeLoginDiagnostic(result.diagnostic),
+        });
         return {
           success: false,
           message: "SportLots login failed. Please check your credentials and try again.",
         };
       }
+
+      // NEO-43: the success counterpart — see the BSC branch.
+      await recordCredentialTest(ctx, userId, true, {
+        platform: "sportlots",
+        duration_ms: durationMs,
+      });
 
       return {
         success: true,
@@ -876,11 +907,11 @@ export const authenticateSportlots = internalAction({
       };
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Unknown error";
-      await ctx.runAction(internal.posthog.captureEvent, {
-        distinctId: userId,
-        event: "credential_test_failed",
-        properties: { platform: "sportlots", reason: detail },
-      }).catch(() => {});
+      await recordCredentialTest(ctx, userId, false, {
+        platform: "sportlots",
+        reason: detail,
+        error_class: classifyAdapterError(detail),
+      });
       console.error("Failed to authenticate SportLots");
       return {
         success: false,

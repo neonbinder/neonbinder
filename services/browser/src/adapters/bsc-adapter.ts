@@ -1,6 +1,6 @@
 import { Page } from "puppeteer";
 import crypto from "node:crypto";
-import { BaseAdapter, AdapterResponse } from "./base-adapter";
+import { BaseAdapter, AdapterResponse, LoginOptions } from "./base-adapter";
 import { SecretsManagerService } from "../services/secrets-manager";
 import {
   buildLoginDiagnostic,
@@ -415,16 +415,24 @@ export class BSCAdapter extends BaseAdapter {
       .replace(/<[^>]*>/g, " ");
   }
 
-  async login(key: string): Promise<AdapterResponse> {
+  async login(key: string, opts?: LoginOptions): Promise<AdapterResponse> {
     const secretsManager = new SecretsManagerService();
     const credentials = await secretsManager.getCredentials(key);
+    const canary = opts?.canary === true;
 
     // --- Cache-hit path: validate the stored token, never touch a browser --
     //
     // BSC stores the bare token (no "Bearer " prefix); fetchSellerProfile
     // prepends "Bearer " on the validation request. A still-valid cached token
     // short-circuits the whole B2C exchange.
+    //
+    // NEO-43: the canary skips this entirely. A cache hit costs ~1.1s and
+    // proves only that a previously-issued token is still accepted — it does
+    // NOT exercise the B2C authorize/SelfAsserted/confirmed/token exchange,
+    // which is the part that actually breaks. A canary that short-circuits
+    // here would report green straight through a real outage.
     if (
+      !canary &&
       credentials.token &&
       credentials.expiresAt &&
       credentials.expiresAt > Date.now()
@@ -480,12 +488,23 @@ export class BSCAdapter extends BaseAdapter {
       // Persist the bare token + expiry exactly as before so the cache-hit
       // path and the Convex BSC API adapter (which prepends "Bearer ") work
       // unchanged.
-      await secretsManager.updateCredentials(key, {
-        ...credentials,
-        token,
-        expiresAt,
-      });
-      console.log(`[BSC Adapter] Stored token in Secret Manager for ${this.siteName}`);
+      //
+      // NEO-43: the canary must NOT write back. Every write adds a new,
+      // permanently-enabled Secret Manager version ($0.06/version/month) —
+      // at canary cadence that is thousands of versions a month, costing more
+      // than the rest of this infrastructure combined. Skipping it also means
+      // no token is ever cached on the canary key, so the cache-skip above is
+      // structurally guaranteed rather than merely flag-dependent.
+      if (canary) {
+        console.log(`[BSC Adapter] canary run — skipping token write-back for ${this.siteName}`);
+      } else {
+        await secretsManager.updateCredentials(key, {
+          ...credentials,
+          token,
+          expiresAt,
+        });
+        console.log(`[BSC Adapter] Stored token in Secret Manager for ${this.siteName}`);
+      }
 
       // Capture sellerId/storeName in the same response shape as the cached
       // path. Profile failure here is non-fatal — we already have a valid
