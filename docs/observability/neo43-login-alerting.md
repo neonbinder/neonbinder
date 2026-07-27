@@ -41,20 +41,40 @@ Hangs are caught by three other things instead: the Cloud Run *request* log
 canary-absence policy. If you ever find yourself "simplifying" the alerting
 down to the failure metric alone, you have deleted hang detection.
 
-### 2.2 A bad BSC password returns HTTP 500; SportLots returns 400
+### 2.2 Login status codes carry meaning — and 5xx is always ours
 
-`services/browser/src/index.ts` — the BSC failure branch responds `500`, the
-SportLots one responds `400`.
+`services/browser/src/index.ts` answers a failed login with:
 
-So the obvious-looking rule, "alert on elevated 5xx on `/login/*`", is wrong
-twice over: it pages on an ordinary seller typo, **and** it never fires for
-SportLots at all. This is why the hang policy matches `499|502|503|504` and
-deliberately excludes `500`.
+| Status | Meaning | Pages? |
+|---|---|---|
+| `422` | The marketplace processed the credentials and refused them, or the stored secret was incomplete. **The seller's problem.** | Never |
+| `502` | We could not complete the exchange — the marketplace was unreachable, returned something unusable, or served a block page. | Yes |
+| `500` | An uncaught throw in our own code, or a container that died mid-request. | Yes |
+| `400` | Missing or malformed credential key. | Never |
 
-(Worth fixing upstream — a credential rejection should be a `401`. Tracked as
-**NEO-98**. Until then the hang policy has **no crash coverage**: a genuine
-container crash returning 500 mid-request is indistinguishable from a typo'd
-password. Once NEO-98 lands, widen the policy to `>=500`.)
+So a 5xx on `/login/*` is **always** our problem, and the hang policy matches
+`499|5[0-9][0-9]`.
+
+**This was not always true, and the history explains a subtlety.** Until
+NEO-98, a bad BSC password returned `500` while the identical SportLots
+failure returned `400`. The obvious rule — "alert on elevated 5xx on
+`/login/*`" — was therefore wrong twice over: it paged on an ordinary seller
+typo **and** never fired for SportLots. The policy had to exclude `500`, which
+cost it the one thing it most needed to catch: a genuine container crash.
+
+The fix could not be a blanket "422 on failure". `bsc-adapter.ts` returns the
+identical string `"Authentication failed"` from five structurally different
+failures, and only one is a rejection — so NEO-98 added
+`AdapterResponse.credentialRejected`, set only where the marketplace
+demonstrably refused the credentials. **Anything the adapter cannot positively
+identify as a rejection returns 502 and pages.** If you add a failure branch
+to an adapter and forget to classify it, it errs toward waking someone up.
+That is deliberate; do not "fix" it by defaulting the flag to true.
+
+> **Diagnosing a 422 spike?** It is seller behavior, not an incident — unless
+> it is a *cliff*. A sudden collapse in 422 volume can mean logins stopped
+> reaching the marketplace at all. The `browser_login_http_status` metric
+> captures from `>=400`, so the 422 series is there to compare against.
 
 ### 2.3 Cloud Run's built-in request metrics have no path label
 
@@ -87,7 +107,7 @@ field, so never filter on it).
 | `platform` | `bsc` \| `sportlots` | ⚠️ PostHog uses `buysportscards`, not `bsc` |
 | `duration_ms` | number | From handler entry — **excludes** container cold start |
 | `success` | boolean | |
-| `status_code` | 200 / 400 / 500 | See §2.2 |
+| `status_code` | 200 / 400 / 422 / 500 / 502 | See §2.2. Tracks the status actually put on the wire |
 | `error_class` | see below | |
 | `challenge_detected` | boolean, **or absent** | Absent = no diagnostic captured. Absent ≠ `false` |
 | `canary` | boolean | Always present |
@@ -100,6 +120,21 @@ inline. A closed set — it never interpolates the raw error.
 marketplace is blocking us" (act now) from "the seller mistyped their
 password" (do nothing). Before NEO-43 it lived only in the HTTP response body
 and Cloud Monitoring could not see it.
+
+> **It did not actually make that separation until NEO-98.** The pattern list
+> behind the flag was written for NEO-18 diagnostics, where it answered the
+> broad question "why did this login fail", and it included SportLots' tell
+> for an ordinary bad login — `not a valid email address`. When NEO-43
+> repurposed the same boolean as an *alerting* discriminator, that entry
+> quietly inverted the distinction: a plain seller typo reported
+> `challenge_detected=true`, i.e. "we are being blocked, page someone".
+>
+> NEO-98 split the list. Genuine block signals (captcha, Cloudflare, rate
+> limit) stay in `CHALLENGE_PATTERNS`; rejection tells moved to
+> `CREDENTIAL_REJECTION_PATTERNS` and set a separate
+> `credentialRejectionDetected`. The guidance below — "`challenge_detected=true`
+> means this is not a credential problem" — is now true. If you are reading
+> logs from before that shipped, it is not.
 
 > **Security:** only the `challengeDetected` boolean crosses into Cloud
 > Logging. The diagnostic's `snippet` (up to 1500 chars of marketplace page
@@ -399,10 +434,12 @@ falling through to the app router. Do not "fix" it.
   contacting eBay. Instrumenting it would inject *fabricated successes* into
   the failure-rate denominator, making the alert progressively less sensitive
   as eBay usage grew. Deliberately excluded, not overlooked.
-- **BSC returns 500 for a bad password — NEO-98** (§2.2). Costs us crash
-  coverage on the hang policy.
-- **No crash coverage on the hang policy**, as a direct consequence of
-  NEO-98. Revisit together.
+- **SportLots' no-cookies branch uses a heuristic — NEO-98 follow-up.** When
+  SportLots returns no session cookies, a rejection is inferred from its
+  `not a valid email address` tell, falling back to "did SportLots render any
+  body at all". A structural fix would parse SportLots' error markup, which we
+  do not have documented. The fallback errs toward 502 (pages), so the failure
+  mode is a spurious page, not a missed one.
 - **PostHog config is not IaC.** PostHog exposes REST endpoints for insights
   and alerts, so a checked-in JSON plus an idempotent apply script is
   possible. Its own ticket.
