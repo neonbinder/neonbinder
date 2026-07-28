@@ -49,6 +49,10 @@ jobs:
     outputs:
       web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
+      deps_only: ${{ steps.deps.outputs.deps_only }}
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
@@ -59,6 +63,75 @@ jobs:
               - 'apps/web/**'
             browser:
               - 'services/browser/**'
+
+      # NEO-87: is this PR *exclusively* a dependency-manifest bump? If so the
+      # 8-worker Maestro matrix is pure cost — a lockfile bump can't change app
+      # behavior that lint + unit don't already cover — so `e2e` skips and
+      # `ci-gate` accepts that skip (and ONLY that skip; see the gate below).
+      #
+      # Deliberately narrow: manifests ONLY. CI-infrastructure bumps that
+      # Dependabot also raises — `.github/workflows/**` and
+      # `apps/web/.github/actions/maestro-runner/**` (setup-chrome, setup-java,
+      # actions/cache) — ARE the E2E harness. Skipping E2E on those would merge
+      # an unexercised test runner, so they keep running the full matrix.
+      #
+      # NOT keyed on `github.actor == 'dependabot[bot]'`: actor is orthogonal to
+      # risk (a maintainer dep-batch like #70 is equally safe; a Dependabot
+      # workflow bump is not). Path content is the honest signal.
+      #
+      # Fail-CLOSED: any error, empty file list, or non-pull_request event
+      # leaves deps_only=false ⇒ E2E runs. A false 'true' here would silently
+      # wave product changes through the gate, so ambiguity must cost us a
+      # redundant E2E run, never a skipped one.
+      - name: Detect dependency-only PR
+        id: deps
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+
+          # Single assignment at the very end — `verdict` is the only thing that
+          # reaches GITHUB_OUTPUT, so duplicate-key precedence is never relied on.
+          verdict=false
+
+          decide() {
+            if [ "${GITHUB_EVENT_NAME}" != "pull_request" ] || [ -z "${PR:-}" ]; then
+              echo "Not a pull_request event — E2E runs."
+              return
+            fi
+
+            local files offenders
+            files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" \
+              --paginate --jq '.[].filename') || {
+                echo "::warning::could not list PR files — E2E runs."
+                return
+              }
+
+            if [ -z "$files" ]; then
+              echo "::warning::empty PR file list — E2E runs."
+              return
+            fi
+
+            echo "Changed files:"; printf '%s\n' "$files" | sed 's/^/  /'
+
+            # Anything that is NOT a bare package.json / package-lock.json at any
+            # depth disqualifies the PR.
+            offenders=$(printf '%s\n' "$files" \
+              | grep -vE '(^|/)package(-lock)?\.json$' || true)
+
+            if [ -n "$offenders" ]; then
+              echo "Non-manifest files present — E2E runs:"
+              printf '%s\n' "$offenders" | sed 's/^/  /'
+              return
+            fi
+
+            verdict=true
+            echo "✅ Dependency-manifest-only PR — the 8-worker E2E matrix will be skipped (NEO-87)."
+          }
+
+          decide
+          echo "deps_only=${verdict}" >> "$GITHUB_OUTPUT"
 
   # Point the Convex preview's NEONBINDER_BROWSER_URL at the PR's own pr-<N>
   # browser preview, so the E2E suite (invoked next) hits the PR's browser code.
@@ -214,12 +287,16 @@ jobs:
   # web-only PRs wire-browser-url is SKIPPED and E2E still runs (dev default).
   # If wiring FAILS, E2E is skipped (no false green against dev) and the red
   # wire-browser-url job surfaces the problem.
+  #
+  # Also skipped for dependency-manifest-only PRs (NEO-87). That skip is the ONE
+  # case ci-gate treats as acceptable — every other skip still fails the gate.
   e2e:
     name: E2E
     needs: [changes, wire-browser-url]
     if: |
       always()
       && needs.changes.result == 'success'
+      && needs.changes.outputs.deps_only != 'true'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
@@ -307,6 +384,10 @@ jobs:
   # "required check never registers" wedge that blocks out-of-area PRs.
   # Verdict: `changes` + `e2e` MUST succeed; area/wiring jobs pass on
   # success OR skipped (out-of-area); any failure/cancelled fails.
+  # NEO-87 carve-out: `e2e` may be `skipped` IFF changes.deps_only == 'true'.
+  # That pairing is what keeps the NEO-68 vacuous-skip trap closed — a skipped
+  # E2E is green only when an authoritative, fail-closed signal says the PR
+  # touched nothing but dependency manifests. Every other skip is still red.
   ci-gate:
     name: CI Gate
     needs: [changes, web-lint, web-unit, browser-test, wire-browser-url, e2e]
@@ -324,13 +405,23 @@ jobs:
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_E2E: ${{ needs.e2e.result }}
+          R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
         run: |
           set -euo pipefail
-          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST wire-browser-url=$R_WIRE e2e=$R_E2E"
+          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST wire-browser-url=$R_WIRE e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
-          # changes + e2e must SUCCEED (skipped => gate unreliable / E2E didn't run)
+          # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
-          [ "$R_E2E" = "success" ]     || { echo "::error::e2e=$R_E2E (must succeed)"; fail=1; }
+          # e2e must SUCCEED, except on a dependency-manifest-only PR where a
+          # SKIP is the intended outcome (NEO-87). Note the deps_only check reads
+          # the same job output that gated the skip, so the two can't disagree.
+          if [ "$R_E2E" != "success" ]; then
+            if [ "$R_DEPS_ONLY" = "true" ] && [ "$R_E2E" = "skipped" ]; then
+              echo "e2e=skipped — dependency-manifest-only PR, matrix intentionally not run (NEO-87)."
+            else
+              echo "::error::e2e=$R_E2E (must succeed; skip allowed only when deps_only=true)"; fail=1
+            fi
+          fi
           # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
           for kv in "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "wire-browser-url=$R_WIRE"; do
             r="${kv#*=}"
