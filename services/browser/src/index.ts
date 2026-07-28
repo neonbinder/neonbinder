@@ -7,7 +7,12 @@ import { SportlotsAdapter } from "./adapters/sportlots-adapter";
 import { SecretsManagerService } from "./services/secrets-manager";
 import { LoginDiagnostic } from "./services/login-diagnostic";
 import { credentialRateLimitKey } from "./rate-limit";
-import { logBrowserOp, classifyBrowserError, challengeFlag } from "./observability";
+import {
+  logBrowserOp,
+  classifyBrowserError,
+  challengeFlag,
+  loginFailureOutcome,
+} from "./observability";
 
 interface LoginResponse {
   success: boolean;
@@ -142,14 +147,19 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
       });
       res.json({ success: true, message: result.message });
     } else {
-      const errorClass = classifyBrowserError(result.error);
+      // NEO-98: 422 when SportLots refused the credentials, 502 when we could
+      // not complete the exchange. Was a flat 400 for both.
+      const { status, errorClass } = loginFailureOutcome(result, result.error);
       logBrowserOp({
         msg: "browser_login_call",
         operation: "login_sportlots",
         platform: "sportlots",
         duration_ms: Date.now() - startMs,
         success: false,
-        status_code: 400,
+        // Must track the res.status() below: this field feeds the
+        // browser_login_failures log-based metric that the alert policies
+        // filter on, so a drift between the two silently lies to monitoring.
+        status_code: status,
         error_class: errorClass,
         // NEO-43: boolean only. The rest of the diagnostic (url/title/snippet)
         // is page-derived text and must not enter Cloud Logging.
@@ -159,7 +169,7 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
       // Include the sanitized diagnostic (if the adapter captured one) so
       // Convex can attach it to PostHog. result.diagnostic is already
       // redacted of credentials/tokens by buildLoginDiagnostic.
-      res.status(400).json({
+      res.status(status).json({
         error: result.error || "SportLots login failed",
         diagnostic: result.diagnostic,
         error_class: errorClass,
@@ -244,18 +254,24 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
         sellerId: result.sellerId,
       });
     } else {
-      const errorClass = classifyBrowserError(result.error || result.message);
+      // NEO-98: 422 when BSC refused the credentials, 502 when the B2C
+      // exchange itself failed. Was a flat 500 for both, which is exactly why
+      // the NEO-43 hang policy had to exclude 500 and so had no crash
+      // coverage. 500 now means only "our code threw" (see the catch below).
+      const { status, errorClass } = loginFailureOutcome(
+        result,
+        result.error || result.message,
+      );
       logBrowserOp({
         msg: "browser_login_call",
         operation: "login_bsc",
         platform: "bsc",
         duration_ms: Date.now() - startMs,
         success: false,
-        // NOTE: an ordinary BSC credential rejection returns 500 here, while
-        // the equivalent SportLots failure returns 400. That asymmetry is why
-        // the NEO-43 hang policy filters on 499/502/503/504 and EXCLUDES 500 —
-        // a blanket ">=500 on /login/*" rule would page on every seller typo.
-        status_code: 500,
+        // Must track the res.status() below: this field feeds the
+        // browser_login_failures log-based metric that the alert policies
+        // filter on, so a drift between the two silently lies to monitoring.
+        status_code: status,
         error_class: errorClass,
         // NEO-43: boolean only. The rest of the diagnostic (url/title/snippet)
         // is page-derived text and must not enter Cloud Logging.
@@ -265,7 +281,7 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
       // Include the sanitized diagnostic (if the adapter captured one) so
       // Convex can attach it to PostHog. result.diagnostic is already
       // redacted of credentials/tokens by buildLoginDiagnostic.
-      res.status(500).json({
+      res.status(status).json({
         error: result.error || result.message || "BSC login failed",
         diagnostic: result.diagnostic,
         error_class: errorClass,

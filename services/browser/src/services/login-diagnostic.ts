@@ -23,8 +23,18 @@ export interface LoginDiagnostic {
   url?: string;
   /** page.title() for BSC; omitted/empty for SL. */
   title?: string;
-  /** True if the text matches a known challenge/blocked/invalid signal. */
+  /** True if the text matches a known challenge/blocked signal. */
   challengeDetected?: boolean;
+  /**
+   * NEO-98: true if the text carries a marketplace's own "we refused these
+   * credentials" tell (e.g. SportLots' "Not a valid Email Address").
+   *
+   * Deliberately SEPARATE from challengeDetected. Being bot-blocked and
+   * having a seller mistype a password are opposite findings — one pages us,
+   * the other must never page — and collapsing them into one boolean is what
+   * this field exists to prevent.
+   */
+  credentialRejectionDetected?: boolean;
   /** Redacted, <= MAX_SNIPPET_CHARS of visible text / body. */
   snippet?: string;
 }
@@ -41,8 +51,21 @@ const REDACTED = "[REDACTED]";
 /**
  * Signals that the login failed because the marketplace served a challenge /
  * block page rather than authenticating. Matched case-insensitively against
- * the captured visible text. "not a valid email address" is the SportLots
- * tell described in the diagnostics requirements.
+ * the captured visible text.
+ *
+ * NEO-98: "not a valid email address" USED to live in this list. It was moved
+ * to CREDENTIAL_REJECTION_PATTERNS below, because the meaning of this flag
+ * changed underneath it. When the list was written (NEO-18) it answered the
+ * broad question "why did this login fail". NEO-43 then repurposed the same
+ * boolean as an ALERTING discriminator — per observability.ts it is now "the
+ * only signal that separates 'the marketplace is blocking us' (page us) from
+ * 'the seller mistyped their password' (do nothing)".
+ *
+ * Under that meaning, the SportLots typo tell sitting in this list inverted
+ * the exact distinction the flag exists to make: an ordinary mistyped email
+ * reported challengeDetected=true, i.e. "we are being blocked, page someone".
+ *
+ * Keep this list to genuine block/bot signals only.
  */
 const CHALLENGE_PATTERNS: RegExp[] = [
   /captcha/i,
@@ -56,8 +79,47 @@ const CHALLENGE_PATTERNS: RegExp[] = [
   /temporarily blocked/i,
   /too many (attempts|requests)/i,
   /rate limit/i,
-  /not a valid email address/i,
 ];
+
+/**
+ * NEO-98/NEO-100: signals that the marketplace itself evaluated the
+ * credentials and refused them — the seller's problem, never ours.
+ *
+ * SportLots never uses a status code for this. It answers a refused login
+ * with HTTP 200 and a ~115-byte JS-redirect stub that carries the reason in a
+ * query param, captured live against the real endpoint on 2026-07-27:
+ *
+ *   <html><head> </head> <body onload='window.location =
+ *     "\?message=Not a valid Email Address";'> </body> </html>
+ *
+ * Observed messages:
+ *   "Not a valid Email Address"       — malformed email
+ *   "Invalid email address supplied"  — well-formed but unknown account, and
+ *                                       also an empty/incorrect password
+ *
+ * SportLots deliberately returns the same message for "no such account" and
+ * "wrong password" (good practice on their part — it prevents account
+ * enumeration), so those do not need separate patterns.
+ *
+ * The remaining entries are defensive: variants SportLots or a future adapter
+ * plausibly emits. An unrecognised message is NOT treated as a rejection —
+ * see detectCredentialRejection.
+ */
+const CREDENTIAL_REJECTION_PATTERNS: RegExp[] = [
+  /not a valid email address/i,
+  /invalid email address supplied/i,
+  /invalid (email|username|password|login|credentials)/i,
+  /incorrect (email|username|password)/i,
+  /no such (user|account)/i,
+  /account (is )?(locked|disabled|suspended)/i,
+];
+
+/**
+ * NEO-100: SportLots' failure envelope — `?message=<reason>` inside the
+ * onload redirect above. Bounded to stop at the closing quote/semicolon so a
+ * larger page can't drag unrelated text into the match.
+ */
+const REDIRECT_MESSAGE_RE = /[?&]message=([^"'&;]+)/i;
 
 /** Escape a string for safe use inside a RegExp. */
 function escapeRegExp(value: string): string {
@@ -127,6 +189,45 @@ function detectChallenge(rawText: string, extra?: string): boolean {
 }
 
 /**
+ * NEO-98/NEO-100: decide credentialRejectionDetected. Scans pre-redaction text
+ * for the same reason detectChallenge does — none of these patterns overlap
+ * with secret values, and redaction must not be able to mask the signal.
+ *
+ * When the `?message=` envelope is present, match ONLY the extracted message.
+ * That envelope is the marketplace's own authoritative statement of why it
+ * refused, so narrowing to it stops incidental page boilerplate (a maintenance
+ * notice that happens to contain the word "password") from reading as a
+ * rejection.
+ *
+ * An envelope carrying an UNRECOGNISED message returns false, i.e. 502, i.e.
+ * it pages. That is deliberate and is the safe direction: a surprising new
+ * SportLots message should get looked at, not silently filed as user error.
+ * The opposite default would let a changed login flow masquerade as a wave of
+ * seller typos.
+ *
+ * Only rawText is scanned, never url/title — a URL containing "login" or
+ * "invalid" says nothing about whether the password was refused, whereas a
+ * challenge genuinely can show up in a page title or a /challenge path.
+ *
+ * Returns a BOOLEAN only. The extracted message is never stored or logged: a
+ * marketplace is free to echo the submitted identifier back inside it.
+ */
+function detectCredentialRejection(rawText: string): boolean {
+  const enveloped = rawText.match(REDIRECT_MESSAGE_RE);
+  const haystack = enveloped ? decodeMessage(enveloped[1]) : rawText;
+  return CREDENTIAL_REJECTION_PATTERNS.some((re) => re.test(haystack));
+}
+
+/** Best-effort percent/plus decoding; falls back to the raw value. */
+function decodeMessage(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    return value;
+  }
+}
+
+/**
  * Build a sanitized {@link LoginDiagnostic}.
  *
  * @param input.url        page.url() (BSC) or login POST URL (SL).
@@ -153,7 +254,10 @@ export function buildLoginDiagnostic(
     ? truncate(redactSecrets(rawText, secrets))
     : undefined;
 
-  const diagnostic: LoginDiagnostic = { challengeDetected };
+  const diagnostic: LoginDiagnostic = {
+    challengeDetected,
+    credentialRejectionDetected: detectCredentialRejection(rawText),
+  };
   if (input.url) diagnostic.url = input.url;
   if (input.title) diagnostic.title = redactSecrets(input.title, secrets);
   if (snippet) diagnostic.snippet = snippet;

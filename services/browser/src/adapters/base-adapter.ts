@@ -34,6 +34,24 @@ export interface AdapterResponse {
    */
   retryable?: boolean;
   /**
+   * NEO-98: true ONLY when the marketplace demonstrably processed the
+   * credentials and refused them. Drives the HTTP status the login routes
+   * return: 422 (the seller's problem — never pages) vs 502 (an
+   * upstream/integration fault — pages).
+   *
+   * Leave it UNSET on any branch where you cannot tell the difference. Unset
+   * is the safe direction: it pages. Setting it wrongly is the expensive
+   * mistake, because it permanently classifies a marketplace outage as user
+   * error and Cloud Monitoring goes blind to it.
+   *
+   * A detected challenge page (diagnostic.challengeDetected) always CLEARS
+   * this — being bot-blocked is our problem, not the seller's.
+   *
+   * Not returned to the caller as-is; it is collapsed into the status code
+   * and into `error_class: "invalid_credentials"`.
+   */
+  credentialRejected?: boolean;
+  /**
    * Sanitized login-failure diagnostic. Set by adapters on `success: false`
    * when they could capture context from the stuck/challenge page. SAFE to
    * return to the caller: it is redacted of credentials and tokens by
