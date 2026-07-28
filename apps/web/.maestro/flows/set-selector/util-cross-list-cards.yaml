@@ -1,0 +1,99 @@
+appId: com.neonbinder.web
+name: "Util — from an open checklist, link cards printed in another set into it"
+tags:
+  - util
+---
+# Reusable sub-flow: the operator is looking at a checklist (the GUEST set),
+# opens "Add Cross-Release Cards", says which set the cards were really printed
+# in and which numbers to pull across, and submits.
+#
+# CALLER CONTRACT:
+#   - The guest set's checklist is open and its toolbar is on screen (this is
+#     exactly what util-drill-to-custom.yaml / util-add-custom-card.yaml leave
+#     behind when VARIANT is supplied).
+#
+# RETURN CONTRACT:
+#   - The modal is STILL OPEN with its result panel showing. The caller asserts
+#     what came back ("Linked 1 card.", "Not found in source set: …") and then
+#     closes the modal itself — different callers care about different results,
+#     so this util deliberately does not judge the outcome beyond "a result
+#     came back at all".
+#
+# INPUTS:
+#   CARD_NUMBERS          (required) — what the operator types, e.g.
+#                           "951-w0-a1-AB12" or "301-320" or "301,303,305".
+#   SOURCE_SET            (required) — the set the cards were printed in.
+#   SOURCE_SPORT / SOURCE_YEAR / SOURCE_MANUFACTURER /
+#   SOURCE_VARIANT_TYPE / SOURCE_VARIANT
+#                         (optional) — default to the per-worker custom
+#                           playground: "E2E Test Sport <worker>" / 2026 /
+#                           Topps / <SOURCE_SET> / Insert / Base.
+#
+# ORDER OF OPERATIONS — SOURCE FIRST, THEN THE NUMBERS:
+#   This is the order the operator actually works in, and the modal is built for
+#   it: the card-number box is pinned below the list of choices and stays on
+#   screen the whole way down, and once the source is settled the modal puts the
+#   cursor straight into that box. (An older version of this util typed the
+#   numbers first to dodge a layout problem in the previous design — that is no
+#   longer needed and the natural order reads better.)
+
+# ============================================================
+# STEP 1 — OPEN THE MODAL FROM THE CHECKLIST TOOLBAR
+# The toolbar button sits next to "Add Card". centerElement keeps it out of the
+# bottom band where taps get stolen (R8).
+# ============================================================
+- scrollUntilVisible:
+    element:
+      id: "Open add cross-release cards form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Open add cross-release cards form"
+- extendedWaitUntil:
+    visible:
+      id: "Add cross-release cards"
+    timeout: 7000
+
+# ============================================================
+# STEP 2 — SAY WHICH SET THE CARDS WERE PRINTED IN
+# Returns once the modal shows its green "Source set: …" confirmation.
+# ============================================================
+- runFlow:
+    file: util-pick-cross-list-source.yaml
+    env:
+      SOURCE_SPORT: ${SOURCE_SPORT || 'E2E Test Sport ' + (WORKER_INDEX || 0)}
+      SOURCE_YEAR: ${SOURCE_YEAR || '2026'}
+      SOURCE_MANUFACTURER: ${SOURCE_MANUFACTURER || 'Topps'}
+      SOURCE_SET: ${SOURCE_SET}
+      SOURCE_VARIANT_TYPE: ${SOURCE_VARIANT_TYPE || 'Insert'}
+      SOURCE_VARIANT: ${SOURCE_VARIANT || 'Base'}
+
+# ============================================================
+# STEP 3 — TYPE THE CARD NUMBERS
+# Asserting the box actually READS what was typed (rather than just existing)
+# means a dropped keystroke fails here, not later as a confusing "0 linked".
+# ============================================================
+- tapOn:
+    id: "Card numbers to cross-list"
+- inputText: ${CARD_NUMBERS}
+- assertVisible:
+    id: "Card numbers to cross-list"
+    text: ${CARD_NUMBERS}
+
+# ============================================================
+# STEP 4 — SUBMIT
+# The submit button lives in the modal's own footer, which is always on screen
+# — a floating panel is tapped directly, never scrolled to (R8 fixed-element
+# exception, same as the Base-set picker's Cancel).
+# ============================================================
+- tapOn:
+    id: "Link cross-release cards"
+
+# The result panel appearing is this util's return contract. It reports how
+# many cards were linked either way, so this matches a success AND a
+# nothing-found run; the caller asserts which one it expected.
+- extendedWaitUntil:
+    visible:
+      text: ".*Linked [0-9]+ card.*"
+    timeout: 7000
