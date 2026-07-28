@@ -24,7 +24,8 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
-const { logBrowserOp, classifyBrowserError, challengeFlag } = require("../dist/observability");
+const { logBrowserOp, classifyBrowserError, challengeFlag, loginFailureOutcome } =
+  require("../dist/observability");
 
 let captured = [];
 const realLog = console.log;
@@ -172,6 +173,60 @@ describe("challengeFlag", () => {
   it("coerces a missing/non-boolean challengeDetected to false, never to a truthy string", () => {
     assert.equal(challengeFlag({}), false);
     assert.equal(challengeFlag({ challengeDetected: "yes" }), false);
+  });
+});
+
+describe("loginFailureOutcome — status contract (NEO-98)", () => {
+  // What this protects: 500 must mean "our own code threw" and nothing else.
+  // Before NEO-98, BSC answered a rejected password with 500 while SportLots
+  // answered the identical event with 400 — which is why the NEO-43 hang
+  // policy had to match 499|502|503|504 and EXCLUDE 500, leaving it with no
+  // crash coverage at all. If an ordinary rejection ever leaks back into 5xx,
+  // the policy starts paging on seller typos and someone switches it off.
+
+  it("maps a marketplace credential rejection to 422", () => {
+    assert.equal(loginFailureOutcome({ credentialRejected: true }, "Authentication failed").status, 422);
+  });
+
+  it("maps an unflagged failure to 502 — an upstream fault, not our crash", () => {
+    assert.equal(loginFailureOutcome({}, "Authentication failed").status, 502);
+  });
+
+  it("defaults to the PAGEABLE status whenever the flag is absent or false", () => {
+    // The safe direction, mirroring classifyBrowserError's "a new tag defaults
+    // to paging". A newly-added adapter failure branch that nobody classified
+    // must get noticed, not silently absorbed as user error.
+    for (const result of [{}, { credentialRejected: undefined }, { credentialRejected: false }]) {
+      assert.equal(loginFailureOutcome(result, "anything").status, 502);
+    }
+  });
+
+  it("forces error_class to invalid_credentials on a rejection", () => {
+    // Deriving it would not work: BSC's caller-facing string is the generic
+    // "Authentication failed" (deliberately — the raw Azure B2C message can
+    // echo the submitted identifier), which buckets as "other". The alert
+    // policies exclude `invalid_credentials` as a caller error, so leaving it
+    // "other" would page on typos through a different door than the status.
+    assert.equal(classifyBrowserError("Authentication failed"), "other");
+    assert.equal(
+      loginFailureOutcome({ credentialRejected: true }, "Authentication failed").errorClass,
+      "invalid_credentials",
+    );
+  });
+
+  it("still derives error_class normally on a non-rejection", () => {
+    assert.equal(loginFailureOutcome({}, "Login timed out").errorClass, "timeout");
+    assert.equal(loginFailureOutcome({}, "captcha required").errorClass, "challenge");
+    assert.equal(loginFailureOutcome({}, undefined).errorClass, undefined);
+  });
+
+  it("emits ONLY 422 or 502 — 400 and 500 belong to the routes, not this helper", () => {
+    const statuses = new Set(
+      [{ credentialRejected: true }, { credentialRejected: false }, {}].map(
+        (r) => loginFailureOutcome(r, "x").status,
+      ),
+    );
+    assert.deepEqual([...statuses].sort(), [422, 502]);
   });
 });
 
