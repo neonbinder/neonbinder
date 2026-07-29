@@ -1,6 +1,12 @@
 import { SecretsManagerService } from "../services/secrets-manager";
 import { LoginDiagnostic } from "../services/login-diagnostic";
+import { LoginOptions } from "../observability";
 import puppeteer, { Browser, Page } from "puppeteer";
+
+// Re-exported so adapters can import LoginOptions alongside AdapterResponse
+// from their existing "./base-adapter" import. `export type` keeps it erased
+// at runtime — no require() of ../observability is emitted into dist.
+export type { LoginOptions };
 
 export interface LoginCredentials {
   username: string;
@@ -28,6 +34,24 @@ export interface AdapterResponse {
    */
   retryable?: boolean;
   /**
+   * NEO-98: true ONLY when the marketplace demonstrably processed the
+   * credentials and refused them. Drives the HTTP status the login routes
+   * return: 422 (the seller's problem — never pages) vs 502 (an
+   * upstream/integration fault — pages).
+   *
+   * Leave it UNSET on any branch where you cannot tell the difference. Unset
+   * is the safe direction: it pages. Setting it wrongly is the expensive
+   * mistake, because it permanently classifies a marketplace outage as user
+   * error and Cloud Monitoring goes blind to it.
+   *
+   * A detected challenge page (diagnostic.challengeDetected) always CLEARS
+   * this — being bot-blocked is our problem, not the seller's.
+   *
+   * Not returned to the caller as-is; it is collapsed into the status code
+   * and into `error_class: "invalid_credentials"`.
+   */
+  credentialRejected?: boolean;
+  /**
    * Sanitized login-failure diagnostic. Set by adapters on `success: false`
    * when they could capture context from the stuck/challenge page. SAFE to
    * return to the caller: it is redacted of credentials and tokens by
@@ -49,7 +73,15 @@ export abstract class BaseAdapter {
   }
 
   abstract getHomeUrl(): string;
-abstract login(key: string): Promise<AdapterResponse>;
+
+  /**
+   * @param opts NEO-43 login options. `opts.canary` puts the adapter in
+   * synthetic-probe mode: it MUST skip the cached-token short-circuit and
+   * MUST NOT write a freshly-obtained token back to Secret Manager. See
+   * LoginOptions in ../observability for why both halves are mandatory.
+   * Omitting opts preserves the pre-NEO-43 behaviour exactly.
+   */
+  abstract login(key: string, opts?: LoginOptions): Promise<AdapterResponse>;
 
   protected async navigateToHome(): Promise<void> {
     try {

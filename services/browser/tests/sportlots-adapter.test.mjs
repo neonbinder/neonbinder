@@ -196,6 +196,10 @@ describe("SportlotsAdapter.login retry loop", () => {
       assert.equal(result.success, false);
       assert.equal(stub.loginCalls(), 1, "should give up after one attempt — validation failure is permanent");
       assert.match(result.error, /login validation failed/);
+      // NEO-98: SL handed us cookies and then bounced them straight back to
+      // the login form — it processed the sign-in and declined a session.
+      // A rejection (422), not an outage.
+      assert.equal(result.credentialRejected, true);
     } finally {
       restore();
     }
@@ -214,8 +218,145 @@ describe("SportlotsAdapter.login retry loop", () => {
       const result = await adapter.login("sportlots-credentials-user_test");
       assert.equal(result.success, false);
       assert.match(result.error, /Invalid credentials format/);
+      // NEO-98: SportLots never gets asked — the stored secret is incomplete.
+      // Caller-data problem, so 422 and no page.
+      assert.equal(result.credentialRejected, true);
     } finally {
       restore();
+    }
+  });
+});
+
+describe("SportlotsAdapter — NEO-98/NEO-100 rejection vs upstream fault", () => {
+  // The no-cookies branch is two different events wearing one error string,
+  // and it matters more here than anywhere else: SportLots answers a refused
+  // login with HTTP 200, never a status code, so this branch IS the real
+  // seller-typo path.
+  //
+  // The bodies below are VERBATIM captures from the live SportLots endpoint
+  // (2026-07-27), not invented fixtures. That matters: the whole response is
+  // ~115 bytes and carries the reason in a `?message=` JS redirect, which is
+  // nothing like the "re-served login page" one would reasonably assume.
+
+  // Malformed email.
+  const SL_REJECT_MALFORMED =
+    `<html><head> </head> <body onload='window.location = "\\?message=Not a valid Email Address";'> </body> </html>`;
+  // Well-formed but unknown account — and also what an incorrect/empty
+  // password returns. SportLots does not distinguish the two (no account
+  // enumeration), which is why one pattern covers both.
+  const SL_REJECT_UNKNOWN =
+    `<html><head> </head> <body onload='window.location = "\\?message=Invalid email address supplied";'> </body> </html>`;
+
+  it("flags a rejection on SportLots' real refusal envelopes", async () => {
+    for (const body of [SL_REJECT_MALFORMED, SL_REJECT_UNKNOWN]) {
+      const SportlotsAdapter = loadSportlotsAdapter();
+      const stub = scriptedLoginFetch([response({ status: 200, body })]);
+      const restore = stubFetch(stub);
+      try {
+        const adapter = new SportlotsAdapter(null);
+        const result = await adapter.login("sportlots-credentials-user_test");
+        assert.equal(result.success, false);
+        assert.equal(result.credentialRejected, true, `should be a rejection → 422: ${body.slice(0, 60)}`);
+      } finally {
+        restore();
+      }
+    }
+  });
+
+  it("does NOT retry a rejection SportLots already stated explicitly", async () => {
+    // NEO-100: replaying a login SportLots has explicitly refused just spends
+    // four more round trips to reach the same answer, and puts four more
+    // failed attempts on the seller's account.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = scriptedLoginFetch([response({ status: 200, body: SL_REJECT_UNKNOWN })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(stub.loginCalls(), 1, "a confirmed rejection must not be retried");
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT flag a rejection when SL returned an empty body", async () => {
+    // The blank/slow response this branch's retry exists for. Must stay
+    // pageable (502) — this is the direction that matters, because silently
+    // calling an SL outage 'user error' is exactly the blindness NEO-98 is
+    // meant to remove.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = scriptedLoginFetch([response({ status: 200, body: "   " })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.credentialRejected, true, "empty body is an upstream fault → 502");
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT flag a rejection on an UNRECOGNISED message, and still retries it", async () => {
+    // NEO-100's key safety property. If SportLots changes its login flow and
+    // starts emitting a message we don't know, that must surface as a 502 and
+    // page — never be absorbed as a wave of seller typos, which is precisely
+    // how a broken integration would hide. Under the old body-emptiness
+    // heuristic this exact response was classified as a rejection.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const body = `<html><head> </head> <body onload='window.location = "\\?message=Scheduled maintenance in progress";'> </body> </html>`;
+    const stub = scriptedLoginFetch([response({ status: 200, body })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.notEqual(result.credentialRejected, true, "unknown message must stay pageable → 502");
+      assert.ok(stub.loginCalls() > 1, "and must still be retried, since it may be transient");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a challenge page VETOES the rejection flag even though a page was served", async () => {
+    // The invariant documented on AdapterResponse.credentialRejected: being
+    // bot-blocked is our problem. A Cloudflare interstitial is a non-empty
+    // body with no cookies, so without the veto it would look exactly like a
+    // typo and quietly stop paging — the failure mode NEO-98 exists to close.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = scriptedLoginFetch([
+      response({ status: 200, body: "<html><body>Attention Required! Cloudflare</body></html>" }),
+    ]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-user_test");
+      assert.equal(result.success, false);
+      assert.equal(result.diagnostic.challengeDetected, true, "sanity: should read as a challenge");
+      assert.notEqual(result.credentialRejected, true, "a block page must stay pageable → 502");
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT flag a rejection on upstream 5xx or rate limiting", async () => {
+    for (const status of [500, 503, 429]) {
+      const SportlotsAdapter = loadSportlotsAdapter();
+      const stub = scriptedLoginFetch([response({ status })]);
+      const restore = stubFetch(stub);
+      try {
+        const adapter = new SportlotsAdapter(null);
+        const result = await adapter.login("sportlots-credentials-user_test");
+        assert.equal(result.success, false);
+        assert.notEqual(
+          result.credentialRejected,
+          true,
+          `HTTP ${status} from SportLots is an outage, not a typo`,
+        );
+      } finally {
+        restore();
+      }
     }
   });
 });
@@ -465,6 +606,103 @@ describe("SportlotsAdapter.cleanup — pure-HTTP no-op safety", () => {
       await assert.doesNotReject(adapter.cleanup(), "SL cleanup must be idempotent");
     } finally {
       globalThis.fetch = original;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-43 — synthetic canary mode
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter.login — NEO-43 canary mode", () => {
+  it("BYPASSES a still-valid cached cookie and POSTs the real signin form", async () => {
+    // CACHED_TOKEN_TTL_MS is 30 DAYS. A canary that honoured the cache would
+    // exercise the real SportLots login roughly once a month — blind to
+    // exactly the login hang this ticket exists to detect.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "user@example.com",
+        password: "pw",
+        token: "sl_session=cached; path=/",
+        expiresAt: Date.now() + 29 * 24 * 60 * 60 * 1000, // comfortably valid
+      },
+    });
+    const stub = scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-canary", { canary: true });
+      assert.equal(result.success, true);
+      assert.equal(
+        stub.loginCalls(),
+        1,
+        "canary must POST the real signin form even with a valid cached cookie",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("does NOT write the fresh cookie back to Secret Manager", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: { username: "user@example.com", password: "pw" },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]));
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-canary", { canary: true });
+      assert.equal(result.success, true);
+      assert.deepEqual(updates, [], "canary must never call updateCredentials");
+    } finally {
+      restore();
+    }
+  });
+
+  it("caps retries at 2 attempts instead of 5 so a scheduled probe can't burst", async () => {
+    // NEO-29: a burst of serialized marketplace logins is what tripped bot
+    // protection. A canary firing on a schedule with the full 5-attempt
+    // budget would recreate that shape automatically, forever.
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const stub = scriptedLoginFetch([response({ status: 500 })]);
+    const restore = stubFetch(stub);
+    try {
+      const adapter = new SportlotsAdapter(null);
+      const result = await adapter.login("sportlots-credentials-canary", { canary: true });
+      assert.equal(result.success, false);
+      assert.equal(stub.loginCalls(), 2, "canary retry budget must be 2, not MAX_ATTEMPTS (5)");
+    } finally {
+      restore();
+    }
+  });
+
+  it("without the flag, behaviour is unchanged: full 5-attempt budget and the cookie IS stored", async () => {
+    // Regression guard — the flag must be purely additive.
+    const burstStub = scriptedLoginFetch([response({ status: 500 })]);
+    let restore = stubFetch(burstStub);
+    try {
+      const A = loadSportlotsAdapter();
+      const r = await new A(null).login("sportlots-credentials-user_test");
+      assert.equal(r.success, false);
+      assert.equal(burstStub.loginCalls(), 5, "non-canary must retain the full 5-attempt budget");
+    } finally {
+      restore();
+    }
+
+    const updates = [];
+    const B = loadSportlotsAdapter({
+      credentials: { username: "user@example.com", password: "pw" },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    restore = stubFetch(scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]));
+    try {
+      const r = await new B(null).login("sportlots-credentials-user_test");
+      assert.equal(r.success, true);
+      assert.equal(updates.length, 1, "non-canary success must still store the cookie");
+      assert.ok(updates[0].creds.token.includes("sl_session=abc123"));
+    } finally {
+      restore();
     }
   });
 });

@@ -1,6 +1,6 @@
 import { Page } from "puppeteer";
 import crypto from "node:crypto";
-import { BaseAdapter, AdapterResponse } from "./base-adapter";
+import { BaseAdapter, AdapterResponse, LoginOptions } from "./base-adapter";
 import { SecretsManagerService } from "../services/secrets-manager";
 import {
   buildLoginDiagnostic,
@@ -177,7 +177,10 @@ export class BSCAdapter extends BaseAdapter {
   private async httpLogin(
     email: string,
     password: string,
-  ): Promise<{ token: string } | { error: string; diagnostic?: LoginDiagnostic }> {
+  ): Promise<
+    | { token: string }
+    | { error: string; diagnostic?: LoginDiagnostic; credentialRejected?: boolean }
+  > {
     const secrets: DiagnosticSecrets = { email, password };
     const jar = new B2CCookieJar();
 
@@ -273,7 +276,20 @@ export class BSCAdapter extends BaseAdapter {
         { url: BSC_SELF_ASSERTED_URL, rawText: selfAssertedBody },
         secrets,
       );
-      return { error: `Authentication failed`, diagnostic };
+      // NEO-98: this is the ONE branch in the whole B2C exchange where BSC
+      // demonstrably evaluated the credentials and said no — it parsed as
+      // B2C's own {"status":"<non-200>"} envelope. Every other failure below
+      // (and above) is an integration fault and must stay pageable.
+      //
+      // Two carve-outs, both deliberate:
+      //   - selfAssertedStatus === undefined means the body did NOT parse as
+      //     the envelope at all. That is B2C returning something unexpected,
+      //     not a rejection, so it does NOT count.
+      //   - a challenge page means we were bot-blocked before the password
+      //     was ever judged. Our problem, not the seller's.
+      const credentialRejected =
+        selfAssertedStatus !== undefined && diagnostic.challengeDetected !== true;
+      return { error: `Authentication failed`, diagnostic, credentialRejected };
     }
 
     // --- Step 3: GET /api/<api>/confirmed → 302 with #code= ----------------
@@ -415,16 +431,24 @@ export class BSCAdapter extends BaseAdapter {
       .replace(/<[^>]*>/g, " ");
   }
 
-  async login(key: string): Promise<AdapterResponse> {
+  async login(key: string, opts?: LoginOptions): Promise<AdapterResponse> {
     const secretsManager = new SecretsManagerService();
     const credentials = await secretsManager.getCredentials(key);
+    const canary = opts?.canary === true;
 
     // --- Cache-hit path: validate the stored token, never touch a browser --
     //
     // BSC stores the bare token (no "Bearer " prefix); fetchSellerProfile
     // prepends "Bearer " on the validation request. A still-valid cached token
     // short-circuits the whole B2C exchange.
+    //
+    // NEO-43: the canary skips this entirely. A cache hit costs ~1.1s and
+    // proves only that a previously-issued token is still accepted — it does
+    // NOT exercise the B2C authorize/SelfAsserted/confirmed/token exchange,
+    // which is the part that actually breaks. A canary that short-circuits
+    // here would report green straight through a real outage.
     if (
+      !canary &&
       credentials.token &&
       credentials.expiresAt &&
       credentials.expiresAt > Date.now()
@@ -465,13 +489,22 @@ export class BSCAdapter extends BaseAdapter {
       return {
         success: false,
         error: `Missing credentials for ${this.siteName}`,
+        // NEO-98: the stored secret is incomplete, so BSC never gets asked.
+        // Not a marketplace verdict, but unambiguously a caller-data problem
+        // rather than a service fault — 422, and it must not page.
+        credentialRejected: true,
       };
     }
 
     try {
       const result = await this.httpLogin(email, password);
       if ("error" in result) {
-        return { success: false, error: result.error, diagnostic: result.diagnostic };
+        return {
+          success: false,
+          error: result.error,
+          diagnostic: result.diagnostic,
+          credentialRejected: result.credentialRejected,
+        };
       }
 
       const token = result.token;
@@ -480,12 +513,23 @@ export class BSCAdapter extends BaseAdapter {
       // Persist the bare token + expiry exactly as before so the cache-hit
       // path and the Convex BSC API adapter (which prepends "Bearer ") work
       // unchanged.
-      await secretsManager.updateCredentials(key, {
-        ...credentials,
-        token,
-        expiresAt,
-      });
-      console.log(`[BSC Adapter] Stored token in Secret Manager for ${this.siteName}`);
+      //
+      // NEO-43: the canary must NOT write back. Every write adds a new,
+      // permanently-enabled Secret Manager version ($0.06/version/month) —
+      // at canary cadence that is thousands of versions a month, costing more
+      // than the rest of this infrastructure combined. Skipping it also means
+      // no token is ever cached on the canary key, so the cache-skip above is
+      // structurally guaranteed rather than merely flag-dependent.
+      if (canary) {
+        console.log(`[BSC Adapter] canary run — skipping token write-back for ${this.siteName}`);
+      } else {
+        await secretsManager.updateCredentials(key, {
+          ...credentials,
+          token,
+          expiresAt,
+        });
+        console.log(`[BSC Adapter] Stored token in Secret Manager for ${this.siteName}`);
+      }
 
       // Capture sellerId/storeName in the same response shape as the cached
       // path. Profile failure here is non-fatal — we already have a valid
