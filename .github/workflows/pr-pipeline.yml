@@ -64,10 +64,20 @@ jobs:
             browser:
               - 'services/browser/**'
 
-      # NEO-87: is this PR *exclusively* a dependency-manifest bump? If so the
-      # 8-worker Maestro matrix is pure cost — a lockfile bump can't change app
-      # behavior that lint + unit don't already cover — so `e2e` skips and
-      # `ci-gate` accepts that skip (and ONLY that skip; see the gate below).
+      # NEO-87: is this PR *exclusively* a dependency-manifest bump? If so `e2e`
+      # skips and `ci-gate` accepts that skip (and ONLY that skip; see the gate
+      # below).
+      #
+      # This is a cost/risk TRADEOFF, not a zero-risk optimization (NEO-103
+      # corrects the original claim that a lockfile bump "cannot alter app
+      # behavior that lint + unit don't already cover" — that was overstated).
+      # A dependency bump ships runtime code to users, and semver is a promise
+      # rather than a guarantee; this repo has already had a grouped bump break
+      # E2E badly enough that PR #9 was closed over it. What the skip buys is
+      # ~25 min of 8-worker matrix on the common case. What it costs is browser-
+      # level verification. When that trade looks wrong for a specific PR — a
+      # broad bump, or one touching auth / the Convex client / React — apply the
+      # `run-e2e` label below to force the matrix back on.
       #
       # Deliberately narrow: manifests ONLY. CI-infrastructure bumps that
       # Dependabot also raises — `.github/workflows/**` and
@@ -101,7 +111,27 @@ jobs:
               return
             fi
 
-            local files offenders
+            local labels files offenders
+
+            # NEO-103 override. Read live from the API rather than from
+            # `github.event.pull_request.labels`, because the event payload is
+            # frozen at trigger time and is replayed verbatim on a re-run — a
+            # label added after the fact would never be seen. Querying here means
+            # "label the PR, hit re-run" works, which is the whole point.
+            #
+            # One-way by construction: this can only ever force the matrix ON.
+            # There is no label that turns it off, and a failed lookup also
+            # leaves E2E running, so the escape hatch can't become a bypass.
+            labels=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" \
+              --jq '.labels[].name') || {
+                echo "::warning::could not read PR labels — E2E runs."
+                return
+              }
+
+            if printf '%s\n' "$labels" | grep -qxF 'run-e2e'; then
+              echo "🔬 \`run-e2e\` label present — forcing the full matrix regardless of paths (NEO-103)."
+              return
+            fi
             files=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" \
               --paginate --jq '.[].filename') || {
                 echo "::warning::could not list PR files — E2E runs."
@@ -137,10 +167,25 @@ jobs:
   # browser preview, so the E2E suite (invoked next) hits the PR's browser code.
   # Skipped for web-only PRs and for workflow_dispatch (no PR ⇒ no pr-<N>
   # preview) → E2E then uses the canonical dev browser default.
+  #
+  # NEO-104: also skipped on a dependency-manifest-only PR. E2E is the ONLY
+  # consumer of this wiring, so when `deps_only` skips the matrix this job spends
+  # ~3.5 min (resolve Cloud Run host → poll Vercel → resolve the Convex slug →
+  # wait for the pr-<N> revision → set + read-back the env var) wiring up a suite
+  # that never runs.
+  #
+  # Note what is deliberately NOT skipped: browser.yml's `deploy-preview` and
+  # `preview-login-probe` still run. That probe does a live BSC + SportLots login
+  # round-trip against the PR's own deployed browser code, and once E2E is gone
+  # it is the only real integration coverage a browser deps PR has — it is what
+  # makes those PRs safe to merge at all. Only the unused Convex wiring goes.
   wire-browser-url:
     name: Wire NEONBINDER_BROWSER_URL → pr-<N> browser preview
     needs: changes
-    if: github.event_name == 'pull_request' && needs.changes.outputs.browser == 'true'
+    if: |
+      github.event_name == 'pull_request'
+      && needs.changes.outputs.browser == 'true'
+      && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Job-scoped perms: id-token (WIF for gcloud), deployments (resolve Vercel
