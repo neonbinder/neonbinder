@@ -157,6 +157,42 @@ describe("ResilientEntityColumn — stalled-read backstop (NEO-83)", () => {
     expect(mountSpy).toHaveBeenCalledTimes(2 + MAX_RESUBSCRIBE_ATTEMPTS);
   });
 
+  it("keeps the column mounted after giving up, and self-heals on a late value", () => {
+    state.items = undefined;
+    const { rerender, getByText, queryByText } = render(columnElement());
+
+    // Drive it all the way to the give-up state.
+    for (let i = 0; i <= MAX_RESUBSCRIBE_ATTEMPTS; i++) {
+      act(() => {
+        vi.advanceTimersByTime(SELECTOR_OPTIONS_STALL_BACKSTOP_MS);
+      });
+    }
+    expect(getByText(/Couldn't load/i)).toBeTruthy();
+
+    // The banner must render ALONGSIDE the column, not instead of it. If
+    // EntityColumn were unmounted here its subscription would be dropped and no
+    // late value could ever arrive — the terminal dead end this guards against.
+    expect(getByText("selector-probe")).toBeTruthy();
+    const mountsAtGiveUp = mountSpy.mock.calls.length;
+
+    // A value lands late on the SAME subscription — no Retry, no remount.
+    state.items = [{ _id: "vt1", value: "Base" }];
+    act(() => {
+      rerender(columnElement());
+    });
+
+    expect(queryByText(/Couldn't load/i)).toBeNull(); // healed itself
+    expect(getByText("selector-probe")).toBeTruthy();
+    expect(mountSpy).toHaveBeenCalledTimes(mountsAtGiveUp); // never remounted
+
+    // And it stays healed — the backstop doesn't re-trip on a resolved read.
+    act(() => {
+      vi.advanceTimersByTime(SELECTOR_OPTIONS_STALL_BACKSTOP_MS * 3);
+    });
+    expect(queryByText(/Couldn't load/i)).toBeNull();
+    expect(mountSpy).toHaveBeenCalledTimes(mountsAtGiveUp);
+  });
+
   it("resolves fast with no backstop, no remount, and no flicker", () => {
     state.items = [{ _id: "vt1", value: "Base" }]; // read delivers immediately
     const { getByText, queryByText } = render(columnElement());

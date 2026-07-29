@@ -35,8 +35,11 @@ const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
  * "is this card autographed", not two disagreeing controls).
  *
  * Display-only: card images (imageUrls or placeholder), and the
- * inherited-from-set hierarchy (sport→…→variant). Per-card override of the
- * hierarchy levels themselves is deferred to NEO-21 (cross-release home set).
+ * inherited-from-set hierarchy (sport→…→variant). The hierarchy levels stay
+ * read-only: NEO-21 resolved "this card belongs somewhere else too" with the
+ * additive "Also appears in" section below (cardCrossListings) rather than by
+ * letting a card override its own home set, so `selectorOptionId` remains the
+ * single source of truth for release year, SKU and provenance.
  */
 
 // Attribute tokens the panel exposes as toggle chips. Any other token already
@@ -117,6 +120,15 @@ export default function CardDetailPanel({
 }: CardDetailPanelProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const setCardFeature = useMutation(api.selectorOptions.setCardFeature);
+  // NEO-21: every guest set this card is cross-listed into. A property of the
+  // card itself, so it renders whether the panel was opened from the card's
+  // home checklist or from one of its guest checklists.
+  const crossListings = useQuery(api.selectorOptions.getCrossListingsForCard, {
+    cardChecklistId: card._id,
+  });
+  const removeCrossListing = useMutation(
+    api.selectorOptions.removeCrossListing,
+  );
   const cardNameInputRef = useRef<HTMLInputElement | null>(null);
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // field rather than the first input in the drawer (see useFieldTestClass).
@@ -524,8 +536,9 @@ export default function CardDetailPanel({
             />
           </div>
 
-          {/* Inherited from set (read-only). Per-card override of these levels
-              is NEO-21's scope; here they're context only. */}
+          {/* Inherited from set (read-only) — where this card was printed.
+              Cross-release membership is additive and lives in "Also appears
+              in" below; these levels are never overridden per-card. */}
           {inheritedLevels.length > 0 && (
             <div>
               <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
@@ -544,6 +557,40 @@ export default function CardDetailPanel({
                   </div>
                 ))}
               </dl>
+            </div>
+          )}
+
+          {/* NEO-21: guest sets this card also completes. Unlinking here drops
+              only the junction row — the card itself stays in the set it was
+              printed in, which is why this is separate from any delete. */}
+          {crossListings && crossListings.length > 0 && (
+            <div>
+              <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+                Also appears in
+              </label>
+              <ul className="rounded border border-gray-200 dark:border-gray-700 divide-y divide-gray-100 dark:divide-gray-700">
+                {crossListings.map((link) => (
+                  <li
+                    key={link._id}
+                    className="flex items-center justify-between px-2.5 py-1.5 text-xs gap-3"
+                  >
+                    <span className="text-gray-500 dark:text-gray-400 truncate">
+                      {link.setLabel}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void removeCrossListing({ crossListingId: link._id });
+                      }}
+                      aria-label={`Unlink card from ${link.setLabel}`}
+                      title="Remove this card from that set — the card itself is not deleted"
+                      className="px-2 py-0.5 rounded text-[#FF2EB3] hover:bg-[#FF2EB3]/10 border border-transparent hover:border-[#FF2EB3]/50 shrink-0"
+                    >
+                      Unlink
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 
