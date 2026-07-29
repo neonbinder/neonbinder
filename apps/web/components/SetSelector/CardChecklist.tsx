@@ -10,9 +10,36 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
 import ChecklistSourceFilter, {
+  Chip,
   type SourceChips,
   type SourceFilter,
 } from "./ChecklistSourceFilter";
+import CrossListingImportModal from "./CrossListingImportModal";
+
+/**
+ * NEO-21: natural card-number ordering, mirroring `compareCardNumbers` in
+ * convex/selectorOptions.ts. Deliberately duplicated rather than imported —
+ * convex/ is a separate deploy/typecheck unit and the frontend shouldn't pull
+ * server modules in for twelve lines.
+ *
+ * This replaced a `sortOrder` sort. `sortOrder` is stamped per-checklist, so a
+ * cross-listed guest card carries the value it was given in its HOME set,
+ * which is meaningless here — sorting by it scattered guest rows to arbitrary
+ * positions and undid the merge order the backend query already returns.
+ */
+function compareCardNumbers(a: string, b: string): number {
+  const aMatch = a.match(/^(\d+)(.*)/);
+  const bMatch = b.match(/^(\d+)(.*)/);
+  if (aMatch && bMatch) {
+    const aNum = parseInt(aMatch[1], 10);
+    const bNum = parseInt(bMatch[1], 10);
+    if (aNum !== bNum) return aNum - bNum;
+    return aMatch[2].localeCompare(bMatch[2]);
+  }
+  if (aMatch && !bMatch) return -1;
+  if (!aMatch && bMatch) return 1;
+  return a.localeCompare(b);
+}
 
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;
@@ -113,12 +140,17 @@ export default function CardChecklist({
   // point at a different card after any list mutation.
   const [selectedCardId, setSelectedCardId] =
     useState<Id<"cardChecklist"> | null>(null);
+  // NEO-21: let the operator collapse the checklist back to just this set's
+  // own cards. Local to this component — nothing above needs it.
+  const [hideCrossListed, setHideCrossListed] = useState(false);
+  const [showCrossListingModal, setShowCrossListingModal] = useState(false);
 
   // Reset filter + close the detail panel when the variant changes — chips and
   // selection for one variant don't apply to another.
   useEffect(() => {
     setSourceFilter({ bsc: null, sportlots: null });
     setSelectedCardId(null);
+    setHideCrossListed(false);
   }, [variantId]);
 
   // Virtuoso scroll handle + a one-shot flag so when the user adds a card
@@ -247,11 +279,13 @@ export default function CardChecklist({
     if (targetId && count > prevCardCountRef.current && cards) {
       const idx = cards.findIndex((c) => c._id === targetId);
       if (idx >= 0) {
-        // The data prop on Virtuoso below is sortedCards, which sorts by
-        // sortOrder ascending. cards from Convex carry sortOrder fields,
-        // so a sort-aware index is needed. Compute it via cardsBySortOrder.
+        // The data prop on Virtuoso below is sortedCards, so the scroll index
+        // has to be computed against the SAME ordering. NEO-21 changed that
+        // ordering from sortOrder to natural card-number order; leaving this
+        // on sortOrder would scroll to whatever row happened to sit at the
+        // old index.
         const sortedIdx = [...cards]
-          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber))
           .findIndex((c) => c._id === targetId);
         if (sortedIdx >= 0) {
           requestAnimationFrame(() => {
@@ -287,10 +321,20 @@ export default function CardChecklist({
         ) {
           return false;
         }
+        if (hideCrossListed && c.isCrossListed) return false;
         return true;
       })
-      .sort((a, b) => a.sortOrder - b.sortOrder);
-  }, [cards, sourceFilter]);
+      .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
+  }, [cards, sourceFilter, hideCrossListed]);
+
+  // Only worth showing the toggle when this checklist actually has visiting
+  // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
+  // `cards`, not `sortedCards` — otherwise hiding them would remove the very
+  // control needed to bring them back.
+  const hasCrossListed = useMemo(
+    () => (cards ?? []).some((c) => c.isCrossListed),
+    [cards],
+  );
   const lastSynced = useMemo(() => {
     if (!cards || cards.length === 0) return null;
     return Math.max(
@@ -353,6 +397,13 @@ export default function CardChecklist({
                 aria-label="Open add card form"
               >
                 Add Card
+              </NeonButton>
+              <NeonButton
+                secondary
+                onClick={() => setShowCrossListingModal(true)}
+                aria-label="Open add cross-release cards form"
+              >
+                Add Cross-Release Cards
               </NeonButton>
               {sortedCards.length > 0 && (
                 <NeonButton
@@ -449,6 +500,23 @@ export default function CardChecklist({
           onChange={setSourceFilter}
         />
 
+        {/* NEO-21: only rendered when guest cards are actually present, so a
+            normal single-release checklist is visually unchanged. */}
+        {hasCrossListed && (
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-24 shrink-0">
+              Cross-release
+            </span>
+            <Chip
+              label="Hide cross-release cards"
+              ariaLabel={`Hide cross-release cards${hideCrossListed ? " (on)" : ""}`}
+              title="Show only cards printed in this set"
+              active={hideCrossListed}
+              onClick={() => setHideCrossListed((v) => !v)}
+            />
+          </div>
+        )}
+
         {sortedCards.length === 0 ? (
           <div className="text-center py-6">
             <p className="text-gray-500 dark:text-gray-400 mb-4">
@@ -510,6 +578,12 @@ export default function CardChecklist({
           hasNext={selectedIndex >= 0 && selectedIndex < sortedCards.length - 1}
         />
       )}
+
+      <CrossListingImportModal
+        isOpen={showCrossListingModal}
+        onClose={() => setShowCrossListingModal(false)}
+        targetVariantId={variantId}
+      />
 
       {pendingPreview?.batchId && (
         <EntityReviewWizard
