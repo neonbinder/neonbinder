@@ -101,6 +101,50 @@ export function classifyBrowserError(raw: string | undefined): string | undefine
 }
 
 /**
+ * NEO-98: decide the HTTP status and error_class for a failed login.
+ *
+ * The contract this establishes, and why it exists:
+ *
+ *   422 — the marketplace processed the credentials and refused them (or the
+ *         stored secret was incomplete). The seller's problem. NEVER pages.
+ *   502 — we could not complete the exchange: the marketplace returned
+ *         something unusable, was unreachable, or blocked us. Our problem.
+ *         PAGES.
+ *   500 — reserved for an uncaught throw in our own code (set by the routes'
+ *         catch blocks, not here). PAGES.
+ *
+ * Before this, BSC answered a rejection with 500 and SportLots with 400. That
+ * asymmetry is what forced the NEO-43 hang policy to match 499|502|503|504
+ * and explicitly EXCLUDE 500 — leaving it with no crash coverage at all,
+ * because a container dying mid-request looked exactly like a typo'd
+ * password. Splitting rejection (422) from fault (502) is what lets that
+ * policy widen to >=500.
+ *
+ * Note the default: anything the adapter could not positively identify as a
+ * rejection returns 502 and therefore pages. Same safe direction as
+ * classifyBrowserError above — a new, unclassified failure gets noticed
+ * rather than silently absorbed as user error.
+ *
+ * `raw` is passed separately because the two routes assemble it differently
+ * (BSC falls back to `message`). It is only ever fed to classifyBrowserError,
+ * which returns a closed set of literals and never echoes it.
+ */
+export function loginFailureOutcome(
+  result: { credentialRejected?: boolean },
+  raw: string | undefined,
+): { status: 422 | 502; errorClass: string | undefined } {
+  if (result.credentialRejected) {
+    // Force the tag rather than deriving it. BSC's caller-facing string is
+    // deliberately the generic "Authentication failed", which classifies as
+    // "other" — and the alert policies exclude `invalid_credentials` as a
+    // caller error, so leaving it "other" would keep paging on seller typos
+    // through a different door than the status code.
+    return { status: 422, errorClass: "invalid_credentials" };
+  }
+  return { status: 502, errorClass: classifyBrowserError(raw) };
+}
+
+/**
  * Options threaded from the HTTP layer into an adapter's login().
  */
 export interface LoginOptions {

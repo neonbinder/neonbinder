@@ -1,0 +1,198 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Cross-release — 'Unlink' removes a visiting card from this checklist without deleting it from the set it was printed in"
+tags:
+  - set-selector
+  - regression
+---
+# ============================================================================
+# R1 — ONE FEATURE: detaching a visiting card is a REMOVAL, not a DELETION.
+#   A card that is only visiting a checklist must not be destroyed by tidying
+#   that checklist up — it still belongs to the product it was physically
+#   printed in (and may be completing other checklists too). So the row's
+#   destructive button says "Unlink", and using it may only sever the guest
+#   appearance. This flow proves that promise.
+#
+# THE CONCRETE ASSERTIONS (R2 — every one of these fails if the promise is
+# broken, and no step is conditional):
+#   1. The visiting row's button reads "Unlink", not "Del" — the operator is
+#      told what they are about to do before they do it.
+#   2. It still asks for confirmation first ("Confirm?").
+#   3. After confirming, the card is gone from the guest checklist — and since
+#      it was that checklist's only content, the checklist falls back to its
+#      empty message.
+#   4. The "Hide cross-release cards" control disappears too. That control only
+#      exists while the checklist actually holds a visiting card, so its
+#      absence proves the guest appearance was genuinely severed rather than
+#      merely hidden from view.
+#   5. THE POINT: reopening the set the card was printed in shows the card
+#      still there, intact. If unlinking had deleted the card (the bug this
+#      guards against), this is where the flow would fail.
+#
+# WHY A DEDICATED HOME SET (data isolation + repeatability):
+#   Everything lives in this worker's private playground,
+#   "E2E Test Sport <worker>" → 2026 → Topps:
+#     xds-<worker>  the HOME set — used ONLY by this flow, which deletes its
+#                   card again at the end, so the set holds at most one card
+#                   and step 5's re-check never has to hunt through a long list
+#     xdg-<worker>  the GUEST set — whose only content is the visiting card
+#
+# R3 — DEDUP: the import itself is proved by
+#   cross-release-card-appears-in-guest-checklist.yaml and the show/hide filter
+#   by cross-release-hide-toggle-filters-guest-cards.yaml. Those two flows also
+#   detach at the end, but purely as housekeeping — this is the only flow that
+#   makes a claim about what detaching means.
+# R9 — navigation via the shared drill utils; the modal via
+#   util-cross-list-cards.yaml.
+# R5 — 7s waits throughout; no marketplace is contacted (custom subtree).
+# R7 — both the guest checklist and the home set are left exactly as found.
+#
+# KNOWN COVERAGE GAP (deliberate, reported rather than hacked around): the card
+#   detail panel also lists "Also appears in …" with its own per-set Unlink
+#   button. That section sits near the bottom of a side panel that Maestro can
+#   only reach with a hand-tuned number of drag gestures, and the count cannot
+#   be established without running the flow. It is left for a follow-up once
+#   this flow has run on CI.
+# ============================================================================
+
+# Step 1 — open the app, signed in, on the Set Selector.
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# Step 2 — PUT A CARD IN ITS HOME SET
+# ============================================================
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "xds-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "957-${ATTEMPT_ID}"
+      PLAYER_NAME: "Cross Unlink ${ATTEMPT_ID}"
+
+# ============================================================
+# Step 3 — OPEN THE GUEST CHECKLIST AND BORROW THE CARD
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xdg-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+- runFlow:
+    file: util-cross-list-cards.yaml
+    env:
+      SOURCE_SET: "xds-${WORKER_INDEX || 0}"
+      CARD_NUMBERS: "957-${ATTEMPT_ID}"
+- assertVisible:
+    text: ".*Linked 1 card.*"
+- tapOn:
+    id: "Cancel cross-release import"
+- extendedWaitUntil:
+    notVisible:
+      id: "Add cross-release cards"
+    timeout: 7000
+
+# The visiting row exists — the precondition for the unlink. The scroll is the
+# assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: "#957-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# ============================================================
+# Step 4 — ASSERTION 1: the destructive button reads "Unlink", not "Del"
+# The scroll IS that assertion (R6): it looks for the word the operator sees.
+# On an ordinary row that word is "Del", so this step fails outright if the row
+# is offering a delete. The tap then goes by the button's full name, which also
+# ties the action to this specific card. centerElement keeps the button clear
+# of the bottom band where taps get stolen (R8).
+# ============================================================
+- scrollUntilVisible:
+    element:
+      text: "Unlink"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Remove card 957-${ATTEMPT_ID} from this set"
+
+# ── ASSERTION 2: it asks before doing anything ──────────────────────────────
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm remove card 957-${ATTEMPT_ID} from this set"
+
+# ── ASSERTION 3: the visiting card has left this checklist ──────────────────
+# It was this checklist's only content, so the set falls back to its empty
+# message. The scroll IS the assertion (R6).
+- extendedWaitUntil:
+    notVisible: "#957-${ATTEMPT_ID}"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "No cards in this checklist yet."
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+
+# ── ASSERTION 4: the guest appearance is really severed, not just hidden ────
+# The "Hide cross-release cards" control only exists while this checklist holds
+# a visiting card, and it sits immediately ABOVE the empty message we just
+# centred — so if it were still there it would be plainly in view. Its absence
+# here is therefore a real absence, not a scrolled-past one.
+- assertNotVisible:
+    id: "Hide cross-release cards"
+
+# ============================================================
+# Step 5 — THE POINT: THE CARD IS STILL IN THE SET IT WAS PRINTED IN
+# Reopen the home set's checklist from scratch and find the card there.
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xds-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ── ASSERTION 5: still here, with its name intact. The scroll is the
+# assertion (R6); the name check confirms it is the same card, not a stub. ───
+- scrollUntilVisible:
+    element:
+      text: "#957-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+- assertVisible: "Cross Unlink ${ATTEMPT_ID}"
+
+# ============================================================
+# CLEANUP (R7) — remove this attempt's card from its home set so the set stays
+# a one-card fixture for the next run. This is an ordinary card delete on a
+# private per-worker set, not a cross-release action.
+# ============================================================
+- scrollUntilVisible:
+    element:
+      id: "Delete card 957-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Delete card 957-${ATTEMPT_ID}"
+- tapOn:
+    id: "Confirm delete card 957-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    notVisible: "#957-${ATTEMPT_ID}"
+    timeout: 7000

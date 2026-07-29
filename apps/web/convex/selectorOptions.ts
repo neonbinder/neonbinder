@@ -7,7 +7,7 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import {
   recordAdapterCall,
@@ -471,6 +471,48 @@ async function resolveUnknownsAndStartBatch(
   return { unknownPlayers, unknownTeams, batchId };
 }
 
+/**
+ * Human-readable label for a set node ("2021 Score Football"), built from its
+ * own parent chain. NEO-21 needs it on both sides of a cross-listing — the
+ * guest checklist labels each visiting card's home set, the card detail lists
+ * every guest set it appears in. Kept next to its two callers rather than
+ * generalized, same as `findSetNameValue`.
+ */
+async function buildSetLabel(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<string> {
+  const byLevel = new Map<string, string>();
+  let cursorId: Id<"selectorOptions"> | undefined = selectorOptionId;
+  while (cursorId) {
+    const node = await ctx.db.get(cursorId);
+    if (!node) break;
+    byLevel.set(node.level, node.value);
+    cursorId = node.parentId;
+  }
+  return ["year", "manufacturer", "setName"]
+    .map((level) => byLevel.get(level))
+    .filter((value): value is string => !!value)
+    .join(" ");
+}
+
+/**
+ * One row of a rendered checklist: a card, plus the guest-side annotations set
+ * only when it's visiting from another product.
+ *
+ * Declared as ONE type covering both cases on purpose. The handler builds the
+ * result as `[...homeCards, ...guestCards]`, and without this the inferred
+ * element type is a union — home rows lack the three fields entirely, so
+ * `card.isCrossListed` is a type error for every *consumer* of this query even
+ * though the returns validator allows it. The client type is inferred from the
+ * handler's return, not from the validator.
+ */
+type CardChecklistRow = Doc<"cardChecklist"> & {
+  isCrossListed?: boolean;
+  crossListingId?: Id<"cardCrossListings">;
+  homeSetLabel?: string;
+};
+
 export const getCardChecklist = query({
   args: { selectorOptionId: v.id("selectorOptions") },
   returns: v.array(
@@ -520,16 +562,56 @@ export const getCardChecklist = query({
       sku: v.optional(v.string()),
       sortOrder: v.number(),
       lastUpdated: v.number(),
+      // NEO-21: set only on guest rows — cards printed in another product
+      // that also complete this checklist. `selectorOptionId` still points at
+      // the home set, so the UI needs the label to say where it came from.
+      isCrossListed: v.optional(v.boolean()),
+      crossListingId: v.optional(v.id("cardCrossListings")),
+      homeSetLabel: v.optional(v.string()),
     }),
   ),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return await ctx.db
+    const homeCards = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) =>
         q.eq("selectorOptionId", args.selectorOptionId),
       )
       .collect();
+
+    const crossListings = await ctx.db
+      .query("cardCrossListings")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.selectorOptionId),
+      )
+      .collect();
+
+    // Guest cards typically all come from the same home set, so cache the
+    // label per home node instead of re-walking the chain for each card.
+    const labelCache = new Map<string, string>();
+    const guestCards: CardChecklistRow[] = [];
+    for (const link of crossListings) {
+      const card = await ctx.db.get(link.cardChecklistId);
+      if (!card) continue;
+      let homeSetLabel = labelCache.get(card.selectorOptionId);
+      if (homeSetLabel === undefined) {
+        homeSetLabel = await buildSetLabel(ctx, card.selectorOptionId);
+        labelCache.set(card.selectorOptionId, homeSetLabel);
+      }
+      guestCards.push({
+        ...card,
+        isCrossListed: true,
+        crossListingId: link._id,
+        homeSetLabel,
+      });
+    }
+
+    // A guest row's `sortOrder` was stamped against its home checklist and
+    // means nothing here, so order the merged list by card number instead.
+    const merged: CardChecklistRow[] = [...homeCards, ...guestCards];
+    return merged.sort((a, b) =>
+      compareCardNumbers(a.cardNumber, b.cardNumber),
+    );
   },
 });
 
@@ -1303,6 +1385,8 @@ export const storeCardChecklist = mutation({
     // Delete non-custom cards that weren't in the new set
     for (const existing of existingCards) {
       if (!processedNumbers.has(existing.cardNumber) && !existing.isCustom) {
+        // NEO-21: drop this card's cross-listing rows before the card itself.
+        await deleteCardCrossListingsFor(ctx, existing._id);
         await ctx.db.delete(existing._id);
       }
     }
@@ -1478,13 +1562,190 @@ export const updateCard = mutation({
   },
 });
 
+/**
+ * NEO-21: every place in this file that deletes a `cardChecklist` row must
+ * drop its `cardCrossListings` junction rows first, or a guest checklist
+ * keeps rendering a link to a card that no longer exists. Shared so the
+ * handful of stale-card-cleanup loops (marketplace re-sync, legacy-migration
+ * wipe, manual delete, dev-only reset) can't drift out of sync with each
+ * other on this invariant.
+ */
+async function deleteCardCrossListingsFor(
+  ctx: { db: { query: any; delete: (id: any) => Promise<void> } },
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<void> {
+  const crossListings = await ctx.db
+    .query("cardCrossListings")
+    .withIndex("by_card", (q: any) => q.eq("cardChecklistId", cardChecklistId))
+    .collect();
+  for (const link of crossListings) {
+    await ctx.db.delete(link._id);
+  }
+}
+
 export const deleteCard = mutation({
   args: { id: v.id("cardChecklist") },
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    await deleteCardCrossListingsFor(ctx, args.id);
     await ctx.db.delete(args.id);
     return null;
+  },
+});
+
+// ===========================================================================
+// NEO-21: cross-release listings
+// ===========================================================================
+//
+// A card physically printed in one product can complete a different product's
+// checklist (2021 Score #301-320 shipped inside 2022 Chronicles packs). The
+// card row stays pinned to where it was printed — release year, SKU and
+// provenance all resolve off `cardChecklist.selectorOptionId` and must keep
+// resolving to the home set. `cardCrossListings` only adds a second place the
+// card is *displayed*. Admin-only tooling for now.
+
+// The UI caps a single range/list expansion at the same number (see
+// MAX_EXPANDED_NUMBERS in CrossListingImportModal.tsx) — mirrored server-side
+// so a direct API call can't hand this mutation an unbounded batch just
+// because the client-side cap is only advisory.
+const MAX_CROSS_LISTING_CARD_NUMBERS = 1000;
+
+export const addCrossListingsByCardNumbers = mutation({
+  args: {
+    // Where the cards actually live (the home set, already fetched from the
+    // marketplace) — we link existing rows, never create card data.
+    sourceSelectorOptionId: v.id("selectorOptions"),
+    // The guest checklist the operator has open and wants them to show up in.
+    targetSelectorOptionId: v.id("selectorOptions"),
+    cardNumbers: v.array(v.string()),
+  },
+  returns: v.object({
+    linked: v.array(v.string()),
+    alreadyLinked: v.array(v.string()),
+    notFound: v.array(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    if (args.sourceSelectorOptionId === args.targetSelectorOptionId) {
+      throw new Error("Cannot cross-list a set into itself");
+    }
+    if (args.cardNumbers.length > MAX_CROSS_LISTING_CARD_NUMBERS) {
+      throw new Error(
+        `Too many card numbers in one request (${args.cardNumbers.length}); ` +
+          `max ${MAX_CROSS_LISTING_CARD_NUMBERS}.`,
+      );
+    }
+
+    // cardChecklist.selectorOptionId only ever points at a variant-level row
+    // (variantType/insert/parallel — see schema.ts). Reject anything else up
+    // front instead of silently returning an all-notFound/no-op result for a
+    // sport/year/manufacturer/setName id, which would look like "nothing
+    // matched" rather than "this isn't a valid set to cross-list from/into".
+    const isVariantLevel = (level: string) =>
+      ["variantType", "insert", "parallel"].includes(level);
+    const [sourceNode, targetNode] = await Promise.all([
+      ctx.db.get(args.sourceSelectorOptionId),
+      ctx.db.get(args.targetSelectorOptionId),
+    ]);
+    if (!sourceNode || !isVariantLevel(sourceNode.level)) {
+      throw new Error("Source set must be a variant-level set (Base/insert/parallel)");
+    }
+    if (!targetNode || !isVariantLevel(targetNode.level)) {
+      throw new Error("Target set must be a variant-level set (Base/insert/parallel)");
+    }
+
+    // One read of the target's existing links covers every requested number,
+    // and doubles as the de-dup guard for repeats within this one request.
+    const existing = await ctx.db
+      .query("cardCrossListings")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.targetSelectorOptionId),
+      )
+      .collect();
+    const linkedCardIds = new Set<string>(
+      existing.map((link) => link.cardChecklistId),
+    );
+
+    const linked: string[] = [];
+    const alreadyLinked: string[] = [];
+    const notFound: string[] = [];
+    const now = Date.now();
+
+    for (const cardNumber of args.cardNumbers) {
+      const card = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option_and_number", (q) =>
+          q
+            .eq("selectorOptionId", args.sourceSelectorOptionId)
+            .eq("cardNumber", cardNumber),
+        )
+        .first();
+      if (!card) {
+        notFound.push(cardNumber);
+        continue;
+      }
+      if (linkedCardIds.has(card._id)) {
+        alreadyLinked.push(cardNumber);
+        continue;
+      }
+      await ctx.db.insert("cardCrossListings", {
+        cardChecklistId: card._id,
+        selectorOptionId: args.targetSelectorOptionId,
+        createdByUserId: userId,
+        lastUpdated: now,
+      });
+      linkedCardIds.add(card._id);
+      linked.push(cardNumber);
+    }
+
+    return { linked, alreadyLinked, notFound };
+  },
+});
+
+export const removeCrossListing = mutation({
+  args: { crossListingId: v.id("cardCrossListings") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    // Junction row only. The card belongs to its home set and must survive
+    // being removed from a guest checklist.
+    await ctx.db.delete(args.crossListingId);
+    return null;
+  },
+});
+
+export const getCrossListingsForCard = query({
+  args: { cardChecklistId: v.id("cardChecklist") },
+  returns: v.array(
+    v.object({
+      _id: v.id("cardCrossListings"),
+      selectorOptionId: v.id("selectorOptions"),
+      setLabel: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const links = await ctx.db
+      .query("cardCrossListings")
+      .withIndex("by_card", (q) =>
+        q.eq("cardChecklistId", args.cardChecklistId),
+      )
+      .collect();
+
+    const out: Array<{
+      _id: Id<"cardCrossListings">;
+      selectorOptionId: Id<"selectorOptions">;
+      setLabel: string;
+    }> = [];
+    for (const link of links) {
+      out.push({
+        _id: link._id,
+        selectorOptionId: link.selectorOptionId,
+        setLabel: await buildSetLabel(ctx, link.selectorOptionId),
+      });
+    }
+    return out;
   },
 });
 
@@ -2154,6 +2415,7 @@ export const resetSetBuilderData = action({
   returns: v.object({
     selectorOptionsDeleted: v.number(),
     cardChecklistDeleted: v.number(),
+    crossListingsDeleted: v.number(),
     playersDeleted: v.number(),
     teamsDeleted: v.number(),
   }),
@@ -2162,6 +2424,7 @@ export const resetSetBuilderData = action({
   ): Promise<{
     selectorOptionsDeleted: number;
     cardChecklistDeleted: number;
+    crossListingsDeleted: number;
     playersDeleted: number;
     teamsDeleted: number;
   }> => {
@@ -2187,6 +2450,19 @@ export const resetSetBuilderData = action({
         {},
       );
       cardChecklistDeleted += result.deleted;
+      if (!result.hasMore) break;
+    }
+
+    // NEO-21: cardCrossListings rows outlive nothing on their own (they're
+    // pure junction rows), but a wipe that skips this table leaves them
+    // pointing at cardChecklist ids that no longer exist post-reset.
+    let crossListingsDeleted = 0;
+    while (true) {
+      const result = await ctx.runMutation(
+        internal.selectorOptions.resetCardCrossListingsBatch,
+        {},
+      );
+      crossListingsDeleted += result.deleted;
       if (!result.hasMore) break;
     }
 
@@ -2216,7 +2492,13 @@ export const resetSetBuilderData = action({
       if (!result.hasMore) break;
     }
 
-    return { selectorOptionsDeleted, cardChecklistDeleted, playersDeleted, teamsDeleted };
+    return {
+      selectorOptionsDeleted,
+      cardChecklistDeleted,
+      crossListingsDeleted,
+      playersDeleted,
+      teamsDeleted,
+    };
   },
 });
 
@@ -2265,6 +2547,35 @@ export const resetCardChecklistBatch = internalMutation({
       );
     }
     const rows = await ctx.db.query("cardChecklist").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: delete up to RESET_BATCH_SIZE rows from cardCrossListings
+ * (NEO-21). Used by resetSetBuilderData (action) in a loop until no rows
+ * remain — a dev/test reset that wiped cardChecklist but left this table
+ * would carry over junction rows pointing at ids the next run reuses for
+ * unrelated cards.
+ */
+export const resetCardCrossListingsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
+      throw new Error(
+        "Reset Set Builder Data is not enabled in this environment. " +
+          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
+      );
+    }
+    const rows = await ctx.db.query("cardCrossListings").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -2384,6 +2695,8 @@ export const wipeLegacyBaseChildren = mutation({
             )
             .collect();
           for (const c of parCards) {
+            // NEO-21: drop this card's cross-listing rows before the card.
+            await deleteCardCrossListingsFor(ctx, c._id);
             await ctx.db.delete(c._id);
             cardChecklistRowsDeleted += 1;
           }
@@ -2398,6 +2711,8 @@ export const wipeLegacyBaseChildren = mutation({
           )
           .collect();
         for (const c of insCards) {
+          // NEO-21: drop this card's cross-listing rows before the card.
+          await deleteCardCrossListingsFor(ctx, c._id);
           await ctx.db.delete(c._id);
           cardChecklistRowsDeleted += 1;
         }
@@ -4403,6 +4718,8 @@ export const commitCardChecklist = mutation({
 
     for (const existing of existingCards) {
       if (!processedNumbers.has(existing.cardNumber) && !existing.isCustom) {
+        // NEO-21: drop this card's cross-listing rows before the card itself.
+        await deleteCardCrossListingsFor(ctx, existing._id);
         await ctx.db.delete(existing._id);
       }
     }

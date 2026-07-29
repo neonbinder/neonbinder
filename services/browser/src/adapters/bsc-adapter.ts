@@ -177,7 +177,10 @@ export class BSCAdapter extends BaseAdapter {
   private async httpLogin(
     email: string,
     password: string,
-  ): Promise<{ token: string } | { error: string; diagnostic?: LoginDiagnostic }> {
+  ): Promise<
+    | { token: string }
+    | { error: string; diagnostic?: LoginDiagnostic; credentialRejected?: boolean }
+  > {
     const secrets: DiagnosticSecrets = { email, password };
     const jar = new B2CCookieJar();
 
@@ -273,7 +276,20 @@ export class BSCAdapter extends BaseAdapter {
         { url: BSC_SELF_ASSERTED_URL, rawText: selfAssertedBody },
         secrets,
       );
-      return { error: `Authentication failed`, diagnostic };
+      // NEO-98: this is the ONE branch in the whole B2C exchange where BSC
+      // demonstrably evaluated the credentials and said no — it parsed as
+      // B2C's own {"status":"<non-200>"} envelope. Every other failure below
+      // (and above) is an integration fault and must stay pageable.
+      //
+      // Two carve-outs, both deliberate:
+      //   - selfAssertedStatus === undefined means the body did NOT parse as
+      //     the envelope at all. That is B2C returning something unexpected,
+      //     not a rejection, so it does NOT count.
+      //   - a challenge page means we were bot-blocked before the password
+      //     was ever judged. Our problem, not the seller's.
+      const credentialRejected =
+        selfAssertedStatus !== undefined && diagnostic.challengeDetected !== true;
+      return { error: `Authentication failed`, diagnostic, credentialRejected };
     }
 
     // --- Step 3: GET /api/<api>/confirmed → 302 with #code= ----------------
@@ -473,13 +489,22 @@ export class BSCAdapter extends BaseAdapter {
       return {
         success: false,
         error: `Missing credentials for ${this.siteName}`,
+        // NEO-98: the stored secret is incomplete, so BSC never gets asked.
+        // Not a marketplace verdict, but unambiguously a caller-data problem
+        // rather than a service fault — 422, and it must not page.
+        credentialRejected: true,
       };
     }
 
     try {
       const result = await this.httpLogin(email, password);
       if ("error" in result) {
-        return { success: false, error: result.error, diagnostic: result.diagnostic };
+        return {
+          success: false,
+          error: result.error,
+          diagnostic: result.diagnostic,
+          credentialRejected: result.credentialRejected,
+        };
       }
 
       const token = result.token;

@@ -238,6 +238,23 @@ export default defineSchema({
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_number", ["selectorOptionId", "cardNumber"]),
 
+  // NEO-21: cross-release guest appearances. Some cards complete one set's
+  // checklist but were physically printed inside a different product (2021
+  // Score #301-320 shipped in 2022 Chronicles packs). The card's
+  // `cardChecklist.selectorOptionId` stays pinned to where it was PRINTED —
+  // that pointer is what release-year, SKU generation and provenance resolve
+  // off, so it must never be repointed at the guest set. This junction table
+  // is purely additive: it says "also show this card under that other
+  // variant". Deleting a row here never touches the card.
+  cardCrossListings: defineTable({
+    cardChecklistId: v.id("cardChecklist"),    // the home card row (owns provenance/pricing/year)
+    selectorOptionId: v.id("selectorOptions"), // the OTHER variant-level set this card also appears under
+    createdByUserId: v.optional(v.string()),
+    lastUpdated: v.number(),
+  })
+    .index("by_selector_option", ["selectorOptionId"]) // guest-side lookup: "who's cross-listed into me"
+    .index("by_card", ["cardChecklistId"]),            // home-side lookup: "where else does this card appear"
+
   // Players — first-class entity. Created from BSC `players[]` / SL desc
   // parse / user input. Enriched async from Wikidata SPARQL after user
   // confirmation in the UnknownEntitiesDialog.
