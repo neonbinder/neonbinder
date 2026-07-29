@@ -1,0 +1,168 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Cross-release — the 'Hide cross-release cards' filter collapses a checklist back to only its own cards, and restores them"
+tags:
+  - set-selector
+  - regression
+---
+# ============================================================================
+# R1 — ONE FEATURE: the show/hide filter for visiting cards.
+#   Once a checklist contains cards printed elsewhere, the operator gets a
+#   "Hide cross-release cards" control so they can see the set as it was
+#   actually printed. This flow proves that control appears only when it is
+#   needed, hides the visiting card when switched on, and brings it back when
+#   switched off again.
+#
+# THE CONCRETE ASSERTIONS (R2 — nothing here can pass while the filter is
+# broken, and no step is conditional):
+#   1. With a visiting card present, the "Hide cross-release cards" control is
+#      on screen. (It is not rendered at all on an ordinary checklist, so its
+#      presence is itself part of the feature.)
+#   2. Switching it on removes the visiting card from the list — and because
+#      the visiting card is the ONLY card in this set, the checklist falls all
+#      the way back to its empty message. A filter that did nothing would leave
+#      the row on screen and fail here.
+#   3. The control survives being switched on (it is derived from every card,
+#      not from what is currently shown) and now reads as active — otherwise
+#      the operator could hide the cards and never get them back.
+#   4. Switching it off restores the visiting card.
+#
+# WHY THE FIXTURE LOOKS LIKE THIS (data isolation):
+#   Everything lives in this worker's private playground,
+#   "E2E Test Sport <worker>" → 2026 → Topps:
+#     xsrc-<worker>  the HOME set, which lends the card
+#     xcg-<worker>   the GUEST set, whose only content is the visiting card
+#   Keeping the guest set otherwise empty is deliberate: it turns "the row was
+#   filtered out" into the much stronger "the checklist is now empty".
+#
+# R3 — DEDUP: the import itself is proved by
+#   cross-release-card-appears-in-guest-checklist.yaml and detaching by
+#   cross-release-unlink-keeps-card-in-home-set.yaml. This flow claims only the
+#   show/hide behaviour. R9 — navigation via the shared drill utils; the modal
+#   via util-cross-list-cards.yaml.
+# R5 — 7s waits throughout; no marketplace is contacted (custom subtree).
+# R7 — the guest checklist is returned to empty at the end.
+# ============================================================================
+
+# Step 1 — open the app, signed in, on the Set Selector.
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# Step 2 — GIVE THE HOME SET A CARD TO LEND
+# ============================================================
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "xsrc-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "955-${ATTEMPT_ID}"
+      PLAYER_NAME: "Cross Filter ${ATTEMPT_ID}"
+
+# ============================================================
+# Step 3 — OPEN THE GUEST CHECKLIST (empty, and stays that way apart from the
+# card we are about to borrow)
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xcg-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ============================================================
+# Step 4 — BORROW THE CARD, THEN CLOSE THE MODAL
+# ============================================================
+- runFlow:
+    file: util-cross-list-cards.yaml
+    env:
+      SOURCE_SET: "xsrc-${WORKER_INDEX || 0}"
+      CARD_NUMBERS: "955-${ATTEMPT_ID}"
+- assertVisible:
+    text: ".*Linked 1 card.*"
+- tapOn:
+    id: "Cancel cross-release import"
+- extendedWaitUntil:
+    notVisible:
+      id: "Add cross-release cards"
+    timeout: 7000
+
+# The visiting card is on the checklist — the precondition for everything
+# below. The scroll is the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: "#955-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# ============================================================
+# Step 5 — ASSERTION 1: the filter control is now offered
+# The scroll IS the assertion (R6) — this control is not rendered at all on a
+# checklist without visiting cards. direction: UP because the control sits
+# ABOVE the card list we just centred, and the default downward scroll would
+# walk away from it. centerElement keeps it clear of the bottom band where taps
+# get stolen (R8).
+# ============================================================
+- scrollUntilVisible:
+    element:
+      id: "Hide cross-release cards"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Hide cross-release cards"
+
+# ── ASSERTION 2: the visiting card is gone, and this set has nothing of its
+# own left to show ──────────────────────────────────────────────────────────
+- extendedWaitUntil:
+    notVisible: "#955-${ATTEMPT_ID}"
+    timeout: 7000
+- assertVisible: "No cards in this checklist yet."
+
+# ── ASSERTION 3: the control is still there and now reads as switched on ────
+# Its label gains " (on)" while active, so this is a different control name
+# from the one tapped above — proof the switch actually flipped, not just that
+# a button exists. (The brackets are escaped because names are matched as
+# patterns.)
+- scrollUntilVisible:
+    element:
+      id: "Hide cross-release cards \\(on\\)"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Hide cross-release cards \\(on\\)"
+
+# ── ASSERTION 4: switching it off brings the visiting card back ─────────────
+- extendedWaitUntil:
+    visible: "#955-${ATTEMPT_ID}"
+    timeout: 7000
+
+# ============================================================
+# CLEANUP (R7) — detach the borrowed card so the guest checklist goes back to
+# empty for the next run. Housekeeping only; what detaching guarantees is
+# proved by cross-release-unlink-keeps-card-in-home-set.yaml.
+# ============================================================
+- scrollUntilVisible:
+    element:
+      id: "Remove card 955-${ATTEMPT_ID} from this set"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Remove card 955-${ATTEMPT_ID} from this set"
+- tapOn:
+    id: "Confirm remove card 955-${ATTEMPT_ID} from this set"
+- extendedWaitUntil:
+    notVisible: "#955-${ATTEMPT_ID}"
+    timeout: 7000
