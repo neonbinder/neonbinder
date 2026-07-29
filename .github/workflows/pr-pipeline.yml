@@ -64,35 +64,43 @@ jobs:
             browser:
               - 'services/browser/**'
 
-      # NEO-87: is this PR *exclusively* a dependency-manifest bump? If so `e2e`
-      # skips and `ci-gate` accepts that skip (and ONLY that skip; see the gate
-      # below).
+      # May this PR skip the 8-worker matrix? Only if BOTH hold:
+      #   1. it was authored by dependabot[bot]  (NEO-108), and
+      #   2. it touches nothing but dependency manifests  (NEO-87).
+      # If so `e2e` skips and `ci-gate` accepts that skip (and ONLY that skip;
+      # see the gate below).
       #
-      # This is a cost/risk TRADEOFF, not a zero-risk optimization (NEO-103
-      # corrects the original claim that a lockfile bump "cannot alter app
-      # behavior that lint + unit don't already cover" — that was overstated).
-      # A dependency bump ships runtime code to users, and semver is a promise
-      # rather than a guarantee; this repo has already had a grouped bump break
-      # E2E badly enough that PR #9 was closed over it. What the skip buys is
-      # ~25 min of 8-worker matrix on the common case. What it costs is browser-
-      # level verification. When that trade looks wrong for a specific PR — a
-      # broad bump, or one touching auth / the Convex client / React — apply the
-      # `run-e2e` label below to force the matrix back on.
+      # THE POLICY THIS ENCODES: a Dependabot PR is never merged directly. Those
+      # PRs are screening — they prove a bump compiles and carry the changelog.
+      # What lands is a maintainer batch branch (NEO-86 / PR #70): combine the
+      # bumps, validate locally one at a time, ONE full E2E run, one squash-
+      # merge, then close the Dependabot PRs. So the skip is not "dependency
+      # changes are safe" — it is "these particular PRs are not the thing that
+      # ships, and the thing that ships gets the full suite."
       #
-      # Deliberately narrow: manifests ONLY. CI-infrastructure bumps that
-      # Dependabot also raises — `.github/workflows/**` and
+      # Condition 1 is what makes that true rather than aspirational. NEO-87
+      # gated on paths ALONE, which cannot distinguish a throwaway Dependabot PR
+      # from the maintainer batch — the batch is manifest-only too, so it skipped
+      # E2E as well, and could have merged with no browser-level coverage at all.
+      # The carve-out swallowed the exact PR it existed to spare.
+      #
+      # Condition 2 stays deliberately narrow: manifests ONLY. CI-infrastructure
+      # bumps that Dependabot also raises — `.github/workflows/**` and
       # `apps/web/.github/actions/maestro-runner/**` (setup-chrome, setup-java,
-      # actions/cache) — ARE the E2E harness. Skipping E2E on those would merge
+      # actions/cache) — ARE the E2E harness. Skipping E2E on those would leave
       # an unexercised test runner, so they keep running the full matrix.
       #
-      # NOT keyed on `github.actor == 'dependabot[bot]'`: actor is orthogonal to
-      # risk (a maintainer dep-batch like #70 is equally safe; a Dependabot
-      # workflow bump is not). Path content is the honest signal.
+      # Do not "simplify" condition 1 to `github.actor`. See the note at the
+      # check itself: the triggering actor becomes the maintainer on any push to
+      # a Dependabot branch, which we do routinely to grant Actions secrets.
       #
-      # Fail-CLOSED: any error, empty file list, or non-pull_request event
-      # leaves deps_only=false ⇒ E2E runs. A false 'true' here would silently
-      # wave product changes through the gate, so ambiguity must cost us a
-      # redundant E2E run, never a skipped one.
+      # Fail-CLOSED: any error, empty file list, unreadable author, or
+      # non-pull_request event leaves deps_only=false ⇒ E2E runs. A false 'true'
+      # here would silently wave changes through the gate, so ambiguity must cost
+      # a redundant E2E run, never a skipped one.
+      #
+      # Escape hatch the other way: the `run-e2e` label (NEO-103) forces the
+      # matrix back on for a Dependabot PR you want browser-verified in place.
       - name: Detect dependency-only PR
         id: deps
         env:
@@ -111,23 +119,48 @@ jobs:
               return
             fi
 
-            local labels files offenders
+            local pr_json author labels files offenders
 
-            # NEO-103 override. Read live from the API rather than from
-            # `github.event.pull_request.labels`, because the event payload is
-            # frozen at trigger time and is replayed verbatim on a re-run — a
-            # label added after the fact would never be seen. Querying here means
-            # "label the PR, hit re-run" works, which is the whole point.
+            # One API call, two signals (author + labels). Read live rather than
+            # from `github.event.pull_request.*`: the event payload is frozen at
+            # trigger time and replayed verbatim on a re-run, so a label added
+            # after the fact would never be seen. Querying makes "label it, hit
+            # re-run" work, which is the whole point of the NEO-103 override.
+            pr_json=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}") || {
+              echo "::warning::could not read PR metadata — E2E runs."
+              return
+            }
+            author=$(printf '%s' "$pr_json" | jq -r '.user.login // ""')
+            labels=$(printf '%s' "$pr_json" | jq -r '.labels[].name')
+
+            # NEO-108: only Dependabot's OWN PRs may skip the matrix.
             #
-            # One-way by construction: this can only ever force the matrix ON.
-            # There is no label that turns it off, and a failed lookup also
-            # leaves E2E running, so the escape hatch can't become a bypass.
-            labels=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" \
-              --jq '.labels[].name') || {
-                echo "::warning::could not read PR labels — E2E runs."
-                return
-              }
+            # Dependabot PRs are screening-only — they prove a bump compiles and
+            # carry the changelog, and are never merged directly. What actually
+            # lands is a maintainer batch branch (the NEO-86 pattern: combine the
+            # bumps, validate locally one at a time, ONE full E2E run, one
+            # squash-merge, then close the Dependabot PRs).
+            #
+            # NEO-87 gated this on PATHS ALONE, which could not tell those two
+            # apart — the batch PR is manifest-only too, so it skipped E2E as
+            # well. The carve-out swallowed the exact PR it existed to spare, and
+            # the batch could have merged with no browser-level coverage at all.
+            #
+            # Keyed on the PR AUTHOR, deliberately not `github.actor`. The
+            # triggering actor becomes the maintainer as soon as anyone pushes to
+            # a Dependabot branch — which we do routinely, since a maintainer push
+            # is what grants Actions secrets to those runs. Using `github.actor`
+            # would flip every Dependabot PR to a full matrix on its second run
+            # and reintroduce the spend this exists to prevent. `user.login` stays
+            # `dependabot[bot]` no matter who pushes.
+            if [ "$author" != "dependabot[bot]" ]; then
+              echo "PR author is '${author:-unknown}', not dependabot[bot] — E2E runs (NEO-108)."
+              return
+            fi
 
+            # NEO-103 override, one-way by construction: it can only ever force
+            # the matrix ON. No label turns it off, and every failure path above
+            # also leaves E2E running, so the escape hatch cannot become a bypass.
             if printf '%s\n' "$labels" | grep -qxF 'run-e2e'; then
               echo "🔬 \`run-e2e\` label present — forcing the full matrix regardless of paths (NEO-103)."
               return
