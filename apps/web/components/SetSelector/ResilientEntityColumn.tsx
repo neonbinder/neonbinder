@@ -23,6 +23,12 @@ import EntityColumn, { type EntityColumnProps } from "./EntityColumn";
  * AND stabilizes the set-selector E2E flake class (a stalled subscription
  * auto-recovers → the column's heading renders → the flow assertion passes).
  *
+ * That give-up state is presentational ONLY: the banner renders above a
+ * still-mounted EntityColumn rather than replacing it, so a late-arriving value
+ * clears it with no user action. Replacing the column unmounted the
+ * subscription and made the state terminal — recoverable solely by a human
+ * pressing Retry — which turned a transient stall into a permanent dead end.
+ *
  * Why remount the WHOLE EntityColumn (not just its EntitySelector child):
  * EntityColumn and its EntitySelector child both `useQuery(getSelectorOptions,
  * {level, parentId})` with identical args, which the Convex client dedupes into
@@ -112,6 +118,13 @@ export default function ResilientEntityColumn(
     return () => clearTimeout(timer);
   }, [watching, attempt, level]);
 
+  // Self-heal: the give-up state is presentational only, so a value that lands
+  // late (see the mounted-not-replaced note below) clears it with no user
+  // action. `loading` flips false the moment EntityColumn's read resolves.
+  useEffect(() => {
+    if (gaveUp && !loading) setGaveUp(false);
+  }, [gaveUp, loading]);
+
   const handleRetry = () => {
     emitBackstop("retry", level, attempt + 1);
     setGaveUp(false);
@@ -119,14 +132,52 @@ export default function ResilientEntityColumn(
     setAttempt((a) => a + 1); // new key → fresh subscription
   };
 
-  if (isVisible && gaveUp) {
-    // "Sync Sports" → "Sports", "Sync Variant Types" → "Variant Types", etc.
-    // Mirrors EntityColumn's own label derivation.
-    const label = addButtonText.replace(/^Sync /, "");
-    return (
-      <div className="min-w-[260px] max-w-[340px] flex-shrink-0 flex flex-col gap-4">
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-          <h2 className="text-xl font-semibold mb-3">{label}</h2>
+  // "Sync Sports" → "Sports", "Sync Variant Types" → "Variant Types", etc.
+  // Mirrors EntityColumn's own label derivation.
+  const label = addButtonText.replace(/^Sync /, "");
+
+  // `key={attempt}` is load-bearing — see the header comment. It fully
+  // unmounts + remounts EntityColumn (dropping the last listener on the shared
+  // getSelectorOptions token) so the retry issues a brand-new subscription.
+  const column = (
+    <EntityColumn key={attempt} {...props} onLoadingChange={setLoading} />
+  );
+
+  // The give-up banner renders ABOVE a still-mounted EntityColumn — it does not
+  // replace it. Returning the banner *instead of* the column used to unmount the
+  // subscription, which made the state terminal: `watching` is false once
+  // `gaveUp`, so no timer re-arms, and only a human pressing Retry could ever
+  // clear it. A late-delivered value or a socket reconnect could not, so a
+  // transient read stall became a permanent dead end (it stranded the
+  // set-selector E2E flow that drills this column: the "+ Custom" button is
+  // gated on the read and never reappeared).
+  //
+  // Keeping the column mounted preserves the existing subscription so a late
+  // value still lands and self-heals. Retry is unchanged and remains the escape
+  // hatch for the case mounting can't fix — a token wedged server-side, where
+  // only a brand-new query id will re-deliver.
+  //
+  // STRUCTURE IS LOAD-BEARING. The wrapper is rendered unconditionally and the
+  // banner occupies a fixed leading slot (`… ? <banner/> : null`). Both details
+  // exist to keep EntityColumn's position in the element tree identical across
+  // the gaveUp toggle:
+  //   • Returning EntityColumn bare in one branch and wrapped in the other would
+  //     change the ROOT element type (component → div), and React unmounts the
+  //     whole subtree when the type changes.
+  //   • Omitting the banner entirely (rather than rendering null) would shift
+  //     EntityColumn from child index 0 to 1, and unkeyed siblings reconcile by
+  //     index — also a remount.
+  // Either mistake silently re-breaks the fix by dropping the subscription at
+  // the exact moment we need to hold it. `ResilientEntityColumn.test.tsx` pins
+  // this via the mount count.
+  //
+  // No heading in the banner: EntityColumn renders its own. Duplicating it would
+  // put the level name on screen twice and make the E2E text selectors
+  // ambiguous.
+  return (
+    <div className="min-w-[260px] max-w-[340px] flex-shrink-0 flex flex-col gap-4">
+      {isVisible && gaveUp ? (
+        <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow">
           <div
             role="alert"
             className="p-3 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
@@ -141,12 +192,8 @@ export default function ResilientEntityColumn(
             Retry
           </NeonButton>
         </div>
-      </div>
-    );
-  }
-
-  // `key={attempt}` is load-bearing — see the header comment. It fully
-  // unmounts + remounts EntityColumn (dropping the last listener on the shared
-  // getSelectorOptions token) so the retry issues a brand-new subscription.
-  return <EntityColumn key={attempt} {...props} onLoadingChange={setLoading} />;
+      ) : null}
+      {column}
+    </div>
+  );
 }
