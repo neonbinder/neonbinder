@@ -27,6 +27,12 @@ type CardChecklistItemProps = {
       sportlots?: string;
     };
     isCustom?: boolean;
+    // NEO-21: present only on guest rows — a card printed in another product
+    // that also completes this checklist. `selectorOptionId` above still
+    // points at its HOME set, so these three carry the guest-side context.
+    isCrossListed?: boolean;
+    crossListingId?: Id<"cardCrossListings">;
+    homeSetLabel?: string;
   };
   // NEO-6: id→label map for the parent variant's attached platform IDs.
   // When sourcePlatformIds.<side> is set AND a label exists for that ID,
@@ -85,9 +91,22 @@ export default function CardChecklistItem({
   );
 
   const deleteCard = useMutation(api.selectorOptions.deleteCard);
+  const removeCrossListing = useMutation(
+    api.selectorOptions.removeCrossListing,
+  );
+
+  // NEO-21: on a guest row the destructive action is UNLINK, not delete. The
+  // card belongs to the set it was printed in — destroying it from a checklist
+  // it's only visiting would take it out of its home set too (and out of every
+  // other set it's cross-listed into). Only the junction row goes.
+  const isCrossListed = card.isCrossListed === true && !!card.crossListingId;
 
   const handleDelete = async () => {
-    await deleteCard({ id: card._id });
+    if (isCrossListed) {
+      await removeCrossListing({ crossListingId: card.crossListingId! });
+    } else {
+      await deleteCard({ id: card._id });
+    }
     setConfirmDelete(false);
   };
 
@@ -185,6 +204,19 @@ export default function CardChecklistItem({
             Custom
           </span>
         )}
+        {/* NEO-21: names the set this card was physically printed in, so it's
+            obvious the row is a visitor and not a mis-filed card. Gated on
+            `isCrossListed` alone (not `homeSetLabel` truthiness) — a home
+            chain missing year/manufacturer/setName would otherwise blank the
+            badge entirely and the row would look like an ordinary card. */}
+        {isCrossListed && (
+          <span
+            className="text-xs px-1.5 py-0.5 rounded bg-[#00B7FF]/10 text-[#00B7FF] border border-[#00B7FF]/50"
+            title={`Cross-release card — physically printed in ${card.homeSetLabel || "another set"}, but it completes this set's checklist.`}
+          >
+            ↗ {card.homeSetLabel || "another set"}
+          </span>
+        )}
       </div>
       {/* Actions always rendered. Hiding them behind hover (opacity-0
           group-hover:opacity-100) made the buttons unreachable for
@@ -211,7 +243,11 @@ export default function CardChecklistItem({
               e.stopPropagation();
               void handleDelete();
             }}
-            aria-label={`Confirm delete card ${card.cardNumber}`}
+            aria-label={
+              isCrossListed
+                ? `Confirm remove card ${card.cardNumber} from this set`
+                : `Confirm delete card ${card.cardNumber}`
+            }
             className="px-1.5 py-0.5 text-xs text-red-600 dark:text-red-400 font-medium"
           >
             Confirm?
@@ -223,11 +259,19 @@ export default function CardChecklistItem({
               setConfirmDelete(true);
             }}
             onBlur={() => setConfirmDelete(false)}
-            aria-label={`Delete card ${card.cardNumber}`}
+            aria-label={
+              isCrossListed
+                ? `Remove card ${card.cardNumber} from this set`
+                : `Delete card ${card.cardNumber}`
+            }
             className="px-1.5 py-0.5 text-xs text-gray-500 hover:text-red-600 dark:text-gray-400 dark:hover:text-red-400"
-            title="Delete"
+            title={
+              isCrossListed
+                ? "Remove from this set — the card stays in the set it was printed in"
+                : "Delete"
+            }
           >
-            Del
+            {isCrossListed ? "Unlink" : "Del"}
           </button>
         )}
       </div>

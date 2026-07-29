@@ -1,0 +1,151 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Cross-release — a card printed in another product shows up in this set's checklist, badged with the set it came from"
+tags:
+  - set-selector
+  - regression
+---
+# ============================================================================
+# R1 — ONE FEATURE: cross-release import (NEO-21).
+#   Some cards complete one product's checklist but were physically printed
+#   inside a different product (the classic case: 2021 Score #301-320 shipped
+#   in 2022 Chronicles packs). The operator opens the checklist that is MISSING
+#   those cards, says "these came from over there", names the numbers, and the
+#   cards appear in this checklist marked with the set they were printed in.
+#   This flow proves that one journey end to end.
+#
+# THE CONCRETE ASSERTIONS (R2 — the flow cannot go green if the feature is
+# broken, and there is no branch that can skip the feature):
+#   1. The import reports "Linked 1 card." — a real link was created.
+#   2. Back on the checklist, the card's number is now a row in a set it was
+#      never printed in.
+#   3. That row carries the "came from" badge naming its home set
+#      ("2026 Topps xsrc-<worker>"). Without the badge the row would look like
+#      a mis-filed card, which is the whole thing this badge prevents.
+#
+# WHY TWO SETS AND WHY THESE NAMES (data isolation):
+#   The set catalogue and card checklists are shared by every test worker, so
+#   everything here happens in this worker's own private playground —
+#   "E2E Test Sport <worker>" → 2026 → Topps. Two sets under it:
+#     xsrc-<worker>  the HOME set — where the card is really printed
+#     xag-<worker>   the GUEST set — the checklist we import into
+#   Nothing real or shared is touched, and no other worker can see these.
+#
+# THE CARD NUMBER CARRIES ${ATTEMPT_ID}:
+#   Every attempt links a brand-new card, so "Linked 1 card." is true on a
+#   retry too (a re-link of the same card would report "Already linked").
+#
+# R3 — DEDUP: the missing-numbers message is proved by
+#   cross-release-import-reports-missing-numbers.yaml, the show/hide filter by
+#   cross-release-hide-toggle-filters-guest-cards.yaml, and detaching by
+#   cross-release-unlink-keeps-card-in-home-set.yaml. This flow claims only
+#   "the link happens and the card shows up badged". All navigation goes
+#   through the shared drill utils (R9); the modal itself is driven by
+#   util-cross-list-cards.yaml so its dropdown mechanics live in one place.
+#
+# R5 — every wait is the 7s default except page-load / scroll budgets. No
+#   marketplace is contacted: a custom subtree never triggers a fetch.
+#
+# R7 — the flow puts the checklist back the way it found it (see CLEANUP).
+# ============================================================================
+
+# Step 1 — open the app, signed in, on the Set Selector.
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# Step 2 — GIVE THE HOME SET A CARD TO LEND
+# Adds card #951-<attempt> to this worker's home set. This is the card that
+# will later appear in a completely different set's checklist.
+# ============================================================
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "xsrc-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "951-${ATTEMPT_ID}"
+      PLAYER_NAME: "Cross Home ${ATTEMPT_ID}"
+
+# ============================================================
+# Step 3 — OPEN THE GUEST CHECKLIST
+# A different set entirely. Its checklist has never contained this card.
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xag-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ============================================================
+# Step 4 — DO THE IMPORT
+# Opens "Add Cross-Release Cards", types the number, drills to the home set,
+# submits. Returns with the modal open on its result panel.
+# ============================================================
+- runFlow:
+    file: util-cross-list-cards.yaml
+    env:
+      SOURCE_SET: "xsrc-${WORKER_INDEX || 0}"
+      CARD_NUMBERS: "951-${ATTEMPT_ID}"
+
+# ── ASSERTION 1: the import says it linked exactly one card ──────────────────
+# "Linked 0 cards." (nothing matched) or "Already linked: …" would both fail
+# this, which is the point.
+- assertVisible:
+    text: ".*Linked 1 card.*"
+
+# ============================================================
+# Step 5 — CLOSE THE MODAL AND LOOK AT THE CHECKLIST
+# ============================================================
+- tapOn:
+    id: "Cancel cross-release import"
+- extendedWaitUntil:
+    notVisible:
+      id: "Add cross-release cards"
+    timeout: 7000
+
+# ── ASSERTION 2: the visiting card is now a row in this set's checklist ──────
+# The scroll IS the assertion (R6) — it fails loudly if the row never appears.
+- scrollUntilVisible:
+    element:
+      text: "#951-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# ── ASSERTION 3: the row names the set the card was actually printed in ──────
+# The badge reads "↗ 2026 Topps xsrc-<worker>". Matched on the set name only,
+# so the arrow glyph never has to survive a round-trip through YAML. This text
+# exists nowhere else on the page — the columns behind show "2026", "Topps" and
+# the set name as three separate things, never joined like this.
+- assertVisible:
+    text: ".*2026 Topps xsrc-${WORKER_INDEX || 0}.*"
+
+# ============================================================
+# CLEANUP (R7) — put the guest checklist back to empty
+# Detaching here is housekeeping, not the claim: it stops the guest checklist
+# accumulating a row per CI run, which would eventually push a fresh row out of
+# view for the next attempt. What detaching actually GUARANTEES (the card
+# survives in its home set) is proved by
+# cross-release-unlink-keeps-card-in-home-set.yaml, not here.
+# ============================================================
+- scrollUntilVisible:
+    element:
+      id: "Remove card 951-${ATTEMPT_ID} from this set"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Remove card 951-${ATTEMPT_ID} from this set"
+- tapOn:
+    id: "Confirm remove card 951-${ATTEMPT_ID} from this set"
+- extendedWaitUntil:
+    notVisible: "#951-${ATTEMPT_ID}"
+    timeout: 7000

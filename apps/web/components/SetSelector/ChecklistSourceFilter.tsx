@@ -74,16 +74,24 @@ export default function ChecklistSourceFilter({
   );
 }
 
-function Chip({
+/**
+ * Exported so other checklist-scoped toggles (NEO-21's "Hide cross-release
+ * cards") render as the same chip rather than a second look-alike. `ariaLabel`
+ * overrides the source-filter-specific default for those callers — Maestro
+ * targets aria-label, so it has to describe what the chip actually does.
+ */
+export function Chip({
   label,
   title,
   active,
   onClick,
+  ariaLabel,
 }: {
   label: string;
   title?: string;
   active: boolean;
   onClick: () => void;
+  ariaLabel?: string;
 }) {
   return (
     <button
@@ -91,7 +99,7 @@ function Chip({
       onClick={onClick}
       title={title}
       aria-pressed={active}
-      aria-label={`Filter source: ${label}${active ? " (selected)" : ""}`}
+      aria-label={ariaLabel ?? `Filter source: ${label}${active ? " (selected)" : ""}`}
       className={`text-xs px-2.5 py-1 rounded-full border transition-colors focus:outline-none focus:ring-1 focus:ring-[#00D558] ${
         active
           ? "border-[#00D558] bg-[#00D558]/15 text-[#00D558]"
