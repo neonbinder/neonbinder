@@ -800,19 +800,64 @@ tags:
                 timeout: 10000
             - inputText: ${VARIANT_TYPE}
             - pressKey: Enter
+            # Wait for the custom-entry FORM to close before anything targets the
+            # new row. This gate exists on all 8 other Add-Custom-Entry blocks in
+            # this file; level 5 was the only one missing it, and that omission is
+            # what broke PR #77 / run 30414180040 (runner 4, custom-card-crud):
+            #   * EntityColumn renders the form INSTEAD of the list
+            #     (`if (mode === "custom") return customForm`), so while the form
+            #     is open the "Insert" ROW does not exist at all;
+            #   * maestro-web reads an <input>'s text as its VALUE, so the still-
+            #     open custom-entry input (value "Insert") satisfied both the
+            #     ".*Insert.*" wait below AND the `text: Insert` scroll/tap;
+            #   * the flow therefore tapped the INPUT — logged at bounds
+            #     [435,458][727,500], i.e. 292px wide = max-w-[340px] minus the
+            #     form's p-6, never a 210px list row — and by the time the click
+            #     dispatched, addCustomOption had resolved, setMode("idle") had
+            #     unmounted the form and EntityColumn's scrollColumnIntoView had
+            #     shifted the row to y≈310. The tap landed in dead space, "Insert"
+            #     was never selected, so the Variants column never mounted and the
+            #     ".*Inserts.*" assert below failed after burning its full timeout.
+            - extendedWaitUntil:
+                notVisible: "Add Custom Entry"
+                timeout: 10000
+            # Form is gone, so this can now only match the new row in the list —
+            # it is a real "the custom variant type was created" assertion.
             - extendedWaitUntil:
                 visible:
                   text: ".*${VARIANT_TYPE}.*"
                 timeout: 5000
 
+      # R8 centering + settle, matching the SET_NAME tap at level 4 and the
+      # VARIANT tap at level 6 (this was the only row-tap in the util without
+      # either). Centering puts the row at y≈315, clear of the y≥489 footer-steal
+      # band, and makes Maestro's tap point agree with where EntityColumn's own
+      # scrollColumnIntoView settles the column after its post-create re-render.
       - scrollUntilVisible:
           element:
             text: ${VARIANT_TYPE}
+          centerElement: true
+          waitToSettleTimeoutMs: 1000
           timeout: 10000
-      - tapOn: ${VARIANT_TYPE}
+      - tapOn:
+          text: ${VARIANT_TYPE}
+          waitToSettleTimeoutMs: 2000
 
       # Verify the Variants column opened. Header is the pluralized VARIANT_TYPE:
       # "Insert" → "Inserts", "Parallel" → "Parallels", etc.
+      #
+      # Deliberately an extendedWaitUntil and NOT a scrollUntilVisible: on
+      # maestro-web `visible` has no viewport-bounds test at all (UiElement.
+      # isWithinViewPortBounds is never called from maestro-client or maestro-
+      # orchestra; only scrollUntilVisible measures getVisiblePercentage), so this
+      # already passes for a column that mounted off to the right of the columns
+      # row. Converting it to a scroll would make it STRICTER, not more tolerant —
+      # and unwinnable: scrollUntilVisible drives CdpWebDriver.swipe, which is
+      # only `window.scrollTo`, while the columns row is an inner overflow-x-auto
+      # scroller (SetSelector.tsx `data-set-selector-scroll`) that window scrolling
+      # cannot move. If this line ever fails again it means the column is absent
+      # from the DOM — i.e. the variant-type selection did not register — which is
+      # exactly what it is here to catch.
       - extendedWaitUntil:
           visible:
             text: ".*${VARIANT_TYPE}s.*"
