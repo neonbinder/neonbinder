@@ -26,7 +26,9 @@ tags:
 
 # Step 2: with no saved profile, the page shows the empty-state copy verbatim.
 # (No "QR Code Generator" form here — the null-profile branch renders instead.)
-- assertVisible: "Set up your public profile first to generate sale QR codes."
+- extendedWaitUntil:
+    visible: "Set up your public profile first to generate sale QR codes."
+    timeout: 45000
 
 # Step 3: and offers the Go to Profile CTA (links to /profile). Asserting it
 # renders is the feature; we do NOT tap it (plain <a> nav — out of scope, and

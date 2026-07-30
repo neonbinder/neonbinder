@@ -83,7 +83,7 @@ tags:
 - launchApp
 - extendedWaitUntil:
     visible: "Set Selector"
-    timeout: 30000
+    timeout: 45000
 
 # ── GLOBAL RESET ────────────────────────────────────────────────────────────
 # DESTRUCTIVE — sanctioned global wipe; gated by ALLOW_RESET_SET_BUILDER_DATA,

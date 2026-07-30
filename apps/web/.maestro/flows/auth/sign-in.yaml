@@ -5,5 +5,10 @@ tags:
   - auth
 ---
 - launchApp
+# Gate on "Sign out", not the "Neon Binder" header — the header also renders on
+# the signed-out landing page (app/landing.tsx), so it proves only that we left
+# the bootstrap screen, not that sign-in actually succeeded.
+- extendedWaitUntil:
+    visible: "Sign out"
+    timeout: 45000
 - assertVisible: "Neon Binder"
-- assertVisible: "Sign out"

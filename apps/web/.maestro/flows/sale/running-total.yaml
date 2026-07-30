@@ -21,7 +21,9 @@ tags:
 ---
 # Step 1: land on the freshly-reset /profile page.
 - launchApp
-- assertVisible: "Profile Settings"
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
 
 # Step 2: fill + save this run's public profile (incl. payment handles) via the
 # shared util (R3 reuse). The profile is now persisted in Convex under

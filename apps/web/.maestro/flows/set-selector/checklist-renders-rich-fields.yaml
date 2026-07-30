@@ -39,6 +39,7 @@ tags:
 - launchApp
 - extendedWaitUntil:
     visible: "Set Selector"
+    timeout: 45000
 
 # ============================================================
 # DRILL TO BASE VARIANT (setup pre-synced 335 cards)

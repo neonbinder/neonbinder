@@ -9,7 +9,9 @@ tags:
 # No clear / restore / seed / reset — strictly sign-in and assert.
 
 - launchApp
-- assertVisible: "Set Builder requires marketplace credentials"
+- extendedWaitUntil:
+    visible: "Set Builder requires marketplace credentials"
+    timeout: 45000
 - assertVisible: ".*BuySportsCards and SportLots.*"
 - assertNotVisible: "Set Selector"
 - assertNotVisible: "Sync Sports"

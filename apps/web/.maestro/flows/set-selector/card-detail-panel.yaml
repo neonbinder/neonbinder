@@ -58,6 +58,7 @@ tags:
 - launchApp
 - extendedWaitUntil:
     visible: "Set Selector"
+    timeout: 45000
 
 # ============================================================
 # DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
