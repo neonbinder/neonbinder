@@ -53,6 +53,7 @@ vi.mock("../../convex/_generated/api", () => ({
       getBatch: "entityReviewQueue.getBatch",
       recordDecision: "entityReviewQueue.recordDecision",
       cancelBatch: "entityReviewQueue.cancelBatch",
+      recordAllRemainingAsCreate: "entityReviewQueue.recordAllRemainingAsCreate",
     },
     // CareerTeamEntry (rendered for player rows) reads teams.list for its
     // typeahead; the useQuery mock below returns undefined for it, which is
@@ -64,6 +65,7 @@ vi.mock("../../convex/_generated/api", () => ({
 let currentRows: unknown;
 const mockRecordDecision = vi.fn();
 const mockCancelBatch = vi.fn();
+const mockRecordAllRemainingAsCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -73,6 +75,8 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) => {
     if (ref === "entityReviewQueue.recordDecision") return mockRecordDecision;
     if (ref === "entityReviewQueue.cancelBatch") return mockCancelBatch;
+    if (ref === "entityReviewQueue.recordAllRemainingAsCreate")
+      return mockRecordAllRemainingAsCreate;
     return vi.fn();
   },
 }));
@@ -157,6 +161,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRecordDecision.mockResolvedValue(null);
   mockCancelBatch.mockResolvedValue(null);
+  mockRecordAllRemainingAsCreate.mockResolvedValue(0);
   currentRows = [];
   lastLinkSearchProps = null;
   nextRowId = 0;
@@ -618,5 +623,142 @@ describe("EntityReviewWizard — cancel", () => {
 
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bulk "Add All Remaining as New" + NEO-110 footer stability
+//
+// The bulk action had NO coverage at either layer (this file or
+// convex/entityReviewQueue.test.ts) before NEO-110, which is why a real defect
+// around it reached CI and cost a full investigation to root-cause.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
+  it("labels the button with the undecided count and calls the bulk mutation", async () => {
+    currentRows = [
+      makeRow({ status: "ready", name: "A" }),
+      makeRow({ status: "pending", name: "B" }),
+      makeRow({ status: "pending", name: "C" }),
+    ];
+    renderWizard();
+
+    const bulk = screen.getByRole("button", { name: "Add all remaining as new (3)" });
+    expect(bulk.textContent).toContain("Add All Remaining as New (3)");
+
+    fireEvent.click(bulk);
+
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledWith({
+        selectorOptionId: "selopt-1",
+        batchId: "batch-1",
+      }),
+    );
+  });
+
+  it("counts only undecided rows, ignoring ones already decided", () => {
+    currentRows = [
+      makeRow({ status: "ready", decision: { action: "create" } }),
+      makeRow({ status: "ready" }),
+      makeRow({ status: "pending" }),
+    ];
+    renderWizard();
+
+    expect(
+      screen.getByRole("button", { name: "Add all remaining as new (2)" }),
+    ).toBeTruthy();
+  });
+
+  it("is not rendered once every row is decided (the final step owns the footer)", () => {
+    currentRows = [
+      makeRow({ status: "ready", decision: { action: "create" } }),
+      makeRow({ status: "ready", decision: { action: "create" } }),
+    ];
+    renderWizard();
+
+    expect(screen.queryByText(/Add All Remaining as New/)).toBeNull();
+    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+  });
+
+  it("surfaces a rejected bulk decide instead of swallowing it (NEO-110)", async () => {
+    // Before the fix `handleBulkCreate` had no catch and the call site is
+    // `void handleBulkCreate()`, so a failure became a silent unhandled
+    // rejection — indistinguishable to the user from a partial decide.
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    mockRecordAllRemainingAsCreate.mockRejectedValueOnce(new Error("not an admin"));
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add all remaining as new (2)" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("not an admin");
+  });
+
+  it("re-enables the button after a failure so the user can retry", async () => {
+    currentRows = [makeRow({ status: "ready" })];
+    mockRecordAllRemainingAsCreate.mockRejectedValueOnce(new Error("boom"));
+    renderWizard();
+
+    const bulk = screen.getByRole("button", {
+      name: "Add all remaining as new (1)",
+    }) as HTMLButtonElement;
+    fireEvent.click(bulk);
+
+    await screen.findByRole("alert");
+    expect(bulk.disabled).toBe(false);
+  });
+});
+
+describe("EntityReviewWizard — NEO-110 footer stability", () => {
+  // WHY A CLASS ASSERTION: jsdom performs no layout, so the footer's real pixel
+  // position cannot be measured here. The defect was purely geometric — the
+  // body swapped between a ~20px "Looking up…" line and a ~240px item block,
+  // and because the overlay centres the dialog the footer moved ~108px, so a
+  // click aimed at the bulk link struck the green "Add as New Player" button
+  // that had just rendered into those coordinates (CI run 30505189226; the tap
+  // point (394,388) is #00D558 in the failure screenshot).
+  //
+  // The guard that prevents it is the body's reserved minimum height, so that
+  // is what these pin. A refactor that drops `min-h-80` fails here — which is
+  // the point, since nothing else in the suite would notice.
+
+  function bodyRegion(): HTMLElement {
+    const el = document.querySelector(".min-h-80");
+    if (!el) throw new Error("wizard body region (min-h-80) not found");
+    return el as HTMLElement;
+  }
+
+  it("reserves a minimum body height while every row is still pending", () => {
+    currentRows = [makeRow({ status: "pending" }), makeRow({ status: "pending" })];
+    renderWizard();
+
+    expect(screen.getByText(/Looking up 2 more names/)).toBeTruthy();
+    expect(bodyRegion().className).toContain("min-h-80");
+  });
+
+  it("keeps the same reserved body height once an item block renders", () => {
+    // The exact state transition that used to move the footer.
+    currentRows = [makeRow({ status: "ready", name: "Resolved Player" })];
+    renderWizard();
+
+    expect(screen.getByText("Resolved Player")).toBeTruthy();
+    expect(bodyRegion().className).toContain("min-h-80");
+  });
+
+  it("keeps it on the final all-decided step too", () => {
+    currentRows = [makeRow({ status: "ready", decision: { action: "create" } })];
+    renderWizard();
+
+    expect(screen.getByText(/All reviewed/)).toBeTruthy();
+    expect(bodyRegion().className).toContain("min-h-80");
+  });
+
+  it("bounds growth so tall content scrolls rather than overflowing the viewport", () => {
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard();
+
+    const cls = bodyRegion().className;
+    expect(cls).toContain("overflow-y-auto");
+    expect(cls).toContain("max-h-[60vh]");
   });
 });

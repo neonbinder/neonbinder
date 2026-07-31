@@ -82,6 +82,11 @@ export default function EntityReviewWizard({
   const [stagedCareerTeams, setStagedCareerTeams] = useState<CareerTeamDraft[]>([]);
   const [cancelling, setCancelling] = useState(false);
   const [bulkCreating, setBulkCreating] = useState(false);
+  // NEO-110: a rejected bulk decide used to be swallowed entirely (the call
+  // site is `void handleBulkCreate()` and there was no catch), so a failed
+  // bulk looked identical to a partial one — the button simply re-enabled and
+  // the counter didn't move. Surface it instead.
+  const [bulkError, setBulkError] = useState<string | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
 
   const total = rows?.length ?? 0;
@@ -129,8 +134,13 @@ export default function EntityReviewWizard({
   const handleBulkCreate = async () => {
     if (bulkCreating || saving) return;
     setBulkCreating(true);
+    setBulkError(null);
     try {
       await recordAllRemainingAsCreate({ selectorOptionId, batchId });
+    } catch (e) {
+      setBulkError(
+        e instanceof Error ? e.message : "Couldn't add the remaining names. Try again.",
+      );
     } finally {
       setBulkCreating(false);
     }
@@ -203,7 +213,51 @@ export default function EntityReviewWizard({
             </p>
           </div>
 
-          <div className="p-6 space-y-4">
+          {/*
+            NEO-110 — THE FOOTER MUST NOT MOVE WHEN A LOOKUP LANDS.
+            This body swaps between three wildly different heights: the
+            "Looking up N more names…" line (~20px) while every row is still
+            `pending`, the full item block (~240px) once one resolves, and the
+            "All reviewed" line. Because the overlay centres the dialog
+            (`flex items-center`), a content-height jump moves the footer by
+            HALF the delta — measured at ~108px in CI run 30505189226.
+
+            That is not cosmetic. The bulk "Add All Remaining as New (N)" link
+            sat at y=380-396; 333ms later the item block had rendered and the
+            green "Add as New {kind}" button occupied y=383-414. A click aimed
+            at the bulk link landed on "Add as New Player" instead — deciding
+            ONE row rather than all of them, silently, for an entity the user
+            never reviewed. (Proven by pixel analysis of the failure
+            screenshot: the tap point (394,388) is #00D558.)
+
+            MEASURED from that failure screenshot: header 98→176, body 176→463
+            (287px), footer 463→527. So 287px is the tallest state actually
+            observed — a player row with "No Wikidata match found" plus the
+            manual career-team form. `min-h-80` reserves 320px, which covers it
+            with ~33px spare, so both the "Looking up…" state and the item state
+            render at exactly 320px and the pending→ready transition cannot move
+            the footer at all.
+
+            HONEST LIMIT: this bounds the movement, it does not mathematically
+            eliminate it. An enrichment-rich row (HoF badge + a long career-team
+            list) could exceed 320px, at which point the body grows again until
+            `max-h-[60vh]` (377px on the 1024×629 CI viewport) turns it into a
+            scroll region. Worst-case residual footer shift is therefore about
+            (377-320)/2 ≈ 28px, versus the 108px that caused the incident.
+            Eliminating it entirely needs a fixed-height body (`h-80`), which
+            would put the item block behind an inner scrollbar that Maestro's
+            page-level scroll cannot drive — that trade-off is a product call,
+            tracked on NEO-110 rather than made silently here.
+
+            min- (not fixed h-) is also why `checklist-fetch-wizard-add-career-team`
+            keeps working: the career-team controls stay in normal page flow.
+          */}
+          <div className="p-6 space-y-4 min-h-80 max-h-[60vh] overflow-y-auto">
+            {bulkError && (
+              <p role="alert" className="text-xs text-[#FF2EB3]">
+                {bulkError}
+              </p>
+            )}
             {current ? (
               <>
                 <div>

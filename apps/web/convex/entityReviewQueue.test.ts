@@ -768,6 +768,173 @@ describe("recordDecision", () => {
 // cancelBatch
 // ===========================================================================
 
+// ===========================================================================
+// recordAllRemainingAsCreate
+//
+// NEO-110: this mutation had ZERO coverage, which is why a suspected bug here
+// cost a full investigation to exonerate. CI run 30505189226 showed a bulk tap
+// on a button reading "(3)" leaving the wizard at "1 of 3 reviewed", and the
+// backend was the prime suspect. It was innocent — the tap had landed on "Add
+// as New Player" after a reflow (see EntityReviewWizard.tsx's NEO-110 comment)
+// — but nothing here proved that. These tests are that proof, kept permanently.
+//
+// The load-bearing property: this mutation decides EVERY undecided row in one
+// transaction and deliberately does NOT filter on `status`, so rows whose
+// lookup is still in flight are decided too (commitCardChecklist's create
+// branch treats `enrichment` as optional).
+// ===========================================================================
+
+describe("recordAllRemainingAsCreate", () => {
+  test("decides every undecided row in the batch and returns the count", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    for (const name of ["KOPlayer", "CDPlayerA", "CDPlayerB"])
+      await insertRow(t, {
+        selectorOptionId,
+        batchId: "bulk",
+        kind: "player",
+        name,
+        status: "ready",
+      });
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsCreate,
+      { selectorOptionId, batchId: "bulk" },
+    );
+
+    expect(count).toBe(3);
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId: "bulk",
+    });
+    expect(rows.filter((r) => r.decision).length).toBe(3);
+    expect(rows.every((r) => r.decision?.action === "create")).toBe(true);
+  });
+
+  test("decides rows still 'pending' — an in-flight lookup must not be skipped", async () => {
+    // The exact CI shape: one lookup had resolved, two were still pending.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    await insertRow(t, {
+      selectorOptionId, batchId: "bulk", kind: "player", name: "KOPlayer", status: "ready",
+    });
+    await insertRow(t, {
+      selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerA", status: "pending",
+    });
+    await insertRow(t, {
+      selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerB", status: "pending",
+    });
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsCreate,
+      { selectorOptionId, batchId: "bulk" },
+    );
+
+    expect(count).toBe(3);
+  });
+
+  test("leaves an already-decided row alone and does not count it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const decidedId = await insertRow(t, {
+      selectorOptionId, batchId: "bulk", kind: "player", name: "Already", status: "ready",
+    });
+    await insertRow(t, {
+      selectorOptionId, batchId: "bulk", kind: "player", name: "Undecided", status: "ready",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(decidedId, { decision: { action: "create" } }),
+    );
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsCreate,
+      { selectorOptionId, batchId: "bulk" },
+    );
+
+    expect(count).toBe(1);
+  });
+
+  test("a later enrichment write does NOT clear the decisions it set", async () => {
+    // applyLookupResult patches only status/enrichment. Locked in because the
+    // NEO-110 investigation's first hypothesis was that this write clobbered
+    // `decision` on rows that were pending at bulk-decide time.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const ids: Array<Id<"entityReviewQueue">> = [];
+    for (const name of ["A", "B", "C"])
+      ids.push(
+        await insertRow(t, {
+          selectorOptionId, batchId: "bulk", kind: "player", name, status: "pending",
+        }),
+      );
+
+    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      selectorOptionId,
+      batchId: "bulk",
+    });
+    for (const id of ids)
+      await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+        id,
+        status: "ready",
+      });
+
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId: "bulk",
+    });
+    expect(rows.filter((r) => r.decision).length).toBe(3);
+    expect(rows.every((r) => r.status === "ready")).toBe(true);
+  });
+
+  test("is scoped to its own batch — rows in another batch are untouched", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    await insertRow(t, {
+      selectorOptionId, batchId: "mine", kind: "player", name: "Mine", status: "ready",
+    });
+    await insertRow(t, {
+      selectorOptionId, batchId: "theirs", kind: "player", name: "Theirs", status: "ready",
+    });
+
+    const count = await asAdmin.mutation(
+      api.entityReviewQueue.recordAllRemainingAsCreate,
+      { selectorOptionId, batchId: "mine" },
+    );
+
+    expect(count).toBe(1);
+    const theirs = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId: "theirs",
+    });
+    expect(theirs[0].decision).toBeUndefined();
+  });
+
+  test("requires admin", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    await insertRow(t, {
+      selectorOptionId, batchId: "bulk", kind: "player", name: "X", status: "ready",
+    });
+
+    await expect(
+      t.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        selectorOptionId,
+        batchId: "bulk",
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("cancelBatch", () => {
   test("deletes every row for the batch and touches nothing else", async () => {
     const t = convexTest(schema, modules);
