@@ -4,5 +4,11 @@ tags:
   - auth
 ---
 - launchApp
+# Gate the tap on the destination being ready. The launch URL is the Clerk
+# bootstrap, not /dashboard — tapping before it redirects means tapping a
+# control that isn't on screen yet. See "Launching a flow" in ../../README.md.
+- extendedWaitUntil:
+    visible: "Sign out"
+    timeout: 45000
 - tapOn: "Sign out"
 - assertVisible: "Get Started"

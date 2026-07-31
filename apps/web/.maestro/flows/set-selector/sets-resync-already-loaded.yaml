@@ -21,7 +21,9 @@ tags:
 # the error path. So we assert the idle-mode button is present without tapping.
 
 - launchApp
-- assertVisible: "Set Selector"
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
 
 # /profile detour (load-bearing): navigate away so util-drill's openLink
 # /set-selector is a fresh CROSS-page mount. No marketplace warm needed — this

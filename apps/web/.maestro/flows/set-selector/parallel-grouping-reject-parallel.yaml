@@ -23,7 +23,9 @@ tags:
 # every wait is the 7s default; the util owns the cold custom-subtree drill.
 
 - launchApp
-- assertVisible: "Set Selector"
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
 
 # Provide a per-run unique prefix for all insert names. The CI runner injects
 # ATTEMPT_ID; for standalone local runs we fall back to the last 4 digits of

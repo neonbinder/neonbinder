@@ -25,7 +25,9 @@ tags:
 ---
 # Step 1: land on the freshly-reset /profile page.
 - launchApp
-- assertVisible: "Profile Settings"
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
 
 # Step 2: fill + save this run's public profile (username/display + payments) via
 # the shared util — runs in this session, returns after "Profile saved." (R3:

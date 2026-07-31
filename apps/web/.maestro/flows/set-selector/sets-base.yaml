@@ -38,7 +38,9 @@ tags:
 # is needed to make it a cross-page mount.
 
 - launchApp
-- assertVisible: "Set Selector"
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
 
 # Drill Baseball → 2024 → Topps → Topps Heritage (cold variant-type sync inside util).
 - runFlow:

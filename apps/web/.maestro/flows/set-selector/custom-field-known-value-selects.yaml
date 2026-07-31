@@ -38,6 +38,7 @@ tags:
 - launchApp
 - extendedWaitUntil:
     visible: "Set Selector"
+    timeout: 45000
 
 # ============================================================
 # WAIT FOR SPORTS COLUMN IDLE

@@ -183,6 +183,54 @@ something beyond plain navigation; for a plain `<a href>` you lose nothing by
 navigating directly. **Watch #2944**: once it's fixed and we bump maestro, real
 click-navigation becomes reliable and this convention can relax.
 
+## Launching a flow: always gate on the destination heading
+
+Almost every flow's `url:` is **not** the page under test — it's
+`/testing/sign-in?redirect=…&worker=N`, which renders only
+`[testing] <status>` while it completes a Clerk testing-token round-trip and
+*then* redirects. So the first command after `launchApp` must be an
+`extendedWaitUntil` on the destination heading, never a bare `assertVisible`
+and never a `tapOn`:
+
+```yaml
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"     # the destination's <h1>, not the bootstrap
+    timeout: 45000
+```
+
+**Pick a marker unique to the destination.** The `[testing]` bootstrap screen
+renders nothing else, so *any* app text clears it — but that's a weak gate. The
+`"Neon Binder"` header also renders on the signed-out landing page
+(`app/landing.tsx`), so gating on it passes even if Clerk bounced you back out;
+you then fail on the *next* assertion with only the default timeout. Gate on
+something the destination alone has: `"COMING SOON"` for `/dashboard`,
+`"Sign out"` for "we are authenticated", `"Profile Settings"` for `/profile`.
+
+**Why 45 s** — `app/testing/sign-in/page.tsx` can, worst case, burn ~22 s
+before it even navigates: up to 2 s of anti-thundering-herd jitter, then up to
+four `signIn.create` attempts whose rate-limit backoff is
+`attempt * 2000 + jitter(0-1000)` (≈3 s + 5 s + 7 s), plus the token fetch and
+the Clerk round-trips themselves. Only then does the destination page mount and
+run its Convex queries. A bare `assertVisible` gets Maestro's default — measured
+at 17.8 s on the NEO-106 failure — which the bootstrap alone can exceed. 45 s
+leaves roughly 23 s for the destination to render.
+
+This is the sanctioned exception to the 7 s rule: **short waits everywhere,
+long waits only for external fetch/auth.** It is specifically *not* licence to
+inflate later in-app steps — once you're past this gate there's no auth
+round-trip left, so subsequent navigations keep their normal short timeouts.
+`profile/credentials-lifecycle` is the worked example: its post-`launchApp`
+gate is 45 s, and its eight in-app `/profile` returns stay at 30 s.
+
+Flows that genuinely launch signed-out (`home/*`, which use a bare `APP_URL` or
+`clearState: true`) have no bootstrap and are exempt.
+
+Failures here are easy to misattribute — the flow dies on an unrelated-looking
+heading assertion, so on PR #78 it first read as an `actions/setup-java` 4→5
+regression. If a flow fails on its very first assertion, check the failure
+screenshot for `[testing] …` before suspecting anything else.
+
 ## Worker-state seeding
 
 The cascade's `requires:` / `provides:` dependency graph IS the seeding

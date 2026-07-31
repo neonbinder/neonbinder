@@ -53,7 +53,9 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - launchApp
-- assertVisible: "Set Selector"
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
 
 # ── DRILL Baseball → 2024 → Topps → Topps Big League (R9) ────────────────────
 # Cold variant-type sync for this fresh set is absorbed inside the util (its

@@ -9,7 +9,9 @@ tags:
 # owned the shared name.
 ---
 - launchApp
-- assertVisible: "Profile Settings"
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
 
 # Basic Info — tap label to focus, then type.
 # Skips eraseText: account=new-profile guarantees empty fields, saving ~13 erase

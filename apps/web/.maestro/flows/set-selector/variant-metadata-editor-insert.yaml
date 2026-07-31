@@ -33,7 +33,9 @@ tags:
 #   - "Save" button — only when the Prefix field has unsaved changes
 
 - launchApp
-- assertVisible: "Set Selector"
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
 
 # Drill to a per-flow custom set; returns on the Inserts column (idle).
 - runFlow:

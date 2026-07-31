@@ -28,7 +28,9 @@ tags:
 #   After rename, "Renamed-..." is visible on the row; "CRUDName-..." is gone.
 
 - launchApp
-- assertVisible: "Set Selector"
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
 
 # ============================================================
 # DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD

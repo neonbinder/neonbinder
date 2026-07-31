@@ -26,7 +26,9 @@ tags:
 # drill and its sync-tolerant waits.
 
 - launchApp
-- assertVisible: "Set Selector"
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
 
 # Drill to a per-flow custom set and land on its Parallels column (idle, with
 # the "Add custom Parallels" button scrolled into view).

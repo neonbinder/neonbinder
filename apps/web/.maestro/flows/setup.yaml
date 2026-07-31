@@ -40,9 +40,14 @@ tags:
 # ── CANONICAL PRE-SYNCED DATA (the contract every other flow relies on) ──────
 # After this flow completes, the shared Convex deployment holds exactly this —
 # any flow may fast-drill to it and read it WITHOUT syncing. If you need data
-# NOT listed here, your flow must sync it itself (and accept the cost), or this
-# inventory must be extended. Keep this list in sync with the agent memory:
-# .claude/agent-memory/maestro-e2e-author/reference_presynced_setup_data.md
+# NOT listed here, your flow must NOT sync it on its own initiative — a new real
+# marketplace set costs a 30–90s sync and needs explicit owner approval. Use a
+# per-worker custom set instead. Keep this list in sync with the registry:
+# apps/web/.maestro/SET-REGISTRY.md
+#
+# THIS FLOW IS THE ONLY WRITER TO THE REAL SET. Everything below is READ-ONLY for
+# every other flow — the 8 runners drain a shared queue, so any other write is
+# visible to whatever else happens to be running (see SET-REGISTRY.md, R7a).
 #
 #   - selectorOptions / cardChecklist / players / teams cleared, then rebuilt
 #   - Worker 0's BSC + SportLots sessions warmed (creds seeded by the
@@ -83,7 +88,7 @@ tags:
 - launchApp
 - extendedWaitUntil:
     visible: "Set Selector"
-    timeout: 30000
+    timeout: 45000
 
 # ── GLOBAL RESET ────────────────────────────────────────────────────────────
 # DESTRUCTIVE — sanctioned global wipe; gated by ALLOW_RESET_SET_BUILDER_DATA,

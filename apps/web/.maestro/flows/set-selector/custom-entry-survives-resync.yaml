@@ -20,6 +20,7 @@ tags:
 - launchApp
 - extendedWaitUntil:
     visible: "Set Selector"
+    timeout: 45000
 
 # Worker-bootstrap has already seeded marketplace credentials server-side;
 # no credential-setup block needed here.
