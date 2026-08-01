@@ -15,22 +15,23 @@ import type { Id } from "../../convex/_generated/dataModel";
  */
 export default function EntityLinkSearch({
   kind,
-  sport,
+  sportId,
   onSelect,
   onCancel,
 }: {
   kind: "player" | "team";
-  sport: string;
+  /** NEO-96: the sport-level selectorOptions row id, not its display name. */
+  sportId: Id<"selectorOptions">;
   onSelect: (id: Id<"players"> | Id<"teams">, name: string) => void;
   onCancel: () => void;
 }) {
   const players = useQuery(
     api.players.list,
-    kind === "player" ? { sport, limit: 500 } : "skip",
+    kind === "player" ? { sportId, limit: 500 } : "skip",
   );
   const teams = useQuery(
     api.teams.list,
-    kind === "team" ? { sport, limit: 500 } : "skip",
+    kind === "team" ? { sportId, limit: 500 } : "skip",
   );
   const candidates = kind === "player" ? players : teams;
 

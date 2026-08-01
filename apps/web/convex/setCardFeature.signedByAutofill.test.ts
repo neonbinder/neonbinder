@@ -58,6 +58,12 @@ async function seedCard(t: ReturnType<typeof convexTest>, opts: SeedOpts = {}) {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
       platformData: {},
       children: [],
       lastUpdated: Date.now(),
@@ -76,7 +82,7 @@ async function seedCard(t: ReturnType<typeof convexTest>, opts: SeedOpts = {}) {
       const id = await ctx.db.insert("players", {
         name,
         nameNormalized: name.toLowerCase(),
-        primarySport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       });
       insertedPlayerIds.push(id);

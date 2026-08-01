@@ -41,6 +41,12 @@ async function seedVariantTypeUnderChromeSet(t: ReturnType<typeof convexTest>) {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
       platformData: {},
       children: [],
       lastUpdated: Date.now(),
@@ -73,11 +79,11 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
   test("a freshly-committed card gets a non-empty sku reflecting sport/year/set/cardNumber", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [
         {
           cardNumber: "50",
@@ -115,11 +121,11 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
   test("two different cards committed in the same batch get DIFFERENT skus", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [
         {
           cardNumber: "50",
@@ -172,12 +178,12 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
   test("re-committing an already-existing card number does not overwrite its sku", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const commitCard = () =>
       asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: variantTypeId,
-        sport: "Baseball",
+        sportId,
         cards: [
           {
             cardNumber: "50",
@@ -222,7 +228,7 @@ describe("addCustomCard generates a cross-marketplace sku (NEO-91)", () => {
   test("a card added via addCustomCard gets a non-empty, correctly-formatted sku", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: variantTypeId,
@@ -241,7 +247,7 @@ describe("addCustomCard generates a cross-marketplace sku (NEO-91)", () => {
   test("two custom cards added under the same set get DIFFERENT skus", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const cardId1 = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: variantTypeId,

@@ -141,7 +141,7 @@ describe("lookupPlayerEnrichment", () => {
       }) as unknown as typeof fetch,
     );
 
-    const result = await lookupPlayerEnrichment("Mike Trout", "Baseball");
+    const result = await lookupPlayerEnrichment("Mike Trout", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
 
     expect(result).not.toBeNull();
     expect(result!.wikidataId).toBe("Q123456");
@@ -166,14 +166,14 @@ describe("lookupPlayerEnrichment", () => {
       }),
     );
 
-    const result = await lookupPlayerEnrichment("Derek Jeter", "Baseball");
+    const result = await lookupPlayerEnrichment("Derek Jeter", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
     expect(result!.isHallOfFame).toBe(true);
   });
 
   test("defaults isHallOfFame to false (not undefined) for a HoF-aware sport with no matching award", async () => {
     vi.stubGlobal("fetch", makePlayerFetchStub({ qid: "Q1000", detail: {} }));
 
-    const result = await lookupPlayerEnrichment("Some Journeyman", "Baseball");
+    const result = await lookupPlayerEnrichment("Some Journeyman", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
     expect(result!.isHallOfFame).toBe(false);
   });
 
@@ -187,12 +187,12 @@ describe("lookupPlayerEnrichment", () => {
       }) as unknown as typeof fetch,
     );
 
-    const result = await lookupPlayerEnrichment("Totally Unknown Prospect", "Baseball");
+    const result = await lookupPlayerEnrichment("Totally Unknown Prospect", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
     expect(result).toBeNull();
     expect(callCount).toBe(1); // search query only — no detail query attempted
   });
 
-  test("returns null for a sport with no SPORT_QIDS mapping, without calling fetch at all", async () => {
+  test("returns null for a sport with no sportConfig.wikidata mapping, without calling fetch at all", async () => {
     let fetchCalled = false;
     vi.stubGlobal(
       "fetch",
@@ -202,7 +202,7 @@ describe("lookupPlayerEnrichment", () => {
       }) as unknown as typeof fetch,
     );
 
-    const result = await lookupPlayerEnrichment("Someone", "Cricket");
+    const result = await lookupPlayerEnrichment("Someone", { label: "Cricket" });
     expect(result).toBeNull();
     expect(fetchCalled).toBe(false);
   });
@@ -222,7 +222,7 @@ describe("lookupTeamEnrichment", () => {
       (async () => new Response(null, { status: 500 })) as unknown as typeof fetch,
     );
 
-    const result = await lookupTeamEnrichment("Some Unresolvable Team", "Baseball");
+    const result = await lookupTeamEnrichment("Some Unresolvable Team", { label: "Baseball", wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" }, espn: { path: "baseball/mlb", leagueName: "Major League Baseball" } });
     expect(result).toBeNull();
   });
 });
@@ -245,6 +245,13 @@ describe("processEntityReviewQueue", () => {
         value: "Baseball",
         platformData: {},
         children: [],
+        // NEO-96: enrichment reads the QIDs off the sport row now.
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+        },
         lastUpdated: Date.now(),
       }),
     );
@@ -262,7 +269,10 @@ describe("processEntityReviewQueue", () => {
         createdByUserId: "user_review_001",
         kind: opts.kind,
         name: opts.name,
-        sport: "Baseball",
+        // NEO-96: these tests seed the sport row and the review row's
+        // selectorOption as the SAME row, which is fine — the queue only needs
+        // a valid reference to resolve config from.
+        sportId: selectorOptionId,
         status: "pending",
       }),
     );

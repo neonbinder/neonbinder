@@ -37,17 +37,21 @@ import type { Id } from "../../convex/_generated/dataModel";
 export default function TeamPicker({
   value,
   onChange,
-  sport,
+  sportId,
   disabled,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
   /**
-   * Sport to filter the typeahead candidates by. When undefined we
-   * fall back to the full teams list — usable but slower; callers
-   * should always pass it when they can resolve the ancestor sport.
+   * NEO-96: the sport-level selectorOptions row id, not its display name.
+   * Filters the typeahead and tags a newly-created team.
+   *
+   * When undefined we still LIST the full teams table (usable, just slower),
+   * but creating is disabled — see showCreateOption. Previously this passed
+   * `sport: sport ?? ""`, silently writing teams with an empty-string sport
+   * that no query could ever find again.
    */
-  sport?: string;
+  sportId?: Id<"selectorOptions">;
   disabled?: boolean;
 }) {
   // Resolve currently-selected ids → display rows for the chip labels.
@@ -59,7 +63,7 @@ export default function TeamPicker({
   // is filtered + ranked client-side in the popover.
   const candidates = useQuery(
     api.teams.list,
-    sport ? { sport, limit: 500 } : { limit: 500 },
+    sportId ? { sportId, limit: 500 } : { limit: 500 },
   );
   const findOrCreate = useMutation(api.teams.findOrCreate);
 
@@ -120,15 +124,18 @@ export default function TeamPicker({
     return candidates.some((c) => c.name.toLowerCase() === q);
   }, [query, candidates]);
 
+  // NEO-96: no sport row → no create. A team must reference a real sport; the
+  // old `sport ?? ""` fallback produced orphaned rows.
   const showCreateOption =
-    query.trim().length > 0 && !hasExactMatch && !creating;
+    query.trim().length > 0 && !hasExactMatch && !creating && !!sportId;
 
   const createAndAdd = async () => {
     const name = query.trim();
     if (!name || disabled) return;
     setCreating(true);
     try {
-      const id = await findOrCreate({ name, sport: sport ?? "" });
+      if (!sportId) return;
+      const id = await findOrCreate({ name, sportId });
       addChip(id);
     } finally {
       setCreating(false);

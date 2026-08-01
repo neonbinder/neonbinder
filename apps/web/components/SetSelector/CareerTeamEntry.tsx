@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import type { Id } from "../../convex/_generated/dataModel";
 
 /**
  * NEO-92 follow-up: manual career-team entry for a player row in the
@@ -33,13 +34,14 @@ export const MIN_CAREER_YEAR = 1869;
 export type CareerTeamDraft = { name: string; fromYear: number; toYear?: number };
 
 export default function CareerTeamEntry({
-  sport,
+  sportId,
   onAdd,
 }: {
-  sport: string;
+  /** NEO-96: the sport-level selectorOptions row id, not its display name. */
+  sportId: Id<"selectorOptions">;
   onAdd: (entry: CareerTeamDraft) => void;
 }) {
-  const teams = useQuery(api.teams.list, { sport, limit: 500 });
+  const teams = useQuery(api.teams.list, { sportId, limit: 500 });
 
   const [name, setName] = useState("");
   const [fromYear, setFromYear] = useState("");

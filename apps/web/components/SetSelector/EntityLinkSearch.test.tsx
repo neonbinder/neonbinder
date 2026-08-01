@@ -19,6 +19,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Id } from "../../convex/_generated/dataModel";
+
+// NEO-96: the sport-level selectorOptions ROW ID, not a display string.
+const SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -63,7 +67,7 @@ function renderSearch(props: Partial<Parameters<typeof EntityLinkSearch>[0]> = {
   const utils = render(
     <EntityLinkSearch
       kind="player"
-      sport="Baseball"
+      sportId={SPORT_ID}
       onSelect={onSelect}
       onCancel={onCancel}
       {...props}
@@ -98,13 +102,13 @@ describe("EntityLinkSearch", () => {
     currentTeams = [makeCandidate("t1", "Los Angeles Angels")];
 
     const { rerender } = render(
-      <EntityLinkSearch kind="player" sport="Baseball" onSelect={vi.fn()} onCancel={vi.fn()} />,
+      <EntityLinkSearch kind="player" sportId={SPORT_ID} onSelect={vi.fn()} onCancel={vi.fn()} />,
     );
     expect(screen.getByText("Mike Trout")).toBeTruthy();
     expect(screen.queryByText("Los Angeles Angels")).toBeNull();
 
     rerender(
-      <EntityLinkSearch kind="team" sport="Baseball" onSelect={vi.fn()} onCancel={vi.fn()} />,
+      <EntityLinkSearch kind="team" sportId={SPORT_ID} onSelect={vi.fn()} onCancel={vi.fn()} />,
     );
     expect(screen.getByText("Los Angeles Angels")).toBeTruthy();
     expect(screen.queryByText("Mike Trout")).toBeNull();

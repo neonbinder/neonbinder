@@ -51,7 +51,7 @@ describe("fetchEspnTeamInfo", () => {
       throw new Error("fetch must not be called");
     }) as unknown as typeof fetch);
 
-    const result = await fetchEspnTeamInfo("Soccer", "Inter Miami CF");
+    const result = await fetchEspnTeamInfo(undefined, "Inter Miami CF");
     expect(result).toBeNull();
     expect(fetchCalled).toBe(false);
   });
@@ -77,7 +77,7 @@ describe("fetchEspnTeamInfo", () => {
     }) as unknown as typeof fetch);
 
     // Case-insensitive: fixture is title-case, lookup is lowercased.
-    const result = await fetchEspnTeamInfo("Baseball", "washington nationals");
+    const result = await fetchEspnTeamInfo({ path: "baseball/mlb", leagueName: "Major League Baseball" }, "washington nationals");
 
     expect(requestedUrl).toBe("https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/teams");
     expect(result).toEqual({
@@ -100,7 +100,7 @@ describe("fetchEspnTeamInfo", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       )) as unknown as typeof fetch);
 
-    const result = await fetchEspnTeamInfo("Basketball", "Boston Celtics");
+    const result = await fetchEspnTeamInfo({ path: "basketball/nba", leagueName: "National Basketball Association" }, "Boston Celtics");
     // The ESPN list response fixture above never contains a "league" key
     // anywhere — this value can only have come from SPORT_TO_ESPN_LEAGUE.
     expect(result?.league).toBe("National Basketball Association");
@@ -118,14 +118,14 @@ describe("fetchEspnTeamInfo", () => {
       )) as unknown as typeof fetch);
 
     // Defunct/relocated franchise absent from ESPN's current-teams list.
-    const result = await fetchEspnTeamInfo("Basketball", "Seattle SuperSonics");
+    const result = await fetchEspnTeamInfo({ path: "basketball/nba", leagueName: "National Basketball Association" }, "Seattle SuperSonics");
     expect(result).toBeNull();
   });
 
   test("a non-2xx response returns null without throwing", async () => {
     stubFetchOnce((async () => new Response("error", { status: 500 })) as unknown as typeof fetch);
 
-    await expect(fetchEspnTeamInfo("Football", "Los Angeles Rams")).resolves.toBeNull();
+    await expect(fetchEspnTeamInfo({ path: "football/nfl", leagueName: "National Football League" }, "Los Angeles Rams")).resolves.toBeNull();
   });
 
   test("a thrown fetch error (network failure) returns null without throwing", async () => {
@@ -133,7 +133,7 @@ describe("fetchEspnTeamInfo", () => {
       throw new Error("network down");
     }) as unknown as typeof fetch);
 
-    await expect(fetchEspnTeamInfo("Hockey", "Winnipeg Jets")).resolves.toBeNull();
+    await expect(fetchEspnTeamInfo({ path: "hockey/nhl", leagueName: "National Hockey League" }, "Winnipeg Jets")).resolves.toBeNull();
   });
 
   test("a team with color but no alternateColor leaves colorAlternate undefined (not an empty string or literal)", async () => {
@@ -147,7 +147,7 @@ describe("fetchEspnTeamInfo", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       )) as unknown as typeof fetch);
 
-    const result = await fetchEspnTeamInfo("Football", "Green Bay Packers");
+    const result = await fetchEspnTeamInfo({ path: "football/nfl", leagueName: "National Football League" }, "Green Bay Packers");
     expect(result?.colorPrimary).toBe("#203731");
     expect(result?.colorAlternate).toBeUndefined();
   });
@@ -168,7 +168,7 @@ describe("fetchEspnTeamInfo", () => {
         { status: 200, headers: { "Content-Type": "application/json" } },
       )) as unknown as typeof fetch);
 
-    const result = await fetchEspnTeamInfo("Football", "Detroit Lions");
+    const result = await fetchEspnTeamInfo({ path: "football/nfl", leagueName: "National Football League" }, "Detroit Lions");
     expect(result?.colorPrimary).toBeUndefined();
     expect(result?.colorAlternate).toBe("#b0b7bc");
   });

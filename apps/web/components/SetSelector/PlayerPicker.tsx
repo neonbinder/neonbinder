@@ -29,19 +29,24 @@ import type { Id } from "../../convex/_generated/dataModel";
 export default function PlayerPicker({
   value,
   onChange,
-  sport,
+  sportId,
   disabled,
 }: {
   value: Array<Id<"players">>;
   onChange: (next: Array<Id<"players">>) => void;
-  /** Sport to filter typeahead candidates + tag a newly-created player. */
-  sport?: string;
+  /**
+   * NEO-96: the sport-level selectorOptions row id, not its display name.
+   * Filters typeahead candidates and tags a newly-created player. When absent,
+   * listing still works but creating is disabled — the old `sport ?? ""`
+   * fallback wrote players no query could find again.
+   */
+  sportId?: Id<"selectorOptions">;
   disabled?: boolean;
 }) {
   const selectedRows = useQuery(api.players.getManyByIds, { ids: value });
   const candidates = useQuery(
     api.players.list,
-    sport ? { sport, limit: 500 } : { limit: 500 },
+    sportId ? { sportId, limit: 500 } : { limit: 500 },
   );
   const findOrCreate = useMutation(api.players.findOrCreate);
 
@@ -96,8 +101,9 @@ export default function PlayerPicker({
     return candidates.some((c) => c.name.toLowerCase() === q);
   }, [query, candidates]);
 
+  // NEO-96: no sport row → no create. See TeamPicker for the rationale.
   const showCreateOption =
-    query.trim().length > 0 && !hasExactMatch && !creating;
+    query.trim().length > 0 && !hasExactMatch && !creating && !!sportId;
 
   const removeChip = (idToRemove: Id<"players">) => {
     if (disabled) return;
@@ -118,7 +124,8 @@ export default function PlayerPicker({
     if (!name || disabled) return;
     setCreating(true);
     try {
-      const id = await findOrCreate({ name, sport: sport ?? "" });
+      if (!sportId) return;
+      const id = await findOrCreate({ name, sportId });
       addChip(id);
     } finally {
       setCreating(false);

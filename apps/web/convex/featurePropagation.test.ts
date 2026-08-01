@@ -64,6 +64,12 @@ async function seedSubtree(
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
       platformData: { bsc: "bsc-baseball", sportlots: "sl-baseball" },
       children: [],
       lastUpdated: Date.now(),
@@ -286,7 +292,7 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [
         {
           cardNumber: "1",
@@ -361,6 +367,12 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       const sportId = await ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Baseball",
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+        },
         platformData: {},
         features: { league: "MLB" },
         children: [],
@@ -397,12 +409,12 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     // `playerNames`/`wasBlank && isNowSet` in commitCardChecklist), so
     // pre-seed both players directly via the same findOrCreate mutation the
     // old confirmedNewPlayers path used to call under the hood.
-    await asAdmin.mutation(api.players.findOrCreate, { name: "Mike Trout", sport: "Baseball" });
-    await asAdmin.mutation(api.players.findOrCreate, { name: "Aaron Judge", sport: "Baseball" });
+    await asAdmin.mutation(api.players.findOrCreate, { name: "Mike Trout", sportId: subtreeIds.sportId });
+    await asAdmin.mutation(api.players.findOrCreate, { name: "Aaron Judge", sportId: subtreeIds.sportId });
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: subtreeIds.variantTypeId,
-      sport: "Baseball",
+      sportId: subtreeIds.sportId,
       cards: [
         // Card 1: rookie, signed, gold parallel
         {
@@ -484,6 +496,12 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       const sportId = await ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Baseball",
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+        },
         platformData: {},
         children: [],
         lastUpdated: Date.now(),
@@ -503,7 +521,7 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: subtreeIds.setNameId,
-      sport: "Baseball",
+      sportId: subtreeIds.sportId,
       cards: [
         {
           cardNumber: "1",
@@ -587,6 +605,12 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
       const sportId = await ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Baseball",
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+        },
         platformData: {},
         children: [],
         lastUpdated: Date.now(),
@@ -618,17 +642,17 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
   test("a freshly committed card gets a non-empty listingTitle/listingDescription reflecting its actual data", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     // Real listingTitle generation reads `playerNames` off the card's
     // RESOLVED playerIds (see commitCardChecklist) — pre-seed the player so
     // it resolves instead of going through the (unexercised here) batchId
     // review-decision path.
-    await asAdmin.mutation(api.players.findOrCreate, { name: "Elly De La Cruz", sport: "Baseball" });
+    await asAdmin.mutation(api.players.findOrCreate, { name: "Elly De La Cruz", sportId });
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [
         {
           cardNumber: "50",
@@ -678,12 +702,12 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
   test("re-committing an already-existing card number does NOT regenerate/overwrite an operator-edited listingTitle", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const commitCard = () =>
       asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: variantTypeId,
-        sport: "Baseball",
+        sportId,
         cards: [
           {
             cardNumber: "50",
@@ -747,6 +771,12 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
       const sportId = await ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Baseball",
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+        },
         platformData: {},
         children: [],
         lastUpdated: Date.now(),
@@ -760,7 +790,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
         lastUpdated: Date.now(),
       });
       await ctx.db.patch(sportId, { children: [variantTypeId] });
-      return variantTypeId;
+      return { variantTypeId, sportId };
     });
   }
 
@@ -775,7 +805,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
   test("a new card with a BSC ref and no team gets its team resolved via the enrichment queue", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const variantTypeId = await seedVariantType(t);
+    const { variantTypeId, sportId } = await seedVariantType(t);
 
     vi.stubGlobal(
       "fetch",
@@ -790,7 +820,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [
         {
           cardNumber: "50",
@@ -830,7 +860,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
   test("a card whose team is already recoverable from the bulk fetch is NOT re-queued (fetch never called)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const variantTypeId = await seedVariantType(t);
+    const { variantTypeId, sportId } = await seedVariantType(t);
 
     // Only the BSC per-card lookup is under test here — this card's team
     // is already known, so THAT call must never happen. NEO-92: since
@@ -852,11 +882,11 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
       }) as unknown as typeof fetch,
     );
 
-    await asAdmin.mutation(api.teams.findOrCreate, { name: "Kansas City Royals", sport: "Baseball" });
+    await asAdmin.mutation(api.teams.findOrCreate, { name: "Kansas City Royals", sportId });
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [
         {
           cardNumber: "1",
@@ -894,7 +924,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
   test("a card with no BSC ref at all is not queued for BSC enrichment (fetch never called)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const variantTypeId = await seedVariantType(t);
+    const { variantTypeId, sportId } = await seedVariantType(t);
 
     // Same scoping as the test above — "Some Player" isn't pre-seeded and
     // has no batchId/decision, so commitCardChecklist just leaves it
@@ -914,7 +944,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [
         {
           cardNumber: "1",

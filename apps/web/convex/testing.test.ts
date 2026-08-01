@@ -37,7 +37,8 @@ async function seedUser(
     });
     await ctx.db.insert("userProfiles", {
       userId,
-      preferences: { defaultSport: "Baseball" },
+      // NEO-96: preferences.defaultSport was dropped (zero readers).
+      preferences: { defaultYear: 2024 },
     });
     await ctx.db.insert("prizePool", {
       userId,

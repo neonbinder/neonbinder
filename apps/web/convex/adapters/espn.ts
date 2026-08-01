@@ -11,19 +11,12 @@
 
 const ESPN_API_BASE = "https://site.api.espn.com/apis/site/v2/sports";
 
-// NeonBinder's `sport` values (as stored on `teams.sport`/`selectorOptions`
-// sport-level nodes) → ESPN's {sport}/{league} URL segments + the league's
-// full display name. The full name is used directly as `league` when ESPN
-// matches a team — authoritative for a current team, no need to also ask
-// Wikidata for it in that case. Confirmed via grep this session that these
-// four are the only sport values referenced anywhere in this codebase
-// (seed data, adapters, tests) — extend here if that ever changes.
-const SPORT_TO_ESPN_LEAGUE: Record<string, { path: string; leagueName: string }> = {
-  Baseball: { path: "baseball/mlb", leagueName: "Major League Baseball" },
-  Football: { path: "football/nfl", leagueName: "National Football League" },
-  Basketball: { path: "basketball/nba", leagueName: "National Basketball Association" },
-  Hockey: { path: "hockey/nhl", leagueName: "National Hockey League" },
-};
+// NEO-96: `SPORT_TO_ESPN_LEAGUE`, a display-name-keyed map, used to live here
+// and be consulted at runtime with `teams.sport`. It moved to
+// convex/sportConfig.ts as a BOOTSTRAP DEFAULT, seeded onto the sport row's
+// `sportConfig.espn` at creation; callers now pass that object in. The league's
+// full display name is still used directly as `league` when ESPN matches a team
+// — authoritative for a current team, no need to also ask Wikidata in that case.
 
 const ESPN_FETCH_TIMEOUT_MS = 10_000;
 
@@ -64,10 +57,13 @@ function normalize(s: string): string {
  * Wikidata", not an error).
  */
 export async function fetchEspnTeamInfo(
-  sport: string,
+  league: { path: string; leagueName: string } | undefined,
   teamName: string,
 ): Promise<EspnTeamInfo | null> {
-  const league = SPORT_TO_ESPN_LEAGUE[sport];
+  // NEO-96: the caller supplies the league from the sport row's
+  // `sportConfig.espn` rather than this module looking it up by display name.
+  // An unmapped/custom sport passes undefined and gets the same graceful null
+  // as any other miss.
   if (!league) return null;
 
   let data: EspnTeamListResponse;

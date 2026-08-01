@@ -85,6 +85,8 @@ type CardDetailPanelProps = {
   // Ancestor chain (sport→…→variant) already queried once in CardChecklist.
   ancestorChain?: Array<AncestorLevel>;
   ancestorSport?: string;
+  /** NEO-96: sport-level selectorOptions row id, for the entity pickers. */
+  ancestorSportId?: Id<"selectorOptions">;
   onClose: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -112,6 +114,7 @@ export default function CardDetailPanel({
   card,
   ancestorChain,
   ancestorSport,
+  ancestorSportId,
   onClose,
   onPrev,
   onNext,
@@ -379,7 +382,7 @@ export default function CardDetailPanel({
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Teams
             </label>
-            <TeamPicker value={teamIds} onChange={setTeamIds} sport={ancestorSport} />
+            <TeamPicker value={teamIds} onChange={setTeamIds} sportId={ancestorSportId} />
           </div>
 
           {/* Per-card feature overrides (persists immediately via setCardFeature).
@@ -532,7 +535,7 @@ export default function CardDetailPanel({
             <PlayerPicker
               value={playerIds}
               onChange={setPlayerIds}
-              sport={ancestorSport}
+              sportId={ancestorSportId}
             />
           </div>
 

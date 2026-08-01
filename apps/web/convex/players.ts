@@ -41,7 +41,8 @@ const playerDocPublicValidator = v.object({
   _creationTime: v.number(),
   name: v.string(),
   nameNormalized: v.string(),
-  primarySport: v.string(),
+  // NEO-96: reference to the sport-level selectorOptions row.
+  sportId: v.id("selectorOptions"),
   teamYears: v.optional(v.array(v.object({
     teamId: v.id("teams"),
     fromYear: v.number(),
@@ -59,7 +60,8 @@ const playerDocValidator = v.object({
   _creationTime: v.number(),
   name: v.string(),
   nameNormalized: v.string(),
-  primarySport: v.string(),
+  // NEO-96: reference to the sport-level selectorOptions row.
+  sportId: v.id("selectorOptions"),
   teamYears: v.optional(v.array(v.object({
     teamId: v.id("teams"),
     fromYear: v.number(),
@@ -93,7 +95,7 @@ function toPublicPlayer<T extends { createdByUserId?: string }>(doc: T): Omit<T,
 export const findByNameAndSport = query({
   args: {
     name: v.string(),
-    sport: v.string(),
+    sportId: v.id("selectorOptions"),
   },
   returns: v.union(playerDocPublicValidator, v.null()),
   handler: async (ctx, args) => {
@@ -102,7 +104,7 @@ export const findByNameAndSport = query({
       .query("players")
       .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
       .collect();
-    const found = matches.find((p) => p.primarySport === args.sport);
+    const found = matches.find((p) => p.sportId === args.sportId);
     return found ? toPublicPlayer(found) : null;
   },
 });
@@ -120,7 +122,7 @@ export const findByNameAndSport = query({
 export const findOrCreate = mutation({
   args: {
     name: v.string(),
-    sport: v.string(),
+    sportId: v.id("selectorOptions"),
   },
   returns: v.id("players"),
   handler: async (ctx, args): Promise<Id<"players">> => {
@@ -132,13 +134,13 @@ export const findOrCreate = mutation({
       .query("players")
       .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
       .collect();
-    const existing = matches.find((p) => p.primarySport === args.sport);
+    const existing = matches.find((p) => p.sportId === args.sportId);
     if (existing) return existing._id;
 
     return await ctx.db.insert("players", {
       name: args.name.trim(),
       nameNormalized: normalized,
-      primarySport: args.sport,
+      sportId: args.sportId,
       createdByUserId: userId,
       lastUpdated: Date.now(),
     });
@@ -152,16 +154,16 @@ export const findOrCreate = mutation({
  */
 export const list = query({
   args: {
-    sport: v.optional(v.string()),
+    sportId: v.optional(v.id("selectorOptions")),
     limit: v.optional(v.number()),
   },
   returns: v.array(playerDocPublicValidator),
   handler: async (ctx, args) => {
     const limit = args.limit ?? 100;
-    const docs = args.sport
+    const docs = args.sportId
       ? await ctx.db
           .query("players")
-          .withIndex("by_sport", (q) => q.eq("primarySport", args.sport!))
+          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
           .take(limit)
       : await ctx.db.query("players").take(limit);
     return docs.map(toPublicPlayer);

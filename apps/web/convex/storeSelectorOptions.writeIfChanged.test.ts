@@ -52,6 +52,15 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
         value: "Football",
         platformData: { bsc: "bsc-fb", sportlots: "sl-fb" },
         children: [],
+        // NEO-96: a synced sport row carries its config. Without this the
+        // one-time sportConfig backfill would (correctly) patch the row, and
+        // this test is specifically about the NO-CHANGE path.
+        sportConfig: {
+          skuCode: "FB",
+          league: "NFL",
+          espn: { path: "football/nfl", leagueName: "National Football League" },
+          wikidata: { sportQid: "Q41323", hallOfFameQid: "Q1382553" },
+        },
         lastUpdated: SENTINEL,
       }),
     );
@@ -79,6 +88,15 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
         value: "Football",
         platformData: { bsc: "bsc-fb", sportlots: "sl-fb" },
         children: [],
+        // NEO-96: a synced sport row carries its config. Without this the
+        // one-time sportConfig backfill would (correctly) patch the row, and
+        // this test is specifically about the NO-CHANGE path.
+        sportConfig: {
+          skuCode: "FB",
+          league: "NFL",
+          espn: { path: "football/nfl", leagueName: "National Football League" },
+          wikidata: { sportQid: "Q41323", hallOfFameQid: "Q1382553" },
+        },
         lastUpdated: SENTINEL,
       }),
     );

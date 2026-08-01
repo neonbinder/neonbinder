@@ -3,6 +3,7 @@ import {
   mutation,
   action,
   internalMutation,
+  internalQuery,
   ActionCtx,
 } from "./_generated/server";
 import { v } from "convex/values";
@@ -24,6 +25,7 @@ import {
   generateListingDescription,
 } from "./features/generateListing";
 import { generateSku } from "./sku";
+import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
@@ -305,6 +307,42 @@ export const findByLevelAndValue = query({
   },
 });
 
+/**
+ * NEO-96: the enrichment adapters (Wikidata/ESPN) are actions and cannot read
+ * the db, so they resolve a sport row's config through this. Returns the
+ * display label for log lines plus whatever config the row carries — all of it
+ * optional, because a custom/unmapped sport legitimately has none and callers
+ * degrade rather than error.
+ *
+ * Internal: no auth gate, matching the other internal read helpers here. It is
+ * unreachable from a client.
+ */
+export const getSportEnrichmentContext = internalQuery({
+  args: { sportId: v.id("selectorOptions") },
+  returns: v.union(
+    v.object({
+      label: v.string(),
+      espn: v.optional(v.object({ path: v.string(), leagueName: v.string() })),
+      wikidata: v.optional(
+        v.object({
+          sportQid: v.string(),
+          hallOfFameQid: v.optional(v.string()),
+        }),
+      ),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.sportId);
+    if (!row) return null;
+    return {
+      label: row.value,
+      ...(row.sportConfig?.espn ? { espn: row.sportConfig.espn } : {}),
+      ...(row.sportConfig?.wikidata ? { wikidata: row.sportConfig.wikidata } : {}),
+    };
+  },
+});
+
 export const getAncestorChain = query({
   args: { id: v.id("selectorOptions") },
   returns: v.array(
@@ -390,7 +428,9 @@ async function resolveUnknownsAndStartBatch(
   ctx: ActionCtx,
   args: {
     selectorOptionId: Id<"selectorOptions">;
-    sport: string;
+    sportId: Id<"selectorOptions">;
+    /** Display label, for log/telemetry only. */
+    sportLabel: string;
     additionalPlayerNames?: string[];
     additionalTeamNames?: string[];
   },
@@ -437,14 +477,14 @@ async function resolveUnknownsAndStartBatch(
   for (const name of playerByNorm.values()) {
     const existing = await ctx.runQuery(api.players.findByNameAndSport, {
       name,
-      sport: args.sport,
+      sportId: args.sportId,
     });
     if (!existing) unknownPlayers.push(name);
   }
   for (const name of teamByNorm.values()) {
     const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
       name,
-      sport: args.sport,
+      sportId: args.sportId,
     });
     if (!existing) unknownTeams.push(name);
   }
@@ -462,7 +502,7 @@ async function resolveUnknownsAndStartBatch(
     batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId: args.selectorOptionId,
       createdByUserId: callerId,
-      sport: args.sport,
+      sportId: args.sportId,
       playerNames: unknownPlayers,
       teamNames: unknownTeams,
     });
@@ -756,9 +796,19 @@ export const storeSelectorOptions = mutation({
           existing.platformData,
         );
 
-        if (platformDataChanged) {
+        // NEO-96: backfill sportConfig onto a sport row that predates it (or
+        // whose earlier sync ran before defaults existed). Only ever ADDS —
+        // never overwrites a config already on the row, so an operator edit
+        // survives every subsequent sync.
+        const sportConfigBackfill =
+          level === "sport" && !existing.sportConfig
+            ? sportConfigDefaultsFor(option.value)
+            : undefined;
+
+        if (platformDataChanged || sportConfigBackfill) {
           await ctx.db.patch(existing._id, {
-            platformData: mergedPlatformData,
+            ...(platformDataChanged ? { platformData: mergedPlatformData } : {}),
+            ...(sportConfigBackfill ? { sportConfig: sportConfigBackfill } : {}),
             lastUpdated: Date.now(),
           });
         }
@@ -771,6 +821,12 @@ export const storeSelectorOptions = mutation({
           ...(parentFeatures ?? {}),
           ...deriveOwnLevelFeatures(level, option.value),
         };
+        // NEO-96: a sport row carries its own config from creation, so nothing
+        // downstream ever looks up SKU codes / QIDs / ESPN paths by display
+        // name again. Absent for an unmapped sport — callers degrade, see
+        // convex/sportConfig.ts.
+        const sportConfig =
+          level === "sport" ? sportConfigDefaultsFor(option.value) : undefined;
         const id = await ctx.db.insert("selectorOptions", {
           level,
           value: option.value,
@@ -778,6 +834,7 @@ export const storeSelectorOptions = mutation({
           parentId,
           children: [],
           ...(Object.keys(features).length > 0 ? { features } : {}),
+          ...(sportConfig ? { sportConfig } : {}),
           lastUpdated: Date.now(),
         });
         insertedIds.push(id);
@@ -1201,6 +1258,101 @@ export const renamePlatformLabel = mutation({
 });
 
 /**
+ * NEO-96: rename a selectorOptions row's DISPLAY value.
+ *
+ * Until now `value` was write-once — set at insert (storeSelectorOptions /
+ * addCustomSelectorOption) and never patched anywhere in this file. There was
+ * no way, in the UI or the backend, to fix a typo or relabel a sport, year,
+ * manufacturer, set or variant. `renamePlatformLabel` above renames a
+ * MARKETPLACE label, which is a different thing entirely.
+ *
+ * This is only safe to expose now that entities reference sport rows by id
+ * rather than copying their display string: renaming used to mean silently
+ * orphaning every team/player that had stored the old label, and would also
+ * have broken SKU generation and enrichment, which keyed off the display name.
+ * Both of those now read `sportConfig` on the row, so a rename touches nothing
+ * but the label.
+ *
+ * Deliberately does NOT touch `platformData`. The display title and the
+ * marketplace mapping are independent by design — that separation is the whole
+ * point of the NEO-96 work, and a rename must not silently remap a row to a
+ * different marketplace set.
+ */
+export const renameSelectorOption = mutation({
+  args: {
+    id: v.id("selectorOptions"),
+    value: v.string(),
+  },
+  returns: v.object({ success: v.boolean(), message: v.string() }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    const row = await ctx.db.get(args.id);
+    if (!row) {
+      throw new Error(`selectorOptions row not found: ${args.id}`);
+    }
+
+    const trimmed = args.value.trim();
+    if (!trimmed) {
+      throw new Error("Name cannot be empty");
+    }
+
+    const normalized = trimmed.toLowerCase();
+    if (normalized === row.value.toLowerCase().trim()) {
+      // A no-op rename (or a case-only change to the same word) should not
+      // churn `lastUpdated` — NEO-85: a redundant patch invalidates every query
+      // watching this row and reflows the SetSelector columns for nothing.
+      if (trimmed === row.value) {
+        return { success: true, message: "Unchanged" };
+      }
+    } else {
+      // Same normalized-compare rule addCustomSelectorOption uses, scoped to
+      // siblings: two rows under one parent must not share a display value, or
+      // the drill utils and the pickers can't tell them apart.
+      const siblings = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", row.level).eq("parentId", row.parentId),
+        )
+        .collect();
+      const clash = siblings.find(
+        (o) => o._id !== row._id && o.value.toLowerCase().trim() === normalized,
+      );
+      if (clash) {
+        throw new Error(
+          `Another ${row.level} here is already called "${clash.value}"`,
+        );
+      }
+    }
+
+    // `features` are derived FROM the value at insert
+    // (addCustomSelectorOption: deriveOwnLevelFeatures(level, value)), so a
+    // rename has to recompute them or the row keeps features derived from a
+    // name it no longer has. Existing explicitly-set keys win, matching the
+    // insert-time precedence (parent features < own-level derived).
+    const rederived = deriveOwnLevelFeatures(row.level, trimmed);
+    const features = { ...(row.features ?? {}), ...rederived };
+
+    // A sport's config is seeded from its display value at creation. Backfill
+    // it on rename ONLY when the row has none — never overwrite, so an
+    // operator's edits survive, and never clear it, so renaming "Baseball" to
+    // "MLB Baseball" keeps the SKU code and QIDs it already had.
+    const sportConfig =
+      row.level === "sport" && !row.sportConfig
+        ? sportConfigDefaultsFor(trimmed)
+        : undefined;
+
+    await ctx.db.patch(row._id, {
+      value: trimmed,
+      ...(Object.keys(features).length > 0 ? { features } : {}),
+      ...(sportConfig ? { sportConfig } : {}),
+      lastUpdated: Date.now(),
+    });
+    return { success: true, message: `Renamed to "${trimmed}"` };
+  },
+});
+
+/**
  * Validator for the rich per-card payload that storeCardChecklist accepts.
  * Mirrors the shape returned by fetchBscChecklist + fetchSportLotsChecklist
  * after reconciliation. Player/team strings have already been resolved to
@@ -1500,10 +1652,16 @@ export const addCustomCard = mutation({
     await restampCardChecklistSortOrders(ctx, args.selectorOptionId);
 
     // NEO-91: same insert-then-patch SKU generation as commitCardChecklist.
-    const sport = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    // NEO-96: SKU prefix comes from the sport ROW's config, so this path and
+    // commitCardChecklist can no longer disagree (they used to emit NB-BB- and
+    // NB-BA- for the same set, because one passed "Baseball" and the other the
+    // lowercased "baseball" into a capitalized-keyed map).
+    const skuSportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    const skuSportRow = skuSportId ? await ctx.db.get(skuSportId) : null;
     await ctx.db.patch(id, {
       sku: generateSku({
-        sport: sport ?? "",
+        skuCode: skuSportRow?.sportConfig?.skuCode,
+        sportFallbackLabel: skuSportRow?.value ?? "",
         year: mergedFeatures.season ?? "",
         setName: setNameValue ?? "",
         cardNumber: args.cardNumber,
@@ -3747,7 +3905,7 @@ export const fetchCardChecklist = action({
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
-    sport: v.optional(v.string()),
+    sportId: v.optional(v.id("selectorOptions")),
     cards: v.array(previewCardValidator),
     unknownPlayers: v.array(v.string()),
     unknownTeams: v.array(v.string()),
@@ -3758,7 +3916,7 @@ export const fetchCardChecklist = action({
   handler: async (ctx, args): Promise<{
     success: boolean;
     message: string;
-    sport?: string;
+    sportId?: Id<"selectorOptions">;
     cards: Array<{
       cardNumber: string;
       cardName: string;
@@ -3791,12 +3949,21 @@ export const fetchCardChecklist = action({
       // arrays here and fan out / pass through downstream.
       const slPlatformFilters: Record<string, string[]> = {};
       const bscPlatformFilters: Record<string, string[]> = {};
-      let sport: string | undefined;
+      // NEO-96: `sport` used to be `ancestor.value.toLowerCase()` — a BSC wire
+      // format — and that string was returned to the client and persisted onto
+      // teams/players by commitCardChecklist. It is now the sport ROW's id.
+      // The marketplace filters below still derive their own wire values from
+      // `platformData`, which is where they belong.
+      let sportId: Id<"selectorOptions"> | undefined;
+      let sportLabel: string | undefined;
       let cardNumberPrefix: string | undefined;
 
       for (const ancestor of chain) {
         filters[ancestor.level] = ancestor.value;
-        if (ancestor.level === "sport") sport = ancestor.value.toLowerCase();
+        if (ancestor.level === "sport") {
+          sportId = ancestor._id;
+          sportLabel = ancestor.value;
+        }
         if (ancestor.metadata?.cardNumberPrefix) {
           cardNumberPrefix = ancestor.metadata.cardNumberPrefix;
         }
@@ -3828,10 +3995,11 @@ export const fetchCardChecklist = action({
         // Without this, a custom-only set's pending names could never be
         // resolved via the wizard at all (see resolveUnknownsAndStartBatch's
         // doc comment for why this is a real, previously-unclosed gap).
-        const { unknownPlayers, unknownTeams, batchId } = sport
+        const { unknownPlayers, unknownTeams, batchId } = sportId
           ? await resolveUnknownsAndStartBatch(ctx, {
               selectorOptionId: args.selectorOptionId,
-              sport,
+              sportId,
+              sportLabel: sportLabel ?? "",
             })
           : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
         return {
@@ -3840,7 +4008,7 @@ export const fetchCardChecklist = action({
             unknownPlayers.length || unknownTeams.length
               ? `Custom selector subtree — ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation.`
               : "Custom selector subtree — no marketplace data available; add custom cards.",
-          sport,
+          sportId,
           cards: [],
           unknownPlayers,
           unknownTeams,
@@ -3887,7 +4055,7 @@ export const fetchCardChecklist = action({
         return {
           success: false,
           message: msg,
-          sport,
+          sportId,
           cards: [],
           unknownPlayers: [],
           unknownTeams: [],
@@ -3895,7 +4063,7 @@ export const fetchCardChecklist = action({
       }
 
       console.log(
-        `[fetchCardChecklist] sport=${sport} prefix=${cardNumberPrefix}`,
+        `[fetchCardChecklist] sport=${sportLabel} prefix=${cardNumberPrefix}`,
         `filters:`, filters,
       );
 
@@ -4201,10 +4369,11 @@ export const fetchCardChecklist = action({
         for (const t of c.teams ?? []) additionalTeamNames.push(t);
         if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
       }
-      const { unknownPlayers, unknownTeams, batchId } = sport
+      const { unknownPlayers, unknownTeams, batchId } = sportId
         ? await resolveUnknownsAndStartBatch(ctx, {
             selectorOptionId: args.selectorOptionId,
-            sport,
+            sportId,
+            sportLabel: sportLabel ?? "",
             additionalPlayerNames,
             additionalTeamNames,
           })
@@ -4218,7 +4387,7 @@ export const fetchCardChecklist = action({
       return {
         success: true,
         message: `Found ${out.length} cards${unknownPlayers.length || unknownTeams.length ? `; ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation` : ""}`,
-        sport,
+        sportId,
         cards: out,
         unknownPlayers,
         unknownTeams,
@@ -4250,7 +4419,7 @@ export const fetchCardChecklist = action({
 export const commitCardChecklist = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
-    sport: v.string(),
+    sportId: v.id("selectorOptions"),
     cards: v.array(previewCardValidator),
     // Present whenever the fetch surfaced unknown names (and the wizard
     // ran); absent on the zero-unknowns fast path.
@@ -4271,6 +4440,17 @@ export const commitCardChecklist = mutation({
     await requireAdmin(ctx);
     const userId = await getCurrentUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
+
+    // NEO-96: read the sport row ONCE for its SKU code rather than per card.
+    // This is the same row addCustomCard reads, which is what finally makes the
+    // two creation paths agree on a SKU prefix (they used to emit NB-BA- and
+    // NB-BB- for the same set).
+    const commitSportRow = await ctx.db.get(args.sportId);
+    if (!commitSportRow || commitSportRow.level !== "sport") {
+      throw new Error(
+        `commitCardChecklist: sportId ${args.sportId} is not a sport-level row`,
+      );
+    }
 
     // Helper — same normalization as players.ts/teams.ts
     const norm = (s: string) =>
@@ -4342,15 +4522,15 @@ export const commitCardChecklist = mutation({
       const normalized = norm(rawName);
       const existing = await ctx.db
         .query("teams")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", normalized).eq("sport", args.sport),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
         )
         .first();
       if (existing) return existing._id;
       return await ctx.db.insert("teams", {
         name: rawName.trim(),
         nameNormalized: normalized,
-        sport: args.sport,
+        sportId: args.sportId,
         lastUpdated: Date.now(),
       });
     };
@@ -4363,8 +4543,8 @@ export const commitCardChecklist = mutation({
       // many cross-sport duplicates of this normalized name exist.
       const existing = await ctx.db
         .query("players")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", normalized).eq("primarySport", args.sport),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
         )
         .first();
       if (existing) {
@@ -4415,7 +4595,7 @@ export const commitCardChecklist = mutation({
       const id = await ctx.db.insert("players", {
         name: name.trim(),
         nameNormalized: normalized,
-        primarySport: args.sport,
+        sportId: args.sportId,
         createdByUserId: userId,
         lastUpdated: Date.now(),
         ...(teamYears.length ? { teamYears } : {}),
@@ -4436,8 +4616,8 @@ export const commitCardChecklist = mutation({
       const normalized = norm(name);
       const existing = await ctx.db
         .query("teams")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", normalized).eq("sport", args.sport),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
         )
         .first();
       if (existing) {
@@ -4454,7 +4634,7 @@ export const commitCardChecklist = mutation({
       const id = await ctx.db.insert("teams", {
         name: name.trim(),
         nameNormalized: normalized,
-        sport: args.sport,
+        sportId: args.sportId,
         lastUpdated: Date.now(),
         ...(enrichment?.league ? { league: enrichment.league } : {}),
         ...(enrichment?.city ? { city: enrichment.city } : {}),
@@ -4700,7 +4880,8 @@ export const commitCardChecklist = mutation({
         // insert-then-patch pattern already used elsewhere in this file.
         await ctx.db.patch(newCardId, {
           sku: generateSku({
-            sport: args.sport,
+            skuCode: commitSportRow?.sportConfig?.skuCode,
+            sportFallbackLabel: commitSportRow?.value ?? "",
             year: mergedFeatures.season ?? "",
             setName: setNameValue ?? "",
             cardNumber: card.cardNumber,

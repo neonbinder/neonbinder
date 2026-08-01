@@ -43,7 +43,9 @@ export default defineSchema({
       bscSellerId: v.optional(v.string()),
     })),
     preferences: v.optional(v.object({
-      defaultSport: v.optional(v.string()),
+      // NEO-96: `defaultSport: v.optional(v.string())` removed — it had zero
+      // readers anywhere in the app, so it was dropped rather than converted to
+      // a reference. Re-add as v.id("selectorOptions") if a consumer appears.
       defaultYear: v.optional(v.number()),
       theme: v.optional(v.union(v.literal("light"), v.literal("dark"))),
     })),
@@ -100,6 +102,34 @@ export default defineSchema({
       cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
       isInsert: v.optional(v.boolean()),
       isParallel: v.optional(v.boolean()),
+    })),
+    // NEO-96: self-describing config for a `level: "sport"` row. Absent on
+    // every other level, and absent on custom sports (which degrade explicitly:
+    // slugified SKU prefix, no Wikidata/ESPN enrichment).
+    //
+    // These values used to live in five module-level maps keyed by the sport's
+    // DISPLAY NAME — SPORT_QIDS/HOF_QIDS (adapters/wikidata.ts),
+    // SPORT_TO_ESPN_LEAGUE (adapters/espn.ts), SPORT_SKU_CODE (sku.ts),
+    // SPORT_TO_LEAGUE (features/deriveCardFeatures.ts). Keying on the display
+    // name meant renaming a sport would silently break SKU generation and
+    // enrichment. Holding the config on the row makes it rename-proof: the maps
+    // survive only as bootstrap DEFAULTS applied at row creation
+    // (see convex/sportConfig.ts), never as runtime lookups.
+    //
+    // NOT to be confused with `platformData`, which holds marketplace WIRE
+    // formats (bsc "baseball", sportlots "BB"). Those are resolved at the
+    // adapter boundary and must never be persisted onto a domain entity.
+    sportConfig: v.optional(v.object({
+      skuCode: v.optional(v.string()),  // 2-char NeonBinder SKU prefix, e.g. "BB"
+      league: v.optional(v.string()),   // e.g. "MLB"
+      espn: v.optional(v.object({
+        path: v.string(),               // e.g. "baseball/mlb"
+        leagueName: v.string(),
+      })),
+      wikidata: v.optional(v.object({
+        sportQid: v.string(),               // e.g. "Q5369" (baseball)
+        hallOfFameQid: v.optional(v.string()),
+      })),
     })),
     // NEO-24: marketplace-agnostic feature map. Keys come from
     // `convex/features/expectedFeatures.ts` (e.g. "league", "era",
@@ -262,7 +292,14 @@ export default defineSchema({
     name: v.string(),
     // lowercase + token-sort dedup key. Built by normalizePlayerName().
     nameNormalized: v.string(),
-    primarySport: v.string(),
+    // NEO-96: a REFERENCE to the sport-level selectorOptions row, not a copy of
+    // its display label. Previously `primarySport: v.string()`, which three
+    // writers populated with two different casings — commitCardChecklist wrote
+    // fetchCardChecklist's lowercased "baseball" (a BSC wire format that leaked
+    // out of the adapter layer), while the pickers wrote the raw "Baseball".
+    // Reads are exact matches, so the same player was invisible to whichever
+    // path didn't create it and got silently duplicated.
+    sportId: v.id("selectorOptions"),
     // Career teams from Wikidata P54 with P580/P582 qualifiers. teamId
     // points at our teams table once the team is created/known.
     teamYears: v.optional(v.array(v.object({
@@ -285,8 +322,8 @@ export default defineSchema({
     // + football + …), so a 300-player BSC fetch scanned 300 × N cross-sport
     // duplicates and could blow past Convex's 4096 document-scan budget on
     // a single mutation.
-    .index("by_name_normalized_and_sport", ["nameNormalized", "primarySport"])
-    .index("by_sport", ["primarySport"]),
+    .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
+    .index("by_sport_id", ["sportId"]),
 
   // Teams — first-class entity. Modeled with city + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
@@ -294,7 +331,8 @@ export default defineSchema({
   teams: defineTable({
     name: v.string(),
     nameNormalized: v.string(),
-    sport: v.string(),
+    // NEO-96: reference, not a copied display label — see players.sportId.
+    sportId: v.id("selectorOptions"),
     league: v.optional(v.string()),
     city: v.optional(v.string()),
     yearsActive: v.optional(v.object({
@@ -317,8 +355,8 @@ export default defineSchema({
   })
     .index("by_name_normalized", ["nameNormalized"])
     // Same compound-index optimization as players above. See its comment.
-    .index("by_name_normalized_and_sport", ["nameNormalized", "sport"])
-    .index("by_sport", ["sport"]),
+    .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
+    .index("by_sport_id", ["sportId"]),
 
   // NEO-92: per-fetch review queue backing the step-through "new players &
   // teams" wizard (replaces the old single-screen checkbox dialog). One row
@@ -348,7 +386,10 @@ export default defineSchema({
     createdByUserId: v.string(),
     kind: v.union(v.literal("player"), v.literal("team")),
     name: v.string(),
-    sport: v.string(),
+    // NEO-96: reference, not a copied display label — see players.sportId.
+    // getBatch resolves this to a `sportValue` string for the wizard's label so
+    // the client never has to join.
+    sportId: v.id("selectorOptions"),
     status: v.union(
       v.literal("pending"),
       v.literal("ready"),

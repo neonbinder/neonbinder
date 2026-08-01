@@ -264,7 +264,7 @@ export default function EntityReviewWizard({
                   <h3 className="text-sm font-semibold text-gray-200">
                     {current.name}{" "}
                     <span className="text-xs font-normal text-gray-500">
-                      ({kindLabel(current.kind)} · {current.sport})
+                      ({kindLabel(current.kind)} · {current.sportValue})
                     </span>
                   </h3>
                   <div className="mt-2 text-xs text-gray-400 space-y-1">
@@ -326,7 +326,7 @@ export default function EntityReviewWizard({
                 {linkingOpen ? (
                   <EntityLinkSearch
                     kind={current.kind}
-                    sport={current.sport}
+                    sportId={current.sportId}
                     onSelect={(id) => {
                       void handleLink(current._id, current.kind, id);
                     }}
@@ -365,7 +365,7 @@ export default function EntityReviewWizard({
                           </ul>
                         )}
                         <CareerTeamEntry
-                          sport={current.sport}
+                          sportId={current.sportId}
                           onAdd={(entry) =>
                             setStagedCareerTeams((prev) => [...prev, entry])
                           }

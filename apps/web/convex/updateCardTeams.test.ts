@@ -36,6 +36,12 @@ describe("updateCard with teamOnCardIds patch", () => {
       const sportId = await ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Baseball",
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+        },
         platformData: { bsc: "x", sportlots: "y" },
         children: [],
         lastUpdated: Date.now(),
@@ -60,13 +66,13 @@ describe("updateCard with teamOnCardIds patch", () => {
       const teamA = await ctx.db.insert("teams", {
         name: "Yankees",
         nameNormalized: "yankees",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       });
       const teamB = await ctx.db.insert("teams", {
         name: "Red Sox",
         nameNormalized: "red sox",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       });
 
@@ -122,6 +128,12 @@ describe("updateCard with teamOnCardIds patch", () => {
       const sportId = await ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Baseball",
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+        },
         platformData: { bsc: "x", sportlots: "y" },
         children: [],
         lastUpdated: Date.now(),
