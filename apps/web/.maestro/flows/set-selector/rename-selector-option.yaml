@@ -1,0 +1,118 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Selector rename — an entry's display name can be changed in place and the renamed row still selects (per-worker custom set)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-96): a selectorOptions row's DISPLAY NAME can be renamed
+# from the UI, the new name renders, and the renamed row still behaves as a
+# normal selectable entry.
+#
+# WHY THIS IS NEW BEHAVIOUR, NOT A REGRESSION TEST:
+#   `selectorOptions.value` was WRITE-ONCE until NEO-96 — set at insert
+#   (storeSelectorOptions / addCustomSelectorOption) and never patched anywhere
+#   in the codebase. There was no way, in the UI or the backend, to fix a typo
+#   or relabel a sport/year/manufacturer/set/variant. (`renamePlatformLabel`
+#   renames a MARKETPLACE label, which is a different thing entirely.)
+#
+#   Renaming only became safe once teams/players referenced the sport ROW
+#   instead of copying its display string: before that a rename silently
+#   orphaned every entity holding the old label, and broke SKU generation and
+#   Wikidata/ESPN enrichment, both of which keyed off the display name.
+#
+# ISOLATION (R7a): operates on a PER-WORKER CUSTOM set under real
+#   Baseball → 2024 → Topps, so no other runner can observe or race this
+#   rename, and the shared real "2024 Topps Chrome" set is never touched.
+#   Prefix `rnm-` is registered in .maestro/SET-REGISTRY.md.
+#
+# R2 — HARD ASSERTIONS:
+#   - The pre-rename name is visible (proves we're renaming the right row).
+#   - After committing, the NEW name renders and the OLD name is gone.
+#   - The renamed row is still selectable — tapping it opens the next column,
+#     proving the rename didn't detach the row from the hierarchy.
+#
+# MAESTRO NOTES:
+#   - The rename control is a SIBLING of the row button (a button cannot nest
+#     inside a button), exposed as aria-label "Rename <name>" and, once open,
+#     "Edit name for <name>".
+#   - The input carries a per-instance class from useFieldTestClass because
+#     maestro-web's inputText builds an XPath from id → class → position, and
+#     every row would otherwise share one Tailwind className (issue #1083).
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO A PER-WORKER CUSTOM SET UNDER REAL Baseball/2024/Topps
+# util-drill-to-custom creates the set if it doesn't exist, so the first run
+# on a fresh deployment establishes it and later runs re-select it.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "rnm-${WORKER_INDEX || 0}"
+
+# ============================================================
+# RENAME THE CUSTOM SET ENTRY
+# The Sets column lists rnm-<worker>; its rename control sits beside the row.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Rename rnm-${WORKER_INDEX || 0}"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Rename rnm-${WORKER_INDEX || 0}"
+
+# The input replaces the affordance in place, seeded with the current value.
+- extendedWaitUntil:
+    visible:
+      id: "Edit name for rnm-${WORKER_INDEX || 0}"
+    timeout: 7000
+- tapOn:
+    id: "Edit name for rnm-${WORKER_INDEX || 0}"
+    waitToSettleTimeoutMs: 250
+- eraseText
+- inputText: "rnmx-${WORKER_INDEX || 0}"
+- pressKey: Enter
+
+# ============================================================
+# VERIFY THE RENAME LANDED
+# ============================================================
+
+# The new label renders on the row…
+- extendedWaitUntil:
+    visible: "rnmx-${WORKER_INDEX || 0}"
+    timeout: 10000
+# …and the old one is gone. (Substring-safe: "rnm-0" is not a substring of
+# "rnmx-0", so this genuinely proves the old label is no longer rendered.)
+- assertNotVisible: "rnm-${WORKER_INDEX || 0}"
+
+# ============================================================
+# THE RENAMED ROW IS STILL A NORMAL SELECTABLE ENTRY
+# Selecting it must still open the next column — proving the rename changed the
+# label only, and did not detach the row from its parent's children.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "rnmx-${WORKER_INDEX || 0}"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    text: "rnmx-${WORKER_INDEX || 0}"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    visible: "Variant Types"
+    timeout: 20000
