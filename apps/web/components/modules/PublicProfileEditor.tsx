@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "./NeonButton";
+import { Input } from "../primitives/Input";
 
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = useState(value);
@@ -72,9 +73,33 @@ export default function PublicProfileEditor() {
   const upsertPublicProfile = useMutation(api.publicProfile.upsertPublicProfile);
   const uploadProfilePhoto = useAction(api.adapters.gcs.uploadProfilePhoto);
 
-  // Populate form from existing profile
+  /**
+   * NEO-39/41 — has the operator touched the form since it was hydrated?
+   *
+   * This component is both a live view of `getMyPublicProfile` AND an editor
+   * for it, which is the reactive-form race the whole NEO-39 line is about.
+   * The hydration effect below used to run on EVERY re-emit of that query and
+   * blindly reset all 20 fields — and `useQuery` hands back a fresh object on
+   * every reactive push, not only when the row's contents actually change. So
+   * any push (this component's own save completing, a concurrent edit, an
+   * unrelated reactivity wave) wiped whatever the operator was part-way
+   * through typing.
+   *
+   * A ref, not state: it must update synchronously inside onChange without
+   * scheduling a render, exactly like the focus-guard refs in
+   * `useReactiveField`. Once set it is never cleared — after the first edit the
+   * form belongs to the operator for the rest of the mount, and the server has
+   * nothing to tell it that it does not already know (what we would re-hydrate
+   * from is what we just sent; `upsertPublicProfile` does not normalise).
+   */
+  const dirtyRef = useRef(false);
+  const markDirty = useCallback(() => {
+    dirtyRef.current = true;
+  }, []);
+
+  // Populate form from existing profile — but only while it is still pristine.
   useEffect(() => {
-    if (existingProfile) {
+    if (existingProfile && !dirtyRef.current) {
       setUsername(existingProfile.username ?? "");
       setDisplayName(existingProfile.displayName ?? "");
       setTagline(existingProfile.tagline ?? "");
@@ -102,14 +127,33 @@ export default function PublicProfileEditor() {
     }
   }, [existingProfile]);
 
-  const handleUsernameChange = useCallback((value: string) => {
-    const sanitized = value.toLowerCase().replace(/[^a-z0-9-]/g, "");
-    setUsername(sanitized);
-  }, []);
+  const handleUsernameChange = useCallback(
+    (value: string) => {
+      markDirty();
+      const sanitized = value.toLowerCase().replace(/[^a-z0-9-]/g, "");
+      setUsername(sanitized);
+    },
+    [markDirty],
+  );
+
+  /**
+   * Every field routes its edit through here so one call site owns the
+   * dirty-marking. A setter wired straight to onChange would silently opt that
+   * one field out of the guard and reintroduce the stomp for it alone.
+   */
+  const edit = useCallback(
+    <T,>(setter: (v: T) => void) =>
+      (value: T) => {
+        markDirty();
+        setter(value);
+      },
+    [markDirty],
+  );
 
   const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    markDirty();
     const reader = new FileReader();
     reader.onload = (ev) => {
       const result = ev.target?.result as string;
@@ -187,8 +231,10 @@ export default function PublicProfileEditor() {
     }
   };
 
-  const inputClass =
-    "w-full px-3 py-2 border border-slate-700 rounded-md bg-slate-900 text-foreground focus:outline-none focus:ring-2 focus:ring-[#00C2FF]";
+  // Geometry only — surface, border, radius and focus ring now come from the
+  // shared Input primitive (NEO-44), which in `bare` mode deliberately emits no
+  // layout classes so the row keeps the exact dimensions it always had.
+  const inputClass = "w-full px-3 py-2";
 
   const labelClass = "block text-sm font-medium mb-1 text-slate-300";
 
@@ -256,7 +302,8 @@ export default function PublicProfileEditor() {
             Username <span className="text-slate-500 text-xs">(neonbinder.com/u/username)</span>
           </label>
           <div className="relative">
-            <input
+            <Input
+              bare
               id="pub-username"
               type="text"
               value={username}
@@ -286,11 +333,12 @@ export default function PublicProfileEditor() {
           <label htmlFor="pub-display-name" className={labelClass}>
             Display Name
           </label>
-          <input
+          <Input
+            bare
             id="pub-display-name"
             type="text"
             value={displayName}
-            onChange={(e) => setDisplayName(e.target.value)}
+            onChange={(e) => edit(setDisplayName)(e.target.value)}
             className={inputClass}
             placeholder="Your name or shop name"
           />
@@ -300,11 +348,12 @@ export default function PublicProfileEditor() {
           <label htmlFor="pub-tagline" className={labelClass}>
             Tagline
           </label>
-          <input
+          <Input
+            bare
             id="pub-tagline"
             type="text"
             value={tagline}
-            onChange={(e) => setTagline(e.target.value)}
+            onChange={(e) => edit(setTagline)(e.target.value)}
             className={inputClass}
             placeholder="e.g. Vintage baseball cards & rare finds"
           />
@@ -356,15 +405,16 @@ export default function PublicProfileEditor() {
             <input
               type="color"
               value={brandColor1}
-              onChange={(e) => setBrandColor1(e.target.value)}
+              onChange={(e) => edit(setBrandColor1)(e.target.value)}
               className="w-10 h-10 rounded cursor-pointer border border-slate-700 bg-transparent"
               aria-label="Brand color 1"
             />
-            <input
+            <Input
+              bare
               type="text"
               value={brandColor1}
-              onChange={(e) => setBrandColor1(e.target.value)}
-              className="w-28 px-2 py-1 border border-slate-700 rounded bg-slate-900 text-sm font-mono text-slate-300 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+              onChange={(e) => edit(setBrandColor1)(e.target.value)}
+              className="w-28 px-2 py-1 text-sm font-mono text-slate-300"
               placeholder="#00D558"
             />
           </div>
@@ -372,15 +422,16 @@ export default function PublicProfileEditor() {
             <input
               type="color"
               value={brandColor2}
-              onChange={(e) => setBrandColor2(e.target.value)}
+              onChange={(e) => edit(setBrandColor2)(e.target.value)}
               className="w-10 h-10 rounded cursor-pointer border border-slate-700 bg-transparent"
               aria-label="Brand color 2"
             />
-            <input
+            <Input
+              bare
               type="text"
               value={brandColor2}
-              onChange={(e) => setBrandColor2(e.target.value)}
-              className="w-28 px-2 py-1 border border-slate-700 rounded bg-slate-900 text-sm font-mono text-slate-300 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+              onChange={(e) => edit(setBrandColor2)(e.target.value)}
+              className="w-28 px-2 py-1 text-sm font-mono text-slate-300"
               placeholder="#A44AFF"
             />
           </div>
@@ -411,14 +462,15 @@ export default function PublicProfileEditor() {
               ) : buttonType === "myslabs" ? (
                 <MySlabsButton />
               ) : (
-                <FillButton onClick={() => setter(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} />
+                <FillButton onClick={() => edit(setter)(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} />
               )}
             </div>
-            <input
+            <Input
+              bare
               id={id}
               type="url"
               value={value}
-              onChange={(e) => setter(e.target.value)}
+              onChange={(e) => edit(setter)(e.target.value)}
               className={inputClass}
               placeholder={placeholder}
             />
@@ -437,13 +489,14 @@ export default function PublicProfileEditor() {
                 <span className="text-slate-500 text-xs">→ paypal.me/{paypalUsername}</span>
               )}
             </label>
-            <FillButton onClick={() => setPaypalUsername(username)} url={inferredUrls.paypal()} />
+            <FillButton onClick={() => edit(setPaypalUsername)(username)} url={inferredUrls.paypal()} />
           </div>
-          <input
+          <Input
+            bare
             id="pub-paypal"
             type="text"
             value={paypalUsername}
-            onChange={(e) => setPaypalUsername(e.target.value)}
+            onChange={(e) => edit(setPaypalUsername)(e.target.value)}
             className={inputClass}
             placeholder="yourpaypalname"
           />
@@ -453,11 +506,12 @@ export default function PublicProfileEditor() {
             PayPal email (Goods & Services){" "}
             <span className="text-slate-500 text-xs">Buyer-protected payments</span>
           </label>
-          <input
+          <Input
+            bare
             id="pub-paypal-email"
             type="email"
             value={paypalEmail}
-            onChange={(e) => setPaypalEmail(e.target.value)}
+            onChange={(e) => edit(setPaypalEmail)(e.target.value)}
             className={inputClass}
             placeholder="your@email.com"
           />
@@ -470,13 +524,14 @@ export default function PublicProfileEditor() {
                 <span className="text-slate-500 text-xs">→ venmo.com/{venmoUsername}</span>
               )}
             </label>
-            <FillButton onClick={() => setVenmoUsername(username)} url={inferredUrls.venmo()} />
+            <FillButton onClick={() => edit(setVenmoUsername)(username)} url={inferredUrls.venmo()} />
           </div>
-          <input
+          <Input
+            bare
             id="pub-venmo"
             type="text"
             value={venmoUsername}
-            onChange={(e) => setVenmoUsername(e.target.value)}
+            onChange={(e) => edit(setVenmoUsername)(e.target.value)}
             className={inputClass}
             placeholder="yourvenmoname"
           />
@@ -489,13 +544,14 @@ export default function PublicProfileEditor() {
                 <span className="text-slate-500 text-xs">→ cash.app/${cashAppUsername}</span>
               )}
             </label>
-            <FillButton onClick={() => setCashAppUsername(username)} url={inferredUrls.cashApp()} />
+            <FillButton onClick={() => edit(setCashAppUsername)(username)} url={inferredUrls.cashApp()} />
           </div>
-          <input
+          <Input
+            bare
             id="pub-cashapp"
             type="text"
             value={cashAppUsername}
-            onChange={(e) => setCashAppUsername(e.target.value)}
+            onChange={(e) => edit(setCashAppUsername)(e.target.value)}
             className={inputClass}
             placeholder="yourcashapptag"
           />
@@ -516,13 +572,14 @@ export default function PublicProfileEditor() {
           <div key={id}>
             <div className="flex items-center justify-between mb-1">
               <label htmlFor={id} className={labelClass}>{label}</label>
-              <FillButton onClick={() => setter(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} />
+              <FillButton onClick={() => edit(setter)(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} />
             </div>
-            <input
+            <Input
+              bare
               id={id}
               type="url"
               value={value}
-              onChange={(e) => setter(e.target.value)}
+              onChange={(e) => edit(setter)(e.target.value)}
               className={inputClass}
               placeholder={placeholder}
             />

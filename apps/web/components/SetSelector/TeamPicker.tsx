@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
+import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 
@@ -217,7 +218,8 @@ export default function TeamPicker({
             role="listbox"
             aria-label="Team typeahead results"
           >
-            <input
+            <Input
+              bare
               ref={inputRef}
               type="text"
               value={query}
@@ -254,7 +256,7 @@ export default function TeamPicker({
                   removeChip(value[value.length - 1]);
                 }
               }}
-              className="w-full p-1.5 border rounded text-sm dark:bg-gray-900 dark:border-gray-600 focus:border-[#00D558] focus:outline-none"
+              className="w-full p-1.5 text-sm"
             />
 
             {!candidates && (
