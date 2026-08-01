@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { PencilSquareIcon } from "@heroicons/react/24/outline";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -16,16 +17,20 @@ import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
  * enrichment, which both keyed off the display name.
  *
  * ── WHERE THIS LIVES (read before moving it) ────────────────────────────────
- * It renders in SetAttributesPanel's EXPANDED body, not on selector rows.
- * Renaming is rare and deliberate, and one affordance per row in every column
- * was visual noise for something almost nobody uses. The panel already targets
- * exactly one row — the deepest current selection, at ANY level — so rename
- * still reaches sports, years, manufacturers, sets and variants.
+ * A pencil icon immediately after SetAttributesPanel's header title, which is
+ * the name it renames. That adjacency IS the affordance: an earlier revision
+ * put a "Rename" text link over by the SET ATTRIBUTES heading, far from the
+ * name, where nobody would connect the two.
  *
- * Do not put it back on the rows: an EntitySelector row is a single full-width
- * <button>, and a <button> inside a <button> is invalid HTML that browsers
- * reparent, detaching the click handler. It would have to be a sibling in a
- * flex wrapper, which is what made it so prominent in the first place.
+ * The panel targets exactly one row — the deepest current selection, at ANY
+ * level — so rename reaches sports, years, manufacturers, sets and variants.
+ *
+ * Do not put it back on the selector rows: it was there first, one per row in
+ * every column, which was a lot of permanent weight for a rare action. An
+ * EntitySelector row is also a single full-width <button>, and a <button>
+ * inside a <button> is invalid HTML that browsers reparent, detaching the
+ * click handler — so it could only ever be a sibling, never inline with the
+ * name the way it is here.
  *
  * ── UNCONTROLLED INPUT (NEO-36 pattern — do not "fix" this back) ─────────────
  * The name field is UNCONTROLLED (a ref, read at commit) rather than controlled
@@ -118,9 +123,10 @@ export default function RenameEntityControl({
         disabled={disabled}
         onClick={() => setEditing(true)}
         aria-label={`Rename ${currentValue}`}
-        className="shrink-0 px-2 text-xs text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50"
+        title={`Rename ${currentValue}`}
+        className="shrink-0 text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none disabled:opacity-50"
       >
-        Rename
+        <PencilSquareIcon className="w-4 h-4" />
       </button>
     );
   }

@@ -161,9 +161,17 @@ export default function SetAttributesPanel({
       {/* Breadcrumb header (fixes QA #2 — which level/column applies). */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-gray-100">
-            {headerTitle}
-          </h3>
+          {/* NEO-96: the rename pencil sits immediately after the title
+              because the title IS the name it edits — that adjacency is the
+              only thing making it discoverable. The panel scopes itself to the
+              deepest current selection at ANY level, so this one control
+              renames sports, years, manufacturers, sets and variants alike. */}
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-sm font-semibold text-gray-100">
+              {headerTitle}
+            </h3>
+            <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+          </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
           </p>
@@ -197,15 +205,6 @@ export default function SetAttributesPanel({
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
               Set attributes
             </span>
-            {/* NEO-96: renaming lives here rather than on every selector row.
-                It is a rare, deliberate action, and this panel already scopes
-                itself to exactly one row — the deepest current selection, at
-                ANY level (see deepestSelectedId in modules/SetSelector) — so
-                rename stays available for sports, years, manufacturers, sets
-                and variants alike without repeating the affordance down every
-                column. It sits inside the EXPANDED body so it only surfaces
-                once someone has deliberately opened attributes. */}
-            <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
           </div>
 
           {toast && (

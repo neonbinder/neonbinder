@@ -21,11 +21,12 @@ tags:
 #   Wikidata/ESPN enrichment, both of which keyed off the display name.
 #
 # WHERE THE CONTROL LIVES:
-#   SetAttributesPanel's EXPANDED body — not on the selector rows. The panel
-#   scopes itself to the deepest current selection at ANY level, so this same
-#   path renames a sport, year, manufacturer, set or variant; drilling one
-#   level deeper is all that changes. Reaching it therefore means selecting the
-#   row and opening attributes, NOT hunting for it in a column list.
+#   A pencil icon immediately after SetAttributesPanel's header title — not on
+#   the selector rows. The panel scopes itself to the deepest current selection
+#   at ANY level, so this same path renames a sport, year, manufacturer, set or
+#   variant; drilling one level deeper is all that changes. Reaching it means
+#   selecting the row, NOT hunting for it in a column list. The header renders
+#   whether or not attributes are expanded, so no expansion step is needed.
 #
 # ISOLATION (R7a): operates on a PER-WORKER CUSTOM set under real
 #   Baseball → 2024 → Topps, so no other runner can observe or race this
@@ -86,14 +87,15 @@ tags:
       SET_NAME: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # ============================================================
-# OPEN THE ATTRIBUTES PANEL FOR THE SELECTED SET
-# The panel renders collapsed by default at every level (NEO-38: auto-expanding
-# during a drill pushed the selector columns down and hid the next column's
-# target), so it takes an explicit tap to open.
+# SCROLL TO THE ATTRIBUTES PANEL HEADER FOR THE SELECTED SET
+# The panel sits BELOW the selector columns, off-screen at the 1024x629
+# headless viewport — scroll to it before asserting, since "visible" means
+# in-viewport, not merely in the DOM.
 #
-# It also sits BELOW the selector columns, off-screen at the 1024x629 headless
-# viewport — scroll to it before asserting, since "visible" means in-viewport,
-# not merely in the DOM.
+# No expansion step: the pencil lives in the header, which renders whether the
+# attributes body is collapsed or open. (The body itself defaults to collapsed
+# at every level — NEO-38: auto-expanding during a drill pushed the selector
+# columns down and hid the next column's target.)
 # ============================================================
 
 - scrollUntilVisible:
@@ -103,8 +105,6 @@ tags:
     timeout: 15000
 - assertVisible:
     text: ".*Attributes for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
-- tapOn:
-    id: "Edit attributes"
 
 # ============================================================
 # RENAME THE ENTRY
