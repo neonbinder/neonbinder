@@ -25,6 +25,13 @@ tags:
 #   rename, and the shared real "2024 Topps Chrome" set is never touched.
 #   Prefix `rnm-` is registered in .maestro/SET-REGISTRY.md.
 #
+#   ALSO PER-ATTEMPT (`-${ATTEMPT_ID}`), which the sibling isolation alone does
+#   NOT give us here: this flow RENAMES its set, so a second run would create a
+#   fresh `rnm-<worker>` and then try to rename it to a `rnmx-<worker>` that the
+#   previous run already produced — and the sibling-collision guard would
+#   (correctly) reject it. A per-attempt suffix keeps every run's pair unique.
+#   Same reason parallel-grouping-cancel/reject carry ATTEMPT_ID.
+#
 # R2 — HARD ASSERTIONS:
 #   - The pre-rename name is visible (proves we're renaming the right row).
 #   - After committing, the NEW name renders and the OLD name is gone.
@@ -60,7 +67,7 @@ tags:
       SPORT: "Baseball"
       YEAR: "2024"
       MANUFACTURER: "Topps"
-      SET_NAME: "rnm-${WORKER_INDEX || 0}"
+      SET_NAME: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # ============================================================
 # RENAME THE CUSTOM SET ENTRY
@@ -69,22 +76,22 @@ tags:
 
 - scrollUntilVisible:
     element:
-      id: "Rename rnm-${WORKER_INDEX || 0}"
+      id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
     timeout: 15000
 - tapOn:
-    id: "Rename rnm-${WORKER_INDEX || 0}"
+    id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # The input replaces the affordance in place, seeded with the current value.
 - extendedWaitUntil:
     visible:
-      id: "Edit name for rnm-${WORKER_INDEX || 0}"
+      id: "Edit name for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     timeout: 7000
 - tapOn:
-    id: "Edit name for rnm-${WORKER_INDEX || 0}"
+    id: "Edit name for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 250
 - eraseText
-- inputText: "rnmx-${WORKER_INDEX || 0}"
+- inputText: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - pressKey: Enter
 
 # ============================================================
@@ -93,11 +100,11 @@ tags:
 
 # The new label renders on the row…
 - extendedWaitUntil:
-    visible: "rnmx-${WORKER_INDEX || 0}"
+    visible: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     timeout: 10000
 # …and the old one is gone. (Substring-safe: "rnm-0" is not a substring of
 # "rnmx-0", so this genuinely proves the old label is no longer rendered.)
-- assertNotVisible: "rnm-${WORKER_INDEX || 0}"
+- assertNotVisible: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # ============================================================
 # THE RENAMED ROW IS STILL A NORMAL SELECTABLE ENTRY
@@ -107,11 +114,11 @@ tags:
 
 - scrollUntilVisible:
     element:
-      text: "rnmx-${WORKER_INDEX || 0}"
+      text: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
     timeout: 10000
 - tapOn:
-    text: "rnmx-${WORKER_INDEX || 0}"
+    text: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     retryTapIfNoChange: true
 - extendedWaitUntil:
     visible: "Variant Types"

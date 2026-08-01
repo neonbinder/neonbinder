@@ -82,7 +82,7 @@ a retry must not observe its own prior debris.
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |
-| `rnm-` | `rename-selector-option.yaml` (renamed in-flow to `rnmx-`) |
+| `rnm-` | `rename-selector-option.yaml` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
 | `vme-insert-` | `variant-metadata-editor-insert.yaml` |
