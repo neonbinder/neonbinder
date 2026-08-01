@@ -21,6 +21,29 @@ import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
  * invalid HTML and browsers reparent it, which detaches the click handler.
  * It renders as a SIBLING inside the row's flex wrapper.
  *
+ * ── UNCONTROLLED INPUT (NEO-36 pattern — do not "fix" this back) ─────────────
+ * The name field is UNCONTROLLED (a ref, read at commit) rather than controlled
+ * React state, for the same reason as CardChecklist's add-card form: this row
+ * lives in a Convex-reactive list that re-renders on every selectorOptions
+ * update, and those externally-triggered re-renders contend with a controlled
+ * input's value. React never reconciles an uncontrolled input's value, so the
+ * DOM holds exactly what was typed and commit() reads it directly: what you
+ * see is what you save.
+ *
+ * ── EMPTY, NOT PRE-SEEDED (deliberate) ──────────────────────────────────────
+ * The field opens EMPTY with the current name as its placeholder, rather than
+ * pre-filled with the current name. Typing a name replaces it; submitting an
+ * empty field is a no-op (treated as cancel), so the old name is never lost by
+ * accident.
+ *
+ * Pre-seeding cost two E2E runs to diagnose: clicking into a pre-filled field
+ * puts the caret WHERE YOU CLICKED, and a backspace-based clear only removes
+ * what is left of the caret — renaming to `rnmx-0-w0-a2-6355` committed
+ * `rnmx-0-w0-a2-6355a2-6355`, the un-erased tail still trailing. A human hits
+ * the same edge (click the middle, select-all-and-retype is a habit, not a
+ * guarantee); maestro-web additionally cannot send Cmd/Ctrl+A at all, since it
+ * rejects modifier combos. Empty-on-open removes the caret from the problem.
+ *
  * ── MAESTRO ─────────────────────────────────────────────────────────────────
  * Selectors are visible text or aria-label only. The input additionally carries
  * a per-instance class from useFieldTestClass: maestro-web's `inputText` builds
@@ -45,7 +68,6 @@ export default function RenameEntityControl({
   const fieldClass = useFieldTestClass();
 
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(currentValue);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -54,18 +76,12 @@ export default function RenameEntityControl({
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
-  // A rename landing from elsewhere (or a re-sync) should not leave a stale
-  // draft behind the next time this opens.
-  useEffect(() => {
-    if (!editing) setDraft(currentValue);
-  }, [currentValue, editing]);
-
   const commit = async () => {
-    const trimmed = draft.trim();
+    // Read the live DOM value (uncontrolled input) — see the NEO-36 note above.
+    const trimmed = (inputRef.current?.value ?? "").trim();
     if (saving) return;
     if (!trimmed || trimmed === currentValue) {
       setEditing(false);
-      setDraft(currentValue);
       setError(null);
       return;
     }
@@ -83,9 +99,9 @@ export default function RenameEntityControl({
     }
   };
 
+  // Closing unmounts the input; it remounts empty, so there is nothing to reset.
   const cancel = () => {
     setEditing(false);
-    setDraft(currentValue);
     setError(null);
   };
 
@@ -107,11 +123,10 @@ export default function RenameEntityControl({
     <div className="shrink-0 flex items-center gap-1">
       <input
         ref={inputRef}
-        value={draft}
+        placeholder={currentValue}
         disabled={saving}
         aria-label={`Edit name for ${currentValue}`}
         className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800`}
-        onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           // Stop the row's own handlers from seeing these — the row is a
           // sibling button and Enter would otherwise also select it.

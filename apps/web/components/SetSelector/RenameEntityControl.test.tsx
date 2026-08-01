@@ -43,11 +43,18 @@ describe("RenameEntityControl", () => {
     expect(screen.queryByLabelText("Edit name for Baseball")).toBeNull();
   });
 
-  it("opens an input seeded with the current value", () => {
+  // Opens EMPTY, with the current value as the placeholder — not pre-filled.
+  // Pre-filling put the caret mid-text on click, so a backspace-based clear
+  // left an un-erased tail behind and the rename committed a mangled name
+  // (see the note in RenameEntityControl). Empty-on-open removes the caret
+  // from the problem; an empty submit is treated as cancel, so the existing
+  // name is never lost by accident.
+  it("opens an empty input placeheld by the current value", () => {
     renderControl();
     fireEvent.click(screen.getByLabelText("Rename Baseball"));
     const input = screen.getByLabelText("Edit name for Baseball") as HTMLInputElement;
-    expect(input.value).toBe("Baseball");
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("Baseball");
   });
 
   it("commits on Enter with the trimmed value", async () => {
