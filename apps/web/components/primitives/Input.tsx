@@ -76,10 +76,18 @@ export interface InputProps extends NativeInputProps {
    * guaranteed per instance without it.
    */
   fieldKey?: string;
+  /**
+   * Fields are `w-full` by default, which is what almost every form row wants.
+   * Set false for the narrow ones (a hex swatch, a print-run box): Tailwind
+   * resolves conflicting width utilities by stylesheet order, not by the order
+   * they appear in `className`, so a caller's `w-28` cannot reliably beat a
+   * baked-in `w-full` — it has to be omitted rather than overridden.
+   */
+  fullWidth?: boolean;
 }
 
 const BASE_INPUT =
-  "w-full border border-slate-700 rounded-md bg-slate-900 text-foreground placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
+  "border border-slate-700 rounded-md bg-slate-900 text-foreground placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
 
 const SIZE_CLASSES: Record<NonNullable<InputProps["inputSize"]>, string> = {
   default: "px-3 py-2 text-base",
@@ -132,6 +140,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       bare = false,
       reactive,
       fieldKey,
+      fullWidth = true,
       className = "",
       ...props
     },
@@ -140,6 +149,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     const fieldClass = useFieldTestClass();
     const inputClasses = [
       fieldClass(fieldKey),
+      fullWidth ? "w-full" : "",
       BASE_INPUT,
       SIZE_CLASSES[inputSize],
       state === "focused" ? "ring-2 ring-[#00C2FF]" : "",

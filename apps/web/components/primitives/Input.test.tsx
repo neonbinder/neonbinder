@@ -56,6 +56,17 @@ describe("Input — bare mode", () => {
     expect(el.disabled).toBe(true);
   });
 
+  it("is w-full by default but omits it when fullWidth is false", () => {
+    // Tailwind resolves conflicting widths by stylesheet order, so a caller's
+    // `w-28` cannot beat a baked-in `w-full` — it must not be emitted at all.
+    const { rerender } = render(<Input bare aria-label="field" />);
+    expect(field().className).toContain("w-full");
+
+    rerender(<Input bare aria-label="field" fullWidth={false} className="w-28" />);
+    expect(field().className).not.toContain("w-full");
+    expect(field().className).toContain("w-28");
+  });
+
   it("keeps the caller's className alongside the marker class", () => {
     render(<Input bare aria-label="field" className="w-full custom-thing" />);
     const el = field();
