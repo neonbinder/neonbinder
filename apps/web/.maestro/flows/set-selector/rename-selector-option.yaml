@@ -35,13 +35,17 @@ tags:
 # R2 — HARD ASSERTIONS:
 #   - The pre-rename name is visible (proves we're renaming the right row).
 #   - After committing, the NEW name renders and the OLD name is gone.
-#   - The renamed row is still selectable — tapping it opens the next column,
-#     proving the rename didn't detach the row from the hierarchy.
+#   - The SetAttributesPanel breadcrumb reads "Attributes for <new name> (Set)",
+#     proving the selection still resolves to this row — the rename changed the
+#     label only and did not detach it from its parent.
 #
 # MAESTRO NOTES:
 #   - The rename control is a SIBLING of the row button (a button cannot nest
 #     inside a button), exposed as aria-label "Rename <name>" and, once open,
 #     "Edit name for <name>".
+#   - EntitySelector COLLAPSES a column once it has a selection, rendering a
+#     summary chip instead of the row list — so the rename control is absent
+#     until the column is re-expanded. That cost this flow its first CI run.
 #   - The input carries a per-instance class from useFieldTestClass because
 #     maestro-web's inputText builds an XPath from id → class → position, and
 #     every row would otherwise share one Tailwind className (issue #1083).
@@ -70,15 +74,39 @@ tags:
       SET_NAME: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # ============================================================
-# RENAME THE CUSTOM SET ENTRY
-# The Sets column lists rnm-<worker>; its rename control sits beside the row.
+# RE-EXPAND THE SETS COLUMN
+# util-drill-to-custom SELECTS the set, and EntitySelector collapses a column
+# once it has a selection: it renders a summary chip (name + "Custom" + chevron)
+# INSTEAD of the row list, so the row — and its rename control — is not in the
+# DOM at all. Tapping the chip re-expands the column. The chip is a plain
+# clickable div with no aria-label, so it is targeted by its text.
 # ============================================================
 
+- extendedWaitUntil:
+    visible: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      text: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    text: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    retryTapIfNoChange: true
+
+# ============================================================
+# RENAME THE ENTRY
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 10000
 - scrollUntilVisible:
     element:
       id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
-    timeout: 15000
+    timeout: 10000
 - tapOn:
     id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
@@ -95,31 +123,26 @@ tags:
 - pressKey: Enter
 
 # ============================================================
-# VERIFY THE RENAME LANDED
+# VERIFY THE RENAME LANDED AND THE ROW IS STILL THE SELECTED ONE
+#
+# The SetAttributesPanel breadcrumb reads "Attributes for <name> (Set)" for the
+# CURRENTLY SELECTED set. Asserting the new name there proves both halves at
+# once: the label changed, AND the selection still resolves to this row — i.e.
+# the rename did not detach it from its parent.
+#
+# Deliberately NOT re-tapping the row to prove selection: it is already
+# selected, and re-tapping a selected row DESELECTS it and closes the next
+# column (see the guard in util-drill-to-custom's level handlers).
 # ============================================================
 
-# The new label renders on the row…
 - extendedWaitUntil:
     visible: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     timeout: 10000
-# …and the old one is gone. (Substring-safe: "rnm-0" is not a substring of
-# "rnmx-0", so this genuinely proves the old label is no longer rendered.)
-- assertNotVisible: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-
-# ============================================================
-# THE RENAMED ROW IS STILL A NORMAL SELECTABLE ENTRY
-# Selecting it must still open the next column — proving the rename changed the
-# label only, and did not detach the row from its parent's children.
-# ============================================================
-
-- scrollUntilVisible:
-    element:
-      text: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-    centerElement: true
-    timeout: 10000
-- tapOn:
-    text: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-    retryTapIfNoChange: true
 - extendedWaitUntil:
-    visible: "Variant Types"
-    timeout: 20000
+    visible:
+      text: ".*Attributes for rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 10000
+
+# The old label is gone everywhere. Substring-safe: "rnm-0-x" is not a substring
+# of "rnmx-0-x", so this genuinely proves the old value is no longer rendered.
+- assertNotVisible: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
