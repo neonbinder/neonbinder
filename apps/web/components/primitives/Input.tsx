@@ -31,11 +31,21 @@ import {
  * (implicit association) when it does not — accessible either way, without
  * inventing an id.
  *
+ * ## What the primitive owns, and what the caller owns
+ * The primitive owns **visual identity** — surface, border, radius, focus ring,
+ * disabled treatment. In `bare` mode the caller owns **geometry** (width,
+ * padding, font size), because it is dropping into markup that already has a
+ * layout. This split is not stylistic: Tailwind resolves conflicting utilities
+ * by stylesheet order, not by the order they appear in a `className` string, so
+ * a caller's `w-28`/`p-1.5` cannot reliably override a baked-in `w-full`/`px-3
+ * py-2`. Geometry has to be *absent* rather than overridden. Non-bare mode is
+ * standalone, so it does supply `w-full` and a size.
+ *
  * ## Modes
- * - **bare** — renders the lone `<input>` with no wrapper/label/helper chrome.
- *   Use this when dropping into existing markup that already has its own label
- *   and layout: the DOM stays byte-for-byte what it was, so no `.maestro` flow
- *   needs editing.
+ * - **bare** — renders the lone `<input>` with no wrapper/label/helper chrome
+ *   and no geometry classes. Use this when dropping into existing markup: keep
+ *   the layout classes that were already on the element and delete only the
+ *   colour ones, so the DOM stays what it was and no `.maestro` flow changes.
  * - **reactive** — pass {@link ReactiveFieldOptions} and the field becomes
  *   uncontrolled with the NEO-39 focus-guard (external reactive pushes are
  *   dropped while focused/saving; commit reads the live DOM). Supersedes the
@@ -76,14 +86,6 @@ export interface InputProps extends NativeInputProps {
    * guaranteed per instance without it.
    */
   fieldKey?: string;
-  /**
-   * Fields are `w-full` by default, which is what almost every form row wants.
-   * Set false for the narrow ones (a hex swatch, a print-run box): Tailwind
-   * resolves conflicting width utilities by stylesheet order, not by the order
-   * they appear in `className`, so a caller's `w-28` cannot reliably beat a
-   * baked-in `w-full` — it has to be omitted rather than overridden.
-   */
-  fullWidth?: boolean;
 }
 
 const BASE_INPUT =
@@ -140,7 +142,6 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
       bare = false,
       reactive,
       fieldKey,
-      fullWidth = true,
       className = "",
       ...props
     },
@@ -149,9 +150,9 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     const fieldClass = useFieldTestClass();
     const inputClasses = [
       fieldClass(fieldKey),
-      fullWidth ? "w-full" : "",
       BASE_INPUT,
-      SIZE_CLASSES[inputSize],
+      // Geometry only in standalone mode — see the header note.
+      bare ? "" : `w-full ${SIZE_CLASSES[inputSize]}`,
       state === "focused" ? "ring-2 ring-[#00C2FF]" : "",
       className,
     ]

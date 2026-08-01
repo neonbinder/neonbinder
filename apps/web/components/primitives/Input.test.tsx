@@ -56,15 +56,27 @@ describe("Input — bare mode", () => {
     expect(el.disabled).toBe(true);
   });
 
-  it("is w-full by default but omits it when fullWidth is false", () => {
-    // Tailwind resolves conflicting widths by stylesheet order, so a caller's
-    // `w-28` cannot beat a baked-in `w-full` — it must not be emitted at all.
-    const { rerender } = render(<Input bare aria-label="field" />);
-    expect(field().className).toContain("w-full");
+  it("emits NO geometry classes — the caller owns width/padding/size", () => {
+    // Tailwind resolves conflicting utilities by stylesheet order, not by their
+    // order in `className`, so a caller's `w-28`/`p-1.5` cannot override a
+    // baked-in `w-full`/`px-3 py-2`. Bare mode must omit geometry entirely.
+    render(<Input bare aria-label="field" className="w-28 p-1.5 text-sm" />);
+    const cls = field().className;
+    expect(cls).not.toContain("w-full");
+    expect(cls).not.toContain("px-3");
+    expect(cls).not.toContain("py-2");
+    expect(cls).not.toContain("text-base");
+    // ...but the visual identity is still applied.
+    expect(cls).toContain("bg-slate-900");
+    expect(cls).toContain("w-28");
+    expect(cls).toContain("p-1.5");
+  });
 
-    rerender(<Input bare aria-label="field" fullWidth={false} className="w-28" />);
-    expect(field().className).not.toContain("w-full");
-    expect(field().className).toContain("w-28");
+  it("standalone (non-bare) mode DOES supply geometry", () => {
+    render(<Input aria-label="field" />);
+    const cls = field().className;
+    expect(cls).toContain("w-full");
+    expect(cls).toContain("px-3");
   });
 
   it("keeps the caller's className alongside the marker class", () => {
