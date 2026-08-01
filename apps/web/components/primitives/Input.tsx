@@ -88,8 +88,15 @@ export interface InputProps extends NativeInputProps {
   fieldKey?: string;
 }
 
+/**
+ * Visual identity. The text colour is hardcoded rather than `text-foreground`
+ * on purpose: `--foreground` flips to #171717 under a light-mode OS (see
+ * globals.css), and this surface is always `bg-slate-900`, so the themed token
+ * would render near-black text on a near-black field for anyone whose system is
+ * not in dark mode. A hardcoded surface needs a hardcoded foreground.
+ */
 const BASE_INPUT =
-  "border border-slate-700 rounded-md bg-slate-900 text-foreground placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
+  "border border-slate-700 rounded-md bg-slate-900 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
 
 const SIZE_CLASSES: Record<NonNullable<InputProps["inputSize"]>, string> = {
   default: "px-3 py-2 text-base",

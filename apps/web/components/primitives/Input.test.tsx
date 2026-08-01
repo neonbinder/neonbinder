@@ -72,6 +72,16 @@ describe("Input — bare mode", () => {
     expect(cls).toContain("p-1.5");
   });
 
+  it("pairs its hardcoded surface with a hardcoded text colour", () => {
+    // The surface is always bg-slate-900, but `--foreground` flips to #171717
+    // under a light-mode OS — so `text-foreground` here would be near-black
+    // text on a near-black field for anyone not in dark mode.
+    render(<Input bare aria-label="field" />);
+    const cls = field().className;
+    expect(cls).toContain("text-slate-100");
+    expect(cls).not.toContain("text-foreground");
+  });
+
   it("standalone (non-bare) mode DOES supply geometry", () => {
     render(<Input aria-label="field" />);
     const cls = field().className;
