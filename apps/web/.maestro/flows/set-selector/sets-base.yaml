@@ -50,8 +50,8 @@ tags:
 
 # ── SELECT BASE → BaseSetPicker ─────────────────────────────────────────────
 # "Base" sits in the Variant Types column. Center it before tapping — without
-# centering, the element can land in the 1024×629 footer-steal zone (y≥490) and
-# the click is absorbed by the footer layer rather than the row. Rule 8.
+# centering, the scroll can stop with the element only partially on screen and
+# the tap lands off-target. Rule 8.
 - scrollUntilVisible:
     element:
       text: "Base"
@@ -86,7 +86,7 @@ tags:
 #   options arrive, and the confirm button reads "Loading…"/stays disabled until
 #   fetchRawOptions resolves — it only flips to "Confirm Base Set" then, so the
 #   scrollUntilVisible below naturally waits out the real marketplace round-trip.
-#   Center before tapping to keep the button clear of the footer-steal zone. Rule 8.
+#   Center before tapping so the button is fully in view. Rule 8.
 - runFlow:
     when:
       visible: "Select Base Set"

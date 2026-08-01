@@ -123,7 +123,7 @@ tags:
 # Marketplaces" button when the checklist is empty (attempt-1) OR the header
 # "Refresh" button when debris cards exist (retry) — exactly one renders at a
 # time, so targeting it by aria-label is unambiguous. centerElement keeps it in
-# the tap band clear of the sticky binder-header (top) and footer (y≥489).
+# the tap band clear of the sticky binder-header at the top.
 # ============================================================
 
 - scrollUntilVisible:

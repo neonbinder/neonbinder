@@ -113,7 +113,7 @@ tags:
 # touched. The combined { id, text } selector matches the League control whose
 # selected option is "MLB"; a missing snapshot reads "— Select —" and fails.
 # scrollUntilVisible brings the row into the 629px viewport and carries the
-# assertion (R6). centerElement clears the y>=489 footer zone.
+# assertion (R6). centerElement keeps it fully in view.
 - scrollUntilVisible:
     element:
       id: "Value for League"

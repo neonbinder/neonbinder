@@ -68,7 +68,7 @@ tags:
 #
 # aria-label "Add custom Inserts" maps to resource-id (id:). Maestro best
 # practice: centerElement: true on every scroll whose target we then tap — it
-# also clears the 1024×629 headless footer-steal zone.
+# also keeps it fully in view.
 #
 # Non-scroll settle guard: the Inserts column can be mid-re-render immediately
 # after util-drill returns (Convex subscription fires as the page re-settles).
@@ -119,7 +119,7 @@ tags:
 # opens at the bottom of the viewport. The panel occupies y≈488-628; the
 # "Group Parallels" button sits at y≈425-447, fully above the panel — the
 # button's DOM center (x≈500, y≈430) is within the visible columns area and
-# safe from the footer-steal zone (y≥489). No deselection needed.
+# safe from edge clipping. No deselection needed.
 #
 # ── OPEN MODAL: assert initial suggestion pre-placement ─────────────────────
 # On open, <ID> Stars sits in "Top-level inserts"; <ID> Stars Gold and

@@ -101,8 +101,8 @@ tags:
 # NO centerElement: a plain scroll lands the target in the safe mid/lower
 # band; centering is unnecessary for a read-only assert (no tap follows), and
 # the panel is the page's last content so there's nothing below to center
-# against. The danger zone here is the y>=489 FOOTER, not the top (the sticky
-# header is pointer-events-none) — and footer occlusion only steals TAPS, not
+# against. The top is safe (the sticky header is pointer-events-none), and
+# there is no app footer at all — occlusion in general only steals TAPS, not
 # visibility, so a plain scroll is correct for these asserts.
 # ============================================================
 

@@ -253,7 +253,7 @@ tags:
 - tapOn: "Player name"
 - inputText: "Propagation Test Player ${ATTEMPT_ID}"
 # Scroll the "Submit new card" button into center before tapping — it sits in
-# the y=610-642 footer-steal band on the 1024×629 CI viewport; centerElement
+# y=610-642 — below the fold on the 1024×629 CI viewport; centerElement
 # lands it near y≈315 so its own scroll-before-tap CDP call has content to
 # scroll to (without it the tap crashes "null cannot be cast to kotlin.Int").
 - scrollUntilVisible:

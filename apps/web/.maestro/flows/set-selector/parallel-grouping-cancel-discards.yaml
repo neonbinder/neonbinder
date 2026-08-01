@@ -40,8 +40,8 @@ tags:
 # NAMING STRATEGY: ATTEMPT_ID is a PREFIX so the auto-suggestion prefix-match
 # groups Gold/Red under OUR Stars, not an old bare "Stars" entry from a prior run.
 # aria-label "Add custom Inserts" maps to resource-id (id:).
-# centerElement: true on every scroll whose target we then tap — clears the
-# 1024×629 headless footer-steal zone (y≥489).
+# centerElement: true on every scroll whose target we then tap — keeps it
+# fully in view in the 1024×629 headless viewport.
 #
 # --- <ID> Stars ---
 - scrollUntilVisible:

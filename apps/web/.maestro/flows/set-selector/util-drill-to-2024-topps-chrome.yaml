@@ -36,7 +36,7 @@ tags:
 
 # ── SPORT ─────────────────────────────────────────────────────────────────────
 # Baseball is seeded by setup.yaml and appears immediately — no search input at
-# this level. Scroll + center before tapping (footer-steal zone rule).
+# this level. Scroll + center before tapping (centering rule).
 # waitToSettleTimeoutMs: 0 — the subsequent extendedWaitUntil re-syncs; the
 # settle dead-wait is redundant here.
 - extendedWaitUntil:

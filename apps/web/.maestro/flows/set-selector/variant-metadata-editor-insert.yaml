@@ -61,8 +61,8 @@ tags:
 - assertNotVisible: "Add Custom Entry"
 
 # ── SELECT "META-TEST" → VariantMetadataEditor panel renders ────────────────
-# R8 — centerElement: true so the tap lands clear of the footer (y≈315),
-# avoiding the sticky-footer-steal zone at y≥489.
+# R8 — centerElement: true so the tap lands on a fully-visible target (y≈315)
+# rather than one clipped at a viewport edge.
 # R6 — dropped the preceding assertVisible: "META-TEST" (redundant with scroll).
 - scrollUntilVisible:
     element:
@@ -96,7 +96,7 @@ tags:
 
 # ── SAVE → button disappears once the mutation commits; panel stays ─────────
 # R8 — centerElement: true; "Save" is at the bottom of the VariantMetadataEditor
-# panel — the footer-steal zone at y≥489 is a real risk here.
+# panel — a target clipped at the bottom edge is a real risk here.
 - scrollUntilVisible:
     element:
       text: "Save"

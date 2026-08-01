@@ -220,7 +220,7 @@ tags:
 # STEP 3 — PRECONDITION: SET Signed By TO A UNIQUE SENTINEL (editor expanded)
 # Signed By is a row INSIDE the CardFeaturesEditor, so expand it first. The editor
 # is collapsed by default (position 3 in the drawer body, near the top).
-# centerElement keeps the toggle clear of the y>=489 footer-steal zone (R8). Then
+# centerElement keeps the toggle fully in view (R8). Then
 # ONE manual in-drawer swipe (x=80% — inside the right-anchored ~480px drawer; a
 # viewport-centre swipe lands on the backdrop and can't drive the drawer's inner
 # scroll) lifts the Signed By row into the tap band. A per-attempt UNIQUE sentinel

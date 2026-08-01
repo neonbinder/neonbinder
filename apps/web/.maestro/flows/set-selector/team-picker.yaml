@@ -88,7 +88,7 @@ tags:
 - tapOn: "Player name"
 - inputText: "Team Feature Player ${ATTEMPT_ID}"
 # Scroll the "Submit new card" (Add) button into center before tapping. It sits
-# at the bottom of the add-card form, in the y=610-642 footer-steal band on the
+# at the bottom of the add-card form, at y=610-642 — below the fold on the
 # 1024×629 CI viewport. centerElement lands it near y≈315 so its own
 # scroll-before-tap CDP call has content to scroll to — WITHOUT it, scrollToPoint
 # gets an empty JS result and the tap crashes with "null cannot be cast to
