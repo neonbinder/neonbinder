@@ -467,3 +467,68 @@ describe("NEO-96 renameSelectorOption", () => {
     ).rejects.toThrow();
   });
 });
+
+// ===========================================================================
+// RETURNS-VALIDATOR COVERAGE
+//
+// Convex enforces a function's `returns` validator STRICTLY: a document
+// carrying a field the validator doesn't enumerate fails at RUNTIME with
+// "Object contains extra field ...". Adding sportConfig to the schema without
+// adding it to the three validators that enumerate selectorOptions fields did
+// exactly that — getSelectorOptions threw for every sport row, which crashed
+// the whole SetSelector page behind the app-wide error boundary and took the
+// entire E2E seed flow down with it.
+//
+// Nothing in the suite exercised those queries against a row that HAD the new
+// field, so typecheck and 568 unit tests were all green. These close that gap:
+// every query returning a selectorOptions document is called against a sport
+// row carrying a full config.
+// ===========================================================================
+
+describe("NEO-96 queries returning selectorOptions docs accept sportConfig", () => {
+  test("getSelectorOptions returns a configured sport row without a validator error", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await seedTree(t);
+
+    const rows = await asAdmin.query(api.selectorOptions.getSelectorOptions, {
+      level: "sport",
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].value).toBe("Baseball");
+  });
+
+  test("getSelectorOptionById returns a configured sport row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId } = await seedTree(t);
+
+    const row = await asAdmin.query(api.selectorOptions.getSelectorOptionById, {
+      id: sportId,
+    });
+    expect(row?.value).toBe("Baseball");
+  });
+
+  test("findByLevelAndValue returns a configured sport row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await seedTree(t);
+
+    const row = await asAdmin.query(api.selectorOptions.findByLevelAndValue, {
+      level: "sport",
+      value: "Baseball",
+    });
+    expect(row?.value).toBe("Baseball");
+  });
+
+  test("getAncestorChain walks through a configured sport row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId } = await seedTree(t);
+
+    const chain = await asAdmin.query(api.selectorOptions.getAncestorChain, {
+      id: variantTypeId,
+    });
+    expect(chain.map((c) => c.level)).toEqual(["sport", "setName", "variantType"]);
+  });
+});

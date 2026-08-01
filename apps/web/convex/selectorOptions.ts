@@ -86,6 +86,22 @@ export const getSelectorOptions = query({
         bsc: v.optional(v.string()),
         sportlots: v.optional(v.string()),
       })),
+      // NEO-96: sport-level rows carry their own config. Convex validates
+      // `returns` STRICTLY, so every validator that enumerates selectorOptions
+      // fields must list it or the query fails at runtime with
+      // "Object contains extra field `sportConfig`".
+      sportConfig: v.optional(v.object({
+        skuCode: v.optional(v.string()),
+        league: v.optional(v.string()),
+        espn: v.optional(v.object({
+          path: v.string(),
+          leagueName: v.string(),
+        })),
+        wikidata: v.optional(v.object({
+          sportQid: v.string(),
+          hallOfFameQid: v.optional(v.string()),
+        })),
+      })),
       parentId: v.optional(v.id("selectorOptions")),
       children: v.optional(v.array(v.id("selectorOptions"))),
       isCustom: v.optional(v.boolean()),
@@ -243,6 +259,22 @@ export const getSelectorOptionById = query({
         bsc: v.optional(v.string()),
         sportlots: v.optional(v.string()),
       })),
+      // NEO-96: sport-level rows carry their own config. Convex validates
+      // `returns` STRICTLY, so every validator that enumerates selectorOptions
+      // fields must list it or the query fails at runtime with
+      // "Object contains extra field `sportConfig`".
+      sportConfig: v.optional(v.object({
+        skuCode: v.optional(v.string()),
+        league: v.optional(v.string()),
+        espn: v.optional(v.object({
+          path: v.string(),
+          leagueName: v.string(),
+        })),
+        wikidata: v.optional(v.object({
+          sportQid: v.string(),
+          hallOfFameQid: v.optional(v.string()),
+        })),
+      })),
       parentId: v.optional(v.id("selectorOptions")),
       children: v.optional(v.array(v.id("selectorOptions"))),
       isCustom: v.optional(v.boolean()),
@@ -283,6 +315,22 @@ export const findByLevelAndValue = query({
       primaryPlatformId: v.optional(v.object({
         bsc: v.optional(v.string()),
         sportlots: v.optional(v.string()),
+      })),
+      // NEO-96: sport-level rows carry their own config. Convex validates
+      // `returns` STRICTLY, so every validator that enumerates selectorOptions
+      // fields must list it or the query fails at runtime with
+      // "Object contains extra field `sportConfig`".
+      sportConfig: v.optional(v.object({
+        skuCode: v.optional(v.string()),
+        league: v.optional(v.string()),
+        espn: v.optional(v.object({
+          path: v.string(),
+          leagueName: v.string(),
+        })),
+        wikidata: v.optional(v.object({
+          sportQid: v.string(),
+          hallOfFameQid: v.optional(v.string()),
+        })),
       })),
       parentId: v.optional(v.id("selectorOptions")),
       children: v.optional(v.array(v.id("selectorOptions"))),
