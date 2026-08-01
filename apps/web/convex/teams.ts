@@ -33,7 +33,8 @@ const teamDocValidator = v.object({
   _creationTime: v.number(),
   name: v.string(),
   nameNormalized: v.string(),
-  sport: v.string(),
+  // NEO-96: reference to the sport-level selectorOptions row.
+  sportId: v.id("selectorOptions"),
   league: v.optional(v.string()),
   city: v.optional(v.string()),
   yearsActive: v.optional(v.object({
@@ -54,7 +55,7 @@ const teamDocValidator = v.object({
 export const findByNameAndSport = query({
   args: {
     name: v.string(),
-    sport: v.string(),
+    sportId: v.id("selectorOptions"),
   },
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
@@ -63,14 +64,14 @@ export const findByNameAndSport = query({
       .query("teams")
       .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
       .collect();
-    return matches.find((t) => t.sport === args.sport) ?? null;
+    return matches.find((t) => t.sportId === args.sportId) ?? null;
   },
 });
 
 export const findOrCreate = mutation({
   args: {
     name: v.string(),
-    sport: v.string(),
+    sportId: v.id("selectorOptions"),
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
@@ -79,13 +80,13 @@ export const findOrCreate = mutation({
       .query("teams")
       .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
       .collect();
-    const existing = matches.find((t) => t.sport === args.sport);
+    const existing = matches.find((t) => t.sportId === args.sportId);
     if (existing) return existing._id;
 
     return await ctx.db.insert("teams", {
       name: args.name.trim(),
       nameNormalized: normalized,
-      sport: args.sport,
+      sportId: args.sportId,
       lastUpdated: Date.now(),
     });
   },
@@ -115,10 +116,26 @@ export const seedTestTeams = mutation({
           "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
       );
     }
-    const seeds: Array<{ name: string; sport: string }> = [
-      { name: "New York Yankees", sport: "Baseball" },
-      { name: "New York Mets", sport: "Baseball" },
-    ];
+    // NEO-96: teams now reference the sport row, so the Baseball row must
+    // already exist — i.e. the sport sync has to have run before this. That is
+    // an ORDERING REQUIREMENT for setup.yaml, not an incidental detail: seeding
+    // before the sync would silently produce zero teams and the TeamPicker
+    // flows would fail far downstream with no clue why. Fail loudly instead.
+    const baseball = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level", (q) => q.eq("level", "sport"))
+      .collect();
+    const baseballRow = baseball.find(
+      (o) => o.value.toLowerCase().trim() === "baseball",
+    );
+    if (!baseballRow) {
+      throw new Error(
+        "Seed Test Teams requires the Baseball sport row to exist — run the " +
+          "sport sync first (setup.yaml must sync sports before seeding teams).",
+      );
+    }
+
+    const seeds = [{ name: "New York Yankees" }, { name: "New York Mets" }];
     let created = 0;
     let existing = 0;
     for (const seed of seeds) {
@@ -129,14 +146,14 @@ export const seedTestTeams = mutation({
           q.eq("nameNormalized", normalized),
         )
         .collect();
-      if (matches.find((t) => t.sport === seed.sport)) {
+      if (matches.find((t) => t.sportId === baseballRow._id)) {
         existing += 1;
         continue;
       }
       await ctx.db.insert("teams", {
         name: seed.name,
         nameNormalized: normalized,
-        sport: seed.sport,
+        sportId: baseballRow._id,
         lastUpdated: Date.now(),
       });
       created += 1;
@@ -147,16 +164,16 @@ export const seedTestTeams = mutation({
 
 export const list = query({
   args: {
-    sport: v.optional(v.string()),
+    sportId: v.optional(v.id("selectorOptions")),
     limit: v.optional(v.number()),
   },
   returns: v.array(teamDocValidator),
   handler: async (ctx, args) => {
     const limit = args.limit ?? 100;
-    if (args.sport) {
+    if (args.sportId) {
       return await ctx.db
         .query("teams")
-        .withIndex("by_sport", (q) => q.eq("sport", args.sport!))
+        .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
         .take(limit);
     }
     return await ctx.db.query("teams").take(limit);
@@ -199,7 +216,7 @@ export const getInternal = internalQuery({
 export const findOrCreateInternal = internalMutation({
   args: {
     name: v.string(),
-    sport: v.string(),
+    sportId: v.id("selectorOptions"),
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
@@ -208,13 +225,13 @@ export const findOrCreateInternal = internalMutation({
       .query("teams")
       .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
       .collect();
-    const existing = matches.find((t) => t.sport === args.sport);
+    const existing = matches.find((t) => t.sportId === args.sportId);
     if (existing) return existing._id;
 
     return await ctx.db.insert("teams", {
       name: args.name.trim(),
       nameNormalized: normalized,
-      sport: args.sport,
+      sportId: args.sportId,
       lastUpdated: Date.now(),
     });
   },

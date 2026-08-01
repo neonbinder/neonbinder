@@ -56,6 +56,11 @@ vi.mock("convex/react", () => ({
 import PlayerPicker from "./PlayerPicker";
 import type { Id } from "../../convex/_generated/dataModel";
 
+// NEO-96: pickers take the sport-level selectorOptions ROW ID now, not a
+// display string. These stand in for a seeded sport row.
+const SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+const OTHER_SPORT_ID = "selopt-sport-2" as unknown as Id<"selectorOptions">;
+
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
 // ---------------------------------------------------------------------------
@@ -73,7 +78,7 @@ function renderPicker(
 ) {
   const onChange = vi.fn();
   const utils = render(
-    <PlayerPicker value={[]} onChange={onChange} sport="Baseball" {...props} />,
+    <PlayerPicker value={[]} onChange={onChange} sportId={SPORT_ID} {...props} />,
   );
   return { ...utils, onChange };
 }
@@ -307,7 +312,7 @@ describe("PlayerPicker", () => {
   it("clicking '+ Create' calls players.findOrCreate({ name, sport }) and adds the resulting id as a chip", async () => {
     currentCandidates = [];
     mockFindOrCreate.mockResolvedValue(pid("new-player-1"));
-    const { onChange } = renderPicker({ sport: "Baseball" });
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
     openPopover();
 
     fireEvent.change(screen.getByLabelText("Search players"), {
@@ -318,7 +323,7 @@ describe("PlayerPicker", () => {
     await waitFor(() => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Bobby Witt Jr",
-        sport: "Baseball",
+        sportId: SPORT_ID,
       });
     });
     await waitFor(() => {
@@ -329,7 +334,7 @@ describe("PlayerPicker", () => {
   it("pressing Enter with the create row highlighted (no matches) also creates and adds", async () => {
     currentCandidates = [];
     mockFindOrCreate.mockResolvedValue(pid("new-player-2"));
-    const { onChange } = renderPicker({ sport: "Baseball" });
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
     openPopover();
 
     const input = screen.getByLabelText("Search players");
@@ -339,7 +344,7 @@ describe("PlayerPicker", () => {
     await waitFor(() => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Bobby Witt Jr",
-        sport: "Baseball",
+        sportId: SPORT_ID,
       });
     });
     await waitFor(() => {
@@ -347,22 +352,18 @@ describe("PlayerPicker", () => {
     });
   });
 
-  it("passes an empty-string sport to findOrCreate when no sport prop is given", async () => {
+  // NEO-96: see the matching TeamPicker test — this used to assert that a
+  // missing sport prop produced `sport: ""` on the created player.
+  it("hides the create option entirely when no sportId is given", () => {
     currentCandidates = [];
-    mockFindOrCreate.mockResolvedValue(pid("new-player-3"));
-    renderPicker({ sport: undefined });
+    renderPicker({ sportId: undefined });
     openPopover();
 
     fireEvent.change(screen.getByLabelText("Search players"), {
       target: { value: "Bobby Witt Jr" },
     });
-    fireEvent.click(screen.getByLabelText('Create player Bobby Witt Jr'));
 
-    await waitFor(() => {
-      expect(mockFindOrCreate).toHaveBeenCalledWith({
-        name: "Bobby Witt Jr",
-        sport: "",
-      });
-    });
+    expect(screen.queryByLabelText("Create player Bobby Witt Jr")).toBeNull();
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
   });
 });

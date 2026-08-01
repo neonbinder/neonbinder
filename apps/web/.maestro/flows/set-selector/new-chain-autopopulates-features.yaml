@@ -206,8 +206,8 @@ tags:
 # WOVT2-<worker> (Variant)") is a plain <h3> with no aria-label, so its text
 # content is reliably matchable. This scrollUntilVisible IS the assertion that
 # the panel exists at the right node (R6 — no redundant assertVisible after).
-# centerElement keeps the header/toggle clear of the y>=489 footer-steal zone
-# (R8) so the expand tap below lands.
+# centerElement keeps the header/toggle fully in view (R8) so the expand tap
+# below lands.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for WOVT3-${WORKER_INDEX || 0}.*"
@@ -251,8 +251,8 @@ tags:
 # Note on the Era select's text pattern: the selected <option> text is
 # "Vintage (1970-79)"; the literal parentheses are regex metacharacters, so we
 # match on the unambiguous inner substring ".*1970-79.*" (unique on this panel)
-# rather than escaping. centerElement keeps each row clear of the y>=489 footer
-# zone; visibilityPercentage:50 tolerates a partially-clipped row.
+# rather than escaping. centerElement keeps each row fully in view;
+# visibilityPercentage:50 tolerates a partially-clipped row.
 
 # 6a — Era = "Vintage (1970-79)" (copied down from the pre-1980 year, 2 hops).
 - scrollUntilVisible:

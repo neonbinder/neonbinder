@@ -118,16 +118,31 @@ function makeFetchStub(opts: {
 async function insertTeam(
   t: ReturnType<typeof convexTest>,
   name: string,
-  sport = "Baseball",
 ): Promise<Id<"teams">> {
-  return t.run(async (ctx) =>
-    ctx.db.insert("teams", {
+  return t.run(async (ctx) => {
+    // NEO-96: teams reference a sport ROW, and enrichment reads that row's
+    // sportConfig for the ESPN league + Wikidata QIDs — so the fixture has to
+    // carry the same config a real synced sport row gets at creation.
+    const sportId = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
+      platformData: {},
+      children: [],
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
+      lastUpdated: 1_700_000_000_000,
+    });
+    return ctx.db.insert("teams", {
       name,
       nameNormalized: normalizeTeamName(name),
-      sport,
+      sportId,
       lastUpdated: 1_700_000_000_000,
-    }),
-  );
+    });
+  });
 }
 
 const getTeam = (t: ReturnType<typeof convexTest>, id: Id<"teams">) =>

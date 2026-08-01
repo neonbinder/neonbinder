@@ -46,7 +46,7 @@ tags:
 # (Baseball, Basketball, ..., E2E Test Sport 0, E2E Test Sport 1, Football,
 # ..., TestCustomSport-<attempt> rows from prior runs). With a stable
 # (settled) page, CDP scroll succeeds reliably. centerElement: true puts
-# the button at y≈315, clear of the footer-steal zone (y≥489). R8 fix.
+# the button at y≈315, fully in view. R8 fix.
 - scrollUntilVisible:
     element:
       id: "Add custom Sports"
@@ -125,7 +125,7 @@ tags:
 #
 # "Sync Sports" lands below the viewport fold when the Sports list has grown
 # (multiple workers' E2E Test Sport entries + TestCustomSport accumulate over runs).
-# centerElement: true avoids the footer-steal zone (y≥489 steals clicks). R8 fix.
+# centerElement: true keeps the target fully in view. R8 fix.
 - extendedWaitUntil:
     visible: "Baseball"
     timeout: 30000

@@ -119,8 +119,8 @@ tags:
     id: "pub-tiktok"
 - inputText: "https://tiktok.com/@${TEST_USERNAME}-tt"
 
-# Save — centerElement keeps "Save Public Profile" away from the y>=489 footer-steal
-# zone in the 1024x629 headless viewport (R8).
+# Save — centerElement keeps "Save Public Profile" fully in view rather than
+# clipped at the edge of the 1024x629 headless viewport (R8).
 - scrollUntilVisible:
     element:
       text: "Save Public Profile"

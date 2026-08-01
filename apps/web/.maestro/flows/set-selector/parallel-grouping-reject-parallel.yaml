@@ -46,8 +46,8 @@ tags:
 #   - "${ATTEMPT_ID} Champions" does NOT prefix-match → stays top-level
 #
 # aria-label "Add custom Inserts" maps to resource-id (id:); centerElement on
-# every scroll whose target is then tapped — clears the 1024×629 headless
-# footer-steal zone (y≥489).
+# every scroll whose target is then tapped — keeps it fully in view in the
+# 1024×629 headless viewport.
 #
 # Non-scroll settle guard: the Inserts column can be mid-re-render immediately
 # after util-drill returns. Let it settle before the first swipe fires.
@@ -95,7 +95,7 @@ tags:
 
 # ── OPEN MODAL → ACCEPT ALL (places Stars Gold under Stars) ─────────────────
 # centerElement: true on the Group Parallels scroll — the button may sit near
-# y≈425–447 after 3 inserts are added; centering guards against the footer-steal
+# y≈425–447 after 3 inserts are added; centering guards against the edge-clipping
 # zone in edge-case viewport states.
 - scrollUntilVisible:
     element:

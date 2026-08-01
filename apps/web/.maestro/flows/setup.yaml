@@ -113,19 +113,6 @@ tags:
       text: ".*Deleted [0-9]+ selector options.*"
     timeout: 60000
 
-# ── SEED TEST TEAMS ─────────────────────────────────────────────────────────
-# The reset wiped `teams`. Seed New York Yankees + Mets so TeamPicker-style
-# flows get a deterministic typeahead match without depending on card commits.
-- scrollUntilVisible:
-    element:
-      text: "Seed Test Teams"
-    timeout: 10000
-- tapOn: "Seed Test Teams"
-- extendedWaitUntil:
-    visible:
-      text: ".*Seed complete.*"
-    timeout: 15000
-
 # ── WARM WORKER 0's MARKETPLACE SESSIONS ────────────────────────────────────
 # seed-credentials (in the url above) stored real BSC + SL creds but does NOT
 # warm the Puppeteer sessions. Force a fresh login for each so the syncs below
@@ -162,6 +149,28 @@ tags:
       - extendedWaitUntil:
           visible: "Baseball"
           timeout: 60000
+
+# ── SEED TEST TEAMS (NEO-96: must run AFTER the sport sync) ─────────────────
+# The reset wiped `teams`. Seed New York Yankees + Mets so TeamPicker-style
+# flows get a deterministic typeahead match without depending on card commits.
+#
+# ORDERING IS LOAD-BEARING. Teams now reference the sport-level selectorOptions
+# ROW rather than storing the string "Baseball", so seedTestTeams has to resolve
+# that row — which only exists once the Sports column has finished its
+# post-reset auto-sync (the wait immediately above). This block used to sit
+# before the reset's fresh mount, where the row does not exist yet; the mutation
+# now throws a clear error rather than silently seeding nothing.
+- scrollUntilVisible:
+    element:
+      text: "Seed Test Teams"
+    centerElement: true
+    timeout: 10000
+- tapOn: "Seed Test Teams"
+- extendedWaitUntil:
+    visible:
+      text: ".*Seed complete.*"
+    timeout: 15000
+
 - scrollUntilVisible:
     element:
       text: "Baseball"

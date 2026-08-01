@@ -54,6 +54,12 @@ async function seedSelectorOption(
     ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
       platformData: {},
       children: [],
       lastUpdated: Date.now(),
@@ -68,7 +74,7 @@ async function insertRow(
     batchId: string;
     kind: "player" | "team";
     name: string;
-    sport?: string;
+    sportId: Id<"selectorOptions">;
     status?: "pending" | "ready" | "error";
   },
 ) {
@@ -79,7 +85,7 @@ async function insertRow(
       createdByUserId: "user_review_001",
       kind: opts.kind,
       name: opts.name,
-      sport: opts.sport ?? "Baseball",
+      sportId: opts.sportId,
       status: opts.status ?? "pending",
     }),
   );
@@ -95,30 +101,52 @@ describe("startBatch", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: "user_review_001",
-      sport: "Baseball",
-      playerNames: ["Mike Trout", "Aaron Judge"],
-      teamNames: ["Los Angeles Angels"],
-    });
+    // startBatch schedules the background enrichment queue as a side effect.
+    // The rows are asserted while still "pending" (that IS this test's point),
+    // then the queue is drained in the finally so its SPARQL/ESPN fetches
+    // cannot land inside a LATER test — one of which asserts nothing fetched
+    // at all. Pre-existing leak; it only started failing once the sport row
+    // carried real enrichment config for the lookups to act on.
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(JSON.stringify({ results: { bindings: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })) as unknown as typeof fetch,
+    );
+    try {
+      const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+        selectorOptionId,
+        createdByUserId: "user_review_001",
+        sportId: selectorOptionId,
+        playerNames: ["Mike Trout", "Aaron Judge"],
+        teamNames: ["Los Angeles Angels"],
+      });
 
-    expect(batchId).toBeTruthy();
+      expect(batchId).toBeTruthy();
 
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(rows).toHaveLength(3);
-    for (const row of rows) {
-      expect(row.status).toBe("pending");
-      expect(row.batchId).toBe(batchId);
-      expect(row.decision).toBeUndefined();
+      const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+        selectorOptionId,
+        batchId,
+      });
+      expect(rows).toHaveLength(3);
+      for (const row of rows) {
+        expect(row.status).toBe("pending");
+        expect(row.batchId).toBe(batchId);
+        expect(row.decision).toBeUndefined();
+      }
+      const byName = new Map(rows.map((r) => [r.name, r]));
+      expect(byName.get("Mike Trout")?.kind).toBe("player");
+      expect(byName.get("Aaron Judge")?.kind).toBe("player");
+      expect(byName.get("Los Angeles Angels")?.kind).toBe("team");
+
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
     }
-    const byName = new Map(rows.map((r) => [r.name, r]));
-    expect(byName.get("Mike Trout")?.kind).toBe("player");
-    expect(byName.get("Aaron Judge")?.kind).toBe("player");
-    expect(byName.get("Los Angeles Angels")?.kind).toBe("team");
   });
 
   test("resumes an in-progress batch for the same selectorOptionId instead of deleting/recreating it", async () => {
@@ -129,7 +157,7 @@ describe("startBatch", () => {
     const firstBatchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: "user_review_001",
-      sport: "Baseball",
+      sportId: selectorOptionId,
       playerNames: ["Mike Trout"],
       teamNames: [],
     });
@@ -150,7 +178,7 @@ describe("startBatch", () => {
     const secondBatchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: "user_review_001",
-      sport: "Baseball",
+      sportId: selectorOptionId,
       playerNames: ["Someone Else Entirely"],
       teamNames: [],
     });
@@ -182,14 +210,14 @@ describe("startBatch", () => {
     const batchIdForUserA = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: "user_a",
-      sport: "Baseball",
+      sportId: selectorOptionId,
       playerNames: ["Mike Trout"],
       teamNames: [],
     });
     const batchIdForUserB = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: "user_b",
-      sport: "Baseball",
+      sportId: selectorOptionId,
       playerNames: ["Aaron Judge"],
       teamNames: [],
     });
@@ -220,7 +248,7 @@ describe("startBatch", () => {
     const resumedForUserA = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: "user_a",
-      sport: "Baseball",
+      sportId: selectorOptionId,
       playerNames: ["Someone New"],
       teamNames: [],
     });
@@ -232,19 +260,39 @@ describe("startBatch", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-      selectorOptionId,
-      createdByUserId: "user_review_001",
-      sport: "Baseball",
-      playerNames: ["Mike Trout"],
-      teamNames: [],
-    });
-    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-      selectorOptionId,
-      batchId,
-    });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).not.toHaveProperty("createdByUserId");
+    // startBatch schedules the background enrichment queue as a side effect.
+    // Stub + drain it here so the SPARQL fetch cannot land during a LATER test
+    // — the next test asserts that nothing fetched, and was failing on this
+    // one's leaked scheduled action rather than on its own behaviour.
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(JSON.stringify({ results: { bindings: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })) as unknown as typeof fetch,
+    );
+    try {
+      const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+        selectorOptionId,
+        createdByUserId: "user_review_001",
+        sportId: selectorOptionId,
+        playerNames: ["Mike Trout"],
+        teamNames: [],
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+        selectorOptionId,
+        batchId,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).not.toHaveProperty("createdByUserId");
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 
   test("schedules processEntityReviewQueue for a non-empty name list (rows eventually leave 'pending')", async () => {
@@ -266,7 +314,7 @@ describe("startBatch", () => {
       const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
         selectorOptionId,
         createdByUserId: "user_review_001",
-        sport: "Baseball",
+        sportId: selectorOptionId,
         playerNames: ["Mike Trout"],
         teamNames: [],
       });
@@ -302,7 +350,7 @@ describe("startBatch", () => {
     const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
       createdByUserId: "user_review_001",
-      sport: "Baseball",
+      sportId: selectorOptionId,
       playerNames: [],
       teamNames: [],
     });
@@ -330,6 +378,7 @@ describe("getBatch", () => {
 
     await insertRow(t, {
       selectorOptionId: selectorOptionA,
+      sportId: selectorOptionA,
       batchId: "batch-a",
       kind: "player",
       name: "Row A1",
@@ -337,6 +386,7 @@ describe("getBatch", () => {
     // Same selectorOption, DIFFERENT batch — must not leak into batch-a's results.
     await insertRow(t, {
       selectorOptionId: selectorOptionA,
+      sportId: selectorOptionA,
       batchId: "batch-a2",
       kind: "player",
       name: "Row A2 (other batch)",
@@ -344,6 +394,7 @@ describe("getBatch", () => {
     // Different selectorOption, SAME batchId string — must not leak either.
     await insertRow(t, {
       selectorOptionId: selectorOptionB,
+      sportId: selectorOptionB,
       batchId: "batch-a",
       kind: "player",
       name: "Row B (other selectorOption)",
@@ -394,12 +445,14 @@ describe("recordDecision", () => {
 
     const rowId1 = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Mike Trout",
     });
     const rowId2 = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Aaron Judge",
@@ -424,16 +477,16 @@ describe("recordDecision", () => {
       ctx.db.insert("players", {
         name: "Mike Trout",
         nameNormalized: "mike trout",
-        primarySport: "Baseball",
+        sportId: selectorOptionId,
         lastUpdated: Date.now(),
       }),
     );
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Mike Trout Jr Typo",
-      sport: "Baseball",
     });
 
     await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
@@ -457,16 +510,16 @@ describe("recordDecision", () => {
       ctx.db.insert("teams", {
         name: "Los Angeles Angels",
         nameNormalized: "angeles angels los",
-        sport: "Baseball",
+        sportId: selectorOptionId,
         lastUpdated: Date.now(),
       }),
     );
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "team",
       name: "LA Angels",
-      sport: "Baseball",
     });
 
     await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
@@ -488,6 +541,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Mike Trout",
@@ -505,20 +559,23 @@ describe("recordDecision", () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
+    // NEO-96: a genuinely DIFFERENT sport row — the guard now compares ids, so
+    // the mismatch has to be a different row rather than a different string.
+    const otherSportId = await seedSelectorOption(t);
     const wrongSportPlayerId = await t.run(async (ctx) =>
       ctx.db.insert("players", {
         name: "Some Football Player",
         nameNormalized: "football player some",
-        primarySport: "Football",
+        sportId: otherSportId,
         lastUpdated: Date.now(),
       }),
     );
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Mike Trout",
-      sport: "Baseball",
     });
 
     await expect(
@@ -536,6 +593,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Daulton Varsho",
@@ -566,6 +624,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Mike Trout",
@@ -589,6 +648,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Daulton Varsho",
@@ -609,6 +669,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Daulton Varsho",
@@ -631,6 +692,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Daulton Varsho",
@@ -653,6 +715,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Journeyman",
@@ -682,6 +745,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Journeyman",
@@ -709,6 +773,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Daulton Varsho",
@@ -730,6 +795,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Mike Trout",
@@ -749,6 +815,7 @@ describe("recordDecision", () => {
     const selectorOptionId = await seedSelectorOption(t);
     const rowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "b1",
       kind: "player",
       name: "Mike Trout",
@@ -793,6 +860,7 @@ describe("recordAllRemainingAsCreate", () => {
     for (const name of ["KOPlayer", "CDPlayerA", "CDPlayerB"])
       await insertRow(t, {
         selectorOptionId,
+        sportId: selectorOptionId,
         batchId: "bulk",
         kind: "player",
         name,
@@ -820,13 +888,16 @@ describe("recordAllRemainingAsCreate", () => {
     const selectorOptionId = await seedSelectorOption(t);
 
     await insertRow(t, {
-      selectorOptionId, batchId: "bulk", kind: "player", name: "KOPlayer", status: "ready",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "KOPlayer", status: "ready",
     });
     await insertRow(t, {
-      selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerA", status: "pending",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerA", status: "pending",
     });
     await insertRow(t, {
-      selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerB", status: "pending",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerB", status: "pending",
     });
 
     const count = await asAdmin.mutation(
@@ -843,10 +914,12 @@ describe("recordAllRemainingAsCreate", () => {
     const selectorOptionId = await seedSelectorOption(t);
 
     const decidedId = await insertRow(t, {
-      selectorOptionId, batchId: "bulk", kind: "player", name: "Already", status: "ready",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "Already", status: "ready",
     });
     await insertRow(t, {
-      selectorOptionId, batchId: "bulk", kind: "player", name: "Undecided", status: "ready",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "Undecided", status: "ready",
     });
     await t.run(async (ctx) =>
       ctx.db.patch(decidedId, { decision: { action: "create" } }),
@@ -872,7 +945,7 @@ describe("recordAllRemainingAsCreate", () => {
     for (const name of ["A", "B", "C"])
       ids.push(
         await insertRow(t, {
-          selectorOptionId, batchId: "bulk", kind: "player", name, status: "pending",
+          selectorOptionId, sportId: selectorOptionId, batchId: "bulk", kind: "player", name, status: "pending",
         }),
       );
 
@@ -900,10 +973,12 @@ describe("recordAllRemainingAsCreate", () => {
     const selectorOptionId = await seedSelectorOption(t);
 
     await insertRow(t, {
-      selectorOptionId, batchId: "mine", kind: "player", name: "Mine", status: "ready",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "mine", kind: "player", name: "Mine", status: "ready",
     });
     await insertRow(t, {
-      selectorOptionId, batchId: "theirs", kind: "player", name: "Theirs", status: "ready",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "theirs", kind: "player", name: "Theirs", status: "ready",
     });
 
     const count = await asAdmin.mutation(
@@ -923,7 +998,8 @@ describe("recordAllRemainingAsCreate", () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
     await insertRow(t, {
-      selectorOptionId, batchId: "bulk", kind: "player", name: "X", status: "ready",
+      selectorOptionId,
+      sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "X", status: "ready",
     });
 
     await expect(
@@ -941,11 +1017,12 @@ describe("cancelBatch", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    await insertRow(t, { selectorOptionId, batchId: "cancel-me", kind: "player", name: "Mike Trout" });
-    await insertRow(t, { selectorOptionId, batchId: "cancel-me", kind: "team", name: "Los Angeles Angels" });
+    await insertRow(t, { selectorOptionId, sportId: selectorOptionId, batchId: "cancel-me", kind: "player", name: "Mike Trout" });
+    await insertRow(t, { selectorOptionId, sportId: selectorOptionId, batchId: "cancel-me", kind: "team", name: "Los Angeles Angels" });
     // A row in a DIFFERENT batch must survive.
     const otherBatchRowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "keep-me",
       kind: "player",
       name: "Aaron Judge",
@@ -958,7 +1035,7 @@ describe("cancelBatch", () => {
       ctx.db.insert("players", {
         name: "Existing Player",
         nameNormalized: "existing player",
-        primarySport: "Baseball",
+        sportId: selectorOptionId,
         lastUpdated: 1_700_000_000_000,
       }),
     );
@@ -966,7 +1043,7 @@ describe("cancelBatch", () => {
       ctx.db.insert("teams", {
         name: "Existing Team",
         nameNormalized: "existing team",
-        sport: "Baseball",
+        sportId: selectorOptionId,
         lastUpdated: 1_700_000_000_000,
       }),
     );
@@ -1015,10 +1092,11 @@ describe("cleanupBatch", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    await insertRow(t, { selectorOptionId, batchId: "done-batch", kind: "player", name: "Mike Trout" });
-    await insertRow(t, { selectorOptionId, batchId: "done-batch", kind: "team", name: "Angels" });
+    await insertRow(t, { selectorOptionId, sportId: selectorOptionId, batchId: "done-batch", kind: "player", name: "Mike Trout" });
+    await insertRow(t, { selectorOptionId, sportId: selectorOptionId, batchId: "done-batch", kind: "team", name: "Angels" });
     const otherBatchRowId = await insertRow(t, {
       selectorOptionId,
+      sportId: selectorOptionId,
       batchId: "other-batch",
       kind: "player",
       name: "Aaron Judge",

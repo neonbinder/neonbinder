@@ -19,6 +19,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Id } from "../../convex/_generated/dataModel";
+
+// NEO-96: the sport-level selectorOptions ROW ID, not a display string.
+const SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
 
 vi.mock("../../convex/_generated/api", () => ({
   api: { teams: { list: "teams.list" } },
@@ -52,7 +56,7 @@ describe("CareerTeamEntry", () => {
   it("accepts a free-text team name that matches nothing and emits it via onAdd", () => {
     currentTeams = [];
     const onAdd = vi.fn();
-    render(<CareerTeamEntry sport="Baseball" onAdd={onAdd} />);
+    render(<CareerTeamEntry sportId={SPORT_ID} onAdd={onAdd} />);
 
     fireEvent.change(screen.getByLabelText("Career team name"), {
       target: { value: "Brand New Club" },
@@ -68,7 +72,7 @@ describe("CareerTeamEntry", () => {
 
   it("includes toYear when provided", () => {
     const onAdd = vi.fn();
-    render(<CareerTeamEntry sport="Baseball" onAdd={onAdd} />);
+    render(<CareerTeamEntry sportId={SPORT_ID} onAdd={onAdd} />);
 
     fireEvent.change(screen.getByLabelText("Career team name"), {
       target: { value: "Arizona Diamondbacks" },
@@ -91,7 +95,7 @@ describe("CareerTeamEntry", () => {
       makeTeam("Boston Red Sox", "t3"),
     ];
     const onAdd = vi.fn();
-    render(<CareerTeamEntry sport="Baseball" onAdd={onAdd} />);
+    render(<CareerTeamEntry sportId={SPORT_ID} onAdd={onAdd} />);
 
     fireEvent.change(screen.getByLabelText("Career team name"), { target: { value: "T" } });
 
@@ -107,7 +111,7 @@ describe("CareerTeamEntry", () => {
 
   it("disables Add for an out-of-bounds fromYear", () => {
     const onAdd = vi.fn();
-    render(<CareerTeamEntry sport="Baseball" onAdd={onAdd} />);
+    render(<CareerTeamEntry sportId={SPORT_ID} onAdd={onAdd} />);
 
     fireEvent.change(screen.getByLabelText("Career team name"), {
       target: { value: "Ancient Club" },
@@ -122,7 +126,7 @@ describe("CareerTeamEntry", () => {
 
   it("disables Add when toYear precedes fromYear", () => {
     const onAdd = vi.fn();
-    render(<CareerTeamEntry sport="Baseball" onAdd={onAdd} />);
+    render(<CareerTeamEntry sportId={SPORT_ID} onAdd={onAdd} />);
 
     fireEvent.change(screen.getByLabelText("Career team name"), {
       target: { value: "Backwards Club" },
@@ -137,7 +141,7 @@ describe("CareerTeamEntry", () => {
 
   it("disables Add when the name is blank even if the year is valid", () => {
     const onAdd = vi.fn();
-    render(<CareerTeamEntry sport="Baseball" onAdd={onAdd} />);
+    render(<CareerTeamEntry sportId={SPORT_ID} onAdd={onAdd} />);
 
     fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2021" } });
 

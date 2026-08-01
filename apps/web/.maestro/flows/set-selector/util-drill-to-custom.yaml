@@ -105,11 +105,11 @@ tags:
 #   comments for full CI failure history.
 #
 # centerElement: true RATIONALE:
-#   Maestro Web headless viewport is 1024×629. The footer paints over the
+#   Maestro Web headless viewport is 1024×629. Content near the bottom of the
 #   body's overflow region at y≥489 and steals click events. Any Add-custom
 #   button or selectable row near the bottom without centering gets its tap
 #   registered in the DOM but the follow-up events (modal open, column expand)
-#   are swallowed by the footer. Centering puts the element at y≈315, clear
+#   viewport is easily clipped or shifted by a re-render. Centering puts it
 #   of the footer. Applied on every Add-custom tap and on every row tap that
 #   might be near the scroll fold.
 
@@ -218,12 +218,12 @@ tags:
                         # The sport was not found in the search results. At this point
                         # the search shows "No matches found" and the "+ Custom" button
                         # (aria-label "Add custom Sports") is rendered BELOW the search
-                        # box at y≈520 — inside the 1024×629 footer-steal zone (y≥489).
+                        # box at y≈520 — below the fold.
                         # Do NOT erase the search text first: eraseText leaves a trailing
                         # char (the Maestro cursor-trap bug). The page is STABLE in
                         # "No matches found" state (no re-render in progress), so CDP
                         # scroll works safely. scrollUntilVisible + centerElement: true
-                        # brings the button to y≈315, clear of the footer.
+                        # brings the button to y≈315, fully in view.
                         - scrollUntilVisible:
                             element:
                               id: "Add custom Sports"
@@ -464,7 +464,7 @@ tags:
 #
 # Real-synced path: "Search manufacturers" input present.
 # Custom path (under custom Sport or Year): no search input; Add-custom only.
-# centerElement: true on Add-custom tap — footer-steal risk (see header comment).
+# centerElement: true on Add-custom tap — edge-clipping risk (see header comment).
 # ============================================================
 
 - runFlow:
@@ -551,7 +551,7 @@ tags:
                               id: "Search manufacturers"
 
       # Custom-only Manufacturers (no search input).
-      # centerElement: true — footer-steal risk at 1024×629 (see util-drill-to-custom-set
+      # centerElement: true — edge-clipping risk at 1024×629 (see util-drill-to-custom-set
       # Level 3 comment; once-custom-always-custom gate removes the search input).
       # Guarded by notVisible "Sets" — if the search branch already selected a
       # Manufacturer, Sets will be visible; skip this fallback.
@@ -608,7 +608,7 @@ tags:
 # Gate: SPORT AND YEAR AND MANUFACTURER AND SET_NAME must all be non-empty.
 #
 # Both real-synced and custom columns can have the search input when large.
-# centerElement: true on Add-custom Sets tap — footer-steal (see util-drill-to-custom-set
+# centerElement: true on Add-custom Sets tap — edge-clipping (see util-drill-to-custom-set
 # Level 4 comment for full CI failure history at y≈583+).
 #
 # After the custom-add idempotency runFlow, the search-vs-direct tap logic
@@ -752,7 +752,7 @@ tags:
 # NEO-47 raised the EntityColumn empty-state height ("No variant types
 # available. Sync from marketplaces to populate."), pushing the
 # "Add custom Variant Types" button to y≈605 in the 1024×629 headless
-# viewport — well into the footer-steal zone (≥489) and below the fold.
+# viewport — well below the fold.
 # A non-scrolling extendedWaitUntil can't bring a below-fold button into
 # view, so we MUST use the standard R8 centerElement scroll.
 # The CDP MismatchedInputException that previously blocked this approach
@@ -830,8 +830,7 @@ tags:
 
       # R8 centering + settle, matching the SET_NAME tap at level 4 and the
       # VARIANT tap at level 6 (this was the only row-tap in the util without
-      # either). Centering puts the row at y≈315, clear of the y≥489 footer-steal
-      # band, and makes Maestro's tap point agree with where EntityColumn's own
+      # either). Centering puts the row at y≈315, fully in view, and makes Maestro's tap point agree with where EntityColumn's own
       # scrollColumnIntoView settles the column after its post-create re-render.
       - scrollUntilVisible:
           element:
@@ -904,7 +903,7 @@ tags:
                 notVisible: "Add Custom Entry"
                 timeout: 10000
 
-      # Tap the Variant to open CardChecklist. centerElement: true — footer-steal
+      # Tap the Variant to open CardChecklist. centerElement: true — edge-clipping
       # risk at 1024×629 (see header comment).
       - scrollUntilVisible:
           element:

@@ -19,13 +19,20 @@
 
 export const SKU_MAX_LENGTH = 41;
 
-const SPORT_SKU_CODE: Record<string, string> = {
-  Baseball: "BB",
-  Football: "FB",
-  Basketball: "BK",
-  Hockey: "HK",
-};
-
+/**
+ * NEO-96: `SPORT_SKU_CODE`, a display-name-keyed map consulted here at runtime,
+ * is gone. It was keyed `"Baseball"`, but `commitCardChecklist` passed the
+ * lowercased `"baseball"` that had leaked out of the BSC adapter, so it MISSED
+ * and fell through to `slugify("baseball", 2)` → `"BA"`, while `addCustomCard`
+ * passed the raw `"Baseball"` and hit → `"BB"`. The same set therefore produced
+ * two different marketplace-facing SKU prefixes depending on which path created
+ * the card.
+ *
+ * The code now comes from the sport row's own `sportConfig.skuCode` (seeded by
+ * convex/sportConfig.ts), so both paths read one value and a sport rename can't
+ * change it. `skuCode` is optional: a custom sport has none, and falls back to
+ * the slugify path below — which is a legitimate degrade, not a bug.
+ */
 function slugify(raw: string, maxLength: number): string {
   const cleaned = raw
     .toUpperCase()
@@ -35,7 +42,13 @@ function slugify(raw: string, maxLength: number): string {
 }
 
 export interface GenerateSkuParams {
-  sport: string;
+  /** The sport row's `sportConfig.skuCode` (e.g. "BB"). Undefined for a custom
+   *  or unmapped sport — `sportFallbackLabel` is slugified instead. */
+  skuCode?: string;
+  /** The sport's display value, used ONLY to derive a prefix when `skuCode` is
+   *  absent. Never used when `skuCode` is present, so casing cannot affect the
+   *  result for a configured sport. */
+  sportFallbackLabel: string;
   year: string;
   setName: string;
   cardNumber: string;
@@ -46,7 +59,7 @@ export interface GenerateSkuParams {
 
 export function generateSku(params: GenerateSkuParams): string {
   const sportCode =
-    SPORT_SKU_CODE[params.sport] ?? slugify(params.sport, 2).padEnd(2, "X");
+    params.skuCode ?? slugify(params.sportFallbackLabel, 2).padEnd(2, "X");
   const year = slugify(params.year, 4);
   const setSlug = slugify(params.setName, 12);
   const cardNumberSlug = slugify(params.cardNumber, 10);

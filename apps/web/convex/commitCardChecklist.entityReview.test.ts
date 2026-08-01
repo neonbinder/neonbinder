@@ -51,6 +51,12 @@ async function seedVariantTypeUnderChromeSet(t: ReturnType<typeof convexTest>) {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
       platformData: {},
       children: [],
       lastUpdated: Date.now(),
@@ -110,7 +116,7 @@ async function insertReviewRow(
     batchId: string;
     kind: "player" | "team";
     name: string;
-    sport?: string;
+    sportId: Id<"selectorOptions">;
     decision: {
       action: "create";
       manualCareerTeams?: Array<{ name: string; fromYear: number; toYear?: number }>;
@@ -129,7 +135,7 @@ async function insertReviewRow(
       createdByUserId: "user_review_001",
       kind: opts.kind,
       name: opts.name,
-      sport: opts.sport ?? "Baseball",
+      sportId: opts.sportId,
       status: "ready",
       decision: opts.decision,
       ...(opts.enrichment ? { enrichment: opts.enrichment as never } : {}),
@@ -145,10 +151,11 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
   test("a player 'create' decision inserts a new player with teamYears/isHallOfFame/externalIds.wikidataId from its enrichment", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "player",
       name: "Mike Trout",
@@ -165,7 +172,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Mike Trout", players: ["Mike Trout"] })],
       batchId: "batch-1",
     });
@@ -173,8 +180,8 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const player = await t.run(async (ctx) =>
       ctx.db
         .query("players")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", "mike trout").eq("primarySport", "Baseball"),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "mike trout").eq("sportId", sportId),
         )
         .first(),
     );
@@ -209,10 +216,11 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
   test("merges enrichment.careerTeams with decision.manualCareerTeams into teamYears (manual appended after Wikidata)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "player",
       name: "Daulton Varsho",
@@ -229,7 +237,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Daulton Varsho", players: ["Daulton Varsho"] })],
       batchId: "batch-1",
     });
@@ -237,8 +245,8 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const player = await t.run(async (ctx) =>
       ctx.db
         .query("players")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", "daulton varsho").eq("primarySport", "Baseball"),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "daulton varsho").eq("sportId", sportId),
         )
         .first(),
     );
@@ -256,12 +264,13 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
   test("Daulton Varsho case: no Wikidata careerTeams — teamYears comes purely from manual entries", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     // enrichment absent entirely (the "No Wikidata match found" path) — the
     // ONLY source of career-team history is what the admin typed by hand.
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "player",
       name: "Daulton Varsho",
@@ -277,7 +286,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Daulton Varsho", players: ["Daulton Varsho"] })],
       batchId: "batch-1",
     });
@@ -285,8 +294,8 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const player = await t.run(async (ctx) =>
       ctx.db
         .query("players")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", "daulton varsho").eq("primarySport", "Baseball"),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "daulton varsho").eq("sportId", sportId),
         )
         .first(),
     );
@@ -298,10 +307,11 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
   test("dedupes by resolved teamId when Wikidata and manual name the SAME team — the MANUAL correction wins", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "player",
       name: "Mike Trout",
@@ -321,7 +331,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Mike Trout", players: ["Mike Trout"] })],
       batchId: "batch-1",
     });
@@ -329,8 +339,8 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const player = await t.run(async (ctx) =>
       ctx.db
         .query("players")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", "mike trout").eq("primarySport", "Baseball"),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "mike trout").eq("sportId", sportId),
         )
         .first(),
     );
@@ -348,8 +358,8 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const angelsRows = await t.run(async (ctx) =>
       ctx.db
         .query("teams")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", "angeles angels los").eq("sport", "Baseball"),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "angeles angels los").eq("sportId", sportId),
         )
         .collect(),
     );
@@ -359,10 +369,11 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
   test("a team 'create' decision inserts a new team with league/city/yearsActive/colors/espnId from its enrichment", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "team",
       name: "Los Angeles Angels",
@@ -379,7 +390,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Team Card", teams: ["Los Angeles Angels"] })],
       batchId: "batch-1",
     });
@@ -387,8 +398,8 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const team = await t.run(async (ctx) =>
       ctx.db
         .query("teams")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", "angeles angels los").eq("sport", "Baseball"),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "angeles angels los").eq("sportId", sportId),
         )
         .first(),
     );
@@ -417,7 +428,7 @@ describe("commitCardChecklist: 'link' decision resolves to the existing row, no 
   test("a player 'link' decision uses linkedPlayerId directly — no new player row is created", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     // The REAL player, under a different spelling than what the
     // marketplace card carries.
@@ -425,13 +436,14 @@ describe("commitCardChecklist: 'link' decision resolves to the existing row, no 
       ctx.db.insert("players", {
         name: "Ken Griffey Jr.",
         nameNormalized: "griffey jr ken",
-        primarySport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "player",
       // A spelling that normalizes differently from "Ken Griffey Jr." (no
@@ -442,7 +454,7 @@ describe("commitCardChecklist: 'link' decision resolves to the existing row, no 
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Griffey", players: ["Ken Griffey Junior"] })],
       batchId: "batch-1",
     });
@@ -464,19 +476,20 @@ describe("commitCardChecklist: 'link' decision resolves to the existing row, no 
   test("a team 'link' decision uses linkedTeamId directly — no new team row is created", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const realTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Los Angeles Angels",
         nameNormalized: "angeles angels los",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "team",
       name: "LA Angels of Anaheim", // normalizes differently -> "genuinely unknown"
@@ -485,7 +498,7 @@ describe("commitCardChecklist: 'link' decision resolves to the existing row, no 
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Team Card", teams: ["LA Angels of Anaheim"] })],
       batchId: "batch-1",
     });
@@ -518,10 +531,11 @@ describe("commitCardChecklist: post-commit batch cleanup", () => {
   test("after a successful commit, the batch's entityReviewQueue rows are gone immediately — no scheduled step needed", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const rowId = await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "batch-1",
       kind: "player",
       name: "Mike Trout",
@@ -531,7 +545,7 @@ describe("commitCardChecklist: post-commit batch cleanup", () => {
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Mike Trout", players: ["Mike Trout"] })],
       batchId: "batch-1",
     });
@@ -545,12 +559,13 @@ describe("commitCardChecklist: post-commit batch cleanup", () => {
   test("committing WITHOUT a batchId never touches entityReviewQueue at all", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { variantTypeId } = await seedVariantTypeUnderChromeSet(t);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     // A row for an UNRELATED batch — must survive since this commit has no
     // batchId at all (the zero-unknowns fast path).
     const unrelatedRowId = await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
+      sportId,
       batchId: "unrelated-batch",
       kind: "player",
       name: "Someone Else",
@@ -559,7 +574,7 @@ describe("commitCardChecklist: post-commit batch cleanup", () => {
 
     await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
-      sport: "Baseball",
+      sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "No Unknowns Card" })],
     });
 

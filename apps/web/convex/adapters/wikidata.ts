@@ -42,25 +42,28 @@ const USER_AGENT = "NeonBinder/1.0 (https://neonbinder.io; jburich@neonbinder.io
  */
 const INTER_ENTITY_DELAY_MS = 3000;
 
-// Sport string → Wikidata sport QID. Used in the `wdt:P641` filter so
-// SPARQL only returns athletes from the relevant league.
-const SPORT_QIDS: Record<string, string> = {
-  baseball: "Q5369",
-  football: "Q41323",   // American football (our domain — no soccer cards)
-  basketball: "Q5372",
-  hockey: "Q41466",     // Ice hockey
-};
-
-// Sport → Hall of Fame QID. A P166 (award received) value matching this
-// QID flips isHallOfFame to true. Sports without a single canonical HoF
-// (e.g. soccer) are intentionally absent — those players ship with
-// isHallOfFame undefined rather than misleadingly false.
-const HOF_QIDS: Record<string, string> = {
-  baseball: "Q1194380",   // National Baseball Hall of Fame
-  football: "Q1382553",   // Pro Football Hall of Fame
-  basketball: "Q635155",  // Naismith Memorial Basketball Hall of Fame
-  hockey: "Q579974",      // Hockey Hall of Fame
-};
+/**
+ * NEO-96: everything this module needs to know about a sport, resolved by the
+ * caller from the sport row's `sportConfig` and passed in.
+ *
+ * The `SPORT_QIDS` and `HOF_QIDS` maps that used to live here were keyed by
+ * lowercase display name while every production caller passed display-cased
+ * strings ("Baseball"). That silently disabled player matching AND Hall-of-Fame
+ * resolution until two separate `.toLowerCase()` patches were added — two
+ * outages of the same class, in one file, from keying behaviour on a display
+ * string. The values now live on the sport row (see convex/sportConfig.ts) and
+ * arrive here already resolved, so there is nothing left to mis-key.
+ *
+ * Every field is optional: an unmapped or custom sport yields no enrichment
+ * rather than an error, which is the long-standing convention here (a miss is
+ * "fall back", not a failure).
+ */
+export interface SportEnrichmentContext {
+  /** Display value, for log lines only — never used for lookup. */
+  label: string;
+  espn?: { path: string; leagueName: string };
+  wikidata?: { sportQid: string; hallOfFameQid?: string };
+}
 
 interface SparqlBinding {
   type: string;
@@ -164,13 +167,16 @@ function yearFromBinding(binding?: SparqlBinding): number | undefined {
  * Wikidata indexes labels and aliases for prefix lookup. The sport
  * filter (`wdt:P641`) picks off the right "John Smith" across leagues.
  */
-async function findPlayerQid(name: string, sport: string): Promise<string | null> {
-  // SPORT_QIDS is keyed lowercase; callers pass NeonBinder's display-cased
-  // sport strings ("Baseball", not "baseball") — normalize so this
-  // actually matches instead of silently no-op'ing on every real sport
-  // value. (Found as a real, pre-existing bug: this meant Wikidata player
-  // enrichment silently never matched anyone.)
-  const sportQid = SPORT_QIDS[sport.toLowerCase()];
+async function findPlayerQid(
+  name: string,
+  sportQid: string | undefined,
+): Promise<string | null> {
+  // NEO-96: the QID now arrives from the sport row's `sportConfig.wikidata`
+  // instead of being looked up in a display-name-keyed map here. That map's
+  // casing assumption had already caused one real outage of this exact
+  // function — it was keyed lowercase while callers passed "Baseball", so
+  // player enrichment silently matched nobody until a `.toLowerCase()` was
+  // patched in. Passing the resolved value removes the class of bug.
   if (!sportQid) return null;
 
   const safeName = sparqlStringLiteral(name);
@@ -194,9 +200,11 @@ async function findPlayerQid(name: string, sport: string): Promise<string | null
   return binding ? qidFromIri(binding.player.value) : null;
 }
 
-async function findTeamQid(name: string, sport: string): Promise<string | null> {
-  // See the identical note in findPlayerQid above — same case-mismatch bug.
-  const sportQid = SPORT_QIDS[sport.toLowerCase()];
+async function findTeamQid(
+  name: string,
+  sportQid: string | undefined,
+): Promise<string | null> {
+  // See the NEO-96 note in findPlayerQid above.
   if (!sportQid) return null;
 
   const safeName = sparqlStringLiteral(name);
@@ -259,22 +267,21 @@ export interface TeamLookupResult {
  */
 export async function lookupPlayerEnrichment(
   name: string,
-  sport: string,
+  sport: SportEnrichmentContext,
 ): Promise<PlayerLookupResult | null> {
-  const qid = await findPlayerQid(name, sport);
+  const qid = await findPlayerQid(name, sport.wikidata?.sportQid);
   if (!qid) {
-    console.log(`[wikidata.lookupPlayerEnrichment] no Wikidata match for ${name} (${sport})`);
+    console.log(
+      `[wikidata.lookupPlayerEnrichment] no Wikidata match for ${name} (${sport.label})`,
+    );
     return null;
   }
 
-  // HOF_QIDS is keyed lowercase, same as SPORT_QIDS above (see the identical
-  // note on findPlayerQid) — callers pass display-cased sport strings
-  // ("Baseball"), so this lookup must normalize too. Found as a real,
-  // pre-existing bug while adding NEO-92 coverage: without `.toLowerCase()`
-  // here, `isHallOfFame` silently never resolved for any real caller (every
-  // production call site passes display-cased sport), even though the QID
-  // lookup two lines up already got this right.
-  const hofQid = HOF_QIDS[sport.toLowerCase()];
+  // NEO-96: from the sport row's own config. This used to be a lookup into a
+  // lowercase-keyed HOF_QIDS map with display-cased callers, which silently
+  // meant `isHallOfFame` never resolved for anyone until a `.toLowerCase()` was
+  // patched in — the second outage of that exact class in this file.
+  const hofQid = sport.wikidata?.hallOfFameQid;
 
   const detailQuery = `
     SELECT ?team ?teamLabel ?start ?end ?award WHERE {
@@ -356,14 +363,24 @@ export const enrichPlayer = internalAction({
     const player = await ctx.runQuery(internal.players.getInternal, { id: args.playerId });
     if (!player) return null;
 
-    const result = await lookupPlayerEnrichment(player.name, player.primarySport);
+    // NEO-96: resolve the sport row's config once, then reuse it for both the
+    // lookup and the career-team creations below.
+    const sportCtx = await ctx.runQuery(
+      internal.selectorOptions.getSportEnrichmentContext,
+      { sportId: player.sportId },
+    );
+    if (!sportCtx) return null;
+
+    const result = await lookupPlayerEnrichment(player.name, sportCtx);
     if (!result) return null;
 
     const teamYears: Array<{ teamId: import("../_generated/dataModel").Id<"teams">; fromYear: number; toYear?: number }> = [];
     for (const ct of result.careerTeams) {
       const teamId = await ctx.runMutation(internal.teams.findOrCreateInternal, {
         name: ct.name,
-        sport: player.primarySport,
+        // Career teams inherit the player's sport by REFERENCE now, so they
+        // can no longer land under a differently-cased duplicate.
+        sportId: player.sportId,
       });
       teamYears.push({ teamId, fromYear: ct.fromYear, toYear: ct.toYear });
     }
@@ -399,11 +416,11 @@ export const enrichPlayer = internalAction({
  */
 export async function lookupTeamEnrichment(
   name: string,
-  sport: string,
+  sport: SportEnrichmentContext,
 ): Promise<TeamLookupResult | null> {
-  const espnInfo = await fetchEspnTeamInfo(sport, name);
+  const espnInfo = await fetchEspnTeamInfo(sport.espn, name);
 
-  const qid = await findTeamQid(name, sport);
+  const qid = await findTeamQid(name, sport.wikidata?.sportQid);
   if (!qid) {
     if (!espnInfo) {
       console.log(`[wikidata.lookupTeamEnrichment] no match for ${name} (${sport}) on either source`);
@@ -459,7 +476,13 @@ export const enrichTeam = internalAction({
     const team = await ctx.runQuery(internal.teams.getInternal, { id: args.teamId });
     if (!team) return null;
 
-    const result = await lookupTeamEnrichment(team.name, team.sport);
+    const sportCtx = await ctx.runQuery(
+      internal.selectorOptions.getSportEnrichmentContext,
+      { sportId: team.sportId },
+    );
+    if (!sportCtx) return null;
+
+    const result = await lookupTeamEnrichment(team.name, sportCtx);
     if (!result) return null;
 
     await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
@@ -556,10 +579,15 @@ export const processEntityReviewQueue = internalAction({
     const row = await ctx.runQuery(internal.entityReviewQueue.getInternal, { id: head });
     if (row) {
       try {
-        const result =
-          row.kind === "player"
-            ? await lookupPlayerEnrichment(row.name, row.sport)
-            : await lookupTeamEnrichment(row.name, row.sport);
+        const sportCtx = await ctx.runQuery(
+          internal.selectorOptions.getSportEnrichmentContext,
+          { sportId: row.sportId },
+        );
+        const result = !sportCtx
+          ? null
+          : row.kind === "player"
+            ? await lookupPlayerEnrichment(row.name, sportCtx)
+            : await lookupTeamEnrichment(row.name, sportCtx);
         await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
           id: head,
           status: result ? "ready" : "error",

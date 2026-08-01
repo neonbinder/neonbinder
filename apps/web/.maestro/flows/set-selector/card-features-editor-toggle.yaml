@@ -132,7 +132,7 @@ tags:
 # Scroll the delete button into view — the Cancel above collapses the edit
 # form, resetting the Virtuoso scroll position. The card row may not be
 # in the viewport when the form closes. centerElement: true keeps it well
-# clear of the sticky header and footer before the tap.
+# clear of the sticky header before the tap.
 - scrollUntilVisible:
     element:
       id: "Delete card 991-${ATTEMPT_ID}"

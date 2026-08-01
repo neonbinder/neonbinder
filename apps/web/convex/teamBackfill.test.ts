@@ -41,7 +41,7 @@ const modules = (import.meta as unknown as {
 async function seedTree(
   t: ReturnType<typeof convexTest>,
   sportValue = "Baseball",
-): Promise<Id<"selectorOptions">> {
+): Promise<{ variantTypeId: Id<"selectorOptions">; sportId: Id<"selectorOptions"> }> {
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
@@ -68,7 +68,7 @@ async function seedTree(
       lastUpdated: Date.now(),
     });
     await ctx.db.patch(setNameId, { children: [variantTypeId] });
-    return variantTypeId;
+    return { variantTypeId, sportId };
   });
 }
 
@@ -108,7 +108,7 @@ async function insertLegacyCard(
 describe("backfillTeamToOnCardIds", () => {
   test("happy path: creates a teams row and links it on the card", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertLegacyCard(t, variantTypeId, "New York Yankees", "1");
 
     const result = await t.mutation(
@@ -129,12 +129,13 @@ describe("backfillTeamToOnCardIds", () => {
       ctx.db.get(patched!.teamOnCardIds![0]),
     );
     expect(teamRow!.name).toBe("New York Yankees");
-    expect(teamRow!.sport).toBe("Baseball");
+    // NEO-96: the team references the sport ROW, so assert the id.
+    expect(teamRow!.sportId).toBe(sportId);
   });
 
   test("idempotent: re-run on already-migrated rows reports zero processed", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     await insertLegacyCard(t, variantTypeId, "Boston Red Sox", "1");
 
     // First run drains.
@@ -156,7 +157,7 @@ describe("backfillTeamToOnCardIds", () => {
 
   test("reuses existing teams row when name + sport already matches", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
 
     // Pre-existing teams row. nameNormalized matches the token-sorted
     // output of `normalizeTeamName("New York Yankees")` =
@@ -165,7 +166,7 @@ describe("backfillTeamToOnCardIds", () => {
       ctx.db.insert("teams", {
         name: "Yankees",
         nameNormalized: "new yankees york",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
@@ -221,7 +222,7 @@ describe("backfillTeamToOnCardIds", () => {
 
   test("batchSize caps the work per invocation; re-run drains the queue", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     // Insert 5 rows; cap to 2 per batch.
     for (let i = 0; i < 5; i++) {
       await insertLegacyCard(t, variantTypeId, `Team ${i}`, String(i + 1));
@@ -251,13 +252,13 @@ describe("backfillTeamToOnCardIds", () => {
 
   test("already-linked rows just have the leftover string cleared", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
 
     const preexistingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Mets",
         nameNormalized: "mets",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );

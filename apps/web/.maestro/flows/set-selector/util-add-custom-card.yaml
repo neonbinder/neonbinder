@@ -62,7 +62,7 @@ tags:
 # ============================================================
 # STEP 2 — ADD INSERT ENTRY (idempotent)
 # The "Add custom <VARIANT_TYPE>s" button is in viewport after util-drill.
-# centerElement: true prevents the footer-steal zone (y>=489 in 1024x629)
+# centerElement: true keeps the target fully in view (1024x629)
 # from absorbing the tap without firing the modal-open follow-up events.
 # The when: notVisible guard skips the add if INSERT_NAME already exists
 # (idempotent on rerun when a prior attempt left the entry in the DB).
@@ -88,7 +88,7 @@ tags:
 # ============================================================
 # STEP 3 — SELECT THE INSERT ENTRY TO OPEN CARDCHECKLIST
 # scrollUntilVisible + centerElement: true keeps the row at y~315,
-# clear of both the sticky nav (top) and the footer-steal zone (y>=489).
+# clear of the sticky nav at the top and fully in view.
 # extendedWaitUntil immediately before tapOn confirms the row is stable
 # after the add-modal close animation.
 # ============================================================
@@ -109,7 +109,7 @@ tags:
 # Custom subtrees short-circuit the BSC/SL adapters via the isCustomSubtree
 # gate (NEO-22), so no marketplace fetch fires. "Open add card form" is
 # the reliable idle signal on custom sets (no "Fetch from Marketplaces" step).
-# centerElement: true clears the footer zone before the subsequent tap.
+# centerElement: true keeps the target fully in view before the subsequent tap.
 # ============================================================
 
 - scrollUntilVisible:
@@ -171,7 +171,7 @@ tags:
 # ============================================================
 # STEP 9 — SUBMIT THE NEW CARD
 # The "Submit new card" (Add) button sits at the bottom of the add-card form,
-# whose bounds (y~610 in the 1024x629 CI viewport) land in the footer-steal
+# whose bounds (y~610 in the 1024x629 CI viewport) land in the edge-clipping
 # zone (y>=489). centerElement: true drives the button to y~315 so Maestro's
 # own scroll-before-tap CDP call has content to scroll to — WITHOUT it,
 # scrollToPoint gets an empty JS result ("No content to map...end-of-input")

@@ -59,6 +59,11 @@ vi.mock("convex/react", () => ({
 import TeamPicker from "./TeamPicker";
 import type { Id } from "../../convex/_generated/dataModel";
 
+// NEO-96: pickers take the sport-level selectorOptions ROW ID now, not a
+// display string. These stand in for a seeded sport row.
+const SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+const OTHER_SPORT_ID = "selopt-sport-2" as unknown as Id<"selectorOptions">;
+
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
 // ---------------------------------------------------------------------------
@@ -74,7 +79,7 @@ function makeTeam(id: string, name: string, city?: string) {
 function renderPicker(props: Partial<Parameters<typeof TeamPicker>[0]> = {}) {
   const onChange = vi.fn();
   const utils = render(
-    <TeamPicker value={[]} onChange={onChange} sport="Baseball" {...props} />,
+    <TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} {...props} />,
   );
   return { ...utils, onChange };
 }
@@ -334,7 +339,7 @@ describe("TeamPicker", () => {
   it("clicking '+ Create' calls teams.findOrCreate({ name, sport }) and adds the resulting id as a chip", async () => {
     currentCandidates = [];
     mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
-    const { onChange } = renderPicker({ sport: "Baseball" });
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
     openPopover();
 
     fireEvent.change(screen.getByLabelText("Search teams"), {
@@ -345,7 +350,7 @@ describe("TeamPicker", () => {
     await waitFor(() => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Savannah Bananas",
-        sport: "Baseball",
+        sportId: SPORT_ID,
       });
     });
     await waitFor(() => {
@@ -356,7 +361,7 @@ describe("TeamPicker", () => {
   it("pressing Enter with the create row highlighted (no matches) also creates and adds", async () => {
     currentCandidates = [];
     mockFindOrCreate.mockResolvedValue(tid("new-team-2"));
-    const { onChange } = renderPicker({ sport: "Baseball" });
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
     openPopover();
 
     const input = screen.getByLabelText("Search teams");
@@ -366,7 +371,7 @@ describe("TeamPicker", () => {
     await waitFor(() => {
       expect(mockFindOrCreate).toHaveBeenCalledWith({
         name: "Savannah Bananas",
-        sport: "Baseball",
+        sportId: SPORT_ID,
       });
     });
     await waitFor(() => {
@@ -374,22 +379,21 @@ describe("TeamPicker", () => {
     });
   });
 
-  it("passes an empty-string sport to findOrCreate when no sport prop is given", async () => {
+  // NEO-96: this test used to assert the OPPOSITE — that with no sport prop the
+  // picker called findOrCreate with `sport: ""`. That wrote a team no query
+  // could ever find again (every read is an exact sport match), which is one of
+  // the ways duplicate/orphaned entities got into the catalogue. Creating now
+  // requires a real sport row, so the affordance is hidden instead.
+  it("hides the create option entirely when no sportId is given", () => {
     currentCandidates = [];
-    mockFindOrCreate.mockResolvedValue(tid("new-team-3"));
-    renderPicker({ sport: undefined });
+    renderPicker({ sportId: undefined });
     openPopover();
 
     fireEvent.change(screen.getByLabelText("Search teams"), {
       target: { value: "Savannah Bananas" },
     });
-    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
 
-    await waitFor(() => {
-      expect(mockFindOrCreate).toHaveBeenCalledWith({
-        name: "Savannah Bananas",
-        sport: "",
-      });
-    });
+    expect(screen.queryByLabelText("Create team Savannah Bananas")).toBeNull();
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
   });
 });

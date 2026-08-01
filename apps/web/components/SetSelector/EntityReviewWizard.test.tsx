@@ -81,18 +81,18 @@ vi.mock("convex/react", () => ({
   },
 }));
 
-let lastLinkSearchProps: { kind: string; sport: string } | null = null;
+let lastLinkSearchProps: { kind: string; sportId: string } | null = null;
 vi.mock("./EntityLinkSearch", () => ({
   default: ({
     kind,
-    sport,
+    sportId,
     onSelect,
   }: {
     kind: "player" | "team";
-    sport: string;
+    sportId: string;
     onSelect: (id: string) => void;
   }) => {
-    lastLinkSearchProps = { kind, sport };
+    lastLinkSearchProps = { kind, sportId };
     return (
       <div aria-label="Entity link search (stub)">
         <button onClick={() => onSelect("linked-id-123")}>Stub link select</button>
@@ -118,7 +118,8 @@ type Row = {
   batchId: string;
   kind: "player" | "team";
   name: string;
-  sport: string;
+  sportId: Id<"selectorOptions">;
+  sportValue: string;
   status: "pending" | "ready" | "error";
   enrichment?: Record<string, unknown>;
   decision?: { action: "create" } | { action: "link"; linkedPlayerId?: string; linkedTeamId?: string };
@@ -134,7 +135,8 @@ function makeRow(overrides: Partial<Row> = {}): Row {
     batchId: "batch-1",
     kind: "player",
     name: "Mike Trout",
-    sport: "Baseball",
+    sportId: "selopt-sport-1" as unknown as Id<"selectorOptions">,
+    sportValue: "Baseball",
     status: "ready",
     ...overrides,
   };
@@ -335,13 +337,22 @@ describe("EntityReviewWizard — decision actions", () => {
   });
 
   it("'Link to Existing…' expands EntityLinkSearch scoped to the row's kind/sport", () => {
-    currentRows = [makeRow({ kind: "player", sport: "Football", status: "ready" })];
+    currentRows = [makeRow({
+      kind: "player",
+      sportId: "selopt-sport-2" as unknown as Id<"selectorOptions">,
+      sportValue: "Football",
+      status: "ready",
+    })];
     renderWizard();
 
     fireEvent.click(screen.getByLabelText("Link to existing instead"));
 
     expect(screen.getByLabelText("Entity link search (stub)")).toBeTruthy();
-    expect(lastLinkSearchProps).toEqual({ kind: "player", sport: "Football" });
+    // NEO-96: the wizard hands the search a sport ROW ID, not a label.
+    expect(lastLinkSearchProps).toEqual({
+      kind: "player",
+      sportId: "selopt-sport-2",
+    });
   });
 
   it("selecting a player from EntityLinkSearch calls recordDecision with linkedPlayerId set (linkedTeamId undefined)", async () => {

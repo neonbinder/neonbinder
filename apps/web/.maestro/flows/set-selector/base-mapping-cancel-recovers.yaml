@@ -66,7 +66,7 @@ tags:
       SET: "Topps Big League"
 
 # ── SELECT "Base" → auto-opens BaseSetPicker (unmapped → autoOpen=true) ──────
-# Center before tapping so the row clears the 1024×629 footer-steal zone (R8).
+# Center before tapping so the row is fully in view (R8).
 - scrollUntilVisible:
     element:
       text: "Base"
@@ -100,7 +100,7 @@ tags:
 
 # ── CANCEL the picker — the exact accidental action from the bug report ──────
 # The picker is a fixed z-50 portal overlay covering the whole viewport (its
-# own footer sits above the app footer, so no footer-steal — a direct tap is
+# own action row is inside the modal, nothing overlays it — a direct tap is
 # correct; a fixed modal can't be scrolled). Rule 8 fixed-element exception.
 - tapOn: "Cancel"
 

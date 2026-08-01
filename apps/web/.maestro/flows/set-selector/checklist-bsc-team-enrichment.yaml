@@ -30,7 +30,7 @@ tags:
 #     NOT mount at the top, and a DOWN scroll walks to the BOTTOM of the list —
 #     so the lowest card numbers (#1…) are unreachable, but the bottom cards
 #     (…#300) settle reliably into view. #300 is the second-to-last row (its
-#     Edit control sits at ~y438, clear of the y≥489 footer-steal band), so it
+#     Edit control sits at ~y438, comfortably inside the fold), so it
 #     is the natural, stable, reliably-tappable target. (Targeting #1 was tried
 #     first and confirmed unreachable — the DOWN scroll lands on #295–#300b.)
 #   - Ground truth verified live (unauthenticated) against
@@ -73,7 +73,7 @@ tags:
 # list, where #300 lives. No centerElement: #300 is in the bottom region and
 # the list can't scroll far enough past it to center it (that loops until
 # timeout) — vis:50 is enough to bring its Edit control into the tappable band,
-# and it lands at ~y438, clear of the footer. waitToSettleTimeoutMs lets
+# and it lands at ~y438, inside the fold. waitToSettleTimeoutMs lets
 # Virtuoso finish rendering each windowed row between scroll steps.
 - scrollUntilVisible:
     element:

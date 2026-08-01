@@ -6,7 +6,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
 
 /**
@@ -93,7 +93,8 @@ const rowValidator = v.object({
   createdByUserId: v.string(),
   kind: v.union(v.literal("player"), v.literal("team")),
   name: v.string(),
-  sport: v.string(),
+  // NEO-96: reference to the sport-level selectorOptions row.
+  sportId: v.id("selectorOptions"),
   status: v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
   enrichment: v.optional(enrichmentValidator),
   decision: v.optional(decisionValidator),
@@ -106,11 +107,28 @@ const publicRowValidator = v.object({
   batchId: v.string(),
   kind: v.union(v.literal("player"), v.literal("team")),
   name: v.string(),
-  sport: v.string(),
+  sportId: v.id("selectorOptions"),
+  // NEO-96: the sport row's display value, resolved server-side so the wizard
+  // can render "(Player \u00b7 Baseball)" without a client-side join.
+  sportValue: v.string(),
   status: v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
   enrichment: v.optional(enrichmentValidator),
   decision: v.optional(decisionValidator),
 });
+
+/**
+ * NEO-96: resolve a sport row id to its display value. Used for human-facing
+ * error text and for the `sportValue` the wizard renders. Falls back to the raw
+ * id rather than throwing — a dangling reference should surface as an odd label
+ * in one message, not break the whole review flow.
+ */
+async function sportLabel(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null> } },
+  sportId: Id<"selectorOptions">,
+): Promise<string> {
+  const row = await ctx.db.get(sportId);
+  return row?.value ?? sportId;
+}
 
 function toPublicRow<T extends { createdByUserId: string }>(
   row: T,
@@ -155,7 +173,7 @@ export const startBatch = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     createdByUserId: v.string(),
-    sport: v.string(),
+    sportId: v.id("selectorOptions"),
     playerNames: v.array(v.string()),
     teamNames: v.array(v.string()),
   },
@@ -181,7 +199,7 @@ export const startBatch = internalMutation({
           createdByUserId: args.createdByUserId,
           kind: "player",
           name,
-          sport: args.sport,
+          sportId: args.sportId,
           status: "pending",
         }),
       );
@@ -194,7 +212,7 @@ export const startBatch = internalMutation({
           createdByUserId: args.createdByUserId,
           kind: "team",
           name,
-          sport: args.sport,
+          sportId: args.sportId,
           status: "pending",
         }),
       );
@@ -229,7 +247,20 @@ export const getBatch = query({
         q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
       )
       .collect();
-    return rows.map(toPublicRow);
+    // NEO-96: resolve the sport label server-side. Every row in a batch shares
+    // one sportId, so this is a single extra read regardless of batch size —
+    // worth doing here rather than making the wizard join per row.
+    const labelCache = new Map<Id<"selectorOptions">, string>();
+    const resolved = [];
+    for (const row of rows) {
+      let sportValue = labelCache.get(row.sportId);
+      if (sportValue === undefined) {
+        sportValue = await sportLabel(ctx, row.sportId);
+        labelCache.set(row.sportId, sportValue);
+      }
+      resolved.push({ ...toPublicRow(row), sportValue });
+    }
+    return resolved;
   },
 });
 
@@ -323,9 +354,12 @@ export const recordDecision = mutation({
       }
       const linked = await ctx.db.get(args.linkedPlayerId);
       if (!linked) throw new Error("Linked player not found");
-      if (linked.primarySport !== row.sport) {
+      if (linked.sportId !== row.sportId) {
+        // NEO-96: compare ids, but report DISPLAY names — an operator reading
+        // "sport (abc123) doesn't match xyz789" learns nothing.
         throw new Error(
-          `Linked player's sport (${linked.primarySport}) doesn't match ${row.sport}`,
+          `Linked player's sport (${await sportLabel(ctx, linked.sportId)}) ` +
+            `doesn't match ${await sportLabel(ctx, row.sportId)}`,
         );
       }
       await ctx.db.patch(args.reviewRowId, {
@@ -337,9 +371,10 @@ export const recordDecision = mutation({
       }
       const linked = await ctx.db.get(args.linkedTeamId);
       if (!linked) throw new Error("Linked team not found");
-      if (linked.sport !== row.sport) {
+      if (linked.sportId !== row.sportId) {
         throw new Error(
-          `Linked team's sport (${linked.sport}) doesn't match ${row.sport}`,
+          `Linked team's sport (${await sportLabel(ctx, linked.sportId)}) ` +
+            `doesn't match ${await sportLabel(ctx, row.sportId)}`,
         );
       }
       await ctx.db.patch(args.reviewRowId, {

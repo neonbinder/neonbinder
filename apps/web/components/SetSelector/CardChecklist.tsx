@@ -65,7 +65,7 @@ type CardChecklistProps = {
  * decision.
  */
 type FetchPreview = {
-  sport: string;
+  sportId: Id<"selectorOptions">;
   batchId?: string;
   cards: Array<{
     cardNumber: string;
@@ -104,6 +104,10 @@ export default function CardChecklist({
     id: variantId,
   });
   const ancestorSport = ancestorChain?.find((c) => c.level === "sport")?.value;
+  // NEO-96: the row ID, which is what teams/players now reference. The chain
+  // already carried `_id` — this line is the only place it used to be thrown
+  // away, which is why the pickers ended up matching on a display string.
+  const ancestorSportId = ancestorChain?.find((c) => c.level === "sport")?._id;
   const fetchChecklist = useAction(api.selectorOptions.fetchCardChecklist);
   const commitChecklist = useMutation(api.selectorOptions.commitCardChecklist);
   const addCustomCard = useMutation(api.selectorOptions.addCustomCard);
@@ -176,12 +180,12 @@ export default function CardChecklist({
     setSyncMessage(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
-      if (!result.success || !result.sport) {
+      if (!result.success || !result.sportId) {
         setSyncMessage(result.message);
         return;
       }
       const preview: FetchPreview = {
-        sport: result.sport,
+        sportId: result.sportId,
         batchId: result.batchId,
         cards: result.cards,
         unknownPlayers: result.unknownPlayers,
@@ -209,7 +213,7 @@ export default function CardChecklist({
     try {
       const result = await commitChecklist({
         selectorOptionId: variantId,
-        sport: preview.sport,
+        sportId: preview.sportId,
         cards: preview.cards,
         batchId: preview.batchId,
       });
@@ -571,6 +575,7 @@ export default function CardChecklist({
           card={selectedCard}
           ancestorChain={ancestorChain}
           ancestorSport={ancestorSport}
+          ancestorSportId={ancestorSportId}
           onClose={() => setSelectedCardId(null)}
           onPrev={() => selectByIndex(selectedIndex - 1)}
           onNext={() => selectByIndex(selectedIndex + 1)}

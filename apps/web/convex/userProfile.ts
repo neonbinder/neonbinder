@@ -27,7 +27,6 @@ export const getUserProfile = query({
       }))),
       marketplaceAccountIds: marketplaceAccountIdsValidator,
       preferences: v.optional(v.object({
-        defaultSport: v.optional(v.string()),
         defaultYear: v.optional(v.number()),
         theme: v.optional(v.union(v.literal("light"), v.literal("dark"))),
       })),
@@ -135,7 +134,6 @@ export const setMarketplaceAccountIdInternal = internalMutation({
 export const updateUserProfile = mutation({
   args: {
     preferences: v.optional(v.object({
-      defaultSport: v.optional(v.string()),
       defaultYear: v.optional(v.number()),
       theme: v.optional(v.union(v.literal("light"), v.literal("dark"))),
     })),

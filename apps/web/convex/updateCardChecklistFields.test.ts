@@ -36,6 +36,12 @@ async function seed() {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
       platformData: { bsc: "x", sportlots: "y" },
       children: [],
       lastUpdated: Date.now(),
@@ -60,13 +66,13 @@ async function seed() {
     const teamA = await ctx.db.insert("teams", {
       name: "Dodgers",
       nameNormalized: "dodgers",
-      sport: "Baseball",
+      sportId,
       lastUpdated: Date.now(),
     });
     const playerA = await ctx.db.insert("players", {
       name: "Shohei Ohtani",
       nameNormalized: "ohtani shohei",
-      primarySport: "Baseball",
+      sportId,
       lastUpdated: Date.now(),
     });
 

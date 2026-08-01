@@ -15,7 +15,8 @@ import { generateSku, SKU_MAX_LENGTH } from "./sku";
 describe("generateSku", () => {
   test("known-good input produces the exact expected SKU string", () => {
     const sku = generateSku({
-      sport: "Baseball",
+      skuCode: "BB",
+      sportFallbackLabel: "Baseball",
       year: "2026",
       setName: "Topps Chrome",
       cardNumber: "42",
@@ -29,7 +30,8 @@ describe("generateSku", () => {
 
   test("a very long setName and cardNumber are truncated, and total length never exceeds SKU_MAX_LENGTH", () => {
     const sku = generateSku({
-      sport: "Baseball",
+      skuCode: "BB",
+      sportFallbackLabel: "Baseball",
       year: "2026",
       setName: "ThisSetNameIsWayTooLongToFitInTwelveCharacters",
       cardNumber: "1234567890123456",
@@ -44,7 +46,8 @@ describe("generateSku", () => {
   test("unicode and punctuation in setName/cardNumber are stripped, not left in, and generateSku never throws", () => {
     expect(() =>
       generateSku({
-        sport: "Baseball",
+        skuCode: "BB",
+        sportFallbackLabel: "Baseball",
         year: "2026",
         setName: "Café Ünïcode 🎉 Set!",
         cardNumber: "#42-A/B",
@@ -53,7 +56,8 @@ describe("generateSku", () => {
     ).not.toThrow();
 
     const sku = generateSku({
-      sport: "Baseball",
+      skuCode: "BB",
+      sportFallbackLabel: "Baseball",
       year: "2026",
       setName: "Café Ünïcode 🎉 Set!",
       cardNumber: "#42-A/B",
@@ -70,7 +74,7 @@ describe("generateSku", () => {
 
   test("a sport not in SPORT_SKU_CODE falls back to a derived 2-char code instead of throwing or emitting undefined", () => {
     const sku = generateSku({
-      sport: "Soccer",
+      sportFallbackLabel: "Soccer",
       year: "2026",
       setName: "Panini",
       cardNumber: "7",
@@ -85,7 +89,7 @@ describe("generateSku", () => {
   test("a sport not in SPORT_SKU_CODE and shorter than 2 chars after slugify is padded with X to stay exactly 2 chars", () => {
     // slugify("A", 2) -> "A", then .padEnd(2, "X") -> "AX".
     const sku = generateSku({
-      sport: "A",
+      sportFallbackLabel: "A",
       year: "2026",
       setName: "Panini",
       cardNumber: "7",
@@ -97,7 +101,8 @@ describe("generateSku", () => {
 
   test("two calls with different uniqueSuffix values (all else identical) produce different SKUs", () => {
     const base = {
-      sport: "Baseball",
+      skuCode: "BB",
+      sportFallbackLabel: "Baseball",
       year: "2026",
       setName: "Topps",
       cardNumber: "10",
@@ -115,7 +120,8 @@ describe("generateSku", () => {
     // (known sports are already exactly 2 chars, unknown sports padEnd to 2)
     // and the suffix (padEnd to 6) are guaranteed fixed-width.
     const shortSku = generateSku({
-      sport: "Baseball",
+      skuCode: "BB",
+      sportFallbackLabel: "Baseball",
       year: "26",
       setName: "X",
       cardNumber: "1",
@@ -127,7 +133,8 @@ describe("generateSku", () => {
 
     // The worst-case (every component at its cap) is exactly SKU_MAX_LENGTH.
     const maxSku = generateSku({
-      sport: "Baseball",
+      skuCode: "BB",
+      sportFallbackLabel: "Baseball",
       year: "2026",
       setName: "ThisSetNameIsWayTooLongToFitInTwelveCharacters",
       cardNumber: "1234567890123456",
@@ -138,7 +145,8 @@ describe("generateSku", () => {
 
   test("an empty setName/cardNumber falls back to the literal 'X' placeholder rather than an empty segment", () => {
     const sku = generateSku({
-      sport: "Baseball",
+      skuCode: "BB",
+      sportFallbackLabel: "Baseball",
       year: "2026",
       setName: "!!!",
       cardNumber: "???",

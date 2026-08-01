@@ -36,16 +36,23 @@ import { normalizeTeamName } from "./teams";
  * cutoff matches the `commitCardChecklist` ancestor walk so a cycle
  * can't deadlock the mutation.
  */
+/**
+ * NEO-96: returns the sport-level ancestor's ROW ID, not its display value.
+ * It used to return `node.value` (raw case) while `fetchCardChecklist` returned
+ * the same node's value lowercased — two writers, two casings, into the same
+ * `teams.sport` string column. Returning the id removes the disagreement by
+ * construction.
+ */
 export async function findSportForSelectorOption(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   selectorOptionId: Id<"selectorOptions">,
-): Promise<string | undefined> {
+): Promise<Id<"selectorOptions"> | undefined> {
   let cursor: Id<"selectorOptions"> | undefined = selectorOptionId;
   let depth = 0;
   while (cursor && depth < 16) {
     const node = await ctx.db.get(cursor);
     if (!node) return undefined;
-    if (node.level === "sport") return node.value;
+    if (node.level === "sport") return node._id;
     cursor = node.parentId;
     depth += 1;
   }
@@ -127,11 +134,11 @@ export const backfillTeamToOnCardIds = internalMutation({
         continue;
       }
 
-      const sport = await findSportForSelectorOption(
+      const sportId = await findSportForSelectorOption(
         ctx,
         row.selectorOptionId,
       );
-      if (!sport) {
+      if (!sportId) {
         // No sport ancestor — can't safely look up across sports
         // (Yankees-MLB vs Yankees-Pinstripes-something-else). Log
         // and leave for operator review.
@@ -150,8 +157,8 @@ export const backfillTeamToOnCardIds = internalMutation({
       // indexed read per team string regardless of cross-sport dupes.
       const existing = await ctx.db
         .query("teams")
-        .withIndex("by_name_normalized_and_sport", (q) =>
-          q.eq("nameNormalized", normalized).eq("sport", sport),
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", normalized).eq("sportId", sportId),
         )
         .first();
 
@@ -162,7 +169,7 @@ export const backfillTeamToOnCardIds = internalMutation({
         teamId = await ctx.db.insert("teams", {
           name: teamString.trim(),
           nameNormalized: normalized,
-          sport,
+          sportId,
           lastUpdated: Date.now(),
         });
         teamsCreated += 1;
@@ -251,8 +258,8 @@ export const applyBscTeamResolution = internalMutation({
       return { applied: false, teamCreated: false };
     }
 
-    const sport = await findSportForSelectorOption(ctx, row.selectorOptionId);
-    if (!sport) {
+    const sportId = await findSportForSelectorOption(ctx, row.selectorOptionId);
+    if (!sportId) {
       // Same ambiguous case backfillTeamToOnCardIds guards against. Leave
       // teamCheckDoneAt unset so a future retry can still pick this up
       // once the ancestor chain is fixed.
@@ -266,8 +273,8 @@ export const applyBscTeamResolution = internalMutation({
     const normalized = normalizeTeamName(teamName);
     const existing = await ctx.db
       .query("teams")
-      .withIndex("by_name_normalized_and_sport", (q) =>
-        q.eq("nameNormalized", normalized).eq("sport", sport),
+      .withIndex("by_name_normalized_and_sport_id", (q) =>
+        q.eq("nameNormalized", normalized).eq("sportId", sportId),
       )
       .first();
 
@@ -279,7 +286,7 @@ export const applyBscTeamResolution = internalMutation({
       teamId = await ctx.db.insert("teams", {
         name: teamName,
         nameNormalized: normalized,
-        sport,
+        sportId,
         lastUpdated: Date.now(),
       });
       teamCreated = true;

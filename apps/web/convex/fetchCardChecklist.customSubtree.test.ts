@@ -49,6 +49,12 @@ async function seedCustomSport(
     ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
+      sportConfig: {
+        skuCode: "BB",
+        league: "MLB",
+        espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+        wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
+      },
       platformData: {},
       isCustom: true,
       children: [],

@@ -39,17 +39,20 @@ tags:
 #   WHY A CUSTOM SET UNDER *REAL* Baseball/2024/Topps (not a synthetic sport):
 #     A custom SET node makes the whole subtree custom (isCustomSubtree → BSC/SL
 #     skipped, NEO-22), so the wizard opens ONLY from this worker's own custom
-#     cards' pending names — never from a marketplace fetch. But because the SPORT
-#     ancestor is the REAL "Baseball", fetchCardChecklist derives sport="baseball"
-#     (selectorOptions.ts lowercases the sport ancestor's value), and the wizard's
-#     EntityLinkSearch lists api.players.list({sport:"baseball"}). That means the
-#     real, setup-synced Baseball roster (incl. Shohei Ohtani) is available as a
-#     link target — exactly as on the old real-Base path, with ZERO change to the
-#     link step. A fully-synthetic "E2E Test Sport N" would give sport="e2e test
-#     sport n" with an EMPTY roster and no real player to link to; and seeding one
-#     via PlayerPicker "+ Create" is casing-broken (it would create the player in
-#     primarySport="Baseball" — the raw ancestor value — which the wizard's
-#     lowercased "baseball" query never returns). Ohtani is the correct target.
+#     cards' pending names — never from a marketplace fetch. Keeping the REAL
+#     "Baseball" SPORT ancestor means the wizard's EntityLinkSearch lists that
+#     sport's real, setup-synced roster (incl. Shohei Ohtani), so there is a
+#     genuine link target. A fully-synthetic "E2E Test Sport N" would have an
+#     EMPTY roster and nothing to link to.
+#
+#     NEO-96 removed the casing hazard this comment used to warn about. It said
+#     seeding a player via PlayerPicker "+ Create" was "casing-broken" — the
+#     picker wrote primarySport="Baseball" (the raw ancestor value) while the
+#     wizard queried the lowercased "baseball" that fetchCardChecklist had
+#     derived from a BSC wire format, so the two never saw each other. Both
+#     sides now pass the sport ROW ID, so either seeding path works and this
+#     flow no longer has to route around it. Ohtani remains the target simply
+#     because he is deterministic setup-synced data.
 #
 #   NEO-92 backend enablement (convex/selectorOptions.ts): the custom-subtree
 #   branch of fetchCardChecklist now calls the shared resolveUnknownsAndStartBatch
@@ -120,7 +123,7 @@ tags:
 # Marketplaces" button when the checklist is empty (attempt-1) OR the header
 # "Refresh" button when debris cards exist (retry) — exactly one renders at a
 # time, so targeting it by aria-label is unambiguous. centerElement keeps it in
-# the tap band clear of the sticky binder-header (top) and footer (y≥489).
+# the tap band clear of the sticky binder-header at the top.
 # ============================================================
 
 - scrollUntilVisible:

@@ -38,7 +38,7 @@ const modules = (import.meta as unknown as {
 async function seedTree(
   t: ReturnType<typeof convexTest>,
   sportValue = "Baseball",
-): Promise<Id<"selectorOptions">> {
+): Promise<{ variantTypeId: Id<"selectorOptions">; sportId: Id<"selectorOptions"> }> {
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
@@ -65,7 +65,7 @@ async function seedTree(
       lastUpdated: Date.now(),
     });
     await ctx.db.patch(setNameId, { children: [variantTypeId] });
-    return variantTypeId;
+    return { variantTypeId, sportId };
   });
 }
 
@@ -107,7 +107,7 @@ const getCard = (t: ReturnType<typeof convexTest>, id: Id<"cardChecklist">) =>
 describe("getForBscTeamCheck", () => {
   test("returns null when the card has no platformData.bsc", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1"); // no bsc
 
     const result = await t.query(internal.cardChecklist.getForBscTeamCheck, {
@@ -118,7 +118,7 @@ describe("getForBscTeamCheck", () => {
 
   test("needsCheck is true when neither teamOnCardIds nor teamCheckDoneAt is set", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
     const result = await t.query(internal.cardChecklist.getForBscTeamCheck, {
@@ -129,12 +129,12 @@ describe("getForBscTeamCheck", () => {
 
   test("needsCheck is false once teamOnCardIds is set", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const teamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Yankees",
         nameNormalized: "yankees",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
@@ -151,7 +151,7 @@ describe("getForBscTeamCheck", () => {
 
   test("needsCheck is false once teamCheckDoneAt is set, even with empty teamOnCardIds", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", {
       bsc: "bsc-1",
       teamCheckDoneAt: Date.now(),
@@ -171,7 +171,7 @@ describe("getForBscTeamCheck", () => {
 describe("applyBscTeamResolution", () => {
   test("team-found case creates a teams row and sets teamOnCardIds + teamCheckDoneAt", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
     const result = await t.mutation(
@@ -188,18 +188,19 @@ describe("applyBscTeamResolution", () => {
     const teamId: Id<"teams"> = card!.teamOnCardIds![0];
     const teamRow = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(teamRow!.name).toBe("New York Yankees");
-    expect(teamRow!.sport).toBe("Baseball");
+    // NEO-96: the team references the sport ROW, so assert the id.
+    expect(teamRow!.sportId).toBe(sportId);
   });
 
   test("reuses an existing teams row via by_name_normalized_and_sport instead of creating a duplicate", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const existingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Yankees",
         // normalizeTeamName("New York Yankees") token-sorts to this key.
         nameNormalized: "new yankees york",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
@@ -217,7 +218,7 @@ describe("applyBscTeamResolution", () => {
 
   test("no-team-found case (empty string) only sets teamCheckDoneAt", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
     const result = await t.mutation(
@@ -233,7 +234,7 @@ describe("applyBscTeamResolution", () => {
 
   test("whitespace-only teamName is treated the same as empty", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
 
     const result = await t.mutation(
@@ -249,12 +250,12 @@ describe("applyBscTeamResolution", () => {
 
   test("already-resolved row is a no-op and backfills teamCheckDoneAt if missing, without touching teamOnCardIds", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const preexistingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Mets",
         nameNormalized: "mets",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
@@ -279,12 +280,12 @@ describe("applyBscTeamResolution", () => {
 
   test("already-resolved row with teamCheckDoneAt already set leaves the original timestamp untouched", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const preexistingTeamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Mets",
         nameNormalized: "mets",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
@@ -332,7 +333,7 @@ describe("applyBscTeamResolution", () => {
 
   test("row that no longer exists is a safe no-op", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
     await t.run(async (ctx) => ctx.db.delete(cardId));
 
@@ -352,12 +353,12 @@ describe("applyBscTeamResolution", () => {
 describe("enqueueBscTeamBackfill", () => {
   test("only enqueues rows with platformData.bsc, no teamOnCardIds, and no teamCheckDoneAt", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     const teamId = await t.run(async (ctx) =>
       ctx.db.insert("teams", {
         name: "Yankees",
         nameNormalized: "yankees",
-        sport: "Baseball",
+        sportId,
         lastUpdated: Date.now(),
       }),
     );
@@ -379,7 +380,7 @@ describe("enqueueBscTeamBackfill", () => {
 
   test("respects batchSize and reports remaining beyond the batch", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     for (let i = 0; i < 5; i++) {
       await insertCard(t, variantTypeId, String(i + 1), { bsc: `bsc-${i + 1}` });
     }
@@ -394,7 +395,7 @@ describe("enqueueBscTeamBackfill", () => {
 
   test("defaults batchSize to 200 when not provided", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     for (let i = 0; i < 3; i++) {
       await insertCard(t, variantTypeId, String(i + 1), { bsc: `bsc-${i + 1}` });
     }
@@ -407,7 +408,7 @@ describe("enqueueBscTeamBackfill", () => {
 
   test("no eligible rows enqueues nothing", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
     await insertCard(t, variantTypeId, "1"); // no bsc ref at all
 
     const result = await t.mutation(internal.cardChecklist.enqueueBscTeamBackfill, {
@@ -431,7 +432,7 @@ describe("enqueueBscTeamBackfill", () => {
   // fixes this by actually advancing through the whole table.
   test("advances past the first page via cursor instead of re-scanning it forever", async () => {
     const t = convexTest(schema, modules);
-    const variantTypeId = await seedTree(t);
+    const { variantTypeId, sportId } = await seedTree(t);
 
     // Seed more than one page's worth of eligible rows (PAGE_SIZE is 1000
     // internally) so a single call can't possibly enqueue them all — the
