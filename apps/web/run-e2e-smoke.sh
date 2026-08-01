@@ -644,18 +644,27 @@ run_flow_on_worker() {
       echo "$MAESTRO" test "${worker_args[@]}" "${report_args[@]}" "$flow"
     fi
   } >> "$log_file"
-  # Run with 1 retry on non-timeout failures. The Maestro CDP web driver
-  # has documented intermittent failures ("null cannot be cast to non-null
-  # type kotlin.Int", "Failed to execute JS") that happen between successful
-  # scrollUntilVisible and the immediately-following tap on the same element.
-  # The JVM has also been observed to SIGSEGV/SIGBUS mid-flow. These
-  # infrastructure flakes do not reflect product bugs and almost always
-  # succeed on a second attempt. Retry is bounded to 1 (worst case: 2x
-  # runtime per flow) and is skipped for timeout codes since those usually
-  # mean a slow/hung product path that retry won't help.
+  # NEO-42: per-flow retry is OFF (MAESTRO_FLOW_RETRIES:-1), matching
+  # run-e2e-queue.sh — the runner CI actually drives the flows with. A blanket
+  # retry masked real instability: a first-attempt failure that passed on
+  # re-run still went green, so the "Passed on retry" flows were never chased
+  # down. The reactive-form and coordinate-staleness root causes behind them
+  # are fixed (NEO-39/40, NEO-81/85), and first-attempt green is the
+  # definition-of-done. Keeping the loop (rather than deleting it) preserves
+  # the escape hatch: set MAESTRO_FLOW_RETRIES=2+ to triage a genuine
+  # Maestro/JVM infra crash (CDP "null cannot be cast to non-null type
+  # kotlin.Int" / "Failed to execute JS", or a mid-flow SIGSEGV/SIGBUS).
+  # Never raise the default to get a red suite green — fix the flow.
+  # Timeout codes still never retry: those mean a slow/hung product path.
+  #
+  # This also covers CI's pre-matrix `setup` track (e2e.yml runs
+  # `npm run test:e2e -- setup`, which routes setup.yaml through this same
+  # function). That is intentional: a setup failure is a config/secrets/env
+  # problem — exactly the class a silent re-run hides. Verified inert at the
+  # time of the change: the last 3 green pipelines logged zero retry lines.
   local exit_code=0
   local attempt=1
-  local max_attempts="${MAESTRO_FLOW_RETRIES:-2}"
+  local max_attempts="${MAESTRO_FLOW_RETRIES:-1}"
   while [ "$attempt" -le "$max_attempts" ]; do
     exit_code=0
     if [ "$attempt" -gt 1 ]; then
@@ -697,7 +706,11 @@ run_flow_on_worker() {
     echo "⏱  [w$worker_index] TIMEOUT after ${FLOW_TIMEOUT_SEC}s: $flow" >> "$log_file"
     echo "FAIL $flow (timeout)" >> "$results_file"
   else
-    echo "❌ [w$worker_index] Failed after $max_attempts attempts: $flow" >> "$log_file"
+    if [ "$max_attempts" -gt 1 ]; then
+      echo "❌ [w$worker_index] Failed after $max_attempts attempts: $flow" >> "$log_file"
+    else
+      echo "❌ [w$worker_index] Failed: $flow" >> "$log_file"
+    fi
     echo "FAIL $flow" >> "$results_file"
   fi
   echo "" >> "$log_file"
