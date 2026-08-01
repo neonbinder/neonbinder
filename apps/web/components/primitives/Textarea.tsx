@@ -33,9 +33,12 @@ export interface TextareaProps
 
 /** Visual identity only — geometry is the caller's in `bare` mode (see Input). */
 const BASE_TEXTAREA =
-  "resize-none rounded-md border border-slate-700 bg-slate-900 text-foreground placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
+  "rounded-md border border-slate-700 bg-slate-900 text-foreground placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50";
 
-const TEXTAREA_GEOMETRY = "flex min-h-[80px] w-full px-3 py-2 text-sm";
+// `resize-none` lives here, not in BASE: resize behaviour is geometry, and a
+// caller that wants `resize-y` could not override it from `className` (Tailwind
+// resolves conflicts by stylesheet order).
+const TEXTAREA_GEOMETRY = "flex min-h-[80px] w-full resize-none px-3 py-2 text-sm";
 
 export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
   (
