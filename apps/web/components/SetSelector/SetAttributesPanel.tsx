@@ -8,6 +8,7 @@ import {
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
 import { FeatureValueControl } from "./FeatureValueControl";
+import RenameEntityControl from "./RenameEntityControl";
 
 /**
  * NEO-38 (PR B-2) — level-agnostic set ATTRIBUTES editor.
@@ -196,6 +197,15 @@ export default function SetAttributesPanel({
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
               Set attributes
             </span>
+            {/* NEO-96: renaming lives here rather than on every selector row.
+                It is a rare, deliberate action, and this panel already scopes
+                itself to exactly one row — the deepest current selection, at
+                ANY level (see deepestSelectedId in modules/SetSelector) — so
+                rename stays available for sports, years, manufacturers, sets
+                and variants alike without repeating the affordance down every
+                column. It sits inside the EXPANDED body so it only surfaces
+                once someone has deliberately opened attributes. */}
+            <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
           </div>
 
           {toast && (

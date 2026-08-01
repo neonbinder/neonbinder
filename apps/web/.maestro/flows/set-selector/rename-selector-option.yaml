@@ -1,12 +1,12 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Selector rename — an entry's display name can be changed in place and the renamed row still selects (per-worker custom set)"
+name: "Selector rename — an entry's display name can be changed from its attributes panel and the selection follows the new name (per-worker custom set)"
 tags:
   - set-selector
 ---
-# R1 — ONE FEATURE (NEO-96): a selectorOptions row's DISPLAY NAME can be renamed
-# from the UI, the new name renders, and the renamed row still behaves as a
-# normal selectable entry.
+# R1 — ONE FEATURE (NEO-96): a selectorOptions row's DISPLAY NAME can be
+# renamed from its attributes panel, the new name renders, and the selection
+# still resolves to that row afterwards.
 #
 # WHY THIS IS NEW BEHAVIOUR, NOT A REGRESSION TEST:
 #   `selectorOptions.value` was WRITE-ONCE until NEO-96 — set at insert
@@ -19,6 +19,13 @@ tags:
 #   instead of copying its display string: before that a rename silently
 #   orphaned every entity holding the old label, and broke SKU generation and
 #   Wikidata/ESPN enrichment, both of which keyed off the display name.
+#
+# WHERE THE CONTROL LIVES:
+#   SetAttributesPanel's EXPANDED body — not on the selector rows. The panel
+#   scopes itself to the deepest current selection at ANY level, so this same
+#   path renames a sport, year, manufacturer, set or variant; drilling one
+#   level deeper is all that changes. Reaching it therefore means selecting the
+#   row and opening attributes, NOT hunting for it in a column list.
 #
 # ISOLATION (R7a): operates on a PER-WORKER CUSTOM set under real
 #   Baseball → 2024 → Topps, so no other runner can observe or race this
@@ -33,29 +40,25 @@ tags:
 #   Same reason parallel-grouping-cancel/reject carry ATTEMPT_ID.
 #
 # R2 — HARD ASSERTIONS:
-#   - The pre-rename row is present (proves we're renaming the right row).
-#   - After committing, a row labelled with the NEW name exists and NO row
-#     labelled with the old name does — asserted against the rename control's
-#     aria-label, which is derived from the row's current display value.
-#   - Re-tapping the renamed row selects it and collapses the column, proving
-#     the rename changed the label only and left the row selectable.
+#   - The panel header names the set BEFORE the rename (we're renaming the row
+#     we think we are).
+#   - After committing, that header reads the NEW name. The header renders the
+#     CURRENTLY SELECTED row, so this proves both halves at once: the label
+#     changed, and the selection still resolves to this row rather than being
+#     orphaned by the rename.
+#   - The old label is gone from the page entirely.
 #
 # MAESTRO NOTES:
-#   - The rename control is a SIBLING of the row button (a button cannot nest
-#     inside a button), exposed as aria-label "Rename <name>" and, once open,
-#     "Edit name for <name>".
-#   - EntitySelector COLLAPSES a column once it has a selection, rendering a
-#     summary chip instead of the row list — so the rename control is absent
-#     until the column is re-expanded.
-#   - The expanded row list is its own `max-h-[400px] overflow-y-auto`
-#     container, so PAGE scrolling cannot bring a row into view. The column
-#     renders a "Search <column>" box once it holds >8 entries; filtering is
-#     the only reliable way to reach a specific row. util-drill-to-custom
-#     documents the same constraint and takes the same approach. Asserting
-#     visibility before filtering is what cost this flow two CI runs.
-#   - The rename input carries a per-instance class from useFieldTestClass
-#     because maestro-web's inputText builds an XPath from id → class →
-#     position, and every row would otherwise share one Tailwind className
+#   - The rename affordance is exposed as aria-label "Rename <name>" and, once
+#     open, "Edit name for <name>" — both derived from the row's CURRENT value,
+#     so they track the rename.
+#   - The input opens EMPTY (current name as placeholder), so there is nothing
+#     to erase. That is deliberate: tapOn plants the caret WHERE IT TAPS, and
+#     eraseText only deletes to the caret's left, so clearing a pre-filled
+#     field left a tail behind and committed a mangled name. maestro-web also
+#     cannot send Cmd+A to select all — it rejects modifier combos.
+#   - The input carries a per-instance class from useFieldTestClass because
+#     maestro-web's inputText builds an XPath from id → class → position
 #     (mobile-dev-inc/maestro#1083).
 
 # ============================================================
@@ -70,8 +73,8 @@ tags:
 # ============================================================
 # DRILL TO A PER-WORKER CUSTOM SET UNDER REAL Baseball/2024/Topps
 # util-drill-to-custom creates the set if it doesn't exist, so the first run
-# on a fresh deployment establishes it and later runs re-select it. It leaves
-# the set SELECTED, which means the Sets column is collapsed to its chip.
+# on a fresh deployment establishes it and later runs re-select it. Selecting
+# it is what points SetAttributesPanel at this row.
 # ============================================================
 
 - runFlow:
@@ -83,70 +86,39 @@ tags:
       SET_NAME: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # ============================================================
-# RE-EXPAND THE SETS COLUMN
-# The collapsed chip is a plain clickable div with no aria-label, so it is
-# targeted by its text. Tapping it restores the row list.
-# ============================================================
-
-- extendedWaitUntil:
-    visible: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-    timeout: 15000
-- tapOn:
-    text: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-    retryTapIfNoChange: true
-
-# ============================================================
-# FILTER DOWN TO OUR ROW
-# The Sets column under a real manufacturer holds dozens of entries (every
-# synced set plus every worker's customs), so our row sits far down an inner
-# scroll container. The search box filters the list in place.
+# OPEN THE ATTRIBUTES PANEL FOR THE SELECTED SET
+# The panel renders collapsed by default at every level (NEO-38: auto-expanding
+# during a drill pushed the selector columns down and hid the next column's
+# target), so it takes an explicit tap to open.
 #
-# Filter on ATTEMPT_ID ALONE — deliberately not on the full old name. Both the
-# old name (rnm-<w>-<attempt>) and the new one (rnmx-<w>-<attempt>) contain it,
-# so this single filter stays correct across the rename and never has to be
-# retyped. That matters: the box is a controlled input over a Convex-reactive
-# list, and re-typing into it while a mutation settles duplicates/drops
-# characters (see reactive-input race, NEO-46's mb-search- fix). An earlier
-# revision erased and retyped here and got "w0-a2-22372237" — "No matches
-# found", and a false failure. One type, into an empty box, before any write.
+# It also sits BELOW the selector columns, off-screen at the 1024x629 headless
+# viewport — scroll to it before asserting, since "visible" means in-viewport,
+# not merely in the DOM.
 # ============================================================
 
-- runFlow:
-    when:
-      visible:
-        id: "Search sets"
-    commands:
-      - tapOn:
-          id: "Search sets"
-      - inputText: "${ATTEMPT_ID}"
-
-# Fallback for a short list (<=8 entries), where no search box is rendered.
-- runFlow:
-    when:
-      notVisible:
-        id: "Search sets"
-    commands:
-      - scrollUntilVisible:
-          element:
-            id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-          centerElement: true
-          timeout: 10000
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    centerElement: true
+    timeout: 15000
+- assertVisible:
+    text: ".*Attributes for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+- tapOn:
+    id: "Edit attributes"
 
 # ============================================================
 # RENAME THE ENTRY
 # ============================================================
 
-- extendedWaitUntil:
-    visible:
+- scrollUntilVisible:
+    element:
       id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
     timeout: 10000
 - tapOn:
     id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
-# The input replaces the affordance in place. It opens EMPTY (the current name
-# is its placeholder), so there is nothing to erase: a backspace-based clear
-# would only remove what is left of the caret that tapOn just planted mid-text,
-# and maestro-web cannot send Cmd+A to select all. Type straight into it.
+# The input replaces the affordance in place and opens empty — type straight in.
 - extendedWaitUntil:
     visible:
       id: "Edit name for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
@@ -158,42 +130,22 @@ tags:
 - pressKey: Enter
 
 # ============================================================
-# VERIFY THE RENAME LANDED
+# VERIFY THE RENAME LANDED AND THE SELECTION FOLLOWED IT
 #
-# The ATTEMPT_ID filter set above still holds and matches BOTH names, which is
-# what makes the "old label is gone" assertion meaningful: an un-renamed row
-# would still be inside this filtered view, rather than merely filtered out of
-# it.
-#
-# Assertions target the rename control's aria-label, which is derived from the
-# row's CURRENT display value — so it tracks the rename and, unlike a raw text
-# match, cannot be satisfied by the search box echoing back what we typed.
-# Substring-safe: "Rename rnm-0-x" is not a substring of "Rename rnmx-0-x".
+# The panel header reads "Attributes for <name> (<Level>)" for the CURRENTLY
+# SELECTED row, so asserting the new name there proves the label changed AND
+# that the selection still resolves to this row.
 # ============================================================
 
-- extendedWaitUntil:
-    visible:
-      id: "Rename rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    centerElement: true
     timeout: 10000
-- assertNotVisible:
-    id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- assertVisible:
+    text: ".*Attributes for rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 
-# ============================================================
-# THE RENAMED ROW STILL SELECTS
-#
-# Tapping a row selects it and collapses the column to its summary chip
-# (EntitySelector's row onClick → onSelect + setExpanded(false)). Selection is
-# unconditional rather than a toggle — handleSetSelect in modules/SetSelector
-# just sets the id — so tapping the already-selected row re-selects it. The
-# search box exists only in the EXPANDED variant, so its disappearance is the
-# collapse signal, and the chip still rendering the new name proves the
-# selection resolves to this row under its new label.
-# ============================================================
-
-- tapOn:
-    text: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-- extendedWaitUntil:
-    notVisible:
-      id: "Search sets"
-    timeout: 7000
-- assertVisible: "rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+# The old label is gone everywhere — the panel header, its breadcrumb, and the
+# Sets column's selected chip all re-render from the same row. Substring-safe:
+# "rnm-0-x" is not a substring of "rnmx-0-x".
+- assertNotVisible: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"

@@ -1,6 +1,4 @@
 import { memo, useMemo, useState } from "react";
-import RenameEntityControl from "./RenameEntityControl";
-import type { Id } from "../../convex/_generated/dataModel";
 import { useQuery } from "convex/react";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
@@ -170,17 +168,14 @@ function EntitySelector({
             const pd = getPlatformData(item);
             const showPills = isItemTerminal?.(item) ?? false;
             return (
-              // NEO-96: the row button and the rename control are SIBLINGS.
-              // A <button> cannot be nested inside another <button> — browsers
-              // reparent it and the inner click handler stops firing.
-              <div key={item._id} className="flex items-center gap-1">
               <button
+                key={item._id}
                 onClick={() => {
                   onSelect(item._id);
                   setExpanded(false);
                   setSearchFilter("");
                 }}
-                className={`flex-1 min-w-0 text-left p-3 rounded-md border transition-colors ${
+                className={`w-full text-left p-3 rounded-md border transition-colors ${
                   selectedId === item._id
                     ? `${selectedColor}`
                     : isCustom(item)
@@ -214,13 +209,6 @@ function EntitySelector({
                   </div>
                 )}
               </button>
-              <RenameEntityControl
-                // SelectorItem is deliberately loose ({_id: string; [k]: unknown})
-                // so this column can render any level; narrow at the boundary.
-                id={item._id as Id<"selectorOptions">}
-                currentValue={getDisplayName(item)}
-              />
-              </div>
             );
           })
         )}

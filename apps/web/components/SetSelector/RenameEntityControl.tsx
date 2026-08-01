@@ -15,11 +15,17 @@ import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
  * orphan every team/player holding the old string, and break SKU generation and
  * enrichment, which both keyed off the display name.
  *
- * ── MARKUP CONSTRAINT (read before moving this) ─────────────────────────────
- * The selector row is a single full-width <button> (EntitySelector.tsx), so
- * this control CANNOT be nested inside it — a button inside a button is
- * invalid HTML and browsers reparent it, which detaches the click handler.
- * It renders as a SIBLING inside the row's flex wrapper.
+ * ── WHERE THIS LIVES (read before moving it) ────────────────────────────────
+ * It renders in SetAttributesPanel's EXPANDED body, not on selector rows.
+ * Renaming is rare and deliberate, and one affordance per row in every column
+ * was visual noise for something almost nobody uses. The panel already targets
+ * exactly one row — the deepest current selection, at ANY level — so rename
+ * still reaches sports, years, manufacturers, sets and variants.
+ *
+ * Do not put it back on the rows: an EntitySelector row is a single full-width
+ * <button>, and a <button> inside a <button> is invalid HTML that browsers
+ * reparent, detaching the click handler. It would have to be a sibling in a
+ * flex wrapper, which is what made it so prominent in the first place.
  *
  * ── UNCONTROLLED INPUT (NEO-36 pattern — do not "fix" this back) ─────────────
  * The name field is UNCONTROLLED (a ref, read at commit) rather than controlled
