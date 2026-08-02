@@ -67,11 +67,13 @@ const RAW_TEXTAREA_MESSAGE =
  * effectively a no-op for every component in the app.
  *
  * The block below brings `.tsx` into scope for the raw-input rule, which would
- * incidentally switch these on for the whole codebase too: 54 errors, mostly
- * `react-hooks/refs` ("Cannot access refs during render") and exhaustive-deps.
- * Some of those look like real bugs and each needs judgement, so they get their
- * own pass rather than being fixed blind or silenced inside a lint-rule PR.
- * Widening this back to `.tsx` is the first step of that work.
+ * incidentally switch these on for the whole codebase too: ~53 errors, led by
+ * `react-hooks/set-state-in-effect` (25) and `react-hooks/refs` (21). That
+ * first rule is the NEO-39 reactive-form bug family — it flags
+ * PublicProfileEditor's hydration effect, the exact defect NEO-41 fixed by
+ * hand — so these need judgement, not a blind sweep inside a lint-rule PR.
+ *
+ * Tracked in NEO-111. Widening this back to `.tsx` is step one of that work.
  */
 const reactHooksLegacyScope = compat
   .extends("plugin:react-hooks/recommended")
