@@ -1,3 +1,46 @@
+/* eslint-disable react-hooks/refs --
+ * NEO-111: all 21 reports in this file trace to ONE deliberate construct —
+ * `stableVariantTypeFlagsRef` (~L99-136), a render-phase cache that holds the
+ * last known-good variant-type flags while `selectedVariantType` is briefly
+ * `undefined` (its useQuery in flight). The other 20 reports are just the rule
+ * following those three derived values to their consumers.
+ *
+ * It is load-bearing, not sloppiness: without it a mid-flight `undefined`
+ * re-evaluates `isBaseVariantTypeSelected`, which unmounts <CardChecklist> and
+ * takes an in-progress Add Card form with it — the NEO-36 failure this cache was
+ * added to prevent. The comment above the ref spells that out.
+ *
+ * Do NOT "fix" this by reaching for useMemo. The requirement is "remember the
+ * last DEFINED value across an undefined", which is inherently stateful, and a
+ * memo cannot see its own previous result: the moment `selectedVariantType`
+ * flips to undefined a memo keyed on it recomputes to false and you are back to
+ * the unmount. Moving the write into an effect is worse still — the flags would
+ * lag a render, so the frame where the query resolves renders the stale value
+ * and you introduce a flicker that does not exist today.
+ *
+ * The one alternative that preserves the semantics is useState plus the
+ * documented adjust-state-during-render pattern, because state does carry the
+ * previous value. It costs an extra render pass per change and would trip
+ * react-hooks/set-state-in-render, so it mostly trades this disable for another
+ * one. This construct is fit for its purpose; the rule is flagging a category,
+ * not a demonstrated defect. (The mutation is idempotent in its inputs, so
+ * StrictMode's double render and a discarded-and-retried concurrent render both
+ * land on the same result. The real theoretical hazard is interleaved
+ * concurrent lanes carrying different selectedVariantTypeId values, which
+ * nothing in this app currently creates.)
+ *
+ * The lever that would actually retire this cache is not the ref — it is the
+ * coupling that makes a transient undefined collapse an id which controls
+ * MOUNTING, when the only real harm is that an in-progress draft dies with the
+ * unmount. Written up in NEO-112, deliberately low priority: this screen has
+ * months of clean production history with no reported bugs here, so that is a
+ * record to reach for IF a symptom shows up, not scheduled work.
+ *
+ * To exercise this screen locally, sign in THROUGH the seeding page —
+ * /testing/sign-in?redirect=/testing/seed-credentials?redirect=/set-selector
+ * — the same chain .maestro/flows/profile/worker-bootstrap.yaml uses. Going
+ * straight to /set-selector only ever lands on the credential gate.
+ */
 import type { GenericId } from "convex/values";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";

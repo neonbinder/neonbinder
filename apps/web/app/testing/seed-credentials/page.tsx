@@ -27,6 +27,7 @@ function TestingSeedCredentialsContent() {
 
   useEffect(() => {
     if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- status readout of an async driver effect; test-only page
       setStatus("Testing mode is not enabled in this environment.");
       return;
     }

@@ -105,6 +105,7 @@ export default function EntityReviewWizard({
   // (e.g. after a decision advances the wizard) so it doesn't stay open for
   // the wrong row.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- closes the link-search when the wizard advances so it cannot stay open on the wrong row
     setLinkingOpen(false);
     setStagedCareerTeams([]);
   }, [current?._id]);

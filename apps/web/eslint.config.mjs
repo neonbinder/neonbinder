@@ -77,24 +77,18 @@ const RAW_TEXTAREA_MESSAGE =
  */
 const reactHooksLegacyScope = compat
   .extends("plugin:react-hooks/recommended")
-  .map((config) => ({ ...config, files: ["**/*.{js,mjs,cjs,jsx}"] }));
+  .map((config) => ({ ...config, files: ["**/*.{js,mjs,cjs,jsx,tsx}"] }));
 
 const eslintConfig = [
   ...reactHooksLegacyScope,
   {
     ignores: ["dist/", "convex/_generated/"],
   },
+  // Parser for EVERY .tsx path, including the primitives and tests. It has to be
+  // unscoped: react-hooks now covers .tsx, and any file it visits without a
+  // parser fails as a syntax error rather than being skipped.
   {
     files: ["**/*.tsx"],
-    // The primitives are where the real elements live, and tests assert on raw
-    // markup on purpose (e.g. EntityColumn.field-class.test.tsx renders a bare
-    // <input> to prove the class collision the primitive fixes).
-    ignores: ["components/primitives/**", "**/*.test.tsx"],
-    // `.tsx` matched no config before this block, so these files were not being
-    // linted at all. The parser is here purely so the AST selector below can
-    // read JSX — none of typescript-eslint's own rules are enabled, so this
-    // deliberately does not switch on a new wave of unrelated errors. Turning
-    // those on is worth doing, but it is its own change, not this one.
     languageOptions: {
       parser: tsParser,
       parserOptions: {
@@ -102,15 +96,14 @@ const eslintConfig = [
         sourceType: "module",
       },
     },
-    // Registered so the `react-hooks/*` eslint-disable comments already present
-    // in these files resolve to a known rule. Every rule stays OFF — see the
-    // note on reactHooksLegacyScope above.
-    plugins: { "react-hooks": reactHooks },
-    // Those same directives are "unused" only because the rules they suppress
-    // are off here. They are not dead code — they carry the author's reasoning
-    // and become live again the moment react-hooks is widened to `.tsx`, so
-    // they should not be deleted to silence a warning.
-    linterOptions: { reportUnusedDisableDirectives: "off" },
+  },
+  {
+    files: ["**/*.tsx"],
+    // The primitives are where the real elements live, and tests assert on raw
+    // markup on purpose (e.g. EntityColumn.field-class.test.tsx renders a bare
+    // <input> to prove the class collision the primitive fixes). Only the
+    // raw-input rule is scoped away from them — the parser above is not.
+    ignores: ["components/primitives/**", "**/*.test.tsx"],
     rules: {
       "no-restricted-syntax": [
         "error",

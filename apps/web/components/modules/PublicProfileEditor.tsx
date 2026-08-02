@@ -15,6 +15,58 @@ function useDebounce<T>(value: T, delay: number): T {
   return debounced;
 }
 
+/**
+ * NEO-111 — these three live at module scope, not inside PublicProfileEditor.
+ *
+ * Declaring a component inside another component's body makes it a NEW
+ * component type on every render, so React unmounts and remounts it rather than
+ * updating it: local state and focus are destroyed each keystroke. Harmless for
+ * a stateless button today, but it is the kind of thing that quietly breaks the
+ * moment one of them gains state — and this file is already the home of one
+ * reactive-form bug (NEO-41). Flagged by react-hooks/static-components.
+ *
+ * Closure values they used to capture are now explicit props.
+ */
+const LINK_BUTTON_CLASS =
+  "text-xs text-[#00C2FF] hover:text-[#00C2FF]/80 transition-colors";
+
+function FillButton({
+  onClick,
+  url,
+  canInfer,
+}: {
+  onClick: () => void;
+  url: string;
+  canInfer: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={!canInfer}
+      className={`${LINK_BUTTON_CLASS} disabled:text-slate-500 disabled:cursor-not-allowed break-all text-right`}
+      title={canInfer ? "Click to fill with inferred URL" : "Enter a username first"}
+    >
+      {url}
+    </button>
+  );
+}
+
+function BscButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} className={LINK_BUTTON_CLASS}>
+      Find my BSC url
+    </button>
+  );
+}
+
+function MySlabsButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} className={LINK_BUTTON_CLASS}>
+      Find my MySlabs url
+    </button>
+  );
+}
+
 export default function PublicProfileEditor() {
   const existingProfile = useQuery(api.publicProfile.getMyPublicProfile);
 
@@ -120,6 +172,7 @@ export default function PublicProfileEditor() {
       setFacebookUrl(existingProfile.facebookUrl ?? "");
       setThreadsUrl(existingProfile.threadsUrl ?? "");
       if (existingProfile.photoUrl) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- NEO-41 hydration effect; already guarded by dirtyRef so a reactive push cannot stomp an edit in progress
         setPhotoPreview(existingProfile.photoUrl);
       }
       setSavedUsername(existingProfile.username ?? null);
@@ -259,35 +312,6 @@ export default function PublicProfileEditor() {
   };
 
   const canInferUrl = username.length > 0;
-
-  const FillButton = ({ onClick, url }: { onClick: () => void; url: string }) => (
-    <button
-      onClick={onClick}
-      disabled={!canInferUrl}
-      className="text-xs text-[#00C2FF] hover:text-[#00C2FF]/80 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors break-all text-right"
-      title={canInferUrl ? "Click to fill with inferred URL" : "Enter a username first"}
-    >
-      {url}
-    </button>
-  );
-
-  const BscButton = () => (
-    <button
-      onClick={() => setShowBscModal(true)}
-      className="text-xs text-[#00C2FF] hover:text-[#00C2FF]/80 transition-colors"
-    >
-      Find my BSC url
-    </button>
-  );
-
-  const MySlabsButton = () => (
-    <button
-      onClick={() => setShowMySlabsModal(true)}
-      className="text-xs text-[#00C2FF] hover:text-[#00C2FF]/80 transition-colors"
-    >
-      Find my MySlabs url
-    </button>
-  );
 
   return (
     <div className="space-y-8">
@@ -457,11 +481,11 @@ export default function PublicProfileEditor() {
             <div className="flex items-center justify-between mb-1">
               <label htmlFor={id} className={labelClass}>{label}</label>
               {buttonType === "bsc" ? (
-                <BscButton />
+                <BscButton onClick={() => setShowBscModal(true)} />
               ) : buttonType === "myslabs" ? (
-                <MySlabsButton />
+                <MySlabsButton onClick={() => setShowMySlabsModal(true)} />
               ) : (
-                <FillButton onClick={() => edit(setter)(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} />
+                <FillButton onClick={() => edit(setter)(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} canInfer={canInferUrl} />
               )}
             </div>
             <Input
@@ -488,7 +512,7 @@ export default function PublicProfileEditor() {
                 <span className="text-slate-500 text-xs">→ paypal.me/{paypalUsername}</span>
               )}
             </label>
-            <FillButton onClick={() => edit(setPaypalUsername)(username)} url={inferredUrls.paypal()} />
+            <FillButton onClick={() => edit(setPaypalUsername)(username)} url={inferredUrls.paypal()} canInfer={canInferUrl} />
           </div>
           <Input
             bare
@@ -523,7 +547,7 @@ export default function PublicProfileEditor() {
                 <span className="text-slate-500 text-xs">→ venmo.com/{venmoUsername}</span>
               )}
             </label>
-            <FillButton onClick={() => edit(setVenmoUsername)(username)} url={inferredUrls.venmo()} />
+            <FillButton onClick={() => edit(setVenmoUsername)(username)} url={inferredUrls.venmo()} canInfer={canInferUrl} />
           </div>
           <Input
             bare
@@ -543,7 +567,7 @@ export default function PublicProfileEditor() {
                 <span className="text-slate-500 text-xs">→ cash.app/${cashAppUsername}</span>
               )}
             </label>
-            <FillButton onClick={() => edit(setCashAppUsername)(username)} url={inferredUrls.cashApp()} />
+            <FillButton onClick={() => edit(setCashAppUsername)(username)} url={inferredUrls.cashApp()} canInfer={canInferUrl} />
           </div>
           <Input
             bare
@@ -571,7 +595,7 @@ export default function PublicProfileEditor() {
           <div key={id}>
             <div className="flex items-center justify-between mb-1">
               <label htmlFor={id} className={labelClass}>{label}</label>
-              <FillButton onClick={() => edit(setter)(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} />
+              <FillButton onClick={() => edit(setter)(inferredUrls[inferKey]())} url={inferredUrls[inferKey]()} canInfer={canInferUrl} />
             </div>
             <Input
               bare

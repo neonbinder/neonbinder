@@ -53,6 +53,7 @@ export default function SetForm({
       triggered.current = true;
       doSync();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch; including it would loop
   }, [yearId]);
 
   return (

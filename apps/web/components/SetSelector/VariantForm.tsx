@@ -199,6 +199,7 @@ export default function VariantForm({
       triggered.current = true;
       doSync();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch; including it would loop
   }, [sportValue, yearValue, baseVariant]);
 
   return (

@@ -77,6 +77,7 @@ export default function TeamPicker({
 
   // Reset highlight whenever the typed query changes.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
     setHighlightIdx(0);
   }, [query]);
 

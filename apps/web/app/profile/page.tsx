@@ -103,17 +103,20 @@ export default function ProfilePage() {
     profile?.siteCredentials?.some(
       (cred) =>
         typeof cred.lockedAt === "number" &&
+        // eslint-disable-next-line react-hooks/purity -- Date.now() for a lock-lease staleness check. Advisory only, and the row it reads re-renders on its own Convex subscription, so a stale frame self-corrects
         cred.lockedAt + CRED_LOCK_LEASE_MS > Date.now(),
     ) || false;
   const credsBusy = isLoading || anyCredentialOpInFlight;
 
   // Set mounted flag after hydration
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot post-hydration flag; there is no render-time equivalent
     setIsMounted(true);
   }, []);
 
   // Reset form fields and edit mode when site changes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate reset-on-prop-change: a different platform is a different credential form
     setUsername("");
     setPassword("");
     setMessage("");

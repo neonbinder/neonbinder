@@ -238,6 +238,7 @@ export default function EntityColumn({
   // A different parent is a fresh, untouched context: re-allow auto-sync and
   // require a new first-sync before interaction can freeze the column again.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate reset-on-prop-change: a new parent is a fresh, unfrozen column
     setHasInteracted(false);
     setSelfRequestedSync(false);
     hasSyncedRef.current = false;
@@ -284,6 +285,7 @@ export default function EntityColumn({
   // status string so it does NOT fire on the render where forceSync sets the
   // latch true (status hasn't flipped to "syncing" yet), avoiding a self-reset.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- clears the self-requested-sync latch once the reactive status leaves 'syncing'
     if (syncStatus?.status !== "syncing") setSelfRequestedSync(false);
   }, [syncStatus?.status]);
 

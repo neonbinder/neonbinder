@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
@@ -44,8 +44,27 @@ export default function VariantMetadataEditor({
   // than the first input sharing the className (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
 
-  // Sync local state from query result
+  /**
+   * NEO-111 — hydrate the prefix from the query, but never over an unsaved edit.
+   *
+   * This is the NEO-41 shape: a controlled field inside a component that is also
+   * a live view of the row it edits. The effect used to resync unconditionally,
+   * so a server-side change to `cardNumberPrefix` while the operator was typing
+   * both replaced what they had typed AND reset `dirty` to false — silently
+   * discarding the pending edit and the "unsaved" affordance with it.
+   *
+   * A ref, not the `dirty` state, so the guard is readable synchronously here
+   * without adding `dirty` to the deps (which would refire on every keystroke).
+   * Switching rows still resets, because a different row is a different draft.
+   * `handleSave` already clears both flags on its own path.
+   */
+  const dirtyRef = useRef(false);
+  const hydratedIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
+    const rowChanged = hydratedIdRef.current !== option?._id;
+    if (!rowChanged && dirtyRef.current) return;
+    hydratedIdRef.current = option?._id;
+    dirtyRef.current = false;
     setCardNumberPrefix(option?.metadata?.cardNumberPrefix ?? "");
     setDirty(false);
   }, [option?._id, option?.metadata?.cardNumberPrefix]);
@@ -66,6 +85,7 @@ export default function VariantMetadataEditor({
         cardNumberPrefix: option.metadata?.cardNumberPrefix,
       },
     });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- deps are the specific metadata fields this reconciles; adding `option`/`updateMetadata` would refire on every unrelated field change and re-issue the mutation
   }, [
     option?._id,
     option?.metadata?.isInsert,
@@ -86,6 +106,7 @@ export default function VariantMetadataEditor({
           cardNumberPrefix: cardNumberPrefix || undefined,
         },
       });
+      dirtyRef.current = false;
       setDirty(false);
     } finally {
       setSaving(false);
@@ -137,6 +158,7 @@ export default function VariantMetadataEditor({
               value={cardNumberPrefix}
               onChange={(e) => {
                 setCardNumberPrefix(e.target.value);
+                dirtyRef.current = true;
                 setDirty(true);
               }}
               placeholder="e.g. DK-"
