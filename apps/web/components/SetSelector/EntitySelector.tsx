@@ -1,5 +1,6 @@
 import { memo, useMemo, useState } from "react";
 import { useQuery } from "convex/react";
+import { Input } from "../primitives/Input";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
 
@@ -138,7 +139,8 @@ function EntitySelector({
         )}
       </div>
       {showSearch && (
-        <input
+        <Input
+          bare
           type="text"
           value={searchFilter}
           onChange={(e) => setSearchFilter(e.target.value)}
@@ -151,7 +153,7 @@ function EntitySelector({
           // typed into Sports → "No matches found"; Sets never filtered).
           // Same fix class as the mb-field-<slug> inputs. aria-label alone
           // doesn't help — inputText keys off className, not aria-label.
-          className={`mb-search-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")} w-full p-2 mb-3 border rounded-md dark:bg-gray-700 dark:border-gray-600 text-sm`}
+          className={`mb-search-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")} w-full p-2 mb-3 text-sm`}
           placeholder={`Search ${title.toLowerCase()}...`}
           aria-label={`Search ${title.toLowerCase()}`}
         />

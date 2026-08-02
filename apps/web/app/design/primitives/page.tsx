@@ -83,7 +83,10 @@ export default function PrimitivesPage() {
             <h2 className="text-2xl font-semibold text-slate-900 mb-8">
               Input
             </h2>
-            <div className="grid grid-cols-2 gap-8">
+            {/* NEO-44: Input is now the app's dark-neon field, so show it on the
+                dark surface it actually renders against rather than this
+                gallery's white page. */}
+            <div className="grid grid-cols-2 gap-8 rounded-lg bg-slate-950 p-8">
               <div className="space-y-6">
                 <Input
                   label="Email"
@@ -96,6 +99,7 @@ export default function PrimitivesPage() {
                   label="Email"
                   placeholder="Email"
                   value="pietro.schirano@gmail.com"
+                  readOnly
                   helperText="Enter your email address"
                   variant="withButton"
                   buttonText="Subscribe"
@@ -119,6 +123,7 @@ export default function PrimitivesPage() {
                 <Input
                   label="Width"
                   value="100%"
+                  readOnly
                   labelPosition="left"
                   state="completed"
                 />
@@ -191,7 +196,8 @@ export default function PrimitivesPage() {
             <h2 className="text-2xl font-semibold text-slate-900 mb-8">
               Textarea
             </h2>
-            <div className="grid grid-cols-2 gap-8">
+            {/* Dark surface — see the Input section note. */}
+            <div className="grid grid-cols-2 gap-8 rounded-lg bg-slate-950 p-8">
               <Textarea
                 label="Your message"
                 placeholder="Type your message here"
@@ -224,8 +230,8 @@ export default function PrimitivesPage() {
                     you&apos;re done.
                   </p>
                   <div className="space-y-4">
-                    <Input label="Name" value="Pietro Schirano" />
-                    <Input label="Username" value="@skirano" />
+                    <Input label="Name" value="Pietro Schirano" readOnly />
+                    <Input label="Username" value="@skirano" readOnly />
                     <Button variant="default">Save changes</Button>
                   </div>
                 </TabsContent>
@@ -345,9 +351,9 @@ export default function PrimitivesPage() {
                 defaultOpen={false}
               >
                 <div className="space-y-2">
-                  <Input value="@radix-ui/primitives" inputSize="small" />
-                  <Input value="@radix-ui/colors" inputSize="small" />
-                  <Input value="@stitches/react" inputSize="small" />
+                  <Input value="@radix-ui/primitives" inputSize="small" readOnly />
+                  <Input value="@radix-ui/colors" inputSize="small" readOnly />
+                  <Input value="@stitches/react" inputSize="small" readOnly />
                 </div>
               </Collapsible>
             </div>

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Input } from "../primitives/Input";
+import { Textarea } from "../primitives/Textarea";
 import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -366,12 +368,13 @@ export default function CardDetailPanel({
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Card name
             </label>
-            <input
+            <Input
+              bare
               ref={cardNameInputRef}
               type="text"
               value={cardName}
               onChange={(e) => setCardName(e.target.value)}
-              className={`${fieldClass("cardName")} w-full p-1.5 border rounded text-sm dark:bg-gray-700 dark:border-gray-600`}
+              className={`${fieldClass("cardName")} w-full p-1.5 text-sm`}
               placeholder="Card name"
               aria-label="Card name"
             />
@@ -410,11 +413,12 @@ export default function CardDetailPanel({
                 {listingTitle.length} chars
               </span>
             </label>
-            <input
+            <Input
+              bare
               type="text"
               value={listingTitle}
               onChange={(e) => setListingTitle(e.target.value)}
-              className={`${fieldClass("cardTitle")} w-full p-1.5 border rounded text-sm dark:bg-gray-700 dark:border-gray-600`}
+              className={`${fieldClass("cardTitle")} w-full p-1.5 text-sm`}
               placeholder="Listing title reused across marketplaces"
               aria-label="Card title"
             />
@@ -426,11 +430,12 @@ export default function CardDetailPanel({
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Card description
             </label>
-            <textarea
+            <Textarea
+              bare
               value={listingDescription}
               onChange={(e) => setListingDescription(e.target.value)}
               rows={3}
-              className={`${fieldClass("cardDescription")} w-full p-1.5 border rounded text-sm dark:bg-gray-700 dark:border-gray-600 resize-y`}
+              className={`${fieldClass("cardDescription")} w-full p-1.5 text-sm resize-y`}
               placeholder="Listing description reused across marketplaces"
               aria-label="Card description"
             />
@@ -489,11 +494,12 @@ export default function CardDetailPanel({
               <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
                 Print run (/N)
               </label>
-              <input
+              <Input
+                bare
                 type="number"
                 value={printRun}
                 onChange={(e) => setPrintRun(e.target.value)}
-                className={`${fieldClass("printRun")} w-full p-1.5 border rounded text-sm dark:bg-gray-700 dark:border-gray-600`}
+                className={`${fieldClass("printRun")} w-full p-1.5 text-sm`}
                 placeholder="e.g. 99"
                 aria-label="Print run"
                 min={0}
@@ -517,11 +523,12 @@ export default function CardDetailPanel({
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Variation
             </label>
-            <input
+            <Input
+              bare
               type="text"
               value={cardVariation}
               onChange={(e) => setCardVariation(e.target.value)}
-              className={`${fieldClass("cardVariation")} w-full p-1.5 border rounded text-sm dark:bg-gray-700 dark:border-gray-600`}
+              className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm`}
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
             />
