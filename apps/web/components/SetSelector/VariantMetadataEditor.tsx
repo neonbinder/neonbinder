@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { Input } from "../primitives/Input";
 
 type VariantMetadataEditorProps = {
   optionId: GenericId<"selectorOptions">;
@@ -130,7 +131,8 @@ export default function VariantMetadataEditor({
         <div className="flex flex-wrap gap-3 items-center">
           <label className="flex items-center gap-1.5 text-xs text-gray-300">
             Prefix:
-            <input
+            <Input
+              bare
               type="text"
               value={cardNumberPrefix}
               onChange={(e) => {
@@ -138,7 +140,7 @@ export default function VariantMetadataEditor({
                 setDirty(true);
               }}
               placeholder="e.g. DK-"
-              className={`${fieldClass("prefix")} w-20 px-1.5 py-0.5 text-xs bg-gray-700 border border-gray-600 rounded text-gray-200`}
+              className={`${fieldClass("prefix")} w-20 px-1.5 py-0.5 text-xs`}
             />
           </label>
           {dirty && (

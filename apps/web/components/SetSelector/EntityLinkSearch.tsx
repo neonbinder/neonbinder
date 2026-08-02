@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { Input } from "../primitives/Input";
 
 /**
  * NEO-92: single-select existing-player/team search for the review wizard's
@@ -70,7 +71,8 @@ export default function EntityLinkSearch({
       role="listbox"
       aria-label={`Search existing ${label}s`}
     >
-      <input
+      <Input
+        bare
         ref={inputRef}
         type="text"
         value={query}
@@ -93,7 +95,7 @@ export default function EntityLinkSearch({
             if (pick) onSelect(pick._id, pick.name);
           }
         }}
-        className="w-full p-1.5 border rounded text-sm dark:bg-gray-900 dark:border-gray-600 focus:border-[#00D558] focus:outline-none"
+        className="w-full p-1.5 text-sm"
       />
 
       {!candidates && (

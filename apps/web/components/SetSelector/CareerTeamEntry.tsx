@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { Input } from "../primitives/Input";
 
 /**
  * NEO-92 follow-up: manual career-team entry for a player row in the
@@ -104,7 +105,8 @@ export default function CareerTeamEntry({
   return (
     <div className="border border-gray-700 rounded-md bg-gray-900/60 p-2 space-y-1.5">
       <div className="relative">
-        <input
+        <Input
+          bare
           ref={nameInputRef}
           type="text"
           value={name}
@@ -146,7 +148,7 @@ export default function CareerTeamEntry({
               }
             }
           }}
-          className="w-full p-1.5 border rounded text-sm dark:bg-gray-900 dark:border-gray-600 focus:border-[#00D558] focus:outline-none"
+          className="w-full p-1.5 text-sm"
         />
         {suggestionsOpen && matches.length > 0 && (
           <ul
@@ -178,7 +180,8 @@ export default function CareerTeamEntry({
       </div>
 
       <div className="flex items-center gap-2">
-        <input
+        <Input
+          bare
           type="number"
           value={fromYear}
           placeholder="From year"
@@ -186,9 +189,10 @@ export default function CareerTeamEntry({
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setFromYear(e.target.value)}
-          className="w-24 p-1.5 border rounded text-sm dark:bg-gray-900 dark:border-gray-600 focus:border-[#00D558] focus:outline-none"
+          className="w-24 p-1.5 text-sm"
         />
-        <input
+        <Input
+          bare
           type="number"
           value={toYear}
           placeholder="To year (opt)"
@@ -196,7 +200,7 @@ export default function CareerTeamEntry({
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setToYear(e.target.value)}
-          className="w-28 p-1.5 border rounded text-sm dark:bg-gray-900 dark:border-gray-600 focus:border-[#00D558] focus:outline-none"
+          className="w-28 p-1.5 text-sm"
         />
         <button
           type="button"

@@ -4,6 +4,7 @@ import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
+import { Input } from "../primitives/Input";
 
 /**
  * NEO-96: inline rename for a single `selectorOptions` row's display value.
@@ -133,12 +134,13 @@ export default function RenameEntityControl({
 
   return (
     <div className="shrink-0 flex items-center gap-1">
-      <input
+      <Input
+        bare
         ref={inputRef}
         placeholder={currentValue}
         disabled={saving}
         aria-label={`Edit name for ${currentValue}`}
-        className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800`}
+        className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm`}
         onKeyDown={(e) => {
           // Stop the row's own handlers from seeing these — the row is a
           // sibling button and Enter would otherwise also select it.
