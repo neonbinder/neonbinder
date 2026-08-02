@@ -33,8 +33,13 @@
  * coupling that makes a transient undefined collapse an id which controls
  * MOUNTING, when the only real harm is that an in-progress draft dies with the
  * unmount. Written up in NEO-112, deliberately low priority: this screen has
- * months of clean production history, so that is a record to reach for IF a
- * symptom shows up, not scheduled work.
+ * months of clean production history with no reported bugs here, so that is a
+ * record to reach for IF a symptom shows up, not scheduled work.
+ *
+ * To exercise this screen locally, sign in THROUGH the seeding page —
+ * /testing/sign-in?redirect=/testing/seed-credentials?redirect=/set-selector
+ * — the same chain .maestro/flows/profile/worker-bootstrap.yaml uses. Going
+ * straight to /set-selector only ever lands on the credential gate.
  */
 import type { GenericId } from "convex/values";
 import { useCallback, useMemo, useRef, useState } from "react";
