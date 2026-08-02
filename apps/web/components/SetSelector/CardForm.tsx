@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
+import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import NeonButton from "../modules/NeonButton";
 import type { GenericId } from "convex/values";
@@ -73,11 +74,12 @@ export default function CardForm({
           <label className="block text-sm font-medium mb-2">
             Card Number
           </label>
-          <input
+          <Input
+            bare
             type="text"
             value={cardNumber}
             onChange={(e) => setCardNumber(e.target.value)}
-            className={`${fieldClass("cardNumber")} w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600`}
+            className={`${fieldClass("cardNumber")} w-full p-2`}
             placeholder="e.g., 1, 2A, 2B"
             required
           />
@@ -86,11 +88,12 @@ export default function CardForm({
           <label className="block text-sm font-medium mb-2">
             Player Name
           </label>
-          <input
+          <Input
+            bare
             type="text"
             value={playerName}
             onChange={(e) => setPlayerName(e.target.value)}
-            className={`${fieldClass("playerName")} w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600`}
+            className={`${fieldClass("playerName")} w-full p-2`}
             placeholder="e.g., Mike Trout"
           />
         </div>
@@ -98,11 +101,12 @@ export default function CardForm({
           <label className="block text-sm font-medium mb-2">
             Team (optional)
           </label>
-          <input
+          <Input
+            bare
             type="text"
             value={team}
             onChange={(e) => setTeam(e.target.value)}
-            className={`${fieldClass("team")} w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600`}
+            className={`${fieldClass("team")} w-full p-2`}
             placeholder="e.g., Los Angeles Angels"
           />
         </div>
@@ -110,11 +114,12 @@ export default function CardForm({
           <label className="block text-sm font-medium mb-2">
             Attributes (comma-separated)
           </label>
-          <input
+          <Input
+            bare
             type="text"
             value={attributes}
             onChange={(e) => setAttributes(e.target.value)}
-            className={`${fieldClass("attributes")} w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600`}
+            className={`${fieldClass("attributes")} w-full p-2`}
             placeholder="e.g., RC, AU, SP"
           />
         </div>

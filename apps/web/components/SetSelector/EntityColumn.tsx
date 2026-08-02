@@ -1,5 +1,6 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
+import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
@@ -378,14 +379,15 @@ export default function EntityColumn({
   const customForm = (
     <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
       <h2 className="text-lg font-semibold mb-3">Add Custom Entry</h2>
-      <input
+      <Input
+        bare
         type="text"
         value={customValue}
         onChange={(e) => setCustomValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") handleCustomSubmit();
         }}
-        className={`${fieldClass("customvalue")} w-full p-2 mb-3 border rounded-md dark:bg-gray-700 dark:border-gray-600`}
+        className={`${fieldClass("customvalue")} w-full p-2 mb-3`}
         placeholder="Enter custom value..."
         autoFocus
       />

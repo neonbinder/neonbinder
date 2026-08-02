@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
+import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
@@ -318,7 +319,8 @@ function Chip({
         </span>
       )}
       {mode === "editing" ? (
-        <input
+        <Input
+          bare
           type="text"
           value={draft}
           autoFocus
@@ -335,7 +337,7 @@ function Chip({
           }}
           onBlur={commitRename}
           aria-label={`Edit label for ${chip.id}`}
-          className="flex-1 min-w-0 bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-sm text-gray-100 focus:border-[#00D558] focus:outline-none"
+          className="flex-1 min-w-0 px-2 py-0.5 text-sm"
         />
       ) : (
         <button
