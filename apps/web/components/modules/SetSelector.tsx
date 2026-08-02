@@ -1,3 +1,23 @@
+/* eslint-disable react-hooks/refs --
+ * NEO-111: all 21 reports in this file trace to ONE deliberate construct —
+ * `stableVariantTypeFlagsRef` (~L99-136), a render-phase cache that holds the
+ * last known-good variant-type flags while `selectedVariantType` is briefly
+ * `undefined` (its useQuery in flight). The other 20 reports are just the rule
+ * following those three derived values to their consumers.
+ *
+ * It is load-bearing, not sloppiness: without it a mid-flight `undefined`
+ * re-evaluates `isBaseVariantTypeSelected`, which unmounts <CardChecklist> and
+ * takes an in-progress Add Card form with it — the NEO-36 failure this cache was
+ * added to prevent. The comment above the ref spells that out.
+ *
+ * The rule is still right that reading and writing a ref during render is unsafe
+ * under concurrent rendering. Converting it (useMemo, or the documented
+ * adjust-state-during-render pattern) is the correct fix, but it changes
+ * behaviour in the one screen that cannot be exercised locally — Set Builder is
+ * marketplace-credential-gated — so it needs to be validated against the Set
+ * Builder E2E flows rather than reasoned about. Deliberately deferred rather
+ * than rewritten blind; see NEO-111.
+ */
 import type { GenericId } from "convex/values";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";

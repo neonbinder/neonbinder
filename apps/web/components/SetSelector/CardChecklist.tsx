@@ -153,6 +153,7 @@ export default function CardChecklist({
   // Reset filter + close the detail panel when the variant changes — chips and
   // selection for one variant don't apply to another.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate reset-on-prop-change: one variant's chips and selection do not apply to another
     setSourceFilter({ bsc: null, sportlots: null });
     setSelectedCardId(null);
     setHideCrossListed(false);
@@ -491,6 +492,9 @@ export default function CardChecklist({
               hour: "2-digit",
               minute: "2-digit",
             })}
+            {/* eslint-disable-next-line react-hooks/purity -- Date.now() for a
+                "last synced > 7d" badge. Advisory only, and the value it sits
+                next to comes from a live query that re-renders this. */}
             {Date.now() - lastSynced > 7 * 24 * 60 * 60 * 1000 && (
               <span className="ml-1 text-amber-500">(stale)</span>
             )}

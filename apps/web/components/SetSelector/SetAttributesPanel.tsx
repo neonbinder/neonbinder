@@ -95,6 +95,7 @@ export default function SetAttributesPanel({
   // from a card-less set into a node with cards would keep the panel
   // expanded (pushing the list down) because state initializes once.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-evaluates the collapse default when the source intent flips; useState only initialises once
     setExpanded(!defaultCollapsed);
   }, [defaultCollapsed, selectorOptionId]);
 

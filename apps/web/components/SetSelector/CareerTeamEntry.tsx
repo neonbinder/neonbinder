@@ -54,6 +54,7 @@ export default function CareerTeamEntry({
   const maxYear = new Date().getFullYear() + 1;
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
     setHighlightIdx(0);
   }, [name]);
 

@@ -28,6 +28,7 @@ function TestingSignInContent() {
 
     // Already signed in — redirect immediately, no API calls.
     if (isSignedIn) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- status readout of an async driver effect; test-only page
       setStatus("Already signed in — redirecting...");
       navigate(redirect);
       return;

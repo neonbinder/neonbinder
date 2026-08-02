@@ -59,6 +59,7 @@ export default function PlayerPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
     setHighlightIdx(0);
   }, [query]);
 

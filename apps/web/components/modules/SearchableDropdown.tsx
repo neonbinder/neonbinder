@@ -36,6 +36,7 @@ export default function SearchableDropdown({
   useEffect(() => {
     if (value) {
       const option = options.find((opt) => opt.value === value);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- mirrors the controlled `value` prop into the selected-option object
       setSelectedOption(option || null);
     } else {
       setSelectedOption(null);

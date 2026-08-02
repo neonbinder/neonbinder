@@ -268,6 +268,7 @@ export default function CrossListingImportModal({
   // banner and selections don't bleed into the next one.
   useEffect(() => {
     if (!isOpen) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate reset-on-open so a prior import's result does not bleed into the next
     setPicked(LEVELS.map(() => null));
     setActiveIndex(0);
     setConfirmedIndex(null);
@@ -280,6 +281,7 @@ export default function CrossListingImportModal({
 
   // A filter typed for one level means nothing at the next one.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a filter typed for one level is meaningless at the next
     setFilter("");
   }, [activeIndex]);
 
@@ -292,6 +294,7 @@ export default function CrossListingImportModal({
     const parent = picked[activeIndex - 1];
     if (!parent) return;
     if (activeOptions === undefined) return; // still loading
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-advance past an empty OPTIONAL level; guarded on a resolved query
     if (activeOptions.length === 0) setConfirmedIndex(activeIndex - 1);
   }, [activeIndex, activeOptions, confirmedIndex, picked]);
 

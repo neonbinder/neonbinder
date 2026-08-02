@@ -110,6 +110,7 @@ export default function AttachSetsDialog({
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag raised before the fetch it guards
     setLoading(true);
     setErrorMsg(null);
     (async () => {
@@ -190,6 +191,7 @@ export default function AttachSetsDialog({
         const target = e.target as HTMLElement | null;
         if (target && target.tagName === "INPUT") return;
         e.preventDefault();
+        // eslint-disable-next-line react-hooks/immutability -- handleConfirm is referenced from inside a keydown closure that only runs after declaration, so the TDZ the rule warns about is unreachable here
         void handleConfirm();
       }
     };

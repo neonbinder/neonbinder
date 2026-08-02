@@ -170,7 +170,9 @@ export default function BaseMappingForm({
     if (triggered.current) return;
     if (!sportValue || !yearValue || !setNameValue) return;
     triggered.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fires the auto-sync action; latched by triggered.current so it runs once
     void doSync();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync is deliberately omitted: it is not referentially stable, and including it would refire the auto-sync it is latched (triggered.current) to run once
   }, [autoOpen, sportValue, yearValue, setNameValue]);
 
   if (!autoOpen && !pickerOpen && !loading && !message) {

@@ -108,6 +108,7 @@ export default function BaseSetPicker({
   useEffect(() => {
     if (userPicked) return;
     if (sortedOptions.length > 0 && sortedOptions[0].score >= 795) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-pick the best match; already latched by userPicked so it yields to the operator
       setSelectedValue(sortedOptions[0].value);
     }
   }, [sortedOptions, userPicked]);
@@ -116,6 +117,7 @@ export default function BaseSetPicker({
   useEffect(() => {
     if (userPickedBsc) return;
     if (sortedBscOptions.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- auto-pick the best BSC match; latched by userPickedBsc
       setSelectedBscValue(null);
       return;
     }
@@ -182,6 +184,7 @@ export default function BaseSetPicker({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- handleConfirm/onClose are recreated each render; the listener only needs the isOpen/selectedValue/confirming snapshot it closes over
   }, [isOpen, selectedValue, confirming]);
 
   if (!isOpen) return null;

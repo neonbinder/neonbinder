@@ -158,6 +158,7 @@ export default function ParallelForm({
       triggered.current = true;
       doSync();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch as BaseMappingForm; including it would loop
   }, [sportValue, yearValue, manufacturerValue, variantTypeValue, setNameValue]);
 
   return (

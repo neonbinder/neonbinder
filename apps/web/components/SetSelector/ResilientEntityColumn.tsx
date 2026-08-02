@@ -122,6 +122,7 @@ export default function ResilientEntityColumn(
   // late (see the mounted-not-replaced note below) clears it with no user
   // action. `loading` flips false the moment EntityColumn's read resolves.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- self-heal: the give-up state is presentational and clears when a late value lands
     if (gaveUp && !loading) setGaveUp(false);
   }, [gaveUp, loading]);
 

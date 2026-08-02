@@ -82,6 +82,7 @@ export default function QrCodePage() {
   const [generatedUrl, setGeneratedUrl] = useState<string | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
 
+  // eslint-disable-next-line react-hooks/preserve-manual-memoization -- informational compiler skip, not a defect: the existing useCallback is still correct, the compiler just declines to preserve it
   const handleGenerate = useCallback(() => {
     if (!myProfile?.username || !amount) return;
 
