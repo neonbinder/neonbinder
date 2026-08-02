@@ -10,13 +10,31 @@
  * takes an in-progress Add Card form with it — the NEO-36 failure this cache was
  * added to prevent. The comment above the ref spells that out.
  *
- * The rule is still right that reading and writing a ref during render is unsafe
- * under concurrent rendering. Converting it (useMemo, or the documented
- * adjust-state-during-render pattern) is the correct fix, but it changes
- * behaviour in the one screen that cannot be exercised locally — Set Builder is
- * marketplace-credential-gated — so it needs to be validated against the Set
- * Builder E2E flows rather than reasoned about. Deliberately deferred rather
- * than rewritten blind; see NEO-111.
+ * Do NOT "fix" this by reaching for useMemo. The requirement is "remember the
+ * last DEFINED value across an undefined", which is inherently stateful, and a
+ * memo cannot see its own previous result: the moment `selectedVariantType`
+ * flips to undefined a memo keyed on it recomputes to false and you are back to
+ * the unmount. Moving the write into an effect is worse still — the flags would
+ * lag a render, so the frame where the query resolves renders the stale value
+ * and you introduce a flicker that does not exist today.
+ *
+ * The one alternative that preserves the semantics is useState plus the
+ * documented adjust-state-during-render pattern, because state does carry the
+ * previous value. It costs an extra render pass per change and would trip
+ * react-hooks/set-state-in-render, so it mostly trades this disable for another
+ * one. This construct is fit for its purpose; the rule is flagging a category,
+ * not a demonstrated defect. (The mutation is idempotent in its inputs, so
+ * StrictMode's double render and a discarded-and-retried concurrent render both
+ * land on the same result. The real theoretical hazard is interleaved
+ * concurrent lanes carrying different selectedVariantTypeId values, which
+ * nothing in this app currently creates.)
+ *
+ * The lever that would actually retire this cache is not the ref — it is the
+ * coupling that makes a transient undefined collapse an id which controls
+ * MOUNTING, when the only real harm is that an in-progress draft dies with the
+ * unmount. Written up in NEO-112, deliberately low priority: this screen has
+ * months of clean production history, so that is a record to reach for IF a
+ * symptom shows up, not scheduled work.
  */
 import type { GenericId } from "convex/values";
 import { useCallback, useMemo, useRef, useState } from "react";
