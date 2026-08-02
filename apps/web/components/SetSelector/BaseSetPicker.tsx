@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
 import type { PlatformItem } from "./ReconciliationModal";
+import { Input } from "../primitives/Input";
 
 type BaseSetPickerProps = {
   isOpen: boolean;
@@ -271,11 +272,12 @@ export default function BaseSetPicker({
             SportLots base
           </div>
           {slOptions.length > 8 && (
-            <input
+            <Input
+              bare
               type="text"
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
-              className="w-full px-3 py-2 text-sm bg-gray-800 border border-gray-600 rounded-lg text-gray-200 placeholder-gray-500"
+              className="w-full px-3 py-2 text-sm"
               placeholder="Search SportLots sets..."
               autoFocus
             />

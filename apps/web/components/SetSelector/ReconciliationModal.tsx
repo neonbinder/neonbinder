@@ -17,6 +17,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { Input } from "../primitives/Input";
 
 // ===== TYPES =====
 
@@ -234,14 +235,15 @@ function FilterInput({
   };
   return (
     <div className="relative mb-2">
-      <input
+      <Input
+        bare
         ref={inputRef}
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel}
-        className={`${fieldClass()} w-full pl-2.5 pr-7 py-1.5 text-xs bg-gray-800 border border-gray-600 rounded-md text-gray-200 placeholder-gray-500`}
+        className={`${fieldClass()} w-full pl-2.5 pr-7 py-1.5 text-xs`}
       />
       {value.length > 0 && (
         <button
@@ -487,12 +489,13 @@ function MetadataEditor({
       </label>
       <label className="flex items-center gap-1.5 text-xs text-gray-400">
         Prefix:
-        <input
+        <Input
+          bare
           type="text"
           value={metadata.cardNumberPrefix || ""}
           onChange={(e) => onChange({ cardNumberPrefix: e.target.value })}
           placeholder="e.g. DK-"
-          className={`${fieldClass("prefix")} w-20 px-1.5 py-0.5 text-xs bg-gray-700 border border-gray-600 rounded text-gray-200`}
+          className={`${fieldClass("prefix")} w-20 px-1.5 py-0.5 text-xs`}
         />
       </label>
     </div>

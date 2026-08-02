@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useReactiveField } from "../forms/useReactiveField";
 import type { ExpectedFeature } from "../../convex/features/expectedFeatures";
+import { Input } from "../primitives/Input";
 
 /**
  * NEO-71–74 — shared value editor for the "text"/"select" `ExpectedFeature`
@@ -127,7 +128,8 @@ function TextValueControl({
 
   return (
     <>
-      <input
+      <Input
+        bare
         {...inputProps}
         type="text"
         inputMode={numeric ? "numeric" : undefined}

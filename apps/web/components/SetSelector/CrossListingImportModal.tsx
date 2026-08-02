@@ -5,6 +5,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
+import { Input } from "../primitives/Input";
 
 /**
  * NEO-21: link cards that were physically printed in one product into a
@@ -530,7 +531,8 @@ export default function CrossListingImportModal({
                         top match is picked. */}
                     {!activeLoading &&
                       (activeOptions?.length ?? 0) > FILTER_THRESHOLD && (
-                        <input
+                        <Input
+                          bare
                           type="text"
                           value={filter}
                           onChange={(e) => setFilter(e.target.value)}
@@ -544,7 +546,7 @@ export default function CrossListingImportModal({
                           disabled={submitting}
                           placeholder={`Filter ${LEVEL_LABEL[activeLevel]}…`}
                           aria-label={`Filter ${LEVEL_LABEL[activeLevel]} options`}
-                          className="w-full px-3 py-1.5 text-sm bg-gray-800 border border-gray-600 rounded-lg text-gray-200 placeholder-gray-500 disabled:opacity-50"
+                          className="w-full px-3 py-1.5 text-sm"
                         />
                       )}
 
@@ -610,7 +612,8 @@ export default function CrossListingImportModal({
                   <span className="block text-xs text-purple-400 font-medium uppercase tracking-wide">
                     Card numbers
                   </span>
-                  <input
+                  <Input
+                    bare
                     ref={cardNumberRef}
                     type="text"
                     value={cardNumberInput}
@@ -621,7 +624,7 @@ export default function CrossListingImportModal({
                     disabled={submitting}
                     placeholder="e.g. 301-320 or 301,303,305-310"
                     aria-label="Card numbers to cross-list"
-                    className="w-full px-3 py-2 text-sm bg-gray-800 border border-gray-600 rounded-lg text-gray-200 placeholder-gray-500 disabled:opacity-50"
+                    className="w-full px-3 py-2 text-sm"
                   />
                   <span className="block text-xs text-gray-500">
                     Ranges expand; separate entries with commas.

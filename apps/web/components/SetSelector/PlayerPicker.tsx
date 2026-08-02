@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { Input } from "../primitives/Input";
 
 /**
  * NEO-25 — multi-select player picker. Mirrors `TeamPicker`'s chip/popover
@@ -185,7 +186,8 @@ export default function PlayerPicker({
             role="listbox"
             aria-label="Player typeahead results"
           >
-            <input
+            <Input
+              bare
               ref={inputRef}
               type="text"
               value={query}
@@ -219,7 +221,7 @@ export default function PlayerPicker({
                   removeChip(value[value.length - 1]);
                 }
               }}
-              className="w-full p-1.5 border rounded text-sm dark:bg-gray-900 dark:border-gray-600 focus:border-[#00D558] focus:outline-none"
+              className="w-full p-1.5 text-sm"
             />
 
             {!candidates && (

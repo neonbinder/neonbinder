@@ -6,6 +6,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { Input } from "../primitives/Input";
 
 /**
  * Combined attach dialog (NEO-6 phase 1). Lists unmatched BSC and SL sets
@@ -387,13 +388,14 @@ function CandidateColumn({
         <h3 className="text-sm font-semibold text-gray-200">{title}</h3>
         <span className="text-xs text-gray-500">{candidates.length}</span>
       </header>
-      <input
+      <Input
+        bare
         type="text"
         value={search}
         onChange={(e) => onSearch(e.target.value)}
         placeholder="Search…"
         aria-label={ariaLabel}
-        className={`${fieldClass("search")} bg-gray-800 border border-gray-700 rounded px-3 py-1.5 text-sm text-gray-100 placeholder-gray-500 focus:border-[#00D558] focus:outline-none mb-2`}
+        className={`${fieldClass("search")} px-3 py-1.5 text-sm mb-2`}
       />
       <ul className="flex-1 overflow-y-auto space-y-1 pr-1">
         {loading && (
@@ -427,13 +429,14 @@ function CandidateColumn({
                     id: {c.platformValue}
                   </div>
                   {isSelected && (
-                    <input
+                    <Input
+                      bare
                       type="text"
                       value={sel.label}
                       onChange={(e) => onLabel(side, c.platformValue, e.target.value)}
                       placeholder="Label shown on filter chip"
                       aria-label={`Edit label for ${c.value}`}
-                      className={`${fieldClass(`label-${c.platformValue}`)} mt-1 w-full bg-gray-900 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-100 placeholder-gray-500 focus:border-[#00D558] focus:outline-none`}
+                      className={`${fieldClass(`label-${c.platformValue}`)} mt-1 w-full px-2 py-0.5 text-xs`}
                     />
                   )}
                 </div>

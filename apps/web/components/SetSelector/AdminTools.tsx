@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAction, useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import NeonButton from "../modules/NeonButton";
+import { Input } from "../primitives/Input";
 
 const CONFIRM_PHRASE = "RESET";
 
@@ -221,13 +222,14 @@ export default function AdminTools() {
             data. Type <code className="text-neon-orange">RESET</code> to
             confirm.
           </p>
-          <input
+          <Input
+            bare
             type="text"
             value={confirmInput}
             onChange={(e) => setConfirmInput(e.target.value)}
             placeholder="Type RESET"
             autoFocus
-            className="w-full p-2 mb-3 border rounded-md bg-gray-900 border-gray-700 text-white focus:outline-none focus:border-neon-orange"
+            className="w-full p-2 mb-3"
           />
           <div className="flex gap-2">
             <NeonButton

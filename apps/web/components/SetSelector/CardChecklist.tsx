@@ -15,6 +15,7 @@ import ChecklistSourceFilter, {
   type SourceFilter,
 } from "./ChecklistSourceFilter";
 import CrossListingImportModal from "./CrossListingImportModal";
+import { Input } from "../primitives/Input";
 
 /**
  * NEO-21: natural card-number ordering, mirroring `compareCardNumbers` in
@@ -432,33 +433,37 @@ export default function CardChecklist({
           <div className="bg-gray-50 dark:bg-gray-900/40 p-4 mb-4 rounded-lg space-y-3">
             <h3 className="font-semibold text-sm">Add Card</h3>
             <div className="flex gap-2">
-              <input
+              <Input
+                bare
                 type="text"
                 ref={cardNumberRef}
-                className={`${fieldClass("cardNumber")} w-20 p-2 border rounded-md text-sm dark:bg-gray-700 dark:border-gray-600`}
+                className={`${fieldClass("cardNumber")} w-20 p-2 text-sm`}
                 placeholder="#"
                 aria-label="Card number"
                 autoFocus
               />
-              <input
+              <Input
+                bare
                 type="text"
                 ref={cardNameRef}
-                className={`${fieldClass("cardName")} flex-1 p-2 border rounded-md text-sm dark:bg-gray-700 dark:border-gray-600`}
+                className={`${fieldClass("cardName")} flex-1 p-2 text-sm`}
                 placeholder="Player name"
                 aria-label="Card name"
               />
             </div>
-            <input
+            <Input
+              bare
               type="text"
               ref={playersRef}
-              className={`${fieldClass("players")} w-full p-2 border rounded-md text-sm dark:bg-gray-700 dark:border-gray-600`}
+              className={`${fieldClass("players")} w-full p-2 text-sm`}
               placeholder="Player(s) — comma separated, optional"
               aria-label="Players"
             />
-            <input
+            <Input
+              bare
               type="text"
               ref={teamRef}
-              className={`${fieldClass("team")} w-full p-2 border rounded-md text-sm dark:bg-gray-700 dark:border-gray-600`}
+              className={`${fieldClass("team")} w-full p-2 text-sm`}
               placeholder="Team (optional)"
               aria-label="Team"
             />

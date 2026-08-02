@@ -13,6 +13,7 @@ import {
   ArrowDownTrayIcon,
   PrinterIcon,
 } from "@heroicons/react/24/outline";
+import { Input } from "@/components/primitives/Input";
 
 
 async function downloadSvgAsPng(
@@ -171,7 +172,8 @@ export default function QrCodePage() {
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-lg font-bold">
             $
           </span>
-          <input
+          <Input
+            bare
             id="amount"
             type="number"
             step="0.01"
@@ -181,7 +183,7 @@ export default function QrCodePage() {
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="w-full pl-8 pr-4 py-3 bg-gray-900 border border-gray-700 rounded-xl text-white text-lg font-bold placeholder-gray-600 focus:outline-none focus:border-neon-green focus:ring-1 focus:ring-neon-green/30 transition-colors"
+            className="w-full pl-8 pr-4 py-3 text-lg font-bold transition-colors"
           />
         </div>
       </div>

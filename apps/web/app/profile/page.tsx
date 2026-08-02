@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../../components/modules/NeonButton";
 import PublicProfileEditor from "../../components/modules/PublicProfileEditor";
+import { Input } from "@/components/primitives/Input";
 
 const SUPPORTED_SITES = [
   { key: "buysportscards", label: "BuySportsCards" },
@@ -854,12 +855,13 @@ export default function ProfilePage() {
                     >
                       {siteMeta?.label} Username/Email
                     </label>
-                    <input
+                    <Input
+                      bare
                       id="username"
                       type="text"
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-green-500"
+                      className="w-full px-3 py-2"
                       placeholder={`Enter your ${siteMeta?.label} username or email`}
                     />
                   </div>
@@ -870,12 +872,13 @@ export default function ProfilePage() {
                     >
                       {siteMeta?.label} Password
                     </label>
-                    <input
+                    <Input
+                      bare
                       id="password"
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-green-500"
+                      className="w-full px-3 py-2"
                       placeholder={`Enter your ${siteMeta?.label} password`}
                     />
                   </div>
@@ -1037,7 +1040,8 @@ export default function ProfilePage() {
                 >
                   Prize Name
                 </label>
-                <input
+                <Input
+                  bare
                   id={editingPrizeId ? "edit-prize-name" : "prize-name"}
                   type="text"
                   value={editingPrizeId ? editPrizeName : newPrizeName}
@@ -1046,7 +1050,7 @@ export default function ProfilePage() {
                       ? setEditPrizeName(e.target.value)
                       : setNewPrizeName(e.target.value)
                   }
-                  className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="w-full px-3 py-2"
                   placeholder="Enter prize name (e.g., Extra Card, Booster Pack)"
                 />
               </div>
@@ -1061,7 +1065,8 @@ export default function ProfilePage() {
                 >
                   Win Percentage (0-100)
                 </label>
-                <input
+                <Input
+                  bare
                   id={
                     editingPrizeId
                       ? "edit-prize-percentage"
@@ -1079,7 +1084,7 @@ export default function ProfilePage() {
                       ? setEditPrizePercentage(e.target.value)
                       : setNewPrizePercentage(e.target.value)
                   }
-                  className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-md bg-background text-foreground focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="w-full px-3 py-2"
                   placeholder="Enter percentage (0-100)"
                 />
               </div>

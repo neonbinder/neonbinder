@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import NeonButton from "../modules/NeonButton";
+import { Input } from "../primitives/Input";
 
 type Field = {
   name: string;
@@ -62,12 +63,13 @@ export default function GenericEntityForm({
             <label className="block text-sm font-medium mb-2">
               {field.label}
             </label>
-            <input
+            <Input
+              bare
               name={field.name}
               type={field.type}
               value={values[field.name]}
               onChange={handleChange}
-              className="w-full p-2 border rounded-md dark:bg-gray-700 dark:border-gray-600"
+              className="w-full p-2"
               placeholder={field.placeholder}
               required={field.required}
             />
