@@ -463,7 +463,10 @@ jobs:
   # on dispatch, so a validation dispatch can't move live dev traffic.
   dev-promote:
     name: Promote dev to 100%
-    needs: [deploy-dev, dev-login-probe]
+    # build-push is needed only for its deploy_tag output (the scratch tag this
+    # job drops). It is already a transitive dependency via deploy-dev, so this
+    # adds no ordering, just visibility of the output.
+    needs: [build-push, deploy-dev, dev-login-probe]
     if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -479,12 +482,20 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-      - name: Promote dev revision to 100%
+      # The sha-<short> tag is scratch state: it exists only so dev-login-probe
+      # can reach this revision while it sits at 0% traffic. Once traffic moves,
+      # the tag is dead weight — and a lingering tag keeps the revision
+      # addressable indefinitely, which is exactly what pinned 17 idle instances
+      # in dev at minScale=1 (NEO-114). Dropping it in the SAME update-traffic
+      # call makes promotion and cleanup one atomic mutation, so there is no
+      # window in which a promoted revision keeps an orphaned tag.
+      - name: Promote dev revision to 100% and drop its scratch tag
         run: |
           set -euo pipefail
           gcloud run services update-traffic neonbinder-browser \
             --region=us-central1 --project=neonbinder-dev \
-            --to-revisions="${{ needs.deploy-dev.outputs.new_revision }}=100"
+            --to-revisions="${{ needs.deploy-dev.outputs.new_revision }}=100" \
+            --remove-tags="${{ needs.build-push.outputs.deploy_tag }}"
 
   # Prod blue/green — only after dev is built, probed, and promoted. Same image
   # bytes (gcr.io/neonbinder/...:sha) built once in build-push.
@@ -600,7 +611,8 @@ jobs:
 
   prod-promote:
     name: Promote prod to 100%
-    needs: [deploy-prod, prod-login-probe]
+    # build-push is needed only for its deploy_tag output (see dev-promote).
+    needs: [build-push, deploy-prod, prod-login-probe]
     if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -616,12 +628,15 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
-      - name: Promote prod revision to 100%
+      # Same scratch-tag teardown as dev-promote — see the comment there. Prod
+      # accumulated 10 pinned instances this way (NEO-114).
+      - name: Promote prod revision to 100% and drop its scratch tag
         run: |
           set -euo pipefail
           gcloud run services update-traffic neonbinder-browser \
             --region=us-central1 --project=neonbinder \
-            --to-revisions="${{ needs.deploy-prod.outputs.new_revision }}=100"
+            --to-revisions="${{ needs.deploy-prod.outputs.new_revision }}=100" \
+            --remove-tags="${{ needs.build-push.outputs.deploy_tag }}"
 
   # Unified failure report (enabled-push only): opens an issue identifying the
   # first failed stage + its blast radius.
