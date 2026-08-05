@@ -1,0 +1,161 @@
+# R1 — Single feature: a signed-in user who HAS a saved return address can type a
+# recipient on /labels and watch the 4x6 label preview build itself from what
+# they typed (uppercased, USPS-style), with their own return address already in
+# the FROM block.
+#
+# SELF-CONTAINED (R3/R4): the cloud queue regenerates the account state per flow
+# on an arbitrary runner, so no flow can lean on another flow's saved return
+# address — this one creates its own. The entry URL signs in as the isolated
+# `new-profile` account and routes through /testing/reset, which deletes this
+# user's userProfiles row (convex/testing.ts) — that row is where returnAddress
+# lives, so we start from a guaranteed-empty Shipping form (no eraseText needed,
+# and the NEO-41 dirty guard can't re-hydrate stale values over our typing).
+# No in-body re-login beyond that entry handshake (R4).
+#
+# R2 — this cannot go green without the feature: /labels only renders a "Ship To"
+# form when getMyReturnAddress is non-null. If the /profile save silently failed,
+# /labels would render the "Add your return address" empty state instead and
+# every step below would fail on a missing field.
+#
+# HARD CONSTRAINT — we never tap "Print Label". It calls window.print(), whose
+# native dialog blocks every further browser event and wedges the run. The live
+# preview IS the assertable half of the feature; the printed sheet is the same
+# element serialized, so asserting the preview is asserting the label.
+#
+# Entry URL: sign in (new-profile) -> /testing/reset (wipe to empty) -> /profile.
+# `account=new-profile` and `worker` are top-level sign-in query params (the
+# inner redirect value is left unencoded so the router parses them as siblings).
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Shipping Labels — type a recipient and the label preview follows
+tags:
+  - smoke
+  - labels
+---
+# Step 1: land on the freshly-reset /profile page.
+- launchApp
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# Step 2: fill in the Shipping section — the seller's return address. It sits
+# below the whole Public Profile editor, so every field is scrolled into the
+# middle of the viewport before it is tapped (R8; the 1024x629 headless viewport
+# shows only a slice of this page). We target what the user SEES: the visible
+# field labels. Each one's htmlFor points at its input (ship-name, ship-line1,
+# ship-city, ship-state, ship-postal-code), so tapping the label focuses that
+# field and the typing lands in it. These five label texts appear nowhere else on
+# /profile — the Public Profile editor uses "Display Name", "Username", "Tagline"
+# and "... URL", none of which collide.
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Neon Seller"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+- inputText: "100 Binder Way"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Austin"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "TX"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "78701"
+
+# Step 3: save it. The button stays disabled until name/street/city/state/ZIP are
+# all filled, so a tap that lands and a confirmation that appears together prove
+# the five values above actually reached their fields.
+- scrollUntilVisible:
+    element:
+      text: "Save Return Address"
+    centerElement: true
+- tapOn: "Save Return Address"
+- assertVisible: "Return address saved."
+
+# Step 4: go to the Labels page. openLink (not a nav tap) = a fresh cross-page
+# mount, which avoids the post-tap CDP navigation crash and re-reads the return
+# address we just saved.
+- openLink: ${APP_URL || "https://localhost:3000"}/labels
+- assertVisible: "Shipping Labels"
+
+# Step 5: the return address is already printed in the FROM block — the user
+# never retypes it. This is the visible proof that Step 3 persisted and that the
+# page is in its "has a return address" state, not the empty state.
+- assertVisible: "AUSTIN TX 78701"
+
+# Step 6: address the package. Same visible-label technique as Step 2; on this
+# page the labels focus to-name / to-line1 / to-city / to-state / to-postal-code.
+# The recipient is deliberately never saved anywhere, so these fields always
+# start blank — nothing to clear first.
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Jane Buyer"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+- inputText: "742 Evergreen Ter"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Springfield"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "IL"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "62704"
+
+# Step 7: bring the preview on screen. The label is 6in wide (576px at 96dpi) and
+# renders below the form, so on the 1024x629 headless viewport it sits under the
+# fold once the form is filled. We scroll to the "Preview" heading — a DIFFERENT
+# element from the address lines asserted next, so this is not a redundant
+# pre-assert of them (R6 ok).
+- scrollUntilVisible:
+    element:
+      text: "Preview"
+
+# Step 8: the feature. Every line of the recipient block appears on the label
+# UPPERCASED, and city/state/ZIP are composed into the single line a carrier
+# reads. Typing "Jane Buyer" and seeing "JANE BUYER" is the assertion that
+# matters: the preview is not echoing the input box, it is the formatted label.
+# We do NOT tap "Print Label" — see the header note.
+- assertVisible: "JANE BUYER"
+- assertVisible: "742 EVERGREEN TER"
+- assertVisible: "SPRINGFIELD IL 62704"

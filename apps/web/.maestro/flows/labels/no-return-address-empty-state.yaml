@@ -1,0 +1,45 @@
+# R1 — Single feature: /labels shows the "set up your return address first"
+# prompt (and a Go to Profile CTA) instead of a label form when the signed-in
+# user has NO return address saved.
+#
+# SELF-CONTAINED (R4): the flow owns its own reset. Signing in as the isolated
+# `new-profile` account and routing through /testing/reset deletes this user's
+# userProfiles row — the row that carries returnAddress — so getMyReturnAddress
+# returns null and the empty state is what renders. It depends on NO other flow's
+# state, which is what makes it correct under the cloud queue (arbitrary order,
+# arbitrary runner). The `new-profile` account is per-WORKER_INDEX so runners
+# never collide, and within a runner flows are sequential, so our reset
+# immediately precedes our assert.
+#
+# Entry URL: sign in as the new-profile account, reset it, land on /labels.
+# `account=new-profile` and `worker` are TOP-LEVEL sign-in query params (the
+# inner redirect value is left unencoded so the router parses them as siblings).
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/labels&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Shipping Labels — no return address empty state
+tags:
+  - labels
+---
+# Step 1: open the app at the signed-in, freshly-reset /labels route.
+- launchApp
+
+# Step 2: with no return address the page explains what is missing and why. This
+# is the assertion that identifies the empty-state branch — the "Shipping Labels"
+# heading below renders in BOTH branches, so on its own it would prove nothing.
+# Wrapped in .* because the sentence continues ("— it prints in the FROM block of
+# every label") and Maestro text matches are anchored to the whole text node.
+- extendedWaitUntil:
+    visible: ".*Add your return address on your profile first.*"
+    timeout: 45000
+
+# Step 3: the page still identifies itself, and offers the one action that can
+# fix the situation. We do NOT tap Go to Profile — it is a plain <a> navigation,
+# out of scope here, and tapping nav links risks the maestro-web CDP crash.
+- assertVisible: "Shipping Labels"
+- assertVisible: "Go to Profile"
+
+# Step 4: and it offers no half-usable label form. A "Ship To" heading here would
+# mean the user was handed an address form that can never produce a mailable
+# label (no FROM block), which is exactly the outcome this branch exists to
+# prevent — so its absence is part of the feature, not decoration.
+- assertNotVisible: "Ship To"

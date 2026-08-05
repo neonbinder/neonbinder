@@ -60,6 +60,7 @@ export default function ShippingLabelsPage() {
                   height="200"
                   fill="none"
                   xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
                 >
                   {/* Profile card holding a saved address */}
                   <rect x="35" y="45" width="130" height="90" rx="8" stroke="#00E5C0" strokeWidth="3" />
@@ -124,6 +125,7 @@ export default function ShippingLabelsPage() {
                   height="200"
                   fill="none"
                   xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
                 >
                   {/* Form fields on the left */}
                   <rect x="20" y="45" width="60" height="12" rx="3" stroke="#00C2FF" strokeWidth="2" />
@@ -196,6 +198,7 @@ export default function ShippingLabelsPage() {
                   height="200"
                   fill="none"
                   xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
                 >
                   {/* Landscape 4x6 label with dimension marks */}
                   <rect x="30" y="62" width="140" height="93" rx="4" stroke="#00E5C0" strokeWidth="3" />

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import NeonButton from "../../components/modules/NeonButton";
@@ -27,6 +28,7 @@ const FIELD_CLASS = "w-full px-3 py-2";
 const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
 
 export default function LabelsPage() {
+  const navigate = useNavigate();
   const returnAddress = useQuery(api.shipping.getMyReturnAddress);
   const [to, setTo] = useState<PostalAddress>(EMPTY_ADDRESS);
   const [printError, setPrintError] = useState("");
@@ -79,9 +81,11 @@ export default function LabelsPage() {
           Add your return address on your profile first — it prints in the FROM
           block of every label.
         </p>
-        <a href="/profile">
-          <NeonButton>Go to Profile</NeonButton>
-        </a>
+        {/* A NeonButton renders a real <button>; wrapping it in an <a> would
+            nest interactive content and expose an ambiguous role. */}
+        <NeonButton onClick={() => navigate("/profile")}>
+          Go to Profile
+        </NeonButton>
       </div>
     );
   }
@@ -125,7 +129,7 @@ export default function LabelsPage() {
 
         <div>
           <label htmlFor="to-company" className={LABEL_CLASS}>
-            Company <span className="text-slate-500 text-xs">(optional)</span>
+            Company <span className="text-slate-400 text-xs">(optional)</span>
           </label>
           <Input
             bare
@@ -156,7 +160,7 @@ export default function LabelsPage() {
         <div>
           <label htmlFor="to-line2" className={LABEL_CLASS}>
             Apt / Suite{" "}
-            <span className="text-slate-500 text-xs">(optional)</span>
+            <span className="text-slate-400 text-xs">(optional)</span>
           </label>
           <Input
             bare
@@ -199,7 +203,13 @@ export default function LabelsPage() {
               className={FIELD_CLASS}
               placeholder="TX"
               maxLength={2}
+              aria-describedby="to-state-hint"
             />
+            {/* The field silently truncates and re-cases what you type; say so,
+                since a placeholder disappears the moment you start typing. */}
+            <span id="to-state-hint" className="sr-only">
+              Two-letter state abbreviation
+            </span>
           </div>
           <div>
             <label htmlFor="to-postal-code" className={LABEL_CLASS}>
@@ -218,18 +228,33 @@ export default function LabelsPage() {
           </div>
         </div>
 
-        <div className="flex justify-center pt-2">
-          <NeonButton type="submit" disabled={!canPrint} size="3">
+        <div className="flex flex-col items-center pt-2">
+          <NeonButton
+            type="submit"
+            disabled={!canPrint}
+            size="3"
+            aria-describedby="print-requirements"
+          >
             <PrinterIcon className="w-5 h-5 mr-2" />
             Print Label
           </NeonButton>
+          {/* A natively-disabled button drops out of the tab order and
+              announces only as "unavailable", with no clue what is missing. */}
+          {!canPrint && (
+            <p
+              id="print-requirements"
+              className="text-xs text-slate-400 text-center mt-2"
+            >
+              Fill in name, street, city, state, and ZIP to enable printing.
+            </p>
+          )}
         </div>
 
-        {printError && (
-          <p role="alert" className="text-sm text-neon-pink text-center">
-            {printError}
-          </p>
-        )}
+        {/* Always mounted: a live region inserted at the same moment its text
+            appears is unreliably announced (notably VoiceOver). */}
+        <p role="alert" className="text-sm text-neon-pink text-center">
+          {printError}
+        </p>
       </form>
 
       {/* Live preview. At 96dpi a 6in label is 576px, so it fits a desktop
@@ -237,8 +262,17 @@ export default function LabelsPage() {
           element that gets printed. Narrower screens scroll it rather than
           shrinking it, so what you see stays true to size. */}
       <div className="w-full max-w-full flex flex-col items-center gap-3">
-        <h2 className="text-lg font-semibold">Preview</h2>
-        <div className="max-w-full overflow-x-auto">
+        <h2 id="label-preview-heading" className="text-lg font-semibold">
+          Preview
+        </h2>
+        {/* tabIndex makes the scroll container reachable: on a narrow viewport
+            the 6in label overflows, and without it only a pointer could pan. */}
+        <div
+          role="group"
+          aria-labelledby="label-preview-heading"
+          tabIndex={0}
+          className="max-w-full overflow-x-auto"
+        >
           <div className="border border-neon-teal/30 rounded-lg p-2 bg-white/5 w-fit">
             <ShippingLabel
               ref={labelRef}

@@ -163,7 +163,7 @@ export default function ReturnAddressEditor() {
 
       <div>
         <label htmlFor="ship-company" className={LABEL_CLASS}>
-          Company <span className="text-slate-500 text-xs">(optional)</span>
+          Company <span className="text-slate-400 text-xs">(optional)</span>
         </label>
         <Input
           bare
@@ -195,7 +195,7 @@ export default function ReturnAddressEditor() {
 
       <div>
         <label htmlFor="ship-line2" className={LABEL_CLASS}>
-          Apt / Suite <span className="text-slate-500 text-xs">(optional)</span>
+          Apt / Suite <span className="text-slate-400 text-xs">(optional)</span>
         </label>
         <Input
           bare
@@ -241,7 +241,13 @@ export default function ReturnAddressEditor() {
             placeholder="TX"
             maxLength={2}
             autoComplete="address-level1"
+            aria-describedby="ship-state-hint"
           />
+          {/* The field silently truncates and re-cases what you type; say so,
+              since a placeholder disappears the moment you start typing. */}
+          <span id="ship-state-hint" className="sr-only">
+            Two-letter state abbreviation
+          </span>
         </div>
         <div>
           <label htmlFor="ship-postal-code" className={LABEL_CLASS}>
@@ -262,30 +268,46 @@ export default function ReturnAddressEditor() {
       </div>
 
       <div className="flex items-center gap-3">
-        <NeonButton type="submit" disabled={!canSave}>
+        <NeonButton
+          type="submit"
+          disabled={!canSave}
+          aria-describedby="ship-save-requirements"
+        >
           {isSaving ? "Saving…" : "Save Return Address"}
         </NeonButton>
         {hasEdited && (
+          // p-2/-m-2 grows the hit target past the 24px minimum without
+          // moving anything: a bare text button is only ~14px tall.
           <button
             type="button"
             onClick={handleRevert}
-            className="text-sm text-slate-400 hover:text-slate-200 underline"
+            className="text-sm text-slate-400 hover:text-slate-200 underline p-2 -m-2"
           >
             Discard changes
           </button>
         )}
       </div>
 
-      {saveMessage && (
-        <p
-          role="status"
-          className={`text-sm ${
-            saveMessageType === "success" ? "text-neon-green" : "text-neon-pink"
-          }`}
-        >
-          {saveMessage}
+      {/* A natively-disabled button leaves the tab order and announces only as
+          "unavailable", so the reason has to live outside it. */}
+      {!canSave && !isSaving && (
+        <p id="ship-save-requirements" className="text-xs text-slate-400">
+          Fill in name, street, city, state, and ZIP to save.
         </p>
       )}
+
+      {/* Always mounted: a live region inserted at the same moment its text
+          appears is unreliably announced (notably VoiceOver). The role flips
+          because a failed save should interrupt, while a success need not. */}
+      <p
+        role={saveMessageType === "error" ? "alert" : "status"}
+        aria-live={saveMessageType === "error" ? "assertive" : "polite"}
+        className={`text-sm ${
+          saveMessageType === "success" ? "text-neon-green" : "text-neon-pink"
+        }`}
+      >
+        {saveMessage}
+      </p>
     </form>
   );
 }
