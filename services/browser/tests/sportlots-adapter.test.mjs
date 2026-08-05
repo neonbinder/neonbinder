@@ -423,7 +423,7 @@ describe("SportlotsAdapter.login token cache", () => {
     }
   });
 
-  it("clears stale cache and falls through to fresh login when validation fails", async () => {
+  it("falls through to fresh login when validation fails, writing the secret exactly once", async () => {
     const updates = [];
     const SportlotsAdapter = loadSportlotsAdapter({
       credentials: {
@@ -454,18 +454,19 @@ describe("SportlotsAdapter.login token cache", () => {
       const adapter = new SportlotsAdapter(null);
       const result = await adapter.login("sportlots-credentials-user_test");
       assert.equal(result.success, true, "should succeed via fresh-login fallback");
-      assert.equal(stub.signinCalls(), 1, "should POST to signin.tpl after stale-cache clear");
+      assert.equal(stub.signinCalls(), 1, "should POST to signin.tpl after the stale cookie is rejected");
       // 1 validation from cache check + 1 from post-fresh-login validation = 2
       assert.equal(stub.validateCalls(), 2, "should validate twice (cache check + post-fresh-login)");
-      // First update: clearing the stale cache. Second update: persisting the new cookie.
-      assert.equal(updates.length, 2, "should clear stale cache, then persist fresh cookie");
-      const [clear, persist] = updates;
-      assert.equal(clear.creds.token, undefined, "stale-clear update should remove token");
-      assert.equal(clear.creds.expiresAt, undefined, "stale-clear update should remove expiresAt");
-      assert.equal(clear.creds.username, "user@example.com", "stale-clear must preserve username");
-      assert.equal(clear.creds.password, "pw", "stale-clear must preserve password");
+      // NEO-115: exactly ONE write. The old code wrote a token-cleared version
+      // first and then immediately overwrote it with the fresh cookie — two
+      // billed Secret Manager versions, to blank a field the second write set
+      // anyway. That intermediate write is gone; if it comes back this fails.
+      assert.equal(updates.length, 1, "stale-cookie path must write the secret exactly once");
+      const [persist] = updates;
       assert.ok(persist.creds.token, "fresh login should persist a new token");
       assert.ok(persist.creds.expiresAt > Date.now(), "fresh login must persist a future expiresAt");
+      assert.equal(persist.creds.username, "user@example.com", "write-back must preserve username");
+      assert.equal(persist.creds.password, "pw", "write-back must preserve password");
     } finally {
       restore();
     }

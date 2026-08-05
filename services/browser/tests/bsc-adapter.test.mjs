@@ -208,7 +208,7 @@ describe("BSCAdapter.login — cache-hit path", () => {
 // ---------------------------------------------------------------------------
 
 describe("BSCAdapter.login — cache-invalid → fresh B2C login", () => {
-  it("clears the stale token, runs the browser-free B2C exchange, and persists the fresh token", async () => {
+  it("runs the browser-free B2C exchange and persists the fresh token with a SINGLE secret write", async () => {
     const updates = [];
     const baseCreds = {
       username: "seller@example.com",
@@ -236,19 +236,21 @@ describe("BSCAdapter.login — cache-invalid → fresh B2C login", () => {
     const result = await adapter.login("buysportscards-credentials-seller1");
     restore();
 
-    assert.equal(result.success, true, "fresh login should succeed after stale-cache clear");
+    assert.equal(result.success, true, "fresh login should succeed after the stale token is rejected");
     assert.equal(result.sellerId, "fresh-seller-id");
     assert.match(result.message, /Successfully logged into/, "message should reflect fresh login, not cached");
 
-    // First update clears the stale token; second persists the new one.
-    assert.equal(updates.length, 2, "should clear stale cache, then persist fresh token");
-    const [clear, persist] = updates;
-    assert.equal(clear.creds.token, undefined, "stale-clear update should remove token");
-    assert.equal(clear.creds.expiresAt, undefined);
-    assert.equal(clear.creds.username, "seller@example.com", "stale-clear must preserve username");
-    assert.equal(clear.creds.password, "secret", "stale-clear must preserve password");
+    // NEO-115: exactly ONE write. The old code wrote a token-cleared version
+    // first and then immediately overwrote it with the fresh token — two
+    // billed Secret Manager versions per hourly TTL expiry, to blank a field
+    // the second write set anyway. That intermediate write is gone; if it
+    // ever comes back, this assertion fails.
+    assert.equal(updates.length, 1, "stale-token path must write the secret exactly once");
+    const [persist] = updates;
     assert.equal(persist.creds.token, "fresh-access-token", "should persist the BARE access token (no 'Bearer ' prefix)");
     assert.ok(persist.creds.expiresAt > Date.now());
+    assert.equal(persist.creds.username, "seller@example.com", "write-back must preserve username");
+    assert.equal(persist.creds.password, "secret", "write-back must preserve password");
   });
 });
 

@@ -93,18 +93,18 @@ export class SportlotsAdapter extends BaseAdapter {
             expiresAt: credentials.expiresAt,
           };
         }
-        // Stale or revoked cookie. Clear before falling through so the next
-        // call doesn't waste another validation round trip on the same dead
-        // token. Username/password are preserved.
+        // Stale or revoked cookie. Fall through to the fresh-login loop.
+        //
+        // NEO-115: we deliberately do NOT write a token-cleared version here.
+        // That write burned a whole Secret Manager version (billed forever)
+        // purely to blank a field that attemptLogin's write-back overwrites
+        // moments later. The dead cookie just stays in the secret until the
+        // fresh login replaces it; it can never cause a false success,
+        // because the cache-hit branch above only returns success when
+        // validateCachedCookie actually authenticates it.
         console.log(
-          `[SportLots Adapter] cached token invalid, clearing and re-authenticating...`,
+          `[SportLots Adapter] cached token invalid, re-authenticating...`,
         );
-        await secretsManager.updateCredentials(key, {
-          username: credentials.username,
-          password: credentials.password,
-          token: undefined,
-          expiresAt: undefined,
-        });
       }
     } catch (error) {
       // Cache lookup failure should never block a fresh login. Log and fall

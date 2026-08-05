@@ -165,11 +165,13 @@ async function withCredentialLock<T>(
  * - `username`+`password` both provided → store to the browser service (PUT),
  *   then atomically mark `hasCredentials: true`.
  * - Both omitted/blank → delete from the browser service (DELETE) — a
- *   genuinely distinct GCP operation, not a blank overwrite: Secret
- *   Manager's `updateCredentials` only ever ADDS a version, it never
- *   destroys prior ones, so a "store with empty strings" could never
- *   actually purge real credential material — then atomically clear
- *   `hasCredentials`.
+ *   genuinely distinct GCP operation, not a blank overwrite. DELETE removes
+ *   the whole secret; a "store with empty strings" would only add a blank
+ *   version to a secret that still exists. (NEO-115 note: `updateCredentials`
+ *   now also prunes prior versions, so a blank overwrite would in fact destroy
+ *   the old material — but it would still leave an empty secret behind and
+ *   `credentialsExist` would still report true, so DELETE remains the correct
+ *   operation here.) Then atomically clear `hasCredentials`.
  *
  * Either way the Convex flag write happens server-side, inside this same
  * action, immediately after the browser-service call succeeds — no second
