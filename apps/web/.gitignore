@@ -55,6 +55,10 @@ yarn-error.log*
 
 # Maestro E2E outputs
 maestro-report/
+# Local debugging runs use a custom REPORT_DIR (e.g. maestro-report-local) so a
+# previous run's JUnit files cannot skew the next run's pass/fail tally — that
+# misreport is easy to chase for a while before spotting it.
+maestro-report-*/
 # Local E2E queue-harness run context (holds the dev queue secret) + sentinels
 .e2e-local/
 artifacts/

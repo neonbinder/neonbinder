@@ -22,6 +22,7 @@ import About from "@/app/about/page";
 import BinderTracking from "@/app/binder-tracking/page";
 import AiCardIdentification from "@/app/ai-card-identification/page";
 import ManagingInventory from "@/app/managing-inventory/page";
+import ShippingLabelsMarketing from "@/app/shipping-labels/page";
 import SignInPage from "@/app/signin/[[...sign-in]]/page";
 import SignUpPage from "@/app/sign-up/[[...sign-up]]/page";
 import PublicProfile from "@/app/u/[username]/page";
@@ -34,6 +35,7 @@ import Profile from "@/app/profile/page";
 import SetSelector from "@/app/set-selector/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import QrCode from "@/app/qr-code/page";
+import Labels from "@/app/labels/page";
 import Collection from "@/app/collection/page";
 import Inventory from "@/app/inventory/page";
 
@@ -62,6 +64,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<AiCardIdentification />}
           />
           <Route path="/managing-inventory" element={<ManagingInventory />} />
+          <Route
+            path="/shipping-labels"
+            element={<ShippingLabelsMarketing />}
+          />
           <Route path="/signin/*" element={<SignInPage />} />
           <Route path="/sign-up/*" element={<SignUpPage />} />
           <Route path="/u/:username/sale" element={<SalePage />} />
@@ -81,6 +87,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/inventory" element={<Inventory />} />
               <Route path="/profile" element={<Profile />} />
               <Route path="/qr-code" element={<QrCode />} />
+              <Route path="/labels" element={<Labels />} />
               <Route path="/design/primitives" element={<DesignPrimitives />} />
               {/* Admin-only routes — redirected to /dashboard for non-admins */}
               <Route element={<AdminLayout />}>

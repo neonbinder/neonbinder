@@ -31,6 +31,13 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
               ? "#00C2FF"
               : "#00D558",
           color: cancel || secondary ? "white" : "black",
+          // The inline backgroundColor above overrides Radix's own disabled
+          // styling, so without this a disabled button renders at full neon
+          // and reads as clickable — you press it and nothing happens, with
+          // no clue why. Dim it and switch the cursor so the state is visible.
+          ...(props.disabled
+            ? { opacity: 0.45, cursor: "not-allowed" }
+            : null),
           ...props.style,
         }}
       >

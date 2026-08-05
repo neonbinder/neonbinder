@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../../components/modules/NeonButton";
 import PublicProfileEditor from "../../components/modules/PublicProfileEditor";
+import ReturnAddressEditor from "../../components/modules/ReturnAddressEditor";
 import { Input } from "@/components/primitives/Input";
 
 const SUPPORTED_SITES = [
@@ -1428,6 +1429,27 @@ export default function ProfilePage() {
               </div>
             </div>
           )}
+
+          {/* Shipping Section — NEO-118. Kept separate from Public Profile
+              because a home address is private: publicProfiles is served
+              unauthenticated at /u/:username, userProfiles is not.
+
+              Deliberately LAST. The e2e worker bootstrap reaches "Test
+              Credentials" with a scrollUntilVisible that already burned 17s of
+              its 20s budget before this section existed (measured on the run
+              before this branch); inserting ~600px above the Credentials
+              section pushed it over and failed the whole seed track. Anything
+              added here must go below the existing sections, or the bootstrap's
+              scroll budget has to be raised first. */}
+          <section className="space-y-6 p-6 border border-slate-800 rounded-lg">
+            <div>
+              <h2 className="text-xl font-semibold">Shipping</h2>
+              <p className="text-sm text-slate-400 mt-1">
+                Your return address for printed shipping labels
+              </p>
+            </div>
+            <ReturnAddressEditor />
+          </section>
         </div>
   );
 }

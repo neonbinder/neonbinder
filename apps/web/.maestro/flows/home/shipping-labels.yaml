@@ -1,0 +1,57 @@
+# R1 — Single feature: a signed-out visitor can reach the new shipping-label
+# marketing page from the landing feature grid, read what the feature does, and
+# be offered a sign-up.
+#
+# R4 — public page, so no sign-in URL. clearState forces the signed-out state on
+# purpose: "/" bounces a signed-in user straight to /dashboard, and the "Get
+# Started" CTA only opens the Clerk sign-up modal for a visitor who has no
+# account yet.
+url: ${APP_URL || "https://localhost:3000"}
+name: Shipping Labels Feature Page
+tags:
+  - marketing
+  - home
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Neon Binder"
+
+# Scroll to and tap the Print 4x6 Shipping Labels card (fourth in the feature
+# grid, so it is below the fold on the 1024x629 headless viewport — centered
+# before the tap per R8). The card's real heading is "Print 4×6 Shipping Labels"
+# with a U+00D7 MULTIPLICATION SIGN, not the letter x; matching on the trailing
+# words sidesteps the glyph entirely.
+- scrollUntilVisible:
+    element:
+      text: ".*Shipping Labels.*"
+    centerElement: true
+- tapOn:
+    text: ".*Shipping Labels.*"
+
+# The page's own promise, then its three feature sections.
+- assertVisible: "Print the Label, Ship the Card"
+- scrollUntilVisible:
+    element:
+      text: "Your Address, Saved Once"
+- scrollUntilVisible:
+    element:
+      text: "Type The Buyer, Hit Print"
+# "Fits Any 4×6 Label Printer" — the . stands in for the multiplication sign.
+- scrollUntilVisible:
+    element:
+      text: "Fits Any 4.6 Label Printer"
+
+# CTA: verify Get Started button opens Clerk dialog
+- scrollUntilVisible:
+    element:
+      text: "Get Started"
+    centerElement: true
+- tapOn: "Get Started"
+- assertVisible: "Create your account"
+
+# Dismiss dialog and navigate back to home
+- tapOn:
+    point: "5%, 50%"
+- assertNotVisible: "Create your account"
+- tapOn: "Back"
+- assertVisible: "Sign In"
