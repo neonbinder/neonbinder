@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import {
   EMPTY_ADDRESS,
   formatAddressBlock,
+  hasCompleteStreetAddress,
   isCompleteAddress,
   type PostalAddress,
 } from "./address";
@@ -96,9 +97,39 @@ describe("formatAddressBlock", () => {
   });
 });
 
+// The seller's return address has no name of its own — the FROM line resolves
+// from their public display name — so saving it must not require one. That is
+// the whole reason these two predicates are separate.
+describe("hasCompleteStreetAddress", () => {
+  test("accepts a street address with no name", () => {
+    expect(hasCompleteStreetAddress({ ...COMPLETE, name: "" })).toBe(true);
+  });
+
+  test.each(["line1", "city", "state", "postalCode"] as const)(
+    "rejects a street address missing %s",
+    (field) => {
+      expect(hasCompleteStreetAddress({ ...COMPLETE, [field]: "" })).toBe(false);
+    },
+  );
+
+  test("rejects whitespace-only street fields", () => {
+    expect(hasCompleteStreetAddress({ ...COMPLETE, city: "  " })).toBe(false);
+  });
+
+  test("rejects the empty address the form starts from", () => {
+    expect(hasCompleteStreetAddress(EMPTY_ADDRESS)).toBe(false);
+  });
+});
+
 describe("isCompleteAddress", () => {
   test("accepts an address with every required field", () => {
     expect(isCompleteAddress(COMPLETE)).toBe(true);
+  });
+
+  // Printing still needs somebody to address it to, whether that name was
+  // typed or resolved from the profile.
+  test("rejects a complete street address with no name", () => {
+    expect(isCompleteAddress({ ...COMPLETE, name: "" })).toBe(false);
   });
 
   test("accepts a complete address regardless of optional fields", () => {

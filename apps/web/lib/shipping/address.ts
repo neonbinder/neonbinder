@@ -26,9 +26,13 @@ export interface PostalAddress {
   country: string;
 }
 
-/** The fields an address cannot be printed without. */
-const REQUIRED_FIELDS = [
-  "name",
+/**
+ * The street half of an address — everything except who it is addressed to.
+ * Split out because the seller's return address does not carry its own name:
+ * the FROM line falls back to their public display name (or username), so the
+ * street fields are all the editor can require.
+ */
+const REQUIRED_STREET_FIELDS = [
   "line1",
   "city",
   "state",
@@ -51,15 +55,29 @@ function present(value: string | undefined): string {
 }
 
 /**
- * True when every field required to actually address a package is filled in.
+ * True when the street half is filled in — enough to identify a building, but
+ * not yet who it is for. This is what gates SAVING a return address, whose name
+ * line is resolved from the seller's public profile rather than typed.
+ */
+export function hasCompleteStreetAddress(
+  address: Partial<PostalAddress> | null | undefined,
+): boolean {
+  if (!address) return false;
+  return REQUIRED_STREET_FIELDS.every((field) => present(address[field]) !== "");
+}
+
+/**
+ * True when every field required to actually address a package is filled in —
+ * the street half plus somebody to address it to. This is what gates PRINTING,
+ * and it applies to both blocks: the recipient (typed) and the sender (resolved).
+ *
  * `company` and `line2` are genuinely optional, and `country` is defaulted
  * rather than typed by the user, so none of them gate printing.
  */
 export function isCompleteAddress(
   address: Partial<PostalAddress> | null | undefined,
 ): boolean {
-  if (!address) return false;
-  return REQUIRED_FIELDS.every((field) => present(address[field]) !== "");
+  return hasCompleteStreetAddress(address) && present(address?.name) !== "";
 }
 
 /**

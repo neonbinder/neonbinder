@@ -22,12 +22,29 @@ import { postalAddressValidator } from "./schema";
 /**
  * The current user's saved return address, or null when they haven't set one.
  *
- * `/labels` distinguishes the two: null renders the "set this up on your
- * profile first" empty state rather than an unprintable half-blank label.
+ * Returns the stored address AND a separately-resolved name, rather than one
+ * merged object, because the two consumers need different things: the label
+ * prints `resolvedName`, while the editor has to show the *stored* value so a
+ * deliberately-blank name stays blank instead of being silently promoted into
+ * a saved one.
+ *
+ * `resolvedName` is the stored name if the seller typed one, else their public
+ * display name, else their username. A seller's name is already on their public
+ * profile; making them retype it on a second screen — and keep the two in sync
+ * forever after — is the kind of duplication this avoids.
+ *
+ * `/labels` treats null as "not set up yet" and renders the setup prompt rather
+ * than an unprintable half-blank label.
  */
 export const getMyReturnAddress = query({
   args: {},
-  returns: v.union(postalAddressValidator, v.null()),
+  returns: v.union(
+    v.object({
+      address: postalAddressValidator,
+      resolvedName: v.string(),
+    }),
+    v.null(),
+  ),
   handler: async (ctx) => {
     const userId = await getCurrentUserId(ctx);
     if (!userId) return null;
@@ -37,7 +54,22 @@ export const getMyReturnAddress = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .unique();
 
-    return profile?.returnAddress ?? null;
+    const address = profile?.returnAddress;
+    if (!address) return null;
+
+    let resolvedName = address.name.trim();
+    if (resolvedName === "") {
+      const publicProfile = await ctx.db
+        .query("publicProfiles")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .unique();
+      resolvedName =
+        publicProfile?.displayName?.trim() ||
+        publicProfile?.username?.trim() ||
+        "";
+    }
+
+    return { address, resolvedName };
   },
 });
 
@@ -57,7 +89,9 @@ export const saveMyReturnAddress = mutation({
 
     // Server-side completeness check. The form disables Save without these, but
     // the mutation is the actual boundary — a client is not a validator.
-    const required = ["name", "line1", "city", "state", "postalCode"] as const;
+    // `name` is deliberately absent: a blank name is a valid saved state,
+    // meaning "use my display name", and getMyReturnAddress resolves it.
+    const required = ["line1", "city", "state", "postalCode"] as const;
     for (const field of required) {
       if (args.address[field].trim() === "") {
         throw new Error(`Return address is missing ${field}`);

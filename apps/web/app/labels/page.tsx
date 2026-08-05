@@ -29,7 +29,7 @@ const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
 
 export default function LabelsPage() {
   const navigate = useNavigate();
-  const returnAddress = useQuery(api.shipping.getMyReturnAddress);
+  const saved = useQuery(api.shipping.getMyReturnAddress);
   const [to, setTo] = useState<PostalAddress>(EMPTY_ADDRESS);
   const [printError, setPrintError] = useState("");
   const labelRef = useRef<HTMLDivElement>(null);
@@ -62,7 +62,7 @@ export default function LabelsPage() {
   }, [to.name]);
 
   // Waiting on the return address query.
-  if (returnAddress === undefined) {
+  if (saved === undefined) {
     return (
       <div className="flex items-center justify-center py-24">
         <div className="w-8 h-8 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -72,7 +72,7 @@ export default function LabelsPage() {
 
   // No return address yet — a label without a FROM block is not mailable, so
   // send them to the one place it can be set rather than printing a half label.
-  if (returnAddress === null) {
+  if (saved === null) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center px-4">
         <TagIcon className="w-20 h-20 text-neon-teal mb-6" />
@@ -90,7 +90,18 @@ export default function LabelsPage() {
     );
   }
 
-  const canPrint = isCompleteAddress(to);
+  // The FROM block prints the resolved name (stored name, else the seller's
+  // public display name, else their username) rather than whatever is stored.
+  const returnAddress: PostalAddress = {
+    ...saved.address,
+    name: saved.resolvedName,
+  };
+
+  // Both blocks have to be complete. The FROM half can be incomplete in one
+  // real case: a seller who saved a street address but has no name anywhere —
+  // no typed name and no public profile to fall back to.
+  const fromIsComplete = isCompleteAddress(returnAddress);
+  const canPrint = isCompleteAddress(to) && fromIsComplete;
 
   return (
     <div className="flex flex-col items-center gap-8 py-12 px-4">
@@ -245,7 +256,9 @@ export default function LabelsPage() {
               id="print-requirements"
               className="text-xs text-slate-400 text-center mt-2"
             >
-              Fill in name, street, city, state, and ZIP to enable printing.
+              {fromIsComplete
+                ? "Fill in name, street, city, state, and ZIP to enable printing."
+                : "Add a name to your return address, or set a display name on your public profile."}
             </p>
           )}
         </div>

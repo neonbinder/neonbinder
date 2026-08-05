@@ -59,6 +59,11 @@ tags:
 # in it. These five label texts appear nowhere else on /profile — the Public
 # Profile editor uses "Display Name", "Username", "Tagline" and "... URL", none
 # of which collide.
+# The Name field is optional — blank falls back to the seller's public display
+# name — but we fill it here so the FROM block is deterministic regardless of
+# what profile state the reset left behind. (The fallback chain itself is
+# covered exhaustively in convex/shipping.test.ts, where the data combinations
+# are cheap to enumerate.)
 - scrollUntilVisible:
     element:
       text: "Name"

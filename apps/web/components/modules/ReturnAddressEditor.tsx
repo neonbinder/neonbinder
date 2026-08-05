@@ -7,7 +7,7 @@ import NeonButton from "./NeonButton";
 import { Input } from "@/components/primitives/Input";
 import {
   EMPTY_ADDRESS,
-  isCompleteAddress,
+  hasCompleteStreetAddress,
   type PostalAddress,
 } from "@/lib/shipping/address";
 
@@ -19,14 +19,33 @@ import {
  * that is the shape the mutation takes and an address is only meaningful whole.
  * Every edit still routes through {@link update} so the NEO-41 dirty guard
  * cannot be opted out of field-by-field.
+ *
+ * There is no Company field and Name is optional: the seller's name already
+ * exists on their public profile, so the FROM line falls back to their display
+ * name (then username) and the two cannot drift apart. Saving therefore only
+ * requires the street half — see `hasCompleteStreetAddress`.
  */
 
 const FIELD_CLASS = "w-full px-3 py-2";
 const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
 
 export default function ReturnAddressEditor() {
-  const savedAddress = useQuery(api.shipping.getMyReturnAddress);
+  const saved = useQuery(api.shipping.getMyReturnAddress);
+  const publicProfile = useQuery(api.publicProfile.getMyPublicProfile);
   const saveReturnAddress = useMutation(api.shipping.saveMyReturnAddress);
+
+  // The stored address — NOT the resolved one. Hydrating from the resolved name
+  // would put the display name into the input, and the next save would freeze
+  // it there, quietly breaking the "follows your profile" behaviour.
+  const savedAddress = saved?.address ?? null;
+
+  // What a blank name would fall back to. Read from the public profile rather
+  // than from `resolvedName`, for two reasons: resolvedName already folds in
+  // the stored name (so it would echo the input rather than the fallback), and
+  // it is null until a first address is saved — which is exactly when someone
+  // most needs to be told what blank will do.
+  const fallbackName =
+    publicProfile?.displayName?.trim() || publicProfile?.username?.trim() || "";
 
   const [address, setAddress] = useState<PostalAddress>(EMPTY_ADDRESS);
   const [isSaving, setIsSaving] = useState(false);
@@ -78,8 +97,8 @@ export default function ReturnAddressEditor() {
   );
 
   const handleSave = useCallback(async () => {
-    if (!isCompleteAddress(address)) {
-      setSaveMessage("Fill in name, street, city, state, and ZIP.");
+    if (!hasCompleteStreetAddress(address)) {
+      setSaveMessage("Fill in street, city, state, and ZIP.");
       setSaveMessageType("error");
       return;
     }
@@ -91,9 +110,12 @@ export default function ReturnAddressEditor() {
       await saveReturnAddress({
         address: {
           ...address,
+          // A blank name is a meaningful saved state here — it means "use my
+          // display name" — so it is stored as "" rather than rejected.
+          name: address.name.trim(),
           // Optional fields go as undefined rather than "" so a cleared field
           // stops printing instead of emitting a blank line on the label.
-          company: address.company?.trim() || undefined,
+          company: undefined,
           line2: address.line2?.trim() || undefined,
           country: address.country || "US",
         },
@@ -130,7 +152,7 @@ export default function ReturnAddressEditor() {
     }
   };
 
-  const canSave = isCompleteAddress(address) && !isSaving;
+  const canSave = hasCompleteStreetAddress(address) && !isSaving;
 
   return (
     <form
@@ -146,6 +168,11 @@ export default function ReturnAddressEditor() {
       </p>
 
       <div>
+        {/* No "(optional)" chip here, unlike the other optional fields: the
+            hint below already says what leaving it blank does, which is more
+            useful. It also keeps the label a single text node — a trailing
+            "Name " plus a separate span is not matchable by Maestro's
+            whole-node text selectors. */}
         <label htmlFor="ship-name" className={LABEL_CLASS}>
           Name
         </label>
@@ -156,25 +183,15 @@ export default function ReturnAddressEditor() {
           value={address.name}
           onChange={(e) => update("name")(e.target.value)}
           className={FIELD_CLASS}
-          placeholder="Your name"
+          placeholder={fallbackName || "Your name"}
           autoComplete="name"
+          aria-describedby="ship-name-hint"
         />
-      </div>
-
-      <div>
-        <label htmlFor="ship-company" className={LABEL_CLASS}>
-          Company <span className="text-slate-400 text-xs">(optional)</span>
-        </label>
-        <Input
-          bare
-          id="ship-company"
-          type="text"
-          value={address.company ?? ""}
-          onChange={(e) => update("company")(e.target.value)}
-          className={FIELD_CLASS}
-          placeholder="Shop name"
-          autoComplete="organization"
-        />
+        <p id="ship-name-hint" className="text-xs text-slate-400 mt-1">
+          {fallbackName
+            ? `Leave blank to use "${fallbackName}" from your public profile.`
+            : "Leave blank to use your public profile display name or username."}
+        </p>
       </div>
 
       <div>
@@ -292,7 +309,7 @@ export default function ReturnAddressEditor() {
           "unavailable", so the reason has to live outside it. */}
       {!canSave && !isSaving && (
         <p id="ship-save-requirements" className="text-xs text-slate-400">
-          Fill in name, street, city, state, and ZIP to save.
+          Fill in street, city, state, and ZIP to save.
         </p>
       )}
 
