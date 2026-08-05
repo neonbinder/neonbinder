@@ -110,10 +110,13 @@ tags:
 - openLink: ${APP_URL || "https://localhost:3000"}/labels
 - assertVisible: "Shipping Labels"
 
-# Step 5: the return address is already printed in the FROM block — the user
-# never retypes it. This is the visible proof that Step 3 persisted and that the
-# page is in its "has a return address" state, not the empty state.
-- assertVisible: "AUSTIN TX 78701"
+# Step 5: confirm we are on the "has a return address" branch, not the empty
+# state. "Shipping Labels" above renders in BOTH branches, so it cannot tell them
+# apart; the "Ship To" form heading only exists once getMyReturnAddress is
+# non-null, and it is above the fold on landing. The FROM block is the stronger
+# proof that the save persisted, but it lives in the preview below the fold — it
+# is asserted in Step 8 once the label is actually on screen.
+- assertVisible: "Ship To"
 
 # Step 6: address the package. Same visible-label technique as Step 2; on this
 # page the labels focus to-name / to-line1 / to-city / to-state / to-postal-code.
@@ -154,20 +157,33 @@ tags:
 - tapOn: "ZIP"
 - inputText: "62704"
 
-# Step 7: bring the preview on screen. The label is 6in wide (576px at 96dpi) and
-# renders below the form, so on the 1024x629 headless viewport it sits under the
-# fold once the form is filled. We scroll to the "Preview" heading — a DIFFERENT
-# element from the address lines asserted next, so this is not a redundant
-# pre-assert of them (R6 ok).
+# Step 7: bring the whole label on screen.
+#
+# assertVisible DOES enforce viewport visibility in maestro-web — an earlier
+# revision of this flow asserted a label line straight after landing on /labels
+# and failed on exactly that, with the element present in the DOM but below the
+# fold. So the label has to be scrolled to, not merely rendered.
+#
+# We centre on the recipient NAME rather than the "Preview" heading: the label is
+# 4in tall (384px at 96dpi) inside a 629px viewport, so centring a line in the
+# middle of the label puts every other line — the FROM block above it and the
+# city/state/ZIP line below — on screen in one move.
 - scrollUntilVisible:
     element:
-      text: "Preview"
+      text: "JANE BUYER"
+    centerElement: true
+    timeout: 30000
 
 # Step 8: the feature. Every line of the recipient block appears on the label
 # UPPERCASED, and city/state/ZIP are composed into the single line a carrier
 # reads. Typing "Jane Buyer" and seeing "JANE BUYER" is the assertion that
 # matters: the preview is not echoing the input box, it is the formatted label.
 # We do NOT tap "Print Label" — see the header note.
-- assertVisible: "JANE BUYER"
 - assertVisible: "742 EVERGREEN TER"
 - assertVisible: "SPRINGFIELD IL 62704"
+
+# And the seller's own address is already in the FROM block, from Step 3 — the
+# proof that the /profile save persisted and is being read back here. Distinct
+# city from the recipient (Austin vs Springfield) so neither block's assertion
+# can be satisfied by the other.
+- assertVisible: "AUSTIN TX 78701"
