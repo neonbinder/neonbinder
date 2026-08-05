@@ -10,7 +10,7 @@
  * secrets. `updateCredentials` now destroys every other live version after a
  * successful write, keeping exactly one.
  *
- * Two properties in here are safety-critical and must never be relaxed:
+ * Three properties in here must never be relaxed:
  *
  *  1. The just-written version is NEVER destroyed, and exclusion is by the
  *     explicit resource name returned from addSecretVersion — never by "first
@@ -20,6 +20,11 @@
  *     updateCredentials — a user saving their marketplace password must not
  *     see an error because cleanup hiccuped, and the credential write has
  *     already succeeded by then.
+ *  3. Pruning is BOUNDED and CONCURRENT. The first cut destroyed every stale
+ *     version inline and sequentially; against a 203-version backlog that put
+ *     42 seconds inside a user-facing credential write and failed the E2E BSC
+ *     auth step on PR #126. Both the cap and the concurrency are asserted
+ *     below, because either regressing silently reintroduces that latency.
  *
  * ## Strategy
  *
@@ -90,9 +95,15 @@ function makeClient({
 } = {}) {
   const calls = { add: [], create: [], list: [], destroy: [] };
   let addCount = 0;
+  // Concurrency probe. Each destroy increments on entry and decrements after
+  // yielding to the event loop, so `maxInFlight` is the widest the fan-out
+  // ever got: 1 under a `for … await` loop, N under Promise.allSettled.
+  let inFlight = 0;
+  const stats = { maxInFlight: 0 };
 
   return {
     calls,
+    stats,
     async addSecretVersion(req) {
       addCount++;
       calls.add.push(req);
@@ -119,6 +130,10 @@ function makeClient({
     },
     async destroySecretVersion(req) {
       calls.destroy.push(req.name);
+      inFlight++;
+      stats.maxInFlight = Math.max(stats.maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      inFlight--;
       if (destroyBehavior) destroyBehavior(req.name);
       return [{ name: req.name, state: "DESTROYED" }];
     },
@@ -128,20 +143,35 @@ function makeClient({
 /** Names passed to destroySecretVersion, in call order. */
 const destroyed = (client) => client.calls.destroy;
 
-// Capture console.error so best-effort failures don't spam the test output —
-// and so we can assert nothing secret leaks into them.
+// Capture console.error/log so best-effort failures don't spam the test output
+// — and so we can assert nothing secret leaks into them.
 let capturedErrors = [];
+let capturedLogs = [];
 const realError = console.error;
+const realLog = console.log;
 
 beforeEach(() => {
   capturedErrors = [];
+  capturedLogs = [];
   console.error = (...args) => capturedErrors.push(args.map(String).join(" "));
+  console.log = (...args) => capturedLogs.push(args.map(String).join(" "));
 });
 
 afterEach(() => {
   console.error = realError;
+  console.log = realLog;
   activeClient = null;
 });
+
+/** The cap in src/services/secrets-manager.ts. Kept in sync deliberately. */
+const MAX_DESTROYS_PER_WRITE = 10;
+
+/** N stale ENABLED versions, newest first, plus the kept version at the head. */
+function backlog(keptVersion, staleCount) {
+  const out = [{ name: keptVersion, state: "ENABLED" }];
+  for (let i = staleCount; i >= 1; i--) out.push({ name: V(i), state: "ENABLED" });
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // Happy path: prune to exactly one
@@ -230,6 +260,110 @@ describe("SecretsManagerService.updateCredentials — prune to newest version", 
     await new SecretsManagerService().updateCredentials(KEY, CREDS);
 
     assert.deepEqual(destroyed(activeClient), [V(2)]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Latency: the prune must be bounded and concurrent (PR #126 regression)
+// ---------------------------------------------------------------------------
+
+describe("SecretsManagerService.updateCredentials — prune is bounded and concurrent", () => {
+  it("destroys at most MAX_DESTROYS_PER_WRITE versions in one call", async () => {
+    // 203 enabled versions is the real backlog that produced the 42s write.
+    activeClient = makeClient({
+      createdVersion: V(999),
+      versions: backlog(V(999), 202),
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.equal(
+      destroyed(activeClient).length,
+      MAX_DESTROYS_PER_WRITE,
+      "a backlogged secret must converge over successive writes, not in one 42s request",
+    );
+    assert.ok(
+      !destroyed(activeClient).includes(V(999)),
+      "the cap must not weaken the never-destroy-our-own-version guarantee",
+    );
+    assert.ok(
+      capturedLogs.some((line) => line.includes("cap reached")),
+      "hitting the cap should be visible in the logs so a backlog is diagnosable",
+    );
+  });
+
+  it("issues the capped batch concurrently, not one destroy at a time", async () => {
+    activeClient = makeClient({
+      createdVersion: V(999),
+      versions: backlog(V(999), 50),
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    // The original `for … await` loop yields maxInFlight === 1 — that serial
+    // round-tripping is exactly what cost 42 seconds.
+    assert.equal(
+      activeClient.stats.maxInFlight,
+      MAX_DESTROYS_PER_WRITE,
+      "all destroys in the batch must be in flight together",
+    );
+  });
+
+  it("does not exceed the cap even when the kept version is not in the list", async () => {
+    // Defensive: the survivor may have been listed after the cap boundary, or
+    // not listed at all under eventual consistency. Neither may uncap the loop.
+    activeClient = makeClient({
+      createdVersion: V(999),
+      versions: backlog(V(999), 30).filter((v) => v.name !== V(999)),
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.equal(destroyed(activeClient).length, MAX_DESTROYS_PER_WRITE);
+  });
+
+  it("stays quiet about the cap when the backlog fits in one batch", async () => {
+    activeClient = makeClient({
+      createdVersion: V(999),
+      versions: backlog(V(999), 3),
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.equal(destroyed(activeClient).length, 3);
+    assert.ok(
+      !capturedLogs.some((line) => line.includes("cap reached")),
+      "the steady-state path (1 stale version per write) must not log a backlog warning",
+    );
+  });
+
+  it("one rejected destroy neither aborts nor unsettles the rest of the batch", async () => {
+    activeClient = makeClient({
+      createdVersion: V(999),
+      versions: backlog(V(999), 20),
+      destroyBehavior: (name) => {
+        if (name === V(19)) throw new Error("PERMISSION_DENIED: no destroy permission");
+      },
+    });
+
+    // Would reject if the implementation used Promise.all, and would leave an
+    // unhandled rejection if the batch were fired without settling.
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.equal(
+      destroyed(activeClient).length,
+      MAX_DESTROYS_PER_WRITE,
+      "the failing version must not prevent its siblings from being attempted",
+    );
+    assert.ok(
+      capturedErrors.some((line) => line.includes(V(19))),
+      "the rejected version should be named in the log so it can be chased",
+    );
+    assert.equal(
+      capturedErrors.filter((line) => line.includes("Failed to destroy")).length,
+      1,
+      "only the one genuine failure should be reported",
+    );
   });
 });
 

@@ -7,9 +7,11 @@
 # BSC sessions expire on a `TOKEN_TTL_MS` of one hour. Each expiry historically
 # triggered a credential write-back that added a NEW secret version instead of
 # reusing the existing one — and the write-back path did this twice per
-# refresh (once for the access token, once for the paired metadata write),
-# so a single hourly expiry left two new ENABLED versions behind. Nothing ever
-# destroyed the old ones.
+# refresh: once to blank the stale token, then again to store the freshly
+# minted one. So a single hourly expiry left two new ENABLED versions behind,
+# and nothing ever destroyed the old ones. (Both writes are gone as of
+# NEO-115 — the blanking write was pure waste, since the write-back that
+# followed overwrote it moments later.)
 #
 # Measured 2026-08-04: neonbinder-dev carried 1,326 ENABLED versions across 33
 # secrets (~$70/month) and growing ~25/day. Prod (`neonbinder`) is far smaller
@@ -32,7 +34,11 @@
 #     — this is an unconditional guard, not just a consequence of the --keep
 #     math. --keep 0 is rejected outright at the argument-parsing stage.
 #   * Only ENABLED versions are considered. DESTROYED versions are left alone
-#     (re-destroying one is a no-op error, not idempotent).
+#     (re-destroying one is a no-op error, not idempotent). Note this is
+#     deliberately narrower than the in-code prune in secrets-manager.ts, which
+#     also sweeps DISABLED — those still bill and still accept destroy. A
+#     DISABLED version is not something this codebase ever creates, so the two
+#     only diverge if one is made by hand; this script leaves it for a human.
 #   * This script NEVER reads a secret payload. It only calls
 #     `gcloud secrets versions list` (metadata: name, state, createTime) and
 #     `gcloud secrets versions destroy`. It never calls

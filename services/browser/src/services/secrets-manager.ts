@@ -9,6 +9,26 @@ export interface Credentials {
 
 const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
 
+/**
+ * Hard cap on how many stale versions a single credential write may destroy.
+ *
+ * NEO-115 follow-up. The first cut of the prune destroyed *every* stale version
+ * inline and sequentially. On a secret that had accumulated a backlog
+ * (`buysportscards-credentials-user_3DPlQ…` was at 203 enabled versions) that
+ * meant ~202 serialised `destroySecretVersion` round trips inside the
+ * user-facing write, and the BSC login write-back went from 0.6s to **42s** —
+ * enough to fail the E2E `setup.yaml` BSC-auth step on PR #126. This project
+ * treats any response over 7s as a real bug, so the prune must be bounded, not
+ * merely "eventually fast".
+ *
+ * A backlogged secret converges over successive writes instead of paying the
+ * whole cost at once: 10 per write, and BSC writes hourly. In steady state
+ * (i.e. after the one-time bulk cleanup) there is exactly ONE stale version per
+ * write — the one this write superseded — so the cap is never reached and the
+ * prune costs a single destroy.
+ */
+const MAX_DESTROYS_PER_WRITE = 10;
+
 function validateKeyFormat(key: string): void {
   if (!KEY_PATTERN.test(key)) {
     throw new Error("Invalid credential key format");
@@ -166,8 +186,8 @@ export class SecretsManagerService {
   }
 
   /**
-   * Destroys every version of `secretName` except `keepVersionName`, leaving
-   * the secret with exactly one live version.
+   * Destroys up to `MAX_DESTROYS_PER_WRITE` versions of `secretName` other
+   * than `keepVersionName`, converging the secret on exactly one live version.
    *
    * ## Why this exists
    *
@@ -192,10 +212,15 @@ export class SecretsManagerService {
    *   username/password, not just the ephemeral token, so there is no version
    *   to roll back to. An interrupted write leaves the user re-entering their
    *   credentials in Profile. This trade was made deliberately.
-   * - **No secret material is logged.** Only version RESOURCE NAMES and error
-   *   messages reach the log; payloads are never read here (listSecretVersions
-   *   returns metadata only, never `payload`), and errors are reduced to their
-   *   message so no arbitrary object graph is spilled into Cloud Logging.
+   * - **No secret material is logged.** Only version RESOURCE NAMES, counts
+   *   and error messages reach the log; payloads are never read here
+   *   (listSecretVersions returns metadata only, never `payload`), and errors
+   *   are reduced to their message so no arbitrary object graph is spilled
+   *   into Cloud Logging.
+   * - **Bounded and concurrent.** At most MAX_DESTROYS_PER_WRITE destroys are
+   *   issued, and they run together rather than one-at-a-time, so the prune
+   *   can never dominate the latency of the credential write it follows. See
+   *   the constant for the 42s incident that forced this.
    *
    * @param secretName Fully-qualified `projects/<p>/secrets/<id>` resource name.
    * @param keepVersionName Resource name of the version to preserve. When
@@ -218,7 +243,15 @@ export class SecretsManagerService {
 
     try {
       const [versions] = await this.client.listSecretVersions({ parent: secretName });
+
+      // Select at most MAX_DESTROYS_PER_WRITE stale versions, then stop
+      // walking. The cap is what keeps a backlogged secret from turning a
+      // credential write into a 42-second request; see the constant.
+      const stale: string[] = [];
       for (const version of versions) {
+        if (stale.length >= MAX_DESTROYS_PER_WRITE) {
+          break;
+        }
         if (!version.name || version.name === keepVersionName) {
           continue;
         }
@@ -228,16 +261,43 @@ export class SecretsManagerService {
         if (version.state !== 'ENABLED' && version.state !== 'DISABLED') {
           continue;
         }
-        try {
-          await this.client.destroySecretVersion({ name: version.name });
-        } catch (err: any) {
-          // One version failing must not stop the rest of the sweep.
+        stale.push(version.name);
+      }
+
+      if (stale.length === 0) {
+        return;
+      }
+
+      // Concurrent, not serialised: the old `for … await` loop paid one full
+      // round trip per version. allSettled also means a single rejection can
+      // neither abort its siblings nor escape as an unhandled rejection.
+      //
+      // This is deliberately AWAITED rather than fired and forgotten: Cloud Run
+      // may freeze or reclaim the container once the response is written, so
+      // detached work is not reliably completed and its failures would be
+      // unobservable.
+      const results = await Promise.allSettled(
+        stale.map((name) => this.client.destroySecretVersion({ name })),
+      );
+      results.forEach((result, i) => {
+        if (result.status === 'rejected') {
+          const err = result.reason;
           console.error(
             "Failed to destroy secret version '%s': %s",
-            version.name,
+            stale[i],
             err instanceof Error ? err.message : String(err),
           );
         }
+      });
+
+      if (stale.length === MAX_DESTROYS_PER_WRITE) {
+        // Backlog remains; the next write takes another batch. Counts and
+        // resource names only — never payloads.
+        console.log(
+          "Pruned %d version(s) of secret '%s' (per-write cap reached; more remain)",
+          stale.length,
+          secretName,
+        );
       }
     } catch (err: any) {
       console.error(
