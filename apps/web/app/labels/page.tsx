@@ -7,12 +7,14 @@ import { api } from "../../convex/_generated/api";
 import NeonButton from "../../components/modules/NeonButton";
 import { ShippingLabel } from "../../components/modules/ShippingLabel";
 import { Input } from "@/components/primitives/Input";
+import { Textarea } from "@/components/primitives/Textarea";
 import { PrinterIcon, TagIcon } from "@heroicons/react/24/outline";
 import {
   EMPTY_ADDRESS,
   isCompleteAddress,
   type PostalAddress,
 } from "@/lib/shipping/address";
+import { parseAddressText } from "@/lib/shipping/parse-address";
 import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
 import { printHtmlDocument } from "@/lib/print/print-html";
 
@@ -32,11 +34,39 @@ export default function LabelsPage() {
   const saved = useQuery(api.shipping.getMyReturnAddress);
   const [to, setTo] = useState<PostalAddress>(EMPTY_ADDRESS);
   const [printError, setPrintError] = useState("");
+  const [pasteText, setPasteText] = useState("");
+  const [pasteStatus, setPasteStatus] = useState("");
   const labelRef = useRef<HTMLDivElement>(null);
 
   const update = (field: keyof PostalAddress) => (value: string) => {
     setTo((prev) => ({ ...prev, [field]: value }));
   };
+
+  /**
+   * Fill the Ship To fields from a pasted address block.
+   *
+   * MERGES rather than replaces: the parser returns only what it is confident
+   * about, so a partial parse must not blank a field the seller already typed.
+   * Whatever it could not place is reported verbatim instead of dropped — a
+   * line the seller can see is a line they can put somewhere.
+   */
+  const applyPaste = useCallback((text: string) => {
+    const { fields, filled, unparsed } = parseAddressText(text);
+
+    if (filled.length === 0) {
+      setPasteStatus("Couldn't read an address from that — fill it in below.");
+      return;
+    }
+
+    setTo((prev) => ({ ...prev, ...fields }));
+
+    const named = filled.filter((f) => f !== "country").length;
+    setPasteStatus(
+      unparsed.length > 0
+        ? `Filled ${named} field${named === 1 ? "" : "s"}. Couldn't place: ${unparsed.join(" · ")}`
+        : `Filled ${named} field${named === 1 ? "" : "s"} — check them before printing.`,
+    );
+  }, []);
 
   const handlePrint = useCallback(async () => {
     // The label element itself is the print source — serializing the live DOM
@@ -122,6 +152,68 @@ export default function LabelsPage() {
         }}
       >
         <h2 className="text-lg font-semibold">Ship To</h2>
+
+        {/* Paste-to-fill. The seller has the buyer's address open on a packing
+            slip in another tab; retyping six fields per package is slow and is
+            the easiest place to introduce a typo that misdelivers a card.
+            Filling on paste (rather than behind a button) is the whole point —
+            the button below is only for text that was typed or edited here. */}
+        <div className="rounded-lg border border-slate-800 p-3 space-y-2">
+          <label htmlFor="to-paste" className={LABEL_CLASS}>
+            Paste an address
+          </label>
+          <Textarea
+            bare
+            id="to-paste"
+            rows={3}
+            value={pasteText}
+            onChange={(e) => setPasteText(e.target.value)}
+            onPaste={(e) => {
+              const text = e.clipboardData.getData("text");
+              if (!text) return;
+              // Fill from the clipboard directly: React state has not caught up
+              // to the paste yet, so reading `pasteText` here would parse the
+              // PREVIOUS contents.
+              e.preventDefault();
+              setPasteText(text);
+              applyPaste(text);
+            }}
+            className={`${FIELD_CLASS} font-mono text-sm`}
+            placeholder={"Jane Buyer\n742 Evergreen Ter\nSpringfield, IL 62704"}
+            aria-describedby="to-paste-status"
+          />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => applyPaste(pasteText)}
+              disabled={pasteText.trim() === ""}
+              className="text-sm text-neon-teal hover:text-neon-teal/80 underline disabled:opacity-40 disabled:no-underline p-2 -m-2"
+            >
+              Fill fields
+            </button>
+            {pasteText !== "" && (
+              <button
+                type="button"
+                onClick={() => {
+                  setPasteText("");
+                  setPasteStatus("");
+                }}
+                className="text-sm text-slate-400 hover:text-slate-200 underline p-2 -m-2"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          {/* Always mounted so the announcement is reliable. */}
+          <p
+            id="to-paste-status"
+            role="status"
+            aria-live="polite"
+            className="text-xs text-slate-400"
+          >
+            {pasteStatus}
+          </p>
+        </div>
 
         <div>
           <label htmlFor="to-name" className={LABEL_CLASS}>
