@@ -26,8 +26,9 @@ tags:
 # Step 2: with no return address the page explains what is missing and why. This
 # is the assertion that identifies the empty-state branch — the "Shipping Labels"
 # heading below renders in BOTH branches, so on its own it would prove nothing.
-# Wrapped in .* because the sentence continues ("— it prints in the FROM block of
-# every label") and Maestro text matches are anchored to the whole text node.
+# Wrapped in .* because the sentence continues ("— it prints as the return
+# address on every label") and Maestro text matches are anchored to the whole
+# text node.
 - extendedWaitUntil:
     visible: ".*Add your return address on your profile first.*"
     timeout: 45000

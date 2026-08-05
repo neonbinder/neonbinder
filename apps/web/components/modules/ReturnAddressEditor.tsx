@@ -164,7 +164,8 @@ export default function ReturnAddressEditor() {
       onKeyDown={handleKeyDown}
     >
       <p className="text-sm text-slate-400">
-        Printed as the FROM block on your shipping labels. Only you can see it.
+        Printed as the return address on your shipping labels. Only you can see
+        it.
       </p>
 
       <div>

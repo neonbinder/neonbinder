@@ -85,9 +85,9 @@ export default function ShippingLabelsPage() {
               </h2>
               <p className="text-lg text-slate-300 mb-6">
                 Put your return address on your profile one time and forget
-                about it. Every label you print already has it in the FROM
-                block. No sticker sheets, no rubber stamp, no rewriting the same
-                nine words a hundred times.
+                about it. Every label you print already has it, and it follows
+                the name on your public profile. No sticker sheets, no rubber
+                stamp, no rewriting the same nine words a hundred times.
               </p>
               <div className="space-y-4 text-slate-400">
                 <div className="flex items-start gap-3">

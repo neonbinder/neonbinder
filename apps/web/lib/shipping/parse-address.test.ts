@@ -111,6 +111,60 @@ describe("parseAddressText — common packing-slip shapes", () => {
   });
 });
 
+// The shape of a real SportLots packing slip, with fabricated details. Its
+// distinguishing feature — and the one that broke the first implementation —
+// is that the country sits on the SAME line as city/state/ZIP rather than on
+// its own. Both anchors require the ZIP to be last, so before the country was
+// stripped the anchor was missed entirely and every line shifted one slot: the
+// street became the company and the city line became the street.
+describe("parseAddressText — real SportLots packing-slip shape", () => {
+  const SLIP = "Dana Reyes\n118 North Pine Rd\nEast Granby, CT 06026 USA";
+
+  test("parses the slip into the right fields", () => {
+    const { fields } = parseAddressText(SLIP);
+    expect(fields).toMatchObject({
+      name: "Dana Reyes",
+      line1: "118 North Pine Rd",
+      city: "East Granby",
+      state: "CT",
+      postalCode: "06026",
+      country: "US",
+    });
+  });
+
+  test("does not mistake the street for a company", () => {
+    const { fields } = parseAddressText(SLIP);
+    expect(fields.company).toBeUndefined();
+  });
+
+  test("keeps a leading-zero ZIP intact", () => {
+    const { fields } = parseAddressText(SLIP);
+    expect(fields.postalCode).toBe("06026");
+  });
+
+  test.each([
+    "East Granby, CT 06026 USA",
+    "East Granby, CT 06026 US",
+    "East Granby, CT 06026 U.S.A.",
+    "East Granby, CT 06026 United States",
+    "East Granby, CT 06026",
+  ])("handles trailing country form %s", (lastLine) => {
+    const { fields } = parseAddressText(`Dana Reyes\n118 North Pine Rd\n${lastLine}`);
+    expect(fields.city).toBe("East Granby");
+    expect(fields.state).toBe("CT");
+    expect(fields.postalCode).toBe("06026");
+  });
+
+  test("still works with a unit line in the middle", () => {
+    const { fields } = parseAddressText(
+      "Dana Reyes\n118 North Pine Rd\nUnit 3\nEast Granby, CT 06026 USA",
+    );
+    expect(fields.line1).toBe("118 North Pine Rd");
+    expect(fields.line2).toBe("Unit 3");
+    expect(fields.city).toBe("East Granby");
+  });
+});
+
 describe("parseAddressText — noise the slip brings along", () => {
   test('drops a "Ship To:" header', () => {
     const { fields } = parseAddressText(
@@ -168,11 +222,23 @@ describe("parseAddressText — refuses to guess", () => {
     expect(unparsed).toEqual(["Attention: Receiving"]);
   });
 
-  test("text with no city/state/ZIP still fills what it can, without a country", () => {
+  test("two lines with no city/state/ZIP are read as recipient + street", () => {
     const { fields, filled } = parseAddressText("Jane Buyer\n742 Evergreen Ter");
     expect(fields.line1).toBe("742 Evergreen Ter");
     expect(fields.name).toBe("Jane Buyer");
     expect(filled).not.toContain("postalCode");
+  });
+
+  // With no anchor, position carries no information — assigning by it is how
+  // the street ends up in the company field. Hand it back instead.
+  test("three or more lines with no city/state/ZIP are not guessed at", () => {
+    const { fields, filled, unparsed } = parseAddressText(
+      "Jane Buyer\nCard Shop LLC\n742 Evergreen Ter\nsomewhere",
+    );
+    expect(filled).toEqual([]);
+    expect(fields.company).toBeUndefined();
+    expect(fields.line1).toBeUndefined();
+    expect(unparsed).toHaveLength(4);
   });
 
   test("a bare street with no name leaves name unset", () => {

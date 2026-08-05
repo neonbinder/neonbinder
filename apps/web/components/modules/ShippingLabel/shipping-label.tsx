@@ -29,9 +29,14 @@ import {
  * fallback face at different metrics. A system sans removes that race entirely,
  * and plain sans-serif is what USPS OCR prefers anyway.
  *
- * The top-right of the label is deliberately left clear. That is simply how an
- * address label is laid out — and it is where a postage indicia would go if
- * postage is added later.
+ * ## It is laid out as a real mailing piece, not a form
+ * No "FROM"/"TO" captions: a mailing label does not caption its blocks, and
+ * position alone is the convention a carrier reads — sender small in the top
+ * left, delivery address in the middle. The delivery block is LEFT-ALIGNED
+ * because USPS OCR scans for a left-justified address block; centred text
+ * gives it a ragged left edge to hunt for on every line.
+ *
+ * The top-right is deliberately left clear — that is where postage goes.
  */
 
 const LABEL_FONT_STACK =
@@ -43,15 +48,6 @@ export interface ShippingLabelProps {
   format?: LabelFormat;
   /** Rendered in place of a missing recipient, so the preview is never blank. */
   toPlaceholder?: string;
-}
-
-function captionStyle(fontSize: string): React.CSSProperties {
-  return {
-    fontSize,
-    fontWeight: 700,
-    letterSpacing: "0.08em",
-    margin: "0 0 0.04in 0",
-  };
 }
 
 export const ShippingLabel = React.forwardRef<
@@ -81,35 +77,35 @@ export const ShippingLabel = React.forwardRef<
 
   return (
     <div ref={ref} style={containerStyle} data-label-format={format.id}>
-      {/* FROM — top-left, small. The top-right stays clear (see header note). */}
-      <div style={{ maxWidth: "60%" }}>
-        <p style={captionStyle("7pt")}>FROM</p>
-        <div
-          style={{
-            fontSize: "9pt",
-            lineHeight: 1.3,
-            wordBreak: "break-word",
-          }}
-        >
-          {fromLines.map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
-        </div>
+      {/* Sender — top-left, small, uncaptioned. Position is the convention. */}
+      <div
+        style={{
+          maxWidth: "60%",
+          fontSize: "9pt",
+          lineHeight: 1.3,
+          wordBreak: "break-word",
+        }}
+      >
+        {fromLines.map((line, i) => (
+          <div key={i}>{line}</div>
+        ))}
       </div>
 
-      {/* TO — the block the carrier actually reads, so it gets the space. */}
+      {/* Delivery address — the block the carrier reads, so it gets the space.
+          Left-aligned for OCR, and indented from the left edge so it sits in
+          the middle of the piece rather than crowding the sender block. */}
       <div
         style={{
           flex: 1,
           display: "flex",
           flexDirection: "column",
           justifyContent: "center",
-          alignItems: "center",
-          textAlign: "center",
-          padding: "0 0.15in",
+          alignItems: "flex-start",
+          textAlign: "left",
+          paddingLeft: "0.9in",
+          paddingRight: "0.2in",
         }}
       >
-        <p style={captionStyle("8pt")}>TO</p>
         {toLines.length > 0 ? (
           <div
             style={{

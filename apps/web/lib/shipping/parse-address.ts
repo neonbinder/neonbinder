@@ -43,6 +43,19 @@ const CITY_STATE_ZIP =
 /** A ZIP on its own, for slips that break the last line in two. */
 const STATE_ZIP_ONLY = /^([A-Za-z]{2})[,\s]+(\d{5}(?:-\d{4})?)$/;
 
+/**
+ * A country marker at the END of a line, e.g. the real SportLots packing-slip
+ * shape "West Suffield, CT 06093 USA". Both anchors below require the ZIP to be
+ * last, so the country has to come off first — otherwise the anchor is missed
+ * and every line gets assigned one slot too high.
+ */
+const TRAILING_COUNTRY =
+  /[,\s]+(?:usa|u\.?s\.?a\.?|u\.?s\.?|united states(?: of america)?)\.?$/i;
+
+function stripTrailingCountry(line: string): string {
+  return line.replace(TRAILING_COUNTRY, "").trim();
+}
+
 /** Secondary unit designators — these belong on line2, not line1. */
 const SECONDARY_UNIT =
   /^(apt|apartment|unit|ste|suite|fl|floor|rm|room|bldg|building|lot|trlr|space|spc|#)\b/i;
@@ -116,7 +129,8 @@ export function parseAddressText(raw: string): ParsedAddress {
   //    "12 CA 90210 Blvd" is pathological, but a trailing match is not.
   let anchorIndex = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
-    const m = lines[i].match(CITY_STATE_ZIP);
+    const candidate = stripTrailingCountry(lines[i]);
+    const m = candidate.match(CITY_STATE_ZIP);
     if (m && m[1].trim() !== "") {
       set("city", m[1].trim());
       set("state", m[2].toUpperCase());
@@ -125,7 +139,7 @@ export function parseAddressText(raw: string): ParsedAddress {
       break;
     }
     // "Austin" / "TX 78701" split across two lines.
-    const only = lines[i].match(STATE_ZIP_ONLY);
+    const only = candidate.match(STATE_ZIP_ONLY);
     if (only && i > 0) {
       set("city", lines[i - 1]);
       set("state", only[1].toUpperCase());
@@ -135,11 +149,31 @@ export function parseAddressText(raw: string): ParsedAddress {
     }
   }
 
+  // WITHOUT an anchor, position means nothing and assigning by it is guessing.
+  // This is not hypothetical: before the country-stripping above, the real
+  // SportLots shape ("… CT 06093 USA") missed the anchor and every line landed
+  // one slot too high — the street became the COMPANY and the city line became
+  // the street. Silently wrong beats loudly wrong only if nobody is shipping a
+  // package. So with no anchor we interpret at most an unambiguous two lines
+  // (recipient, then street) and hand everything else back untouched.
+  if (anchorIndex === -1) {
+    if (lines.length === 1) {
+      set("line1", lines[0]);
+      return { fields, filled, unparsed: [] };
+    }
+    if (lines.length === 2) {
+      set("name", lines[0]);
+      set("line1", lines[1]);
+      return { fields, filled, unparsed: [] };
+    }
+    return { fields, filled, unparsed: lines };
+  }
+
   // Everything above the anchor is name / company / street. Anything BELOW it
   // is trailing noise we could not classify (a country line already filtered,
   // a phone number in an odd format) — reported, never guessed at.
-  const head = anchorIndex === -1 ? lines : lines.slice(0, anchorIndex);
-  const tail = anchorIndex === -1 ? [] : lines.slice(anchorIndex + 1);
+  const head = lines.slice(0, anchorIndex);
+  const tail = lines.slice(anchorIndex + 1);
 
   // 2. Street lines, taken from the bottom of the head upward.
   const streetLines: string[] = [];

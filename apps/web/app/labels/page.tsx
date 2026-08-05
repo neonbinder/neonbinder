@@ -108,8 +108,8 @@ export default function LabelsPage() {
         <TagIcon className="w-20 h-20 text-neon-teal mb-6" />
         <h1 className="text-3xl font-bold mb-3">Shipping Labels</h1>
         <p className="text-gray-400 max-w-md mb-6">
-          Add your return address on your profile first — it prints in the FROM
-          block of every label.
+          Add your return address on your profile first — it prints as the
+          return address on every label.
         </p>
         {/* A NeonButton renders a real <button>; wrapping it in an <a> would
             nest interactive content and expose an ambiguous role. */}

@@ -56,10 +56,25 @@ describe("ShippingLabel", () => {
     expect(screen.getByText("AUSTIN TX 78701")).toBeTruthy();
   });
 
-  it("labels the two blocks so the recipient block is unambiguous", () => {
-    renderLabel();
-    expect(screen.getByText("FROM")).toBeTruthy();
-    expect(screen.getByText("TO")).toBeTruthy();
+  // A real mailing piece captions nothing — position is the convention, and a
+  // stray "TO" is one more thing for OCR to read as part of the address.
+  it("carries no FROM/TO captions", () => {
+    const ref = renderLabel();
+    expect(screen.queryByText("FROM")).toBeNull();
+    expect(screen.queryByText("TO")).toBeNull();
+    expect(ref.current!.outerHTML).not.toMatch(/>\s*(FROM|TO)\s*</);
+  });
+
+  // USPS OCR scans for a left-justified block; centred text gives it a ragged
+  // left edge to re-find on every line.
+  it("left-aligns the delivery address", () => {
+    const ref = renderLabel();
+    const deliveryBlock = [...ref.current!.querySelectorAll("div")].find((d) =>
+      d.textContent?.includes("JANE BUYER"),
+    );
+    const aligned = deliveryBlock?.closest<HTMLElement>('[style*="text-align"]');
+    expect(aligned?.style.textAlign).toBe("left");
+    expect(aligned?.style.alignItems).toBe("flex-start");
   });
 
   // The core geometry contract with @page in lib/print/print-html.ts.
