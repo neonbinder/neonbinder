@@ -38,15 +38,27 @@ tags:
     visible: "Profile Settings"
     timeout: 45000
 
-# Step 2: fill in the Shipping section — the seller's return address. It sits
-# below the whole Public Profile editor, so every field is scrolled into the
-# middle of the viewport before it is tapped (R8; the 1024x629 headless viewport
-# shows only a slice of this page). We target what the user SEES: the visible
-# field labels. Each one's htmlFor points at its input (ship-name, ship-line1,
-# ship-city, ship-state, ship-postal-code), so tapping the label focuses that
-# field and the typing lands in it. These five label texts appear nowhere else on
-# /profile — the Public Profile editor uses "Display Name", "Username", "Tagline"
-# and "... URL", none of which collide.
+# Step 2: fill in the Shipping section — the seller's return address.
+#
+# The section is the LAST one on /profile (below Public Profile, Credentials and
+# Prize Pool), so reaching it is a long scroll on the 1024x629 headless viewport.
+# Anchor on the "Shipping" heading first, with a budget well above the default:
+# the sibling scroll in util-login-to-bsc.yaml already needed 17s of its 20s to
+# reach "Test Credentials" higher up this same page, and this target is further
+# down still. Getting there in one deliberate hop also means each field scroll
+# below is a short move rather than another full-page traversal.
+- scrollUntilVisible:
+    element:
+      text: "Shipping"
+    centerElement: true
+    timeout: 45000
+
+# We target what the user SEES: the visible field labels. Each one's htmlFor
+# points at its input (ship-name, ship-line1, ship-city, ship-state,
+# ship-postal-code), so tapping the label focuses that field and the typing lands
+# in it. These five label texts appear nowhere else on /profile — the Public
+# Profile editor uses "Display Name", "Username", "Tagline" and "... URL", none
+# of which collide.
 - scrollUntilVisible:
     element:
       text: "Name"
