@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../../components/modules/NeonButton";
 import PublicProfileEditor from "../../components/modules/PublicProfileEditor";
+import ReturnAddressEditor from "../../components/modules/ReturnAddressEditor";
 import { Input } from "@/components/primitives/Input";
 
 const SUPPORTED_SITES = [
@@ -744,6 +745,19 @@ export default function ProfilePage() {
               </p>
             </div>
             <PublicProfileEditor />
+          </section>
+
+          {/* Shipping Section — NEO-118. Kept separate from Public Profile
+              because a home address is private: publicProfiles is served
+              unauthenticated at /u/:username, userProfiles is not. */}
+          <section className="space-y-6 p-6 border border-slate-800 rounded-lg">
+            <div>
+              <h2 className="text-xl font-semibold">Shipping</h2>
+              <p className="text-sm text-slate-400 mt-1">
+                Your return address for printed shipping labels
+              </p>
+            </div>
+            <ReturnAddressEditor />
           </section>
 
           {/* Credentials Section */}

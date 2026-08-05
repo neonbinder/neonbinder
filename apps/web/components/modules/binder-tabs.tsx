@@ -5,6 +5,7 @@ import {
   RectangleStackIcon,
   ArchiveBoxIcon,
   QrCodeIcon,
+  TagIcon,
   UserIcon,
   SquaresPlusIcon,
 } from "@heroicons/react/24/outline";
@@ -57,6 +58,13 @@ export const NAV_ITEMS: NavItem[] = [
     activeColor: "text-neon-pink",
   },
   {
+    label: "Labels",
+    path: "/labels",
+    icon: TagIcon,
+    glowClass: "binder-tab-glow-teal",
+    activeColor: "text-neon-teal",
+  },
+  {
     label: "Profile",
     path: "/profile",
     icon: UserIcon,
@@ -81,7 +89,9 @@ export function useVisibleNavItems(): NavItem[] {
   }, [isAdmin, isLoaded]);
 }
 
-const STAGGER_OFFSETS = [0, 6, 12, 18, 24, 30];
+// One entry per nav item — a tab past the end of this array falls back to 0 and
+// silently breaks the staircase, so extend it whenever NAV_ITEMS grows.
+const STAGGER_OFFSETS = [0, 6, 12, 18, 24, 30, 36];
 
 export default function BinderTabs() {
   const items = useVisibleNavItems();

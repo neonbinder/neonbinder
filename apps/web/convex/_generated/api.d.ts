@@ -39,6 +39,7 @@ import type * as publicProfile from "../publicProfile.js";
 import type * as resolveRedirect from "../resolveRedirect.js";
 import type * as selectorOptions from "../selectorOptions.js";
 import type * as setReconciliation from "../setReconciliation.js";
+import type * as shipping from "../shipping.js";
 import type * as sku from "../sku.js";
 import type * as sportConfig from "../sportConfig.js";
 import type * as teams from "../teams.js";
@@ -83,6 +84,7 @@ declare const fullApi: ApiFromModules<{
   resolveRedirect: typeof resolveRedirect;
   selectorOptions: typeof selectorOptions;
   setReconciliation: typeof setReconciliation;
+  shipping: typeof shipping;
   sku: typeof sku;
   sportConfig: typeof sportConfig;
   teams: typeof teams;

@@ -12,7 +12,7 @@ tags:
     element:
       text: ".*Free Tier.*"
 
-# Feature detail sections (3-up grid)
+# Feature detail sections (4-up grid — NEO-118 added the shipping-label card)
 - scrollUntilVisible:
     element:
       text: ".*Collection Tracking.*"
@@ -20,6 +20,8 @@ tags:
     text: ".*AI-Based Card Identification.*"
 - assertVisible:
     text: ".*Inventory.*"
+- assertVisible:
+    text: ".*Shipping Labels.*"
 
 # How It Works section
 - scrollUntilVisible:

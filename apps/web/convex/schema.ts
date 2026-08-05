@@ -1,6 +1,26 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
+/**
+ * NEO-118 — a postal address, shared by the schema and by convex/shipping.ts's
+ * query `returns` / mutation `args`. Defined once and exported so the stored
+ * shape and the wire shape cannot drift apart; the matching TypeScript
+ * interface is `PostalAddress` in lib/shipping/address.ts.
+ *
+ * `country` is stored even though it is always "US" today — see the note on
+ * PostalAddress for why it is carried from the start.
+ */
+export const postalAddressValidator = v.object({
+  name: v.string(),
+  company: v.optional(v.string()),
+  line1: v.string(),
+  line2: v.optional(v.string()),
+  city: v.string(),
+  state: v.string(),
+  postalCode: v.string(),
+  country: v.string(),
+});
+
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
   // Users table for storing Clerk user data
@@ -49,6 +69,12 @@ export default defineSchema({
       defaultYear: v.optional(v.number()),
       theme: v.optional(v.union(v.literal("light"), v.literal("dark"))),
     })),
+    // NEO-118: the seller's own address, printed in the FROM block of a 4x6
+    // shipping label. Lives here rather than in `publicProfiles` because a home
+    // address is not public profile content — publicProfiles is served
+    // unauthenticated at /u/:username. Optional so existing rows need no
+    // migration; /labels treats absent as "not set up yet".
+    returnAddress: v.optional(postalAddressValidator),
   }).index("by_user", ["userId"]),
 
   // Selector Options - stores all possible values for each selector level
