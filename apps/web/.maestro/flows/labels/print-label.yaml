@@ -157,33 +157,34 @@ tags:
 - tapOn: "ZIP"
 - inputText: "62704"
 
-# Step 7: bring the whole label on screen.
+# Step 7: bring the label itself on screen.
 #
-# assertVisible DOES enforce viewport visibility in maestro-web — an earlier
-# revision of this flow asserted a label line straight after landing on /labels
-# and failed on exactly that, with the element present in the DOM but below the
-# fold. So the label has to be scrolled to, not merely rendered.
+# Two traps here, both paid for on this flow:
 #
-# We centre on the recipient NAME rather than the "Preview" heading: the label is
-# 4in tall (384px at 96dpi) inside a 629px viewport, so centring a line in the
-# middle of the label puts every other line — the FROM block above it and the
-# city/state/ZIP line below — on screen in one move.
+# 1. assertVisible DOES enforce viewport visibility in maestro-web. It is not a
+#    DOM-only lookup, so the label being rendered is not enough — it sits below
+#    the form and has to be scrolled to.
+#
+# 2. Maestro text matching is CASE-INSENSITIVE, and an input's value is part of
+#    the hierarchy text. So "JANE BUYER" cheerfully matches the Name input still
+#    holding "Jane Buyer": a per-field assertion passes against the FORM while
+#    the label is still off-screen, proving nothing. The uppercase transform is
+#    consequently not assertable here at all — it is covered by the
+#    formatAddressBlock unit tests and the ShippingLabel component tests.
+#
+# What is unique to the label is a COMPOSED line: city, state and ZIP joined into
+# one string. No input holds "SPRINGFIELD IL 62704", so matching it can only mean
+# the formatted label. That makes it both the correct scroll target and the
+# assertion that actually tests the feature.
 - scrollUntilVisible:
     element:
-      text: "JANE BUYER"
+      text: "SPRINGFIELD IL 62704"
     centerElement: true
     timeout: 30000
 
-# Step 8: the feature. Every line of the recipient block appears on the label
-# UPPERCASED, and city/state/ZIP are composed into the single line a carrier
-# reads. Typing "Jane Buyer" and seeing "JANE BUYER" is the assertion that
-# matters: the preview is not echoing the input box, it is the formatted label.
-# We do NOT tap "Print Label" — see the header note.
-- assertVisible: "742 EVERGREEN TER"
-- assertVisible: "SPRINGFIELD IL 62704"
-
-# And the seller's own address is already in the FROM block, from Step 3 — the
-# proof that the /profile save persisted and is being read back here. Distinct
-# city from the recipient (Austin vs Springfield) so neither block's assertion
-# can be satisfied by the other.
+# Step 8: the seller's own address is already in the FROM block, carried from
+# Step 3 — the proof that the /profile save persisted and is read back here.
+# "AUSTIN TX 78701" is likewise composed, belongs to no input on this page, and
+# uses a different city from the recipient so neither block can satisfy the
+# other's assertion. We do NOT tap "Print Label" — see the header note.
 - assertVisible: "AUSTIN TX 78701"
