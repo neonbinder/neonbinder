@@ -43,6 +43,29 @@ export default function LabelsPage() {
   };
 
   /**
+   * Reset the whole Ship To form — fields, paste box and every status line.
+   *
+   * Scoped to the form rather than to the paste box: the moment you want a
+   * clean slate is between two packages, and clearing only the pasted text
+   * would leave the previous buyer's address sitting in the fields and on the
+   * label preview — the worst possible thing to still be there when you print
+   * the next one.
+   */
+  const clearForm = useCallback(() => {
+    setTo(EMPTY_ADDRESS);
+    setPasteText("");
+    setPasteStatus("");
+    setPrintError("");
+  }, []);
+
+  /** True when there is anything to clear — drives showing the control at all. */
+  const hasAnyInput =
+    pasteText.trim() !== "" ||
+    (Object.keys(to) as (keyof PostalAddress)[]).some(
+      (k) => k !== "country" && (to[k] ?? "").trim() !== "",
+    );
+
+  /**
    * Fill the Ship To fields from a pasted address block.
    *
    * MERGES rather than replaces: the parser returns only what it is confident
@@ -191,18 +214,6 @@ export default function LabelsPage() {
             >
               Fill fields
             </button>
-            {pasteText !== "" && (
-              <button
-                type="button"
-                onClick={() => {
-                  setPasteText("");
-                  setPasteStatus("");
-                }}
-                className="text-sm text-slate-400 hover:text-slate-200 underline p-2 -m-2"
-              >
-                Clear
-              </button>
-            )}
           </div>
           {/* Always mounted so the announcement is reliable. */}
           <p
@@ -332,15 +343,29 @@ export default function LabelsPage() {
         </div>
 
         <div className="flex flex-col items-center pt-2">
-          <NeonButton
-            type="submit"
-            disabled={!canPrint}
-            size="3"
-            aria-describedby="print-requirements"
-          >
-            <PrinterIcon className="w-5 h-5 mr-2" />
-            Print Label
-          </NeonButton>
+          <div className="flex items-center gap-4">
+            <NeonButton
+              type="submit"
+              disabled={!canPrint}
+              size="3"
+              aria-describedby="print-requirements"
+            >
+              <PrinterIcon className="w-5 h-5 mr-2" />
+              Print Label
+            </NeonButton>
+            {/* Clears the FORM, not just the paste box — the point is a clean
+                slate between packages. Rendered only when there is something to
+                clear so it never sits there as a no-op. */}
+            {hasAnyInput && (
+              <button
+                type="button"
+                onClick={clearForm}
+                className="text-sm text-slate-400 hover:text-slate-200 underline p-2 -m-2"
+              >
+                Clear form
+              </button>
+            )}
+          </div>
           {/* A natively-disabled button drops out of the tab order and
               announces only as "unavailable", with no clue what is missing. */}
           {!canPrint && (
