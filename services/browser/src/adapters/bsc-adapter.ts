@@ -469,16 +469,17 @@ export class BSCAdapter extends BaseAdapter {
           expiresAt: credentials.expiresAt,
         };
       }
-      // Stale/revoked token. Clear it (username/password preserved) before
-      // falling through to a fresh login so we don't re-validate a dead token
-      // on the next call.
-      console.log(`[BSC Adapter] Cached token is invalid, clearing and re-authenticating...`);
-      await secretsManager.updateCredentials(key, {
-        username: credentials.username,
-        password: credentials.password,
-        token: undefined,
-        expiresAt: undefined,
-      });
+      // Stale/revoked token. Fall through to a fresh login.
+      //
+      // NEO-115: we deliberately do NOT write a token-cleared version here.
+      // That write burned a whole Secret Manager version (billed forever, at
+      // TOKEN_TTL_MS = 1h cadence) purely to blank a field that the
+      // fresh-login write-back below overwrites seconds later — it doubled
+      // BSC's version rate for no durable benefit. The dead token simply
+      // stays in the secret until the fresh login replaces it; it can never
+      // cause a false success, because the cache-hit branch above only
+      // returns success when fetchSellerProfile actually validates it.
+      console.log(`[BSC Adapter] Cached token is invalid, re-authenticating...`);
     }
 
     // --- Fresh-login path: browser-free Azure AD B2C exchange --------------
