@@ -1,0 +1,161 @@
+# R1 — Single feature (NEO-120): a seller with an EasyPost key connected can
+# price a First-Class letter for a recipient and is shown the real cost before
+# anything is bought.
+#
+# REQUIRES `DEV_EASYPOST_API_KEY` on the Convex deployment, seeded into the
+# worker account by /testing/seed-credentials. **It must be a TEST key.** A
+# production key would let a stray change buy real postage on every CI run; a
+# test key prices labels and returns fake ones, charging nothing. Without the
+# env var this flow fails at the rate step with "Add your EasyPost API key" —
+# which is the honest failure, not a silent skip.
+#
+# HARD CONSTRAINT — we never tap "Buy & print". Even on a test key that would
+# exercise a purchase path whose success ends in window.print(), whose native
+# dialog wedges the run; and the same flow pointed at a production deployment
+# would spend real money. Rating is free, is where address verification runs,
+# and is the assertable half. Buying is not assertable at any price worth paying.
+#
+# Entry URL: sign in (new-profile) -> /testing/reset -> /testing/seed-credentials
+# -> /profile. The seed step is what puts the EasyPost key on this worker.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Shipping Labels — price a letter before buying it
+# Tagged `postage` ONLY, deliberately not `labels`: it is the one flow that
+# needs DEV_EASYPOST_API_KEY, so including it in the labels suite would fail
+# that whole suite on any deployment without a key. Opt in with
+# `npm run test:e2e:pick -- postage` once the key is configured.
+tags:
+  - postage
+---
+# Step 1: land on /profile with state reset and credentials (including the
+# EasyPost key) seeded for this worker.
+- launchApp
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# Step 2: a return address is required before any rate can be quoted — the FROM
+# address is half of what USPS prices. Fill the Shipping section, which sits at
+# the very bottom of /profile.
+- scrollUntilVisible:
+    element:
+      text: "Shipping"
+    centerElement: true
+    timeout: 45000
+
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Neon Seller"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+- inputText: "100 Binder Way"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Austin"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "TX"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "78701"
+
+- scrollUntilVisible:
+    element:
+      text: "Save Return Address"
+    centerElement: true
+- tapOn: "Save Return Address"
+- assertVisible: "Return address saved."
+
+# Step 3: confirm the seed actually connected EasyPost. If this is missing, the
+# rate step below would fail with a confusing "add your key" message — better to
+# fail here, where the cause is unambiguous.
+- scrollUntilVisible:
+    element:
+      text: "EasyPost key saved."
+    centerElement: true
+    timeout: 30000
+
+# Step 4: address a package. openLink for a fresh cross-page mount.
+- openLink: ${APP_URL || "https://localhost:3000"}/labels
+- assertVisible: "Ship To"
+
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Dana Reyes"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+# A real, deliverable address: USPS verification runs during rating, so an
+# invented street would (correctly) fail the quote and this flow would be
+# testing the error path instead of the feature.
+- inputText: "1600 Pennsylvania Ave NW"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Washington"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "DC"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "20500"
+
+# Step 5: price it. Free — no postage is bought by this tap.
+- scrollUntilVisible:
+    element:
+      text: "Get rate"
+    centerElement: true
+- tapOn: "Get rate"
+
+# Step 6: the feature. A priced letter comes back and the button becomes an
+# explicit, priced purchase. 30s: rating is a USPS round-trip behind EasyPost's
+# API, and it also runs address verification.
+#
+# Asserting on "Buy & print" is what proves the whole chain worked — that button
+# only renders once a rate exists, so it cannot appear from a failed call.
+- extendedWaitUntil:
+    visible:
+      text: ".*Buy & print.*"
+    timeout: 30000
+
+# And the price is shown BEFORE the irreversible action, not after. A dollar
+# amount on the button is the difference between an informed purchase and a
+# surprise. We stop here — see the header note.
+- assertVisible:
+    text: ".*\\$0\\.[0-9][0-9].*"

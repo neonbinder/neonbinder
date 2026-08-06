@@ -17,10 +17,16 @@
 # /labels would render the "Add your return address" empty state instead and
 # every step below would fail on a missing field.
 #
-# HARD CONSTRAINT — we never tap "Print Label". It calls window.print(), whose
-# native dialog blocks every further browser event and wedges the run. The live
-# preview IS the assertable half of the feature; the printed sheet is the same
-# element serialized, so asserting the preview is asserting the label.
+# TWO HARD CONSTRAINTS, for two different reasons:
+#
+# 1. We never trigger a print. window.print()'s native dialog blocks every
+#    further browser event and wedges the run. The live preview IS the
+#    assertable half; the printed sheet is the same element serialized.
+#
+# 2. NEO-120: we never tap "Buy & print". That call BUYS REAL POSTAGE — with a
+#    production key it would spend the seller's money on every CI run, forever.
+#    Rating is free and is the assertable half of the purchase flow; buying is
+#    not assertable at any price worth paying.
 #
 # Entry URL: sign in (new-profile) -> /testing/reset (wipe to empty) -> /profile.
 # `account=new-profile` and `worker` are top-level sign-in query params (the
@@ -162,6 +168,23 @@ tags:
 - tapOn: "ZIP"
 - inputText: "62704"
 
+# Step 6b (NEO-120): the postage controls, asserted HERE — before Step 7 scrolls
+# down to the preview — because scrollUntilVisible only travels DOWNWARD. The
+# weight fieldset and the rate button live in the form, ABOVE the preview, so
+# once the viewport is parked on the label they are permanently out of reach and
+# the assertion fails with a confusing "no visible element". Same trap that made
+# credentials-lifecycle a tripwire on page height.
+#
+# What this proves: the entry point is the FREE one. "Get rate" costs nothing;
+# "Buy & print" spends the seller's money and only appears once a rate has come
+# back. This flow taps NEITHER — see the header note — it just proves a purchase
+# is never one stray tap away.
+- scrollUntilVisible:
+    element:
+      text: "Get rate"
+    centerElement: true
+- assertVisible: "1 oz"
+
 # Step 7: bring the label itself on screen.
 #
 # Two traps here, both paid for on this flow:
@@ -191,5 +214,8 @@ tags:
 # Step 3 — the proof that the /profile save persisted and is read back here.
 # "AUSTIN TX 78701" is likewise composed, belongs to no input on this page, and
 # uses a different city from the recipient so neither block can satisfy the
-# other's assertion. We do NOT tap "Print Label" — see the header note.
+# other's assertion.
 - assertVisible: "AUSTIN TX 78701"
+
+# (NEO-120 postage controls are asserted earlier, before the preview scroll —
+# see the note there for why order matters.)

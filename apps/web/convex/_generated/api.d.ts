@@ -34,6 +34,7 @@ import type * as http from "../http.js";
 import type * as myFunctions from "../myFunctions.js";
 import type * as observability from "../observability.js";
 import type * as players from "../players.js";
+import type * as postage from "../postage.js";
 import type * as posthog from "../posthog.js";
 import type * as publicProfile from "../publicProfile.js";
 import type * as resolveRedirect from "../resolveRedirect.js";
@@ -79,6 +80,7 @@ declare const fullApi: ApiFromModules<{
   myFunctions: typeof myFunctions;
   observability: typeof observability;
   players: typeof players;
+  postage: typeof postage;
   posthog: typeof posthog;
   publicProfile: typeof publicProfile;
   resolveRedirect: typeof resolveRedirect;

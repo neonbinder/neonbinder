@@ -6,6 +6,7 @@ import { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../../components/modules/NeonButton";
 import PublicProfileEditor from "../../components/modules/PublicProfileEditor";
 import ReturnAddressEditor from "../../components/modules/ReturnAddressEditor";
+import EasypostKeyEditor from "../../components/modules/EasypostKeyEditor";
 import { Input } from "@/components/primitives/Input";
 
 const SUPPORTED_SITES = [
@@ -1449,6 +1450,20 @@ export default function ProfilePage() {
               </p>
             </div>
             <ReturnAddressEditor />
+          </section>
+
+          {/* NEO-120 — postage. Below Shipping for the same reason Shipping is
+              below everything else: the e2e worker bootstrap reaches "Test
+              Credentials" on a scroll budget that was already 85% spent before
+              either section existed. New sections go at the bottom. */}
+          <section className="space-y-6 p-6 border border-slate-800 rounded-lg">
+            <div>
+              <h2 className="text-xl font-semibold">Postage</h2>
+              <p className="text-sm text-slate-400 mt-1">
+                Buy USPS letter postage for your labels
+              </p>
+            </div>
+            <EasypostKeyEditor />
           </section>
         </div>
   );

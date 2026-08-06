@@ -77,7 +77,8 @@ async function getIdTokenClient(audience: string): Promise<IdTokenClient | null>
   return client;
 }
 
-async function browserAuthHeaders(): Promise<Record<string, string>> {
+/** NEO-120: exported alongside {@link browserFetch}, same reasoning. */
+export async function browserAuthHeaders(): Promise<Record<string, string>> {
   // Send requests to browserUrl() (possibly a tagged pr-N--- preview host) but
   // mint the OIDC token against the base service URL that Cloud Run expects.
   const client = await getIdTokenClient(oidcAudienceFor(browserUrl()));
@@ -94,7 +95,14 @@ async function browserAuthHeaders(): Promise<Record<string, string>> {
   return headers;
 }
 
-async function browserFetch(
+/**
+ * NEO-120: exported for `convex/shipping.ts`, which needs the same
+ * IAM-authenticated channel to the browser service for EasyPost postage without
+ * inheriting the marketplace credential machinery wrapped around it. EasyPost is
+ * not a marketplace, and adding it to SUPPORTED_SITES would leak it into
+ * listUserSites, /credentials/check, the Credentials tab and the login flows.
+ */
+export async function browserFetch(
   path: string,
   init: RequestInit,
 ): Promise<Response> {
@@ -113,7 +121,8 @@ async function browserFetch(
   }
 }
 
-function credKey(site: string, userId: string) {
+/** NEO-120: exported alongside {@link browserFetch}, same reasoning. */
+export function credKey(site: string, userId: string) {
   return `${site}-credentials-${userId}`;
 }
 

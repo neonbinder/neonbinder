@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { useQuery } from "convex/react";
+import { useAction, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import NeonButton from "../../components/modules/NeonButton";
 import { ShippingLabel } from "../../components/modules/ShippingLabel";
@@ -19,15 +19,37 @@ import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
 import { printHtmlDocument } from "@/lib/print/print-html";
 
 /**
- * NEO-118 — print a 4×6 shipping label.
+ * NEO-118 / NEO-120 — address a 4×6 label and buy the postage for it.
  *
  * The recipient is deliberately not persisted: you address a package once, and
  * storing buyer addresses would make this a place that accumulates other
  * people's PII for no benefit. The form starts blank every visit.
+ *
+ * ## Why buying is two steps
+ * NEO-118's single "Print Label" button was free and repeatable. Buying postage
+ * is neither. A control that cost nothing yesterday must not quietly start
+ * charging today, so the flow is: **Get rate** (free, and where an undeliverable
+ * address is caught) → the real price → **Buy & print**. The purchase is the
+ * only irreversible thing on this page and it says so.
  */
 
 const FIELD_CLASS = "w-full px-3 py-2";
 const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
+
+/**
+ * First-Class letter rates tier at 1/2/3oz, so the seller has to tell us which.
+ * Card counts are rough guidance, not a promise — a scale is the real answer,
+ * and underpaying gets mail returned.
+ */
+const WEIGHT_OPTIONS = [
+  { oz: 1, hint: "~1–4 cards in a PWE" },
+  { oz: 2, hint: "~5–10 cards, or a toploader" },
+  { oz: 3, hint: "a thicker envelope" },
+] as const;
+
+function formatUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
 
 export default function LabelsPage() {
   const navigate = useNavigate();
@@ -38,8 +60,31 @@ export default function LabelsPage() {
   const [pasteStatus, setPasteStatus] = useState("");
   const labelRef = useRef<HTMLDivElement>(null);
 
+  // NEO-120 — postage
+  const quoteLetterRate = useAction(api.postage.quoteLetterRate);
+  const buyLetterLabel = useAction(api.postage.buyLetterLabel);
+  const [weightOz, setWeightOz] = useState(1);
+  const [quote, setQuote] = useState<{
+    shipmentId: string;
+    rateId: string;
+    amountCents: number;
+    verifiedTo: PostalAddress;
+  } | null>(null);
+  const [busy, setBusy] = useState<null | "rating" | "buying">(null);
+  const [postageError, setPostageError] = useState("");
+
   const update = (field: keyof PostalAddress) => (value: string) => {
     setTo((prev) => ({ ...prev, [field]: value }));
+    // Any edit invalidates the quote: it was priced for a specific address and
+    // weight, and silently buying a stale rate would ship to the old address.
+    setQuote(null);
+    setPostageError("");
+  };
+
+  const changeWeight = (oz: number) => {
+    setWeightOz(oz);
+    setQuote(null);
+    setPostageError("");
   };
 
   /**
@@ -56,6 +101,9 @@ export default function LabelsPage() {
     setPasteText("");
     setPasteStatus("");
     setPrintError("");
+    setQuote(null);
+    setPostageError("");
+    setWeightOz(1);
   }, []);
 
   /** True when there is anything to clear — drives showing the control at all. */
@@ -81,6 +129,8 @@ export default function LabelsPage() {
       return;
     }
 
+    setQuote(null);
+    setPostageError("");
     setTo((prev) => ({ ...prev, ...fields }));
 
     const named = filled.filter((f) => f !== "country").length;
@@ -113,6 +163,87 @@ export default function LabelsPage() {
       );
     }
   }, [to.name]);
+
+  /**
+   * Step 1 — price it. Charges nothing.
+   *
+   * This is also where an undeliverable address is caught: verification runs
+   * server-side as part of rating, so a typo fails here rather than after the
+   * money has gone. The corrected, ZIP+4'd address comes back and replaces what
+   * was typed — USPS's version of the address is the one being shipped to, so
+   * it is the one that should be on screen.
+   */
+  const handleGetRate = useCallback(async () => {
+    setBusy("rating");
+    setPostageError("");
+    setQuote(null);
+    try {
+      const result = await quoteLetterRate({ to, weightOz });
+      setQuote(result);
+      setTo((prev) => ({ ...prev, ...result.verifiedTo }));
+    } catch (error) {
+      setPostageError(
+        error instanceof Error ? error.message : "Could not get a postage rate.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }, [quoteLetterRate, to, weightOz]);
+
+  /**
+   * Step 2 — buy it, then print the label EasyPost returns.
+   *
+   * The only irreversible action on this page. Printing uses the purchased
+   * artwork rather than our own render: that PNG carries the postage indicia
+   * and the barcode, and it is what makes the envelope mailable.
+   *
+   * If the purchase succeeds but printing fails, the label is still bought and
+   * still reprintable from history — so that case says so instead of implying
+   * the money came back.
+   */
+  const handleBuyAndPrint = useCallback(async () => {
+    if (!quote) return;
+    setBusy("buying");
+    setPostageError("");
+    try {
+      const bought = await buyLetterLabel({
+        shipmentId: quote.shipmentId,
+        rateId: quote.rateId,
+        weightOz,
+        to,
+      });
+
+      try {
+        await printHtmlDocument({
+          title: `Postage label — ${to.name || "label"}`,
+          // Sized to the page rather than left at natural size: EasyPost's 6x4
+          // PNG is a known aspect ratio, and letting it overflow would clip the
+          // barcode a carrier has to scan.
+          bodyHtml: `<img src="${bought.labelUrl}" alt="" style="width:${DEFAULT_LABEL_FORMAT.widthIn}in;height:${DEFAULT_LABEL_FORMAT.heightIn}in;display:block">`,
+          css: "",
+          page: {
+            widthIn: DEFAULT_LABEL_FORMAT.widthIn,
+            heightIn: DEFAULT_LABEL_FORMAT.heightIn,
+          },
+        });
+      } catch {
+        setPostageError(
+          "The label was bought but the print dialog didn't open. It's saved — reprint it from your label history.",
+        );
+        return;
+      }
+
+      // Bought and printed: clear so the next package starts clean and nobody
+      // accidentally buys a second label for the same recipient.
+      clearForm();
+    } catch (error) {
+      setPostageError(
+        error instanceof Error ? error.message : "Could not buy the label.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }, [buyLetterLabel, clearForm, quote, to, weightOz]);
 
   // Waiting on the return address query.
   if (saved === undefined) {
@@ -342,17 +473,67 @@ export default function LabelsPage() {
           </div>
         </div>
 
+        {/* Weight — required to rate a letter, and the seller is the only one
+            who knows it. Card counts are guidance, not a promise. */}
+        <fieldset className="border border-slate-800 rounded-lg p-3">
+          <legend className="text-sm font-medium text-slate-300 px-1">
+            Envelope weight
+          </legend>
+          <div className="flex flex-wrap gap-2 mt-1">
+            {WEIGHT_OPTIONS.map((opt) => (
+              <label
+                key={opt.oz}
+                className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer transition-colors ${
+                  weightOz === opt.oz
+                    ? "border-neon-teal text-neon-teal"
+                    : "border-slate-700 text-slate-300 hover:border-slate-500"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="weight-oz"
+                  value={opt.oz}
+                  checked={weightOz === opt.oz}
+                  onChange={() => changeWeight(opt.oz)}
+                  className="accent-[#00E5C0]"
+                />
+                <span className="font-medium">{opt.oz} oz</span>
+                <span className="text-slate-400 text-xs">{opt.hint}</span>
+              </label>
+            ))}
+          </div>
+          <p className="text-xs text-slate-400 mt-2">
+            Weigh it if you can — underpaid mail comes back.
+          </p>
+        </fieldset>
+
         <div className="flex flex-col items-center pt-2">
           <div className="flex items-center gap-4">
-            <NeonButton
-              type="submit"
-              disabled={!canPrint}
-              size="3"
-              aria-describedby="print-requirements"
-            >
-              <PrinterIcon className="w-5 h-5 mr-2" />
-              Print Label
-            </NeonButton>
+            {/* Two steps on purpose: rating is free and catches a bad address;
+                buying spends money. See the header note. */}
+            {!quote ? (
+              <NeonButton
+                type="button"
+                onClick={() => void handleGetRate()}
+                disabled={!canPrint || busy !== null}
+                size="3"
+                aria-describedby="print-requirements"
+              >
+                {busy === "rating" ? "Checking…" : "Get rate"}
+              </NeonButton>
+            ) : (
+              <NeonButton
+                type="button"
+                onClick={() => void handleBuyAndPrint()}
+                disabled={busy !== null}
+                size="3"
+              >
+                <PrinterIcon className="w-5 h-5 mr-2" />
+                {busy === "buying"
+                  ? "Buying…"
+                  : `Buy & print — ${formatUsd(quote.amountCents)}`}
+              </NeonButton>
+            )}
             {/* Clears the FORM, not just the paste box — the point is a clean
                 slate between packages. Rendered only when there is something to
                 clear so it never sits there as a no-op. */}
@@ -374,11 +555,24 @@ export default function LabelsPage() {
               className="text-xs text-slate-400 text-center mt-2"
             >
               {fromIsComplete
-                ? "Fill in name, street, city, state, and ZIP to enable printing."
+                ? "Fill in name, street, city, state, and ZIP to get a rate."
                 : "Add a name to your return address, or set a display name on your public profile."}
             </p>
           )}
+          {quote && (
+            <p className="text-xs text-slate-400 text-center mt-2 max-w-sm">
+              USPS verified this address — {weightOz}oz First-Class letter.
+              Buying charges your EasyPost account.
+            </p>
+          )}
         </div>
+
+        {/* Always mounted so the announcement is reliable. Postage failures are
+            seller-actionable ("address not found", "insufficient funds"), so the
+            message from EasyPost is surfaced rather than flattened. */}
+        <p role="alert" className="text-sm text-neon-pink text-center">
+          {postageError}
+        </p>
 
         {/* Always mounted: a live region inserted at the same moment its text
             appears is unreliably announced (notably VoiceOver). */}

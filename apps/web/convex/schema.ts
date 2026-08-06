@@ -23,6 +23,34 @@ export const postalAddressValidator = v.object({
 
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
+  /**
+   * NEO-120 — one row per postage label actually bought from EasyPost.
+   *
+   * Deliberately minimal, and deliberately NOT the `shipments` table NEO-121
+   * will add: no scan events, no status machine, no sale linkage. This exists
+   * so a seller can see what they spent and reprint a label they already paid
+   * for. Tracking is a separate feature with a separate table.
+   *
+   * `easypostShipmentId` is stored alongside `labelUrl` on purpose — **EasyPost
+   * label URLs expire.** The shipment id is how a reprint re-fetches a fresh
+   * URL; a stored URL alone silently stops working after a while.
+   *
+   * `toAddress` is a snapshot, not a reference: what was on the label is a
+   * historical fact and must not change if anything else is later edited.
+   */
+  labelPurchases: defineTable({
+    userId: v.string(), // Clerk user ID
+    easypostShipmentId: v.string(),
+    trackingCode: v.string(),
+    // Integer cents. Postage arrives as a decimal string ("0.78") and float
+    // money accumulates error the moment you total a month of it.
+    costCents: v.number(),
+    weightOz: v.number(),
+    toAddress: postalAddressValidator,
+    labelUrl: v.string(),
+    purchasedAt: v.number(),
+  }).index("by_user", ["userId"]),
+
   // Users table for storing Clerk user data
   users: defineTable({
     email: v.optional(v.string()),

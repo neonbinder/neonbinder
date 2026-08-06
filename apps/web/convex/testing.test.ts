@@ -250,6 +250,52 @@ describe("seedMyTestCredentials", () => {
     delete process.env.DEV_SPORTLOTS_PASSWORD;
     delete process.env.DEV_BSC_USERNAME;
     delete process.env.DEV_BSC_PASSWORD;
+    delete process.env.DEV_EASYPOST_API_KEY;
+  });
+
+  // NEO-120: seeding EasyPost is additive. Every test above asserts the exact
+  // `seeded` array, so reporting on EasyPost when it is not configured would
+  // change the result of seeding on every deployment that has no key — which is
+  // why the action stays silent rather than pushing a "skipped" entry.
+  test("adds nothing to the result when no EasyPost key is configured", async () => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded.some((s) => s.site === "easypost")).toBe(false);
+  });
+
+  test("stores the EasyPost key when one is configured", async () => {
+    process.env.DEV_EASYPOST_API_KEY = "EZTK_test_key";
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toContainEqual({ site: "easypost", stored: true });
+
+    // One secret per seller, keyed by Clerk user id — never a shared key.
+    const easypostPut = puts.find((p) => p.url.includes("easypost-credentials-"));
+    expect(easypostPut?.url).toContain(`easypost-credentials-${USER_A}`);
+    // username = the user id, password = the key. See postage.saveEasypostKey
+    // for why an API key lands in a field called `password`.
+    expect(easypostPut?.body).toEqual({
+      username: USER_A,
+      password: "EZTK_test_key",
+    });
   });
 
   test("skips re-store (preserves token) when the stored username is already correct", async () => {

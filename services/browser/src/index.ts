@@ -6,6 +6,10 @@ import { BSCAdapter } from "./adapters/bsc-adapter";
 import { SportlotsAdapter } from "./adapters/sportlots-adapter";
 import { SecretsManagerService } from "./services/secrets-manager";
 import { LoginDiagnostic } from "./services/login-diagnostic";
+import {
+  createEasyPostClient,
+  type PostalAddressLike,
+} from "./services/easypost";
 import { credentialRateLimitKey } from "./rate-limit";
 import {
   logBrowserOp,
@@ -423,6 +427,119 @@ app.post("/credentials/check", async (req: Request<{}, {}, { keys: string[] }>, 
     res.status(500).json({ error: "Failed to check credentials" });
   }
 });
+
+// ---------------------------------------------------------------------------
+// NEO-120 — EasyPost postage, proxied because Convex must never hold the key
+// ---------------------------------------------------------------------------
+// The seller's EasyPost API key spends their money. Per NEO-20's boundary, only
+// this service ever reads a per-user secret in plaintext — no route hands a
+// password back — so Convex cannot call EasyPost itself and asks us instead,
+// exactly as it already does for BSC and SportLots logins.
+//
+// Like those, this launches no Chromium. It is plain HTTP.
+
+/** Load a seller's EasyPost key, or 404 if they haven't saved one. */
+async function loadEasyPostKey(key: string): Promise<string> {
+  const secretsManager = new SecretsManagerService();
+  const credentials = await secretsManager.getCredentials(key);
+  // Stored via PUT /credentials/:key as {username: clerkUserId, password: key}.
+  // An API key is not a password, but reusing the existing shape means no new
+  // secret-handling code — see the note in convex/shipping.ts.
+  if (!credentials.password) {
+    throw new Error("No active version");
+  }
+  return credentials.password;
+}
+
+/** Map an EasyPostError kind onto a status the UI can act on. */
+function easypostStatus(kind: string | undefined): number {
+  switch (kind) {
+    case "auth":
+      return 401;
+    case "address":
+    case "no_rate":
+      return 422;
+    case "payment":
+      return 402;
+    case "timeout":
+      return 504;
+    default:
+      return 502;
+  }
+}
+
+function handleEasyPostFailure(err: unknown, res: Response, context: string) {
+  const message = err instanceof Error ? err.message : "Unknown error";
+  if (message.includes("Invalid credential key format")) {
+    res.status(400).json({ error: "Invalid credential key format" });
+    return;
+  }
+  if (message.includes("not found") || message.includes("No active version")) {
+    res.status(404).json({ error: "No EasyPost key saved for this user" });
+    return;
+  }
+  const kind = (err as { kind?: string })?.kind;
+  // Deliberately forwards EasyPost's message: these are seller-actionable
+  // ("address not found", "insufficient funds"), and swallowing them would
+  // leave the UI saying "something went wrong" for a fixable typo. The key
+  // itself never appears in these messages.
+  if (kind) {
+    res.status(easypostStatus(kind)).json({ error: message, kind });
+    return;
+  }
+  console.error(`${context} failed:`, err);
+  res.status(502).json({ error: "EasyPost request failed" });
+}
+
+// Price a First-Class letter. Charges nothing.
+app.post(
+  "/easypost/:key/rate",
+  async (
+    req: Request<{ key: string }, {}, { to?: unknown; from?: unknown; weightOz?: number }>,
+    res: Response,
+  ) => {
+    const { to, from, weightOz } = req.body || {};
+    if (!to || !from || typeof weightOz !== "number" || weightOz <= 0) {
+      res.status(400).json({ error: "Missing required fields: to, from, weightOz" });
+      return;
+    }
+    try {
+      const apiKey = await loadEasyPostKey(req.params.key);
+      const client = createEasyPostClient({ apiKey });
+      res.json(
+        await client.quoteLetterRate({
+          to: to as PostalAddressLike,
+          from: from as PostalAddressLike,
+          weightOz,
+        }),
+      );
+    } catch (err) {
+      handleEasyPostFailure(err, res, "EasyPost rate");
+    }
+  },
+);
+
+// Buy a previously-quoted rate. THIS SPENDS THE SELLER'S MONEY.
+app.post(
+  "/easypost/:key/buy",
+  async (
+    req: Request<{ key: string }, {}, { shipmentId?: string; rateId?: string }>,
+    res: Response,
+  ) => {
+    const { shipmentId, rateId } = req.body || {};
+    if (!shipmentId || !rateId) {
+      res.status(400).json({ error: "Missing required fields: shipmentId, rateId" });
+      return;
+    }
+    try {
+      const apiKey = await loadEasyPostKey(req.params.key);
+      const client = createEasyPostClient({ apiKey });
+      res.json(await client.buyLabel({ shipmentId, rateId }));
+    } catch (err) {
+      handleEasyPostFailure(err, res, "EasyPost buy");
+    }
+  },
+);
 
 const PORT: number = parseInt(process.env.PORT || "8080", 10);
 app.listen(PORT, () => console.log(`[${ENV}] Listening on port ${PORT}`));
