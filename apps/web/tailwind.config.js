@@ -13,6 +13,7 @@ module.exports = {
         'neon-blue': '#00C2FF',     // Info / Accent
         'neon-purple': '#A44AFF',   // Tabs / UI
         'neon-orange': '#FF9E00',   // Admin / gated features
+        'neon-teal': '#00E5C0',     // Shipping / labels
         background: {
           DEFAULT: '#000000',  // Main background
         },

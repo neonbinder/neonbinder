@@ -1,0 +1,195 @@
+# R1 — Single feature: a signed-in user who HAS a saved return address can type a
+# recipient on /labels and watch the 4x6 label preview build itself from what
+# they typed (uppercased, USPS-style), with their own return address already in
+# the FROM block.
+#
+# SELF-CONTAINED (R3/R4): the cloud queue regenerates the account state per flow
+# on an arbitrary runner, so no flow can lean on another flow's saved return
+# address — this one creates its own. The entry URL signs in as the isolated
+# `new-profile` account and routes through /testing/reset, which deletes this
+# user's userProfiles row (convex/testing.ts) — that row is where returnAddress
+# lives, so we start from a guaranteed-empty Shipping form (no eraseText needed,
+# and the NEO-41 dirty guard can't re-hydrate stale values over our typing).
+# No in-body re-login beyond that entry handshake (R4).
+#
+# R2 — this cannot go green without the feature: /labels only renders a "Ship To"
+# form when getMyReturnAddress is non-null. If the /profile save silently failed,
+# /labels would render the "Add your return address" empty state instead and
+# every step below would fail on a missing field.
+#
+# HARD CONSTRAINT — we never tap "Print Label". It calls window.print(), whose
+# native dialog blocks every further browser event and wedges the run. The live
+# preview IS the assertable half of the feature; the printed sheet is the same
+# element serialized, so asserting the preview is asserting the label.
+#
+# Entry URL: sign in (new-profile) -> /testing/reset (wipe to empty) -> /profile.
+# `account=new-profile` and `worker` are top-level sign-in query params (the
+# inner redirect value is left unencoded so the router parses them as siblings).
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Shipping Labels — type a recipient and the label preview follows
+tags:
+  - smoke
+  - labels
+---
+# Step 1: land on the freshly-reset /profile page.
+- launchApp
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# Step 2: fill in the Shipping section — the seller's return address.
+#
+# The section is the LAST one on /profile (below Public Profile, Credentials and
+# Prize Pool), so reaching it is a long scroll on the 1024x629 headless viewport.
+# Anchor on the "Shipping" heading first, with a budget well above the default:
+# the sibling scroll in util-login-to-bsc.yaml already needed 17s of its 20s to
+# reach "Test Credentials" higher up this same page, and this target is further
+# down still. Getting there in one deliberate hop also means each field scroll
+# below is a short move rather than another full-page traversal.
+- scrollUntilVisible:
+    element:
+      text: "Shipping"
+    centerElement: true
+    timeout: 45000
+
+# We target what the user SEES: the visible field labels. Each one's htmlFor
+# points at its input (ship-name, ship-line1, ship-city, ship-state,
+# ship-postal-code), so tapping the label focuses that field and the typing lands
+# in it. These five label texts appear nowhere else on /profile — the Public
+# Profile editor uses "Display Name", "Username", "Tagline" and "... URL", none
+# of which collide.
+# The Name field is optional — blank falls back to the seller's public display
+# name — but we fill it here so the FROM block is deterministic regardless of
+# what profile state the reset left behind. (The fallback chain itself is
+# covered exhaustively in convex/shipping.test.ts, where the data combinations
+# are cheap to enumerate.)
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Neon Seller"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+- inputText: "100 Binder Way"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Austin"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "TX"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "78701"
+
+# Step 3: save it. The button stays disabled until name/street/city/state/ZIP are
+# all filled, so a tap that lands and a confirmation that appears together prove
+# the five values above actually reached their fields.
+- scrollUntilVisible:
+    element:
+      text: "Save Return Address"
+    centerElement: true
+- tapOn: "Save Return Address"
+- assertVisible: "Return address saved."
+
+# Step 4: go to the Labels page. openLink (not a nav tap) = a fresh cross-page
+# mount, which avoids the post-tap CDP navigation crash and re-reads the return
+# address we just saved.
+- openLink: ${APP_URL || "https://localhost:3000"}/labels
+- assertVisible: "Shipping Labels"
+
+# Step 5: confirm we are on the "has a return address" branch, not the empty
+# state. "Shipping Labels" above renders in BOTH branches, so it cannot tell them
+# apart; the "Ship To" form heading only exists once getMyReturnAddress is
+# non-null, and it is above the fold on landing. The FROM block is the stronger
+# proof that the save persisted, but it lives in the preview below the fold — it
+# is asserted in Step 8 once the label is actually on screen.
+- assertVisible: "Ship To"
+
+# Step 6: address the package. Same visible-label technique as Step 2; on this
+# page the labels focus to-name / to-line1 / to-city / to-state / to-postal-code.
+# The recipient is deliberately never saved anywhere, so these fields always
+# start blank — nothing to clear first.
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Jane Buyer"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+- inputText: "742 Evergreen Ter"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Springfield"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "IL"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "62704"
+
+# Step 7: bring the label itself on screen.
+#
+# Two traps here, both paid for on this flow:
+#
+# 1. assertVisible DOES enforce viewport visibility in maestro-web. It is not a
+#    DOM-only lookup, so the label being rendered is not enough — it sits below
+#    the form and has to be scrolled to.
+#
+# 2. Maestro text matching is CASE-INSENSITIVE, and an input's value is part of
+#    the hierarchy text. So "JANE BUYER" cheerfully matches the Name input still
+#    holding "Jane Buyer": a per-field assertion passes against the FORM while
+#    the label is still off-screen, proving nothing. The uppercase transform is
+#    consequently not assertable here at all — it is covered by the
+#    formatAddressBlock unit tests and the ShippingLabel component tests.
+#
+# What is unique to the label is a COMPOSED line: city, state and ZIP joined into
+# one string. No input holds "SPRINGFIELD IL 62704", so matching it can only mean
+# the formatted label. That makes it both the correct scroll target and the
+# assertion that actually tests the feature.
+- scrollUntilVisible:
+    element:
+      text: "SPRINGFIELD IL 62704"
+    centerElement: true
+    timeout: 30000
+
+# Step 8: the seller's own address is already in the FROM block, carried from
+# Step 3 — the proof that the /profile save persisted and is read back here.
+# "AUSTIN TX 78701" is likewise composed, belongs to no input on this page, and
+# uses a different city from the recipient so neither block can satisfy the
+# other's assertion. We do NOT tap "Print Label" — see the header note.
+- assertVisible: "AUSTIN TX 78701"

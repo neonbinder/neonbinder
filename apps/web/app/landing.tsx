@@ -18,6 +18,10 @@ export default function LandingPage() {
     navigate("/managing-inventory");
   };
 
+  const handleShippingLabelsClick = () => {
+    navigate("/shipping-labels");
+  };
+
   return (
     <>
       <header className="sticky top-0 z-10 bg-background p-4 border-b-2 border-slate-200 dark:border-slate-800 flex flex-row justify-between items-center">
@@ -83,8 +87,9 @@ export default function LandingPage() {
             </p>
           </button>
 
-          {/* Features Section */}
-          <div className="grid md:grid-cols-3 gap-8 mb-16">
+          {/* Features Section — 4 cards: two rows of two on tablet, one row of
+              four on desktop. Plain md:grid-cols-3 would orphan the fourth. */}
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-8 mb-16">
             <button
               onClick={handleBindersClick}
               className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-green-500 dark:hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 transition-all cursor-pointer text-left"
@@ -117,6 +122,16 @@ export default function LandingPage() {
               <h3 className="text-xl font-semibold mb-2">Manage Multiple Inventory Sites</h3>
               <p className="text-slate-600 dark:text-slate-400">
                 Track inventory across eBay, BuySportsCards, MySlabs, MyCardPost, and SportLots all in one place. Coming soon for sellers.
+              </p>
+            </button>
+            <button
+              onClick={handleShippingLabelsClick}
+              className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-teal-400 dark:hover:border-teal-400 hover:shadow-lg hover:shadow-teal-400/20 transition-all cursor-pointer text-left"
+            >
+              <div className="text-4xl mb-4">📦</div>
+              <h3 className="text-xl font-semibold mb-2">Print 4×6 Shipping Labels</h3>
+              <p className="text-slate-600 dark:text-slate-400">
+                Save your return address once, type where the card is going, and print a clean 4×6 label. Works with any label printer.
               </p>
             </button>
           </div>
