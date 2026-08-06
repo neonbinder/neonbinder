@@ -11,7 +11,23 @@ name: Cloud Run Revision GC
 #
 # This sweep reclaims whatever slips through. It is deliberately conservative:
 # dry-run unless explicitly applied, never touches the serving revision, and
-# keeps the 5 most recent revisions for rollback.
+# keeps the 2 most recent revisions for rollback.
+#
+# NEO-117: lowered 5 -> 2. Retained revisions cost nothing directly — every
+# revision is minScale=0 since NEO-114, so an idle one holds no instance. What
+# they DO cost is that each pins a container image in Artifact Registry, which
+# is a large part of what kept that registry at 117.8 GB (dev) / 41.7 GB (prod).
+# Product direction is that one rollback target is enough.
+#
+# NOTE for anyone tempted to mirror this number into the Artifact Registry
+# cleanup policies (neonbinder_terraform, google_artifact_registry_repository.gcr_io):
+# DO NOT. Image retention there ranks by PUSH VOLUME, not revision count, and PR
+# previews push to the same `neonbinder-browser` package — dev spiked to 13
+# pushes in a single day. A keep_count of 2 there would let one busy PR day
+# collect the LIVE SERVING image, and since minScale=0 every subsequent request
+# cold-starts against a missing image and fails. That side keeps 10, plus an
+# independent 14-day age gate. The two numbers are on different axes and must
+# not be kept "in sync".
 
 on:
   schedule:
@@ -26,7 +42,7 @@ on:
       keep:
         description: 'Number of recent revisions to retain'
         type: string
-        default: '5'
+        default: '2'
 
 # Never let two sweeps mutate the same service concurrently.
 concurrency:
@@ -68,7 +84,11 @@ jobs:
       - name: Sweep stale revisions
         env:
           PROJECT: ${{ matrix.project }}
-          KEEP: ${{ inputs.keep || '5' }}
+          # This fallback — not the workflow_dispatch input default — is what a
+          # SCHEDULED run uses, since `inputs.keep` is empty on a cron trigger.
+          # Both must be changed together or the weekly sweep silently keeps the
+          # old count.
+          KEEP: ${{ inputs.keep || '2' }}
           # Scheduled runs apply; manual dispatch is dry-run unless the box is
           # ticked. That way the weekly job actually reclaims instances, while a
           # human poking at it by hand cannot delete anything by accident.
