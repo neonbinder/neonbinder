@@ -227,6 +227,11 @@ export default function LabelsPage() {
           },
         });
       } catch {
+        // The label IS bought. Clearing the quote is the important part: it
+        // reverts the control to "Get rate", so a second tap cannot try to buy
+        // the same shipment again. Leaving a live "Buy & print" here is a
+        // double-charge waiting for an impatient click.
+        setQuote(null);
         setPostageError(
           "The label was bought but the print dialog didn't open. It's saved — reprint it from your label history.",
         );
