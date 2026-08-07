@@ -357,6 +357,22 @@ export default function CredentialsPanel() {
             them below.
           </p>
         </div>
+        {/* Every busy label below is keyed off `credsBusy` — the SAME condition
+            as `disabled`, and deliberately NOT off `isLoading` (NEO-128).
+            `credsBusy` is `isLoading || anyCredentialOpInFlight`, and that
+            second half is a server-side lock held by an op on any site. Keyed
+            off `isLoading` alone, the button read "Test Credentials" and looked
+            actionable while being disabled: the click did nothing and said
+            nothing about why. Keep the two conditions identical — a control
+            must never claim to be actionable when it is not.
+
+            This also gives e2e a truthful signal. Maestro cannot read `enabled`
+            on web (the web driver reports it as null), so the label is the only
+            evidence that the button is tappable; waiting for "Test Credentials"
+            now genuinely means waiting for the lock to clear. The seed track
+            failed exactly this way when the flows stopped scrolling: they
+            reached the button in 0.7s instead of 17s and tapped it while it was
+            still locked. */}
         <div className="flex flex-col sm:flex-row gap-4">
           <NeonButton
             onClick={() => setEditMode(true)}
@@ -370,14 +386,14 @@ export default function CredentialsPanel() {
             disabled={credsBusy}
             className="flex-1 bg-slate-600 hover:bg-slate-700"
           >
-            {isLoading ? "Testing..." : "Test Credentials"}
+            {credsBusy ? "Testing..." : "Test Credentials"}
           </NeonButton>
           <NeonButton
             onClick={handleClearCredentials}
             disabled={credsBusy}
             className="flex-1 bg-red-600 hover:bg-red-700"
           >
-            {isLoading ? "Clearing..." : "Clear Credentials"}
+            {credsBusy ? "Clearing..." : "Clear Credentials"}
           </NeonButton>
         </div>
       </div>
@@ -431,14 +447,14 @@ export default function CredentialsPanel() {
             disabled={credsBusy || !username || !password}
             className="flex-1"
           >
-            {isLoading ? "Saving..." : "Save Credentials"}
+            {credsBusy ? "Saving..." : "Save Credentials"}
           </NeonButton>
           <NeonButton
             onClick={handleTestCredentials}
             disabled={credsBusy || !hasStoredCredentials}
             className="flex-1 bg-slate-600 hover:bg-slate-700"
           >
-            {isLoading ? "Testing..." : "Test Stored Credentials"}
+            {credsBusy ? "Testing..." : "Test Stored Credentials"}
           </NeonButton>
           {hasStoredCredentials && (
             <NeonButton
@@ -446,7 +462,7 @@ export default function CredentialsPanel() {
               disabled={credsBusy}
               className="flex-1 bg-red-600 hover:bg-red-700"
             >
-              {isLoading ? "Clearing..." : "Clear Credentials"}
+              {credsBusy ? "Clearing..." : "Clear Credentials"}
             </NeonButton>
           )}
         </div>

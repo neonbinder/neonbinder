@@ -53,9 +53,27 @@ tags:
     timeout: 10000
 - tapOn: "Sportlots"
 
+# Wait in place until the button is genuinely tappable. Its label is keyed off
+# `credsBusy`, so while a credential op holds the server-side lock it reads
+# "Testing..." and this waits rather than tapping a disabled control (NEO-128 —
+# the seed track failed exactly that way once the flows stopped scrolling and
+# reached the button in 0.7s instead of 17s). 30s: the lock is held by a real
+# marketplace login, the same ~22s round trip the banner waits allow for.
 - extendedWaitUntil:
     visible: "Test Credentials"
+    timeout: 30000
+
+# Then centre it before tapping. The panel is short now, so this is one small
+# in-panel move, not a page traversal — but the button still lands near the
+# 1024x629 fold (measured at y=594-626, 3px of margin), and tapping that close
+# to the edge is what `centerElement` has always existed to avoid.
+- scrollUntilVisible:
+    element:
+      text: "Test Credentials"
+    centerElement: true
     timeout: 10000
+    waitToSettleTimeoutMs: 1000
+
 - tapOn: "Test Credentials"
 
 # 30s exception: a COLD marketplace login is a real ~22s Puppeteer/SSO round-trip (cached is <1s).
