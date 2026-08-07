@@ -1,4 +1,4 @@
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile/credentials&worker=${WORKER_INDEX || "0"}
 name: "Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds"
 tags:
   - util

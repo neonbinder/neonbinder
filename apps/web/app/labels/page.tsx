@@ -136,7 +136,7 @@ export default function LabelsPage() {
         </p>
         {/* A NeonButton renders a real <button>; wrapping it in an <a> would
             nest interactive content and expose an ambiguous role. */}
-        <NeonButton onClick={() => navigate("/profile")}>
+        <NeonButton onClick={() => navigate("/profile/shipping")}>
           Go to Profile
         </NeonButton>
       </div>

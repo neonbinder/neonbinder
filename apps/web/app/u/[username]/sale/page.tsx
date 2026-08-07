@@ -365,7 +365,7 @@ export default function SalePage() {
           ) : (
             <div className="w-full mt-4 p-4 bg-white/10 rounded-lg text-slate-300 text-sm">
               No payment methods configured. Visit{" "}
-              <Link to="/profile" className="underline text-white hover:opacity-80">
+              <Link to="/profile/public" className="underline text-white hover:opacity-80">
                 your profile
               </Link>{" "}
               to add payment information.

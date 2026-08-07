@@ -1,4 +1,4 @@
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile/public&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: Fill Profile Data
 tags:
   - profile

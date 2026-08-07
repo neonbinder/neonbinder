@@ -13,17 +13,17 @@
 # the account that fills the profile must also be the one that reads it on
 # /qr-code. No in-body re-login beyond this entry handshake (R4).
 #
-# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile.
+# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile/public.
 # `account=new-profile` and `worker` are top-level sign-in query params (the
 # inner redirect value is left unencoded so the router parses them as siblings).
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile/public&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: QR Code — generate sale QR
 tags:
   - smoke
   - qr-code
 ---
-# Step 1: land on the freshly-reset /profile page.
+# Step 1: land on the freshly-reset Public Profile section.
 - launchApp
 - extendedWaitUntil:
     visible: "Profile Settings"

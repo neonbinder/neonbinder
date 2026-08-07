@@ -4,7 +4,7 @@ import "@radix-ui/themes/styles.css";
 
 import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Routes, Route, useLocation } from "react-router";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router";
 import { ClerkProvider } from "@clerk/clerk-react";
 import { Theme } from "@radix-ui/themes";
 import { PostHogProvider } from "@/components/modules/PostHogProvider";
@@ -31,7 +31,11 @@ import TestSignIn from "@/app/testing/sign-in/page";
 import TestReset from "@/app/testing/reset/page";
 import TestSeedCredentials from "@/app/testing/seed-credentials/page";
 import Dashboard from "@/app/dashboard/page";
-import Profile from "@/app/profile/page";
+import ProfileLayout from "@/src/layouts/profile-layout";
+import ProfilePublic from "@/app/profile/public/page";
+import ProfileCredentials from "@/app/profile/credentials/page";
+import ProfileShipping from "@/app/profile/shipping/page";
+import ProfilePrizes from "@/app/profile/prizes/page";
 import SetSelector from "@/app/set-selector/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import QrCode from "@/app/qr-code/page";
@@ -85,7 +89,16 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/collection" element={<Collection />} />
               <Route path="/inventory" element={<Inventory />} />
-              <Route path="/profile" element={<Profile />} />
+              {/* One route per profile section (NEO-128). Bare /profile keeps
+                  working — every existing link and redirect lands on the index
+                  and is forwarded to Public Profile. */}
+              <Route path="/profile" element={<ProfileLayout />}>
+                <Route index element={<Navigate to="/profile/public" replace />} />
+                <Route path="public" element={<ProfilePublic />} />
+                <Route path="credentials" element={<ProfileCredentials />} />
+                <Route path="shipping" element={<ProfileShipping />} />
+                <Route path="prizes" element={<ProfilePrizes />} />
+              </Route>
               <Route path="/qr-code" element={<QrCode />} />
               <Route path="/labels" element={<Labels />} />
               <Route path="/design/primitives" element={<DesignPrimitives />} />

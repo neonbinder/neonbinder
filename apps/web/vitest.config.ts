@@ -22,13 +22,16 @@ export default defineConfig({
           },
         },
       }),
-      // Project 2: React component tests with happy-dom
+      // Project 2: React component tests with happy-dom.
+      // `src/**` is included alongside `components/**` because layouts live in
+      // src/layouts/ (NEO-128) — without it a test file there is silently
+      // collected by nothing and never runs.
       defineProject({
         test: {
           name: "components",
           environment: "happy-dom",
           globals: true,
-          include: ["components/**/*.test.tsx"],
+          include: ["components/**/*.test.tsx", "src/**/*.test.tsx"],
         },
         resolve: {
           alias: {
