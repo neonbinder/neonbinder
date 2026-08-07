@@ -14,7 +14,18 @@
 
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The layout holds every section's query open to keep them warm across section
+// changes (see useWarmProfileQueries). Those subscriptions need a Convex
+// provider that does not exist in a unit render, so stub the hook — the warming
+// behaviour is a runtime concern, not what these cases are about.
+vi.mock("convex/react", () => ({
+  useQuery: () => undefined,
+  useMutation: () => vi.fn(),
+  useAction: () => vi.fn(),
+}));
+
 import ProfileLayout from "./profile-layout";
 
 function renderAt(path: string) {

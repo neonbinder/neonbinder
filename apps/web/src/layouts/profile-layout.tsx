@@ -1,4 +1,6 @@
+import { useQuery } from "convex/react";
 import { NavLink, Outlet } from "react-router";
+import { api } from "@/convex/_generated/api";
 
 /**
  * Shell for /profile. Each section is its own route rendering into the Outlet
@@ -34,7 +36,34 @@ const SECTIONS = [
   { label: "Prize Pool", path: "/profile/prizes" },
 ];
 
+/**
+ * Hold every section's query open at the shell level.
+ *
+ * Splitting the sections into routes means a panel UNMOUNTS when you leave it,
+ * which drops its Convex subscription — so coming back re-fetched from
+ * `undefined` and the panel painted its loading state first. Switching sections
+ * flashed "Loading credentials…" every time, which reads as the page reloading.
+ * The old single-page /profile never did this: every section was mounted once
+ * and scrolling could not unmount anything.
+ *
+ * Subscribing here keeps the results warm for as long as the user is anywhere
+ * under /profile, so a panel's own useQuery resolves from cache on mount and
+ * paints immediately. The values are deliberately unused — the panels still own
+ * their own data; this only owns the SUBSCRIPTION LIFETIME.
+ *
+ * Keep this list in sync when a section gains a query, or that section
+ * reintroduces the flash on its own.
+ */
+function useWarmProfileQueries() {
+  useQuery(api.userProfile.getUserProfile); // credentials
+  useQuery(api.userProfile.getPrizes); // prizes
+  useQuery(api.publicProfile.getMyPublicProfile); // public + shipping
+  useQuery(api.shipping.getMyReturnAddress); // shipping
+}
+
 export default function ProfileLayout() {
+  useWarmProfileQueries();
+
   return (
     <div className="space-y-8">
       <div>
