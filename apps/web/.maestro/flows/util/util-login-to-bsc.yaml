@@ -31,8 +31,6 @@ tags:
 # ============================================================
 
 - openLink: ${APP_URL || "http://localhost:3000"}/profile
-- extendedWaitUntil:
-    visible: "Neon Binder"
 
 # ============================================================
 # FORCE A FRESH BSC LOGIN — tap "Test Credentials"
@@ -44,8 +42,17 @@ tags:
 # Wait for the stable page heading before scrolling. The DOM is fully settled
 # once "Profile Settings" is visible — starting a scroll during mid-reflow
 # widens the CDP empty-response window that causes the NEO-8 flake.
+#
+# (NEO-125: this util previously gated on "Neon Binder" with NO timeout at all,
+# then on "Profile Settings" with no timeout either. The "Neon Binder" gate was
+# dropped — pure-UI text with no relationship to cred-section readiness, Rule 5,
+# the same reason test-credentials.yaml dropped it. 10s matches the sibling
+# util-login-to-sportlots.yaml: this is an openLink inside an already-
+# authenticated session, not a cold launchApp + Clerk sign-in, so the 45s
+# post-launchApp allowance does not apply here.)
 - extendedWaitUntil:
     visible: "Profile Settings"
+    timeout: 10000
 
 # waitToSettleTimeoutMs: Maestro waits for the view hierarchy to quiesce between
 # scroll steps, reducing CDP "end-of-input"/empty-hierarchy errors on dynamic pages.
@@ -58,13 +65,24 @@ tags:
 
 # 30s exception: a COLD marketplace login is a real ~22s Puppeteer/SSO round-trip (cached is <1s).
 # This is the ONE sanctioned >10s wait (the standing rule is 10s) — do NOT copy this ceiling elsewhere.
-# scrollUntilVisible both waits for the element AND scrolls it into the viewport (Rule 6: no
-# redundant assertVisible needed after a scrollUntilVisible of the same element).
-- scrollUntilVisible:
-    element:
-      text: ".*BSC account authenticated successfully.*"
+#
+# extendedWaitUntil (non-scrolling), NOT scrollUntilVisible — NEO-125. A
+# scrollUntilVisible here doubles as the ~22s WAIT, so it keeps swiping down the
+# whole time the login is in flight and parks the viewport wherever the page
+# happens to end — then the banner appears above it and is never seen. Because
+# direction is DOWN, a single missed poll is unrecoverable by construction: the
+# scroll can never walk back up. That made this step a tripwire on total
+# /profile height (NEO-118 appended a section at the bottom of the page and
+# these flows started failing, with nothing wrong in the credentials feature at
+# all) and cost ~14% of seed runs a full ~25-minute re-run.
+#
+# Waiting in place is safe here: the scroll above centers "Test Credentials" at
+# y≈274 and the banner renders just below it, well inside the 1024×629 headless
+# viewport. This is the same conversion PR #127 applied to
+# profile/credentials-lifecycle.yaml and profile/test-credentials.yaml.
+- extendedWaitUntil:
+    visible: ".*BSC account authenticated successfully.*"
     timeout: 30000
-    waitToSettleTimeoutMs: 1000
 
 # ============================================================
 # CONFIRM AUTHENTICATED
