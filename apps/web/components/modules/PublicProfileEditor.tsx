@@ -113,6 +113,24 @@ export default function PublicProfileEditor() {
   const [showBscModal, setShowBscModal] = useState(false);
   const [showMySlabsModal, setShowMySlabsModal] = useState(false);
 
+  // The save result renders BELOW the Save button. Since NEO-128 split /profile
+  // into a route per section, that button is the last element on its own page,
+  // so the confirmation lands just past the bottom of the viewport: you click
+  // Save and nothing appears to happen. (On the old single-page /profile the
+  // section had three more below it, so the message was mid-document and
+  // visible.) Bring it into view when it appears — `html { scroll-padding-top:
+  // 80px }` in globals.css keeps it clear of the sticky binder header.
+  const saveMessageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (saveMessage) {
+      // "center", not "nearest": `nearest` does the minimum scroll, which lands
+      // the message flush against the bottom edge (measured: bottom === the
+      // viewport height exactly, zero margin). That is the same knife-edge that
+      // made the credential buttons unreliable to tap at y=594 of 629.
+      saveMessageRef.current?.scrollIntoView({ block: "center" });
+    }
+  }, [saveMessage]);
+
   // Username availability
   const debouncedUsername = useDebounce(username, 400);
   const usernameAvailable = useQuery(
@@ -622,6 +640,7 @@ export default function PublicProfileEditor() {
 
         {saveMessage && (
           <div
+            ref={saveMessageRef}
             className={`mt-8 p-3 rounded-md text-sm ${
               saveMessageType === "success"
                 ? "bg-purple-900/30 text-purple-300 border border-purple-800"
