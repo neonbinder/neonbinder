@@ -178,6 +178,7 @@ export default function ProfilePage() {
     if (!username || !password) {
       setMessage("Please enter both username and password to save.");
       setMessageType("error");
+      setMessageDetails(undefined);
       return;
     }
     setIsLoading(true);
@@ -232,6 +233,10 @@ export default function ProfilePage() {
       return;
     }
     setIsLoading(true);
+    // Reset the type before the in-flight message: it is progress, not a
+    // failure. Left at a previous "error" it would render red and, now that the
+    // banner is a live region, announce assertively (NEO-127).
+    setMessageType("success");
     setMessage(`Testing stored credentials with ${siteMeta?.label}...`);
     setMessageDetails(undefined);
     try {
@@ -297,6 +302,11 @@ export default function ProfilePage() {
     setConfirmingClear(false);
     setIsLoading(true);
     setMessage("");
+    // Must clear alongside `message`: details are rendered whenever truthy, so a
+    // previous failure's diagnostic would otherwise survive under the green
+    // "cleared successfully" banner — and `aria-atomic` reads the two as one
+    // unit, announcing a success glued to a stale error (NEO-127).
+    setMessageDetails(undefined);
     try {
       const result = await saveCredentials({ site: selectedSite });
       if (!result.success) {
@@ -971,8 +981,23 @@ export default function ProfilePage() {
                 </div>
               </div>
             )}
+            {/* WCAG 2.2 AA §4.1.3 Status Messages (NEO-127). This banner is the
+                only feedback for whether a marketplace credential saved,
+                authenticated, or failed, and it is inserted after an async
+                action without moving focus — so it must be a live region.
+                Role is driven off messageType, matching how the rest of the
+                codebase splits it: a failed login interrupts (role="alert",
+                implicitly assertive), everything else queues politely.
+                `key` remounts the node when the type flips, because screen
+                readers do not reliably re-evaluate a live region whose role
+                changed in place. `aria-atomic` makes the message and its
+                details read as one unit rather than only the changed child. */}
             {message && (
               <div
+                key={messageType}
+                role={messageType === "error" ? "alert" : "status"}
+                aria-live={messageType === "error" ? undefined : "polite"}
+                aria-atomic="true"
                 className={`p-4 rounded-md ${
                   messageType === "success"
                     ? "bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-200 border border-green-200 dark:border-green-800"
