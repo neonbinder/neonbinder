@@ -12,5 +12,5 @@ Pillow==11.1.0
 torch==2.5.1+cpu
 transformers==4.47.1
 accelerate==1.2.1
-opencv-python-headless==4.10.0.84
+opencv-python-headless==5.0.0.93
 numpy==2.2.1
