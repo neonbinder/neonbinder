@@ -66,8 +66,13 @@ jobs:
   # Integration tests (real Vision + Anthropic against fixture images) are NOT
   # run in CI — the fixtures live in GCS and are gitignored. Smoke tests against
   # the deployed URL cover end-to-end validation.
+  # Name is deliberately NOT "Preprocess lint + unit tests" — that is
+  # pr-pipeline.yml's copy, and two checks with the same name are
+  # indistinguishable in the PR check list. Same split browser.yml uses:
+  # "Build + unit tests" here (the workflow name already says which service),
+  # "Browser build + unit tests" there.
   test:
-    name: Preprocess lint + unit tests
+    name: Lint + unit tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
