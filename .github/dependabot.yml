@@ -35,3 +35,22 @@ updates:
     groups:
       browser-minor-patch:
         update-types: ["minor", "patch"]
+
+  # Preprocess service (FastAPI; plain pip + pinned requirements.txt /
+  # requirements-dev.txt). Same grouping policy as the npm ecosystems above.
+  - package-ecosystem: pip
+    directory: "/services/preprocess"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      preprocess-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # torch is pinned to a CPU-ONLY LOCAL VERSION (`2.5.1+cpu`), resolved via
+      # the `--extra-index-url https://download.pytorch.org/whl/cpu` line inside
+      # requirements.txt. Dependabot resolves against PyPI and proposes a bare
+      # `torch==X.Y.Z`, dropping the `+cpu` local segment — which swaps a
+      # ~190MB CPU wheel for the ~2.5GB CUDA build, in an image that already
+      # bakes ~375MB of SAM weights. Bump torch by hand, keeping the suffix.
+      - dependency-name: "torch"

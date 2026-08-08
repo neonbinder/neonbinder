@@ -10,7 +10,19 @@ on:
 #                          up). Removes the `pr-<N>` traffic tag and deletes the
 #                          `:pr-<N>` GCR image.
 #
-#  2. convex-preview-cleanup — deletes the Convex preview deployment that Vercel's
+#  2. preprocess-cleanup — same teardown for the preprocess preview that
+#                          preprocess.yml stands up. A SEPARATE job rather than
+#                          extra steps on `cleanup`, because preprocess
+#                          authenticates as its own WIF provider + deployer SA:
+#                          google-github-actions/auth rewrites ADC and
+#                          GOOGLE_APPLICATION_CREDENTIALS in place, so a second
+#                          auth inside `cleanup` would silently run every step
+#                          after it as the wrong identity — against the same dev
+#                          project, where some calls would partially succeed.
+#                          Separate jobs also mean a preprocess WIF problem can
+#                          never stop the browser tag from being removed.
+#
+#  3. convex-preview-cleanup — deletes the Convex preview deployment that Vercel's
 #                          build created via CONVEX_PREVIEW_DEPLOY_KEY. Without
 #                          this, previews accumulate to the team quota (40 hard cap)
 #                          and block future PR builds with DeploymentQuotaReached.
@@ -68,6 +80,72 @@ jobs:
           echo "Deleting $IMAGE (best-effort; never fails the cleanup)"
           # Best-effort: missing image or insufficient delete perms must not fail
           # a PR close. The tag removal above is the load-bearing teardown.
+          gcloud container images delete "$IMAGE" --force-delete-tags --quiet || \
+            echo "image $IMAGE not deleted (absent or no delete permission) — ignoring"
+
+  preprocess-cleanup:
+    if: |
+      github.base_ref == 'main'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      # `secrets` is not available in a job-level `if:`, so the
+      # not-yet-provisioned guard has to be a step-level check. Without it, this
+      # job goes red on every PR close until the preprocess WIF secrets exist.
+      - id: guard
+        name: Guard — preprocess WIF provisioned?
+        env:
+          WIF: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          SA: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WIF:-}" ] || [ -z "${SA:-}" ]; then
+            echo "::notice::preprocess WIF secrets not set — skipping preprocess teardown"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Remove pr-<N> tag from dev Cloud Run service
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          TAG="pr-$PR"
+          echo "Removing tag $TAG from neonbinder-preprocess (neonbinder-dev)"
+          # Idempotent, same as the browser teardown above — an absent tag still
+          # exits 0, so cleanup never fails a PR close.
+          gcloud run services update-traffic neonbinder-preprocess \
+            --region=us-central1 \
+            --project=neonbinder-dev \
+            --remove-tags="$TAG"
+
+      - name: Delete the pr-<N> image from dev GCR (best-effort)
+        if: always() && steps.guard.outputs.ready == 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          IMAGE="gcr.io/neonbinder-dev/neonbinder-preprocess:pr-$PR"
+          echo "Deleting $IMAGE (best-effort; never fails the cleanup)"
+          # This matters more here than for browser: preprocess images are
+          # multi-GB (torch + baked SAM weights), and the standalone repo's
+          # cleanup only ever removed the traffic tag, never the image.
           gcloud container images delete "$IMAGE" --force-delete-tags --quiet || \
             echo "image $IMAGE not deleted (absent or no delete permission) — ignoring"
 
