@@ -1,9 +1,9 @@
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-python-multipart==0.0.20
-pydantic==2.10.4
-google-cloud-vision==3.9.0
-anthropic==0.42.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32
+pydantic==2.13.4
+google-cloud-vision==3.15.0
+anthropic==0.120.2
 Pillow==11.1.0
 # SAM crop fallback (slice 2b). CPU-only torch keeps the image size sane;
 # transformers pulls the SAM model + processor; opencv-headless handles
@@ -11,6 +11,6 @@ Pillow==11.1.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 transformers==4.47.1
-accelerate==1.2.1
+accelerate==1.14.0
 opencv-python-headless==4.10.0.84
-numpy==2.2.1
+numpy==2.5.1
