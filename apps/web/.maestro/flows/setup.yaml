@@ -117,9 +117,9 @@ tags:
 # seed-credentials (in the url above) stored real BSC + SL creds but does NOT
 # warm the Puppeteer sessions. Force a fresh login for each so the syncs below
 # hit live marketplace data instead of stalling on a cold login mid-drill.
-# Each util taps "Test Credentials" on /profile (a cold login is a real ~22s
+# Each util taps "Test Credentials" on /profile/credentials (a cold login is a real ~22s
 # round-trip — the sanctioned long wait lives inside these utils, not here).
-# They also navigate to /profile, which sets up the fresh re-mount below.
+# They also navigate to /profile/credentials, which sets up the fresh re-mount below.
 - runFlow:
     file: util/util-login-to-bsc.yaml
 - runFlow:

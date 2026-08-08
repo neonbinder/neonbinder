@@ -23,14 +23,25 @@ tags:
 #   - Credentials are already seeded server-side by worker-bootstrap; no
 #     credential env vars need to be passed.
 #   - Caller is expected to call util-drill-to-base-variant after this util returns.
-#   - This util leaves the browser on /profile (the drill util will navigate from there).
+#   - This util leaves the browser on /profile/credentials (the drill util will
+#     navigate from there).
 
 # ============================================================
-# NAVIGATE TO PROFILE
+# NAVIGATE STRAIGHT TO THE CREDENTIALS SECTION
 # The browser may be anywhere after launchApp redirect. Navigate explicitly.
+#
+# NEO-128: each /profile section is its own route, so this lands on the
+# credential controls directly. This step used to open `/profile` and then walk
+# ~5000px down it with a page-level scrollUntilVisible to find "Test
+# Credentials" — 7–10 CDP swipes at ~2s each, measured at 17s of a 20s budget on
+# a good day and timing out at 20s on a bad one. That made the page's TOTAL
+# height a tripwire on this util: NEO-118 appended a section at the BOTTOM of
+# /profile and the whole seed track went red, with nothing wrong in the
+# credentials feature at all. The cost no longer depends on what else the
+# profile contains.
 # ============================================================
 
-- openLink: ${APP_URL || "http://localhost:3000"}/profile
+- openLink: ${APP_URL || "http://localhost:3000"}/profile/credentials
 
 # ============================================================
 # FORCE A FRESH BSC LOGIN — tap "Test Credentials"
@@ -39,9 +50,9 @@ tags:
 # Cloud Run cold-starts can add 20–30 s to the login round-trip.
 # ============================================================
 
-# Wait for the stable page heading before scrolling. The DOM is fully settled
-# once "Profile Settings" is visible — starting a scroll during mid-reflow
-# widens the CDP empty-response window that causes the NEO-8 flake.
+# Wait for the stable page heading before acting. The DOM is fully settled
+# once "Profile Settings" is visible — acting mid-reflow widens the CDP
+# empty-response window that causes the NEO-8 flake.
 #
 # (NEO-125: this util previously gated on "Neon Binder" with NO timeout at all,
 # then on "Profile Settings" with no timeout either. The "Neon Binder" gate was
@@ -54,13 +65,27 @@ tags:
     visible: "Profile Settings"
     timeout: 10000
 
-# waitToSettleTimeoutMs: Maestro waits for the view hierarchy to quiesce between
-# scroll steps, reducing CDP "end-of-input"/empty-hierarchy errors on dynamic pages.
+# Wait in place until the button is genuinely tappable. Its label is keyed off
+# `credsBusy`, so while a credential op holds the server-side lock it reads
+# "Testing..." and this waits rather than tapping a disabled control (NEO-128 —
+# the seed track failed exactly that way once the flows stopped scrolling and
+# reached the button in 0.7s instead of 17s). 30s: the lock is held by a real
+# marketplace login, the same ~22s round trip the banner waits allow for.
+- extendedWaitUntil:
+    visible: "Test Credentials"
+    timeout: 30000
+
+# Then centre it before tapping. The panel is short now, so this is one small
+# in-panel move, not a page traversal — but the button still lands near the
+# 1024x629 fold (measured at y=594-626, 3px of margin), and tapping that close
+# to the edge is what `centerElement` has always existed to avoid.
 - scrollUntilVisible:
     element:
       text: "Test Credentials"
     centerElement: true
+    timeout: 10000
     waitToSettleTimeoutMs: 1000
+
 - tapOn: "Test Credentials"
 
 # 30s exception: a COLD marketplace login is a real ~22s Puppeteer/SSO round-trip (cached is <1s).
@@ -76,10 +101,11 @@ tags:
 # these flows started failing, with nothing wrong in the credentials feature at
 # all) and cost ~14% of seed runs a full ~25-minute re-run.
 #
-# Waiting in place is safe here: the scroll above centers "Test Credentials" at
-# y≈274 and the banner renders just below it, well inside the 1024×629 headless
-# viewport. This is the same conversion PR #127 applied to
-# profile/credentials-lifecycle.yaml and profile/test-credentials.yaml.
+# Waiting in place is safe here: the credentials panel is a short route of its
+# own (NEO-128), so the button and the banner that renders below it are both
+# inside the 1024×629 headless viewport with no scrolling at all. This is the
+# same conversion PR #127 applied to profile/credentials-lifecycle.yaml and
+# profile/test-credentials.yaml.
 - extendedWaitUntil:
     visible: ".*BSC account authenticated successfully.*"
     timeout: 30000

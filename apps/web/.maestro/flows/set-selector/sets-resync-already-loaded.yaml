@@ -10,8 +10,8 @@ tags:
 # verifies that, on a FRESH session, they persist AND the EntityColumn auto-sync
 # guard does NOT re-sync when items already exist.
 #
-# WHY THE WARM STEP: it taps Test Credentials on /profile (cached <1s here) and,
-# critically, navigates AWAY to /profile so util-drill's openLink /set-selector is
+# WHY THE WARM STEP: it taps Test Credentials on /profile/credentials (cached
+# <1s here) and, critically, navigates AWAY so util-drill's openLink /set-selector is
 # a fresh CROSS-page mount. A same-URL openLink doesn't remount and leaves the
 # Sports column non-interactive (selection never drills) — this is the proven
 # pattern from the setup track.
@@ -25,10 +25,10 @@ tags:
     visible: "Set Selector"
     timeout: 45000
 
-# /profile detour (load-bearing): navigate away so util-drill's openLink
+# /profile/credentials detour (load-bearing): navigate away so util-drill's openLink
 # /set-selector is a fresh CROSS-page mount. No marketplace warm needed — this
 # flow reads cached variant types, not live data.
-- openLink: ${APP_URL || "http://localhost:3000"}/profile
+- openLink: ${APP_URL || "http://localhost:3000"}/profile/credentials
 - assertVisible: "Profile Settings"
 
 # Fast-drill to Topps Chrome (data pre-synced; selection via the fixed below: util).

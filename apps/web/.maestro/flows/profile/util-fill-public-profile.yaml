@@ -18,7 +18,7 @@ tags:
 #
 # CONTRACT: runs INSIDE the caller's session (no `url:`/`launchApp`). The caller
 # must already be signed in (as the account that owns ${TEST_USERNAME}) and on a
-# freshly-reset /profile page. Returns after "Profile saved." confirmed.
+# freshly-reset /profile/public route. Returns after "Profile saved." confirmed.
 #
 # account=new-profile + /testing/reset (done by the caller's entry URL) guarantee
 # empty fields, so we skip eraseText (saves ~13 erase cycles; see NEO-7).
@@ -84,5 +84,12 @@ tags:
     element:
       text: "Save Public Profile"
 - tapOn: "Save Public Profile"
-- assertVisible: "Profile saved.*"
+# Non-scrolling on purpose. The save confirmation renders BELOW the Save button,
+# which is the last element on /profile/public, so it used to land past the fold
+# — PublicProfileEditor now scrolls it into view when it appears (NEO-128). This
+# assertion is what proves that: a scrollUntilVisible here would pass even if
+# the message were invisible to a real operator, which is the bug, not the test.
+- extendedWaitUntil:
+    visible: "Profile saved.*"
+    timeout: 10000
 - assertVisible: "View your profile at /u/${TEST_USERNAME}"

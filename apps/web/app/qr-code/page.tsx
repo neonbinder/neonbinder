@@ -138,7 +138,7 @@ export default function QrCodePage() {
         <p className="text-gray-400 max-w-md mb-6">
           Set up your public profile first to generate sale QR codes.
         </p>
-        <a href="/profile">
+        <a href="/profile/public">
           <NeonButton>Go to Profile</NeonButton>
         </a>
       </div>
