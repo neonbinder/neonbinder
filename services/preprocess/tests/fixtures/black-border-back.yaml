@@ -1,0 +1,10 @@
+orient:
+  rotation_degrees: 0
+classify:
+  side: back
+  player:
+    equals: Jed Carlson Lowrie
+  team:
+    is_null: true
+  card_number:
+    equals: '8'

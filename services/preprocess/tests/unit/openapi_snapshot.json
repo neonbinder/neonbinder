@@ -1,0 +1,399 @@
+{
+  "components": {
+    "schemas": {
+      "Body_crop_alternatives_crop_post": {
+        "properties": {
+          "image": {
+            "format": "binary",
+            "title": "Image",
+            "type": "string"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          }
+        },
+        "required": [
+          "image"
+        ],
+        "title": "Body_crop_alternatives_crop_post",
+        "type": "object"
+      },
+      "Body_process_process_post": {
+        "properties": {
+          "image": {
+            "anyOf": [
+              {
+                "format": "binary",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "precropped": {
+            "anyOf": [
+              {
+                "format": "binary",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precropped"
+          }
+        },
+        "title": "Body_process_process_post",
+        "type": "object"
+      },
+      "CropResponse": {
+        "description": "Response body for POST /crop.\n\n`crops` is a list with one entry per strategy that was run:\n  - one entry when `strategy` was supplied\n  - len(STRATEGY_NAMES) entries when it was omitted\nOrder matches `cropper.STRATEGY_NAMES` (the canonical cascade order).",
+        "properties": {
+          "crops": {
+            "items": {
+              "$ref": "#/components/schemas/CropStrategyOutput"
+            },
+            "title": "Crops",
+            "type": "array"
+          }
+        },
+        "required": [
+          "crops"
+        ],
+        "title": "CropResponse",
+        "type": "object"
+      },
+      "CropStrategyOutput": {
+        "description": "One strategy's output in a /crop response.\n\n`image_b64` is null when the strategy returned None (ran cleanly but\ncouldn't produce a crop) OR when it raised. The two cases are\ndistinguished by `error`: null means \"ran cleanly, no crop\"; a string\nis the exception class name. Crashes do NOT 5xx the endpoint \u2014 the\nwhole point of /crop is letting the human pick from whatever\nsucceeded, even when one strategy is broken.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "image_b64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image B64"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "strategy": {
+            "title": "Strategy",
+            "type": "string"
+          }
+        },
+        "required": [
+          "strategy",
+          "index",
+          "image_b64",
+          "error"
+        ],
+        "title": "CropStrategyOutput",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ProcessResponse": {
+        "description": "Response body for POST /process.\n\n`players` is the canonical list of every player visible on the card\n(one entry for single-player cards, many for leaders/combo/dual-\nrookie/team set cards, empty when unidentifiable). `player` is a\nback-compat convenience: first entry or null.\n\n`rotation_degrees` is the CCW rotation that was applied to the chosen\ncrop before classification; clients that store the corrected image\nshould apply the same rotation to keep their copy aligned with what\nthe model actually saw.\n\n`cropped_source` tells the client which stage of the crop cascade\nwon. When it is `\"precropped\"` the client's upload was used as-is and\n`cropped_image_b64` will be null (the client already has the bytes\non disk). For every other source, the server produced new bytes and\nreturns them base64-encoded in `cropped_image_b64`.",
+        "properties": {
+          "card_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Number"
+          },
+          "cropped_image_b64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cropped Image B64"
+          },
+          "cropped_source": {
+            "title": "Cropped Source",
+            "type": "string"
+          },
+          "orient_confidence": {
+            "title": "Orient Confidence",
+            "type": "number"
+          },
+          "player": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player"
+          },
+          "players": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Players",
+            "type": "array"
+          },
+          "rotation_degrees": {
+            "title": "Rotation Degrees",
+            "type": "integer"
+          },
+          "side": {
+            "title": "Side",
+            "type": "string"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team"
+          },
+          "text_count": {
+            "title": "Text Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "players",
+          "player",
+          "team",
+          "card_number",
+          "side",
+          "rotation_degrees",
+          "orient_confidence",
+          "text_count",
+          "cropped_source",
+          "cropped_image_b64"
+        ],
+        "title": "ProcessResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "neonbinder-preprocess",
+    "version": "0.3.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/crop": {
+      "post": {
+        "description": "Run one or all crop strategies on an uploaded image and return raw crops.\n\nCompanion to `/process`: when the cascade's \"best\" pick looks wrong to\na human, this endpoint surfaces the alternatives. No orient, no\nclassify, no gates \u2014 just raw cropped bytes per strategy so a human\ncan pick a different one. If they pick one, they re-POST it to\n`/process` as `precropped` to get the full pipeline.\n\nStrategy identifier (form field):\n  - omitted \u2192 run every strategy in cascade order\n  - name (e.g. `sam`) \u2192 run just that one\n  - 0-based index as a numeric string (e.g. `2`) \u2192 run just that one",
+        "operationId": "crop_alternatives_crop_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_crop_alternatives_crop_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CropResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Crop Alternatives"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/process": {
+      "post": {
+        "description": "Preprocess an image for card identification.\n\nThree request modes:\n  - **image-only** (unchanged default): `image` attached, no `precropped`.\n    Runs the full crop cascade on the original.\n  - **image + precropped** (unchanged opt-in): both attached. The\n    precropped is tried as the cascade's stage-1 candidate; if it's\n    rejected, the server falls back to its own crop strategies on the\n    original. Saves SAM/Haiku cost when the client crop is good; costs\n    full upload bandwidth regardless.\n  - **crop-only** (new): only `precropped` attached. Server validates the\n    crop and runs orient+classify on it if it passes. If validation\n    fails, returns `422 {\"error_code\":\"CROP_VALIDATION_FAILED\", ...,\n    \"retry_with_original\": true}` so the caller can retry with the\n    original. No silent server-side fallback \u2014 saving upload bandwidth\n    is the whole point.",
+        "operationId": "process_process_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_process_process_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Process"
+      }
+    }
+  }
+}

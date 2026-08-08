@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.env
+.env.local
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+.DS_Store
+
+# Fixture images are stored out-of-band (see scripts/fetch_fixtures.py) to
+# keep the git repo slim. Only the .yaml sidecars are tracked.
+tests/fixtures/*.jpg
+tests/fixtures/*.jpeg
+tests/fixtures/*.png
+tests/fixtures/*.webp
+
+# Local convenience scripts for tailing Cloud Run logs — not part of the
+# committed toolchain.
+scripts/logs.sh
+scripts/logs-tail.sh
