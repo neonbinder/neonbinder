@@ -27,6 +27,14 @@ on:
   workflow_dispatch:
   # Also runs on changes to itself or the script, so the checker cannot ship
   # broken and sit silently green until someone reads a cron summary.
+  #
+  # NOTE: on a pull_request the PROD matrix entries are skipped — see the guard
+  # step. The prod WIF providers accept `assertion.ref == refs/heads/main` only,
+  # with no pull_request clause, because PR previews are deliberately dev-only.
+  # A PR-context token is therefore rejected with
+  # `unauthorized_client / rejected by the attribute condition`. That is the
+  # posture working as intended; the checker skips prod on PRs rather than
+  # anyone loosening prod trust to make CI green.
   pull_request:
     paths:
       - ".github/workflows/revision-image-check.yml"
@@ -81,15 +89,33 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Fork PRs get no OIDC, so the auth step would fail confusingly. Skip the
-      # whole check there rather than go red on something a fork cannot fix.
-      - name: Guard — same-repo only
+      # Two reasons to skip before touching OIDC:
+      #
+      #  1. Fork PRs get no OIDC at all, so auth would fail on something a fork
+      #     cannot fix.
+      #  2. On ANY pull_request, the prod entries cannot authenticate: the prod
+      #     WIF providers require `assertion.ref == refs/heads/main` and have no
+      #     pull_request clause (PR previews are dev-only by design), so a
+      #     PR-context token is rejected by the attribute condition. Skipping is
+      #     correct here — the alternative would be widening prod trust to make
+      #     a test run green, which is exactly the wrong trade.
+      #
+      # Scheduled and workflow_dispatch runs are on refs/heads/main, so they
+      # cover all four combinations. The PR trigger exists to prove the script
+      # and wiring, and dev is sufficient for that.
+      - name: Guard — same-repo, and no prod on PRs
         id: guard
+        env:
+          IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          ENV_NAME: ${{ matrix.env }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ] && \
-             [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+          if [ "$IS_FORK" = "true" ]; then
             echo "::notice::fork PR — no OIDC available, skipping"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_PR" = "true" ] && [ "$ENV_NAME" = "prod" ]; then
+            echo "::notice::pull_request — prod WIF is push-to-main only by design, skipping prod (covered by the scheduled run)"
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
