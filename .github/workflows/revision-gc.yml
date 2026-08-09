@@ -1,13 +1,19 @@
 name: Cloud Run Revision GC
 
-# Backstop for NEO-114.
+# Backstop for NEO-114. Covers BOTH Cloud Run services (NEO-123).
 #
-# browser.yml now drops each deploy's `sha-<short>` scratch tag as part of the
-# promote step, which closes the leak at the source. But promotion only happens
-# on a successful deploy — a run that deploys and then fails its login probe
-# leaves a tagged, never-promoted revision behind. Under the old
-# `--min-instances=1` those revisions each held a warm instance 24/7; 27 of them
-# across dev and prod were costing $869.63/month, ~90% of the entire GCP bill.
+# browser.yml and preprocess.yml each drop their deploy's `sha-<short>` scratch
+# tag as part of the promote step, which closes the leak at the source. But
+# promotion only happens on a successful deploy — a run that deploys and then
+# fails its smoke/probe leaves a tagged, never-promoted revision behind. Under
+# the old `--min-instances=1` those revisions each held a warm instance 24/7;
+# 27 of them across dev and prod were costing $869.63/month, ~90% of the entire
+# GCP bill.
+#
+# preprocess was added to the matrix in NEO-123. Before that this workflow swept
+# only browser — while preprocess's own promote step was deliberately RETAINING
+# its scratch tag, so it had both the leak and no backstop. A manual sweep at
+# migration time cleared 42 revisions and 37 images; this keeps it cleared.
 #
 # This sweep reclaims whatever slips through. It is deliberately conservative:
 # dry-run unless explicitly applied, never touches the serving revision, and
@@ -51,23 +57,46 @@ concurrency:
 
 jobs:
   gc:
-    name: GC ${{ matrix.env }}
+    name: GC ${{ matrix.service }} ${{ matrix.env }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       # fail-fast off: prod must still be swept if dev errors, and vice versa —
-      # each environment bills independently.
+      # each environment bills independently. Same reasoning now applies across
+      # services: a preprocess failure must not stop the browser sweep.
       fail-fast: false
       matrix:
+        # service x env. Until NEO-123 this matrix varied ONLY by env, and the
+        # script's `--service` default (neonbinder-browser) was never overridden
+        # — so preprocess had no revision backstop at all while its own promote
+        # step was retaining scratch tags. That combination is exactly how
+        # revisions pile up unnoticed.
+        #
+        # Each service authenticates as its OWN deployer SA rather than sharing
+        # browser's. Both hold project-wide roles/run.admin so either could sweep
+        # either service, but keeping them separate means revoking one deploy
+        # lane also revokes its GC — no cross-service authority by accident.
         include:
-          - env: dev
+          - service: neonbinder-browser
+            env: dev
             project: neonbinder-dev
             wif: GCP_WIF_PROVIDER_DEV
             sa: GCP_SERVICE_ACCOUNT_DEPLOYER_DEV
-          - env: prod
+          - service: neonbinder-browser
+            env: prod
             project: neonbinder
             wif: GCP_WIF_PROVIDER
             sa: GCP_SERVICE_ACCOUNT_DEPLOYER
+          - service: neonbinder-preprocess
+            env: dev
+            project: neonbinder-dev
+            wif: GCP_WIF_PROVIDER_PREPROCESS_DEV
+            sa: GCP_SA_PREPROCESS_DEPLOYER_DEV
+          - service: neonbinder-preprocess
+            env: prod
+            project: neonbinder
+            wif: GCP_WIF_PROVIDER_PREPROCESS
+            sa: GCP_SA_PREPROCESS_DEPLOYER
     permissions:
       contents: read
       id-token: write
@@ -84,6 +113,7 @@ jobs:
       - name: Sweep stale revisions
         env:
           PROJECT: ${{ matrix.project }}
+          SERVICE: ${{ matrix.service }}
           # This fallback — not the workflow_dispatch input default — is what a
           # SCHEDULED run uses, since `inputs.keep` is empty on a cron trigger.
           # Both must be changed together or the weekly sweep silently keeps the
@@ -95,7 +125,11 @@ jobs:
           APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
         run: |
           set -euo pipefail
-          ARGS=(--project "$PROJECT" --keep "$KEEP")
+          # --service is passed EXPLICITLY. The script defaults to
+          # neonbinder-browser, so an omitted flag silently sweeps the wrong
+          # service rather than erroring — which is what left preprocess
+          # uncovered before NEO-123.
+          ARGS=(--project "$PROJECT" --service "$SERVICE" --keep "$KEEP")
           if [ "$APPLY" = "true" ]; then
             ARGS+=(--apply)
           fi
@@ -105,7 +139,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### Revision GC — ${{ matrix.env }} (\`${{ matrix.project }}\`)"
+            echo "### Revision GC — \`${{ matrix.service }}\` in ${{ matrix.env }} (\`${{ matrix.project }}\`)"
             echo
             echo '```'
             cat "$RUNNER_TEMP/gc.log" 2>/dev/null || echo "(no output — the sweep failed before reporting)"

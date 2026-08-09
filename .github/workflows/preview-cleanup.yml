@@ -70,18 +70,27 @@ jobs:
             --project=neonbinder-dev \
             --remove-tags="$TAG"
 
-      - name: Delete the pr-<N> image from dev GCR (best-effort)
-        if: always()
-        env:
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -uo pipefail
-          IMAGE="gcr.io/neonbinder-dev/neonbinder-browser:pr-$PR"
-          echo "Deleting $IMAGE (best-effort; never fails the cleanup)"
-          # Best-effort: missing image or insufficient delete perms must not fail
-          # a PR close. The tag removal above is the load-bearing teardown.
-          gcloud container images delete "$IMAGE" --force-delete-tags --quiet || \
-            echo "image $IMAGE not deleted (absent or no delete permission) — ignoring"
+      # The `pr-<N>` IMAGE is deliberately NOT deleted here. A best-effort
+      # `gcloud container images delete ... || echo "ignoring"` step used to sit
+      # at this point; NEO-123 removed it because it could never succeed and was
+      # actively misleading.
+      #
+      # The deployer SAs hold roles/artifactregistry.writer + createOnPushWriter.
+      # Neither contains artifactregistry.versions.delete, so the call 403s on
+      # EVERY run — verified across PRs 129 and 131-135 — and the `|| echo`
+      # swallowed it into a green step. Cleanup that reports success while doing
+      # nothing is worse than no cleanup: it is why the accumulation went
+      # unnoticed long enough to matter.
+      #
+      # Granting the CI SA repoAdmin was considered and rejected in NEO-117:
+      # a server-side retention policy is least-privilege, whereas blanket
+      # registry delete from CI is a supply-chain risk for no benefit.
+      #
+      # Images are collected server-side by the Artifact Registry cleanup
+      # policies in neonbinder_ioc (google_artifact_registry_repository.gcr_io):
+      # `delete-stale-pr-images` removes `pr-*` tagged versions after 30 days
+      # across every package, on top of per-package keep/age policies.
+      # Collection lags by design — but it does not lie about having happened.
 
   preprocess-cleanup:
     if: |
@@ -135,19 +144,12 @@ jobs:
             --project=neonbinder-dev \
             --remove-tags="$TAG"
 
-      - name: Delete the pr-<N> image from dev GCR (best-effort)
-        if: always() && steps.guard.outputs.ready == 'true'
-        env:
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -uo pipefail
-          IMAGE="gcr.io/neonbinder-dev/neonbinder-preprocess:pr-$PR"
-          echo "Deleting $IMAGE (best-effort; never fails the cleanup)"
-          # This matters more here than for browser: preprocess images are
-          # multi-GB (torch + baked SAM weights), and the standalone repo's
-          # cleanup only ever removed the traffic tag, never the image.
-          gcloud container images delete "$IMAGE" --force-delete-tags --quiet || \
-            echo "image $IMAGE not deleted (absent or no delete permission) — ignoring"
+      # No image delete here either — same reason as the browser job above, and
+      # it was verified failing on PR #135, this service's very first preview.
+      # Preprocess images are the larger ones (torch + ~375MB of baked SAM
+      # weights), which is why NEO-123 also added a `delete-tagged-preprocess`
+      # policy and dropped `keep-recent-preprocess` from 30 to 10 in
+      # neonbinder_ioc, so server-side collection actually reaches them.
 
   convex-preview-cleanup:
     # Delete the Convex preview deployment for this PR so it doesn't accumulate
