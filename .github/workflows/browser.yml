@@ -15,10 +15,16 @@ on:
   pull_request:
     paths:
       - "services/browser/**"
+      # This workflow's own path (NEO-130). Without it a PR that changes only
+      # this file does not run it, so the change ships unexercised — which is
+      # exactly how a broken preview image path could reach main and take the
+      # E2E pipeline down for every subsequent PR.
+      - ".github/workflows/browser.yml"
   push:
     branches: [main]
     paths:
       - "services/browser/**"
+      - ".github/workflows/browser.yml"
   workflow_dispatch:
 
 concurrency:
@@ -89,7 +95,18 @@ jobs:
 
       - name: Build and push Docker image
         env:
-          IMAGE: gcr.io/neonbinder-dev/neonbinder-browser
+          # A SEPARATE package from the deploy image `neonbinder-browser`
+          # (NEO-130). Artifact Registry's `most_recent_versions` keep policy
+          # ranks by PUSH recency, not by deploy — so while previews shared the
+          # deploy package, every PR synchronize consumed a slot in the window
+          # meant to protect deploys (measured here: 6 of 10 slots were
+          # pr-*/untagged, the whole window spanning 9 days). Split out, rank
+          # in `neonbinder-browser` is driven only by merges, so keep_count
+          # genuinely means "N deploys deep".
+          #
+          # No new cleanup policy needed: `delete-stale-pr-images` (tag prefix
+          # `pr-`, 30d) and `delete-old-untagged` (14d) apply to ALL packages.
+          IMAGE: gcr.io/neonbinder-dev/neonbinder-browser-preview
           PR_NUMBER: ${{ github.event.pull_request.number }}
         # cwd = services/browser (job default); Dockerfile.prod + context live here.
         run: |
@@ -101,7 +118,7 @@ jobs:
         with:
           service: neonbinder-browser
           region: us-central1
-          image: gcr.io/neonbinder-dev/neonbinder-browser:pr-${{ github.event.pull_request.number }}
+          image: gcr.io/neonbinder-dev/neonbinder-browser-preview:pr-${{ github.event.pull_request.number }}
           project_id: neonbinder-dev
           env_vars: ENVIRONMENT=dev
           no_traffic: true
