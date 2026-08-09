@@ -27,13 +27,27 @@ name: Cloud Run Revision GC
 #
 # NOTE for anyone tempted to mirror this number into the Artifact Registry
 # cleanup policies (neonbinder_terraform, google_artifact_registry_repository.gcr_io):
-# DO NOT. Image retention there ranks by PUSH VOLUME, not revision count, and PR
-# previews push to the same `neonbinder-browser` package — dev spiked to 13
-# pushes in a single day. A keep_count of 2 there would let one busy PR day
-# collect the LIVE SERVING image, and since minScale=0 every subsequent request
-# cold-starts against a missing image and fails. That side keeps 10, plus an
-# independent 14-day age gate. The two numbers are on different axes and must
-# not be kept "in sync".
+# DO NOT. The conclusion still holds, but SINCE NEO-130 the reason has changed,
+# and the old one should not be repeated:
+#
+#   * WAS (pre-NEO-130): AR keep_count ranks by PUSH VOLUME, and PR previews
+#     pushed into the same `neonbinder-browser` package — dev spiked to 13 pushes
+#     in a single day, so a keep_count of 2 survived only until the next busy PR
+#     day. Previews now push to `<service>-preview`, so that confound is gone:
+#     one merge produces one version (`:<sha>` is new; moving `:latest` only
+#     retags), and rank there genuinely means "deploys deep".
+#
+#   * STILL TRUE: images and revisions are different axes. This workflow's keep 2
+#     counts REVISIONS; AR's keep_count counts IMAGE VERSIONS, and a revision
+#     retained here whose image was collected there cannot start at all — since
+#     minScale=0, every request cold-starts against a missing image and fails,
+#     and Cloud Run cannot self-heal because revisions are immutable. That is not
+#     merely "un-rollback-to-able". AR keeps 10 plus an independent 14-day age
+#     gate, and the two guards are deliberately sized to fail in opposite
+#     conditions (age protects fast-deploying services, rank protects slow ones).
+#
+# The numbers must not be kept "in sync". neonbinder_terraform/main.tf carries
+# the full derivation; keep the two files' reasoning consistent.
 
 on:
   schedule:

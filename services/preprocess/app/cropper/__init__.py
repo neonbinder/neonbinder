@@ -102,14 +102,13 @@ def resolve_strategy_identifier(identifier: str | int) -> str:
     """
     if isinstance(identifier, bool):  # bool is an int subclass — exclude it
         raise UnknownStrategyError(
-            f"invalid strategy identifier: {identifier!r}; " f"valid names: {list(STRATEGY_NAMES)}"
+            f"invalid strategy identifier: {identifier!r}; valid names: {list(STRATEGY_NAMES)}"
         )
     if isinstance(identifier, int):
         if 0 <= identifier < len(STRATEGY_NAMES):
             return STRATEGY_NAMES[identifier]
         raise UnknownStrategyError(
-            f"strategy index {identifier} out of range; "
-            f"valid indices: 0..{len(STRATEGY_NAMES) - 1}"
+            f"strategy index {identifier} out of range; valid indices: 0..{len(STRATEGY_NAMES) - 1}"
         )
     if isinstance(identifier, str):
         if identifier in STRATEGY_NAMES:

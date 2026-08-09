@@ -22,9 +22,9 @@ SNAPSHOT_PATH = Path(__file__).parent / "openapi_snapshot.json"
 
 
 def test_openapi_schema_matches_snapshot():
-    assert (
-        SNAPSHOT_PATH.exists()
-    ), f"Missing snapshot at {SNAPSHOT_PATH}. Generate it per the docstring in this file."
+    assert SNAPSHOT_PATH.exists(), (
+        f"Missing snapshot at {SNAPSHOT_PATH}. Generate it per the docstring in this file."
+    )
 
     current = json.loads(json.dumps(app.openapi(), sort_keys=True))
     committed = json.loads(SNAPSHOT_PATH.read_text())
