@@ -126,7 +126,7 @@ async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
         )
     if len(data) > MAX_IMAGE_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"{field} exceeds max size of {MAX_IMAGE_BYTES} bytes",
         )
     return data
@@ -206,7 +206,7 @@ async def process(
     if isinstance(result, CropRejected):
         logger.info("process: mode=%s crop_rejected reason=%s", mode, result.reason)
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={
                 "error_code": "CROP_VALIDATION_FAILED",
                 "reason": result.reason,
