@@ -198,6 +198,7 @@ import base64, requests
 URL = "http://localhost:8080/crop"
 HEADERS = {"x-internal-key": "dev-key"}
 
+
 def iter_crops(image_path: str):
     """Yield (index, name, jpeg_bytes_or_None, error_or_None) per strategy."""
     with open(image_path, "rb") as f:

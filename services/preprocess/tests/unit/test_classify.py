@@ -110,9 +110,7 @@ class TestPrepareForAnthropic:
 
 class TestClassifyCard:
     def test_happy_path_returns_parsed_fields(self):
-        payload = (
-            '{"player":"Ken Griffey Jr.","team":"Mariners",' '"card_number":"24","side":"front"}'
-        )
+        payload = '{"player":"Ken Griffey Jr.","team":"Mariners","card_number":"24","side":"front"}'
         client = _mock_client(_response_with_text(payload))
 
         result = classify_card(_jpeg_bytes(), client=client)

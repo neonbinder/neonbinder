@@ -87,15 +87,14 @@ def test_fixture_end_to_end(case: FixtureCase):
         "passthrough",
     }, f"{case.name}: unexpected cropped_source {body['cropped_source']!r}"
     if body["cropped_source"] == "precropped":
-        assert (
-            body["cropped_image_b64"] is None
-        ), f"{case.name}: cropped_image_b64 should be null when source==precropped"
+        assert body["cropped_image_b64"] is None, (
+            f"{case.name}: cropped_image_b64 should be null when source==precropped"
+        )
 
     # Sidecar-specific assertions.
     if case.rotation_degrees is not None:
         assert body["rotation_degrees"] == case.rotation_degrees, (
-            f"{case.name}: rotation {body['rotation_degrees']}, "
-            f"expected {case.rotation_degrees}"
+            f"{case.name}: rotation {body['rotation_degrees']}, expected {case.rotation_degrees}"
         )
     if case.min_confidence is not None:
         assert body["orient_confidence"] >= case.min_confidence, (
@@ -103,9 +102,9 @@ def test_fixture_end_to_end(case: FixtureCase):
             f"{case.min_confidence:.2f}"
         )
     if case.side is not None:
-        assert (
-            body["side"] == case.side
-        ), f"{case.name}: side {body['side']!r}, expected {case.side!r}"
+        assert body["side"] == case.side, (
+            f"{case.name}: side {body['side']!r}, expected {case.side!r}"
+        )
     if case.player is not None:
         case.player.check(body["player"], f"{case.name}.player")
     if case.team is not None:

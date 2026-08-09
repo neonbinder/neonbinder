@@ -75,13 +75,13 @@ class StringMatcher:
         if self.contains is not None:
             needle = self.contains.lower()
             haystack = (actual or "").lower()
-            assert (
-                needle in haystack
-            ), f"{label}: expected to contain {self.contains!r}, got {actual!r}"
+            assert needle in haystack, (
+                f"{label}: expected to contain {self.contains!r}, got {actual!r}"
+            )
         if self.regex is not None:
-            assert actual is not None and re.search(
-                self.regex, actual
-            ), f"{label}: expected to match regex {self.regex!r}, got {actual!r}"
+            assert actual is not None and re.search(self.regex, actual), (
+                f"{label}: expected to match regex {self.regex!r}, got {actual!r}"
+            )
 
 
 @dataclass(frozen=True)
