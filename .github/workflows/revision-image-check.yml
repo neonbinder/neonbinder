@@ -1,0 +1,155 @@
+name: Cloud Run Revision Image Check
+
+# Detector for NEO-130.
+#
+# A Cloud Run revision immutably pins the image DIGEST it was deployed with, and
+# every revision here runs minScale=0 — nothing holds the image open. If an
+# Artifact Registry cleanup policy collects that digest, the revision is dead:
+# the next request cold-starts against a missing image and fails, and the
+# revision cannot be repaired, only replaced.
+#
+# That already happened once (neonbinder-browser-00001-47f in prod) and nothing
+# noticed. Retention policies are tuned to make it unlikely — keep_count plus an
+# age gate, and since NEO-130 previews live in their own package so they no
+# longer consume the deploy keep-window — but "unlikely" is not "detected".
+# This is the backstop that makes the failure mode loud regardless of which
+# policy or tuning error caused it.
+#
+# Read-only: it never deletes or modifies anything.
+
+on:
+  schedule:
+    # 10:00 UTC Sunday — deliberately ONE HOUR AFTER revision-gc (09:00 UTC).
+    # Running after the sweep means this observes the post-GC state, so a GC
+    # that collects something load-bearing is caught the same morning rather
+    # than a week later.
+    - cron: "0 10 * * 0"
+  workflow_dispatch:
+  # Also runs on changes to itself or the script, so the checker cannot ship
+  # broken and sit silently green until someone reads a cron summary.
+  #
+  # NOTE: on a pull_request the PROD matrix entries are skipped — see the guard
+  # step. The prod WIF providers accept `assertion.ref == refs/heads/main` only,
+  # with no pull_request clause, because PR previews are deliberately dev-only.
+  # A PR-context token is therefore rejected with
+  # `unauthorized_client / rejected by the attribute condition`. That is the
+  # posture working as intended; the checker skips prod on PRs rather than
+  # anyone loosening prod trust to make CI green.
+  pull_request:
+    paths:
+      - ".github/workflows/revision-image-check.yml"
+      - "scripts/check-revision-images.sh"
+
+concurrency:
+  group: revision-image-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Image check ${{ matrix.service }} ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # A missing image in one service/env says nothing about the others, and
+      # each is independently actionable — so never let one failure mask the
+      # rest.
+      fail-fast: false
+      matrix:
+        # Same service x env shape as revision-gc.yml, and each service
+        # authenticates as its OWN deployer SA. Both hold project-wide
+        # roles/run.admin, so either could read either service — keeping them
+        # separate means revoking a deploy lane also revokes its checks.
+        include:
+          - service: neonbinder-browser
+            env: dev
+            project: neonbinder-dev
+            wif: GCP_WIF_PROVIDER_DEV
+            sa: GCP_SERVICE_ACCOUNT_DEPLOYER_DEV
+          - service: neonbinder-browser
+            env: prod
+            project: neonbinder
+            wif: GCP_WIF_PROVIDER
+            sa: GCP_SERVICE_ACCOUNT_DEPLOYER
+          - service: neonbinder-preprocess
+            env: dev
+            project: neonbinder-dev
+            wif: GCP_WIF_PROVIDER_PREPROCESS_DEV
+            sa: GCP_SA_PREPROCESS_DEPLOYER_DEV
+          - service: neonbinder-preprocess
+            env: prod
+            project: neonbinder
+            wif: GCP_WIF_PROVIDER_PREPROCESS
+            sa: GCP_SA_PREPROCESS_DEPLOYER
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Two reasons to skip before touching OIDC:
+      #
+      #  1. Fork PRs get no OIDC at all, so auth would fail on something a fork
+      #     cannot fix.
+      #  2. On ANY pull_request, the prod entries cannot authenticate: the prod
+      #     WIF providers require `assertion.ref == refs/heads/main` and have no
+      #     pull_request clause (PR previews are dev-only by design), so a
+      #     PR-context token is rejected by the attribute condition. Skipping is
+      #     correct here — the alternative would be widening prod trust to make
+      #     a test run green, which is exactly the wrong trade.
+      #
+      # Scheduled and workflow_dispatch runs are on refs/heads/main, so they
+      # cover all four combinations. The PR trigger exists to prove the script
+      # and wiring, and dev is sufficient for that.
+      - name: Guard — same-repo, and no prod on PRs
+        id: guard
+        env:
+          IS_FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+          ENV_NAME: ${{ matrix.env }}
+        run: |
+          set -euo pipefail
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::notice::fork PR — no OIDC available, skipping"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_PR" = "true" ] && [ "$ENV_NAME" = "prod" ]; then
+            echo "::notice::pull_request — prod WIF is push-to-main only by design, skipping prod (covered by the scheduled run)"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets[matrix.wif] }}
+          service_account: ${{ secrets[matrix.sa] }}
+
+      - if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Check revision images
+        if: steps.guard.outputs.ready == 'true'
+        env:
+          PROJECT: ${{ matrix.project }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          set -uo pipefail
+          # --service is passed EXPLICITLY and the script refuses to default it,
+          # so adding a service to the matrix cannot silently check the wrong one.
+          bash scripts/check-revision-images.sh \
+            --project "$PROJECT" --service "$SERVICE" | tee "$RUNNER_TEMP/check.log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Summarise
+        if: always() && steps.guard.outputs.ready == 'true'
+        run: |
+          {
+            echo "### Revision image check — \`${{ matrix.service }}\` in ${{ matrix.env }} (\`${{ matrix.project }}\`)"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/check.log" 2>/dev/null || echo "(no output — the check failed before reporting)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

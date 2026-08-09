@@ -57,6 +57,23 @@ env:
   PROD_PROJECT: neonbinder
   DEV_IMAGE: gcr.io/neonbinder-dev/neonbinder-preprocess
   PROD_IMAGE: gcr.io/neonbinder/neonbinder-preprocess
+  # Previews go to a SEPARATE package (NEO-130), not `:pr-<N>` on DEV_IMAGE.
+  #
+  # Artifact Registry's `most_recent_versions` keep policy ranks by PUSH
+  # recency, not by deploy. While previews shared this package, every PR
+  # synchronize pushed a new version (plus left an untagged predecessor), so
+  # preview churn consumed the keep window meant to protect deploys — measured
+  # on browser-dev, 6 of 10 protected slots were pr-*/untagged across a 9-day
+  # span. With a low-frequency service like preprocess that also defeats the
+  # age gate, both guards can be false at once and the policy collects the image
+  # the LIVE revision pins. At minScale=0 that is unrecoverable.
+  #
+  # Split out, rank in DEV_IMAGE is driven only by merges, so keep_count
+  # genuinely means "N deploys deep".
+  #
+  # No new cleanup policy is needed: `delete-stale-pr-images` (tag prefix `pr-`,
+  # 30d) and `delete-old-untagged` (14d) both apply to ALL packages.
+  DEV_PREVIEW_IMAGE: gcr.io/neonbinder-dev/neonbinder-preprocess-preview
 
 jobs:
   # Unit tests + lint. Mirrors pr-pipeline.yml's `preprocess-test` on purpose:
@@ -151,15 +168,18 @@ jobs:
           # squash-merge only, so github.sha on main is a NEW commit and can
           # never equal a PR head SHA. All it did was leave a multi-GB image
           # per push that preview-cleanup never deleted.
-          docker build -t "$DEV_IMAGE:pr-$PR_NUMBER" .
-          docker push "$DEV_IMAGE:pr-$PR_NUMBER"
+          #
+          # DEV_PREVIEW_IMAGE, not DEV_IMAGE — previews live in their own
+          # package so they cannot consume the deploy keep-window (NEO-130).
+          docker build -t "$DEV_PREVIEW_IMAGE:pr-$PR_NUMBER" .
+          docker push "$DEV_PREVIEW_IMAGE:pr-$PR_NUMBER"
 
       - name: Deploy tagged no-traffic preview to dev Cloud Run
         uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
         with:
           service: neonbinder-preprocess
           region: us-central1
-          image: gcr.io/neonbinder-dev/neonbinder-preprocess:pr-${{ github.event.pull_request.number }}
+          image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ github.event.pull_request.number }}
           project_id: neonbinder-dev
           # env_vars is REPLACE-semantics for plain env vars, so every plain var
           # terraform sets on the service must be repeated here or the deploy
