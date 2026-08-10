@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { slotIds } from "../../convex/platformSlots";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import BaseSetPicker from "./BaseSetPicker";
@@ -147,13 +148,13 @@ export default function BaseMappingForm({
   }) => {
     // BSC's variantName facet is often empty under variant=Base — fall back
     // to the SET's BSC slug so card-checklist queries still resolve.
-    const setBsc = setNameAncestor?.platformData?.bsc;
-    const bscFallback =
-      typeof setBsc === "string"
-        ? setBsc
-        : Array.isArray(setBsc) && setBsc.length > 0
-          ? setBsc[0]
-          : undefined;
+    // NEO-137: platformData.bsc is a SLOT MAP now. The old
+    // typeof-string / Array.isArray narrowing is still type-legal against a
+    // Record, so it silently yielded `undefined` and the fallback stopped
+    // working — read the ids through the helper instead.
+    const bscFallback = setNameAncestor
+      ? slotIds(setNameAncestor, "bsc")[0]
+      : undefined;
     const bscPlatformValue = selected.bsc?.platformValue ?? bscFallback;
 
     await writePlatformData({

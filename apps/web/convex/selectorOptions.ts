@@ -2522,9 +2522,13 @@ export const applyParallelGroupings = mutation({
 export const setVariantTypePlatformData = mutation({
   args: {
     variantTypeId: v.id("selectorOptions"),
+    // WIRE shape — marketplace ids. Converted to slots below (NEO-137).
     platformData: v.object({
       bsc: v.optional(v.union(v.string(), v.array(v.string()))),
       sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
+      // The SL set's human display name. Stored as the SL slot's LABEL, which
+      // is what replaced `platformData.sportlotsDisplay` — a single display
+      // string stopped meaning anything once a row could hold several SL sets.
       sportlotsDisplay: v.optional(v.string()),
     }),
     metadata: v.optional(v.object({
@@ -2553,10 +2557,48 @@ export const setVariantTypePlatformData = mutation({
         `setVariantTypePlatformData only operates on Base variantTypes; got "${row.value}"`,
       );
     }
+    // NEO-137: the incoming ids must be resolved to SLOTS. Spreading them
+    // straight over `row.platformData` used to produce a mixed object
+    // ({ bsc: { b0: "x" }, sportlots: "884412" }) that the schema rejects —
+    // which broke the Base Set picker, and with it setup.yaml.
+    let working: {
+      platformData: typeof row.platformData;
+      platformLabels: typeof row.platformLabels;
+      platformSlotSeq: typeof row.platformSlotSeq;
+    } = {
+      platformData: row.platformData,
+      platformLabels: row.platformLabels,
+      platformSlotSeq: row.platformSlotSeq,
+    };
+    for (const [side, incoming, label] of [
+      ["bsc", wireToIds(args.platformData.bsc)[0], undefined],
+      [
+        "sportlots",
+        wireToIds(args.platformData.sportlots)[0],
+        args.platformData.sportlotsDisplay,
+      ],
+    ] as const) {
+      if (!incoming) continue;
+      const next = setPrimarySlotId(working, side, incoming, label);
+      working = {
+        platformData: next.platformData,
+        platformLabels: next.platformLabels,
+        platformSlotSeq: next.platformSlotSeq,
+      };
+    }
+
+    const labels = pruneEmptySides({ ...(working.platformLabels ?? {}) });
     const merged: Record<string, unknown> = {
-      platformData: { ...row.platformData, ...args.platformData },
+      platformData: pruneEmptySides({ ...working.platformData }),
       lastUpdated: Date.now(),
     };
+    if (Object.keys(labels).length > 0) merged.platformLabels = labels;
+    if (
+      working.platformSlotSeq &&
+      Object.keys(working.platformSlotSeq).length > 0
+    ) {
+      merged.platformSlotSeq = working.platformSlotSeq;
+    }
     if (args.metadata) {
       merged.metadata = { ...(row.metadata || {}), ...args.metadata };
     }
@@ -4060,7 +4102,12 @@ export const fetchCardChecklist = action({
       const BSC_REQUIRED_LEVELS = new Set(["sport", "year", "setName"]);
       const missingBsc: string[] = [];
       for (const ancestor of chain) {
-        if (BSC_REQUIRED_LEVELS.has(ancestor.level) && !ancestor.platformData?.bsc) {
+        // NEO-137: check for an actual ID, not truthiness of the slot map —
+        // an empty `{}` is truthy and would silently satisfy this precondition.
+        if (
+          BSC_REQUIRED_LEVELS.has(ancestor.level) &&
+          slotIds(ancestor, "bsc").length === 0
+        ) {
           missingBsc.push(`${ancestor.level}=${ancestor.value}`);
         }
       }

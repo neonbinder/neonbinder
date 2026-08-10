@@ -428,6 +428,107 @@ describe("attachPlatformIds", () => {
 });
 
 // ===========================================================================
+// setVariantTypePlatformData — the Base Set picker's write path
+// ===========================================================================
+
+describe("setVariantTypePlatformData", () => {
+  /**
+   * REGRESSION (NEO-137): this handler used to spread the incoming WIRE ids
+   * straight over `row.platformData`, producing a mixed object like
+   * `{ bsc: { b0: "x" }, sportlots: "884412" }` that the schema rejects. The
+   * mutation threw, the Base Set picker never closed, and setup.yaml failed
+   * with `"Select Base Set" is not visible` — taking the entire E2E lane down
+   * with it, since every other flow depends on the seed.
+   *
+   * There was no unit test on this path, which is why CI found it and the
+   * local suite did not.
+   */
+  test("converts wire marketplace ids into slots and stores the SL display name as the slot label", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await insertParent(t);
+    const baseId: Id<"selectorOptions"> = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        parentId,
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.setVariantTypePlatformData, {
+      variantTypeId: baseId,
+      platformData: {
+        bsc: "2024-topps-chrome-base",
+        sportlots: "884412",
+        sportlotsDisplay: "2024 Topps Chrome",
+      },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    // Slot-keyed, NOT a bare id spread over the map.
+    expect(row!.platformData.bsc).toEqual({ b0: "2024-topps-chrome-base" });
+    expect(row!.platformData.sportlots).toEqual({ s0: "884412" });
+    // sportlotsDisplay becomes the SL slot's label — that is what replaced it.
+    expect(row!.platformLabels?.sportlots).toEqual({ s0: "2024 Topps Chrome" });
+    expect(row!.platformSlotSeq).toEqual({ bsc: 1, sportlots: 1 });
+  });
+
+  test("re-picking a different SL set reuses the slot so the row's cards keep resolving", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await insertParent(t);
+    const baseId: Id<"selectorOptions"> = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: { sportlots: { s0: "884412" } },
+        platformSlotSeq: { sportlots: 1 },
+        primaryPlatformId: { sportlots: "s0" },
+        parentId,
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.setVariantTypePlatformData, {
+      variantTypeId: baseId,
+      platformData: { sportlots: "999999", sportlotsDisplay: "Corrected Set" },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    // Same slot key, refreshed id — cards pointing at s0 stay valid.
+    expect(row!.platformData.sportlots).toEqual({ s0: "999999" });
+    expect(row!.platformLabels?.sportlots).toEqual({ s0: "Corrected Set" });
+  });
+
+  test("rejects a non-Base variantType", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await insertParent(t);
+    const insertId: Id<"selectorOptions"> = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        platformData: {},
+        parentId,
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: insertId,
+        platformData: { sportlots: "884412" },
+      }),
+    ).rejects.toThrow(/only operates on Base variantTypes/);
+  });
+});
+
+// ===========================================================================
 // detachPlatformId
 // ===========================================================================
 
