@@ -59,31 +59,50 @@ tags:
 - runFlow:
     file: util-drill-to-2024-topps-chrome.yaml
 
-# Variant Types column is the util's return contract. "Insert" sits alongside
-# "Base"; select it, then its "Future Stars" child.
-- extendedWaitUntil:
-    visible: "Insert"
-    timeout: 30000
+# Mirrors setup.yaml's proven Insert drill exactly (R9 — do not hand-roll a
+# variant of it). Two things make the naive version wrong:
+#   1. Tapping "Insert" reveals the INSERTS COLUMN — wait on "Inserts", the
+#      column header, not on a row inside it.
+#   2. "Future Stars" is NOT directly visible. The Inserts column carries many
+#      entries, so it renders a search input and the row only appears once
+#      filtered. `below: {id: "Search inserts"}` targets the RESULT row rather
+#      than the input itself.
 - scrollUntilVisible:
     element:
       text: "Insert"
     centerElement: true
-- retry:
-    maxRetries: 1
-    commands:
-      - tapOn:
-          text: "Insert"
-          retryTapIfNoChange: true
-      - extendedWaitUntil:
-          visible: "Future Stars"
-          timeout: 60000
+    timeout: 10000
+- tapOn: "Insert"
+- extendedWaitUntil:
+    visible: "Inserts"
+    timeout: 20000
+
+# The inserts are already reconciled by setup.yaml, so the search input is the
+# expected state here; the Reconcile modal should not appear.
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 60000
 - scrollUntilVisible:
     element:
-      text: "Future Stars"
+      text: ".*Search inserts.*"
     centerElement: true
+    timeout: 10000
+# 250ms settle so the input is focused before inputText fires — a 0ms settle
+# drops the first character on this reactive page.
 - tapOn:
-    text: "Future Stars"
-    retryTapIfNoChange: true
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Future Stars"
+- extendedWaitUntil:
+    visible:
+      text: "^Future Stars$"
+      below:
+        id: "Search inserts"
+    timeout: 15000
+- tapOn:
+    text: "^Future Stars$"
+    below:
+      id: "Search inserts"
 
 # ============================================================
 # STEP 1 — SYNC. This must NOT commit; it must open the pairing dialog.
@@ -97,11 +116,16 @@ tags:
 - tapOn:
     id: "Sync card checklist"
 
-# 60s covers the BSC + SL round-trip for a real set. The dialog heading proves
-# the fetch returned candidates rather than committing.
+# 90s matches setup.yaml's own ceiling for a real-set Insert fetch (BSC + SL
+# round-trip). The dialog heading proves the fetch returned CANDIDATES rather
+# than committing straight to cards.
+#
+# setup.yaml already populated this checklist, so the previously-committed
+# pairings replay into the matched bucket (sticky re-sync) — which is itself
+# worth seeing exercised against live marketplace data.
 - extendedWaitUntil:
     visible: "Match Cards"
-    timeout: 60000
+    timeout: 90000
 
 # ============================================================
 # STEP 2 — THE THREE BUCKETS + KEEP SHELF ARE PRESENT
