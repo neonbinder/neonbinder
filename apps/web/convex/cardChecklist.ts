@@ -225,7 +225,8 @@ export const getForBscTeamCheck = internalQuery({
     const needsCheck =
       (!row.teamOnCardIds || row.teamOnCardIds.length === 0) &&
       !row.teamCheckDoneAt;
-    return { bscCardId: row.platformData.bsc, needsCheck };
+    // NEO-137: platformData.bsc is now {ref, src}; the BSC card id is the ref.
+    return { bscCardId: row.platformData.bsc.ref, needsCheck };
   },
 });
 

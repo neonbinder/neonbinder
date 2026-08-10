@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import AttachSetsDialog from "./AttachSetsDialog";
+import { slotEntries, slotLabel } from "../../convex/platformSlots";
 
 /**
  * Per-row attached-sets panel (NEO-6 phase 1). Renders chip stacks for the
@@ -21,10 +22,17 @@ import AttachSetsDialog from "./AttachSetsDialog";
  */
 type Side = "bsc" | "sportlots";
 
-function toArray(v: string | string[] | undefined): string[] {
-  if (v === undefined) return [];
-  return Array.isArray(v) ? v : [v];
-}
+/**
+ * NEO-137: a chip is one SLOT, not one marketplace id. The same marketplace
+ * set can legitimately occupy more than one slot, and detach/rename now key on
+ * the slot because an id is no longer a unique handle on this row.
+ */
+type SlotChip = {
+  slot: string;
+  id: string;
+  label: string;
+  isPrimary: boolean;
+};
 
 export default function MultiSourcePanel({
   selectorOptionId,
@@ -49,13 +57,13 @@ export default function MultiSourcePanel({
   // box mid-interaction (NEO-85 dropped-tap class). These hooks must precede
   // the early returns below so hook order stays unconditional (Rules of Hooks),
   // hence the `row?.`/guarded bodies for the not-yet-loaded case.
-  const bscIds = useMemo(
-    () => toArray(row?.platformData.bsc),
-    [row?.platformData.bsc],
+  const bscEntries = useMemo(
+    () => (row ? slotEntries(row, "bsc") : []),
+    [row],
   );
-  const slIds = useMemo(
-    () => toArray(row?.platformData.sportlots),
-    [row?.platformData.sportlots],
+  const slEntries = useMemo(
+    () => (row ? slotEntries(row, "sportlots") : []),
+    [row],
   );
   const parentFilters = useMemo<Record<string, string>>(() => {
     const filters: Record<string, string> = {};
@@ -69,10 +77,10 @@ export default function MultiSourcePanel({
   }, [chain, row]);
   const alreadyAttached = useMemo(
     () => ({
-      bsc: new Set(bscIds),
-      sportlots: new Set(slIds),
+      bsc: new Set(bscEntries.map((e) => e.id)),
+      sportlots: new Set(slEntries.map((e) => e.id)),
     }),
-    [bscIds, slIds],
+    [bscEntries, slEntries],
   );
 
   if (!row || !chain) return null;
@@ -84,8 +92,23 @@ export default function MultiSourcePanel({
     return null;
   }
 
-  const primaryBsc = row.primaryPlatformId?.bsc ?? bscIds[0];
-  const primarySl = row.primaryPlatformId?.sportlots ?? slIds[0];
+  // Falls back to the lowest-numbered slot, matching primarySlot() on the
+  // backend, so the UI marks the same chip the reconciler treats as primary.
+  const primaryBscSlot = row.primaryPlatformId?.bsc ?? bscEntries[0]?.slot;
+  const primarySlSlot =
+    row.primaryPlatformId?.sportlots ?? slEntries[0]?.slot;
+
+  const toChips = (
+    entries: Array<{ slot: string; id: string }>,
+    side: Side,
+    primary: string | undefined,
+  ): SlotChip[] =>
+    entries.map((e) => ({
+      slot: e.slot,
+      id: e.id,
+      label: slotLabel(row, side, e.slot),
+      isPrimary: e.slot === primary,
+    }));
 
   // Hide only for genuinely custom user-created rows, which have no
   // marketplace concept at all. Marketplace-backed rows stay reachable even
@@ -118,36 +141,32 @@ export default function MultiSourcePanel({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <SideColumn
           title="BSC"
-          ids={bscIds}
-          labels={row.platformLabels?.bsc ?? {}}
-          primaryId={primaryBsc}
-          onDetach={(id, opts) =>
+          chips={toChips(bscEntries, "bsc", primaryBscSlot)}
+          onDetach={(slot, opts) =>
             detach({
               selectorOptionId,
               side: "bsc",
-              id,
+              slot,
               confirmPrimary: opts?.confirmPrimary,
             })
           }
-          onRename={(id, label) =>
-            rename({ selectorOptionId, side: "bsc", id, label })
+          onRename={(slot, label) =>
+            rename({ selectorOptionId, side: "bsc", slot, label })
           }
         />
         <SideColumn
           title="SportLots"
-          ids={slIds}
-          labels={row.platformLabels?.sportlots ?? {}}
-          primaryId={primarySl}
-          onDetach={(id, opts) =>
+          chips={toChips(slEntries, "sportlots", primarySlSlot)}
+          onDetach={(slot, opts) =>
             detach({
               selectorOptionId,
               side: "sportlots",
-              id,
+              slot,
               confirmPrimary: opts?.confirmPrimary,
             })
           }
-          onRename={(id, label) =>
-            rename({ selectorOptionId, side: "sportlots", id, label })
+          onRename={(slot, label) =>
+            rename({ selectorOptionId, side: "sportlots", slot, label })
           }
         />
       </div>
@@ -167,30 +186,18 @@ export default function MultiSourcePanel({
 
 function SideColumn({
   title,
-  ids,
-  labels,
-  primaryId,
+  chips,
   onDetach,
   onRename,
 }: {
   title: string;
-  ids: string[];
-  labels: Record<string, string>;
-  primaryId: string | undefined;
+  chips: SlotChip[];
   onDetach: (
-    id: string,
+    slot: string,
     opts?: { confirmPrimary?: boolean },
   ) => Promise<unknown>;
-  onRename: (id: string, label: string) => Promise<unknown>;
+  onRename: (slot: string, label: string) => Promise<unknown>;
 }) {
-  const chips = useMemo(() => {
-    return ids.map((id) => ({
-      id,
-      label: labels[id] ?? id,
-      isPrimary: id === primaryId,
-    }));
-  }, [ids, labels, primaryId]);
-
   return (
     <div>
       <header className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
@@ -202,7 +209,7 @@ function SideColumn({
         <ul className="flex flex-col gap-1.5">
           {chips.map((chip) => (
             <Chip
-              key={chip.id}
+              key={chip.slot}
               chip={chip}
               onDetach={onDetach}
               onRename={onRename}
@@ -221,12 +228,12 @@ function Chip({
   onDetach,
   onRename,
 }: {
-  chip: { id: string; label: string; isPrimary: boolean };
+  chip: SlotChip;
   onDetach: (
-    id: string,
+    slot: string,
     opts?: { confirmPrimary?: boolean },
   ) => Promise<unknown>;
-  onRename: (id: string, label: string) => Promise<unknown>;
+  onRename: (slot: string, label: string) => Promise<unknown>;
 }) {
   const [mode, setMode] = useState<ChipMode>("idle");
   const [draft, setDraft] = useState(chip.label);
@@ -243,7 +250,7 @@ function Chip({
     }
     setBusy(true);
     try {
-      await onRename(chip.id, trimmed);
+      await onRename(chip.slot, trimmed);
       setMode("idle");
       setErr(null);
     } catch (e) {
@@ -258,7 +265,7 @@ function Chip({
     setBusy(true);
     setErr(null);
     try {
-      await onDetach(chip.id, { confirmPrimary: chip.isPrimary });
+      await onDetach(chip.slot, { confirmPrimary: chip.isPrimary });
       setMode("idle");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));

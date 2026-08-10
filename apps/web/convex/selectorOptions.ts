@@ -29,7 +29,125 @@ import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
-import { selectorOptionFields, selectorOptionLevelValidator } from "./schema";
+import {
+  cardPlatformDataValidator,
+  cardPlatformWireDataValidator,
+  selectorOptionFields,
+  selectorOptionLevelValidator,
+} from "./schema";
+import {
+  allocateSlots,
+  detachSlot,
+  idForSlot,
+  initialSlots,
+  primarySlot,
+  pruneEmptySides,
+  setPrimarySlotId,
+  slotEntries,
+  slotForId,
+  slotIds,
+  slotLabel,
+} from "./platformSlots";
+
+// The wire still speaks marketplace IDs — clients know nothing about slots.
+function wireToIds(v: string | string[] | undefined): string[] {
+  if (v === undefined) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
+type WirePlatformData = {
+  bsc?: { ref: string; setId?: string };
+  sportlots?: { ref: string; setId?: string };
+};
+
+type StoredPlatformData = {
+  bsc?: { ref: string; src: string };
+  sportlots?: { ref: string; src: string };
+};
+
+/**
+ * NEO-137 — resolve incoming cards' WIRE platformData (marketplace set ids)
+ * into STORED platformData (slot keys on the card's own parent row).
+ *
+ * A stored card's `src` always names a slot on its own parent, which is what
+ * makes the pointer unambiguous. So any source set a card names that is not
+ * yet attached to that parent gets a slot allocated here — the operator's
+ * "as long as they are connected at the parent" rule, enforced at write time
+ * rather than assumed.
+ *
+ * A ref with no `setId` (a marketplace that returned no source tag) resolves
+ * against the side's PRIMARY slot, which is the only sensible reading: the
+ * card came from whichever set this row syncs by default.
+ *
+ * Returns the per-side lookup plus any row patch needed to record newly
+ * allocated slots. The caller applies the patch — the counter and the map it
+ * guards must move together.
+ */
+async function resolveCardSlots(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null>; patch: (id: Id<"selectorOptions">, patch: Record<string, unknown>) => Promise<void> } },
+  selectorOptionId: Id<"selectorOptions">,
+  cards: Array<{ platformData: WirePlatformData }>,
+): Promise<(pd: WirePlatformData) => StoredPlatformData> {
+  const row = await ctx.db.get(selectorOptionId);
+  if (!row) return () => ({});
+
+  const neededBySide: Record<"bsc" | "sportlots", Set<string>> = {
+    bsc: new Set(),
+    sportlots: new Set(),
+  };
+  for (const card of cards) {
+    for (const side of ["bsc", "sportlots"] as const) {
+      const setId = card.platformData?.[side]?.setId;
+      if (setId && slotForId(row, side, setId) === undefined) {
+        neededBySide[side].add(setId);
+      }
+    }
+  }
+
+  let slotById: Record<"bsc" | "sportlots", Record<string, string>> = {
+    bsc: {},
+    sportlots: {},
+  };
+  for (const side of ["bsc", "sportlots"] as const) {
+    for (const { slot, id } of slotEntries(row, side)) slotById[side][id] = slot;
+  }
+
+  const toAllocate = {
+    bsc: [...neededBySide.bsc].map((id) => ({ id })),
+    sportlots: [...neededBySide.sportlots].map((id) => ({ id })),
+  };
+  if (toAllocate.bsc.length > 0 || toAllocate.sportlots.length > 0) {
+    const alloc = allocateSlots(row, toAllocate);
+    slotById = alloc.slotByIdBySide;
+    await ctx.db.patch(selectorOptionId, {
+      platformData: pruneEmptySides({ ...alloc.platformData }),
+      platformSlotSeq: alloc.platformSlotSeq,
+      lastUpdated: Date.now(),
+    });
+  }
+
+  const primaryBySide = {
+    bsc: primarySlot(row, "bsc"),
+    sportlots: primarySlot(row, "sportlots"),
+  };
+
+  return (pd: WirePlatformData): StoredPlatformData => {
+    const out: StoredPlatformData = {};
+    for (const side of ["bsc", "sportlots"] as const) {
+      const wire = pd?.[side];
+      if (!wire) continue;
+      const src = wire.setId
+        ? slotById[side][wire.setId]
+        : primaryBySide[side];
+      // No resolvable slot means the row has no mapping on this side at all.
+      // Dropping the ref is right: a ref we cannot attribute to a source set
+      // is not something later sync-by-set could act on.
+      if (!src) continue;
+      out[side] = { ref: wire.ref, src };
+    }
+    return out;
+  };
+}
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
 const levelValidator = selectorOptionLevelValidator;
@@ -147,15 +265,12 @@ export const getUsedInsertIdentifiersBySet = query({
         .collect();
       for (const ins of inserts) {
         values.push(ins.value);
-        if (typeof ins.platformData.sportlots === "string") {
-          slPlatformValues.push(ins.platformData.sportlots);
-        }
-        const bsc = ins.platformData.bsc;
-        if (typeof bsc === "string") {
-          bscPlatformValues.push(bsc);
-        } else if (Array.isArray(bsc)) {
-          bscPlatformValues.push(...bsc);
-        }
+        // NEO-137: both sides read through the same helper. The SL branch
+        // used to handle only the `string` case and silently skipped arrays,
+        // so an insert mapped to several SL sets did not register any of them
+        // as used and could be double-claimed by a sibling variantType.
+        slPlatformValues.push(...slotIds(ins, "sportlots"));
+        bscPlatformValues.push(...slotIds(ins, "bsc"));
       }
     }
 
@@ -175,15 +290,8 @@ export const getBaseVariantBySet = query({
     v.null(),
     v.object({
       value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
+      platformData: selectorOptionFields.platformData,
+      platformLabels: selectorOptionFields.platformLabels,
     }),
   ),
   handler: async (ctx, args) => {
@@ -517,14 +625,7 @@ export const getCardChecklist = query({
         front: v.optional(v.string()),
         back: v.optional(v.string()),
       })),
-      platformData: v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      }),
-      sourcePlatformIds: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
+      platformData: cardPlatformDataValidator,
       isCustom: v.optional(v.boolean()),
       pendingPlayerNames: v.optional(v.array(v.string())),
       pendingTeamNames: v.optional(v.array(v.string())),
@@ -691,10 +792,10 @@ export const storeSelectorOptions = mutation({
     const warnIfIncomplete = (
       rowId: Id<"selectorOptions"> | "new",
       value: string,
-      pd: { bsc?: string | string[]; sportlots?: string | string[] },
+      bscId: string | undefined,
     ) => {
       if (!BSC_REQUIRED_LEVELS.has(level)) return;
-      if (pd.bsc) return;
+      if (bscId) return;
       console.warn(
         `[storeSelectorOptions] row missing BSC platform slug — level=${level} ` +
           `value=${value} id=${rowId}. Downstream BSC fetches will hit the ` +
@@ -706,14 +807,45 @@ export const storeSelectorOptions = mutation({
       const normalizedValue = option.value.toLowerCase().trim();
       processedValues.add(normalizedValue);
 
+      // The wire still speaks marketplace IDs. These upper levels
+      // (sport/year/manufacturer/setName) carry exactly one per side.
+      const incomingBsc = wireToIds(option.platformData.bsc)[0];
+      const incomingSl = wireToIds(option.platformData.sportlots)[0];
+
       const existing = existingByValue.get(normalizedValue);
       if (existing) {
-        // Merge platformData onto existing (preserves custom entries)
-        const mergedPlatformData = {
-          ...existing.platformData,
-          ...option.platformData,
+        // NEO-137: refresh the PRIMARY SLOT's id per side rather than merging
+        // raw ids. Reusing the slot key is what keeps this row's cards
+        // resolving when a marketplace re-slugs a set — the id changes, the
+        // set does not. An absent incoming id leaves the side untouched here
+        // (unlike the reconciler, this generic sync never clears a mapping).
+        let working: {
+          platformData: typeof existing.platformData;
+          platformLabels: typeof existing.platformLabels;
+          platformSlotSeq: typeof existing.platformSlotSeq;
+        } = {
+          platformData: existing.platformData,
+          platformLabels: existing.platformLabels,
+          platformSlotSeq: existing.platformSlotSeq,
         };
-        warnIfIncomplete(existing._id, option.value, mergedPlatformData);
+        for (const [side, incoming] of [
+          ["bsc", incomingBsc],
+          ["sportlots", incomingSl],
+        ] as const) {
+          if (!incoming) continue;
+          const next = setPrimarySlotId(working, side, incoming);
+          working = {
+            platformData: next.platformData,
+            platformLabels: next.platformLabels,
+            platformSlotSeq: next.platformSlotSeq,
+          };
+        }
+        const mergedPlatformData = pruneEmptySides({ ...working.platformData });
+        warnIfIncomplete(
+          existing._id,
+          option.value,
+          slotIds({ platformData: mergedPlatformData }, "bsc")[0],
+        );
 
         // NEO-85: only patch when the merged data actually differs from what's
         // stored. A no-op patch still invalidates every query that read this
@@ -726,6 +858,10 @@ export const storeSelectorOptions = mutation({
           mergedPlatformData,
           existing.platformData,
         );
+        const slotSeqChanged = !valuesDeepEqual(
+          working.platformSlotSeq ?? {},
+          existing.platformSlotSeq ?? {},
+        );
 
         // NEO-96: backfill sportConfig onto a sport row that predates it (or
         // whose earlier sync ran before defaults existed). Only ever ADDS —
@@ -736,9 +872,12 @@ export const storeSelectorOptions = mutation({
             ? sportConfigDefaultsFor(option.value)
             : undefined;
 
-        if (platformDataChanged || sportConfigBackfill) {
+        if (platformDataChanged || slotSeqChanged || sportConfigBackfill) {
           await ctx.db.patch(existing._id, {
             ...(platformDataChanged ? { platformData: mergedPlatformData } : {}),
+            ...(slotSeqChanged
+              ? { platformSlotSeq: working.platformSlotSeq }
+              : {}),
             ...(sportConfigBackfill ? { sportConfig: sportConfigBackfill } : {}),
             lastUpdated: Date.now(),
           });
@@ -747,7 +886,7 @@ export const storeSelectorOptions = mutation({
         // patched it — skipping the patch must not drop it from the ordering.
         insertedIds.push(existing._id);
       } else {
-        warnIfIncomplete("new", option.value, option.platformData);
+        warnIfIncomplete("new", option.value, incomingBsc);
         const features = {
           ...(parentFeatures ?? {}),
           ...deriveOwnLevelFeatures(level, option.value),
@@ -758,10 +897,17 @@ export const storeSelectorOptions = mutation({
         // convex/sportConfig.ts.
         const sportConfig =
           level === "sport" ? sportConfigDefaultsFor(option.value) : undefined;
+        const alloc = initialSlots({
+          ...(incomingBsc ? { bsc: [{ id: incomingBsc }] } : {}),
+          ...(incomingSl ? { sportlots: [{ id: incomingSl }] } : {}),
+        });
         const id = await ctx.db.insert("selectorOptions", {
           level,
           value: option.value,
-          platformData: option.platformData,
+          platformData: alloc.platformData,
+          ...(Object.keys(alloc.platformSlotSeq).length > 0
+            ? { platformSlotSeq: alloc.platformSlotSeq }
+            : {}),
           parentId,
           children: [],
           ...(Object.keys(features).length > 0 ? { features } : {}),
@@ -909,19 +1055,6 @@ const platformSideValidator = v.union(
   v.literal("sportlots"),
 );
 
-// Normalize platformData side to an array. Mirrors the helper in
-// setReconciliation.ts but kept local to avoid a cross-file import.
-function pdSideToArray(v: string | string[] | undefined): string[] {
-  if (v === undefined) return [];
-  return Array.isArray(v) ? v : [v];
-}
-
-function packPdSide(ids: string[]): string | string[] | undefined {
-  if (ids.length === 0) return undefined;
-  if (ids.length === 1) return ids[0];
-  return ids;
-}
-
 /**
  * Attach one or more BSC/SL set IDs to an existing canonical row, with
  * editable human labels. Skips IDs already attached (including the
@@ -984,43 +1117,41 @@ export const attachPlatformIds = mutation({
       }
     }
 
-    const mergedPD: { bsc?: string | string[]; sportlots?: string | string[] } = {
-      bsc: row.platformData.bsc,
-      sportlots: row.platformData.sportlots,
-    };
-    const mergedLabels: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
-    } = {
-      bsc: { ...(row.platformLabels?.bsc ?? {}) },
-      sportlots: { ...(row.platformLabels?.sportlots ?? {}) },
-    };
-
-    let attached = 0;
+    // Cap check runs before allocation so a batch that would overflow fails
+    // atomically rather than attaching a prefix of itself.
     for (const side of ["bsc", "sportlots"] as const) {
       const additions = args.additions[side] ?? [];
       if (additions.length === 0) continue;
-      const current = pdSideToArray(mergedPD[side]);
-      const currentSet = new Set(current);
-      for (const { id, label } of additions) {
-        if (!id) continue;
-        if (!currentSet.has(id)) {
-          if (current.length >= MAX_ATTACHED_PER_SIDE) {
-            throw new Error(
-              `attachPlatformIds: cap of ${MAX_ATTACHED_PER_SIDE} attached IDs per side reached (side=${side})`,
-            );
-          }
-          current.push(id);
-          currentSet.add(id);
-          attached += 1;
-        }
-        // Label overwrites are intentional — operator may re-attach with a
-        // cleaner label and expect it to stick. We've already validated
-        // non-empty + length in the pass above.
-        mergedLabels[side]![id] = label.trim();
+      const alreadyAttached = new Set(slotIds(row, side));
+      const genuinelyNew = additions.filter(
+        ({ id }) => id && !alreadyAttached.has(id),
+      ).length;
+      if (alreadyAttached.size + genuinelyNew > MAX_ATTACHED_PER_SIDE) {
+        throw new Error(
+          `attachPlatformIds: cap of ${MAX_ATTACHED_PER_SIDE} attached IDs per side reached (side=${side})`,
+        );
       }
-      mergedPD[side] = packPdSide(current);
     }
+
+    // NEO-137: each genuinely-new ID gets a fresh slot from the row's
+    // never-rewound counter. Re-attaching an ID already present is a no-op for
+    // platformData but still refreshes its label — an operator re-attaching
+    // with a cleaner name expects it to stick.
+    //
+    // Nothing here checks whether another row already holds the same
+    // marketplace ID, deliberately: two sibling rows pointing at one
+    // marketplace set is exactly the M:1 mapping this ticket adds.
+    const alloc = allocateSlots(row, {
+      bsc: (args.additions.bsc ?? [])
+        .filter(({ id }) => id)
+        .map(({ id, label }) => ({ id, label: label.trim() })),
+      sportlots: (args.additions.sportlots ?? [])
+        .filter(({ id }) => id)
+        .map(({ id, label }) => ({ id, label: label.trim() })),
+    });
+    const mergedPD = alloc.platformData;
+    const mergedLabels = alloc.platformLabels;
+    const attached = alloc.attachedCount;
 
     // Strip empty label objects so we don't write `{ bsc: {} }`.
     const labelsPatch: {
@@ -1038,6 +1169,13 @@ export const attachPlatformIds = mutation({
       platformData: mergedPD,
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      // The counter moves in the SAME patch as the map it guards. Splitting
+      // them would let a crash in between hand the next allocation a slot key
+      // that is already in use.
+      platformSlotSeq:
+        Object.keys(alloc.platformSlotSeq).length > 0
+          ? alloc.platformSlotSeq
+          : undefined,
       lastUpdated: Date.now(),
     });
 
@@ -1070,7 +1208,11 @@ export const detachPlatformId = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     side: platformSideValidator,
-    id: v.string(),
+    // NEO-137: the SLOT key, not the marketplace ID. A marketplace ID is no
+    // longer a unique handle on a row — the same set can legitimately occupy
+    // more than one slot, and "detach that set" would be ambiguous. The slot
+    // is exactly what the UI renders a row per.
+    slot: v.string(),
     confirmPrimary: v.optional(v.boolean()),
   },
   returns: v.object({
@@ -1085,32 +1227,20 @@ export const detachPlatformId = mutation({
         `selectorOptions row not found: ${args.selectorOptionId}`,
       );
     }
-    const current = pdSideToArray(row.platformData[args.side]);
-    const primary =
-      row.primaryPlatformId?.[args.side] ?? current[0];
-    const isPrimary = args.id === primary;
+    const attachedId = idForSlot(row, args.side, args.slot);
+    if (attachedId === undefined) {
+      return { success: true, message: "Nothing to detach (slot not attached)" };
+    }
+    const isPrimary = args.slot === primarySlot(row, args.side);
     if (isPrimary && !args.confirmPrimary) {
       throw new Error(
-        `Refusing to detach the reconciliation primary (${args.side}=${args.id}). ` +
+        `Refusing to detach the reconciliation primary (${args.side}=${attachedId}). ` +
           `Pass confirmPrimary to detach it anyway, or re-run set reconciliation to change the primary.`,
       );
     }
-    if (!current.includes(args.id)) {
-      return { success: true, message: "Nothing to detach (id not attached)" };
-    }
-    const remaining = current.filter((x) => x !== args.id);
-    const newLabels = { ...(row.platformLabels?.[args.side] ?? {}) };
-    delete newLabels[args.id];
 
-    const labelsPatch: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
-    } = { ...(row.platformLabels ?? {}) };
-    if (Object.keys(newLabels).length > 0) {
-      labelsPatch[args.side] = newLabels;
-    } else {
-      delete labelsPatch[args.side];
-    }
+    const detached = detachSlot(row, args.side, args.slot);
+    const labelsPatch = pruneEmptySides({ ...detached.platformLabels });
 
     let primaryPatch: { bsc?: string; sportlots?: string } | undefined;
     if (isPrimary) {
@@ -1120,12 +1250,14 @@ export const detachPlatformId = mutation({
     }
 
     await ctx.db.patch(row._id, {
-      platformData: {
-        ...row.platformData,
-        [args.side]: packPdSide(remaining),
-      },
+      platformData: pruneEmptySides({ ...detached.platformData }),
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      // platformSlotSeq is deliberately NOT patched — the counter never
+      // rewinds, so this slot key is retired for good. Any card still pointing
+      // at it now resolves to nothing and surfaces as an orphaned ref, which
+      // is recoverable; silently repointing it at a different set is not.
+      //
       // Only touch primaryPlatformId when we actually detached the primary —
       // leave it untouched otherwise (matches the rest of this mutation's
       // minimal-patch convention).
@@ -1144,7 +1276,9 @@ export const renamePlatformLabel = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     side: platformSideValidator,
-    id: v.string(),
+    // NEO-137: the SLOT key — see detachPlatformId for why the marketplace ID
+    // is no longer a unique handle.
+    slot: v.string(),
     label: v.string(),
   },
   returns: v.object({
@@ -1159,20 +1293,22 @@ export const renamePlatformLabel = mutation({
         `selectorOptions row not found: ${args.selectorOptionId}`,
       );
     }
-    const attached = pdSideToArray(row.platformData[args.side]);
-    if (!attached.includes(args.id)) {
+    if (idForSlot(row, args.side, args.slot) === undefined) {
       throw new Error(
-        `Cannot rename label for unattached id (${args.side}=${args.id})`,
+        `Cannot rename label for unattached slot (${args.side}=${args.slot})`,
       );
     }
     const trimmed = args.label.trim();
     if (!trimmed) {
       throw new Error("Label cannot be empty");
     }
+    if (trimmed.length > MAX_LABEL_LENGTH) {
+      throw new Error(`Label exceeds ${MAX_LABEL_LENGTH} chars`);
+    }
 
     const sideLabels = {
       ...(row.platformLabels?.[args.side] ?? {}),
-      [args.id]: trimmed,
+      [args.slot]: trimmed,
     };
     const labelsPatch: {
       bsc?: Record<string, string>;
@@ -1302,10 +1438,9 @@ const richChecklistCardValidator = v.object({
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
-  platformData: v.object({
-    bsc: v.optional(v.string()),
-    sportlots: v.optional(v.string()),
-  }),
+  // WIRE shape — marketplace set ids. Resolved to slots on the card's own
+  // parent row at write time (NEO-137).
+  platformData: cardPlatformWireDataValidator,
 });
 
 /**
@@ -1416,6 +1551,14 @@ export const storeCardChecklist = mutation({
       existingByNumber.set(card.cardNumber, card);
     }
 
+    // NEO-137: incoming refs name marketplace SET ids; stored refs name a slot
+    // on this card's own parent row. Resolve once for the whole batch.
+    const toStoredPlatformData = await resolveCardSlots(
+      ctx,
+      selectorOptionId,
+      cards,
+    );
+
     const processedNumbers = new Set<string>();
 
     for (let i = 0; i < cards.length; i++) {
@@ -1424,10 +1567,10 @@ export const storeCardChecklist = mutation({
 
       const existing = existingByNumber.get(card.cardNumber);
       if (existing) {
-        // Merge platform data — keep prior IDs if the new payload omits one side
+        // Merge platform data — keep prior refs if the new payload omits one side
         const mergedPlatformData = {
           ...existing.platformData,
-          ...card.platformData,
+          ...toStoredPlatformData(card.platformData),
         };
         await ctx.db.patch(existing._id, {
           cardName: card.cardName,
@@ -1458,7 +1601,7 @@ export const storeCardChecklist = mutation({
           printRun: card.printRun,
           autographType: card.autographType,
           cardVariation: card.cardVariation,
-          platformData: card.platformData,
+          platformData: toStoredPlatformData(card.platformData),
           sortOrder: i,
           lastUpdated: Date.now(),
         });
@@ -3737,10 +3880,11 @@ interface ReconciledCard {
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
-  platformData: { bsc?: string; sportlots?: string };
-  // NEO-6: per-card source set IDs when the variant has multiple attached.
-  // Drives the "Series 1 / Series 2" filter and the per-card source badge.
-  sourcePlatformIds?: { bsc?: string; sportlots?: string };
+  // NEO-137: WIRE shape — each ref carries the marketplace SET it came from,
+  // so the source travels with the ref instead of in a parallel
+  // `sourcePlatformIds` that could drift out of step. Commit resolves `setId`
+  // to a slot on the card's own parent row.
+  platformData: WirePlatformData;
   /**
    * Reconciliation marker for cards that landed on only one side. UI
    * surfaces these as needing human review; reconciled cards (from both
@@ -3761,18 +3905,10 @@ const previewCardValidator = v.object({
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
-  platformData: v.object({
-    bsc: v.optional(v.string()),
-    sportlots: v.optional(v.string()),
-  }),
-  // NEO-6: source set IDs per side (only populated when variant has
-  // multiple attached IDs on that side).
-  sourcePlatformIds: v.optional(
-    v.object({
-      bsc: v.optional(v.string()),
-      sportlots: v.optional(v.string()),
-    }),
-  ),
+  // NEO-137: ref + the marketplace set it came from. Replaces the separate
+  // `sourcePlatformIds`, which carried the full set id on every card. This is
+  // the WIRE shape — commit resolves `setId` to a slot on the parent row.
+  platformData: cardPlatformWireDataValidator,
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
 });
 
@@ -3812,22 +3948,9 @@ export const fetchCardChecklist = action({
     success: boolean;
     message: string;
     sportId?: Id<"selectorOptions">;
-    cards: Array<{
-      cardNumber: string;
-      cardName: string;
-      team?: string;
-      teams?: string[];
-      players?: string[];
-      attributes?: string[];
-      isRookie?: boolean;
-      isRelic?: boolean;
-      printRun?: number;
-      autographType?: string;
-      cardVariation?: string;
-      platformData: { bsc?: string; sportlots?: string };
-      sourcePlatformIds?: { bsc?: string; sportlots?: string };
-      unmatched?: "bsc" | "sl";
-    }>;
+    // Structural duplicate of ReconciledCard removed (NEO-137) — it drifted
+    // from the interface it mirrors the moment platformData changed shape.
+    cards: ReconciledCard[];
     unknownPlayers: string[];
     unknownTeams: string[];
     batchId?: string;
@@ -4176,14 +4299,6 @@ export const fetchCardChecklist = action({
         const players = bsc.players ?? (sl?.players ?? undefined);
         const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
 
-        const sourcePlatformIds =
-          bsc.sourceBscSetSlug || sl?.sourceSlSetId
-            ? {
-                bsc: bsc.sourceBscSetSlug,
-                sportlots: sl?.sourceSlSetId,
-              }
-            : undefined;
-
         out.push({
           cardNumber: bsc.cardNumber,
           cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
@@ -4196,11 +4311,30 @@ export const fetchCardChecklist = action({
           printRun,
           autographType: bsc.autographType ?? sl?.autographType,
           cardVariation: bsc.cardVariation,
+          // NEO-137: each ref carries the marketplace SET it came from, so
+          // the source travels with the ref rather than in a parallel
+          // `sourcePlatformIds` object that could fall out of step with it.
+          // Commit resolves `setId` to a slot on this card's parent row.
           platformData: {
-            bsc: bsc.platformRef,
-            sportlots: sl?.platformRef,
+            ...(bsc.platformRef
+              ? {
+                  bsc: {
+                    ref: bsc.platformRef,
+                    ...(bsc.sourceBscSetSlug
+                      ? { setId: bsc.sourceBscSetSlug }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(sl?.platformRef
+              ? {
+                  sportlots: {
+                    ref: sl.platformRef,
+                    ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
+                  },
+                }
+              : {}),
           },
-          sourcePlatformIds,
         });
       }
 
@@ -4220,10 +4354,14 @@ export const fetchCardChecklist = action({
           isRelic: sl.attributes?.includes("RELIC") || undefined,
           printRun: sl.printRun,
           autographType: sl.autographType,
-          platformData: { sportlots: sl.platformRef },
-          sourcePlatformIds: sl.sourceSlSetId
-            ? { sportlots: sl.sourceSlSetId }
-            : undefined,
+          platformData: sl.platformRef
+            ? {
+                sportlots: {
+                  ref: sl.platformRef,
+                  ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
+                },
+              }
+            : {},
           unmatched: "bsc",
         });
       }
@@ -4242,10 +4380,10 @@ export const fetchCardChecklist = action({
       if (needsTeamLookup.length > 0) {
         const teamNames: Record<string, string> = await ctx.runAction(
           internal.adapters.buysportscards.fetchBscCardTeamNames,
-          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!) },
+          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!.ref) },
         );
         for (const c of needsTeamLookup) {
-          const name = teamNames[c.platformData.bsc!];
+          const name = teamNames[c.platformData.bsc!.ref];
           if (name) c.teams = [name];
         }
       }
@@ -4578,10 +4716,18 @@ export const commitCardChecklist = mutation({
         printRun: c.printRun,
         autographType: c.autographType,
         cardVariation: c.cardVariation,
+        // NEO-137: WIRE shape here (marketplace set ids); resolved to slots
+        // just below so a stored card's `src` always names a slot on its own
+        // parent row.
         platformData: c.platformData,
-        sourcePlatformIds: c.sourcePlatformIds,
       };
     });
+
+    const toStoredPlatformData = await resolveCardSlots(
+      ctx,
+      args.selectorOptionId,
+      richCards,
+    );
 
     // Same delete-stale-rows behavior as before, inlined here so we can
     // keep the rich-card persistence path under a single mutation entry.
@@ -4666,9 +4812,11 @@ export const commitCardChecklist = mutation({
       const newSortOrder = targetSortOrder.get(card.cardNumber) ?? i;
       const existing = existingByNumber.get(card.cardNumber);
       if (existing) {
+        // Merge per side so a sync that resolves only one marketplace does not
+        // wipe the other side's confirmed ref.
         const mergedPlatformData = {
           ...existing.platformData,
-          ...card.platformData,
+          ...toStoredPlatformData(card.platformData),
         };
         await ctx.db.patch(existing._id, {
           cardName: card.cardName,
@@ -4682,7 +4830,6 @@ export const commitCardChecklist = mutation({
           autographType: card.autographType,
           cardVariation: card.cardVariation,
           platformData: mergedPlatformData,
-          sourcePlatformIds: card.sourcePlatformIds,
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
         });
@@ -4759,8 +4906,7 @@ export const commitCardChecklist = mutation({
           printRun: card.printRun,
           autographType: card.autographType,
           cardVariation: card.cardVariation,
-          platformData: card.platformData,
-          sourcePlatformIds: card.sourcePlatformIds,
+          platformData: toStoredPlatformData(card.platformData),
           // NEO-24: inherit ancestor + derive per-card on insert. Existing
           // rows are owned by the propagation engine; never clobbered here.
           ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),

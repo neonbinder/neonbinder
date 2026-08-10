@@ -80,7 +80,13 @@ type FetchPreview = {
     printRun?: number;
     autographType?: string;
     cardVariation?: string;
-    platformData: { bsc?: string; sportlots?: string };
+    // NEO-137: WIRE shape from fetchCardChecklist — ref plus the marketplace
+    // SET it came from. commitCardChecklist resolves setId to a slot on this
+    // card's parent row.
+    platformData: {
+      bsc?: { ref: string; setId?: string };
+      sportlots?: { ref: string; setId?: string };
+    };
     unmatched?: "bsc" | "sl";
   }>;
   unknownPlayers: string[];
@@ -318,12 +324,15 @@ export default function CardChecklist({
     if (!cards) return [];
     return [...cards]
       .filter((c) => {
-        if (sourceFilter.bsc && c.sourcePlatformIds?.bsc !== sourceFilter.bsc) {
+        // NEO-137: the filter compares SLOT keys — `platformData.<side>.src`
+        // is the slot on this card's parent row, and the chips are keyed the
+        // same way.
+        if (sourceFilter.bsc && c.platformData?.bsc?.src !== sourceFilter.bsc) {
           return false;
         }
         if (
           sourceFilter.sportlots &&
-          c.sourcePlatformIds?.sportlots !== sourceFilter.sportlots
+          c.platformData?.sportlots?.src !== sourceFilter.sportlots
         ) {
           return false;
         }

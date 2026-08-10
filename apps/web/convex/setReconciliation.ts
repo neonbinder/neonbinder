@@ -4,6 +4,12 @@ import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import {
+  hasOperatorExtras,
+  initialSlots,
+  pruneEmptySides,
+  setPrimarySlotId,
+} from "./platformSlots";
 
 // ===== LEVEL VALIDATOR =====
 const levelValidator = v.union(
@@ -537,32 +543,12 @@ export const fetchRawOptions = action({
 
 // ===== MUTATIONS =====
 
-// Normalize a platformData side (string | string[] | undefined) to an array.
-function pdToArray(v: string | string[] | undefined): string[] {
+// Normalize a WIRE platformData side to an array of marketplace IDs.
+// The wire still speaks marketplace IDs — the client knows nothing about
+// slots. Slots are assigned here, on the way into storage (NEO-137).
+function wireToIds(v: string | string[] | undefined): string[] {
   if (v === undefined) return [];
   return Array.isArray(v) ? v : [v];
-}
-
-// Pack an ID list back into the canonical shape: undefined / string / string[].
-function packIds(ids: string[]): string | string[] | undefined {
-  if (ids.length === 0) return undefined;
-  if (ids.length === 1) return ids[0];
-  return ids;
-}
-
-// Returns true if a row carries operator-attached extras beyond the primary
-// — i.e. would be destructive to delete during reconciliation cleanup.
-function hasOperatorExtras(row: {
-  platformData: { bsc?: string | string[]; sportlots?: string | string[] };
-  primaryPlatformId?: { bsc?: string; sportlots?: string };
-}): boolean {
-  for (const side of ["bsc", "sportlots"] as const) {
-    const ids = pdToArray(row.platformData[side]);
-    const primary = row.primaryPlatformId?.[side] ?? ids[0];
-    const extras = ids.filter((id) => id !== primary);
-    if (extras.length > 0) return true;
-  }
-  return false;
 }
 
 export const storeReconciledOptions = mutation({
@@ -576,6 +562,15 @@ export const storeReconciledOptions = mutation({
           bsc: v.optional(v.union(v.string(), v.array(v.string()))),
           sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
         }),
+        // NEO-137: marketplace-side display names, keyed by marketplace ID
+        // (the wire format — the client has no slot keys). Stored against the
+        // SLOT each ID lands in, which is what replaced
+        // `platformData.sportlotsDisplay`: a single display string had no
+        // meaning once one row could hold several SL sets.
+        platformLabels: v.optional(v.object({
+          bsc: v.optional(v.record(v.string(), v.string())),
+          sportlots: v.optional(v.record(v.string(), v.string())),
+        })),
         metadata: metadataValidator,
       }),
     ),
@@ -619,53 +614,54 @@ export const storeReconciledOptions = mutation({
 
       const existing = existingByValue.get(normalizedValue);
       if (existing) {
-        // Refresh-without-clobber (NEO-6): replace only the entry matching
-        // the existing primaryPlatformId per side; keep operator-attached
-        // extras and their labels. Always rewrite primaryPlatformId to the
-        // reconciler's value so future re-reconciles continue to refresh
-        // the right slot.
-        const mergedPD: { bsc?: string | string[]; sportlots?: string | string[] } = {};
-        const mergedLabels: {
-          bsc?: Record<string, string>;
-          sportlots?: Record<string, string>;
-        } = {};
+        // Refresh-without-clobber (NEO-6, reworked onto slots for NEO-137):
+        // refresh only the PRIMARY SLOT's marketplace ID per side and keep
+        // operator-attached extras untouched.
+        //
+        // The primary slot KEY is deliberately reused rather than retired.
+        // The reconciler is re-identifying the same logical set — a marketplace
+        // re-slug changes the ID, not which set it is — and every card already
+        // pointing at that slot must keep resolving. Retiring the key here
+        // would orphan the whole checklist on a routine re-sync.
+        let working: {
+          platformData: typeof existing.platformData;
+          platformLabels: typeof existing.platformLabels;
+          platformSlotSeq: typeof existing.platformSlotSeq;
+        } = {
+          platformData: existing.platformData,
+          platformLabels: existing.platformLabels,
+          platformSlotSeq: existing.platformSlotSeq,
+        };
         const newPrimary: { bsc?: string; sportlots?: string } = {};
 
         for (const side of ["bsc", "sportlots"] as const) {
-          const oldIds = pdToArray(existing.platformData[side]);
-          const oldPrimary = existing.primaryPlatformId?.[side] ?? oldIds[0];
-          const extras = oldIds.filter((id) => id !== oldPrimary);
-          const reconciledIds = pdToArray(item.platformData[side]);
-          const refreshedPrimary = reconciledIds[0];
-
-          const merged = refreshedPrimary
-            ? [refreshedPrimary, ...extras]
-            : extras;
-          mergedPD[side] = packIds(merged);
-          if (refreshedPrimary) newPrimary[side] = refreshedPrimary;
-
-          // Preserve labels for surviving extra IDs. Reconciler does not
-          // produce labels (those come from the operator's attach dialog).
-          const oldLabels = existing.platformLabels?.[side] ?? {};
-          const survivingLabels: Record<string, string> = {};
-          for (const id of extras) {
-            if (oldLabels[id]) survivingLabels[id] = oldLabels[id];
-          }
-          if (Object.keys(survivingLabels).length > 0) {
-            mergedLabels[side] = survivingLabels;
-          }
+          const refreshedId = wireToIds(item.platformData[side])[0];
+          const label = refreshedId
+            ? item.platformLabels?.[side]?.[refreshedId]
+            : undefined;
+          const next = setPrimarySlotId(working, side, refreshedId, label);
+          working = {
+            platformData: next.platformData,
+            platformLabels: next.platformLabels,
+            platformSlotSeq: next.platformSlotSeq,
+          };
+          if (next.slot) newPrimary[side] = next.slot;
         }
+
+        const prunedData = pruneEmptySides({ ...working.platformData });
+        const prunedLabels = pruneEmptySides({ ...(working.platformLabels ?? {}) });
 
         const patch: Record<string, unknown> = {
-          platformData: mergedPD,
+          platformData: prunedData,
           lastUpdated: Date.now(),
         };
-        if (Object.keys(mergedLabels).length > 0) {
-          patch.platformLabels = mergedLabels;
-        } else if (existing.platformLabels !== undefined) {
-          // Clear stale labels when no extras remain.
-          patch.platformLabels = undefined;
-        }
+        patch.platformLabels =
+          Object.keys(prunedLabels).length > 0 ? prunedLabels : undefined;
+        patch.platformSlotSeq =
+          working.platformSlotSeq &&
+          Object.keys(working.platformSlotSeq).length > 0
+            ? working.platformSlotSeq
+            : undefined;
         // Always rewrite primaryPlatformId (or clear it). Convex patch is
         // a shallow merge at the top level, so replacing the whole object
         // also drops any side the reconciler no longer owns. Without this
@@ -679,25 +675,50 @@ export const storeReconciledOptions = mutation({
         await ctx.db.patch(existing._id, patch);
         insertedIds.push(existing._id);
       } else {
-        // Fresh insert: reconciler is the only source of IDs, so its values
-        // are the primary on both sides.
+        // Fresh insert: reconciler is the only source of IDs, so the slots it
+        // allocates are the primary on both sides.
+        const bscIds = wireToIds(item.platformData.bsc);
+        const slIds = wireToIds(item.platformData.sportlots);
+        const alloc = initialSlots({
+          bsc: bscIds.map((id) => ({
+            id,
+            ...(item.platformLabels?.bsc?.[id]
+              ? { label: item.platformLabels.bsc[id] }
+              : {}),
+          })),
+          sportlots: slIds.map((id) => ({
+            id,
+            ...(item.platformLabels?.sportlots?.[id]
+              ? { label: item.platformLabels.sportlots[id] }
+              : {}),
+          })),
+        });
+
         const newPrimary: { bsc?: string; sportlots?: string } = {};
-        const bscIds = pdToArray(item.platformData.bsc);
-        const slIds = pdToArray(item.platformData.sportlots);
-        if (bscIds[0]) newPrimary.bsc = bscIds[0];
-        if (slIds[0]) newPrimary.sportlots = slIds[0];
+        if (bscIds[0]) newPrimary.bsc = alloc.slotByIdBySide.bsc[bscIds[0]];
+        if (slIds[0]) {
+          newPrimary.sportlots = alloc.slotByIdBySide.sportlots[slIds[0]];
+        }
 
         const features = {
           ...(parentFeatures ?? {}),
           ...deriveOwnLevelFeatures(level, item.value, item.metadata),
         };
 
+        const hasLabels =
+          Object.keys(alloc.platformLabels.bsc ?? {}).length > 0 ||
+          Object.keys(alloc.platformLabels.sportlots ?? {}).length > 0;
+
         const id = await ctx.db.insert("selectorOptions", {
           level,
           value: item.value,
-          platformData: item.platformData,
+          platformData: alloc.platformData,
+          ...(hasLabels ? { platformLabels: alloc.platformLabels } : {}),
           ...(Object.keys(newPrimary).length > 0
             ? { primaryPlatformId: newPrimary }
+            : {}),
+          ...(Object.keys(alloc.platformSlotSeq).length > 0
+            ? { platformSlotSeq: alloc.platformSlotSeq }
             : {}),
           parentId,
           children: [],

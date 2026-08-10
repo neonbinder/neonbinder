@@ -3,6 +3,7 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
+import { slotIds } from "../../convex/platformSlots";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem } from "./ReconciliationModal";
 
 type RawOptionsResult = {
@@ -227,7 +228,11 @@ export default function ParallelForm({
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
           existingRows={existingParallelRows.map((r) => ({
             value: r.value,
-            platformData: r.platformData,
+            // The modal speaks marketplace IDs, not slots (NEO-137).
+            platformData: {
+              bsc: slotIds(r, "bsc"),
+              sportlots: slotIds(r, "sportlots"),
+            },
             metadata: r.metadata,
           }))}
         />

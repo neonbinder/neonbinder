@@ -74,8 +74,11 @@ type CardDetailCard = {
   listingTitle?: string;
   listingDescription?: string;
   imageUrls?: { front?: string; back?: string };
-  platformData: { bsc?: string; sportlots?: string };
-  sourcePlatformIds?: { bsc?: string; sportlots?: string };
+  // NEO-137: ref = marketplace card identity, src = slot on the parent row.
+  platformData: {
+    bsc?: { ref: string; src: string };
+    sportlots?: { ref: string; src: string };
+  };
   isCustom?: boolean;
   features?: Record<string, string>;
 };

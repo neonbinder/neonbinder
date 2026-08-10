@@ -18,13 +18,11 @@ type CardChecklistItemProps = {
     autographType?: string;
     cardVariation?: string;
     features?: Record<string, string>;
+    // NEO-137: `ref` is the card's marketplace identity, `src` the slot on
+    // the parent row naming which marketplace SET it came from.
     platformData: {
-      bsc?: string;
-      sportlots?: string;
-    };
-    sourcePlatformIds?: {
-      bsc?: string;
-      sportlots?: string;
+      bsc?: { ref: string; src: string };
+      sportlots?: { ref: string; src: string };
     };
     isCustom?: boolean;
     // NEO-21: present only on guest rows — a card printed in another product
@@ -168,15 +166,15 @@ export default function CardChecklistItem({
       {/* Platform badges */}
       <div className="flex gap-1 shrink-0 items-center flex-wrap justify-end">
         {/* NEO-6 source-set badges: rendered only when the parent variant
-            exposes a label map for that side AND this card carries a
-            sourcePlatformIds entry. Replaces the bare "SL" / "BSC" tag
+            exposes a label map for that side AND this card's ref names a
+            slot in it. Replaces the bare "SL" / "BSC" tag
             with the operator-given label (e.g. "Series 2"). */}
-        {sourceLabelMaps?.sportlots[card.sourcePlatformIds?.sportlots ?? ""] ? (
+        {sourceLabelMaps?.sportlots[card.platformData?.sportlots?.src ?? ""] ? (
           <span
             className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-200 border border-blue-300 dark:border-blue-700"
-            title={`SL source: ${card.sourcePlatformIds?.sportlots}`}
+            title={`SL source: ${card.platformData?.sportlots?.src}`}
           >
-            SL: {sourceLabelMaps.sportlots[card.sourcePlatformIds!.sportlots!]}
+            SL: {sourceLabelMaps.sportlots[card.platformData!.sportlots!.src]}
           </span>
         ) : (
           card.platformData.sportlots && (
@@ -185,12 +183,12 @@ export default function CardChecklistItem({
             </span>
           )
         )}
-        {sourceLabelMaps?.bsc[card.sourcePlatformIds?.bsc ?? ""] ? (
+        {sourceLabelMaps?.bsc[card.platformData?.bsc?.src ?? ""] ? (
           <span
             className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-200 border border-blue-300 dark:border-blue-700"
-            title={`BSC source: ${card.sourcePlatformIds?.bsc}`}
+            title={`BSC source: ${card.platformData?.bsc?.src}`}
           >
-            BSC: {sourceLabelMaps.bsc[card.sourcePlatformIds!.bsc!]}
+            BSC: {sourceLabelMaps.bsc[card.platformData!.bsc!.src]}
           </span>
         ) : (
           card.platformData.bsc && (
