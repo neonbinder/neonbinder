@@ -2,6 +2,7 @@ import {
   query,
   mutation,
   action,
+  internalAction,
   internalMutation,
   internalQuery,
   ActionCtx,
@@ -2660,48 +2661,18 @@ export const updateSelectorOptionMetadata = mutation({
 // ===== ADMIN UTILITIES =====
 
 /**
- * Full reset of Set Builder data. Deletes every row in `selectorOptions`
- * and `cardChecklist`. Intended for dev cleanup between test runs.
- *
- * Two layers of safety (enforced in the internal mutations below):
- * 1. requireAdmin — only the admin role can call this from a signed-in session.
- * 2. ALLOW_RESET_SET_BUILDER_DATA env var — must be set to "true" on the
- *    Convex deployment. Set on dev + preview + integration-test deployments
- *    (where E2E tests reset state between runs); unset on production.
- *    Without this gate, the admin user could accidentally wipe production
- *    data by clicking "Reset Set Builder Data" while pointed at prod.
- *
- * Implementation: this is an action that loops a paginated internal
- * mutation. A single mutation has a per-execution read limit of 4096
- * rows; on dev deployments where selectorOptions has accumulated many
- * thousands of rows from prior test runs, a single-pass `.collect()`
- * was throwing "Too many reads in a single function execution".
+ * The reset itself, shared by BOTH entry points so they cannot drift:
+ * `resetSetBuilderData` (the AdminTools button) and
+ * `resetSetBuilderDataFromCli` (`npx convex run`). Authorisation belongs to
+ * the caller — this function performs the delete unconditionally.
  */
-const RESET_BATCH_SIZE = 500;
-
-export const resetSetBuilderData = action({
-  args: {},
-  returns: v.object({
-    selectorOptionsDeleted: v.number(),
-    cardChecklistDeleted: v.number(),
-    crossListingsDeleted: v.number(),
-    playersDeleted: v.number(),
-    teamsDeleted: v.number(),
-  }),
-  handler: async (
-    ctx,
-  ): Promise<{
-    selectorOptionsDeleted: number;
-    cardChecklistDeleted: number;
-    crossListingsDeleted: number;
-    playersDeleted: number;
-    teamsDeleted: number;
-  }> => {
-    // Auth and env-var gate are enforced in the internal mutations called
-    // below — keeping the destructive guard as close to the actual delete
-    // as possible. If either check fails on the first batch, the loop
-    // exits before any rows are deleted.
-
+async function runSetBuilderReset(ctx: ActionCtx): Promise<{
+  selectorOptionsDeleted: number;
+  cardChecklistDeleted: number;
+  crossListingsDeleted: number;
+  playersDeleted: number;
+  teamsDeleted: number;
+}> {
     let selectorOptionsDeleted = 0;
     while (true) {
       const result = await ctx.runMutation(
@@ -2768,6 +2739,134 @@ export const resetSetBuilderData = action({
       playersDeleted,
       teamsDeleted,
     };
+}
+
+/**
+ * Full reset of Set Builder data. Deletes every row in `selectorOptions`
+ * and `cardChecklist`. Intended for dev cleanup between test runs.
+ *
+ * Two layers of safety (enforced in the internal mutations below):
+ * 1. requireAdmin — only the admin role can call this from a signed-in session.
+ * 2. ALLOW_RESET_SET_BUILDER_DATA env var — must be set to "true" on the
+ *    Convex deployment. Set on dev + preview + integration-test deployments
+ *    (where E2E tests reset state between runs); unset on production.
+ *    Without this gate, the admin user could accidentally wipe production
+ *    data by clicking "Reset Set Builder Data" while pointed at prod.
+ *
+ * Implementation: this is an action that loops a paginated internal
+ * mutation. A single mutation has a per-execution read limit of 4096
+ * rows; on dev deployments where selectorOptions has accumulated many
+ * thousands of rows from prior test runs, a single-pass `.collect()`
+ * was throwing "Too many reads in a single function execution".
+ */
+const RESET_BATCH_SIZE = 500;
+
+export const resetSetBuilderData = action({
+  args: {},
+  returns: v.object({
+    selectorOptionsDeleted: v.number(),
+    cardChecklistDeleted: v.number(),
+    crossListingsDeleted: v.number(),
+    playersDeleted: v.number(),
+    teamsDeleted: v.number(),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{
+    selectorOptionsDeleted: number;
+    cardChecklistDeleted: number;
+    crossListingsDeleted: number;
+    playersDeleted: number;
+    teamsDeleted: number;
+  }> => {
+    // CLIENT-CALLABLE entry point (the AdminTools button). Both guards live
+    // here now rather than in each batch mutation: this is the only path a
+    // browser can reach, so it is the only path that needs them.
+    //
+    // `ALLOW_RESET_SET_BUILDER_DATA` is deliberately UNSET on prod so a
+    // misdirected click cannot wipe production. Keeping that check down in the
+    // batch mutations meant the CLI inherited it too, which would have forced
+    // arming this button on prod just to run a reset from a terminal — see
+    // `resetSetBuilderDataFromCli` below.
+    await requireAdmin(ctx);
+    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
+      throw new Error(
+        "Reset Set Builder Data is not enabled in this environment. " +
+          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
+      );
+    }
+
+    return await runSetBuilderReset(ctx);
+  },
+});
+
+/**
+ * CLI entry point for the SAME reset the AdminTools button performs.
+ *
+ * Runs the identical batch mutations as `resetSetBuilderData` above — one
+ * implementation, so the two paths cannot drift.
+ *
+ *   # dev (your personal deployment)
+ *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
+ *     '{"confirm":"RESET"}' --identity '{"role":"admin"}'
+ *
+ *   # production
+ *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
+ *     '{"confirm":"RESET"}' --identity '{"role":"admin"}' --prod
+ *
+ * `--identity` IS REQUIRED — do not drop it. The batch mutations this calls
+ * each run `requireAdmin`, which reads `ctx.auth.getUserIdentity()`. A bare
+ * `convex run` carries no identity at all, so without the flag the very first
+ * batch throws `Not authenticated` and nothing is deleted.
+ *
+ * `--identity` IS NOT A SECURITY CONTROL. Anyone running `convex run` can
+ * fabricate any identity they like, admin included. The thing that actually
+ * gates this is your Convex login: reaching `--prod` requires prod deploy
+ * credentials. That is the real "logged in as me" check, and `requireAdmin`
+ * stays on the batch mutations as defence-in-depth for other callers, not as
+ * the boundary that protects prod.
+ *
+ * WHY THE `ALLOW_RESET_SET_BUILDER_DATA` GUARD IS NOT REPEATED HERE:
+ *
+ *   That flag exists to stop the AdminTools BUTTON wiping prod by a
+ *   misdirected click, which is why it is unset there. An `internalAction` is
+ *   unreachable from any client, so the flag would add no safety here — it
+ *   would only force you to arm the button on prod in order to run a reset
+ *   from a terminal, which is strictly worse.
+ *
+ * PRACTICAL NOTE: run this with the app CLOSED. Resetting while the Set
+ * Selector is open lets the page immediately re-sync the sport column and
+ * write the rows straight back — which is exactly what happened on dev during
+ * NEO-137.
+ */
+export const resetSetBuilderDataFromCli = internalAction({
+  args: {
+    // `convex run` is one tab-completion away from a neighbouring function
+    // name and this is unrecoverable, so make the intent explicit.
+    confirm: v.literal("RESET"),
+  },
+  returns: v.object({
+    selectorOptionsDeleted: v.number(),
+    cardChecklistDeleted: v.number(),
+    crossListingsDeleted: v.number(),
+    playersDeleted: v.number(),
+    teamsDeleted: v.number(),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{
+    selectorOptionsDeleted: number;
+    cardChecklistDeleted: number;
+    crossListingsDeleted: number;
+    playersDeleted: number;
+    teamsDeleted: number;
+  }> => {
+    // Same auth posture as the button — the batch mutations below enforce
+    // requireAdmin, which `--identity` satisfies. This entry point differs
+    // from the button in exactly one way: it does not require
+    // ALLOW_RESET_SET_BUILDER_DATA, so prod can be reset from a terminal
+    // without arming a prod-wiping button in the UI.
+    return await runSetBuilderReset(ctx);
   },
 });
 
@@ -2782,13 +2881,16 @@ export const resetSelectorOptionsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("selectorOptions").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2808,13 +2910,16 @@ export const resetCardChecklistBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("cardChecklist").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2837,13 +2942,16 @@ export const resetCardCrossListingsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("cardCrossListings").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2863,13 +2971,16 @@ export const resetPlayersBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("players").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2889,13 +3000,16 @@ export const resetTeamsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("teams").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
