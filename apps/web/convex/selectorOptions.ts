@@ -4284,8 +4284,29 @@ export const fetchCardChecklist = action({
         if (bscRef && slRef) storedSlRefByBscRef.set(bscRef, slRef);
       }
       const slByPlatformRef = new Map<string, typeof slCards[0]>();
+      // INDISTINGUISHABLE (NEO-137 accounting): two SportLots rows sharing BOTH
+      // card number and description. SL exposes no per-card id, so the
+      // description IS the identity (NEO-91) — when it collides there is
+      // genuinely nothing left to tell the rows apart except ordinal position
+      // in the scrape, which is not stable across re-scrapes. Report it; do
+      // NOT guess, because a wrong guess here silently binds a card to the
+      // wrong marketplace row and looks identical to a correct one.
+      const indistinguishableSlRefs: string[] = [];
       for (const c of slCards) {
-        if (c.platformRef) slByPlatformRef.set(c.platformRef, c);
+        if (!c.platformRef) continue;
+        if (slByPlatformRef.has(c.platformRef)) {
+          indistinguishableSlRefs.push(c.platformRef);
+          continue; // first occurrence wins; the duplicate is reported, not used
+        }
+        slByPlatformRef.set(c.platformRef, c);
+      }
+      if (indistinguishableSlRefs.length > 0) {
+        console.warn(
+          `[fetchCardChecklist] ${indistinguishableSlRefs.length} SportLots row(s) ` +
+            `are indistinguishable (same card number AND description) — only ` +
+            `ordinal position separates them and that is not stable. Not guessed: ` +
+            indistinguishableSlRefs.slice(0, 5).join(" | "),
+        );
       }
       // A stored ref that no longer appears in the marketplace's response is
       // ORPHANED — SportLots edited the description out from under us. Report
