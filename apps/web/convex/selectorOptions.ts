@@ -4259,6 +4259,48 @@ export const fetchCardChecklist = action({
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
       }
 
+      // NEO-137 — STICKY PAIRING. An operator's confirmed pairing must survive
+      // a re-sync, otherwise a shared marketplace set has to be hand-paired
+      // again on every fetch and the assignment is not really persisted.
+      //
+      // Re-deriving from scratch is not good enough: the whole point of this
+      // ticket is that the BSC↔SL pairing is NOT inferable (two series can each
+      // contain a card #1), so a fresh guess would silently overwrite the
+      // operator's answer with the wrong one.
+      //
+      // Already-committed rows carry the answer in platformData.{bsc,sportlots}.
+      // Index the SL ref an operator previously bound to each BSC ref and
+      // honour it ahead of every heuristic below.
+      const committed = await ctx.runQuery(
+        api.selectorOptions.getCardChecklist,
+        { selectorOptionId: args.selectorOptionId },
+      );
+      const storedSlRefByBscRef = new Map<string, string>();
+      const storedSlRefs = new Set<string>();
+      for (const row of committed) {
+        const bscRef = row.platformData?.bsc?.ref;
+        const slRef = row.platformData?.sportlots?.ref;
+        if (slRef) storedSlRefs.add(slRef);
+        if (bscRef && slRef) storedSlRefByBscRef.set(bscRef, slRef);
+      }
+      const slByPlatformRef = new Map<string, typeof slCards[0]>();
+      for (const c of slCards) {
+        if (c.platformRef) slByPlatformRef.set(c.platformRef, c);
+      }
+      // A stored ref that no longer appears in the marketplace's response is
+      // ORPHANED — SportLots edited the description out from under us. Report
+      // it; never silently drop the card it belonged to.
+      const orphanedSlRefs = [...storedSlRefs].filter(
+        (ref) => !slByPlatformRef.has(ref),
+      );
+      if (orphanedSlRefs.length > 0) {
+        console.warn(
+          `[fetchCardChecklist] ${orphanedSlRefs.length} stored SportLots ref(s) ` +
+            `no longer resolve — the marketplace changed the description: ` +
+            orphanedSlRefs.slice(0, 5).join(" | "),
+        );
+      }
+
       // NEO-137: three buckets, not one flat list. No NB card exists until
       // the operator pairs — same vocabulary as set reconciliation (matched /
       // unmatched-BSC / unmatched-SL) and the same keep shelf for a
@@ -4285,10 +4327,17 @@ export const fetchCardChecklist = action({
           ? bsc.cardNumber.slice(cardNumberPrefix.length)
           : bsc.cardNumber;
 
+        // Operator's stored answer first — it outranks every heuristic.
+        const storedSlRef = bsc.platformRef
+          ? storedSlRefByBscRef.get(bsc.platformRef)
+          : undefined;
         let sl: typeof slCards[0] | undefined =
-          (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
+          (storedSlRef && slByPlatformRef.get(storedSlRef))
+          || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
           || slByNumber.get(bsc.cardNumber)
           || slByNumber.get(stripped);
+        const fromStoredPairing =
+          storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
 
         // 2. Fuzzy fallback: pick the unclaimed SL card whose first player
         //    name is most similar to BSC's first player. Threshold 0.92.
@@ -4314,7 +4363,9 @@ export const fetchCardChecklist = action({
         // Confidence: an exact number / sportlotsRef hit is certain; a
         // Jaro-Winkler name match is not. Surfaced so the operator can see
         // which pairings deserve a second look.
-        const pairConfidence = sl ? (fuzzyScore ?? 1) : 0;
+        // A previously-confirmed pairing is certain by definition — it is the
+        // operator's own answer being replayed, not a guess.
+        const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
         if (sl) claimedSlNumbers.add(sl.cardNumber);
 
         const attributes = Array.from(new Set([
