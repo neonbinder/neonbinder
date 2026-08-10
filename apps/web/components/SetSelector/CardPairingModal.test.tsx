@@ -188,6 +188,47 @@ describe("CardPairingModal", () => {
     expect(screen.getByText("78%")).toBeTruthy();
   });
 
+  /**
+   * setup.yaml depends on this: a real set that simply is not on the other
+   * marketplace produces an entire column of legitimate unmatched cards, and
+   * without "Keep all" the discard-by-default rule would silently narrow the
+   * provisioned checklist and break its strict card counts.
+   */
+  test("Keep all saves every card in a column", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [bscCard("1", "A"), bscCard("2", "B"), bscCard("3", "C")],
+      unmatchedSl: [slCard("A1", "D")],
+    });
+
+    fireEvent.click(screen.getByLabelText("Keep all BSC-only cards"));
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const cards = onConfirm.mock.calls[0][0].cards;
+    // All three BSC cards kept; the SL column was left alone and discarded.
+    expect(cards).toHaveLength(3);
+    expect(cards.map((c: PairingCard) => c.cardNumber).sort()).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+  });
+
+  test("Keep all is disabled when its column is empty", () => {
+    renderModal({ unmatchedBsc: [bscCard("1", "A")] });
+    expect(
+      (screen.getByLabelText("Keep all BSC-only cards") as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(
+      (
+        screen.getByLabelText(
+          "Keep all SportLots-only cards",
+        ) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+
   test("the footer reports how many cards will be saved", async () => {
     renderModal({
       autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],

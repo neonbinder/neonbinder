@@ -326,6 +326,40 @@ tags:
 - tapOn:
     text: ".*Fetch from Marketplaces.*|Refresh"
 
+# NEO-137 — the card-pairing step now runs BEFORE any card is generated.
+# Sync returns candidates (matched / BSC-only / SportLots-only) and nothing is
+# written until Confirm. "Keep all" on both columns preserves exactly what a
+# pre-NEO-137 sync produced, which is what keeps the strict card counts below
+# honest: this seed must provision the SAME baseline as before, so it keeps
+# every candidate rather than silently narrowing the checklist.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Match Cards"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards"
+          timeout: 60000
+
 # First fetch: all players/teams are new → EntityReviewWizard opens.
 - extendedWaitUntil:
     visible:
@@ -467,6 +501,37 @@ tags:
     timeout: 15000
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
+# NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
+# columns reproduces exactly what a pre-NEO-137 sync produced, which is what
+# keeps the strict card counts below honest: this seed must provision the SAME
+# baseline as before, not a silently narrowed one.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Match Cards"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards"
+          timeout: 90000
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -595,6 +660,37 @@ tags:
     timeout: 15000
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
+# NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
+# columns reproduces exactly what a pre-NEO-137 sync produced, which is what
+# keeps the strict card counts below honest: this seed must provision the SAME
+# baseline as before, not a silently narrowed one.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Match Cards"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards"
+          timeout: 90000
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"

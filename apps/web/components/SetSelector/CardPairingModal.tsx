@@ -66,6 +66,7 @@ type Action =
   | { type: "LINK"; bscNumber: string; slNumber: string }
   | { type: "UNLINK"; index: number }
   | { type: "KEEP"; side: "bsc" | "sl"; cardNumber: string }
+  | { type: "KEEP_ALL"; side: "bsc" | "sl" }
   | { type: "UNKEEP"; side: "bsc" | "sl"; cardNumber: string };
 
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
@@ -167,6 +168,27 @@ function reducer(state: State, action: Action): State {
         ...state,
         unmatchedSl: state.unmatchedSl.filter((_, i) => i !== idx),
         keptSl: [...state.keptSl, card],
+      };
+    }
+    case "KEEP_ALL": {
+      // A set that simply is not on the other marketplace produces an entire
+      // column of legitimate unmatched cards — hundreds, for a parallel set.
+      // Keeping those one tap at a time is not a workflow anyone would use,
+      // and without this the discard-by-default rule would quietly cost real
+      // catalog data on an ordinary single-marketplace sync.
+      if (action.side === "bsc") {
+        if (state.unmatchedBsc.length === 0) return state;
+        return {
+          ...state,
+          unmatchedBsc: [],
+          keptBsc: [...state.keptBsc, ...state.unmatchedBsc],
+        };
+      }
+      if (state.unmatchedSl.length === 0) return state;
+      return {
+        ...state,
+        unmatchedSl: [],
+        keptSl: [...state.keptSl, ...state.unmatchedSl],
       };
     }
     case "UNKEEP": {
@@ -335,9 +357,20 @@ export default function CardPairingModal({
             {/* Unmatched columns */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <section>
-                <h3 className="text-sm font-semibold text-gray-200 mb-2">
-                  BSC only ({state.unmatchedBsc.length})
-                </h3>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-200">
+                    BSC only ({state.unmatchedBsc.length})
+                  </h3>
+                  <button
+                    type="button"
+                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40"
+                    disabled={state.unmatchedBsc.length === 0}
+                    onClick={() => dispatch({ type: "KEEP_ALL", side: "bsc" })}
+                    aria-label="Keep all BSC-only cards"
+                  >
+                    Keep all
+                  </button>
+                </div>
                 <Input
                   bare
                   className={`${bscFieldClass()} w-full`}
@@ -386,9 +419,20 @@ export default function CardPairingModal({
               </section>
 
               <section>
-                <h3 className="text-sm font-semibold text-gray-200 mb-2">
-                  SportLots only ({state.unmatchedSl.length})
-                </h3>
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-200">
+                    SportLots only ({state.unmatchedSl.length})
+                  </h3>
+                  <button
+                    type="button"
+                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40"
+                    disabled={state.unmatchedSl.length === 0}
+                    onClick={() => dispatch({ type: "KEEP_ALL", side: "sl" })}
+                    aria-label="Keep all SportLots-only cards"
+                  >
+                    Keep all
+                  </button>
+                </div>
                 <Input
                   bare
                   className={`${slFieldClass()} w-full`}
@@ -445,7 +489,7 @@ export default function CardPairingModal({
               </h3>
               {state.keptBsc.length + state.keptSl.length === 0 ? (
                 <p className="text-xs text-gray-500 italic">
-                  Nothing kept. Cards left unmatched above are discarded.
+                  Nothing kept — every unmatched card above will be discarded.
                 </p>
               ) : (
                 <ul className="flex flex-col gap-1">

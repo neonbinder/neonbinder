@@ -122,7 +122,15 @@ tags:
 - assertVisible:
     text: ".*Keeping \\([0-9]+\\).*"
 # Nothing has been kept yet, so the shelf states the discard rule outright.
-- assertVisible: "Nothing kept. Cards left unmatched above are discarded."
+- assertVisible: "Nothing kept — every unmatched card above will be discarded."
+# "Keep all" per column: a set that simply is not on the other marketplace can
+# produce hundreds of legitimate unmatched cards, and keeping them one at a
+# time is not a workflow. setup.yaml relies on these to provision the same
+# baseline it always has.
+- assertVisible:
+    id: "Keep all BSC-only cards"
+- assertVisible:
+    id: "Keep all SportLots-only cards"
 # The footer commits to a number before anything is written.
 - assertVisible:
     text: ".*[0-9]+ cards? will be saved.*"
