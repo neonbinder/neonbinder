@@ -53,8 +53,23 @@ type ReconciliationState = {
   keptSl: PlatformItem[];
 };
 
+/**
+ * NEO-137: a ranked SL candidate for a BSC row that ended up unmatched.
+ * `alreadyMatched` means an auto-matched pair already claimed this SL set —
+ * confirming it is what creates the M-NB-rows-to-1-marketplace-set mapping.
+ */
+export type SlCandidateGroup = {
+  bsc: PlatformItem;
+  candidates: Array<{
+    sl: PlatformItem;
+    confidence: number;
+    alreadyMatched: boolean;
+  }>;
+};
+
 type ReconciliationAction =
   | { type: "LINK"; bscValue: string; slValue: string }
+  | { type: "LINK_SHARED"; bscValue: string; sl: PlatformItem; confidence: number }
   | { type: "UNLINK"; index: number }
   | { type: "UPDATE_METADATA"; index: number; metadata: ItemMetadata }
   | { type: "KEEP_BSC"; value: string }
@@ -103,6 +118,30 @@ function reconciliationReducer(
         ],
         unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== bscIndex),
         unmatchedSl: state.unmatchedSl.filter((_, i) => i !== slIndex),
+      };
+    }
+    case "LINK_SHARED": {
+      // The SL set here is ALREADY claimed by another matched pair, so unlike
+      // LINK it is not removed from anywhere — both NB rows keep pointing at
+      // it. That shared pointer IS the N:M mapping; storeReconciledOptions
+      // allocates each row its own slot for the same marketplace id.
+      const bscIndex = state.unmatchedBsc.findIndex(
+        (item) => item.value === action.bscValue,
+      );
+      if (bscIndex === -1) return state;
+      const bscItem = state.unmatchedBsc[bscIndex];
+      return {
+        ...state,
+        matched: [
+          ...state.matched,
+          {
+            displayName: bscItem.value,
+            bsc: bscItem,
+            sl: action.sl,
+            confidence: action.confidence,
+          },
+        ],
+        unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== bscIndex),
       };
     }
     case "UNLINK": {
@@ -188,6 +227,9 @@ type ReconciliationModalProps = {
     autoMatched: MatchedPair[];
     unmatchedBsc: PlatformItem[];
     unmatchedSl: PlatformItem[];
+    /** NEO-137 — ranked SL candidates per unmatched BSC row. Optional so
+     *  callers that do not pass it behave exactly as before. */
+    slCandidates?: SlCandidateGroup[];
   };
   showMetadata?: boolean;
   setName?: string;
@@ -921,16 +963,65 @@ export default function ReconciliationModal({
                         so both list tops line up. */}
                     <div className="mb-2 h-[18px]" aria-hidden="true" />
                     <div className="space-y-1.5 min-h-[60px]">
-                      {filteredUnmatchedBsc.map((item) => (
-                        <DraggableItem
-                          key={`bsc-${item.value}`}
-                          id={`bsc-${item.value}`}
-                          value={item.value}
-                          platform="bsc"
-                          isSelected={selectedBsc === item.value}
-                          onClick={() => handleBscClick(item.value)}
-                        />
-                      ))}
+                      {filteredUnmatchedBsc.map((item) => {
+                        // NEO-137: SL sets an auto-match already claimed, still
+                        // offered to THIS row. Confirming one creates the
+                        // M-NB-rows-to-1-marketplace-set mapping — the 1996
+                        // Score case, where Artist's Proofs Series 1 and 2 both
+                        // belong to one SportLots set and the greedy matcher can
+                        // only ever give it to whichever matched first.
+                        //
+                        // Offered, never applied automatically: the two series
+                        // are not distinguishable from the data (each can hold a
+                        // card #1), so only an operator can say which is which.
+                        const shared = (initialData.slCandidates ?? [])
+                          .find((g) => g.bsc.platformValue === item.platformValue)
+                          ?.candidates.filter((c) => c.alreadyMatched) ?? [];
+                        return (
+                          <div key={`bsc-${item.value}`}>
+                            <DraggableItem
+                              id={`bsc-${item.value}`}
+                              value={item.value}
+                              platform="bsc"
+                              isSelected={selectedBsc === item.value}
+                              onClick={() => handleBscClick(item.value)}
+                            />
+                            {shared.length > 0 && (
+                              <ul className="mt-1 mb-1.5 pl-2 border-l border-amber-700/60 space-y-1">
+                                {shared.slice(0, 3).map((c) => (
+                                  <li
+                                    key={`shared-${item.value}-${c.sl.platformValue}`}
+                                    className="flex items-center justify-between gap-2"
+                                  >
+                                    <span className="text-[11px] text-amber-300/90 truncate">
+                                      {c.sl.value}
+                                      <span className="text-gray-500">
+                                        {" "}
+                                        · {Math.round(c.confidence * 100)}% · already linked
+                                      </span>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="text-[11px] text-cyan-300 hover:text-cyan-200 whitespace-nowrap"
+                                      onClick={() =>
+                                        dispatch({
+                                          type: "LINK_SHARED",
+                                          bscValue: item.value,
+                                          sl: c.sl,
+                                          confidence: c.confidence,
+                                        })
+                                      }
+                                      aria-label={`Also link ${item.value} to shared set ${c.sl.value}`}
+                                    >
+                                      Link shared
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        );
+                      })}
                       {state.unmatchedBsc.length === 0 && (
                         <p className="text-xs text-gray-500 italic py-2">
                           All BSC items matched

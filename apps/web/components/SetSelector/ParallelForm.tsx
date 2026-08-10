@@ -4,7 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { slotIds } from "../../convex/platformSlots";
-import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem } from "./ReconciliationModal";
+import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
 
 type RawOptionsResult = {
   success: boolean;
@@ -13,6 +13,9 @@ type RawOptionsResult = {
   autoMatched: MatchedPair[];
   unmatchedBsc: PlatformItem[];
   unmatchedSl: PlatformItem[];
+  // NEO-137: ranked SL candidates per unmatched BSC row, including sets an
+  // auto-match already claimed. Feeds the modal's "Link shared" affordance.
+  slCandidates?: SlCandidateGroup[];
   errors: Array<{ platform: string; message: string }>;
   message?: string;
 };
@@ -220,6 +223,9 @@ export default function ParallelForm({
             autoMatched: reconciliationData.autoMatched,
             unmatchedBsc: reconciliationData.unmatchedBsc,
             unmatchedSl: reconciliationData.unmatchedSl,
+            // NEO-137: lets the modal offer an already-claimed SL set to a
+            // second NB row (the 1996 Score shared-set case).
+            slCandidates: reconciliationData.slCandidates,
           }}
           showMetadata
           setName={setNameValue || ""}
