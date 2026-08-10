@@ -160,14 +160,16 @@ async function seedTree(t: ReturnType<typeof convexTest>): Promise<Id<"selectorO
         espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
         wikidata: { sportQid: "Q5369", hallOfFameQid: "Q1194380" },
       },
-      platformData: { bsc: "baseball" },
+      platformData: { bsc: { b0: "baseball" } },
+      platformSlotSeq: { bsc: 1 },
       children: [],
       lastUpdated: Date.now(),
     });
     const yearId = await ctx.db.insert("selectorOptions", {
       level: "year",
       value: "2024",
-      platformData: { bsc: "2024" },
+      platformData: { bsc: { b0: "2024" } },
+      platformSlotSeq: { bsc: 1 },
       parentId: sportId,
       children: [],
       lastUpdated: Date.now(),
@@ -176,7 +178,8 @@ async function seedTree(t: ReturnType<typeof convexTest>): Promise<Id<"selectorO
     const setNameId = await ctx.db.insert("selectorOptions", {
       level: "setName",
       value: "2024 Topps",
-      platformData: { bsc: "2024-topps" },
+      platformData: { bsc: { b0: "2024-topps" } },
+      platformSlotSeq: { bsc: 1 },
       parentId: yearId,
       children: [],
       lastUpdated: Date.now(),
@@ -282,7 +285,7 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
     expect(mockState.teamLookupCalls).toHaveLength(0);
     expect(result.cards).toHaveLength(1);
     expect(result.cards[0].platformData.bsc).toBeUndefined();
-    expect(result.cards[0].platformData.sportlots).toBe("sl-77");
+    expect(result.cards[0].platformData.sportlots).toEqual({ ref: "sl-77" });
     expect(result.cards[0].teams).toBeUndefined();
   });
 

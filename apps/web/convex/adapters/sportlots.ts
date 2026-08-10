@@ -2,6 +2,7 @@
 
 import { action, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
+import { primaryId } from "../platformSlots";
 import { api, internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
 import { Id } from "../_generated/dataModel";
@@ -165,7 +166,10 @@ async function resolveSportLotsPlatformValue(
       api.selectorOptions.findByLevelAndValue,
       { level, value: displayValue, parentId },
     );
-    return option?.platformData?.sportlots || displayValue;
+    // NEO-137: platformData.sportlots is a SLOT MAP now. Interpolating it
+    // straight into the request body produced "[object Object]" as the SL
+    // set radio id, which matches nothing.
+    return (option ? primaryId(option, "sportlots") : undefined) || displayValue;
   } catch {
     return displayValue;
   }

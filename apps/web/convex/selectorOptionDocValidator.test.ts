@@ -47,15 +47,15 @@ const ADMIN_IDENTITY = {
  */
 const FULLY_POPULATED = {
   platformData: {
-    bsc: ["dcap-ap-s1", "dcap-ap-s1-extra"],
-    sportlots: "884412",
-    sportlotsDisplay: "Dugout Collection Artists Proofs",
+    bsc: { b0: "dcap-ap-s1", b1: "dcap-ap-s1-extra" },
+    sportlots: { s0: "884412" },
   },
   platformLabels: {
-    bsc: { "dcap-ap-s1-extra": "Series 1 alternate" },
-    sportlots: { "884412": "Dugout Collection Artists Proofs" },
+    bsc: { b1: "Series 1 alternate" },
+    sportlots: { s0: "Dugout Collection Artists Proofs" },
   },
-  primaryPlatformId: { bsc: "dcap-ap-s1", sportlots: "884412" },
+  primaryPlatformId: { bsc: "b0", sportlots: "s0" },
+  platformSlotSeq: { bsc: 2, sportlots: 1 },
   isCustom: false,
   createdByUserId: "clerk|admin_user_137",
   metadata: { cardNumberPrefix: "DK-", isInsert: true, isParallel: false },
@@ -137,18 +137,18 @@ describe("selectorOptions returns-validator drift", () => {
     expect(tree).toHaveLength(1);
     // The three fields whose omission caused the outage.
     expect(tree[0].insert.primaryPlatformId).toEqual({
-      bsc: "dcap-ap-s1",
-      sportlots: "884412",
+      bsc: "b0",
+      sportlots: "s0",
     });
     expect(tree[0].insert.platformLabels?.sportlots).toEqual({
-      "884412": "Dugout Collection Artists Proofs",
+      s0: "Dugout Collection Artists Proofs",
     });
     expect(tree[0].insert.sportConfig?.skuCode).toBe("BB");
     // Parallels go through the same validator and broke identically.
     expect(tree[0].parallels).toHaveLength(1);
     expect(tree[0].parallels[0].primaryPlatformId).toEqual({
-      bsc: "dcap-ap-s1",
-      sportlots: "884412",
+      bsc: "b0",
+      sportlots: "s0",
     });
     expect(tree[0].parallels[0].sportConfig?.league).toBe("MLB");
   });
@@ -184,9 +184,8 @@ describe("selectorOptions returns-validator drift", () => {
     expect(row?.primaryPlatformId).toBeDefined();
     expect(row?.platformLabels).toBeDefined();
     expect(row?.sportConfig).toBeDefined();
-    expect(row?.platformData.sportlotsDisplay).toBe(
-      "Dugout Collection Artists Proofs",
-    );
+    expect(row?.platformSlotSeq).toEqual({ bsc: 2, sportlots: 1 });
+    expect(row?.platformData.sportlots).toEqual({ s0: "884412" });
   });
 
   test("findByLevelAndValue returns a fully-populated row", async () => {

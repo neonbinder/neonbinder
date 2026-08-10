@@ -186,7 +186,8 @@ describe("fetchSportLotsChecklist setRadioId resolution (NEO-91)", () => {
       await ctx.db.insert("selectorOptions", {
         level: "setName",
         value: "Topps",
-        platformData: { sportlots: "db-resolved-99999" },
+        platformData: { sportlots: { s0: "db-resolved-99999" } },
+      platformSlotSeq: { sportlots: 1 },
         children: [],
         lastUpdated: Date.now(),
       });

@@ -50,7 +50,8 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
       ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Football",
-        platformData: { bsc: "bsc-fb", sportlots: "sl-fb" },
+        platformData: { bsc: { b0: "bsc-fb" }, sportlots: { s0: "sl-fb" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
         children: [],
         // NEO-96: a synced sport row carries its config. Without this the
         // one-time sportConfig backfill would (correctly) patch the row, and
@@ -75,7 +76,10 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
     const row = await t.run(async (ctx) => ctx.db.get(id));
     // Unchanged → no patch → sentinel survives.
     expect(row?.lastUpdated).toBe(SENTINEL);
-    expect(row?.platformData).toEqual({ bsc: "bsc-fb", sportlots: "sl-fb" });
+    expect(row?.platformData).toEqual({
+      bsc: { b0: "bsc-fb" },
+      sportlots: { s0: "sl-fb" },
+    });
   });
 
   test("does NOT patch when a partial option merges to identical data", async () => {
@@ -86,7 +90,8 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
       ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Football",
-        platformData: { bsc: "bsc-fb", sportlots: "sl-fb" },
+        platformData: { bsc: { b0: "bsc-fb" }, sportlots: { s0: "sl-fb" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
         children: [],
         // NEO-96: a synced sport row carries its config. Without this the
         // one-time sportConfig backfill would (correctly) patch the row, and
@@ -110,7 +115,10 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
 
     const row = await t.run(async (ctx) => ctx.db.get(id));
     expect(row?.lastUpdated).toBe(SENTINEL);
-    expect(row?.platformData).toEqual({ bsc: "bsc-fb", sportlots: "sl-fb" });
+    expect(row?.platformData).toEqual({
+      bsc: { b0: "bsc-fb" },
+      sportlots: { s0: "sl-fb" },
+    });
   });
 
   test("DOES patch and bump lastUpdated when platformData differs", async () => {
@@ -121,7 +129,8 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
       ctx.db.insert("selectorOptions", {
         level: "sport",
         value: "Football",
-        platformData: { bsc: "bsc-fb" },
+        platformData: { bsc: { b0: "bsc-fb" } },
+      platformSlotSeq: { bsc: 1 },
         children: [],
         lastUpdated: SENTINEL,
       }),
@@ -136,7 +145,7 @@ describe("storeSelectorOptions write-if-changed (NEO-85)", () => {
     // Changed → patched → sentinel replaced with a real Date.now() bump.
     expect(row?.lastUpdated).not.toBe(SENTINEL);
     expect(row?.lastUpdated).toBeGreaterThan(SENTINEL);
-    expect(row?.platformData.bsc).toBe("bsc-fb-NEW");
+    expect(row?.platformData.bsc).toEqual({ b0: "bsc-fb-NEW" });
   });
 
 });

@@ -61,8 +61,8 @@ type WirePlatformData = {
 };
 
 type StoredPlatformData = {
-  bsc?: { ref: string; src: string };
-  sportlots?: { ref: string; src: string };
+  bsc?: { ref: string; src?: string };
+  sportlots?: { ref: string; src?: string };
 };
 
 /**
@@ -139,11 +139,11 @@ async function resolveCardSlots(
       const src = wire.setId
         ? slotById[side][wire.setId]
         : primaryBySide[side];
-      // No resolvable slot means the row has no mapping on this side at all.
-      // Dropping the ref is right: a ref we cannot attribute to a source set
-      // is not something later sync-by-set could act on.
-      if (!src) continue;
-      out[side] = { ref: wire.ref, src };
+      // Keep the ref even when no slot resolves — it is still this card's
+      // marketplace identity. It just cannot participate in sync-by-set until
+      // an operator attaches the set it came from, and surfaces as
+      // unattributed until then.
+      out[side] = { ref: wire.ref, ...(src ? { src } : {}) };
     }
     return out;
   };
@@ -389,11 +389,8 @@ export const getAncestorChain = query({
       _id: v.id("selectorOptions"),
       level: levelValidator,
       value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
+      platformData: selectorOptionFields.platformData,
+      platformLabels: selectorOptionFields.platformLabels,
       metadata: metadataValidator,
       // NEO-24: surface ancestor features so callers (commitCardChecklist
       // inheritance merge, SetFeaturesPanel) can resolve effective values
@@ -408,7 +405,14 @@ export const getAncestorChain = query({
       _id: Id<"selectorOptions">;
       level: Level;
       value: string;
-      platformData: { bsc?: string | string[]; sportlots?: string };
+      platformData: {
+        bsc?: Record<string, string>;
+        sportlots?: Record<string, string>;
+      };
+      platformLabels?: {
+        bsc?: Record<string, string>;
+        sportlots?: Record<string, string>;
+      };
       metadata?: { cardNumberPrefix?: string; isInsert?: boolean; isParallel?: boolean };
       features?: Record<string, string>;
       isCustom?: boolean;
@@ -423,6 +427,7 @@ export const getAncestorChain = query({
         level: option.level,
         value: option.value,
         platformData: option.platformData || {},
+        platformLabels: option.platformLabels,
         metadata: option.metadata,
         features: option.features,
         isCustom: option.isCustom,
@@ -3283,12 +3288,15 @@ export const fetchAggregatedOptions = action({
 
         for (const ancestor of chain) {
           const lvl = ancestor.level;
-          if (ancestor.platformData?.sportlots) {
-            slPlatformFilters[lvl] = ancestor.platformData.sportlots;
+          // NEO-137: adapters filter on marketplace IDs and know nothing about
+          // slots, so read the ids out of the slot map.
+          const slIds = slotIds(ancestor, "sportlots");
+          const bscIdsForLevel = slotIds(ancestor, "bsc");
+          if (slIds.length > 0) {
+            slPlatformFilters[lvl] = slIds[0];
           }
-          if (ancestor.platformData?.bsc) {
-            const bscVal = ancestor.platformData.bsc;
-            bscPlatformFilters[lvl] = Array.isArray(bscVal) ? bscVal : [bscVal];
+          if (bscIdsForLevel.length > 0) {
+            bscPlatformFilters[lvl] = bscIdsForLevel;
           } else if (BSC_REQUIRED.has(lvl)) {
             aggMissingBsc.push(`${lvl}=${ancestor.value}`);
           } else if (ancestor.value) {
@@ -3626,7 +3634,10 @@ export const syncSetsAcrossManufacturers = action({
         _id: Id<"selectorOptions">;
         level: Level;
         value: string;
-        platformData: { bsc?: string | string[]; sportlots?: string };
+        platformData: {
+          bsc?: Record<string, string>;
+          sportlots?: Record<string, string>;
+        };
         isCustom?: boolean;
       }> = await ctx.runQuery(
         api.selectorOptions.getAncestorChain,
@@ -3652,15 +3663,15 @@ export const syncSetsAcrossManufacturers = action({
 
       // Build BSC filters (sport + year only)
       const bscPlatformFilters: Record<string, string[]> = {};
-      if (sportAncestor.platformData?.bsc) {
-        const v = sportAncestor.platformData.bsc;
-        bscPlatformFilters.sport = Array.isArray(v) ? v : [v];
+      const sportBscIds = slotIds(sportAncestor, "bsc");
+      const yearBscIds = slotIds(yearAncestor, "bsc");
+      if (sportBscIds.length > 0) {
+        bscPlatformFilters.sport = sportBscIds;
       } else {
         bscPlatformFilters.sport = [sportAncestor.value.toLowerCase()];
       }
-      if (yearAncestor.platformData?.bsc) {
-        const v = yearAncestor.platformData.bsc;
-        bscPlatformFilters.year = Array.isArray(v) ? v : [v];
+      if (yearBscIds.length > 0) {
+        bscPlatformFilters.year = yearBscIds;
       } else {
         bscPlatformFilters.year = [yearAncestor.value.toLowerCase()];
       }
@@ -3985,13 +3996,14 @@ export const fetchCardChecklist = action({
         if (ancestor.metadata?.cardNumberPrefix) {
           cardNumberPrefix = ancestor.metadata.cardNumberPrefix;
         }
-        if (ancestor.platformData?.sportlots) {
-          const slVal = ancestor.platformData.sportlots;
-          slPlatformFilters[ancestor.level] = Array.isArray(slVal) ? slVal : [slVal];
+        // NEO-137: adapters filter on marketplace IDs; slots are internal.
+        const ancestorSlIds = slotIds(ancestor, "sportlots");
+        const ancestorBscIds = slotIds(ancestor, "bsc");
+        if (ancestorSlIds.length > 0) {
+          slPlatformFilters[ancestor.level] = ancestorSlIds;
         }
-        if (ancestor.platformData?.bsc) {
-          const bscVal = ancestor.platformData.bsc;
-          bscPlatformFilters[ancestor.level] = Array.isArray(bscVal) ? bscVal : [bscVal];
+        if (ancestorBscIds.length > 0) {
+          bscPlatformFilters[ancestor.level] = ancestorBscIds;
         }
       }
 

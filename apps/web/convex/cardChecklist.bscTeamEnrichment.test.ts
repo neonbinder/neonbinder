@@ -86,7 +86,7 @@ async function insertCard(
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
-      platformData: opts.bsc !== undefined ? { bsc: opts.bsc } : {},
+      platformData: opts.bsc !== undefined ? { bsc: { ref: opts.bsc, src: "b0" } } : {},
       sortOrder: Number(cardNumber) || 0,
       lastUpdated: Date.now(),
       ...(opts.teamOnCardIds ? { teamOnCardIds: opts.teamOnCardIds } : {}),

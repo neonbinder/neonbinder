@@ -84,7 +84,7 @@ async function insertCard(
       selectorOptionId,
       cardNumber,
       cardName: `Card ${cardNumber}`,
-      platformData: { bsc: bscCardId },
+      platformData: { bsc: { ref: bscCardId, src: "b0" } },
       sortOrder: Number(cardNumber) || 0,
       lastUpdated: Date.now(),
     }),

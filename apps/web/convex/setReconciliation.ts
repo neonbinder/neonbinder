@@ -6,6 +6,7 @@ import { getCurrentUserId, requireAdmin } from "./auth";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import {
   hasOperatorExtras,
+  slotIds,
   initialSlots,
   pruneEmptySides,
   setPrimarySlotId,
@@ -367,12 +368,14 @@ export const fetchRawOptions = action({
 
         for (const ancestor of chain) {
           const lvl = ancestor.level;
-          if (ancestor.platformData?.sportlots) {
-            slPlatformFilters[lvl] = ancestor.platformData.sportlots;
+          // NEO-137: adapters speak marketplace IDs, not slots.
+          const ancestorSlIds = slotIds(ancestor, "sportlots");
+          if (ancestorSlIds.length > 0) {
+            slPlatformFilters[lvl] = ancestorSlIds[0];
           }
-          if (ancestor.platformData?.bsc) {
-            const bscVal = ancestor.platformData.bsc;
-            bscPlatformFilters[lvl] = Array.isArray(bscVal) ? bscVal : [bscVal];
+          const ancestorBscIds = slotIds(ancestor, "bsc");
+          if (ancestorBscIds.length > 0) {
+            bscPlatformFilters[lvl] = ancestorBscIds;
           } else if (BSC_REQUIRED.has(lvl)) {
             precondMissingBsc.push(`${lvl}=${ancestor.value}`);
           } else if (ancestor.value) {

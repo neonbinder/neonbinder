@@ -30,7 +30,12 @@ export const postalAddressValidator = v.object({
  */
 export const cardPlatformRefValidator = v.object({
   ref: v.string(),
-  src: v.string(),
+  // Absent when the ref cannot be attributed to any set attached to this
+  // card's parent row. The ref is still the card's marketplace identity and
+  // must never be dropped for want of a source — an unattributed ref is
+  // reported, the same way an orphaned one is. It simply cannot participate
+  // in sync-by-set until an operator attaches the set it came from.
+  src: v.optional(v.string()),
 });
 
 export const cardPlatformDataValidator = v.object({
