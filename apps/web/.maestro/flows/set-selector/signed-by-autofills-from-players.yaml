@@ -154,6 +154,36 @@ tags:
     commands:
       - tapOn:
           text: ".*Fetch from Marketplaces.*"
+      # NEO-137: pairing runs before any card is generated. This is a real set,
+      # so the dialog opens; "Keep all" on both columns reproduces exactly what
+      # a pre-NEO-137 sync produced, keeping this fallback's baseline identical.
+      - extendedWaitUntil:
+          visible:
+            text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+          timeout: 60000
+      - runFlow:
+          when:
+            visible: "Match Cards"
+          commands:
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*BSC only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all BSC-only cards"
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*SportLots only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all SportLots-only cards"
+            - tapOn:
+                id: "Confirm card matches"
+            - extendedWaitUntil:
+                notVisible: "Match Cards"
+                timeout: 60000
       # First fetch: all players/teams are new → EntityReviewWizard opens.
       # A populated-enough set may commit immediately ("Saved N cards.").
       - extendedWaitUntil:
