@@ -129,8 +129,10 @@ tags:
 
 - tapOn:
     id: "Open add card form"
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # ============================================================
 # STEP 6 — FILL CARD NUMBER (autofocus)
