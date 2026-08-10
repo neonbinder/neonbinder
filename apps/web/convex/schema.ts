@@ -21,6 +21,117 @@ export const postalAddressValidator = v.object({
   country: v.string(),
 });
 
+export const selectorOptionLevelValidator = v.union(
+  v.literal("sport"),
+  v.literal("year"),
+  v.literal("manufacturer"),
+  v.literal("setName"),
+  v.literal("variantType"),
+  v.literal("insert"),
+  v.literal("parallel"),
+);
+
+/**
+ * NEO-137 phase 0 — the `selectorOptions` document fields, defined once and
+ * exported so every hand-written `returns` validator can be built FROM the
+ * schema instead of re-listing it.
+ *
+ * Four queries used to enumerate these fields by hand
+ * (`getSelectorOptions`, `getSelectorOptionById`, `findByLevelAndValue`,
+ * `getInsertTreeByVariantType`). Convex validates `returns` STRICTLY, so every
+ * field added to the table had to be copied into all four or the query would
+ * throw `Object contains extra field '<name>'` at runtime for any row carrying
+ * it. That is exactly how `getInsertTreeByVariantType` came to be missing
+ * `platformLabels`, `primaryPlatformId` and `sportConfig` — it broke Group
+ * Parallels in prod for every reconciled row, the second occurrence of the
+ * same bug after `sportConfig` (NEO-96).
+ *
+ * Deriving the validator from this object makes that drift structurally
+ * impossible: a new field is in the `returns` of all four the moment it is in
+ * the table. See `selectorOptionDocValidator` in convex/selectorOptions.ts.
+ */
+export const selectorOptionFields = {
+  level: selectorOptionLevelValidator,
+  value: v.string(), // Display value (e.g., "Football")
+  platformData: v.object({
+    // Either side may be an array at the variant levels (variantType /
+    // insert / parallel) when a single canonical row maps to multiple
+    // marketplace sets (e.g. 2022 Topps split into Series 1 / Series 2 on
+    // SportLots). Sport/year/manufacturer/setName rows stay single-string.
+    // See NEO-6 phase 1 for the multi-version mapping design.
+    bsc: v.optional(v.union(v.string(), v.array(v.string()))),
+    sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
+    // SL display name captured at the time the user picked the SL Base
+    // anchor in BaseSetPicker. Used by ReconciliationModal to seed the
+    // SL prefix filter (sibling `sportlots` holds the radio ID, which is
+    // numeric and not human-comparable). Optional + additive for
+    // backwards compatibility; missing rows self-heal on next sync.
+    sportlotsDisplay: v.optional(v.string()),
+  }),
+  // Human-readable label per attached marketplace ID. Keyed by the
+  // marketplace ID string. Absent on legacy / single-ID rows — fall back
+  // to the ID itself when rendering. Only populated when an operator
+  // attaches extras beyond the reconciliation-derived primary.
+  platformLabels: v.optional(v.object({
+    bsc: v.optional(v.record(v.string(), v.string())),
+    sportlots: v.optional(v.record(v.string(), v.string())),
+  })),
+  // The marketplace ID that storeReconciledOptions matched against. Used
+  // during re-reconciliation to refresh that one entry without clobbering
+  // operator-attached extras. Absent on legacy rows — treat the first
+  // entry in platformData.<side> as primary in that case.
+  primaryPlatformId: v.optional(v.object({
+    bsc: v.optional(v.string()),
+    sportlots: v.optional(v.string()),
+  })),
+  parentId: v.optional(v.id("selectorOptions")), // For hierarchical relationships
+  children: v.optional(v.array(v.id("selectorOptions"))), // Child options
+  isCustom: v.optional(v.boolean()), // Distinguishes user-added entries from marketplace data
+  createdByUserId: v.optional(v.string()), // Audit trail for custom entries
+  metadata: v.optional(v.object({
+    cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
+    isInsert: v.optional(v.boolean()),
+    isParallel: v.optional(v.boolean()),
+  })),
+  // NEO-96: self-describing config for a `level: "sport"` row. Absent on
+  // every other level, and absent on custom sports (which degrade explicitly:
+  // slugified SKU prefix, no Wikidata/ESPN enrichment).
+  //
+  // These values used to live in five module-level maps keyed by the sport's
+  // DISPLAY NAME — SPORT_QIDS/HOF_QIDS (adapters/wikidata.ts),
+  // SPORT_TO_ESPN_LEAGUE (adapters/espn.ts), SPORT_SKU_CODE (sku.ts),
+  // SPORT_TO_LEAGUE (features/deriveCardFeatures.ts). Keying on the display
+  // name meant renaming a sport would silently break SKU generation and
+  // enrichment. Holding the config on the row makes it rename-proof: the maps
+  // survive only as bootstrap DEFAULTS applied at row creation
+  // (see convex/sportConfig.ts), never as runtime lookups.
+  //
+  // NOT to be confused with `platformData`, which holds marketplace WIRE
+  // formats (bsc "baseball", sportlots "BB"). Those are resolved at the
+  // adapter boundary and must never be persisted onto a domain entity.
+  sportConfig: v.optional(v.object({
+    skuCode: v.optional(v.string()),  // 2-char NeonBinder SKU prefix, e.g. "BB"
+    league: v.optional(v.string()),   // e.g. "MLB"
+    espn: v.optional(v.object({
+      path: v.string(),               // e.g. "baseball/mlb"
+      leagueName: v.string(),
+    })),
+    wikidata: v.optional(v.object({
+      sportQid: v.string(),               // e.g. "Q5369" (baseball)
+      hallOfFameQid: v.optional(v.string()),
+    })),
+  })),
+  // NEO-24: marketplace-agnostic feature map. Keys come from
+  // `convex/features/expectedFeatures.ts` (e.g. "league", "era",
+  // "isReprint"). Values are strings ("MLB", "Modern",
+  // "true"/"false", "Base Card"). When set at a higher level
+  // (sport/year/manufacturer/setName/variant), the propagation engine
+  // writes the value down to every descendant `cardChecklist` row that
+  // has not explicitly overridden the key. See `setSelectorOptionFeature`.
+  features: v.optional(v.record(v.string(), v.string())),
+  lastUpdated: v.number(),
+};
+
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
   // Users table for storing Clerk user data
@@ -77,96 +188,10 @@ export default defineSchema({
     returnAddress: v.optional(postalAddressValidator),
   }).index("by_user", ["userId"]),
 
-  // Selector Options - stores all possible values for each selector level
-  selectorOptions: defineTable({
-    level: v.union(
-      v.literal("sport"),
-      v.literal("year"),
-      v.literal("manufacturer"),
-      v.literal("setName"),
-      v.literal("variantType"),
-      v.literal("insert"),
-      v.literal("parallel")
-    ),
-    value: v.string(), // Display value (e.g., "Football")
-    platformData: v.object({
-      // Either side may be an array at the variant levels (variantType /
-      // insert / parallel) when a single canonical row maps to multiple
-      // marketplace sets (e.g. 2022 Topps split into Series 1 / Series 2 on
-      // SportLots). Sport/year/manufacturer/setName rows stay single-string.
-      // See NEO-6 phase 1 for the multi-version mapping design.
-      bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-      sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-      // SL display name captured at the time the user picked the SL Base
-      // anchor in BaseSetPicker. Used by ReconciliationModal to seed the
-      // SL prefix filter (sibling `sportlots` holds the radio ID, which is
-      // numeric and not human-comparable). Optional + additive for
-      // backwards compatibility; missing rows self-heal on next sync.
-      sportlotsDisplay: v.optional(v.string()),
-    }),
-    // Human-readable label per attached marketplace ID. Keyed by the
-    // marketplace ID string. Absent on legacy / single-ID rows — fall back
-    // to the ID itself when rendering. Only populated when an operator
-    // attaches extras beyond the reconciliation-derived primary.
-    platformLabels: v.optional(v.object({
-      bsc: v.optional(v.record(v.string(), v.string())),
-      sportlots: v.optional(v.record(v.string(), v.string())),
-    })),
-    // The marketplace ID that storeReconciledOptions matched against. Used
-    // during re-reconciliation to refresh that one entry without clobbering
-    // operator-attached extras. Absent on legacy rows — treat the first
-    // entry in platformData.<side> as primary in that case.
-    primaryPlatformId: v.optional(v.object({
-      bsc: v.optional(v.string()),
-      sportlots: v.optional(v.string()),
-    })),
-    parentId: v.optional(v.id("selectorOptions")), // For hierarchical relationships
-    children: v.optional(v.array(v.id("selectorOptions"))), // Child options
-    isCustom: v.optional(v.boolean()), // Distinguishes user-added entries from marketplace data
-    createdByUserId: v.optional(v.string()), // Audit trail for custom entries
-    metadata: v.optional(v.object({
-      cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
-      isInsert: v.optional(v.boolean()),
-      isParallel: v.optional(v.boolean()),
-    })),
-    // NEO-96: self-describing config for a `level: "sport"` row. Absent on
-    // every other level, and absent on custom sports (which degrade explicitly:
-    // slugified SKU prefix, no Wikidata/ESPN enrichment).
-    //
-    // These values used to live in five module-level maps keyed by the sport's
-    // DISPLAY NAME — SPORT_QIDS/HOF_QIDS (adapters/wikidata.ts),
-    // SPORT_TO_ESPN_LEAGUE (adapters/espn.ts), SPORT_SKU_CODE (sku.ts),
-    // SPORT_TO_LEAGUE (features/deriveCardFeatures.ts). Keying on the display
-    // name meant renaming a sport would silently break SKU generation and
-    // enrichment. Holding the config on the row makes it rename-proof: the maps
-    // survive only as bootstrap DEFAULTS applied at row creation
-    // (see convex/sportConfig.ts), never as runtime lookups.
-    //
-    // NOT to be confused with `platformData`, which holds marketplace WIRE
-    // formats (bsc "baseball", sportlots "BB"). Those are resolved at the
-    // adapter boundary and must never be persisted onto a domain entity.
-    sportConfig: v.optional(v.object({
-      skuCode: v.optional(v.string()),  // 2-char NeonBinder SKU prefix, e.g. "BB"
-      league: v.optional(v.string()),   // e.g. "MLB"
-      espn: v.optional(v.object({
-        path: v.string(),               // e.g. "baseball/mlb"
-        leagueName: v.string(),
-      })),
-      wikidata: v.optional(v.object({
-        sportQid: v.string(),               // e.g. "Q5369" (baseball)
-        hallOfFameQid: v.optional(v.string()),
-      })),
-    })),
-    // NEO-24: marketplace-agnostic feature map. Keys come from
-    // `convex/features/expectedFeatures.ts` (e.g. "league", "era",
-    // "isReprint"). Values are strings ("MLB", "Modern",
-    // "true"/"false", "Base Card"). When set at a higher level
-    // (sport/year/manufacturer/setName/variant), the propagation engine
-    // writes the value down to every descendant `cardChecklist` row that
-    // has not explicitly overridden the key. See `setSelectorOptionFeature`.
-    features: v.optional(v.record(v.string(), v.string())),
-    lastUpdated: v.number(),
-  })
+  // Selector Options - stores all possible values for each selector level.
+  // Fields live in `selectorOptionFields` above so query `returns` validators
+  // are built from the schema rather than re-listing it (NEO-137 phase 0).
+  selectorOptions: defineTable(selectorOptionFields)
     .index("by_level", ["level"])
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])

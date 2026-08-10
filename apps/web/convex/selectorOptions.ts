@@ -29,17 +29,31 @@ import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+import { selectorOptionFields, selectorOptionLevelValidator } from "./schema";
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
-const levelValidator = v.union(
-  v.literal("sport"),
-  v.literal("year"),
-  v.literal("manufacturer"),
-  v.literal("setName"),
-  v.literal("variantType"),
-  v.literal("insert"),
-  v.literal("parallel"),
-);
+const levelValidator = selectorOptionLevelValidator;
+
+/**
+ * NEO-137 phase 0 — the full `selectorOptions` document as a `returns`
+ * validator, built FROM the schema rather than re-listing its fields.
+ *
+ * Convex validates `returns` strictly, so any query returning whole rows must
+ * enumerate every field the row can carry. Four queries here used to do that
+ * by hand, and they drifted: `getInsertTreeByVariantType` was missing
+ * `platformLabels`, `primaryPlatformId` and `sportConfig`, which threw
+ * `Object contains extra field 'primaryPlatformId'` in prod for every
+ * reconciled row and broke Group Parallels. `sportConfig` had already caused
+ * the same outage once (NEO-96).
+ *
+ * Deriving from `selectorOptionFields` means a field added to the table is in
+ * all four validators automatically. Do NOT re-inline these fields.
+ */
+const selectorOptionDocValidator = v.object({
+  _id: v.id("selectorOptions"),
+  _creationTime: v.number(),
+  ...selectorOptionFields,
+});
 
 const metadataValidator = v.optional(v.object({
   cardNumberPrefix: v.optional(v.string()),
@@ -67,50 +81,7 @@ export const getSelectorOptions = query({
     level: levelValidator,
     parentId: v.optional(v.id("selectorOptions")),
   },
-  returns: v.array(
-    v.object({
-      _id: v.id("selectorOptions"),
-      _creationTime: v.number(),
-      level: levelValidator,
-      value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
-      primaryPlatformId: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
-      // NEO-96: sport-level rows carry their own config. Convex validates
-      // `returns` STRICTLY, so every validator that enumerates selectorOptions
-      // fields must list it or the query fails at runtime with
-      // "Object contains extra field `sportConfig`".
-      sportConfig: v.optional(v.object({
-        skuCode: v.optional(v.string()),
-        league: v.optional(v.string()),
-        espn: v.optional(v.object({
-          path: v.string(),
-          leagueName: v.string(),
-        })),
-        wikidata: v.optional(v.object({
-          sportQid: v.string(),
-          hallOfFameQid: v.optional(v.string()),
-        })),
-      })),
-      parentId: v.optional(v.id("selectorOptions")),
-      children: v.optional(v.array(v.id("selectorOptions"))),
-      isCustom: v.optional(v.boolean()),
-      createdByUserId: v.optional(v.string()),
-      metadata: metadataValidator,
-      features: featuresValidator,
-      lastUpdated: v.number(),
-    }),
-  ),
+  returns: v.array(selectorOptionDocValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, parentId } = args;
@@ -239,51 +210,7 @@ export const getBaseVariantBySet = query({
 
 export const getSelectorOptionById = query({
   args: { id: v.id("selectorOptions") },
-  returns: v.union(
-    v.null(),
-    v.object({
-      _id: v.id("selectorOptions"),
-      _creationTime: v.number(),
-      level: levelValidator,
-      value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
-      primaryPlatformId: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
-      // NEO-96: sport-level rows carry their own config. Convex validates
-      // `returns` STRICTLY, so every validator that enumerates selectorOptions
-      // fields must list it or the query fails at runtime with
-      // "Object contains extra field `sportConfig`".
-      sportConfig: v.optional(v.object({
-        skuCode: v.optional(v.string()),
-        league: v.optional(v.string()),
-        espn: v.optional(v.object({
-          path: v.string(),
-          leagueName: v.string(),
-        })),
-        wikidata: v.optional(v.object({
-          sportQid: v.string(),
-          hallOfFameQid: v.optional(v.string()),
-        })),
-      })),
-      parentId: v.optional(v.id("selectorOptions")),
-      children: v.optional(v.array(v.id("selectorOptions"))),
-      isCustom: v.optional(v.boolean()),
-      createdByUserId: v.optional(v.string()),
-      metadata: metadataValidator,
-      features: featuresValidator,
-      lastUpdated: v.number(),
-    }),
-  ),
+  returns: v.union(v.null(), selectorOptionDocValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     return await ctx.db.get(args.id);
@@ -296,51 +223,7 @@ export const findByLevelAndValue = query({
     value: v.string(),
     parentId: v.optional(v.id("selectorOptions")),
   },
-  returns: v.union(
-    v.null(),
-    v.object({
-      _id: v.id("selectorOptions"),
-      _creationTime: v.number(),
-      level: levelValidator,
-      value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
-      primaryPlatformId: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
-      // NEO-96: sport-level rows carry their own config. Convex validates
-      // `returns` STRICTLY, so every validator that enumerates selectorOptions
-      // fields must list it or the query fails at runtime with
-      // "Object contains extra field `sportConfig`".
-      sportConfig: v.optional(v.object({
-        skuCode: v.optional(v.string()),
-        league: v.optional(v.string()),
-        espn: v.optional(v.object({
-          path: v.string(),
-          leagueName: v.string(),
-        })),
-        wikidata: v.optional(v.object({
-          sportQid: v.string(),
-          hallOfFameQid: v.optional(v.string()),
-        })),
-      })),
-      parentId: v.optional(v.id("selectorOptions")),
-      children: v.optional(v.array(v.id("selectorOptions"))),
-      isCustom: v.optional(v.boolean()),
-      createdByUserId: v.optional(v.string()),
-      metadata: metadataValidator,
-      features: featuresValidator,
-      lastUpdated: v.number(),
-    }),
-  ),
+  returns: v.union(v.null(), selectorOptionDocValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const options = await ctx.db
@@ -2226,44 +2109,8 @@ export const getInsertTreeByVariantType = query({
   args: { variantTypeId: v.id("selectorOptions") },
   returns: v.array(
     v.object({
-      insert: v.object({
-        _id: v.id("selectorOptions"),
-        _creationTime: v.number(),
-        level: levelValidator,
-        value: v.string(),
-        platformData: v.object({
-          bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-          sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-          sportlotsDisplay: v.optional(v.string()),
-        }),
-        parentId: v.optional(v.id("selectorOptions")),
-        children: v.optional(v.array(v.id("selectorOptions"))),
-        isCustom: v.optional(v.boolean()),
-        createdByUserId: v.optional(v.string()),
-        metadata: metadataValidator,
-          features: featuresValidator,
-        lastUpdated: v.number(),
-      }),
-      parallels: v.array(
-        v.object({
-          _id: v.id("selectorOptions"),
-          _creationTime: v.number(),
-          level: levelValidator,
-          value: v.string(),
-          platformData: v.object({
-            bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-            sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-            sportlotsDisplay: v.optional(v.string()),
-          }),
-          parentId: v.optional(v.id("selectorOptions")),
-          children: v.optional(v.array(v.id("selectorOptions"))),
-          isCustom: v.optional(v.boolean()),
-          createdByUserId: v.optional(v.string()),
-          metadata: metadataValidator,
-              features: featuresValidator,
-          lastUpdated: v.number(),
-        }),
-      ),
+      insert: selectorOptionDocValidator,
+      parallels: v.array(selectorOptionDocValidator),
     }),
   ),
   handler: async (ctx, args) => {
