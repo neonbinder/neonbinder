@@ -18,6 +18,33 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
+| Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-shared-sl-set-1996-score.yaml` — **sole writer** |
+
+### 1996 Score — approved for NEO-137, sole-writer
+
+Added with owner approval for NEO-137 Phase 5. It is the ONLY set in the
+catalog that exhibits the shape the feature exists for, so the feature cannot
+be end-to-end tested without it:
+
+| BSC | SportLots |
+| -- | -- |
+| Dugout Collection Artist's Proofs Series 1 | *(none — one shared set)* |
+| Dugout Collection Artist's Proofs Series 2 | Dugout Collection Artists Proofs |
+
+BSC splits the Artist's Proofs into two series; SportLots carries one combined
+set. `computeMatches` splices each match out of BOTH arrays, so the single SL
+set is consumed by whichever series matches first and the other is left with
+nothing. Proving that an operator can bind BOTH series to that one SL set is
+the acceptance criterion of NEO-137, and no other registered set can express
+it.
+
+**Sole-writer, not read-only.** Unlike the Topps Chrome anchor, this set is NOT
+pre-synced by `setup.yaml` and is NOT read-only: the reconciliation IS the
+thing under test, so the flow must perform it. Exactly one flow may ever touch
+this set — `inserts-shared-sl-set-1996-score.yaml`. Adding a second would
+reintroduce the cross-runner interference the read-only rule exists to prevent.
+Keeping it out of `setup.yaml` also means its sync cost is paid by one flow
+rather than added to every run's seed.
 
 **No other real set exists in the suite.** If a flow needs marketplace-backed
 data that isn't in the table above, it must either sync it itself (and accept the

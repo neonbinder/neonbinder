@@ -1,0 +1,169 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Inserts — two NB rows bind to ONE SportLots set (1996 Score Dugout Collection Artist's Proofs, NEO-137)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE: the acceptance criterion of NEO-137. Two NeonBinder insert
+# rows both map to a SINGLE SportLots set.
+#
+# WHY THIS SET, AND WHY IT HAD TO BE ADDED (see .maestro/SET-REGISTRY.md):
+#   1996 Score is the only set in the catalog exhibiting the shape the feature
+#   exists for. BSC splits Dugout Collection Artist's Proofs into Series 1 and
+#   Series 2; SportLots carries one combined set:
+#
+#     BSC  Dugout Collection Artist's Proofs Series 1  ->  (none)
+#     BSC  Dugout Collection Artist's Proofs Series 2  ->  Dugout Collection Artists Proofs
+#
+#   `computeMatches` splices every match out of BOTH arrays, so the single SL
+#   set is consumed by whichever series matches first (Series 2, at 78%) and the
+#   other is left with nothing. That exclusivity is structural, not a threshold
+#   to tune. Without this set the feature has NO end-to-end coverage — the
+#   pre-existing Topps Chrome anchor is an ordinary 1:1 mapping and can never
+#   exercise it.
+#
+# SOLE WRITER, NOT READ-ONLY:
+#   Every other flow treats real sets as read-only, because 8 runners drain the
+#   queue concurrently. Here the reconciliation IS the thing under test, so this
+#   flow must perform it. Exactly ONE flow may ever touch 1996 Score — this one.
+#   It is deliberately NOT pre-synced by setup.yaml, so its sync cost lands on
+#   this flow rather than on every run's seed.
+#
+# WHAT THIS TESTS:
+#   - The reconciler leaves one Artist's Proofs series unmatched (the bug).
+#   - The dialog OFFERS the already-claimed SL set to that row, marked
+#     "already linked" with its confidence — the NEO-137 affordance.
+#   - Confirming it binds BOTH series, and Save persists both.
+#   - After save, both series exist as separate NB insert rows.
+#
+# R3 — DEDUP: `checklist-pairing-dialog-cancel` covers the CARD-level pairing
+#   dialog. This flow uniquely covers the SET-level many-to-one binding.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO Baseball / 1996 / Score / Score
+# The util handles the search-input-per-column cascade. 1996 Score is NOT
+# pre-synced, so the util's 60s ceiling on the variant-type reveal covers the
+# cold BSC + SL fetch for this hierarchy.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "1996"
+      MANUFACTURER: "Score"
+      SET: "Score"
+
+# ============================================================
+# STEP 1 — ENTER THE Insert VARIANT TYPE
+# Selecting it kicks the cross-platform auto-sync, which surfaces the
+# ReconciliationModal. 240s matches setup.yaml's sanctioned ceiling for a COLD
+# insert-level BSC + SL fetch — this set has never been synced.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Insert"
+- extendedWaitUntil:
+    visible:
+      text: ".*Reconcile Inserts.*|.*Search inserts.*"
+    timeout: 240000
+
+# If a previous attempt already saved these rows the column renders directly.
+# The reconcile path is the one under test; run it when the modal appears.
+- runFlow:
+    when:
+      visible: "Reconcile Inserts"
+    commands:
+      # ── THE BUG, VISIBLE ──────────────────────────────────────────────
+      # One Artist's Proofs series sits in unmatched-BSC because the other
+      # consumed the single SL set.
+      - assertVisible:
+          text: ".*[0-9]+ matched.*"
+      - scrollUntilVisible:
+          element:
+            text: ".*Unmatched.*"
+          centerElement: true
+          timeout: 15000
+
+      # ── THE FIX, OFFERED ──────────────────────────────────────────────
+      # The losing series is offered the SL set the winner already took,
+      # marked "already linked". Filter the BSC column down to it first —
+      # the unmatched list is long and the row must be on screen to act on.
+      - tapOn:
+          id: "Filter BSC items"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Artist"
+      - extendedWaitUntil:
+          visible:
+            text: ".*already linked.*"
+          timeout: 15000
+      - assertVisible:
+          text: ".*Dugout Collection Artists Proofs.*"
+
+      # Bind the second row to the same SL set. The aria-label is composed
+      # from both names, so this can only match the intended offer.
+      - tapOn:
+          text: "Link shared"
+          retryTapIfNoChange: true
+
+      # The offer is consumed — the row moved into matched.
+      - extendedWaitUntil:
+          notVisible:
+            text: ".*already linked.*"
+          timeout: 10000
+
+      # ── SAVE ──────────────────────────────────────────────────────────
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ matched.*"
+          centerElement: true
+          timeout: 15000
+      - tapOn:
+          text: ".*Save [0-9]+ matched.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile Inserts"
+          timeout: 60000
+
+# ============================================================
+# STEP 2 — BOTH SERIES EXIST AS SEPARATE NB INSERT ROWS
+#
+# This is the acceptance criterion. Before NEO-137 only ONE of these could be
+# saved: the reconciler consumed the SL set for whichever series matched first,
+# and the other had no mapping to persist.
+#
+# The Inserts column carries many entries, so it renders a search input and the
+# rows only appear once filtered (same reason setup.yaml filters for
+# "Future Stars").
+# ============================================================
+
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 30000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Artist"
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Artist's Proofs Series 1.*"
+      below:
+        id: "Search inserts"
+    timeout: 20000
+- assertVisible:
+    text: ".*Artist's Proofs Series 2.*"
+    below:
+      id: "Search inserts"
