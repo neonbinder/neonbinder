@@ -167,7 +167,8 @@ export default function CardChecklistItem({
       <div className="flex gap-1 shrink-0 items-center flex-wrap justify-end">
         {/* NEO-6 source-set badges: rendered only when the parent variant
             exposes a label map for that side AND this card's ref names a
-            slot in it. Replaces the bare "SL" / "BSC" tag
+            slot in it (NEO-137 — this used to key off `sourcePlatformIds`,
+            which no longer exists). Replaces the bare "SL" / "BSC" tag
             with the operator-given label (e.g. "Series 2"). */}
         {sourceLabelMaps?.sportlots[card.platformData?.sportlots?.src ?? ""] ? (
           <span

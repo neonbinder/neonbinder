@@ -1,4 +1,11 @@
-import React, { useCallback, useMemo, useReducer, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
@@ -251,6 +258,39 @@ export default function CardPairingModal({
   const bscFieldClass = useFieldTestClass();
   const slFieldClass = useFieldTestClass();
 
+  // A11y — the dialog asserts role="dialog" + aria-modal, so it has to behave
+  // like one. Without this, Escape only worked once focus happened to be
+  // inside, and a keyboard user had to Tab through the whole page behind the
+  // dialog to reach it (WCAG 2.4.3 / 4.1.2).
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const cancelBtnRef = useRef<HTMLButtonElement | null>(null);
+  const bscFilterRef = useRef<HTMLInputElement | null>(null);
+  const slFilterRef = useRef<HTMLInputElement | null>(null);
+  const matchedToggleRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    // Remember what opened us so focus can go back there on close, rather
+    // than falling to <body>.
+    triggerRef.current = document.activeElement as HTMLElement | null;
+    const id = requestAnimationFrame(() => cancelBtnRef.current?.focus());
+    return () => {
+      cancelAnimationFrame(id);
+      triggerRef.current?.focus?.();
+    };
+  }, [isOpen]);
+
+  /**
+   * Every action below removes the very <li> holding the button that was
+   * clicked, so React unmounts it and focus silently falls to <body>. Move
+   * focus to a stable neighbour instead — the column the item moved to or
+   * from, which is where the operator's attention already is.
+   */
+  const refocus = useCallback((el: HTMLElement | null) => {
+    requestAnimationFrame(() => el?.focus());
+  }, []);
+
   const visibleBsc = useMemo(
     () =>
       state.unmatchedBsc.filter((c) =>
@@ -297,14 +337,38 @@ export default function CardPairingModal({
         className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
         role="dialog"
         aria-modal="true"
-        aria-label="Match cards"
+        aria-labelledby="card-pairing-heading"
+        ref={dialogRef}
         onKeyDown={(e) => {
-          if (e.key === "Escape") onClose();
+          if (e.key === "Escape") {
+            onClose();
+            return;
+          }
+          if (e.key !== "Tab") return;
+          // Keep Tab inside the dialog — aria-modal="true" promises this.
+          const root = dialogRef.current;
+          if (!root) return;
+          const focusable = root.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), input:not([disabled]), [href], select, textarea, [tabindex]:not([tabindex="-1"])',
+          );
+          if (focusable.length === 0) return;
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
         }}
       >
         <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-5xl max-h-[92vh] flex flex-col">
           <header className="p-4 border-b border-gray-700">
-            <h2 className="text-lg font-semibold text-gray-100">
+            <h2
+              id="card-pairing-heading"
+              className="text-lg font-semibold text-gray-100"
+            >
               Match Cards{setLabel ? ` — ${setLabel}` : ""}
             </h2>
             <p className="text-xs text-gray-400 mt-1">
@@ -319,7 +383,8 @@ export default function CardPairingModal({
             <section>
               <button
                 type="button"
-                className="text-sm font-semibold text-gray-200 mb-2"
+                ref={matchedToggleRef}
+                className="text-sm font-semibold text-gray-200 mb-2 px-2 py-1.5"
                 onClick={() => setMatchedCollapsed((v) => !v)}
                 aria-label={`${matchedCollapsed ? "Expand" : "Collapse"} matched cards`}
               >
@@ -342,8 +407,11 @@ export default function CardPairingModal({
                       </span>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-red-400"
-                        onClick={() => dispatch({ type: "UNLINK", index: i })}
+                        className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
+                        onClick={() => {
+                          dispatch({ type: "UNLINK", index: i });
+                          refocus(matchedToggleRef.current);
+                        }}
                         aria-label={`Unlink ${label(m.card)}`}
                       >
                         Unlink
@@ -363,9 +431,12 @@ export default function CardPairingModal({
                   </h3>
                   <button
                     type="button"
-                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40"
+                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40 px-2 py-1.5"
                     disabled={state.unmatchedBsc.length === 0}
-                    onClick={() => dispatch({ type: "KEEP_ALL", side: "bsc" })}
+                    onClick={() => {
+                      dispatch({ type: "KEEP_ALL", side: "bsc" });
+                      refocus(bscFilterRef.current);
+                    }}
                     aria-label="Keep all BSC-only cards"
                   >
                     Keep all
@@ -373,6 +444,7 @@ export default function CardPairingModal({
                 </div>
                 <Input
                   bare
+                  ref={bscFilterRef}
                   className={`${bscFieldClass()} w-full`}
                   type="text"
                   value={bscFilter}
@@ -395,20 +467,27 @@ export default function CardPairingModal({
                             selectedBsc === c.cardNumber ? null : c.cardNumber,
                           )
                         }
-                        aria-label={`Select BSC card ${label(c)}`}
+                        // Selection was conveyed by background colour alone.
+                        aria-pressed={selectedBsc === c.cardNumber}
+                        aria-label={
+                          selectedBsc === c.cardNumber
+                            ? `${label(c)}, selected. Press to deselect.`
+                            : `Select BSC card ${label(c)}`
+                        }
                       >
                         {label(c)}
                       </button>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-cyan-300"
-                        onClick={() =>
+                        className="text-xs text-gray-400 hover:text-cyan-300 px-2 py-1.5"
+                        onClick={() => {
                           dispatch({
                             type: "KEEP",
                             side: "bsc",
                             cardNumber: c.cardNumber,
-                          })
-                        }
+                          });
+                          refocus(bscFilterRef.current);
+                        }}
                         aria-label={`Keep ${label(c)} as BSC-only`}
                       >
                         Keep
@@ -425,9 +504,12 @@ export default function CardPairingModal({
                   </h3>
                   <button
                     type="button"
-                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40"
+                    className="text-xs text-gray-400 hover:text-cyan-300 disabled:opacity-40 px-2 py-1.5"
                     disabled={state.unmatchedSl.length === 0}
-                    onClick={() => dispatch({ type: "KEEP_ALL", side: "sl" })}
+                    onClick={() => {
+                      dispatch({ type: "KEEP_ALL", side: "sl" });
+                      refocus(slFilterRef.current);
+                    }}
                     aria-label="Keep all SportLots-only cards"
                   >
                     Keep all
@@ -435,6 +517,7 @@ export default function CardPairingModal({
                 </div>
                 <Input
                   bare
+                  ref={slFilterRef}
                   className={`${slFieldClass()} w-full`}
                   type="text"
                   value={slFilter}
@@ -464,14 +547,15 @@ export default function CardPairingModal({
                       </button>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-cyan-300"
-                        onClick={() =>
+                        className="text-xs text-gray-400 hover:text-cyan-300 px-2 py-1.5"
+                        onClick={() => {
                           dispatch({
                             type: "KEEP",
                             side: "sl",
                             cardNumber: c.cardNumber,
-                          })
-                        }
+                          });
+                          refocus(slFilterRef.current);
+                        }}
                         aria-label={`Keep ${label(c)} as SportLots-only`}
                       >
                         Keep
@@ -488,7 +572,7 @@ export default function CardPairingModal({
                 Keeping ({state.keptBsc.length + state.keptSl.length})
               </h3>
               {state.keptBsc.length + state.keptSl.length === 0 ? (
-                <p className="text-xs text-gray-500 italic">
+                <p className="text-xs text-gray-400 italic">
                   Nothing kept — every unmatched card above will be discarded.
                 </p>
               ) : (
@@ -501,14 +585,15 @@ export default function CardPairingModal({
                       <span>BSC: {label(c)}</span>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-red-400"
-                        onClick={() =>
+                        className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
+                        onClick={() => {
                           dispatch({
                             type: "UNKEEP",
                             side: "bsc",
                             cardNumber: c.cardNumber,
-                          })
-                        }
+                          });
+                          refocus(bscFilterRef.current);
+                        }}
                         aria-label={`Remove ${label(c)} from save list`}
                       >
                         Remove
@@ -523,14 +608,15 @@ export default function CardPairingModal({
                       <span>SL: {label(c)}</span>
                       <button
                         type="button"
-                        className="text-xs text-gray-400 hover:text-red-400"
-                        onClick={() =>
+                        className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
+                        onClick={() => {
                           dispatch({
                             type: "UNKEEP",
                             side: "sl",
                             cardNumber: c.cardNumber,
-                          })
-                        }
+                          });
+                          refocus(slFilterRef.current);
+                        }}
                         aria-label={`Remove ${label(c)} from save list`}
                       >
                         Remove

@@ -53,6 +53,28 @@ export type SlotBearingRow = {
   platformSlotSeq?: SlotSeqShape;
 };
 
+/**
+ * Labels are operator-visible text stored on the row and returned by four
+ * public queries. Validation used to live only in `attachPlatformIds`, so the
+ * two write paths added by NEO-137 (`storeReconciledOptions`'s per-id labels
+ * and `setVariantTypePlatformData`'s SL display name) could write unbounded
+ * strings. Enforcing it here means every path that can set a label inherits
+ * the same rule.
+ */
+export const MAX_SLOT_LABEL_LENGTH = 200;
+
+export function assertValidSlotLabel(label: string, context: string): void {
+  const trimmed = label.trim();
+  if (!trimmed) {
+    throw new Error(`${context}: label is required`);
+  }
+  if (trimmed.length > MAX_SLOT_LABEL_LENGTH) {
+    throw new Error(
+      `${context}: label exceeds ${MAX_SLOT_LABEL_LENGTH} chars`,
+    );
+  }
+}
+
 /** Single-character namespace so a bare `src` value is self-describing in logs. */
 const SLOT_PREFIX: Record<PlatformSide, string> = {
   bsc: "b",
@@ -259,7 +281,11 @@ export function allocateSlots(
         attachedCount += 1;
       }
       if (label !== undefined) {
-        platformLabels[side] = { ...(platformLabels[side] ?? {}), [slot]: label };
+        assertValidSlotLabel(label, `allocateSlots(${side}=${id})`);
+        platformLabels[side] = {
+          ...(platformLabels[side] ?? {}),
+          [slot]: label.trim(),
+        };
       }
     }
 
@@ -362,15 +388,33 @@ export function setPrimarySlotId(
   }
 
   if (existingPrimary) {
+    // NEO-137 (security review F4): reusing the slot key keeps every card in
+    // it resolving across a marketplace re-slug — but the reconciler's match
+    // is fuzzy Levenshtein, and this ticket's own motivating example bound at
+    // 78%. So when the id ACTUALLY changes, every card in the slot is being
+    // reattributed to a different marketplace set, and that must not be
+    // silent. Reuse is kept (orphaning a whole checklist on a legitimate
+    // re-slug is worse), but the event is reported so a wrong fuzzy rebind is
+    // auditable rather than invisible.
+    const previousId = row.platformData?.[side]?.[existingPrimary];
+    if (previousId !== undefined && previousId !== id) {
+      console.warn(
+        `[platformSlots] primary ${side} slot ${existingPrimary} reattributed: ` +
+          `"${previousId}" -> "${id}". Every card on this slot now points at a ` +
+          `DIFFERENT marketplace set. If these are not the same set, detach and ` +
+          `re-attach so the affected cards surface as orphaned instead.`,
+      );
+    }
     const platformData: PlatformDataShape = {
       ...row.platformData,
       [side]: { ...(row.platformData?.[side] ?? {}), [existingPrimary]: id },
     };
     const platformLabels = { ...(row.platformLabels ?? {}) };
     if (label !== undefined) {
+      assertValidSlotLabel(label, `setPrimarySlotId(${side})`);
       platformLabels[side] = {
         ...(platformLabels[side] ?? {}),
-        [existingPrimary]: label,
+        [existingPrimary]: label.trim(),
       };
     }
     return {

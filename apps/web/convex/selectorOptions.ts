@@ -40,6 +40,7 @@ import {
   detachSlot,
   idForSlot,
   initialSlots,
+  isSlotKeyForSide,
   primarySlot,
   pruneEmptySides,
   setPrimarySlotId,
@@ -84,61 +85,63 @@ type StoredPlatformData = {
  * guards must move together.
  */
 async function resolveCardSlots(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null>; patch: (id: Id<"selectorOptions">, patch: Record<string, unknown>) => Promise<void> } },
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null> } },
   selectorOptionId: Id<"selectorOptions">,
-  cards: Array<{ platformData: WirePlatformData }>,
-): Promise<(pd: WirePlatformData) => StoredPlatformData> {
+): Promise<
+  (pd: WirePlatformData, existing?: StoredPlatformData) => StoredPlatformData
+> {
   const row = await ctx.db.get(selectorOptionId);
   if (!row) return () => ({});
 
-  const neededBySide: Record<"bsc" | "sportlots", Set<string>> = {
-    bsc: new Set(),
-    sportlots: new Set(),
-  };
-  for (const card of cards) {
-    for (const side of ["bsc", "sportlots"] as const) {
-      const setId = card.platformData?.[side]?.setId;
-      if (setId && slotForId(row, side, setId) === undefined) {
-        neededBySide[side].add(setId);
-      }
-    }
-  }
-
-  let slotById: Record<"bsc" | "sportlots", Record<string, string>> = {
+  const slotById: Record<"bsc" | "sportlots", Record<string, string>> = {
     bsc: {},
     sportlots: {},
   };
   for (const side of ["bsc", "sportlots"] as const) {
     for (const { slot, id } of slotEntries(row, side)) slotById[side][id] = slot;
   }
-
-  const toAllocate = {
-    bsc: [...neededBySide.bsc].map((id) => ({ id })),
-    sportlots: [...neededBySide.sportlots].map((id) => ({ id })),
-  };
-  if (toAllocate.bsc.length > 0 || toAllocate.sportlots.length > 0) {
-    const alloc = allocateSlots(row, toAllocate);
-    slotById = alloc.slotByIdBySide;
-    await ctx.db.patch(selectorOptionId, {
-      platformData: pruneEmptySides({ ...alloc.platformData }),
-      platformSlotSeq: alloc.platformSlotSeq,
-      lastUpdated: Date.now(),
-    });
-  }
-
   const primaryBySide = {
     bsc: primarySlot(row, "bsc"),
     sportlots: primarySlot(row, "sportlots"),
   };
 
-  return (pd: WirePlatformData): StoredPlatformData => {
+  return (
+    pd: WirePlatformData,
+    existing?: StoredPlatformData,
+  ): StoredPlatformData => {
     const out: StoredPlatformData = {};
     for (const side of ["bsc", "sportlots"] as const) {
       const wire = pd?.[side];
       if (!wire) continue;
-      const src = wire.setId
-        ? slotById[side][wire.setId]
-        : primaryBySide[side];
+
+      let src: string | undefined;
+      if (wire.setId) {
+        // Resolve ONLY against sets already attached to the parent row.
+        //
+        // This used to ALLOCATE a slot for any set id a card named, which
+        // contradicted the invariant stated on `cardPlatformRefValidator` in
+        // schema.ts ("cannot participate in sync-by-set until an operator
+        // attaches the set it came from"). The id is not ours: on the BSC side
+        // it is `r.setName` straight out of the marketplace's bulk-upload
+        // response, so a rename or a display-name/slug divergence would have
+        // silently grown this row's mapping — and `fetchCardChecklist` filters
+        // its next BSC query on ALL attached slots, so an injected slug would
+        // then widen a privileged outbound fetch to an unrelated set.
+        //
+        // Attaching a marketplace set stays an operator action
+        // (AttachSetsDialog / reconciliation), consistent with every other
+        // confirmation gate in this feature.
+        src = slotById[side][wire.setId];
+      } else if (existing?.[side]?.src) {
+        // No source tag from the marketplace: keep whatever this card was
+        // already attributed to rather than snapping it back to the primary,
+        // which would silently repoint a card bound to an operator-attached
+        // extra slot.
+        src = existing[side]!.src;
+      } else {
+        src = primaryBySide[side];
+      }
+
       // Keep the ref even when no slot resolves — it is still this card's
       // marketplace identity. It just cannot participate in sync-by-set until
       // an operator attaches the set it came from, and surfaces as
@@ -1046,6 +1049,22 @@ export const addCustomSelectorOption = mutation({
 // SportLots adapter, label-quality drift, etc).
 const MAX_ATTACHED_PER_SIDE = 10;
 const MAX_LABEL_LENGTH = 200;
+
+// NEO-137 (security review): the card-write paths fan out into a single parent
+// `selectorOptions` doc and are read back by four public queries. A batch large
+// enough to approach Convex's 1 MB document limit would wedge every subsequent
+// write to that row. The largest real checklist in the catalog is ~300 cards
+// (2024 Topps Chrome Gold Wave Refractors), so this is far above any genuine
+// use while still bounding the blast radius.
+const MAX_CARDS_PER_COMMIT = 5000;
+
+function assertCardBatchWithinLimits(cards: unknown[], fnName: string): void {
+  if (cards.length > MAX_CARDS_PER_COMMIT) {
+    throw new Error(
+      `${fnName}: ${cards.length} cards exceeds the ${MAX_CARDS_PER_COMMIT}-card limit for a single call`,
+    );
+  }
+}
 //
 // A canonical NeonBinder variant (variantType / insert / parallel row) can
 // map to multiple BSC and/or SL set IDs. The reconciliation primary is
@@ -1232,6 +1251,11 @@ export const detachPlatformId = mutation({
         `selectorOptions row not found: ${args.selectorOptionId}`,
       );
     }
+    if (!isSlotKeyForSide(args.side, args.slot)) {
+      throw new Error(
+        `detachPlatformId: "${args.slot}" is not a valid ${args.side} slot key`,
+      );
+    }
     const attachedId = idForSlot(row, args.side, args.slot);
     if (attachedId === undefined) {
       return { success: true, message: "Nothing to detach (slot not attached)" };
@@ -1296,6 +1320,11 @@ export const renamePlatformLabel = mutation({
     if (!row) {
       throw new Error(
         `selectorOptions row not found: ${args.selectorOptionId}`,
+      );
+    }
+    if (!isSlotKeyForSide(args.side, args.slot)) {
+      throw new Error(
+        `renamePlatformLabel: "${args.slot}" is not a valid ${args.side} slot key`,
       );
     }
     if (idForSlot(row, args.side, args.slot) === undefined) {
@@ -1542,6 +1571,7 @@ export const storeCardChecklist = mutation({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { selectorOptionId, cards } = args;
+    assertCardBatchWithinLimits(cards, "storeCardChecklist");
 
     // Get existing cards for this variant
     const existingCards = await ctx.db
@@ -1558,11 +1588,7 @@ export const storeCardChecklist = mutation({
 
     // NEO-137: incoming refs name marketplace SET ids; stored refs name a slot
     // on this card's own parent row. Resolve once for the whole batch.
-    const toStoredPlatformData = await resolveCardSlots(
-      ctx,
-      selectorOptionId,
-      cards,
-    );
+    const toStoredPlatformData = await resolveCardSlots(ctx, selectorOptionId);
 
     const processedNumbers = new Set<string>();
 
@@ -1575,7 +1601,7 @@ export const storeCardChecklist = mutation({
         // Merge platform data — keep prior refs if the new payload omits one side
         const mergedPlatformData = {
           ...existing.platformData,
-          ...toStoredPlatformData(card.platformData),
+          ...toStoredPlatformData(card.platformData, existing.platformData),
         };
         await ctx.db.patch(existing._id, {
           cardName: card.cardName,
@@ -4606,6 +4632,23 @@ export const resolveChecklistEntities = action({
     batchId?: string;
   }> => {
     await requireAdmin(ctx);
+    assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
+
+    // `sportId` used to be derived server-side inside fetchCardChecklist; it
+    // now round-trips through the browser, so it must be re-validated rather
+    // than trusted. A wrong id would bucket every name against the wrong
+    // sport (making them all look unknown) and stamp review rows with a row
+    // that has no sportConfig, silently disabling Wikidata enrichment.
+    const chainForSport = await ctx.runQuery(
+      api.selectorOptions.getAncestorChain,
+      { id: args.selectorOptionId },
+    );
+    const sportAncestor = chainForSport.find((a) => a.level === "sport");
+    if (!sportAncestor || sportAncestor._id !== args.sportId) {
+      throw new Error(
+        "resolveChecklistEntities: sportId is not the sport ancestor of selectorOptionId",
+      );
+    }
 
     // Deduped by NORMALIZED name inside resolveUnknownsAndStartBatch — two
     // spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr") must
@@ -4665,6 +4708,7 @@ export const commitCardChecklist = mutation({
     createdTeamIds: Array<Id<"teams">>;
   }> => {
     await requireAdmin(ctx);
+    assertCardBatchWithinLimits(args.cards, "commitCardChecklist");
     const userId = await getCurrentUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
@@ -4920,7 +4964,6 @@ export const commitCardChecklist = mutation({
     const toStoredPlatformData = await resolveCardSlots(
       ctx,
       args.selectorOptionId,
-      richCards,
     );
 
     // Same delete-stale-rows behavior as before, inlined here so we can
@@ -5010,7 +5053,7 @@ export const commitCardChecklist = mutation({
         // wipe the other side's confirmed ref.
         const mergedPlatformData = {
           ...existing.platformData,
-          ...toStoredPlatformData(card.platformData),
+          ...toStoredPlatformData(card.platformData, existing.platformData),
         };
         await ctx.db.patch(existing._id, {
           cardName: card.cardName,

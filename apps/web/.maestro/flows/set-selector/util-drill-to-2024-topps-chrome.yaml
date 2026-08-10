@@ -112,24 +112,62 @@ tags:
 # ── SET ───────────────────────────────────────────────────────────────────────
 # App auto-scrolls the newly-revealed Sets column fully into view — no test-side
 # right-scroll needed.
-- extendedWaitUntil:
-    visible: ".*Search sets.*"
-- tapOn:
-    text: ".*Search sets.*"
-    waitToSettleTimeoutMs: 250
-- inputText: ${SET || "Topps Chrome"}
-# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the Set
-# row-select ONCE iff the next column ("Variant Types") doesn't appear.
-- retry:
-    maxRetries: 1
+#
+# NEO-137: a column renders its search input only when it has MORE THAN ONE
+# entry. Baseball/1996/Score has exactly one set ("Score"), so waiting on
+# ".*Search sets.*" fails outright there — this util previously assumed the
+# multi-entry shape because 2024 Topps was the only hierarchy it ever drilled.
+# Branch on the input's presence instead of assuming it.
+#
+# Only the SET level needs this today: sport is seeded, and the year and
+# manufacturer columns have many entries for every hierarchy in the suite. If a
+# future set lands under a single-entry manufacturer, that level needs the same
+# treatment.
+# No extra wait needed: the MANUFACTURER retry above already gates on the
+# "Sets" column being visible, so the column is rendered by the time we get
+# here — only its SHAPE is in question.
+
+# Multi-entry column: filter, then pick the row BELOW the input.
+- runFlow:
+    when:
+      visible: ".*Search sets.*"
     commands:
       - tapOn:
-          text: ${SET || "Topps Chrome"}
-          below:
-            id: "Search sets"
-          retryTapIfNoChange: true
-      - extendedWaitUntil:
-          visible: "Variant Types"
+          text: ".*Search sets.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${SET || "Topps Chrome"}
+      # NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the
+      # Set row-select ONCE iff the next column ("Variant Types") doesn't appear.
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${SET || "Topps Chrome"}
+                below:
+                  id: "Search sets"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Variant Types"
+
+# Single-entry column: no search input exists, so tap the row directly. The
+# `below:` anchor cannot be used here — there is nothing to anchor to.
+- runFlow:
+    when:
+      notVisible: ".*Search sets.*"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ${SET || "Topps Chrome"}
+          centerElement: true
+          timeout: 15000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${SET || "Topps Chrome"}
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Variant Types"
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
 # The Variant Types column is confirmed by the Set retry above. "Base" appears

@@ -233,6 +233,64 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     ).toEqual(["#1 Ken Griffey Jr."]);
   });
 
+  /**
+   * SECURITY REGRESSION (audit finding F1).
+   *
+   * `resolveCardSlots` used to ALLOCATE a slot for any marketplace set id a
+   * committed card named. On the BSC side that id is `r.setName`, taken
+   * straight from the marketplace's bulk-upload response — third-party input.
+   * So a rename or a display-name/slug divergence would silently grow this
+   * row's mapping, and `fetchCardChecklist` filters its NEXT BSC query on ALL
+   * attached slots, meaning an injected slug would widen a privileged outbound
+   * fetch to an unrelated set. It also contradicted the invariant written on
+   * `cardPlatformRefValidator` in schema.ts.
+   *
+   * Attaching a marketplace set is an operator action. An unattributable ref
+   * is KEPT (it is still the card's marketplace identity) but carries no
+   * `src`, so it simply cannot participate in sync-by-set yet.
+   */
+  test("a card naming an UNATTACHED marketplace set does not attach it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const insertId = await seedTree(t);
+    const sportId = (await t.run(async (ctx) => {
+      const rows = await ctx.db.query("selectorOptions").collect();
+      return rows.find((r) => r.level === "sport")!._id;
+    })) as Id<"selectorOptions">;
+
+    const before = await t.run(async (ctx) => ctx.db.get(insertId));
+
+    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: insertId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "1",
+          cardName: "Cal Ripken Jr.",
+          platformData: {
+            // Neither of these is attached to the row.
+            bsc: { ref: "bsc-card-1", setId: "some-other-bsc-set" },
+            sportlots: { ref: "#B1 Cal Ripken Jr.", setId: "999999" },
+          },
+        },
+      ],
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(insertId));
+    // The parent row's mapping is untouched — no slot was invented for it.
+    expect(after!.platformData).toEqual(before!.platformData);
+    expect(after!.platformSlotSeq).toEqual(before!.platformSlotSeq);
+
+    // The refs survive, unattributed, rather than being dropped.
+    const stored = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: insertId,
+    });
+    expect(stored[0].platformData.bsc).toEqual({ ref: "bsc-card-1" });
+    expect(stored[0].platformData.sportlots).toEqual({
+      ref: "#B1 Cal Ripken Jr.",
+    });
+  });
+
   test("the stored ref resolves to a slot on the row, so it round-trips", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
