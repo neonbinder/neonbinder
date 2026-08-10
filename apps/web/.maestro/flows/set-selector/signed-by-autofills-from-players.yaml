@@ -239,8 +239,14 @@ tags:
 - tapOn:
     id: "Edit card 300"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+# NEO-109 class: the scroll above proves card 300 EXISTS, so a failure here is
+# the detail drawer not having opened yet — not a missing card. A bare
+# assertVisible gives the drawer no time at all; wait for it the same
+# result-keyed way the rest of this suite waits on a revealed surface.
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # Confirm we opened the intended card (drawer header shows "Card #300").
 - assertVisible:
