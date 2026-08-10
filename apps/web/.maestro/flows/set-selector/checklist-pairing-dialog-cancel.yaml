@@ -136,26 +136,36 @@ tags:
 # these live-derived buckets.
 # ============================================================
 
+# Top of the dialog body — these are in view as soon as it opens.
 - assertVisible:
     text: ".*Matched \\([0-9]+\\).*"
 - assertVisible:
     text: ".*BSC only \\([0-9]+\\).*"
 - assertVisible:
     text: ".*SportLots only \\([0-9]+\\).*"
-# The keep shelf — what lets a deliberately single-marketplace card be saved.
-- assertVisible:
-    text: ".*Keeping \\([0-9]+\\).*"
-# Nothing has been kept yet, so the shelf states the discard rule outright.
-- assertVisible: "Nothing kept — every unmatched card above will be discarded."
 # "Keep all" per column: a set that simply is not on the other marketplace can
 # produce hundreds of legitimate unmatched cards, and keeping them one at a
 # time is not a workflow. setup.yaml relies on these to provision the same
-# baseline it always has.
+# baseline it always has. They sit in the column headers, still above the fold.
 - assertVisible:
     id: "Keep all BSC-only cards"
 - assertVisible:
     id: "Keep all SportLots-only cards"
-# The footer commits to a number before anything is written.
+
+# The keep shelf is the LAST section of the dialog's scrollable body, so at the
+# 1024x629 headless viewport it starts below the fold — scroll to it rather
+# than asserting blind. (This is what failed the previous run: the assertion
+# was correct, the section simply was not on screen.)
+- scrollUntilVisible:
+    element:
+      text: ".*Keeping \\([0-9]+\\).*"
+    centerElement: true
+    timeout: 15000
+# Nothing has been kept yet, so the shelf states the discard rule outright.
+- assertVisible: "Nothing kept — every unmatched card above will be discarded."
+
+# The footer sits OUTSIDE the scrollable body (flex sibling), so it is on
+# screen regardless of scroll position.
 - assertVisible:
     text: ".*[0-9]+ cards? will be saved.*"
 
