@@ -547,7 +547,16 @@ export default function CardPairingModal({
               {totalToSave} card{totalToSave === 1 ? "" : "s"} will be saved
             </span>
             <div className="flex gap-2">
-              <NeonButton secondary size="2" onClick={onClose} aria-label="Cancel">
+              <NeonButton
+                secondary
+                size="2"
+                onClick={onClose}
+                // Specific, matching every other dialog in this directory —
+                // CardChecklist renders a "Cancel new card" button on the same
+                // page, so a bare "Cancel" would be ambiguous to assistive
+                // tech and to Maestro's accessibility-tree selectors.
+                aria-label="Cancel card matching"
+              >
                 Cancel
               </NeonButton>
               <NeonButton

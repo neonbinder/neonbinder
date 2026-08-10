@@ -140,7 +140,7 @@ tags:
 # ============================================================
 
 - tapOn:
-    id: "Cancel"
+    id: "Cancel card matching"
     retryTapIfNoChange: true
 - extendedWaitUntil:
     notVisible: "Match Cards"
