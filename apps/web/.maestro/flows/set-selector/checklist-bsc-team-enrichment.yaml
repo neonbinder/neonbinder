@@ -96,8 +96,8 @@ tags:
 - extendedWaitUntil:
     visible:
       id: "Card name"
+      text: ".*Julio Rodriguez.*"
     timeout: 15000
-    text: ".*Julio Rodriguez.*"
 
 # ── ASSERT THE ENRICHED TEAM (the NEO-90 feature) ───────────────────────────
 # "Teams" is at the top of the drawer body (position 2, directly under Card
