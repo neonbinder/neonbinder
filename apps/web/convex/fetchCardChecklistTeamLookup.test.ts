@@ -227,8 +227,9 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
 
     expect(result.success).toBe(true);
     expect(mockState.teamLookupCalls).toHaveLength(0);
-    expect(result.cards).toHaveLength(1);
-    expect(result.cards[0].teams).toEqual(["Kansas City Royals"]);
+    // NEO-137: BSC-only candidate — nothing is an NB card until pairing.
+    expect(result.unmatchedBsc).toHaveLength(1);
+    expect(result.unmatchedBsc[0].teams).toEqual(["Kansas City Royals"]);
   });
 
   test("a card with a BSC ref and no team gets resolved via fetchBscCardTeamNames and flows into unknownTeams", async () => {
@@ -253,10 +254,20 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
 
     expect(result.success).toBe(true);
     expect(mockState.teamLookupCalls).toEqual([["bsc-50"]]);
-    expect(result.cards).toHaveLength(1);
-    expect(result.cards[0].teams).toEqual(["Cincinnati Reds"]);
-    // The newly-resolved team name shows up in the confirm-dialog bucket.
-    expect(result.unknownTeams).toContain("Cincinnati Reds");
+    expect(result.unmatchedBsc).toHaveLength(1);
+    expect(result.unmatchedBsc[0].teams).toEqual(["Cincinnati Reds"]);
+
+    // NEO-137: unknown-entity bucketing moved out of fetch — it now runs on
+    // the CONFIRMED card set, after the operator pairs.
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId: result.sportId!,
+        cards: result.unmatchedBsc,
+      },
+    );
+    expect(resolved.unknownTeams).toContain("Cincinnati Reds");
   });
 
   test("a SportLots-only card (no platformData.bsc) is skipped entirely — not in the lookup batch, no team populated", async () => {
@@ -283,10 +294,15 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
 
     expect(result.success).toBe(true);
     expect(mockState.teamLookupCalls).toHaveLength(0);
-    expect(result.cards).toHaveLength(1);
-    expect(result.cards[0].platformData.bsc).toBeUndefined();
-    expect(result.cards[0].platformData.sportlots).toEqual({ ref: "sl-77" });
-    expect(result.cards[0].teams).toBeUndefined();
+    // NEO-137: an SL-only card is a candidate in the unmatched-SL column. It
+    // is NOT turned into an NB card unless the operator keeps it — which is
+    // what stops a shared SL set's sibling-owned cards being invented here.
+    expect(result.unmatchedSl).toHaveLength(1);
+    expect(result.unmatchedSl[0].platformData.bsc).toBeUndefined();
+    expect(result.unmatchedSl[0].platformData.sportlots).toEqual({
+      ref: "sl-77",
+    });
+    expect(result.unmatchedSl[0].teams).toBeUndefined();
   });
 
   test("needsTeamLookup empty (mixed batch, nothing needs lookup) — fetchBscCardTeamNames is never called", async () => {
@@ -318,6 +334,7 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
 
     expect(result.success).toBe(true);
     expect(mockState.teamLookupCalls).toHaveLength(0);
-    expect(result.cards).toHaveLength(2);
+    expect(result.unmatchedBsc).toHaveLength(1);
+    expect(result.unmatchedSl).toHaveLength(1);
   });
 });

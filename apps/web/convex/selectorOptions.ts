@@ -3944,16 +3944,18 @@ export const fetchCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
   },
+  // NEO-137: three buckets rather than a flat card list. Nothing here is an
+  // NB card yet — these are candidates for the operator to pair, keep, or
+  // discard, mirroring set reconciliation's vocabulary exactly.
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     sportId: v.optional(v.id("selectorOptions")),
-    cards: v.array(previewCardValidator),
-    unknownPlayers: v.array(v.string()),
-    unknownTeams: v.array(v.string()),
-    // NEO-92: present whenever unknownPlayers/unknownTeams is non-empty —
-    // the review wizard subscribes to this batch via entityReviewQueue.
-    batchId: v.optional(v.string()),
+    autoMatched: v.array(
+      v.object({ card: previewCardValidator, confidence: v.number() }),
+    ),
+    unmatchedBsc: v.array(previewCardValidator),
+    unmatchedSl: v.array(previewCardValidator),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -3961,10 +3963,9 @@ export const fetchCardChecklist = action({
     sportId?: Id<"selectorOptions">;
     // Structural duplicate of ReconciledCard removed (NEO-137) — it drifted
     // from the interface it mirrors the moment platformData changed shape.
-    cards: ReconciledCard[];
-    unknownPlayers: string[];
-    unknownTeams: string[];
-    batchId?: string;
+    autoMatched: Array<{ card: ReconciledCard; confidence: number }>;
+    unmatchedBsc: ReconciledCard[];
+    unmatchedSl: ReconciledCard[];
   }> => {
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
@@ -4018,31 +4019,19 @@ export const fetchCardChecklist = action({
         console.log(
           `[fetchCardChecklist] custom subtree detected — skipping BSC/SL`,
         );
-        // No marketplace cards exist for a custom subtree (correctly always
-        // `cards: []`), but its own custom cards can still carry unresolved
-        // pendingPlayerNames/pendingTeamNames — resolve those and open the
-        // review wizard for them the same way the marketplace path does.
-        // Without this, a custom-only set's pending names could never be
-        // resolved via the wizard at all (see resolveUnknownsAndStartBatch's
-        // doc comment for why this is a real, previously-unclosed gap).
-        const { unknownPlayers, unknownTeams, batchId } = sportId
-          ? await resolveUnknownsAndStartBatch(ctx, {
-              selectorOptionId: args.selectorOptionId,
-              sportId,
-              sportLabel: sportLabel ?? "",
-            })
-          : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
+        // No marketplace cards exist for a custom subtree. Its own custom
+        // cards can still carry unresolved pendingPlayerNames /
+        // pendingTeamNames, but resolving those is now
+        // `resolveChecklistEntities`' job (NEO-137) — it runs on the
+        // confirmed set and handles the no-marketplace case identically.
         return {
           success: true,
           message:
-            unknownPlayers.length || unknownTeams.length
-              ? `Custom selector subtree — ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation.`
-              : "Custom selector subtree — no marketplace data available; add custom cards.",
+            "Custom selector subtree — no marketplace data available; add custom cards.",
           sportId,
-          cards: [],
-          unknownPlayers,
-          unknownTeams,
-          batchId,
+          autoMatched: [],
+          unmatchedBsc: [],
+          unmatchedSl: [],
         };
       }
 
@@ -4086,9 +4075,9 @@ export const fetchCardChecklist = action({
           success: false,
           message: msg,
           sportId,
-          cards: [],
-          unknownPlayers: [],
-          unknownTeams: [],
+          autoMatched: [],
+          unmatchedBsc: [],
+          unmatchedSl: [],
         };
       }
 
@@ -4270,6 +4259,23 @@ export const fetchCardChecklist = action({
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
       }
 
+      // NEO-137: three buckets, not one flat list. No NB card exists until
+      // the operator pairs — same vocabulary as set reconciliation (matched /
+      // unmatched-BSC / unmatched-SL) and the same keep shelf for a
+      // deliberately-single-sided card.
+      //
+      // This is also what holds a shared SL set's sibling-owned cards: when
+      // two NB rows draw from one SL set, the other row's cards simply land
+      // in unmatchedSl and are dropped unless the operator keeps them, rather
+      // than being materialised as bogus cards under this row.
+      const autoMatchedCards: Array<{
+        card: ReconciledCard;
+        confidence: number;
+      }> = [];
+      const unmatchedBscCards: ReconciledCard[] = [];
+      const unmatchedSlCards: ReconciledCard[] = [];
+      // `out` stays as the union of everything, purely so the team-lookup and
+      // entity-bucketing passes below can walk every candidate once.
       const out: ReconciledCard[] = [];
       const claimedSlNumbers = new Set<string>();
 
@@ -4286,6 +4292,7 @@ export const fetchCardChecklist = action({
 
         // 2. Fuzzy fallback: pick the unclaimed SL card whose first player
         //    name is most similar to BSC's first player. Threshold 0.92.
+        let fuzzyScore: number | undefined;
         if (!sl && bsc.players?.[0]) {
           const target = normalizeName(bsc.players[0]);
           let best: { card: typeof slCards[0]; score: number } | null = null;
@@ -4298,9 +4305,16 @@ export const fetchCardChecklist = action({
               best = { card: candidate, score };
             }
           }
-          if (best) sl = best.card;
+          if (best) {
+            sl = best.card;
+            fuzzyScore = best.score;
+          }
         }
 
+        // Confidence: an exact number / sportlotsRef hit is certain; a
+        // Jaro-Winkler name match is not. Surfaced so the operator can see
+        // which pairings deserve a second look.
+        const pairConfidence = sl ? (fuzzyScore ?? 1) : 0;
         if (sl) claimedSlNumbers.add(sl.cardNumber);
 
         const attributes = Array.from(new Set([
@@ -4311,7 +4325,7 @@ export const fetchCardChecklist = action({
         const players = bsc.players ?? (sl?.players ?? undefined);
         const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
 
-        out.push({
+        const candidate: ReconciledCard = {
           cardNumber: bsc.cardNumber,
           cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
           team: bsc.team ?? sl?.team,
@@ -4347,15 +4361,19 @@ export const fetchCardChecklist = action({
                 }
               : {}),
           },
-        });
+          ...(sl ? {} : { unmatched: "sl" as const }),
+        };
+        out.push(candidate);
+        if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
+        else unmatchedBscCards.push(candidate);
       }
 
-      // 3. SL cards never claimed by BSC: emit as unmatched-bsc rows so
-      //    a human can review (they may be valid cards BSC's seller catalog
-      //    doesn't carry, or genuine numbering mismatches we should fix).
+      // 3. SL cards no BSC card claimed. These are NOT turned into NB cards
+      //    on their own any more — they are offered for the operator to pair
+      //    or deliberately keep.
       for (const sl of slCards) {
         if (claimedSlNumbers.has(sl.cardNumber)) continue;
-        out.push({
+        const slOnly: ReconciledCard = {
           cardNumber: sl.cardNumber,
           cardName: sl.cardName || `Card #${sl.cardNumber}`,
           team: sl.team,
@@ -4375,7 +4393,9 @@ export const fetchCardChecklist = action({
               }
             : {},
           unmatched: "bsc",
-        });
+        };
+        out.push(slOnly);
+        unmatchedSlCards.push(slOnly);
       }
 
       // 4. NEO-90: resolve team names for regular BSC cards that don't
@@ -4400,54 +4420,97 @@ export const fetchCardChecklist = action({
         }
       }
 
-      // 5. Bucket unique player + team names against existing tables.
-      //    Deduped by NORMALIZED name (not raw trimmed string) — two
-      //    spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr")
-      //    used to produce two separate unknowns + two Wikidata lookups;
-      //    first-seen display spelling wins. Skip bucketing entirely if we
-      //    can't infer sport (sets without a sport ancestor — shouldn't
-      //    happen but guard anyway).
-      const additionalPlayerNames: string[] = [];
-      const additionalTeamNames: string[] = [];
-      for (const c of out) {
-        for (const p of c.players ?? []) additionalPlayerNames.push(p);
-        for (const t of c.teams ?? []) additionalTeamNames.push(t);
-        if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
-      }
-      const { unknownPlayers, unknownTeams, batchId } = sportId
-        ? await resolveUnknownsAndStartBatch(ctx, {
-            selectorOptionId: args.selectorOptionId,
-            sportId,
-            sportLabel: sportLabel ?? "",
-            additionalPlayerNames,
-            additionalTeamNames,
-          })
-        : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
-
+      // 5. NEO-137: entity resolution NO LONGER happens here.
+      //    Nothing is an NB card yet — the operator has not paired. Creating
+      //    players and teams for candidates they are about to discard would
+      //    be work done on data that may never exist, and the user asked for
+      //    pairing to come before the Wikidata / player / team syncs.
+      //    `resolveChecklistEntities` runs on the CONFIRMED set instead.
       console.log(
-        `[fetchCardChecklist] reconciled ${out.length} cards`,
-        `(${unknownPlayers.length} new players, ${unknownTeams.length} new teams)`,
+        `[fetchCardChecklist] ${autoMatchedCards.length} paired, ` +
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
       );
 
       return {
         success: true,
-        message: `Found ${out.length} cards${unknownPlayers.length || unknownTeams.length ? `; ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation` : ""}`,
+        message:
+          `${autoMatchedCards.length} matched, ` +
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
         sportId,
-        cards: out,
-        unknownPlayers,
-        unknownTeams,
-        batchId,
+        autoMatched: autoMatchedCards,
+        unmatchedBsc: unmatchedBscCards,
+        unmatchedSl: unmatchedSlCards,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
       return {
         success: false,
         message: `Failed to fetch checklist: ${error instanceof Error ? error.message : "Unknown error"}`,
-        cards: [],
-        unknownPlayers: [],
-        unknownTeams: [],
+        autoMatched: [],
+        unmatchedBsc: [],
+        unmatchedSl: [],
       };
     }
+  },
+});
+
+/**
+ * Action — NEO-137: resolve player/team unknowns for the CONFIRMED card set.
+ *
+ * This used to be step 5 of `fetchCardChecklist`. It moved out because
+ * nothing fetched is an NB card until the operator has paired: bucketing
+ * names from candidates they are about to discard would create players and
+ * teams for cards that never exist, and the operator asked for pairing to
+ * happen before the Wikidata / player / team syncs.
+ *
+ * Callers pass the cards they actually intend to commit (confirmed pairs plus
+ * anything held on the keep shelf). Also covers the custom-subtree case,
+ * where there are no marketplace cards at all but the row's own custom cards
+ * can still carry unresolved pendingPlayerNames / pendingTeamNames.
+ */
+export const resolveChecklistEntities = action({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    sportId: v.id("selectorOptions"),
+    cards: v.array(previewCardValidator),
+  },
+  returns: v.object({
+    unknownPlayers: v.array(v.string()),
+    unknownTeams: v.array(v.string()),
+    // Present whenever there are unknowns — the review wizard subscribes to
+    // this batch via entityReviewQueue.
+    batchId: v.optional(v.string()),
+  }),
+  handler: async (ctx, args): Promise<{
+    unknownPlayers: string[];
+    unknownTeams: string[];
+    batchId?: string;
+  }> => {
+    await requireAdmin(ctx);
+
+    // Deduped by NORMALIZED name inside resolveUnknownsAndStartBatch — two
+    // spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr") must
+    // not produce two unknowns and two Wikidata lookups.
+    const additionalPlayerNames: string[] = [];
+    const additionalTeamNames: string[] = [];
+    for (const c of args.cards) {
+      for (const p of c.players ?? []) additionalPlayerNames.push(p);
+      for (const t of c.teams ?? []) additionalTeamNames.push(t);
+      if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
+    }
+
+    const sportRow = await ctx.runQuery(
+      api.selectorOptions.getSelectorOptionById,
+      { id: args.sportId },
+    );
+
+    return await resolveUnknownsAndStartBatch(ctx, {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+      sportLabel: sportRow?.value ?? "",
+      additionalPlayerNames,
+      additionalTeamNames,
+    });
   },
 });
 
