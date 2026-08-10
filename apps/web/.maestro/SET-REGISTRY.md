@@ -24,6 +24,21 @@ data that isn't in the table above, it must either sync it itself (and accept th
 30–90s cost, with owner approval) or — far more often the right answer — use a
 per-worker custom set (see below).
 
+### The one sanctioned read-only visitor
+
+`checklist-pairing-dialog-cancel` (NEO-137) syncs `Insert → Future Stars` on the
+real anchor and then **cancels** the card-pairing dialog. Cancel returns before
+`commitCardChecklist`, so nothing is written and the set is left exactly as
+`setup.yaml` provisioned it — it reads, it does not write.
+
+It cannot use a custom set: a custom subtree is short-circuited before any
+marketplace fetch (`isCustomSubtree`, NEO-22), so it produces no candidates, and
+`CardChecklist` deliberately skips the pairing dialog when all three buckets are
+empty. The dialog is only reachable with real marketplace data.
+
+NEO-137's Phase 5 also calls for a full 1996 Score map-out. That needs a NEW
+real set and therefore explicit owner approval — it is **not** in the suite.
+
 ### READ-ONLY means read-only
 
 No flow other than `setup.yaml` may add, edit, or delete cards, players, teams,

@@ -211,6 +211,19 @@ export default function CardChecklist({
         setSyncMessage(result.message);
         return;
       }
+      const nothingToPair =
+        result.autoMatched.length === 0 &&
+        result.unmatchedBsc.length === 0 &&
+        result.unmatchedSl.length === 0;
+      if (nothingToPair) {
+        // A custom subtree has no marketplace cards at all, so there is
+        // nothing to pair. Showing an empty pairing dialog would be a step
+        // the operator can only click through — go straight to entity
+        // resolution, which is where a custom card's own pendingPlayerNames
+        // surface.
+        await handlePairingConfirm({ cards: [] }, result.sportId);
+        return;
+      }
       setPendingPairing({
         sportId: result.sportId,
         autoMatched: result.autoMatched,
@@ -231,9 +244,14 @@ export default function CardChecklist({
    * Operator confirmed the pairing. Only now do the confirmed cards become
    * candidates for entity resolution and commit.
    */
-  const handlePairingConfirm = async (result: { cards: PairingCard[] }) => {
-    if (!pendingPairing) return;
-    const sportId = pendingPairing.sportId;
+  const handlePairingConfirm = async (
+    result: { cards: PairingCard[] },
+    // Passed explicitly on the nothing-to-pair path, where the modal never
+    // opened and `pendingPairing` was never set.
+    sportIdOverride?: Id<"selectorOptions">,
+  ) => {
+    const sportId = sportIdOverride ?? pendingPairing?.sportId;
+    if (!sportId) return;
     setPendingPairing(null);
     setCommitting(true);
     try {

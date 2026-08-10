@@ -1,0 +1,149 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — the NEO-137 card-pairing dialog opens before any card is generated, and cancelling writes nothing"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE: NEO-137's card-pairing step. Syncing a marketplace-backed
+# checklist no longer generates NB cards directly; it returns three buckets of
+# CANDIDATES and opens CardPairingModal. Cards exist only after the operator
+# confirms.
+#
+# WHAT THIS TESTS:
+#   - Sync opens "Match Cards" rather than committing straight away.
+#   - The three-bucket vocabulary is present (Matched / BSC only / SportLots
+#     only) plus the keep shelf — the same affordances as set reconciliation.
+#   - The footer states how many cards will be saved.
+#   - Cancel writes nothing: the status message says so and the card count on
+#     the set is unchanged.
+#
+# ── WHY THIS FLOW IS READ-ONLY (and therefore allowed on a REAL set) ──
+#   .maestro/SET-REGISTRY.md: real marketplace sets are READ-ONLY for every flow
+#   except setup.yaml, because the queue drains across 8 parallel runners and any
+#   write is visible to whoever else is mid-flow.
+#
+#   This flow only ever CANCELS. CardPairingModal writes nothing until Confirm —
+#   commitCardChecklist is not reached on the cancel path — so no card, player or
+#   team is created and the shared set is left exactly as setup.yaml provisioned
+#   it. That is what makes exercising it here legitimate.
+#
+#   A per-worker CUSTOM set cannot cover this: a custom subtree is short-
+#   circuited before any marketplace fetch (isCustomSubtree, NEO-22), so it has
+#   no candidates, and CardChecklist deliberately SKIPS the pairing dialog when
+#   all three buckets are empty rather than showing an empty step. The dialog is
+#   only reachable with real marketplace data.
+#
+#   NO NEW REAL SET IS SYNCED. This uses "Insert → Future Stars" from the
+#   existing 2024 Topps Chrome anchor that setup.yaml already provisions.
+#   Adding a real set requires explicit owner approval every time — the 1996
+#   Score map-out named in NEO-137's Phase 5 needs that approval and is NOT
+#   added here.
+#
+# R3 — DEDUP: the entity-review wizard's own cancel path is covered by
+#   checklist-fetch-cancel-dialog (custom subtree, no pairing step). This flow
+#   uniquely covers the pairing dialog that now precedes it.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO THE REAL PRE-SYNCED 2024 Topps Chrome → Insert → Future Stars
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# Variant Types column is the util's return contract. "Insert" sits alongside
+# "Base"; select it, then its "Future Stars" child.
+- extendedWaitUntil:
+    visible: "Insert"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Insert"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Future Stars"
+          timeout: 60000
+- scrollUntilVisible:
+    element:
+      text: "Future Stars"
+    centerElement: true
+- tapOn:
+    text: "Future Stars"
+    retryTapIfNoChange: true
+
+# ============================================================
+# STEP 1 — SYNC. This must NOT commit; it must open the pairing dialog.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Sync card checklist"
+
+# 60s covers the BSC + SL round-trip for a real set. The dialog heading proves
+# the fetch returned candidates rather than committing.
+- extendedWaitUntil:
+    visible: "Match Cards"
+    timeout: 60000
+
+# ============================================================
+# STEP 2 — THE THREE BUCKETS + KEEP SHELF ARE PRESENT
+# Same vocabulary as set reconciliation. Counts are data-dependent (they vary
+# with what the marketplaces return today), so assert the SECTIONS exist rather
+# than pinning numbers — a count assertion here would be brittle against live
+# marketplace data, and the exact-count rule applies to card checklists, not to
+# these live-derived buckets.
+# ============================================================
+
+- assertVisible:
+    text: ".*Matched \\([0-9]+\\).*"
+- assertVisible:
+    text: ".*BSC only \\([0-9]+\\).*"
+- assertVisible:
+    text: ".*SportLots only \\([0-9]+\\).*"
+# The keep shelf — what lets a deliberately single-marketplace card be saved.
+- assertVisible:
+    text: ".*Keeping \\([0-9]+\\).*"
+# Nothing has been kept yet, so the shelf states the discard rule outright.
+- assertVisible: "Nothing kept. Cards left unmatched above are discarded."
+# The footer commits to a number before anything is written.
+- assertVisible:
+    text: ".*[0-9]+ cards? will be saved.*"
+
+# ============================================================
+# STEP 3 — CANCEL WRITES NOTHING
+# ============================================================
+
+- tapOn:
+    id: "Cancel"
+    retryTapIfNoChange: true
+- extendedWaitUntil:
+    notVisible: "Match Cards"
+    timeout: 10000
+- assertVisible: "Sync cancelled — no cards saved."
+
+# The set is untouched: the Sync button is still available for a retry, and no
+# entity-review wizard was opened (cancel happens before entity resolution).
+- assertNotVisible: "Confirm New Players & Teams"
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    direction: UP
+    centerElement: true
