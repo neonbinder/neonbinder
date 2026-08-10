@@ -152,7 +152,12 @@ function stripSlBasePrefix(value: string, prefix: string): string {
   return v;
 }
 
-function computeMatches(
+/**
+ * NEO-137: exported ONLY so `setReconciliation.computeMatches.test.ts` can pin
+ * its behaviour. It is shared by Base, inserts and parallels across every set,
+ * so its output is a far wider contract than any one feature.
+ */
+export function computeMatches(
   bscItems: PlatformItem[],
   slItems: PlatformItem[],
   slStripPrefix?: string,
@@ -160,6 +165,15 @@ function computeMatches(
   autoMatched: MatchedPair[];
   unmatchedBsc: PlatformItem[];
   unmatchedSl: PlatformItem[];
+  /** NEO-137 — see the block that builds this near the end of the function. */
+  slCandidates: Array<{
+    bsc: PlatformItem;
+    candidates: Array<{
+      sl: PlatformItem;
+      confidence: number;
+      alreadyMatched: boolean;
+    }>;
+  }>;
 } {
   const autoMatched: MatchedPair[] = [];
   const remainingBsc = [...bscItems];
@@ -259,10 +273,56 @@ function computeMatches(
     }
   }
 
+  // NEO-137: ranked candidates for the BSC rows that ended up with nothing.
+  //
+  // The three passes above splice each match out of BOTH arrays, so a
+  // marketplace set that two NB rows should share is consumed by whichever
+  // row matched first — that is how 1996 Score's Artist's Proofs Series 1 was
+  // left unmatched while Series 2 took the single SL set at 78%.
+  //
+  // This scores every still-unmatched BSC row against EVERY SL item,
+  // including ones already consumed by an auto-match, and reports the best
+  // few. It is strictly additive: `autoMatched` / `unmatchedBsc` /
+  // `unmatchedSl` above are untouched, so no set's reconciliation output
+  // changes. The operator confirms a shared link explicitly — nothing here
+  // links anything on its own, because the discriminator between two series
+  // is not inferable (both can contain a card #1).
+  const MAX_CANDIDATES = 5;
+  const CANDIDATE_FLOOR = 0.3;
+  const slCandidates = remainingBsc.map((bsc) => {
+    const bscNorm = normalizeForMatch(bsc.value);
+    const scored = slItems
+      .map((sl) => {
+        const compareAgainst = slStripPrefix
+          ? stripSlBasePrefix(sl.value, slStripPrefix)
+          : sl.value;
+        const slNorm = normalizeForMatch(compareAgainst);
+        const maxLen = Math.max(bscNorm.length, slNorm.length);
+        if (maxLen === 0) return null;
+        const confidence =
+          1 - levenshteinDistance(bscNorm, slNorm) / maxLen;
+        return {
+          sl,
+          confidence,
+          // True when an auto-matched pair already claimed this SL set —
+          // i.e. confirming this candidate creates the M:1 mapping.
+          alreadyMatched: autoMatched.some(
+            (p) => p.sl.platformValue === sl.platformValue,
+          ),
+        };
+      })
+      .filter((c): c is NonNullable<typeof c> => c !== null)
+      .filter((c) => c.confidence >= CANDIDATE_FLOOR)
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, MAX_CANDIDATES);
+    return { bsc, candidates: scored };
+  });
+
   return {
     autoMatched,
     unmatchedBsc: remainingBsc,
     unmatchedSl: remainingSl,
+    slCandidates,
   };
 }
 
@@ -301,6 +361,18 @@ export const fetchRawOptions = action({
     })),
     unmatchedBsc: v.array(v.object({ value: v.string(), platformValue: v.string() })),
     unmatchedSl: v.array(v.object({ value: v.string(), platformValue: v.string() })),
+    // NEO-137: ranked SL candidates per still-unmatched BSC row, including
+    // sets already claimed by an auto-match. `alreadyMatched` marks the ones
+    // whose confirmation creates an M-NB-rows-to-1-marketplace-set mapping.
+    // Offered only — the operator confirms, nothing links itself.
+    slCandidates: v.array(v.object({
+      bsc: v.object({ value: v.string(), platformValue: v.string() }),
+      candidates: v.array(v.object({
+        sl: v.object({ value: v.string(), platformValue: v.string() }),
+        confidence: v.number(),
+        alreadyMatched: v.boolean(),
+      })),
+    })),
     // Per-platform adapter failures surfaced as structured data so the UI
     // can show a "Sync failed" error and a Retry button when both option
     // lists come back empty due to an underlying failure (e.g. missing
@@ -308,7 +380,30 @@ export const fetchRawOptions = action({
     errors: v.array(v.object({ platform: v.string(), message: v.string() })),
     message: v.optional(v.string()),
   }),
-  handler: async (ctx, args) => {
+  // Explicit return type: without it, adding `slCandidates` pushed the
+  // inferred type past TypeScript's inference budget and `fetchRawOptions`
+  // silently degraded to `any` at every call site (implicit-any on
+  // `result.autoMatched.map((m) => ...)` in AttachSetsDialog / VariantForm /
+  // ParallelForm). `fetchCardChecklist` annotates its handler for the same
+  // reason.
+  handler: async (ctx, args): Promise<{
+    success: boolean;
+    bscOptions: PlatformItem[];
+    slOptions: PlatformItem[];
+    autoMatched: MatchedPair[];
+    unmatchedBsc: PlatformItem[];
+    unmatchedSl: PlatformItem[];
+    slCandidates: Array<{
+      bsc: PlatformItem;
+      candidates: Array<{
+        sl: PlatformItem;
+        confidence: number;
+        alreadyMatched: boolean;
+      }>;
+    }>;
+    errors: Array<{ platform: string; message: string }>;
+    message: string;
+  }> => {
     await requireAdmin(ctx);
     try {
       const { level, parentId, parentFilters, baseSlPrefix } = args;
@@ -349,6 +444,7 @@ export const fetchRawOptions = action({
             autoMatched: [],
             unmatchedBsc: [],
             unmatchedSl: [],
+            slCandidates: [],
             errors: [],
             message: "Custom subtree — no marketplace variants to sync",
           };
@@ -412,6 +508,7 @@ export const fetchRawOptions = action({
           autoMatched: [],
           unmatchedBsc: [],
           unmatchedSl: [],
+          slCandidates: [],
           errors: errs,
           message: errs.map((e) => `${e.platform}: ${e.message}`).join("; "),
         };
@@ -495,11 +592,8 @@ export const fetchRawOptions = action({
       // Run matching algorithm. The SL Base anchor is already filtered
       // out of slOptions above; passing baseSlPrefix here lets the matcher
       // compare BSC names against SL values with the prefix stripped.
-      const { autoMatched, unmatchedBsc, unmatchedSl } = computeMatches(
-        bscOptions,
-        slOptions,
-        baseSlPrefix,
-      );
+      const { autoMatched, unmatchedBsc, unmatchedSl, slCandidates } =
+        computeMatches(bscOptions, slOptions, baseSlPrefix);
 
       const warningSuffix =
         Object.keys(platformErrors).length > 0
@@ -520,6 +614,7 @@ export const fetchRawOptions = action({
         autoMatched,
         unmatchedBsc,
         unmatchedSl,
+        slCandidates,
         errors,
         message: `BSC: ${bscOptions.length}, SL: ${slOptions.length}, Auto-matched: ${autoMatched.length}${warningSuffix}`,
       };
@@ -532,6 +627,7 @@ export const fetchRawOptions = action({
         autoMatched: [],
         unmatchedBsc: [],
         unmatchedSl: [],
+        slCandidates: [],
         errors: [
           {
             platform: "internal",
