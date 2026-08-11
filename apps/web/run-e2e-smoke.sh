@@ -73,6 +73,17 @@ fi
 
 MAESTRO="$HOME/.maestro/bin/maestro"
 CONFIG=".maestro/config.yaml"
+
+# Chrome for Testing is MANDATORY locally (NEO-138). Branded Google Chrome
+# exposes chrome://omnibox-popup CDP targets ahead of the real tab, and Maestro
+# — whose CdpTarget model has no `type` field to filter on — drives the popup
+# widget instead, giving every flow a 1x1 viewport (heightPixels=1) and 1x1
+# failure screenshots. No-op in CI, where setup-chrome already installs a
+# non-branded build. See lib-e2e-chrome.sh for the full write-up.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-e2e-chrome.sh"
+require_chrome_for_testing || exit 1
+[ -n "$SE_BROWSER_PATH" ] && echo "🌐 Chrome: $SE_BROWSER_PATH"
+
 APP_URL="${APP_URL:-https://localhost:3000}"
 # Unique username per run to avoid "already taken" in profile flows.
 # Must match the profile validation regex ^[a-z0-9-]+$ (no underscores).
