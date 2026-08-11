@@ -45,7 +45,7 @@ import type { GenericId } from "convex/values";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { slotEntries, slotLabel } from "../../convex/platformSlots";
+import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
 
@@ -163,8 +163,20 @@ export default function SetSelector() {
     // suppress the auto-prompt on every freshly-synced Base. Only the
     // SportLots value is exclusively written by BaseSetPicker, so its
     // presence is the reliable "user has mapped this Base" signal.
-    stableVariantTypeFlagsRef.current.hasMapping =
-      !!selectedVariantType?.platformData?.sportlots;
+    //
+    // NEO-137: count SLOTS, never truthiness. `platformData.sportlots` used to
+    // be a string, where `!!` was a correct emptiness test. It is a Record now,
+    // and `!!{}` is ALWAYS true — so a row carrying an empty-but-present
+    // sportlots map (every side that has been attached and then fully detached,
+    // since only `pruneEmptySides` removes the key) would report itself mapped.
+    // The user would get the "Re-map Base" button instead of the auto-opening
+    // picker, with no way to reach the picker except that button — the mapping
+    // silently looks done when nothing is attached. Same class as the
+    // typeof-string / Array.isArray narrowings this ticket replaced elsewhere:
+    // type-legal against a Record, and wrong.
+    stableVariantTypeFlagsRef.current.hasMapping = selectedVariantType
+      ? slotIds(selectedVariantType, "sportlots").length > 0
+      : false;
     stableVariantTypeFlagsRef.current.value = selectedVariantType?.value ?? "";
   }
   const isBaseVariantTypeSelected = stableVariantTypeFlagsRef.current.isBase;

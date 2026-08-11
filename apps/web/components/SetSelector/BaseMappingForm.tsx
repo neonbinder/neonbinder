@@ -118,13 +118,17 @@ export default function BaseMappingForm({
       // BSC card lookups under variant=Base still resolve to the set's
       // search results. SL mapping is left empty; the user can retry sync
       // later or add custom cards by hand.
-      const setBsc = setNameAncestor?.platformData?.bsc;
-      const bscFallback =
-        typeof setBsc === "string"
-          ? setBsc
-          : Array.isArray(setBsc) && setBsc.length > 0
-            ? setBsc[0]
-            : undefined;
+      //
+      // NEO-137: read through slotIds, exactly as handlePickerConfirm below
+      // does. getAncestorChain returns platformData in the slot-map shape, so
+      // the old `typeof === "string" / Array.isArray` narrowing is dead against
+      // a Record — still type-legal, but always undefined. That silently turned
+      // this fallback off, so a Base set with no marketplace data on either side
+      // got "No marketplace data found" instead of the set-slug mapping, and
+      // BSC card lookups under variant=Base had nothing to resolve against.
+      const bscFallback = setNameAncestor
+        ? slotIds(setNameAncestor, "bsc")[0]
+        : undefined;
       if (bscFallback) {
         await writePlatformData({ bsc: bscFallback });
         setMessage(`Stored Base mapping (fallback to set slug)`);
