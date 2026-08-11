@@ -147,11 +147,44 @@ tags:
 # The Inserts column carries many entries, so it renders a search input and the
 # rows only appear once filtered (same reason setup.yaml filters for
 # "Future Stars").
+#
+# RE-DRILL FIRST — the columns row is overflow-x-auto, and saving the
+# reconciliation leaves it at whatever horizontal offset the modal was opened
+# from. Here that offset puts Manufacturers/Sets in the viewport and pushes the
+# Inserts column off to the RIGHT, so `Search inserts` is present in the DOM but
+# never visible, and the wait below times out with the page apparently sitting
+# at the top of the cascade. Maestro has no horizontal scroll (nothing in this
+# suite uses direction: LEFT/RIGHT), so scrolling cannot recover it.
+#
+# The util's openLink resets BOTH axes to a nav-safe starting position — the
+# same technique setup.yaml documents for its Base->Insert and Insert->Parallel
+# transitions. The rows are already saved at this point, so re-entering "Insert"
+# renders the column directly instead of re-opening the reconcile modal.
 # ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "1996"
+      MANUFACTURER: "Score"
+      SET: "Score"
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Insert"
 
 - extendedWaitUntil:
     visible: ".*Search inserts.*"
-    timeout: 30000
+    timeout: 60000
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 10000
 - tapOn:
     text: ".*Search inserts.*"
     waitToSettleTimeoutMs: 250

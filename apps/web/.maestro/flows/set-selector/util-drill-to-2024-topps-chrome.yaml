@@ -172,9 +172,23 @@ tags:
     when:
       notVisible: "Variant Types"
     commands:
+      # ANCHOR ON THE COLUMN HEADER. A bare `text: ${SET}` is ambiguous whenever
+      # the set shares a name with an ancestor — Baseball/1996/Score/Score is
+      # exactly that: manufacturer "Score" AND set "Score" are both on screen,
+      # so an unanchored tap can land on the Manufacturers row instead of the
+      # Sets row. That re-taps the already-selected manufacturer, the Variant
+      # Types column never appears, and the retry then cannot find the row at
+      # all. It is order-dependent, so it passes some runs and fails others.
+      #
+      # There IS an anchor here despite what the single-entry case suggests: the
+      # column HEADER "Sets" is always rendered, unlike the search input. Using
+      # it keeps this to visible text (no id/data-testid) and pins the tap to
+      # the right column for both shapes.
       - scrollUntilVisible:
           element:
             text: ${SET || "Topps Chrome"}
+            below:
+              text: "Sets"
           centerElement: true
           timeout: 15000
       - retry:
@@ -182,9 +196,12 @@ tags:
           commands:
             - tapOn:
                 text: ${SET || "Topps Chrome"}
+                below:
+                  text: "Sets"
                 retryTapIfNoChange: true
             - extendedWaitUntil:
                 visible: "Variant Types"
+                timeout: 60000
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
 # The Variant Types column is confirmed by the Set retry above. "Base" appears

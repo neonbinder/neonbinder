@@ -243,10 +243,19 @@ tags:
 # the detail drawer not having opened yet — not a missing card. A bare
 # assertVisible gives the drawer no time at all; wait for it the same
 # result-keyed way the rest of this suite waits on a revealed surface.
-- extendedWaitUntil:
-    visible:
+#
+# SCROLL, don't just wait. CardDetailPanel renders AFTER the virtuoso list
+# container (CardChecklist.tsx), and that list is `height: min(70vh, 800px)` —
+# ~437px of the 625px headless viewport. So the panel opens BELOW the fold, and
+# `extendedWaitUntil: visible` (which never scrolls) timed out even though the
+# drawer was mounted and correct — the failure screenshot showed a healthy card
+# list with no drawer in frame. scrollUntilVisible both waits and scrolls, so a
+# drawer that genuinely fails to open still fails here.
+- scrollUntilVisible:
+    element:
       id: "Card name"
-    timeout: 15000
+    centerElement: true
+    timeout: 20000
 
 # Confirm we opened the intended card (drawer header shows "Card #300").
 - assertVisible:
