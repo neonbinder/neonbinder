@@ -151,9 +151,26 @@ tags:
 
 # Single-entry column: no search input exists, so tap the row directly. The
 # `below:` anchor cannot be used here — there is nothing to anchor to.
+#
+# GATED ON "Variant Types", *NOT* on `notVisible: ".*Search sets.*"`.
+# The two branches must be mutually exclusive, and gating both on the search
+# input does NOT achieve that: `when:` conditions are evaluated sequentially
+# against live state, and selecting a set COLLAPSES the Sets column, removing
+# the very input the first branch tested. So on a multi-entry hierarchy BOTH
+# branches used to run — the second one tapping the already-selected set a
+# second time, which re-toggled the selection and reset the cascade. The
+# columns then re-rendered unfiltered and every downstream step failed far
+# away from the cause (e.g. util-drill-to-base-variant timing out on
+# ".*Select Base Set.*|.*Re-map Base.*", because no variantType was selected
+# any more).
+#
+# "Variant Types" is the state the first branch is defined to reach, and it is
+# not visible until a set is selected — so it is a correct exclusivity gate for
+# both shapes: skipped when the first branch already advanced, run when the
+# column had a single entry and the first branch never fired.
 - runFlow:
     when:
-      notVisible: ".*Search sets.*"
+      notVisible: "Variant Types"
     commands:
       - scrollUntilVisible:
           element:
