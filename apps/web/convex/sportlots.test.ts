@@ -249,3 +249,143 @@ describe("fetchSportLotsChecklist platformRef carries the full per-row descripti
     expect(row1.platformRef).not.toBe(row2.platformRef);
   });
 });
+
+/**
+ * Pagination (NEO-137).
+ *
+ * `listcards.tpl` returns at most 100 rows per request and `start` is a
+ * 1-BASED ROW OFFSET, not a page number. Verified live against selset=3628
+ * (1996 Score Base, 6 pages):
+ *
+ *   start=1   -> cards #1..#100
+ *   start=2   -> cards #2..#101   <- offset, NOT a page index
+ *   start=101 -> cards #101..#200
+ *
+ * The adapter used to POST once with start=1, so every set larger than 100
+ * cards silently truncated to its first 100 — the reconciliation modal then
+ * showed "SportLots only (0)" against hundreds of BSC-only rows, which reads
+ * like a matching bug rather than a fetch bug.
+ */
+
+/** Build a listcards page containing `count` rows starting at card `from`. */
+function listcardsHtml(from: number, count: number): string {
+  let rows = "";
+  for (let i = 0; i < count; i++) {
+    const n = from + i;
+    rows += `<td class="smallleft">${n}</td><td class="smallleft">Player ${n}</td>`;
+  }
+  return `<html><table>${rows}</table></html>`;
+}
+
+/** Serves pages keyed by the `start` form field, recording every request. */
+function makePaginatedFetch(opts: {
+  pageFor: (start: number) => string;
+  starts: number[];
+}): typeof fetch {
+  return (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = String(init?.body ?? "");
+    const start = Number(new URLSearchParams(body).get("start") ?? "1");
+    opts.starts.push(start);
+    return new Response(opts.pageFor(start), {
+      status: 200,
+      headers: { "Content-Type": "text/html" },
+    });
+  }) as unknown as typeof fetch;
+}
+
+describe("fetchSportLotsChecklist pagination (NEO-137)", () => {
+  test("walks every page and returns the whole set, not just the first 100", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const starts: number[] = [];
+    // 250 cards: full, full, then a short final page.
+    vi.stubGlobal("fetch", makePaginatedFetch({
+      starts,
+      pageFor: (start) => {
+        if (start === 1) return listcardsHtml(1, 100);
+        if (start === 101) return listcardsHtml(101, 100);
+        if (start === 201) return listcardsHtml(201, 50);
+        return listcardsHtml(0, 0);
+      },
+    }));
+
+    const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
+      platformFilters: { variantType: "3628" },
+    });
+
+    expect(result.success).toBe(true);
+    // The regression: this was 100 before the fix.
+    expect(result.cards).toHaveLength(250);
+    // `start` advances by rows parsed, 1-based.
+    expect(starts).toEqual([1, 101, 201]);
+    // No gaps and no duplicates across the page boundaries.
+    expect(result.cards[0].cardNumber).toBe("1");
+    expect(result.cards[99].cardNumber).toBe("100");
+    expect(result.cards[100].cardNumber).toBe("101");
+    expect(result.cards[249].cardNumber).toBe("250");
+    expect(new Set(result.cards.map((c) => c.cardNumber)).size).toBe(250);
+  });
+
+  test("stops after one request when the set is smaller than a full page", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const starts: number[] = [];
+    vi.stubGlobal("fetch", makePaginatedFetch({
+      starts,
+      pageFor: () => listcardsHtml(1, 40),
+    }));
+
+    const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
+      platformFilters: { variantType: "3628" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.cards).toHaveLength(40);
+    expect(starts).toEqual([1]);
+  });
+
+  test("stops on the first empty page when the set is an exact multiple of the page size", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const starts: number[] = [];
+    vi.stubGlobal("fetch", makePaginatedFetch({
+      starts,
+      pageFor: (start) => (start === 1 ? listcardsHtml(1, 100) : listcardsHtml(0, 0)),
+    }));
+
+    const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
+      platformFilters: { variantType: "3628" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.cards).toHaveLength(100);
+    expect(starts).toEqual([1, 101]);
+  });
+
+  test("fails the whole fetch rather than committing a truncated checklist when a later page errors", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const starts: number[] = [];
+    vi.stubGlobal("fetch", (async (_u: unknown, init?: RequestInit) => {
+      const start = Number(new URLSearchParams(String(init?.body ?? "")).get("start") ?? "1");
+      starts.push(start);
+      if (start === 1) {
+        return new Response(listcardsHtml(1, 100), { status: 200 });
+      }
+      return new Response("boom", { status: 500 });
+    }) as unknown as typeof fetch);
+
+    const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
+      platformFilters: { variantType: "3628" },
+    });
+
+    // Partial data is worse than no data here: committing it would persist a
+    // checklist that is silently missing cards.
+    expect(result.success).toBe(false);
+    expect(result.cards).toHaveLength(0);
+  });
+});

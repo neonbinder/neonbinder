@@ -818,44 +818,6 @@ export const fetchSportLotsChecklist = action({
         };
       }
 
-      // POST to listcards.tpl with the set radio ID
-      const formData = new URLSearchParams({
-        selset: setRadioId,
-        dcond: "NM",
-        dbin: "1",
-        dval: "0.18",
-        dentry: "ADD",
-        pricing: "OLD",
-        start: "1",
-      });
-
-      const response = await slFetch(LISTCARDS_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Cookie: sessionCookie,
-        },
-        body: formData.toString(),
-      });
-
-      if (!response.ok) {
-        return {
-          success: false,
-          cards: [],
-          message: `SportLots HTTP error: ${response.status}`,
-        };
-      }
-
-      const html = await response.text();
-
-      if (isSessionExpired(html)) {
-        return {
-          success: false,
-          cards: [],
-          message: "SportLots session expired. Re-authenticate from Profile.",
-        };
-      }
-
       // Parse card table rows
       // Pattern: <td class="smallleft">CARD_NUMBER</td> ... <td class="smallleft">DESCRIPTION</td>
       const cardRegex = /<td class="smallleft">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
@@ -872,41 +834,119 @@ export const fetchSportLotsChecklist = action({
         platformRef?: string;
         sportlotsRef?: string;
       }> = [];
-      let match;
 
-      while ((match = cardRegex.exec(html)) !== null) {
-        const cardNumber = match[1].trim();
-        const fullDescription = match[2].trim();
+      // PAGINATE. listcards.tpl returns at most SL_PAGE_SIZE rows per request
+      // and `start` is a 1-BASED ROW OFFSET, not a page number. Verified live
+      // against selset=3628 (1996 Score Base, 6 pages):
+      //
+      //   start=1   -> rows 100, cards #1..#100
+      //   start=2   -> rows 100, cards #2..#101   <- offset, NOT a page index
+      //   start=101 -> rows 100, cards #101..#200
+      //
+      // and page 1 advertises its own siblings as start=101,201,301,401,501.
+      //
+      // This used to POST once with start=1 and parse that single response, so
+      // ANY set larger than 100 cards silently truncated to its first 100. The
+      // reconciliation modal then showed "SportLots only (0)" with hundreds of
+      // BSC-only rows, which reads like a matching bug rather than a fetch bug.
+      //
+      // Advance by the number of rows actually parsed rather than a fixed
+      // stride, so a short page can never skip rows, and stop on the first
+      // page that returns fewer than a full page (or nothing at all).
+      const SL_PAGE_SIZE = 100;
+      // Safety valve: bounds the loop if SL ever returns a full page forever.
+      // 200 pages = 20k cards, far beyond any real set.
+      const SL_MAX_PAGES = 200;
+      let start = 1;
 
-        if (!cardNumber || !fullDescription) continue;
+      for (let page = 0; page < SL_MAX_PAGES; page++) {
+        const formData = new URLSearchParams({
+          selset: setRadioId,
+          dcond: "NM",
+          dbin: "1",
+          dval: "0.18",
+          dentry: "ADD",
+          pricing: "OLD",
+          start: String(start),
+        });
 
-        // Strip a leading "#NNN" if the description echoes the card number,
-        // then run the token tokenizer to lift attributes / print run.
-        let working = fullDescription;
-        const echo = working.indexOf(`#${cardNumber}`);
-        if (echo !== -1) {
-          working = working.substring(echo + cardNumber.length + 1).trim();
+        const response = await slFetch(LISTCARDS_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: sessionCookie,
+          },
+          body: formData.toString(),
+        });
+
+        if (!response.ok) {
+          // Fail the whole fetch rather than silently returning a partial
+          // checklist — a truncated set is exactly the bug this loop fixes,
+          // and committing one would persist missing cards.
+          return {
+            success: false,
+            cards: [],
+            message: `SportLots HTTP error: ${response.status}`,
+          };
         }
 
-        const { attributes, printRun, residual } = tokenizeSlDescription(working);
-        const cardName = residual || fullDescription;
+        const html = await response.text();
 
-        cards.push({
-          cardNumber,
-          cardName,
-          attributes: attributes.length ? attributes : undefined,
-          printRun,
-          autographType: attributes.includes("AU") ? "Unknown" : undefined,
-          // NEO-91: the raw, un-tokenized description (not the bare card
-          // number) — this is what lands in cardChecklist.platformData.
-          // sportlots. SL reuses the same cardNumber across variation rows
-          // ("#10 Aaron Judge" vs "#10 Aaron Judge [ VAR All-Star Logo ]"),
-          // so only the full text disambiguates which SL row this card
-          // actually matched. sportlotsRef stays the bare number — that's
-          // still the correct key for BSC↔SL reconciliation matching below.
-          platformRef: fullDescription,
-          sportlotsRef: cardNumber,
-        });
+        if (isSessionExpired(html)) {
+          return {
+            success: false,
+            cards: [],
+            message: "SportLots session expired. Re-authenticate from Profile.",
+          };
+        }
+
+        const before = cards.length;
+        cardRegex.lastIndex = 0;
+        let match;
+
+        while ((match = cardRegex.exec(html)) !== null) {
+          const cardNumber = match[1].trim();
+          const fullDescription = match[2].trim();
+
+          if (!cardNumber || !fullDescription) continue;
+
+          // Strip a leading "#NNN" if the description echoes the card number,
+          // then run the token tokenizer to lift attributes / print run.
+          let working = fullDescription;
+          const echo = working.indexOf(`#${cardNumber}`);
+          if (echo !== -1) {
+            working = working.substring(echo + cardNumber.length + 1).trim();
+          }
+
+          const { attributes, printRun, residual } = tokenizeSlDescription(working);
+          const cardName = residual || fullDescription;
+
+          cards.push({
+            cardNumber,
+            cardName,
+            attributes: attributes.length ? attributes : undefined,
+            printRun,
+            autographType: attributes.includes("AU") ? "Unknown" : undefined,
+            // NEO-91: the raw, un-tokenized description (not the bare card
+            // number) — this is what lands in cardChecklist.platformData.
+            // sportlots. SL reuses the same cardNumber across variation rows
+            // ("#10 Aaron Judge" vs "#10 Aaron Judge [ VAR All-Star Logo ]"),
+            // so only the full text disambiguates which SL row this card
+            // actually matched. sportlotsRef stays the bare number — that's
+            // still the correct key for BSC↔SL reconciliation matching below.
+            platformRef: fullDescription,
+            sportlotsRef: cardNumber,
+          });
+        }
+
+        const parsed = cards.length - before;
+
+        // A short page (or an empty one) means the set is exhausted. Checking
+        // rows PARSED rather than a fixed stride means a page that returns
+        // fewer rows than requested can never cause us to skip past cards.
+        if (parsed < SL_PAGE_SIZE) break;
+
+        start += parsed;
       }
 
       return {
