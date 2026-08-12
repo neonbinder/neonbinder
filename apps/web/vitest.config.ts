@@ -26,12 +26,22 @@ export default defineConfig({
       // `src/**` is included alongside `components/**` because layouts live in
       // src/layouts/ (NEO-128) — without it a test file there is silently
       // collected by nothing and never runs.
+      // `app/**` is included for the same reason (NEO-141): routed pages live
+      // under app/, so a page test there was collected by nothing either.
+      // Note the failure mode — an uncollected test does not error. The run
+      // simply reports fewer tests and still prints "passed", so compare
+      // COUNTS, not the word. A new top-level dir holding .test.tsx needs a
+      // glob added here.
       defineProject({
         test: {
           name: "components",
           environment: "happy-dom",
           globals: true,
-          include: ["components/**/*.test.tsx", "src/**/*.test.tsx"],
+          include: [
+            "components/**/*.test.tsx",
+            "src/**/*.test.tsx",
+            "app/**/*.test.tsx",
+          ],
         },
         resolve: {
           alias: {

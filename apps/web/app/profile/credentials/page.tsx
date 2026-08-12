@@ -6,7 +6,10 @@ import { Input } from "@/components/primitives/Input";
 
 const SUPPORTED_SITES = [
   { key: "buysportscards", label: "BuySportsCards" },
-  { key: "sportlots", label: "Sportlots" },
+  // NEO-141: "SportLots" is the marketplace's own casing and matches every
+  // server-returned message. Maestro text matching is case-insensitive, so the
+  // flows that select on "Sportlots" keep working.
+  { key: "sportlots", label: "SportLots" },
   // Add more sites here as needed (eBay coming soon)
 ];
 
@@ -22,7 +25,17 @@ export default function CredentialsPanel() {
   const [messageType, setMessageType] = useState<"success" | "error">(
     "success",
   );
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // NEO-141: "has this browser session seen the connection actually work?".
+  // This is deliberately NOT a claim about whether the connection is healthy —
+  // the server owns that, via `needsReauth`. It only suppresses the "not yet
+  // verified" nudge once a connect or test has proved the session works, and it
+  // resets when the user switches platforms because it is per-site knowledge.
+  //
+  // It replaces the old `isAuthenticated`, which asked the browser service
+  // whether a secret existed and then optimistically assumed `true` when that
+  // call failed — guesswork that could contradict the server. Nothing here
+  // guesses any more.
+  const [verifiedThisSession, setVerifiedThisSession] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [confirmingClear, setConfirmingClear] = useState(false);
 
@@ -35,18 +48,24 @@ export default function CredentialsPanel() {
   // NEO-89: save (store or clear) is a single action now — the Convex
   // hasCredentials flag is updated server-side inside saveCredentials itself,
   // not as a second client-triggered mutation, so the two can't drift apart.
+  // NEO-141: it is also connect-and-store — it performs the live marketplace
+  // login itself and stores nothing on failure, so the client no longer chases
+  // it with a separate verification call.
   const saveCredentials = useAction(api.credentials.saveCredentials);
-  const getSiteCredentials = useAction(api.credentials.getSiteCredentials);
   const testSiteCredentials = useAction(api.credentials.testSiteCredentials);
 
   // Get user profile to check if credentials are stored
   const profile = useQuery(api.userProfile.getUserProfile);
   const siteMeta = SUPPORTED_SITES.find((s) => s.key === selectedSite);
 
-  const hasStoredCredentials =
-    profile?.siteCredentials?.some(
-      (cred) => cred.site === selectedSite && cred.hasCredentials,
-    ) || false;
+  const siteCredential = profile?.siteCredentials?.find(
+    (cred) => cred.site === selectedSite,
+  );
+  const hasStoredCredentials = !!siteCredential?.hasCredentials;
+  // NEO-141: a `reauth_required` failure sets this and LEAVES hasCredentials
+  // true — the account is still connected, only the session died. So this must
+  // be checked BEFORE the plain connected summary, or the state never renders.
+  const needsReauth = !!siteCredential?.needsReauth;
 
   // Reactive in-flight guard. A credential op (store / test-login / delete)
   // holds a per-(user, site) lock on the backend, surfaced as `lockedAt` on the
@@ -73,32 +92,9 @@ export default function CredentialsPanel() {
     setUsername("");
     setPassword("");
     setMessage("");
-    setIsAuthenticated(false);
+    setVerifiedThisSession(false);
     setEditMode(false);
   }, [selectedSite]);
-
-  // Check if credentials exist in Secret Manager for the selected site
-  useEffect(() => {
-    const check = async () => {
-      if (!hasStoredCredentials) {
-        setIsAuthenticated(false);
-        return;
-      }
-      setIsLoading(true);
-      try {
-        const creds = await getSiteCredentials({ site: selectedSite });
-        setIsAuthenticated(!!creds);
-      } catch {
-        // If the browser service is unreachable, trust the stored profile flag
-        // rather than showing a confusing unauthenticated state
-        setIsAuthenticated(true);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    check();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedSite, hasStoredCredentials]);
 
   // Escape closes the clear-confirm modal (keyboard parity with the Cancel button).
   useEffect(() => {
@@ -128,7 +124,7 @@ export default function CredentialsPanel() {
 
   const handleSaveCredentials = async () => {
     if (!username || !password) {
-      setMessage("Please enter both username and password to save.");
+      setMessage("Enter both username and password to connect.");
       setMessageType("error");
       setMessageDetails(undefined);
       return;
@@ -137,41 +133,34 @@ export default function CredentialsPanel() {
     setMessage("");
     setMessageDetails(undefined);
     try {
-      const secretResult = await saveCredentials({
+      // NEO-141: one round-trip. `saveCredentials` signs in live, stores only
+      // the resulting session, and stores NOTHING when the login is rejected —
+      // so the old "saved, but authentication failed" outcome cannot occur and
+      // there is no follow-up testSiteCredentials call to make.
+      //
+      // Its message is already complete and user-facing (it names the site and
+      // says the password was not stored), so it is rendered verbatim. Setting
+      // a second client-side success string on top would double up.
+      const result = await saveCredentials({
         site: selectedSite,
         username,
         password,
       });
-      if (!secretResult.success) {
-        throw new Error(secretResult.message);
-      }
-      setPassword("");
-
-      // Automatically verify credentials against the marketplace so the user
-      // doesn't have to click Test Credentials separately. Keeps credentials
-      // stored on auth failure so the user can retry without re-entering.
-      const authResult = await testSiteCredentials({ site: selectedSite });
-      if (authResult.success) {
-        setMessage(
-          `Credentials saved successfully! Your credentials have been securely encrypted and verified with ${siteMeta?.label}.`,
-        );
-        setMessageDetails(authResult.details);
-        setMessageType("success");
-        setIsAuthenticated(true);
+      setMessage(result.message);
+      setMessageType(result.success ? "success" : "error");
+      if (result.success) {
+        setPassword("");
+        setEditMode(false);
+        setVerifiedThisSession(true);
       } else {
-        setMessage(
-          `Credentials were saved, but ${siteMeta?.label} authentication failed: ${authResult.message}. Use "Test Credentials" to retry once the issue is resolved.`,
-        );
-        setMessageDetails(authResult.details);
-        setMessageType("error");
-        setIsAuthenticated(false);
+        setVerifiedThisSession(false);
       }
     } catch (error) {
       setMessage(
-        `Failed to save credentials: ${error instanceof Error ? error.message : "Unknown error"}`,
+        `Couldn't connect to ${siteMeta?.label}: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
       setMessageType("error");
-      setIsAuthenticated(false);
+      setVerifiedThisSession(false);
     } finally {
       setIsLoading(false);
     }
@@ -179,7 +168,7 @@ export default function CredentialsPanel() {
 
   const handleTestCredentials = async () => {
     if (!hasStoredCredentials) {
-      setMessage("Please save credentials first before testing.");
+      setMessage(`Connect your ${siteMeta?.label} account first.`);
       setMessageType("error");
       setMessageDetails(undefined);
       return;
@@ -189,32 +178,25 @@ export default function CredentialsPanel() {
     // failure. Left at a previous "error" it would render red and, now that the
     // banner is a live region, announce assertively (NEO-127).
     setMessageType("success");
-    setMessage(`Testing stored credentials with ${siteMeta?.label}...`);
+    setMessage(`Testing your ${siteMeta?.label} connection...`);
     setMessageDetails(undefined);
     try {
       const testResult = await testSiteCredentials({ site: selectedSite });
 
-      if (testResult.success) {
-        setMessage(testResult.message);
-        setMessageDetails(testResult.details);
-        setMessageType("success");
-        setIsAuthenticated(true);
-      } else {
-        setMessage(testResult.message);
-        setMessageDetails(testResult.details);
-        setMessageType("error");
-        setIsAuthenticated(false);
-      }
+      setMessage(testResult.message);
+      setMessageDetails(testResult.details);
+      setMessageType(testResult.success ? "success" : "error");
+      setVerifiedThisSession(testResult.success);
     } catch (error) {
       console.error("Error testing credentials:", error);
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      setMessage("Failed to test credentials. Please try again.");
+      setMessage(`Couldn't test the ${siteMeta?.label} connection. Please try again.`);
       setMessageDetails(
         `An unexpected error occurred while testing credentials: ${errorMessage}`,
       );
       setMessageType("error");
-      setIsAuthenticated(false);
+      setVerifiedThisSession(false);
     } finally {
       setIsLoading(false);
     }
@@ -269,11 +251,15 @@ export default function CredentialsPanel() {
       }
       setUsername("");
       setPassword("");
-      setIsAuthenticated(false);
-      setMessage("Credentials cleared successfully!");
+      setVerifiedThisSession(false);
+      // The server's clear message interpolates the raw site KEY
+      // ("...for sportlots"), so this path keeps a client-side string that can
+      // use the display label. The connect path does the opposite — see
+      // handleSaveCredentials.
+      setMessage(`Cleared your ${siteMeta?.label} connection.`);
       setMessageType("success");
     } catch {
-      setMessage("Failed to clear credentials. Please try again.");
+      setMessage("Couldn't clear the connection. Please try again.");
       setMessageType("error");
     } finally {
       setIsLoading(false);
@@ -342,19 +328,59 @@ export default function CredentialsPanel() {
         {siteMeta?.label} Credentials
       </h2>
       <p className="text-sm text-muted-foreground mb-4">
-        Enter your {siteMeta?.label} login credentials to enable automatic authentication. Your credentials are securely encrypted and stored.
+        Sign in to {siteMeta?.label} to connect your account. Your password is used once to sign in and is never stored — we keep only a session that expires and can be revoked.
       </p>
     </div>
 
-    {/* Credentials UI - same for all sites including BSC */}
-    {/* If credentials are stored and not in edit mode, show summary and buttons */}
-    {hasStoredCredentials && !editMode ? (
+    {/* Credentials UI - same for all sites including BSC.
+        Three mutually exclusive states, in this order:
+          1. needsReauth (server-owned)  → amber "sign in again" card
+          2. connected, not editing      → blue summary card
+          3. otherwise                   → the sign-in form
+        Order matters: `needsReauth` leaves `hasCredentials` true, so testing it
+        second would make the state unreachable (NEO-141). */}
+    {needsReauth && !editMode ? (
+      <div className="space-y-4">
+        <div className="p-4 bg-amber-50 dark:bg-amber-900/20 text-amber-900 dark:text-amber-200 border border-amber-300 dark:border-amber-700 rounded-md">
+          <strong>Sign in to {siteMeta?.label} again</strong>
+          <p className="text-sm mt-1">
+            Your {siteMeta?.label} session expired or was revoked, so we can&apos;t
+            reach {siteMeta?.label} for you. Sign in again to reconnect — nothing
+            else was lost.
+          </p>
+        </div>
+        {/* No "Test Credentials" here on purpose. `reauth_required` means the
+            stored session cannot be renewed from anything we hold, so a test
+            would fail by construction — offering it would be a control that
+            claims to be useful when it is not (same rule as the busy labels
+            below). Signing in again is the only repair; clearing is the only
+            other legitimate exit. */}
+        <div className="flex flex-col sm:flex-row gap-4">
+          <NeonButton
+            type="button"
+            onClick={() => setEditMode(true)}
+            disabled={credsBusy}
+            className="flex-1"
+          >
+            Sign in again
+          </NeonButton>
+          <NeonButton
+            type="button"
+            onClick={handleClearCredentials}
+            disabled={credsBusy}
+            className="flex-1 bg-red-600 hover:bg-red-700"
+          >
+            {credsBusy ? "Clearing..." : "Clear Credentials"}
+          </NeonButton>
+        </div>
+      </div>
+    ) : hasStoredCredentials && !editMode ? (
       <div className="space-y-4">
         <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
-          <strong>Credentials saved for {siteMeta?.label}</strong>
+          <strong>Connected to {siteMeta?.label}</strong>
           <p className="text-sm mt-1">
-            Your credentials are securely stored. You can edit or test
-            them below.
+            We hold a {siteMeta?.label} session, not your password. You can test
+            it or clear it below.
           </p>
         </div>
         {/* Every busy label below is keyed off `credsBusy` — the SAME condition
@@ -375,13 +401,15 @@ export default function CredentialsPanel() {
             still locked. */}
         <div className="flex flex-col sm:flex-row gap-4">
           <NeonButton
+            type="button"
             onClick={() => setEditMode(true)}
             disabled={credsBusy}
             className="flex-1"
           >
-            Edit
+            Sign in again
           </NeonButton>
           <NeonButton
+            type="button"
             onClick={handleTestCredentials}
             disabled={credsBusy}
             className="flex-1 bg-slate-600 hover:bg-slate-700"
@@ -389,6 +417,7 @@ export default function CredentialsPanel() {
             {credsBusy ? "Testing..." : "Test Credentials"}
           </NeonButton>
           <NeonButton
+            type="button"
             onClick={handleClearCredentials}
             disabled={credsBusy}
             className="flex-1 bg-red-600 hover:bg-red-700"
@@ -398,8 +427,17 @@ export default function CredentialsPanel() {
         </div>
       </div>
     ) : (
-      // Show input fields and Save/Test buttons if editing or no credentials
-      <>
+      // Show input fields and Connect/Test buttons if editing or not connected.
+      // A real <form> so Enter submits from either field — the project keyboard
+      // rule (Enter confirms, Escape cancels); see ReturnAddressEditor. Every
+      // other control inside carries type="button" so it neither submits on
+      // click nor becomes the implicit-submission default.
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void handleSaveCredentials();
+        }}
+      >
         <div className="space-y-4">
           <div>
             <label
@@ -408,6 +446,10 @@ export default function CredentialsPanel() {
             >
               {siteMeta?.label} Username/Email
             </label>
+            {/* Explicit `id` is required: Input never generates one (Maestro
+                derives resource-id from node.id || node.ariaLabel, so an auto
+                id would clobber aria-label selectors) and .maestro flows
+                target these two by id. */}
             <Input
               bare
               id="username"
@@ -415,6 +457,7 @@ export default function CredentialsPanel() {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               className="w-full px-3 py-2"
+              autoComplete="username"
               placeholder={`Enter your ${siteMeta?.label} username or email`}
             />
           </div>
@@ -432,24 +475,34 @@ export default function CredentialsPanel() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3 py-2"
+              autoComplete="current-password"
+              aria-describedby={
+                selectedSite === "sportlots"
+                  ? "sportlots-password-advice"
+                  : undefined
+              }
               placeholder={`Enter your ${siteMeta?.label} password`}
             />
           </div>
           {selectedSite === "sportlots" && (
-            <p className="text-xs text-amber-600 dark:text-amber-400">
-              We recommend using a unique password for your SportLots account.
+            <p
+              id="sportlots-password-advice"
+              className="text-xs text-amber-600 dark:text-amber-400"
+            >
+              SportLots has no API, so we sign in as you. We never store your password — but a unique one for SportLots is still a good idea.
             </p>
           )}
         </div>
-        <div className="flex flex-col sm:flex-row gap-4">
+        <div className="flex flex-col sm:flex-row gap-4 mt-4">
           <NeonButton
-            onClick={handleSaveCredentials}
+            type="submit"
             disabled={credsBusy || !username || !password}
             className="flex-1"
           >
-            {credsBusy ? "Saving..." : "Save Credentials"}
+            {credsBusy ? "Connecting..." : "Connect"}
           </NeonButton>
           <NeonButton
+            type="button"
             onClick={handleTestCredentials}
             disabled={credsBusy || !hasStoredCredentials}
             className="flex-1 bg-slate-600 hover:bg-slate-700"
@@ -458,6 +511,7 @@ export default function CredentialsPanel() {
           </NeonButton>
           {hasStoredCredentials && (
             <NeonButton
+              type="button"
               onClick={handleClearCredentials}
               disabled={credsBusy}
               className="flex-1 bg-red-600 hover:bg-red-700"
@@ -468,6 +522,7 @@ export default function CredentialsPanel() {
         </div>
         {hasStoredCredentials && (
           <NeonButton
+            type="button"
             onClick={() => setEditMode(false)}
             disabled={credsBusy}
             className="mt-2"
@@ -475,7 +530,7 @@ export default function CredentialsPanel() {
             Cancel
           </NeonButton>
         )}
-      </>
+      </form>
     )}
     {confirmingClear && (
       // Centered modal overlay (not inline): a destructive confirm
@@ -499,18 +554,24 @@ export default function CredentialsPanel() {
             id="clear-confirm-title"
             className="text-amber-800 dark:text-amber-200 font-medium mb-4"
           >
-            Are you sure you want to clear your {siteMeta?.label} credentials?
+            Clear your {siteMeta?.label} connection?
           </p>
           <div className="flex gap-3">
             <NeonButton
               cancel
+              type="button"
               onClick={handleConfirmClear}
               disabled={credsBusy}
             >
-              {isLoading ? "Clearing..." : "Yes, Clear"}
+              {/* Keyed off `credsBusy`, the same condition as `disabled` — see
+                  the NEO-128 note above. This button was the one place still
+                  keyed off `isLoading`, so a lock held by another site left it
+                  reading "Yes, Clear" while it was inert. */}
+              {credsBusy ? "Clearing..." : "Yes, Clear"}
             </NeonButton>
             <NeonButton
               ref={clearCancelButtonRef}
+              type="button"
               onClick={() => setConfirmingClear(false)}
               disabled={credsBusy}
             >
@@ -558,12 +619,16 @@ export default function CredentialsPanel() {
         )}
       </div>
     )}
-    {hasStoredCredentials && !isAuthenticated && (
+    {/* Not a fourth state — a nudge that sits alongside the connected card
+        until something proves the session still works. Suppressed while
+        `needsReauth` is set, because then we already know the answer and the
+        amber card says so. */}
+    {hasStoredCredentials && !needsReauth && !verifiedThisSession && (
       <div className="p-4 bg-blue-50 dark:bg-blue-900/20 text-blue-800 dark:text-blue-200 border border-blue-200 dark:border-blue-800 rounded-md">
-        <strong>Credentials Stored</strong>
+        <strong>Connection not yet verified</strong>
         <p className="text-sm mt-1">
-          Your credentials are saved. Click &quot;Test Stored
-          Credentials&quot; to verify they work.
+          Click &quot;Test Stored Credentials&quot; to check that{" "}
+          {siteMeta?.label} still accepts this session.
         </p>
       </div>
     )}
@@ -575,12 +640,15 @@ export default function CredentialsPanel() {
         </h3>
         <ul className="text-sm text-blue-800 dark:text-blue-200 space-y-1">
           <li>
-            • Your credentials are securely encrypted and stored
+            • Your password is used once to sign in and is never stored
           </li>
           <li>
-            • Credentials are only accessible to your account
+            • We keep only a marketplace session, which expires and can be revoked
           </li>
-          <li>• We never share your credentials with third parties</li>
+          <li>
+            • Your session is only accessible to your account
+          </li>
+          <li>• We never share your credentials or sessions with third parties</li>
           <li>• You can clear your credentials at any time</li>
         </ul>
       </div>

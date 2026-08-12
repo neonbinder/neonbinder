@@ -1,0 +1,171 @@
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/profile/credentials&worker=${WORKER_INDEX || "0"}
+name: "Expired marketplace session — the panel says sign in again, and goes back to connected once the session proves good"
+tags:
+  - credentials
+  - profile
+---
+# THE ONE FEATURE THIS FLOW PROVES (NEO-140/141):
+# When a stored marketplace session dies, the credentials panel stops pretending
+# the account is fine. It shows a distinct "sign in again" state — not the
+# connected card, and not the "you have no credentials" form — and that state
+# clears itself the moment the connection is proven to work again.
+#
+# WHY THIS NEEDS A TESTING HOOK:
+# `needsReauth` is set in exactly one place: the browser service reporting a
+# stored session that is dead AND cannot be renewed from anything we hold. No UI
+# action produces it and the honest wait is a 24h token expiry, so the state was
+# untestable until /testing/needs-reauth (auth-scoped, TESTING_RESET_SECRET-gated,
+# patches only the caller's own row). The hook sets the FLAG; everything this
+# flow asserts afterwards is ordinary product behaviour.
+#
+# WHY SPORTLOTS: its session is a 30-day cookie, so the seed below almost always
+# skips its (live, 30-65s) sign-in. BSC's 24h refresh token would pay for one far
+# more often, for identical coverage.
+#
+# WHY THE RECOVERY IS A *TEST*, NOT A RE-SEED — READ BEFORE "TIDYING UP":
+# Re-seeding does NOT clear this flag. When the stored session is still
+# renewable, seedMyTestCredentials skips the store and calls
+# updateSiteCredentialStatus WITHOUT a needsReauth argument, which deliberately
+# PRESERVES the flag. Only a successful login clears it (applyLoginOutcome), and
+# the re-auth card deliberately offers no "Test Credentials" button — so the
+# only route to one is the card's own "Sign in again", which opens the form and
+# its "Test Stored Credentials" button. That is the repair path a real user
+# takes, minus typing a password (never available to a flow — no secrets via -e).
+#
+# HOUSEKEEPING: this flow flags, then unflags, its OWN worker account. If it
+# fails BEFORE the recovery, the worker's SportLots row is left flagged, and the
+# only thing that reads that flag is this panel — the Set Builder gate keys on
+# `hasCredentials`, which is untouched. The one flow that would then also go red
+# on the same runner is profile/test-credentials.yaml (its SportLots half). If
+# you are looking at that pair of failures, this is the cause and the fix is
+# whatever made THIS flow fail.
+
+- launchApp
+
+# Cold sign-in (Clerk + Convex handshake).
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# -----------------------------------------------------------------------
+# Precondition: this worker is CONNECTED to SportLots
+# -----------------------------------------------------------------------
+
+# Phase-0 worker-bootstrap already connected both platforms; this scoped seed
+# just makes the precondition explicit (and keeps the flow runnable on its own
+# with the bootstrap skipped). 90s exception (live marketplace round-trip):
+# since NEO-141 the seed page awaits a REAL sign-in whenever it cannot skip.
+- openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/profile/credentials
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 90000
+
+# Switch to the SportLots tab — the tablist is at the top of the panel.
+- extendedWaitUntil:
+    visible: "SportLots"
+    timeout: 10000
+- tapOn: "SportLots"
+
+- extendedWaitUntil:
+    visible: ".*SportLots Credentials.*"
+    timeout: 20000
+
+- extendedWaitUntil:
+    visible: ".*Connected to SportLots.*"
+    timeout: 7000
+
+# Prove the "Test Credentials" button is HERE, now, on this page — because two
+# steps below the whole point is that it is GONE. Asserting its absence is only
+# meaningful once the same selector has matched something in the same run;
+# otherwise a typo'd selector would make that later assertion pass forever.
+- assertVisible: "Test Credentials"
+
+# -----------------------------------------------------------------------
+# The SportLots session dies
+# -----------------------------------------------------------------------
+
+- openLink: ${APP_URL || "http://localhost:3000"}/testing/needs-reauth?site=sportlots&redirect=/profile/credentials
+
+# 30s: a /testing/* page is a full document load that has to re-do the
+# Clerk → Convex handshake before it can call anything — the same budget every
+# other openLink of a /testing/* page in this suite uses. The mutation itself is
+# a single patch; there is no marketplace call on this path.
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 30000
+
+- extendedWaitUntil:
+    visible: "SportLots"
+    timeout: 10000
+- tapOn: "SportLots"
+
+- extendedWaitUntil:
+    visible: ".*SportLots Credentials.*"
+    timeout: 20000
+
+# THE FEATURE. Three assertions, one per state the panel can be in, so this
+# cannot pass unless the panel is in the re-auth state specifically:
+#   1. the re-auth card is shown…
+- extendedWaitUntil:
+    visible: ".*Sign in to SportLots again.*"
+    timeout: 7000
+#   2. …it is NOT the connected card — no "Test Credentials" here, deliberately,
+#      because a session that cannot be renewed would fail that test by
+#      construction (this absence is why the shared util flows have to
+#      assert-fast on the connected state instead of waiting for the button)…
+- assertNotVisible: "Test Credentials"
+#   3. …and it does NOT read as "you have no credentials": the sign-in form is
+#      not showing. The account is still connected; only the session died.
+- assertNotVisible: ".*SportLots Username.*"
+
+# -----------------------------------------------------------------------
+# Recovery: sign in again → the connection proves good → the warning clears
+# -----------------------------------------------------------------------
+
+# Centre before tapping: the card's buttons sit low in the 1024x629 fold.
+- scrollUntilVisible:
+    element:
+      text: "Sign in again"
+    centerElement: true
+    timeout: 10000
+    waitToSettleTimeoutMs: 1000
+- tapOn: "Sign in again"
+
+# The sign-in form opens. (Same selector asserted absent above — its appearing
+# now is what makes that assertion trustworthy.)
+- extendedWaitUntil:
+    visible: ".*SportLots Username.*"
+    timeout: 7000
+
+# A flow can never type a real password, so the honest repair available here is
+# the form's other button: re-check the stored session. It is enabled because
+# the account never stopped being connected.
+- scrollUntilVisible:
+    element:
+      text: "Test Stored Credentials"
+    centerElement: true
+    timeout: 10000
+    waitToSettleTimeoutMs: 1000
+- tapOn: "Test Stored Credentials"
+
+# 30s sanctioned exception: a live SportLots session check. Non-scrolling so the
+# transient React-state banner is not scrolled past while the call is in flight.
+- extendedWaitUntil:
+    visible: ".*SportLots account authenticated successfully.*"
+    timeout: 30000
+
+# Leave the form (a successful test does not close it — only the user does) and
+# assert the panel is back to CONNECTED. That card renders only when the account
+# has credentials AND is not flagged for re-auth, so this single assertion is
+# the proof that a working connection cleared the warning.
+- scrollUntilVisible:
+    element:
+      text: "Cancel"
+    centerElement: true
+    timeout: 10000
+    waitToSettleTimeoutMs: 1000
+- tapOn: "Cancel"
+
+- extendedWaitUntil:
+    visible: ".*Connected to SportLots.*"
+    timeout: 7000

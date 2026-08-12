@@ -85,13 +85,21 @@ export function logBrowserOp(props: {
  * must not reintroduce that leak.
  *
  * Alert policies treat `invalid_credentials` / `bad_key_format` /
- * `missing_key` as CALLER errors and exclude them; everything else pages.
- * A new tag added here defaults to paging — which is the safe direction.
+ * `missing_key` / `reauth_required` as CALLER errors and exclude them;
+ * everything else pages. A new tag added here defaults to paging — which is
+ * the safe direction.
+ *
+ * The closed set, as of NEO-141:
+ *   bad_key_format | missing_key | invalid_credentials | reauth_required |
+ *   timeout | challenge | oom | other
  */
 export function classifyBrowserError(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   const s = raw.toLowerCase();
   if (s.includes("invalid credential key")) return "bad_key_format";
+  // NEO-141. Checked BEFORE the invalid_credentials rule below, which would
+  // otherwise swallow it and erase the distinction Convex depends on.
+  if (s.includes("re-authentication required")) return "reauth_required";
   if (s.includes("timed out") || s.includes("timeout")) return "timeout";
   if (s.includes("invalid") && (s.includes("credential") || s.includes("password")))
     return "invalid_credentials";
@@ -130,9 +138,27 @@ export function classifyBrowserError(raw: string | undefined): string | undefine
  * which returns a closed set of literals and never echoes it.
  */
 export function loginFailureOutcome(
-  result: { credentialRejected?: boolean },
+  result: { credentialRejected?: boolean; reauthRequired?: boolean },
   raw: string | undefined,
 ): { status: 422 | 502; errorClass: string | undefined } {
+  // NEO-141: checked FIRST. This is the authoritative "the stored session is
+  // gone and we have nothing left to re-establish it with" signal — a BSC
+  // refresh grant that was refused, or a dead SportLots cookie, with no
+  // transient password in the request to fall back on.
+  //
+  // It replaces the thing Convex used to infer from a 404 on
+  // GET /credentials/:key/token, which conflated "this secret has no cached
+  // token yet" (normal) with "this secret does not exist" (not normal) and
+  // made Convex DELETE the user's credential status on the normal case.
+  //
+  // Like a rejection it is 422 and must NEVER page: the user has to sign in
+  // again, which is not an outage. It is a SEPARATE tag from
+  // invalid_credentials because the two need opposite UX — "your password was
+  // wrong" vs "your session expired, sign in again" — and because collapsing
+  // them would leave Convex re-deriving the difference from free text.
+  if (result.reauthRequired) {
+    return { status: 422, errorClass: "reauth_required" };
+  }
   if (result.credentialRejected) {
     // Force the tag rather than deriving it. BSC's caller-facing string is
     // deliberately the generic "Authentication failed", which classifies as
@@ -170,6 +196,25 @@ export interface LoginOptions {
    * service; Convex never sets it.
    */
   canary?: boolean;
+  /**
+   * NEO-140/NEO-141: a username+password supplied in the LOGIN REQUEST BODY,
+   * for this one sign-in only.
+   *
+   * This is the ONLY way a user's password enters the service now, and it is
+   * strictly INBOUND and TRANSIENT:
+   *   - it is used to drive one marketplace sign-in and nothing else;
+   *   - it is NEVER written to Secret Manager for a user key — only the
+   *     resulting `{username, token, expiresAt, refreshToken?,
+   *     refreshExpiresAt?}` is persisted;
+   *   - it must never be logged, echoed in a response, or embedded in an
+   *     error. Adapters pass it to buildLoginDiagnostic as a `secrets` value
+   *     so it is redacted out of any captured page text.
+   *
+   * When absent, the adapter falls back to the stored secret — which is
+   * exactly the canary path (`{key, canary:true}` with no body credentials),
+   * so the NEO-43 scheduler jobs keep working unchanged.
+   */
+  transientCredentials?: { username: string; password: string };
 }
 
 /**

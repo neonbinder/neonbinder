@@ -30,6 +30,7 @@ import SalePage from "@/app/u/[username]/sale/page";
 import TestSignIn from "@/app/testing/sign-in/page";
 import TestReset from "@/app/testing/reset/page";
 import TestSeedCredentials from "@/app/testing/seed-credentials/page";
+import TestNeedsReauth from "@/app/testing/needs-reauth/page";
 import Dashboard from "@/app/dashboard/page";
 import ProfileLayout from "@/src/layouts/profile-layout";
 import ProfilePublic from "@/app/profile/public/page";
@@ -82,6 +83,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             path="/testing/seed-credentials"
             element={<TestSeedCredentials />}
           />
+          <Route path="/testing/needs-reauth" element={<TestNeedsReauth />} />
 
           {/* Protected routes — wrapped in binder shell */}
           <Route element={<ProtectedLayout />}>

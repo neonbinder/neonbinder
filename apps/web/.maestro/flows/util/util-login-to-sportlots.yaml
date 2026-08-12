@@ -53,6 +53,18 @@ tags:
     timeout: 10000
 - tapOn: "Sportlots"
 
+# FAIL FAST IF THIS WORKER IS NOT CONNECTED TO SPORTLOTS (NEO-141).
+# "Test Credentials" is rendered ONLY by the connected card. The two other
+# states the panel can be in — the "Sign in to SportLots again" card after a
+# session died, and the sign-in form when nothing is stored — have no such
+# button, so without this assert the util would sit out the full 30s wait below
+# and then report "Test Credentials never appeared", which says nothing about
+# what actually went wrong. Asserting the connected state names the real
+# problem, and costs nothing when the worker is healthy.
+- extendedWaitUntil:
+    visible: ".*Connected to SportLots.*"
+    timeout: 7000
+
 # Wait in place until the button is genuinely tappable. Its label is keyed off
 # `credsBusy`, so while a credential op holds the server-side lock it reads
 # "Testing..." and this waits rather than tapping a disabled control (NEO-128 —

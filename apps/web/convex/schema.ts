@@ -220,6 +220,14 @@ export default defineSchema({
         v.union(v.literal("store"), v.literal("test"), v.literal("delete")),
       ),
       lockToken: v.optional(v.string()),
+      // NEO-141: the marketplace session is dead and cannot be renewed from
+      // what we hold (we no longer store a password), so the user must supply
+      // it again. Distinct from `hasCredentials: false` — the secret still
+      // exists and still holds the username. `needsReauthSince` is the epoch-ms
+      // first-detection time (not refreshed on repeat detections). Both
+      // optional: existing rows read as "no re-auth needed" (no migration).
+      needsReauth: v.optional(v.boolean()),
+      needsReauthSince: v.optional(v.number()),
     }))),
     // Per-marketplace account identifiers captured at login time so callers
     // (e.g. fetchBscChecklist) don't have to re-derive them on every request.
