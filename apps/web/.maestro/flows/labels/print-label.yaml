@@ -1,5 +1,5 @@
 # R1 — Single feature: a signed-in user who HAS a saved return address can type a
-# recipient on /labels and watch the 4x6 label preview build itself from what
+# recipient on /print/shipping and watch the 4x6 label preview build itself from what
 # they typed (uppercased, USPS-style), with their own return address already in
 # the FROM block.
 #
@@ -12,10 +12,10 @@
 # and the NEO-41 dirty guard can't re-hydrate stale values over our typing).
 # No in-body re-login beyond that entry handshake (R4).
 #
-# R2 — this cannot go green without the feature: /labels only renders a "Ship To"
-# form when getMyReturnAddress is non-null. If the /profile save silently failed,
-# /labels would render the "Add your return address" empty state instead and
-# every step below would fail on a missing field.
+# R2 — this cannot go green without the feature: /print/shipping only renders a
+# "Ship To" form when getMyReturnAddress is non-null. If the /profile save
+# silently failed, it would render the "Add your return address" empty state
+# instead and every step below would fail on a missing field.
 #
 # HARD CONSTRAINT — we never tap "Print Label". It calls window.print(), whose
 # native dialog blocks every further browser event and wedges the run. The live
@@ -108,10 +108,11 @@ tags:
 - tapOn: "Save Return Address"
 - assertVisible: "Return address saved."
 
-# Step 4: go to the Labels page. openLink (not a nav tap) = a fresh cross-page
-# mount, which avoids the post-tap CDP navigation crash and re-reads the return
-# address we just saved.
-- openLink: ${APP_URL || "https://localhost:3000"}/labels
+# Step 4: go to the Shipping tool in the Print Shop (NEO-145 moved it there from
+# the top-level /labels, which still redirects here). openLink (not a nav tap) =
+# a fresh cross-page mount, which avoids the post-tap CDP navigation crash and
+# re-reads the return address we just saved.
+- openLink: ${APP_URL || "https://localhost:3000"}/print/shipping
 - assertVisible: "Shipping Labels"
 
 # Step 5: confirm we are on the "has a return address" branch, not the empty

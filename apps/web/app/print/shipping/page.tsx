@@ -3,9 +3,9 @@
 import { useCallback, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQuery } from "convex/react";
-import { api } from "../../convex/_generated/api";
-import NeonButton from "../../components/modules/NeonButton";
-import { ShippingLabel } from "../../components/modules/ShippingLabel";
+import { api } from "@/convex/_generated/api";
+import NeonButton from "@/components/modules/NeonButton";
+import { ShippingLabel } from "@/components/modules/ShippingLabel";
 import { Input } from "@/components/primitives/Input";
 import { Textarea } from "@/components/primitives/Textarea";
 import { PrinterIcon, TagIcon } from "@heroicons/react/24/outline";
@@ -29,7 +29,7 @@ import { printHtmlDocument } from "@/lib/print/print-html";
 const FIELD_CLASS = "w-full px-3 py-2";
 const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
 
-export default function LabelsPage() {
+export default function ShippingLabelsPage() {
   const navigate = useNavigate();
   const saved = useQuery(api.shipping.getMyReturnAddress);
   const [to, setTo] = useState<PostalAddress>(EMPTY_ADDRESS);
@@ -129,7 +129,8 @@ export default function LabelsPage() {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center px-4">
         <TagIcon className="w-20 h-20 text-neon-teal mb-6" />
-        <h1 className="text-3xl font-bold mb-3">Shipping Labels</h1>
+        {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
+        <h2 className="text-3xl font-bold mb-3">Shipping Labels</h2>
         <p className="text-gray-400 max-w-md mb-6">
           Add your return address on your profile first — it prints as the
           return address on every label.
@@ -160,7 +161,7 @@ export default function LabelsPage() {
     <div className="flex flex-col items-center gap-8 py-12 px-4">
       <div className="text-center">
         <TagIcon className="w-16 h-16 text-neon-teal mx-auto mb-4" />
-        <h1 className="text-3xl font-bold mb-2">Shipping Labels</h1>
+        <h2 className="text-3xl font-bold mb-2">Shipping Labels</h2>
         <p className="text-gray-400 max-w-md">
           Type where it&apos;s going and print a 4&quot; × 6&quot; label. Your
           return address is filled in automatically.
@@ -174,7 +175,7 @@ export default function LabelsPage() {
           void handlePrint();
         }}
       >
-        <h2 className="text-lg font-semibold">Ship To</h2>
+        <h3 className="text-lg font-semibold">Ship To</h3>
 
         {/* Paste-to-fill. The seller has the buyer's address open on a packing
             slip in another tab; retyping six fields per package is slow and is
@@ -392,9 +393,9 @@ export default function LabelsPage() {
           element that gets printed. Narrower screens scroll it rather than
           shrinking it, so what you see stays true to size. */}
       <div className="w-full max-w-full flex flex-col items-center gap-3">
-        <h2 id="label-preview-heading" className="text-lg font-semibold">
+        <h3 id="label-preview-heading" className="text-lg font-semibold">
           Preview
-        </h2>
+        </h3>
         {/* tabIndex makes the scroll container reachable: on a narrow viewport
             the 6in label overflows, and without it only a pointer could pan. */}
         <div

@@ -1,4 +1,4 @@
-# R1 — Single feature: /labels shows the "set up your return address first"
+# R1 — Single feature: /print/shipping shows the "set up your return address first"
 # prompt (and a Go to Profile CTA) instead of a label form when the signed-in
 # user has NO return address saved.
 #
@@ -11,16 +11,18 @@
 # never collide, and within a runner flows are sequential, so our reset
 # immediately precedes our assert.
 #
-# Entry URL: sign in as the new-profile account, reset it, land on /labels.
+# Entry URL: sign in as the new-profile account, reset it, land on
+# /print/shipping (NEO-145 — the tool moved into the Print Shop; the old /labels
+# route redirects here).
 # `account=new-profile` and `worker` are TOP-LEVEL sign-in query params (the
 # inner redirect value is left unencoded so the router parses them as siblings).
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/labels&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/print/shipping&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: Shipping Labels — no return address empty state
 tags:
   - labels
 ---
-# Step 1: open the app at the signed-in, freshly-reset /labels route.
+# Step 1: open the app at the signed-in, freshly-reset /print/shipping route.
 - launchApp
 
 # Step 2: with no return address the page explains what is missing and why. This

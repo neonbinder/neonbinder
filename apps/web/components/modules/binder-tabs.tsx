@@ -4,8 +4,7 @@ import {
   HomeIcon,
   RectangleStackIcon,
   ArchiveBoxIcon,
-  QrCodeIcon,
-  TagIcon,
+  PrinterIcon,
   UserIcon,
   SquaresPlusIcon,
 } from "@heroicons/react/24/outline";
@@ -51,16 +50,12 @@ export const NAV_ITEMS: NavItem[] = [
     requiresAdmin: true,
   },
   {
-    label: "QR Code",
-    path: "/qr-code",
-    icon: QrCodeIcon,
-    glowClass: "binder-tab-glow-pink",
-    activeColor: "text-neon-pink",
-  },
-  {
-    label: "Labels",
-    path: "/labels",
-    icon: TagIcon,
+    // NEO-145 — one tab for every print tool. This replaced separate "QR Code"
+    // and "Labels" tabs: two more print tools are coming, and "Labels" meaning
+    // SHIPPING labels next to a binder-label tool was ambiguous.
+    label: "Print Shop",
+    path: "/print",
+    icon: PrinterIcon,
     glowClass: "binder-tab-glow-teal",
     activeColor: "text-neon-teal",
   },
@@ -89,9 +84,12 @@ export function useVisibleNavItems(): NavItem[] {
   }, [isAdmin, isLoaded]);
 }
 
-// One entry per nav item — a tab past the end of this array falls back to 0 and
-// silently breaks the staircase, so extend it whenever NAV_ITEMS grows.
-const STAGGER_OFFSETS = [0, 6, 12, 18, 24, 30, 36];
+// Each tab sits 6px further right than the one above it, which is what makes
+// the staircase. This used to be a hardcoded [0, 6, 12, …] array with one entry
+// per nav item: a tab past its end fell back to 0 and silently flattened the
+// staircase, so every ticket that added or removed a tab had to remember to
+// edit it in lockstep. Derived from the index, the list can change freely.
+const STAGGER_STEP_PX = 6;
 
 export default function BinderTabs() {
   const items = useVisibleNavItems();
@@ -111,7 +109,7 @@ export default function BinderTabs() {
               : "bg-gray-800/80 text-gray-400 hover:w-[166px] hover:bg-gray-800"
             }`
           }
-          style={{ marginRight: `-${STAGGER_OFFSETS[index] ?? 0}px` }}
+          style={{ marginRight: `-${index * STAGGER_STEP_PX}px` }}
         >
           <item.icon className="w-6 h-6 shrink-0" />
           <span className="text-base font-medium">
