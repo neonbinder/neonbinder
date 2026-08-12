@@ -835,29 +835,41 @@ export const fetchSportLotsChecklist = action({
         sportlotsRef?: string;
       }> = [];
 
-      // PAGINATE. listcards.tpl returns at most SL_PAGE_SIZE rows per request
-      // and `start` is a 1-BASED ROW OFFSET, not a page number. Verified live
-      // against selset=3628 (1996 Score Base, 6 pages):
+      // PAGINATE. `start` is a 1-BASED OFFSET INTO SL'S LISTING TABLE, not a
+      // page number, and SL's stride is a fixed 100 LISTINGS per request.
       //
-      //   start=1   -> rows 100, cards #1..#100
-      //   start=2   -> rows 100, cards #2..#101   <- offset, NOT a page index
-      //   start=101 -> rows 100, cards #101..#200
+      // Crucially, listings != parsed card rows: a request returns up to 100
+      // listings, but the number of rows matching the card pattern VARIES.
+      // Measured live on selset=309098 (2024 Topps Chrome Base, 300 cards):
       //
-      // and page 1 advertises its own siblings as start=101,201,301,401,501.
+      //   start=1   -> 88 rows, cards #1..#88
+      //   start=101 -> 92 rows, cards #89..#180
+      //   start=201 -> 89 rows, cards #181..#269
+      //   start=301 -> 31 rows, cards #270..#300
+      //   start=401 ->  0 rows  <- the only reliable end-of-set signal
       //
-      // This used to POST once with start=1 and parse that single response, so
-      // ANY set larger than 100 cards silently truncated to its first 100. The
-      // reconciliation modal then showed "SportLots only (0)" with hundreds of
-      // BSC-only rows, which reads like a matching bug rather than a fetch bug.
+      // and on selset=3628 that `start` is an offset, not an index:
+      //   start=1 -> #1..#100, start=2 -> #2..#101, start=101 -> #101..#200.
       //
-      // Advance by the number of rows actually parsed rather than a fixed
-      // stride, so a short page can never skip rows, and stop on the first
-      // page that returns fewer than a full page (or nothing at all).
-      const SL_PAGE_SIZE = 100;
-      // Safety valve: bounds the loop if SL ever returns a full page forever.
-      // 200 pages = 20k cards, far beyond any real set.
+      // Two consequences, both learned the hard way:
+      //
+      //   1. ADVANCE BY A FIXED 100, never by rows parsed. Advancing by rows
+      //      (88) would request start=89 and re-read cards #77..#164 — both
+      //      duplicating and, at the tail, skipping.
+      //   2. STOP ONLY ON AN EMPTY PAGE. Stopping on "fewer rows than a full
+      //      page" ends the walk at page one for this very set, since page one
+      //      legitimately yields 88.
+      //
+      // Before pagination existed this POSTed once with start=1, so any set
+      // over one page silently truncated. The reconciliation modal then showed
+      // "SportLots only (0)" against hundreds of BSC-only rows, which reads
+      // like a matching bug rather than a fetch bug.
+      const SL_PAGE_STRIDE = 100;
+      // Safety valve: bounds the loop if SL ever returns a non-empty page
+      // forever. 200 pages = 20k listings, far beyond any real set.
       const SL_MAX_PAGES = 200;
       let start = 1;
+      let lastPageFingerprint = "";
 
       for (let page = 0; page < SL_MAX_PAGES; page++) {
         const formData = new URLSearchParams({
@@ -900,7 +912,9 @@ export const fetchSportLotsChecklist = action({
           };
         }
 
-        const before = cards.length;
+        // Collect this page separately so an unchanged page can be detected
+        // and discarded BEFORE it contributes duplicates.
+        const pageCards: typeof cards = [];
         cardRegex.lastIndex = 0;
         let match;
 
@@ -921,7 +935,7 @@ export const fetchSportLotsChecklist = action({
           const { attributes, printRun, residual } = tokenizeSlDescription(working);
           const cardName = residual || fullDescription;
 
-          cards.push({
+          pageCards.push({
             cardNumber,
             cardName,
             attributes: attributes.length ? attributes : undefined,
@@ -939,14 +953,21 @@ export const fetchSportLotsChecklist = action({
           });
         }
 
-        const parsed = cards.length - before;
+        // An EMPTY page is the only reliable end-of-set signal — see above.
+        // A short page is normal mid-set (88, 92, 89, 31 … all precede more
+        // data), so breaking on one truncates the walk.
+        if (pageCards.length === 0) break;
 
-        // A short page (or an empty one) means the set is exhausted. Checking
-        // rows PARSED rather than a fixed stride means a page that returns
-        // fewer rows than requested can never cause us to skip past cards.
-        if (parsed < SL_PAGE_SIZE) break;
+        // Defence against a `start` that does not advance. If SL ever ignores
+        // the offset and re-serves the same page, appending would duplicate
+        // every row and the walk would only stop at SL_MAX_PAGES — 200 live
+        // requests. Comparing the page's identity fingerprint stops it at two.
+        const fingerprint = `${pageCards.length}|${pageCards[0].cardNumber}|${pageCards[0].platformRef}`;
+        if (fingerprint === lastPageFingerprint) break;
+        lastPageFingerprint = fingerprint;
 
-        start += parsed;
+        cards.push(...pageCards);
+        start += SL_PAGE_STRIDE;
       }
 
       return {

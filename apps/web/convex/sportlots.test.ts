@@ -294,75 +294,98 @@ function makePaginatedFetch(opts: {
 }
 
 describe("fetchSportLotsChecklist pagination (NEO-137)", () => {
-  test("walks every page and returns the whole set, not just the first 100", async () => {
+  test("walks every page and returns the whole set, not just the first page", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const starts: number[] = [];
-    // 250 cards: full, full, then a short final page.
+    // Mirrors the REAL measured shape of selset=309098 (2024 Topps Chrome
+    // Base, 300 cards): rows per page vary and none of them is 100.
     vi.stubGlobal("fetch", makePaginatedFetch({
       starts,
       pageFor: (start) => {
-        if (start === 1) return listcardsHtml(1, 100);
-        if (start === 101) return listcardsHtml(101, 100);
-        if (start === 201) return listcardsHtml(201, 50);
+        if (start === 1) return listcardsHtml(1, 88);
+        if (start === 101) return listcardsHtml(89, 92);
+        if (start === 201) return listcardsHtml(181, 89);
+        if (start === 301) return listcardsHtml(270, 31);
         return listcardsHtml(0, 0);
       },
     }));
 
     const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
-      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
-      platformFilters: { variantType: "3628" },
+      parentFilters: { sport: "Baseball", year: "2024", setName: "Topps Chrome" },
+      platformFilters: { variantType: "309098" },
     });
 
     expect(result.success).toBe(true);
-    // The regression: this was 100 before the fix.
-    expect(result.cards).toHaveLength(250);
-    // `start` advances by rows parsed, 1-based.
-    expect(starts).toEqual([1, 101, 201]);
+    // The regression: 88 before the fix (page one only).
+    expect(result.cards).toHaveLength(300);
+    // Fixed stride of 100, and the walk only stops on the EMPTY page.
+    expect(starts).toEqual([1, 101, 201, 301, 401]);
     // No gaps and no duplicates across the page boundaries.
     expect(result.cards[0].cardNumber).toBe("1");
-    expect(result.cards[99].cardNumber).toBe("100");
-    expect(result.cards[100].cardNumber).toBe("101");
-    expect(result.cards[249].cardNumber).toBe("250");
-    expect(new Set(result.cards.map((c) => c.cardNumber)).size).toBe(250);
+    expect(result.cards[87].cardNumber).toBe("88");
+    expect(result.cards[88].cardNumber).toBe("89");
+    expect(result.cards[299].cardNumber).toBe("300");
+    expect(new Set(result.cards.map((c) => c.cardNumber)).size).toBe(300);
   });
 
-  test("stops after one request when the set is smaller than a full page", async () => {
+  test("a SHORT first page does not end the walk (the bug this fix corrects)", async () => {
+    // Guards the exact mistake made first time round: breaking on
+    // "rows < 100" stops at page one, because a full SL page legitimately
+    // yields fewer than 100 parsed card rows.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const starts: number[] = [];
     vi.stubGlobal("fetch", makePaginatedFetch({
       starts,
-      pageFor: () => listcardsHtml(1, 40),
+      pageFor: (start) => (start === 1 ? listcardsHtml(1, 88)
+        : start === 101 ? listcardsHtml(89, 12)
+        : listcardsHtml(0, 0)),
     }));
 
     const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
-      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
-      platformFilters: { variantType: "3628" },
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.cards).toHaveLength(40);
-    expect(starts).toEqual([1]);
-  });
-
-  test("stops on the first empty page when the set is an exact multiple of the page size", async () => {
-    const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const starts: number[] = [];
-    vi.stubGlobal("fetch", makePaginatedFetch({
-      starts,
-      pageFor: (start) => (start === 1 ? listcardsHtml(1, 100) : listcardsHtml(0, 0)),
-    }));
-
-    const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
-      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
-      platformFilters: { variantType: "3628" },
+      parentFilters: { sport: "Baseball", year: "2024", setName: "Topps Chrome" },
+      platformFilters: { variantType: "309098" },
     });
 
     expect(result.success).toBe(true);
     expect(result.cards).toHaveLength(100);
+    expect(starts).toEqual([1, 101, 201]);
+  });
+
+  test("advances by a fixed 100, never by rows parsed", async () => {
+    // Advancing by rows (88) would request start=89 and re-read earlier cards.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const starts: number[] = [];
+    vi.stubGlobal("fetch", makePaginatedFetch({
+      starts,
+      pageFor: (start) => (start === 1 ? listcardsHtml(1, 88) : listcardsHtml(0, 0)),
+    }));
+
+    await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "2024", setName: "Topps Chrome" },
+      platformFilters: { variantType: "309098" },
+    });
+
     expect(starts).toEqual([1, 101]);
+    expect(starts).not.toContain(89);
+  });
+
+  test("stops immediately when the set is empty", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const starts: number[] = [];
+    vi.stubGlobal("fetch", makePaginatedFetch({ starts, pageFor: () => listcardsHtml(0, 0) }));
+
+    const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
+      parentFilters: { sport: "Baseball", year: "2024", setName: "Topps Chrome" },
+      platformFilters: { variantType: "309098" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.cards).toHaveLength(0);
+    expect(starts).toEqual([1]);
   });
 
   test("fails the whole fetch rather than committing a truncated checklist when a later page errors", async () => {
@@ -372,19 +395,17 @@ describe("fetchSportLotsChecklist pagination (NEO-137)", () => {
     vi.stubGlobal("fetch", (async (_u: unknown, init?: RequestInit) => {
       const start = Number(new URLSearchParams(String(init?.body ?? "")).get("start") ?? "1");
       starts.push(start);
-      if (start === 1) {
-        return new Response(listcardsHtml(1, 100), { status: 200 });
-      }
+      if (start === 1) return new Response(listcardsHtml(1, 88), { status: 200 });
       return new Response("boom", { status: 500 });
     }) as unknown as typeof fetch);
 
     const result = await asAdmin.action(api.adapters.sportlots.fetchSportLotsChecklist, {
-      parentFilters: { sport: "Baseball", year: "1996", setName: "Score" },
-      platformFilters: { variantType: "3628" },
+      parentFilters: { sport: "Baseball", year: "2024", setName: "Topps Chrome" },
+      platformFilters: { variantType: "309098" },
     });
 
-    // Partial data is worse than no data here: committing it would persist a
-    // checklist that is silently missing cards.
+    // Partial data is worse than no data: committing it would persist a
+    // checklist silently missing cards.
     expect(result.success).toBe(false);
     expect(result.cards).toHaveLength(0);
   });
