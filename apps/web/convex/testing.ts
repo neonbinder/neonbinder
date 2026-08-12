@@ -77,6 +77,61 @@ export const resetMyTestState = mutation({
   },
 });
 
+/**
+ * Flag the caller's own credential entry as needing re-authentication (NEO-141).
+ *
+ * Exists solely so E2E can reach the new sixth panel state. That state is the
+ * headline UX of NEO-141 — the thing that turns NEO-140's silent wipe into
+ * something a user can understand and recover from — and it is otherwise
+ * untestable end-to-end: `needsReauth` is set in exactly one place, when the
+ * browser service answers `reauth_required`, which requires a session that
+ * genuinely exists but is dead. No UI action produces it, and the only organic
+ * route is waiting out a 24h BSC refresh token. Faking the assertion in a flow
+ * would be worse than having no flow, so the hook is real instead.
+ *
+ * Safety, in the same shape as the other helpers in this file:
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - only ever touches the CALLER's own row — no userId argument exists;
+ *   - sets a boolean that can do nothing worse than prompt a sign-in. It grants
+ *     no access, reads no secret, and cannot delete a credential.
+ */
+export const markSiteNeedsReauth = mutation({
+  args: { site: v.string() },
+  returns: v.object({ updated: v.boolean() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test re-auth flagging is not enabled on this deployment");
+    }
+
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (!profile?.siteCredentials) {
+      return { updated: false };
+    }
+
+    const entry = profile.siteCredentials.find((c) => c.site === args.site);
+    if (!entry) {
+      return { updated: false };
+    }
+
+    await ctx.db.patch(profile._id, {
+      siteCredentials: profile.siteCredentials.map((c) =>
+        c.site === args.site
+          ? { ...c, needsReauth: true, needsReauthSince: Date.now() }
+          : c,
+      ),
+    });
+    return { updated: true };
+  },
+});
+
 // Server-side marketplace-credential seeding for E2E test isolation (NEO-29).
 //
 // Problem: Maestro flows used to receive real BSC/SportLots passwords via `-e`
@@ -135,32 +190,32 @@ export const seedMyTestCredentials = action({
       }
 
       // IDEMPOTENT, BUT SELF-HEALING: skip the re-store ONLY when the secret
-      // already holds the correct (canonical env) username. Re-storing matters
-      // because the browser service's PUT /credentials
-      // (secrets-manager.updateCredentials) writes a username/password-only
-      // secret version that WIPES the cached marketplace token. Since every
-      // flow routes its sign-in through /testing/seed-credentials, re-storing
-      // on each flow wiped the token every time and forced a fresh Puppeteer
-      // login per flow — a login storm that intermittently 500s/400s under the
-      // browser service's rate limiter (NEO-29 CI run 26577449109). Skipping
-      // when the stored creds are correct keeps the warmed token intact so
-      // subsequent flows reuse it.
+      // already holds the correct (canonical env) username. Skipping matters
+      // even more since NEO-141: `saveCredentials` is now connect-and-store, so
+      // a re-store performs a REAL marketplace login (30-65s) rather than the
+      // old cheap PUT. Since every flow routes its sign-in through
+      // /testing/seed-credentials, re-storing on each flow would mean a login
+      // per flow — the storm that intermittently 500s/400s under the browser
+      // service's rate limiter (NEO-29 CI run 26577449109). Skipping when the
+      // stored creds are correct keeps the warmed session intact so subsequent
+      // flows reuse it.
       //
       // The original "skip whenever ANY secret exists" was too coarse: a worker
       // whose secret held a STALE username from a prior run was never refreshed,
       // so its warm logged in with the bad username and SportLots returned
       // "Not a valid Email Address" (NEO-29 run 26618163560, worker
       // user_3DPlQMAl…). Comparing the stored username to the env value lets us
-      // overwrite a stale secret (which correctly wipes its dead token and
-      // forces a fresh, correct login) while still skipping — and preserving the
-      // token — on the common, already-correct path.
+      // overwrite a stale secret (which now re-logs-in with the correct
+      // username and mints a fresh session) while still skipping — and
+      // preserving the token — on the common, already-correct path.
       //
-      // We never authenticate here either: a real login takes 30-65s and this
-      // action is awaited by the seed page before it redirects, so warming here
-      // would blow past the flows' post-redirect wait budget. Token warming is
-      // done where a flow can afford it, by tapping "Test Credentials"
-      // (util-login-to-bsc / util-login-to-sportlots); adapters also mint a
-      // token lazily via getSiteToken on first fetch.
+      // On the COMMON (already-correct) path we still never authenticate here:
+      // a real login takes 30-65s and this action is awaited by the seed page
+      // before it redirects, so warming here would blow past the flows'
+      // post-redirect wait budget. Token warming is done where a flow can
+      // afford it, by tapping "Test Credentials" (util-login-to-bsc /
+      // util-login-to-sportlots); adapters also mint a token lazily via
+      // getSiteToken on first fetch.
       const existing = await ctx.runAction(api.credentials.getSiteCredentials, {
         site,
       });
@@ -170,14 +225,55 @@ export const seedMyTestCredentials = action({
       // reopen the storm). A genuine mismatch — or no secret at all — re-stores.
       const norm = (value: string) => value.trim().toLowerCase();
       const credsMatch = !!existing && norm(existing.username) === norm(username);
-      if (credsMatch) {
+
+      // NEO-141: a matching username is no longer sufficient to skip. Sessions
+      // now EXPIRE — a BSC refresh token lives 24h — and the seed is the only
+      // place that still holds a password, so it is the only place that can
+      // mint a new one.
+      //
+      // The failure this prevents: a worker idle over 24h keeps a correct
+      // username but a dead refresh token. The old check skipped the re-store,
+      // no fresh session was minted, and the first fetch came back
+      // `reauth_required`. The panel then renders the re-auth card, which
+      // deliberately does NOT offer "Test Credentials" — so every shared util
+      // flow (`util-login-to-bsc`, `util-login-to-sportlots`, …) would hang on
+      // its extendedWaitUntil for that label instead of failing fast. Idle
+      // workers would go red on a timeout with no obvious cause.
+      //
+      // `sessionRenewable` is deliberately conservative: a browser revision
+      // predating NEO-141 omits the field, which coerces to false and costs
+      // one redundant sign-in. Cheap, and it never skips wrongly.
+      const REAUTH_LEEWAY_MS = 10 * 60 * 1000;
+      const sessionRenewable =
+        !!existing &&
+        (existing.hasRefreshToken
+          ? typeof existing.refreshExpiresAt !== "number" ||
+            existing.refreshExpiresAt > Date.now() + REAUTH_LEEWAY_MS
+          : // No refresh token: only a live cached token (SportLots' 30-day
+            // cookie) still counts as renewable-without-us.
+            existing.hasToken &&
+            (typeof existing.expiresAt !== "number" ||
+              existing.expiresAt > Date.now() + REAUTH_LEEWAY_MS));
+
+      if (credsMatch && sessionRenewable) {
         // Correct secret already present — ensure the flag (a prior
         // /testing/reset may have cleared the userProfile row while Secret
         // Manager kept the creds) and leave the stored token untouched.
+        //
+        // `needsReauth: false` is load-bearing, not tidiness. We have just
+        // verified the stored session is renewable, so a lingering flag is
+        // stale by definition. Without it the flag is STICKY on this path:
+        // `reauthPatch(undefined)` returns `{}`, so re-seeding preserves it —
+        // meaning a worker left flagged by an interrupted run stays flagged
+        // through every later seed, and the re-auth card (which renders no
+        // "Test Credentials" button) would keep failing the util flows on that
+        // runner with no way to self-heal. Seeding is the suite's repair
+        // mechanism; it has to actually repair.
         await ctx.runMutation(internal.userProfile.updateSiteCredentialStatus, {
           userId,
           site,
           hasCredentials: true,
+          needsReauth: false,
         });
         seeded.push({ site, stored: true });
         continue;

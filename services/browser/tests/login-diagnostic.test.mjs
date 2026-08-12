@@ -218,3 +218,119 @@ describe("buildLoginDiagnostic redaction", () => {
     assert.ok(diag.title.includes("[REDACTED]"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-141 — the new credential fields must be redactable by exact value
+// ---------------------------------------------------------------------------
+//
+// Exact-value redaction is the only defence that does not require a secret to
+// LOOK like a secret. The structural patterns catch Bearer/JWT/cookie shapes,
+// but a session token is free to be an opaque string matching none of them —
+// and a marketplace is free to echo it back in a page body. DiagnosticSecrets
+// grew `token` and `refreshToken` so the adapters can pass what they hold.
+
+describe("buildLoginDiagnostic — token and refreshToken redaction (NEO-141)", () => {
+  // Deliberately shapeless: no dots, no "session=" prefix, no Bearer. If these
+  // were caught by a structural pattern the test would prove nothing about the
+  // exact-value path, so the values match NO pattern in redactSecrets.
+  const OPAQUE_TOKEN = "AAAABBBBCCCCDDDD1111";
+  const OPAQUE_REFRESH = "ZZZZYYYYXXXXWWWW9999";
+
+  it("redacts an opaque session token echoed back in the page body", () => {
+    const diag = buildLoginDiagnostic(
+      { rawText: `Your session ${OPAQUE_TOKEN} is no longer valid` },
+      { email: EMAIL, password: PASSWORD, token: OPAQUE_TOKEN },
+    );
+    assert.ok(!diag.snippet.includes(OPAQUE_TOKEN), "the token value must not survive");
+    assert.ok(diag.snippet.includes("[REDACTED]"));
+  });
+
+  it("redacts an opaque refresh token echoed back in the page body", () => {
+    const diag = buildLoginDiagnostic(
+      { rawText: `refresh ${OPAQUE_REFRESH} rejected` },
+      { email: EMAIL, password: PASSWORD, refreshToken: OPAQUE_REFRESH },
+    );
+    assert.ok(!diag.snippet.includes(OPAQUE_REFRESH), "the refresh token value must not survive");
+  });
+
+  it("sanity: those same values DO survive when not passed as secrets", () => {
+    // Proves the two assertions above are exercising exact-value redaction
+    // rather than being masked by a structural pattern that would have caught
+    // the value anyway.
+    const diag = buildLoginDiagnostic(
+      { rawText: `Your session ${OPAQUE_TOKEN} is no longer valid` },
+      { email: EMAIL, password: PASSWORD },
+    );
+    assert.ok(
+      diag.snippet.includes(OPAQUE_TOKEN),
+      "if this fails the redaction tests above prove nothing — pick a more opaque fixture",
+    );
+  });
+
+  it("redacts a BARE cookie value echoed without its name= prefix", () => {
+    // The gap this closes. The SL adapter holds a JOINED cookie string, so
+    // exact-value redaction only ever matched that whole string, and the
+    // generic cookie pattern only matches a `name=value` shape. A page echoing
+    // just the session id — no name attached — escaped both and rode into the
+    // snippet, which leaves the service for PostHog.
+    //
+    // The value is deliberately shapeless (no dots, no "session" prefix, no
+    // Bearer), so only the decomposition can catch it.
+    const COOKIE = "slsess=QQQQRRRRSSSSTTTT7777; slid=MMMMNNNNOOOOPPPP8888";
+    const BARE = "QQQQRRRRSSSSTTTT7777";
+    const diag = buildLoginDiagnostic(
+      { rawText: `Session ${BARE} was not recognised` },
+      { email: EMAIL, password: PASSWORD, token: COOKIE },
+    );
+    assert.ok(
+      !diag.snippet.includes(BARE),
+      "a bare echoed cookie value must not survive into the snippet",
+    );
+    assert.ok(diag.snippet.includes("[REDACTED]"));
+  });
+
+  it("does NOT redact trivially short cookie values (snippet stays readable)", () => {
+    // Bare values are redacted without their name, so a short one is
+    // indistinguishable from ordinary page text. Blanking every "1" would
+    // shred the diagnostic while protecting nothing.
+    const diag = buildLoginDiagnostic(
+      { rawText: "There is 1 problem with your account" },
+      { email: EMAIL, password: PASSWORD, token: "debug=1; slsess=LONGENOUGHVALUE123" },
+    );
+    assert.ok(
+      diag.snippet.includes("1 problem"),
+      "a 1-char cookie value must not be redacted out of unrelated prose",
+    );
+  });
+
+  it("redacts a whole SportLots-style cookie string passed as `token`", () => {
+    // What the SL adapter actually holds: the joined name=value pairs it
+    // persists. Passing the whole string means every pair inside it goes.
+    const COOKIE = "slsess=OPAQUEVALUE1; slid=OPAQUEVALUE2";
+    const diag = buildLoginDiagnostic(
+      { rawText: `Set by ${COOKIE} — session ended` },
+      { email: EMAIL, password: PASSWORD, token: COOKIE },
+    );
+    assert.ok(!diag.snippet.includes("OPAQUEVALUE1"));
+    assert.ok(!diag.snippet.includes("OPAQUEVALUE2"));
+  });
+
+  it("still works when the new fields are omitted (every pre-existing call site)", () => {
+    const diag = buildLoginDiagnostic(
+      { rawText: `?message=Not a valid Email Address for ${EMAIL}` },
+      { email: EMAIL, password: PASSWORD },
+    );
+    assert.ok(!diag.snippet.includes(EMAIL));
+    assert.equal(diag.credentialRejectionDetected, true, "detection must be unaffected");
+  });
+
+  it("does not let a token value mask the challenge signal", () => {
+    // Detection runs on the PRE-redaction text, so a token that happened to
+    // contain a signal word cannot erase the flag.
+    const diag = buildLoginDiagnostic(
+      { rawText: "Attention Required! Cloudflare" },
+      { email: EMAIL, password: PASSWORD, token: "Attention" },
+    );
+    assert.equal(diag.challengeDetected, true);
+  });
+});

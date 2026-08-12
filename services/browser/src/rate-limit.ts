@@ -10,9 +10,10 @@ import type { Request } from "express";
  *   service from that one backend's egress IP. An IP-keyed limit therefore
  *   collapsed to a SINGLE global budget shared by all users — a handful of
  *   concurrent users (or parallel E2E workers) fanned out through Convex would
- *   429 each other almost immediately, including credential STOREs
- *   (PUT /credentials), which silently dropped seeds and poisoned the parallel
- *   suite. Bucketing by the credential key isolates each user's own budget while
+ *   429 each other almost immediately, including credential STOREs (then the
+ *   PUT /credentials seed write, since removed), which silently dropped seeds
+ *   and poisoned the parallel suite. Bucketing by the credential key isolates
+ *   each user's own budget while
  *   still capping a runaway loop on a single marketplace account.
  *
  * The credential key (`<site>-credentials-<userId>`) is an identifier, not a
@@ -25,10 +26,10 @@ import type { Request } from "express";
  * IMPORTANT — read the key from req.path, NOT req.params. The limiter is
  * installed as GLOBAL middleware (app.use), which runs BEFORE Express matches a
  * route, so `req.params` is still empty here for the URL-keyed routes
- * (PUT/GET/DELETE /credentials/:key, /credentials/:key/metadata|/token). Reading
- * req.params would silently collapse every one of those to the IP bucket — which
- * includes PUT /credentials (the seed write whose 429s started this). The path
- * is available pre-routing, so we parse the `:key` segment from it directly.
+ * (GET/DELETE /credentials/:key, /credentials/:key/metadata|/token). Reading
+ * req.params would silently collapse every one of those to the IP bucket — the
+ * failure mode that produced the credential-write 429s this exists to fix. The
+ * path is available pre-routing, so we parse the `:key` segment from it directly.
  * `/credentials/check` is the one /credentials/* route that is body-keyed
  * (keys[]), and /login/* carry body.key — both are parsed (express.json runs
  * before this middleware), so the body fallbacks cover them.

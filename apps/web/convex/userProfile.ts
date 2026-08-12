@@ -24,6 +24,11 @@ export const getUserProfile = query({
         lockedOp: v.optional(
           v.union(v.literal("store"), v.literal("test"), v.literal("delete")),
         ),
+        // NEO-141: "your stored session died and we can't renew it — sign in
+        // again". Surfaced so the UI can prompt for the password without
+        // pretending the account was never connected.
+        needsReauth: v.optional(v.boolean()),
+        needsReauthSince: v.optional(v.number()),
       }))),
       marketplaceAccountIds: marketplaceAccountIdsValidator,
       preferences: v.optional(v.object({
@@ -58,6 +63,8 @@ export const getUserProfile = query({
         lastUpdated: c.lastUpdated,
         lockedAt: c.lockedAt,
         lockedOp: c.lockedOp,
+        needsReauth: c.needsReauth,
+        needsReauthSince: c.needsReauthSince,
       })),
       marketplaceAccountIds: profile.marketplaceAccountIds,
       preferences: profile.preferences,
@@ -168,6 +175,24 @@ export const updateUserProfile = mutation({
 });
 
 /**
+ * NEO-141 — the one place the `needsReauth` / `needsReauthSince` pair is
+ * computed, so both writers agree on the shape.
+ *
+ * - `undefined` → `{}` (leave the existing state alone).
+ * - `true`      → set the flag and stamp `needsReauthSince`, PRESERVING an
+ *                 earlier stamp so it means "first detected", not "last seen".
+ * - `false`     → clear BOTH fields (`undefined` removes them from the doc).
+ */
+function reauthPatch(
+  needsReauth: boolean | undefined,
+  existingSince: number | undefined,
+): { needsReauth?: boolean; needsReauthSince?: number } {
+  if (needsReauth === undefined) return {};
+  if (!needsReauth) return { needsReauth: undefined, needsReauthSince: undefined };
+  return { needsReauth: true, needsReauthSince: existingSince ?? Date.now() };
+}
+
+/**
  * Update a specific site's credential status.
  *
  * NEO-89: internal — was a public mutation the frontend called as a SECOND,
@@ -186,6 +211,11 @@ export const updateSiteCredentialStatus = internalMutation({
     userId: v.string(),
     site: v.string(),
     hasCredentials: v.boolean(),
+    // NEO-141: optional so callers that only care about hasCredentials keep
+    // the re-auth state untouched. `false` CLEARS both re-auth fields (the
+    // self-recovery path: a successful login proves no re-auth is needed);
+    // `true` sets them.
+    needsReauth: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -200,11 +230,15 @@ export const updateSiteCredentialStatus = internalMutation({
     const updatedCredentials = [...currentCredentials];
 
     if (existingIndex >= 0) {
-      // Update existing entry
+      // Update existing entry. The spread is load-bearing: it carries the
+      // lock fields (lockedAt/lockedOp/lockToken) of the operation that is
+      // calling us right now, plus any re-auth state we were not asked to
+      // change.
       updatedCredentials[existingIndex] = {
         ...updatedCredentials[existingIndex],
         hasCredentials: args.hasCredentials,
         lastUpdated: new Date().toISOString(),
+        ...reauthPatch(args.needsReauth, updatedCredentials[existingIndex].needsReauthSince),
       };
     } else {
       // Add new entry
@@ -212,6 +246,7 @@ export const updateSiteCredentialStatus = internalMutation({
         site: args.site,
         hasCredentials: args.hasCredentials,
         lastUpdated: new Date().toISOString(),
+        ...reauthPatch(args.needsReauth, undefined),
       });
     }
 
@@ -223,6 +258,67 @@ export const updateSiteCredentialStatus = internalMutation({
       await ctx.db.insert("userProfiles", {
         userId: args.userId,
         siteCredentials: updatedCredentials,
+      });
+    }
+
+    return null;
+  },
+});
+
+/**
+ * NEO-141 — set/clear ONLY the re-auth state for a site, leaving
+ * `hasCredentials` (and the lock fields) exactly as they were.
+ *
+ * This is the non-destructive counterpart to `removeSiteCredentialStatus`.
+ * When the browser service reports `error_class: "reauth_required"` the stored
+ * secret is still there and still holds the username — what died is the
+ * session, and since NEO-141 we no longer keep a password to renew it with. So
+ * we FLAG rather than delete: deleting would drop the user back to a blank
+ * "enter your credentials" form (that regression is NEO-140).
+ *
+ * If no entry exists yet we create one with `hasCredentials: true`, because the
+ * only way to receive `reauth_required` is for the browser service to have
+ * found a stored secret to try.
+ */
+export const setSiteReauthState = internalMutation({
+  args: {
+    userId: v.string(),
+    site: v.string(),
+    needsReauth: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const profile = await ctx.db
+      .query("userProfiles")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .unique();
+
+    const current = profile?.siteCredentials || [];
+    const idx = current.findIndex((c) => c.site === args.site);
+
+    // Nothing to clear on a site we know nothing about.
+    if (idx < 0 && !args.needsReauth) return null;
+
+    const updated = [...current];
+    if (idx >= 0) {
+      updated[idx] = {
+        ...updated[idx],
+        ...reauthPatch(args.needsReauth, updated[idx].needsReauthSince),
+      };
+    } else {
+      updated.push({
+        site: args.site,
+        hasCredentials: true,
+        ...reauthPatch(args.needsReauth, undefined),
+      });
+    }
+
+    if (profile) {
+      await ctx.db.patch(profile._id, { siteCredentials: updated });
+    } else {
+      await ctx.db.insert("userProfiles", {
+        userId: args.userId,
+        siteCredentials: updated,
       });
     }
 
@@ -356,6 +452,12 @@ export const acquireCredentialLock = internalMutation({
       site: args.site,
       hasCredentials: existing?.hasCredentials ?? false,
       lastUpdated: existing?.lastUpdated,
+      // NEO-141: this entry is rebuilt from scratch, so any field not carried
+      // across here is silently DROPPED. The re-auth state must survive an
+      // unrelated credential op or the "please sign in again" prompt would
+      // vanish the moment anything else touched this site.
+      needsReauth: existing?.needsReauth,
+      needsReauthSince: existing?.needsReauthSince,
       lockedAt: Date.now(),
       lockedOp: args.op,
       lockToken: args.token,
@@ -408,6 +510,10 @@ export const releaseCredentialLock = internalMutation({
       site: entry.site,
       hasCredentials: entry.hasCredentials,
       lastUpdated: entry.lastUpdated,
+      // NEO-141: carried across deliberately — releasing a lock must not clear
+      // re-auth state that the just-finished operation may have SET.
+      needsReauth: entry.needsReauth,
+      needsReauthSince: entry.needsReauthSince,
       // lockedAt / lockedOp / lockToken dropped — lock released.
     };
     await ctx.db.patch(profile._id, { siteCredentials: updated });

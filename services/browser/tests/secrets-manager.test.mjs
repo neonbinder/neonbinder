@@ -199,11 +199,16 @@ describe("SecretsManagerService.updateCredentials — prune to newest version", 
     );
   });
 
-  it("never destroys the version it just wrote, even when a NEWER version exists", async () => {
+  it("never destroys the version it just wrote, nor any version NEWER than it", async () => {
     // Simulates a concurrent write from another Cloud Run instance landing as
     // version 9 while this call created version 8. Version 9 sorts first in
     // Secret Manager's newest-first list order — "keep the first one" would
     // destroy our own live credential. Exclusion is by name, so v8 survives.
+    //
+    // v9 survives too, and that is the harder half: excluding only our OWN
+    // version is what let two overlapping writers destroy each other's (see
+    // the interleaving suite below). Ordinals come from the `/versions/N`
+    // suffix, which Secret Manager assigns strictly increasing.
     activeClient = makeClient({
       createdVersion: V(8),
       versions: [
@@ -219,7 +224,48 @@ describe("SecretsManagerService.updateCredentials — prune to newest version", 
       !destroyed(activeClient).includes(V(8)),
       "must NEVER destroy the version this call created",
     );
-    assert.deepEqual(destroyed(activeClient), [V(9), V(7)], "everything else is pruned (keep-1)");
+    assert.deepEqual(
+      destroyed(activeClient),
+      [V(7)],
+      "only OLDER versions are pruned; v9 was written after v8 and is another writer's",
+    );
+  });
+
+  it("skips versions whose name has no parseable /versions/N ordinal", async () => {
+    // An unrecognisable name is not evidence that a version is stale, and the
+    // cost of guessing wrong is a destroyed live credential.
+    activeClient = makeClient({
+      createdVersion: V(5),
+      versions: [
+        { name: V(5), state: "ENABLED" },
+        { name: `${SECRET}/versions/latest`, state: "ENABLED" },
+        { name: V(4), state: "ENABLED" },
+      ],
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.deepEqual(destroyed(activeClient), [V(4)]);
+  });
+
+  it("prunes NOTHING when the created version name has no parseable ordinal", async () => {
+    // Same posture as an unknown created name: with no ordinal for the
+    // survivor there is no way to tell stale from concurrent.
+    activeClient = makeClient({
+      createdVersion: `${SECRET}/versions/latest`,
+      versions: [
+        { name: `${SECRET}/versions/latest`, state: "ENABLED" },
+        { name: V(4), state: "ENABLED" },
+      ],
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.deepEqual(destroyed(activeClient), [], "unparseable survivor → prune nothing");
+    assert.ok(
+      capturedErrors.some((line) => line.includes("ordinal")),
+      "skipping the prune must be visible in the logs",
+    );
   });
 
   it("leaves a single-version secret untouched", async () => {
@@ -260,6 +306,113 @@ describe("SecretsManagerService.updateCredentials — prune to newest version", 
     await new SecretsManagerService().updateCredentials(KEY, CREDS);
 
     assert.deepEqual(destroyed(activeClient), [V(2)]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Concurrent writers: the secret must never end up with ZERO live versions
+// ---------------------------------------------------------------------------
+//
+// Two unsynchronized writers on one key is reachable, not theoretical. Convex's
+// per-(user,site) lock serialises writers within ONE deployment, but a preview
+// deployment has its own `userProfiles` table — its own lock — while sharing the
+// dev browser service, the dev GCP project and the same per-worker Clerk test
+// users. A dev-branch E2E run overlapping a preview E2E run on the same worker
+// index is exactly this.
+//
+// The failure it used to produce is total, not partial: zero ENABLED versions →
+// getCredentials throws "No active version" → the route answers 404
+// {"error":"Credentials not found"} → Convex string-matches that into
+// `not_found` and calls removeSiteCredentialStatus. Credential and status flag
+// both gone, from two ordinary logins.
+
+/**
+ * A single fake secret whose version list is SHARED by both writers, with a
+ * barrier that holds every prune until both writes have landed. That barrier is
+ * what reproduces the interleaving (A adds, B adds, A prunes, B prunes); left to
+ * chance, the two calls would usually serialise and prove nothing.
+ */
+function makeConcurrentClient({ startOrdinal = 9 } = {}) {
+  const versions = []; // newest-first, mirroring Secret Manager's list order
+  let nextOrdinal = startOrdinal;
+  let addCount = 0;
+  let releaseBarrier;
+  const barrier = new Promise((resolve) => {
+    releaseBarrier = resolve;
+  });
+
+  return {
+    versions,
+    async addSecretVersion() {
+      const name = V(++nextOrdinal);
+      versions.unshift({ name, state: "ENABLED" });
+      if (++addCount === 2) releaseBarrier();
+      return [{ name }];
+    },
+    async createSecret() {
+      return [{ name: SECRET }];
+    },
+    async listSecretVersions() {
+      await barrier; // both writes have landed before either prune reads
+      return [versions.map((v) => ({ ...v }))];
+    },
+    async destroySecretVersion({ name }) {
+      const target = versions.find((v) => v.name === name);
+      // Mirror the real API: re-destroying is a FAILED_PRECONDITION error, and
+      // the service must never issue one.
+      assert.notEqual(
+        target?.state,
+        "DESTROYED",
+        `destroySecretVersion called twice for ${name}`,
+      );
+      if (target) target.state = "DESTROYED";
+      return [{ name, state: "DESTROYED" }];
+    },
+  };
+}
+
+describe("SecretsManagerService.updateCredentials — concurrent writers", () => {
+  it("leaves the newest write ENABLED when two writers interleave", async () => {
+    // Seed a couple of pre-existing versions so there is genuine backlog to
+    // sweep alongside the contended ones.
+    const client = makeConcurrentClient({ startOrdinal: 9 });
+    client.versions.push({ name: V(9), state: "ENABLED" });
+    client.versions.push({ name: V(8), state: "ENABLED" });
+    activeClient = client;
+
+    // Writer A lands v10, writer B lands v11. Before the ordinal guard, A's
+    // prune destroyed v11 and B's prune destroyed v10 — zero survivors.
+    await Promise.all([
+      new SecretsManagerService().updateCredentials(KEY, CREDS),
+      new SecretsManagerService().updateCredentials(KEY, CREDS),
+    ]);
+
+    const enabled = client.versions.filter((v) => v.state === "ENABLED");
+    assert.ok(
+      enabled.length >= 1,
+      "a credential must NEVER be left with zero enabled versions",
+    );
+    assert.deepEqual(
+      enabled.map((v) => v.name),
+      [V(11)],
+      "the newest write survives; both older versions and the loser are pruned",
+    );
+  });
+
+  it("converges to keep-1 no matter which writer prunes first", async () => {
+    // Same interleaving, no pre-existing backlog: the two contended versions
+    // are the entire secret, which is the steady-state shape.
+    const client = makeConcurrentClient({ startOrdinal: 0 });
+    activeClient = client;
+
+    await Promise.all([
+      new SecretsManagerService().updateCredentials(KEY, CREDS),
+      new SecretsManagerService().updateCredentials(KEY, CREDS),
+    ]);
+
+    const enabled = client.versions.filter((v) => v.state === "ENABLED");
+    assert.equal(enabled.length, 1, "keep-1 still holds under contention");
+    assert.equal(enabled[0].name, V(2), "and the survivor is the LATEST write");
   });
 });
 
@@ -466,11 +619,210 @@ describe("SecretsManagerService.updateCredentials — prune is best-effort", () 
     );
     assert.deepEqual(destroyed(activeClient), [], "a failed write must not trigger a prune");
   });
+
+  it("logs only the MESSAGE when the write fails — never the error object", async () => {
+    // The sharpest case in the file: the call that failed is addSecretVersion,
+    // whose REQUEST carries the credential payload. A GCP client error object
+    // can hold the request it failed on, so logging the object writes the
+    // credential into Cloud Logging on any transient write failure.
+    activeClient = makeClient({ addBehavior: "boom", versions: [] });
+
+    await assert.rejects(() => new SecretsManagerService().updateCredentials(KEY, CREDS));
+
+    const logged = capturedErrors.join("\n");
+    assert.ok(logged.includes("Failed to update credentials"), "the failure is still logged");
+    for (const [field, value] of Object.entries(CREDS)) {
+      assert.ok(
+        !logged.includes(String(value)),
+        `the ${field} value must never appear in a log line`,
+      );
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
 // Security: nothing secret in the logs
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// NEO-141: the READ path — password-optional, and the field-stripping trap
+// ---------------------------------------------------------------------------
+//
+// getCredentials builds its return value field-by-field from the parsed JSON.
+// That is deliberate (the stored blob is untrusted input and must not be able
+// to inject arbitrary keys), but it carries a trap: a field MISSING from the
+// list is silently dropped on read. Before NEO-141 the list stopped at
+// expiresAt, so a stored refreshToken would have been written and then
+// discarded on the very next read — the write would look perfect and the
+// rotation chain would break one hour later, far from the cause.
+//
+// It also required `password`, which made a password-less secret — now the
+// steady state for every user — unreadable, surfacing as a 500 out of
+// GET /credentials/:key/token.
+
+/**
+ * A spy client that can serve a stored payload back through accessSecretVersion,
+ * so a test can drive a real store → read round trip.
+ */
+function makeReadClient({ payload, versions, state = "ENABLED" } = {}) {
+  const calls = { add: [], access: [] };
+  let stored = payload === undefined ? undefined : Buffer.from(JSON.stringify(payload), "utf8");
+  return {
+    calls,
+    async addSecretVersion(req) {
+      calls.add.push(req);
+      stored = req.payload.data;
+      return [{ name: V(1) }];
+    },
+    async createSecret() {
+      return [{ name: SECRET }];
+    },
+    async listSecretVersions() {
+      return [versions ?? [{ name: V(1), state }]];
+    },
+    async accessSecretVersion(req) {
+      calls.access.push(req.name);
+      return [{ payload: stored === undefined ? undefined : { data: stored } }];
+    },
+    async destroySecretVersion(req) {
+      return [{ name: req.name, state: "DESTROYED" }];
+    },
+    /** Overwrite the stored blob with raw bytes (for malformed-payload tests). */
+    _setRaw(text) {
+      stored = Buffer.from(text, "utf8");
+    },
+  };
+}
+
+describe("SecretsManagerService.getCredentials — NEO-141 payload shape", () => {
+  it("reads a PASSWORD-LESS secret without error (the new steady state)", async () => {
+    // This threw `Invalid credentials format` before NEO-141, which is what
+    // turned every token-less user secret into a 500 on the token endpoint.
+    activeClient = makeReadClient({
+      payload: { username: "seller@example.com", token: "placeholder-token" },
+    });
+
+    const creds = await new SecretsManagerService().getCredentials(KEY);
+
+    assert.equal(creds.username, "seller@example.com");
+    assert.equal(creds.password, undefined);
+    assert.equal(creds.token, "placeholder-token");
+  });
+
+  it("reads a bare {username} secret — no token, no password", async () => {
+    activeClient = makeReadClient({ payload: { username: "seller@example.com" } });
+
+    const creds = await new SecretsManagerService().getCredentials(KEY);
+
+    assert.deepEqual(creds, { username: "seller@example.com" });
+  });
+
+  it("ROUND-TRIPS refreshToken and refreshExpiresAt through store → read", async () => {
+    // The guard on the field-stripping trap. A write that reads back without
+    // its refresh fields breaks the rotation chain silently.
+    activeClient = makeReadClient({});
+    const service = new SecretsManagerService();
+
+    await service.updateCredentials(KEY, {
+      username: "seller@example.com",
+      token: "placeholder-token",
+      expiresAt: 1234567890,
+      refreshToken: "placeholder-refresh",
+      refreshExpiresAt: 987654321,
+    });
+    const creds = await service.getCredentials(KEY);
+
+    assert.equal(creds.refreshToken, "placeholder-refresh", "refreshToken must survive the round trip");
+    assert.equal(creds.refreshExpiresAt, 987654321, "refreshExpiresAt must survive the round trip");
+    assert.equal(creds.token, "placeholder-token");
+    assert.equal(creds.expiresAt, 1234567890);
+    assert.equal(creds.username, "seller@example.com");
+  });
+
+  it("still round-trips a canary payload's password", async () => {
+    // The two canary secrets keep theirs; dropping it would break the NEO-43
+    // login probes, which must perform a real password sign-in every 30 min.
+    activeClient = makeReadClient({});
+    const service = new SecretsManagerService();
+
+    await service.updateCredentials(KEY, {
+      username: "canary@example.com",
+      password: "canary-placeholder-value",
+    });
+    const creds = await service.getCredentials(KEY);
+
+    assert.equal(creds.password, "canary-placeholder-value");
+  });
+
+  it("drops unknown fields rather than passing untrusted keys through", async () => {
+    activeClient = makeReadClient({
+      payload: {
+        username: "seller@example.com",
+        __proto__stuff: "x",
+        somethingElse: { nested: true },
+      },
+    });
+
+    const creds = await new SecretsManagerService().getCredentials(KEY);
+
+    assert.deepEqual(Object.keys(creds), ["username"]);
+  });
+
+  it("ignores fields stored with the wrong type instead of propagating them", async () => {
+    activeClient = makeReadClient({
+      payload: { username: "seller@example.com", expiresAt: "soon", refreshToken: 42 },
+    });
+
+    const creds = await new SecretsManagerService().getCredentials(KEY);
+
+    assert.equal(creds.expiresAt, undefined);
+    assert.equal(creds.refreshToken, undefined);
+  });
+
+  it("still rejects a payload with no username", async () => {
+    activeClient = makeReadClient({ payload: { token: "placeholder-token" } });
+
+    await assert.rejects(
+      () => new SecretsManagerService().getCredentials(KEY),
+      /Failed to retrieve credentials/,
+    );
+  });
+
+  it("reports 'No active version' distinctly so the routes can 404 it", async () => {
+    activeClient = makeReadClient({ versions: [{ name: V(1), state: "DESTROYED" }] });
+
+    await assert.rejects(
+      () => new SecretsManagerService().getCredentials(KEY),
+      /No active version found for key/,
+    );
+  });
+
+  it("never leaks payload text through a JSON parse error", async () => {
+    // Node >= 20 embeds a window of the offending INPUT in SyntaxError.message
+    // ("... is not valid JSON"). For this payload that window is credential
+    // material, and it would otherwise reach both the log and the thrown error.
+    activeClient = makeReadClient({ payload: {} });
+    activeClient._setRaw('{"username":"seller@example.com","password":"leak-canary-value",}');
+
+    await assert.rejects(
+      () => new SecretsManagerService().getCredentials(KEY),
+      (err) => {
+        assert.ok(
+          !err.message.includes("leak-canary-value"),
+          "the thrown error must not carry payload text",
+        );
+        return true;
+      },
+    );
+
+    const joined = capturedErrors.join("\n");
+    assert.ok(joined.length > 0, "sanity: the failure was logged");
+    assert.ok(
+      !joined.includes("leak-canary-value"),
+      "the log must not carry payload text either",
+    );
+  });
+});
 
 describe("SecretsManagerService.updateCredentials — prune logging discipline", () => {
   it("never writes credential material to the log on any prune failure path", async () => {

@@ -86,9 +86,16 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - launchApp
+
+# 120s, not the old 45s (NEO-141). This one wait covers the entire redirect chain
+# in the url above — Clerk sign-in, /testing/reset, then /testing/seed-credentials
+# — and seeding now performs a REAL marketplace sign-in for each platform it has
+# to (re-)store, without forwarding until that finishes. BSC and SportLots can
+# both need one on the same visit. This is the setup track's cold-start budget
+# doing exactly what it exists for; do NOT copy this ceiling into a feature flow.
 - extendedWaitUntil:
     visible: "Set Selector"
-    timeout: 45000
+    timeout: 120000
 
 # ── GLOBAL RESET ────────────────────────────────────────────────────────────
 # DESTRUCTIVE — sanctioned global wipe; gated by ALLOW_RESET_SET_BUILDER_DATA,

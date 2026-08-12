@@ -39,10 +39,23 @@ export interface LoginDiagnostic {
   snippet?: string;
 }
 
-/** Plaintext secrets in scope at the call site, to redact by exact value. */
+/**
+ * Plaintext secrets in scope at the call site, to redact by exact value.
+ *
+ * NEO-141: this list must grow whenever `Credentials` grows. Exact-value
+ * redaction is the only defence that does not depend on a secret LOOKING like
+ * a secret — the structural patterns in redactSecrets catch Bearer/JWT/cookie
+ * shapes, but a marketplace is free to echo an opaque session string back in a
+ * page body in a shape none of them match. If a value is in scope at the call
+ * site, pass it here.
+ */
 export interface DiagnosticSecrets {
   email?: string;
   password?: string;
+  /** Cached session credential: BSC access token or SL session-cookie string. */
+  token?: string;
+  /** BSC refresh token (rotating). */
+  refreshToken?: string;
 }
 
 const MAX_SNIPPET_CHARS = 1500;
@@ -127,6 +140,38 @@ function escapeRegExp(value: string): string {
 }
 
 /**
+ * Shortest bare cookie value worth redacting on its own.
+ *
+ * Bare values are redacted without their `name=` prefix, so a short one is
+ * indistinguishable from ordinary page text — blanking every "1" or "true"
+ * would shred the snippet while protecting nothing. Anything session-shaped is
+ * far longer than this.
+ */
+const MIN_BARE_VALUE_CHARS = 8;
+
+/**
+ * Split a cookie string into the pieces that must be redacted individually.
+ *
+ * A SportLots "token" is `name=value; name=value`. Returns each `name=value`
+ * pair plus each sufficiently distinctive bare `value`, so a page echoing only
+ * the session id — with no cookie name attached — is still caught. Returns []
+ * for anything that is not cookie-shaped (a BSC refresh token, an email).
+ */
+function cookieParts(value: string): string[] {
+  if (!value.includes("=")) return [];
+  const parts: string[] = [];
+  for (const pair of value.split(";")) {
+    const trimmed = pair.trim();
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) continue;
+    parts.push(trimmed);
+    const bare = trimmed.slice(eq + 1);
+    if (bare.length >= MIN_BARE_VALUE_CHARS) parts.push(bare);
+  }
+  return parts;
+}
+
+/**
  * Strip credential- and token-shaped material from a string. This runs in
  * addition to exact-value redaction so that even an unexpected secret format
  * (a token we never had in scope, an inline cookie) cannot leak.
@@ -138,10 +183,25 @@ function escapeRegExp(value: string): string {
 function redactSecrets(input: string, secrets: DiagnosticSecrets): string {
   let out = input;
 
-  // 1. Exact known values typed into the page. Longest first so a password
-  //    that contains the email (unlikely but cheap to guard) is handled.
-  const exact = [secrets.email, secrets.password]
-    .filter((v): v is string => typeof v === "string" && v.length > 0)
+  // 1. Exact known values in scope at the call site. Longest first so a
+  //    password that contains the email (unlikely but cheap to guard) is
+  //    handled — and so a cookie STRING is redacted before any single
+  //    name=value pair inside it is matched separately.
+  //
+  //    NEO-141: token/refreshToken joined the list. A dead SportLots cookie
+  //    is echoed straight back by the page we fetch to validate it, and a
+  //    rotating BSC refresh token has no structural tell at all.
+  //
+  //    NEO-141: a cookie "token" is a JOINED string (`name=value; name=value`).
+  //    This pass only matches that whole string, and pattern 5 below only
+  //    matches a `name=value` shape — so a BARE value echoed on its own escapes
+  //    both, and rides into `diagnostic.snippet` which leaves the service.
+  //    SportLots' rejection page can echo exactly that. `cookieParts` therefore
+  //    decomposes the cookie so each pair and each bare value is redacted in its
+  //    own right.
+  const known = [secrets.email, secrets.password, secrets.token, secrets.refreshToken]
+    .filter((v): v is string => typeof v === "string" && v.length > 0);
+  const exact = Array.from(new Set([...known, ...known.flatMap(cookieParts)]))
     .sort((a, b) => b.length - a.length);
   for (const value of exact) {
     out = out.replace(new RegExp(escapeRegExp(value), "gi"), REDACTED);

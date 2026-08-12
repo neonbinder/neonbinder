@@ -65,8 +65,8 @@ export default function AboutPage() {
               <h2 className="text-2xl font-bold mb-4 text-neon-pink">Secure Integrations</h2>
               <p className="text-lg text-slate-300 leading-relaxed">
                 To enable marketplace integrations, users authorize Neon Binder to connect with their accounts through secure authentication 
-                tokens. In cases where platforms don&apos;t provide API access (such as SportLots), users provide their login credentials which are 
-                securely stored to automate listing and inventory management.
+                tokens. In cases where platforms don&apos;t provide API access (such as SportLots), users sign in through Neon Binder. We use
+                those credentials once to establish a session and never store the password.
               </p>
             </section>
           </div>
