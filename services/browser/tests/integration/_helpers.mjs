@@ -70,26 +70,19 @@ function authHeaders() {
  *
  * Key format matches `src/services/secrets-manager.ts`'s
  * KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/ — the literal
- * "-credentials-" segment is required or PUT /credentials/:key returns
+ * "-credentials-" segment is required or every credential route returns
  * HTTP 400 "Invalid credential key format".
+ *
+ * NOTE: nothing seeds the secret before the probe runs. There used to be a
+ * `putCredentials` helper here calling PUT /credentials/:key; that route is
+ * gone (it had no production callers and a replace-plus-prune write could wipe
+ * a live user's tokens). It is not needed: the first postLogin below carries
+ * transient credentials, and updateCredentials creates the secret when absent.
+ * `deleteCredentials` is already idempotent for a key that never existed.
  */
 export function probeKey(slug) {
   const sha = (process.env.GITHUB_SHA || String(Date.now())).slice(0, 7);
   return `${slug}-credentials-probe-${sha}`;
-}
-
-export async function putCredentials(key, { username, password }) {
-  const res = await fetch(`${TARGET_URL}/credentials/${key}`, {
-    method: "PUT",
-    headers: authHeaders(),
-    body: JSON.stringify({ username, password }),
-  });
-  const text = await res.text();
-  assert.equal(
-    res.status,
-    200,
-    `PUT /credentials/${key} returned ${res.status}: ${text}`,
-  );
 }
 
 /**
@@ -112,19 +105,30 @@ export async function deleteCredentials(key) {
 }
 
 /**
- * POST /login/{slug} with a key referencing credentials already stored
- * via putCredentials. Returns `{ status, body }`. Marketplace login
- * calls can take 20-30 seconds (Puppeteer cold start + real SL/BSC
- * round-trip); the default timeout reflects that.
+ * POST /login/{slug}. Returns `{ status, body }`. Marketplace login calls can
+ * take 20-30 seconds (Puppeteer cold start + real SL/BSC round-trip); the
+ * default timeout reflects that.
+ *
+ * NEO-141: `username`/`password` are optional and TRANSIENT — supplied for one
+ * sign-in and never persisted. Omitting them makes the service fall back to the
+ * stored secret, which is exactly what the NEO-43 canary jobs do; that path is
+ * what an omitted-credentials call here exercises.
+ *
+ * SECURITY: the credentials are sent in the request body and never logged. No
+ * assertion in this suite prints the body it sent.
  */
-export async function postLogin(slug, key, { timeoutMs = 90_000 } = {}) {
+export async function postLogin(slug, key, { timeoutMs = 90_000, credentials } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${TARGET_URL}/login/${slug}`, {
       method: "POST",
       headers: authHeaders(),
-      body: JSON.stringify({ key }),
+      body: JSON.stringify(
+        credentials
+          ? { key, username: credentials.username, password: credentials.password }
+          : { key },
+      ),
       signal: controller.signal,
     });
     const text = await res.text();

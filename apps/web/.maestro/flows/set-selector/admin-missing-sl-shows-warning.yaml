@@ -13,7 +13,12 @@ tags:
 #   - The "Configure credentials in Profile" link points to /profile.
 #
 # No clear, no restore, no reset — the account starts and ends with BSC-only.
-# BSC seed does a real login; allow up to ~18s for the seed step to complete.
+#
+# NEO-141: the seed step is a live marketplace round-trip whenever it has to
+# (re-)store credentials — connecting IS signing in now, and the seed page waits
+# for that sign-in before it redirects. It is skipped while the account's stored
+# session can still be renewed, so most runs pay nothing; the wait below only has
+# to be big enough for the runs that don't.
 
 # Step 1: open /set-selector as admin-bsc-only (nothing seeded yet — don't assert gate here)
 - launchApp
@@ -21,11 +26,12 @@ tags:
     visible: "Set Builder"
     timeout: 45000
 
-# Step 2: seed ONLY BuySportsCards (real login, up to ~18s) then redirect back to /set-selector
+# Step 2: seed ONLY BuySportsCards, then redirect back to /set-selector.
+# 90s exception (live marketplace round-trip) — see the NEO-141 note above.
 - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=buysportscards&redirect=/set-selector
 - extendedWaitUntil:
     visible: "Set Builder"
-    timeout: 30000
+    timeout: 90000
 
 # Step 3: the gate banner must appear naming SportLots only
 - assertVisible: "Set Builder requires marketplace credentials"

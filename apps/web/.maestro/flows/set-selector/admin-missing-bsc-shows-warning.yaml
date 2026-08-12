@@ -13,6 +13,12 @@ tags:
 #   - The "Configure credentials in Profile" link points to /profile.
 #
 # No clear, no restore, no reset — the account starts and ends with SL-only.
+#
+# NEO-141: the seed step is a live marketplace round-trip whenever it has to
+# (re-)store credentials — connecting IS signing in now, and the seed page waits
+# for that sign-in before it redirects. It is skipped while the account's stored
+# session can still be renewed, so most runs pay nothing; the wait below only has
+# to be big enough for the runs that don't.
 
 # Step 1: open /set-selector as admin-sl-only (nothing seeded yet — don't assert gate here)
 - launchApp
@@ -20,8 +26,16 @@ tags:
     visible: "Set Builder"
     timeout: 45000
 
-# Step 2: seed ONLY SportLots (~3s HTTP call) then redirect back to /set-selector
+# Step 2: seed ONLY SportLots, then redirect back to /set-selector.
 - openLink: ${APP_URL || "http://localhost:3000"}/testing/seed-credentials?sites=sportlots&redirect=/set-selector
+
+# Wait for the redirect to land before asserting anything about the page. 90s
+# exception (live marketplace round-trip) — see the NEO-141 note above; the seed
+# page does not forward until its sign-in finishes, and a bare assert here would
+# be judging the seed page instead of /set-selector.
+- extendedWaitUntil:
+    visible: "Set Builder"
+    timeout: 90000
 
 # Step 3: the gate banner must appear naming BuySportsCards only
 - assertVisible: "Set Builder requires marketplace credentials"

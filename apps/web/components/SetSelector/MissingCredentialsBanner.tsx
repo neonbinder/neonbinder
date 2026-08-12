@@ -25,8 +25,8 @@ export default function MissingCredentialsBanner({
         Set Builder requires marketplace credentials
       </h2>
       <p className="text-amber-800 dark:text-amber-200 mb-4">
-        You need saved credentials for <strong>{joined}</strong> before Set
-        Builder can work. Configure them on your Profile.
+        You need to connect <strong>{joined}</strong> before Set Builder can
+        work. Set them up on your Profile.
       </p>
       <Link
         to="/profile/credentials"

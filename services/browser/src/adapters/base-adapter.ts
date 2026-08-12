@@ -13,6 +13,51 @@ export interface LoginCredentials {
   password: string;
 }
 
+/**
+ * NEO-141: the single caller-facing string for "the stored session is gone and
+ * we have nothing left to re-establish it with; the user must sign in again".
+ *
+ * Deliberately one shared constant rather than per-adapter prose:
+ * classifyBrowserError in ../observability maps it to the `reauth_required`
+ * error_class by substring match, and that class is part of the Terraform
+ * log-based-metric contract. Two adapters spelling it differently would put a
+ * silent hole in the metric.
+ *
+ * It says nothing about WHY (expired, revoked, never stored) — that detail
+ * stays server-side in the logs.
+ */
+export const REAUTH_REQUIRED_ERROR = "Re-authentication required";
+
+/**
+ * The two NEO-43 synthetic-canary secrets (`bsc-credentials-canary`,
+ * `sportlots-credentials-canary`) are the ONLY keys in the platform that still
+ * store a marketplace password, because their whole job is to perform a real
+ * password sign-in every 30 minutes so the login alerting has something to
+ * alert on.
+ *
+ * SECURITY / OPERATIONAL INVARIANT: no adapter may ever write back to one of
+ * these keys. The write-back payload is an explicit field list with no
+ * `password` in it, and `updateCredentials` prunes to a single version — so one
+ * write-back against a canary key destroys the canary's password permanently,
+ * with no history to recover it from.
+ *
+ * The guard keys off the KEY, not the request's `canary` flag, and that
+ * distinction is the whole point. Flag-based protection is caller-dependent: a
+ * `POST /login/<site>` carrying the canary key WITHOUT `canary: true` — a
+ * terraform edit dropping the field from a scheduler body is enough — would
+ * take the ordinary password-login path, succeed, write back, and destroy the
+ * password. Every later run then answers 422 `reauth_required`, which the alert
+ * policies deliberately exclude as a caller error, so the canary would go
+ * permanently and SILENTLY dead while the scheduler kept running green.
+ *
+ * Before NEO-141 this self-healed by accident: the write-back spread the
+ * credentials it had just read, so the password survived. Removing that spread
+ * was correct, but it also removed the protection it incidentally provided.
+ */
+export function isCanaryKey(key: string): boolean {
+  return /-credentials-canary$/.test(key);
+}
+
 export interface AdapterResponse {
   success: boolean;
   message?: string;
@@ -51,6 +96,23 @@ export interface AdapterResponse {
    * and into `error_class: "invalid_credentials"`.
    */
   credentialRejected?: boolean;
+  /**
+   * NEO-141: true when the adapter could not authenticate and has nothing left
+   * to try — the cached session is dead, the BSC refresh grant was refused (or
+   * there is no refresh token), and no transient password was supplied in the
+   * request body.
+   *
+   * This is the signal Convex acts on to tell the user to sign in again. It
+   * takes PRECEDENCE over credentialRejected in loginFailureOutcome, and like
+   * it yields 422 (never pages) — but under its own `reauth_required`
+   * error_class, because "your session expired" and "your password was wrong"
+   * need opposite handling upstream.
+   *
+   * Do NOT set it when a password login was actually attempted and refused:
+   * that is credentialRejected. Do not set it for an upstream fault either —
+   * an unreachable marketplace must stay pageable.
+   */
+  reauthRequired?: boolean;
   /**
    * Sanitized login-failure diagnostic. Set by adapters on `success: false`
    * when they could capture context from the stuck/challenge page. SAFE to
