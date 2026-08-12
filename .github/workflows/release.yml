@@ -122,11 +122,44 @@ jobs:
           echo "browser=$browser"       >> "$GITHUB_OUTPUT"
           echo "preprocess=$preprocess" >> "$GITHUB_OUTPUT"
 
+  # Prove we can actually finish the release BEFORE anything deploys.
+  #
+  # Learned the hard way on run 31642167681: a bad `vercel pull` invocation was
+  # only discovered AFTER both service lanes had promoted to 100%, leaving prod
+  # on new services with old Convex/SPA. That skew is the safe direction and
+  # users were unaffected — but a half-applied release is exactly what this
+  # workflow exists to prevent, and finding out 30 minutes in is avoidable.
+  #
+  # ~20s, and it fails the whole release before a single revision moves.
+  preflight:
+    name: Verify Vercel credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Install Vercel CLI
+        run: npm i -g vercel@48.2.0
+      - name: whoami + project access
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ] || [ -z "${VERCEL_ORG_ID:-}" ] || [ -z "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "::error::VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID must all be set as repo secrets."
+            exit 1
+          fi
+          vercel whoami --token="$VERCEL_TOKEN"
+          # Scope matters as much as validity: a personal-scoped token paired
+          # with a team VERCEL_ORG_ID authenticates fine and then cannot see the
+          # project. Pulling the env is the cheapest real proof of both.
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
   # Both service lanes run in parallel — neither depends on the other. Each
   # ends with its prod revision at 100% traffic.
   browser:
     name: Browser service
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.browser == 'true'
     uses: ./.github/workflows/browser-deploy.yml
     secrets: inherit
@@ -137,7 +170,7 @@ jobs:
 
   preprocess:
     name: Preprocess service
-    needs: changes
+    needs: [changes, preflight]
     if: needs.changes.outputs.preprocess == 'true'
     uses: ./.github/workflows/preprocess-deploy.yml
     secrets: inherit
@@ -151,10 +184,11 @@ jobs:
   # cancelled one is not.
   web:
     name: Release web + Convex
-    needs: [changes, browser, preprocess]
+    needs: [changes, preflight, browser, preprocess]
     if: >-
       always()
       && needs.changes.result == 'success'
+      && needs.preflight.result == 'success'
       && needs.browser.result != 'failure'
       && needs.browser.result != 'cancelled'
       && needs.preprocess.result != 'failure'
@@ -185,7 +219,11 @@ jobs:
         run: npm i -g vercel@48.2.0
 
       - name: Pull production environment
-        run: vercel pull --yes --environment=production
+        # --token is REQUIRED. The CLI does not read VERCEL_TOKEN from the
+        # environment for these commands: dropping the flag fails here with
+        # "No existing credentials found" (run 31642167681). GitHub masks the
+        # value in logs, so the flag costs nothing. Do not "clean this up".
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       # THE CONVEX CUTOVER. apps/web/vercel.json's buildCommand is
       # `npx convex deploy --cmd-url-env-var-name VITE_CONVEX_URL --cmd 'npm run build'`,
@@ -196,7 +234,7 @@ jobs:
       # is not.
       - name: Build (pushes production Convex)
         id: build
-        run: vercel build --prod
+        run: vercel build --prod --token="$VERCEL_TOKEN"
 
       # Staged: a real production deployment that no domain points at yet.
       # neonbinder.io keeps serving the previous build until `promote` below.
@@ -204,7 +242,7 @@ jobs:
         id: deploy
         run: |
           set -euo pipefail
-          URL="$(vercel deploy --prebuilt --prod --skip-domain)"
+          URL="$(vercel deploy --prebuilt --prod --skip-domain --token="$VERCEL_TOKEN")"
           if [ -z "$URL" ]; then
             echo "::error::vercel deploy returned no URL"; exit 1
           fi
@@ -251,7 +289,7 @@ jobs:
       - name: Promote to production
         env:
           STAGED_URL: ${{ steps.deploy.outputs.url }}
-        run: vercel promote "$STAGED_URL"
+        run: vercel promote "$STAGED_URL" --token="$VERCEL_TOKEN"
 
   # A web-lane failure has an unusual blast radius worth spelling out: if it
   # failed at or after `Build`, production Convex is ALREADY on the new code
