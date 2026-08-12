@@ -1,0 +1,528 @@
+name: Browser deploy
+
+# The post-merge prod deploy lane for services/browser, extracted verbatim from
+# browser.yml in NEO-143 so that release.yml can ORDER it ahead of the
+# web/Convex release. The jobs below are unchanged; only the trigger moved.
+#
+# Why it moved: Vercel (web + Convex) and Cloud Run deployed on completely
+# independent schedules from the same merge commit, so a release whose Convex
+# code depended on new browser-service behaviour could go live minutes before
+# the browser service it needed. That is exactly how NEO-141 broke production —
+# a ~5.5 minute window in which new Convex called the old browser service and
+# nobody could connect SportLots.
+#
+# Do NOT give this workflow a `push:` trigger. release.yml is the single driver
+# of push-to-main deploys; a push trigger here would race it and re-create the
+# bug. `workflow_dispatch` is retained for the dev-only validation path — the
+# prod jobs stay off on dispatch via their `github.event_name == 'push'` guards,
+# and note that inside a called workflow `github.event_name` is the CALLER's
+# event, so a release.yml invocation correctly reads as `push`.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  # Serialize per ref and never cancel. A cancelled deploy can leave a revision
+  # parked at 0% traffic with its scratch tag still attached, which is precisely
+  # the state that pinned idle instances in NEO-114.
+  group: browser-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/browser
+
+jobs:
+  test:
+    name: Build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/browser/.nvmrc
+          cache: npm
+          cache-dependency-path: services/browser/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  # ===========================================================================
+  # POST-MERGE PROD DEPLOY LANE (NEO-18 Phase 3)
+  # Ported from neonbinder_browser/browser-deploy.yml. Build-once → blue/green
+  # (land at 0% traffic under a `sha-<short>` tag → real BSC+SportLots
+  # login-probe → promote to 100%), dev then prod. NO smoke (the login-probe IS
+  # the gate) and NO convex-dev-gate — the web E2E is the PRE-MERGE gate
+  # (pr-pipeline.yml), so this post-merge lane never re-runs the web E2E.
+  #
+  # DORMANT until cutover: the traffic-promoting + prod jobs run ONLY on `push`
+  # to main with the repo variable `BROWSER_DEPLOY_ENABLED == 'true'`. Until then
+  # a merge to main runs only `test` — no deploy, no traffic shift, no dual-write
+  # of the shared Cloud Run service while the old neonbinder_browser repo is
+  # still the live deploy source. At cutover: set the variable AND stop the old
+  # repo's deploys (CUTOVER.md step D).
+  #
+  # `workflow_dispatch` validates the SAFE half pre-cutover (build-push +
+  # deploy-dev at 0% traffic + dev-login-probe); promotes + all prod jobs stay
+  # off on dispatch, and build-push skips the prod-GCR push on dispatch.
+  # ===========================================================================
+
+  build-push:
+    name: Build + push image (dev + prod GCR)
+    needs: test
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      short_sha: ${{ steps.short.outputs.short_sha }}
+      deploy_tag: ${{ steps.short.outputs.deploy_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: short
+        name: Compute sha tag
+        run: |
+          SHORT="$(echo "$GITHUB_SHA" | cut -c1-7)"
+          echo "short_sha=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "deploy_tag=sha-$SHORT" >> "$GITHUB_OUTPUT"
+
+      - name: Auth to dev
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Configure Docker for GCR (dev)
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build + push to dev GCR
+        # cwd = services/browser (workflow default); Dockerfile.prod + context here.
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          docker build -f Dockerfile.prod \
+            -t gcr.io/neonbinder-dev/neonbinder-browser:$SHA \
+            -t gcr.io/neonbinder-dev/neonbinder-browser:latest \
+            .
+          docker push gcr.io/neonbinder-dev/neonbinder-browser:$SHA
+          docker push gcr.io/neonbinder-dev/neonbinder-browser:latest
+
+      # Prod-GCR retag only on a real (enabled) push — a dispatch validation
+      # stays dev-only and never touches the prod registry.
+      - name: Re-auth to prod
+        if: github.event_name == 'push'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+
+      - name: Configure Docker for GCR (prod)
+        if: github.event_name == 'push'
+        run: gcloud auth configure-docker --quiet
+
+      - name: Retag + push to prod GCR (same image bytes)
+        if: github.event_name == 'push'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          docker tag gcr.io/neonbinder-dev/neonbinder-browser:$SHA gcr.io/neonbinder/neonbinder-browser:$SHA
+          docker tag gcr.io/neonbinder-dev/neonbinder-browser:$SHA gcr.io/neonbinder/neonbinder-browser:latest
+          docker push gcr.io/neonbinder/neonbinder-browser:$SHA
+          docker push gcr.io/neonbinder/neonbinder-browser:latest
+
+  # Dev blue/green: land the new image at 0% traffic under the sha tag. Live dev
+  # keeps serving the prior revision until dev-promote.
+  deploy-dev:
+    name: Deploy dev (no-traffic, sha tag)
+    needs: build-push
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No checkout — override the workflow's services/browser working-dir so the
+    # gcloud run steps don't fail on a missing directory.
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      new_revision: ${{ steps.capture-new.outputs.new_revision }}
+      tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
+      prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - id: capture-prev
+        name: Capture dev's currently-serving revision
+        run: |
+          PREV=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev \
+            --format='value(status.traffic[0].revisionName)')
+          echo "Previous dev revision: $PREV"
+          echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
+      - name: Deploy to dev Cloud Run (no_traffic + sha tag)
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: neonbinder-browser
+          region: us-central1
+          image: gcr.io/neonbinder-dev/neonbinder-browser:${{ github.sha }}
+          project_id: neonbinder-dev
+          env_vars: ENVIRONMENT=dev
+          no_traffic: true
+          tag: ${{ needs.build-push.outputs.deploy_tag }}
+          # Cost control (NEO-95): min-instances=0 intentionally, allow cold start.
+          flags: '--min-instances=0 --max-instances=20'
+      - id: capture-new
+        name: Capture new dev revision + tagged URL
+        env:
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          NEW=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev \
+            --format='value(status.latestCreatedRevisionName)')
+          TAGGED_URL=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "ERROR: tagged URL for tag=$TAG not found."; exit 1
+          fi
+          echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+  # Real BSC + SportLots login round-trip against the dev tagged revision
+  # (catches auth regressions before any traffic shift).
+  dev-login-probe:
+    name: Dev login probe (BSC + SportLots)
+    needs: deploy-dev
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/browser/.nvmrc
+          cache: npm
+          cache-dependency-path: services/browser/package-lock.json
+      - run: npm ci
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      # Cloud Run validates the OIDC audience against the BASE service URL even
+      # when the request targets the tagged host.
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+      - name: Run login suite against dev tagged URL
+        working-directory: services/browser
+        env:
+          TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
+          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
+          SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
+          SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
+        run: npm run test:prod-gate
+
+  # Shift 100% dev traffic to the new revision. Gated (enabled-push only) — never
+  # on dispatch, so a validation dispatch can't move live dev traffic.
+  dev-promote:
+    name: Promote dev to 100%
+    # build-push is needed only for its deploy_tag output (the scratch tag this
+    # job drops). It is already a transitive dependency via deploy-dev, so this
+    # adds no ordering, just visibility of the output.
+    needs: [build-push, deploy-dev, dev-login-probe]
+    if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      # The sha-<short> tag is scratch state: it exists only so dev-login-probe
+      # can reach this revision while it sits at 0% traffic. Once traffic moves,
+      # the tag is dead weight — and a lingering tag keeps the revision
+      # addressable indefinitely, which is exactly what pinned 17 idle instances
+      # in dev at minScale=1 (NEO-114). Dropping it in the SAME update-traffic
+      # call makes promotion and cleanup one atomic mutation, so there is no
+      # window in which a promoted revision keeps an orphaned tag.
+      - name: Promote dev revision to 100% and drop its scratch tag
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev \
+            --to-revisions="${{ needs.deploy-dev.outputs.new_revision }}=100" \
+            --remove-tags="${{ needs.build-push.outputs.deploy_tag }}"
+
+  # Prod blue/green — only after dev is built, probed, and promoted. Same image
+  # bytes (gcr.io/neonbinder/...:sha) built once in build-push.
+  deploy-prod:
+    name: Deploy prod (no-traffic, sha tag)
+    needs: [build-push, dev-promote]
+    if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      new_revision: ${{ steps.capture-new.outputs.new_revision }}
+      tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
+      prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - id: capture-prev
+        name: Capture prod's currently-serving revision
+        run: |
+          PREV=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder \
+            --format='value(status.traffic[0].revisionName)')
+          echo "Previous prod revision: $PREV"
+          echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
+      - name: Deploy to prod Cloud Run (no_traffic + sha tag)
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: neonbinder-browser
+          region: us-central1
+          image: gcr.io/neonbinder/neonbinder-browser:${{ github.sha }}
+          project_id: neonbinder
+          env_vars: ENVIRONMENT=prod
+          no_traffic: true
+          tag: ${{ needs.build-push.outputs.deploy_tag }}
+          flags: '--min-instances=0 --max-instances=20'
+      - id: capture-new
+        name: Capture new prod revision + tagged URL
+        env:
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          NEW=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder \
+            --format='value(status.latestCreatedRevisionName)')
+          TAGGED_URL=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "ERROR: tagged URL for tag=$TAG not found."; exit 1
+          fi
+          echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+  # The signal the dev probe can't give: prod env + prod Secret Manager + prod SA
+  # actually authenticating to BSC + SportLots, against the prod tagged revision.
+  prod-login-probe:
+    name: Prod login probe (BSC + SportLots)
+    needs: deploy-prod
+    if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: services/browser/.nvmrc
+          cache: npm
+          cache-dependency-path: services/browser/package-lock.json
+      - run: npm ci
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+      - name: Run login suite against prod tagged URL
+        working-directory: services/browser
+        env:
+          TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
+          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
+          SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
+          SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
+        run: npm run test:prod-gate
+
+  prod-promote:
+    name: Promote prod to 100%
+    # build-push is needed only for its deploy_tag output (see dev-promote).
+    needs: [build-push, deploy-prod, prod-login-probe]
+    if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+      # Same scratch-tag teardown as dev-promote — see the comment there. Prod
+      # accumulated 10 pinned instances this way (NEO-114).
+      - name: Promote prod revision to 100% and drop its scratch tag
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic neonbinder-browser \
+            --region=us-central1 --project=neonbinder \
+            --to-revisions="${{ needs.deploy-prod.outputs.new_revision }}=100" \
+            --remove-tags="${{ needs.build-push.outputs.deploy_tag }}"
+
+  # Unified failure report (enabled-push only): opens an issue identifying the
+  # first failed stage + its blast radius.
+  report-failure:
+    name: Report deploy failure
+    needs: [test, build-push, deploy-dev, dev-login-probe, dev-promote, deploy-prod, prod-login-probe, prod-promote]
+    if: |
+      always() && github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true' && (
+        needs.test.result == 'failure' ||
+        needs.build-push.result == 'failure' ||
+        needs.deploy-dev.result == 'failure' ||
+        needs.dev-login-probe.result == 'failure' ||
+        needs.dev-promote.result == 'failure' ||
+        needs.deploy-prod.result == 'failure' ||
+        needs.prod-login-probe.result == 'failure' ||
+        needs.prod-promote.result == 'failure'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open GitHub issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R_TEST: ${{ needs.test.result }}
+          R_BUILD: ${{ needs.build-push.result }}
+          R_DEV: ${{ needs.deploy-dev.result }}
+          R_DEV_PROBE: ${{ needs.dev-login-probe.result }}
+          R_DEV_PROMOTE: ${{ needs.dev-promote.result }}
+          R_PROD: ${{ needs.deploy-prod.result }}
+          R_PROBE: ${{ needs.prod-login-probe.result }}
+          R_PROMOTE: ${{ needs.prod-promote.result }}
+          NEW_REV: ${{ needs.deploy-prod.outputs.new_revision }}
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+          TAGGED_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          PROD_PREV: ${{ needs.deploy-prod.outputs.prev_revision }}
+          DEV_PREV: ${{ needs.deploy-dev.outputs.prev_revision }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [ "$R_TEST" = "failure" ]; then STAGE=test
+          elif [ "$R_BUILD" = "failure" ]; then STAGE=build-push
+          elif [ "$R_DEV" = "failure" ]; then STAGE=deploy-dev
+          elif [ "$R_DEV_PROBE" = "failure" ]; then STAGE=dev-login-probe
+          elif [ "$R_DEV_PROMOTE" = "failure" ]; then STAGE=dev-promote
+          elif [ "$R_PROD" = "failure" ]; then STAGE=deploy-prod
+          elif [ "$R_PROBE" = "failure" ]; then STAGE=prod-login-probe
+          elif [ "$R_PROMOTE" = "failure" ]; then STAGE=prod-promote
+          else STAGE=unknown
+          fi
+          case "$STAGE" in
+            test|build-push)
+              BLAST="No infra touched. Dev and prod both still serving their previous revisions." ;;
+            deploy-dev|dev-login-probe)
+              BLAST="Dev has a parked revision at 0% traffic; still serving \`$DEV_PREV\`. No promote. Prod never touched." ;;
+            dev-promote)
+              BLAST="Dev checks passed but the traffic shift failed; dev still serves \`$DEV_PREV\`. Prod never touched." ;;
+            deploy-prod|prod-login-probe)
+              BLAST="Dev serves HEAD. Prod has a parked revision at 0% traffic (\`$NEW_REV\`, tag \`$TAG\`); still serves \`$PROD_PREV\`. Tagged URL: $TAGGED_URL." ;;
+            prod-promote)
+              BLAST="Dev serves HEAD. Prod checks passed but the traffic shift failed. Re-run the promote / investigate update-traffic." ;;
+            *)
+              BLAST="Unknown failure mode — check the run directly." ;;
+          esac
+          cat > body.md <<EOF
+          Browser deploy failed at **\`$STAGE\`** for commit ${{ github.sha }}.
+
+          **Blast radius:** $BLAST
+
+          | Stage | Result |
+          |---|---|
+          | test | \`$R_TEST\` |
+          | build-push | \`$R_BUILD\` |
+          | deploy-dev | \`$R_DEV\` |
+          | dev-login-probe | \`$R_DEV_PROBE\` |
+          | dev-promote | \`$R_DEV_PROMOTE\` |
+          | deploy-prod | \`$R_PROD\` |
+          | prod-login-probe | \`$R_PROBE\` |
+          | prod-promote | \`$R_PROMOTE\` |
+
+          [Deploy run]($RUN_URL)
+          EOF
+          gh issue create \
+            --repo neonbinder/neonbinder \
+            --title "Browser deploy failed at ${STAGE}: ${{ github.sha }}" \
+            --body-file body.md

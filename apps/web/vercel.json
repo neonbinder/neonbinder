@@ -4,6 +4,12 @@
   "framework": "vite",
   "installCommand": "npm ci",
   "outputDirectory": "dist",
+  "git": {
+    "_comment": "NEO-143: main is released by .github/workflows/release.yml, NOT by the Vercel git integration. The integration deployed on merge in parallel with the Cloud Run lanes, so a build whose Convex code needed the new browser service could go live minutes before it — that is what broke production on the NEO-141 merge. release.yml promotes the services first, then runs vercel pull/build/deploy --skip-domain, smokes the staged build, and only then promotes. Re-enabling this races that pipeline. PR previews are unaffected: they build from PR branches, not main.",
+    "deploymentEnabled": {
+      "main": false
+    }
+  },
   "rewrites": [
     {
       "source": "/ingest/static/(.*)",

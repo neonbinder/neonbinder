@@ -21,6 +21,7 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
+import { __resetContractCache } from "./credentials";
 import { internal } from "./_generated/api";
 import { sanitizeLoginDiagnostic } from "./observability";
 
@@ -60,6 +61,20 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/**
+ * NEO-143: every authenticated browser-service call pre-flights `GET /health`
+ * for the contract version. Serve it centrally so these tests keep asserting on
+ * the credential calls only.
+ */
+function stubFetch(handler: FetchStub) {
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).endsWith("/health")) {
+      return jsonResponse({ status: "ok", environment: "test", contractVersion: 1 });
+    }
+    return handler(url, init);
+  }) as FetchStub);
+}
+
 /** The one capture of the given event name; asserts exactly one was emitted. */
 function only(event: string) {
   const found = captureCalls.filter((c) => c.event === event);
@@ -71,6 +86,9 @@ beforeEach(() => {
   captureCalls.length = 0;
   // Loopback browser URL → getIdTokenClient short-circuits (no OIDC / no GCP creds).
   process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+  // NEO-143: the contract probe is cached at module scope; reset it so tests
+  // cannot inherit a previous test's "healthy" result.
+  __resetContractCache();
   // PostHog client short-circuits when no key is set. Force one so the mocked
   // client actually gets invoked.
   process.env.POSTHOG_API_KEY = "test-posthog-key";
@@ -103,7 +121,7 @@ describe("credential_test_failed — enriched properties", () => {
       }
       throw new Error(`unexpected fetch: ${url}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER })
@@ -129,7 +147,7 @@ describe("credential_test_failed — enriched properties", () => {
     const stub: FetchStub = async () => {
       throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER })
@@ -151,7 +169,7 @@ describe("credential_test_failed — enriched properties", () => {
       }
       throw new Error(`unexpected fetch: ${url}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     await t.withIdentity({ subject: USER }).action(internal.credentials.authenticateSportlots, {});
 
@@ -170,7 +188,7 @@ describe("credential_test_succeeded — the rate denominator", () => {
       }
       throw new Error(`unexpected fetch: ${url}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER })
@@ -191,7 +209,7 @@ describe("credential_test_succeeded — the rate denominator", () => {
       }
       throw new Error(`unexpected fetch: ${url}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER })
@@ -249,7 +267,7 @@ describe("recordCredentialTest — never breaks the login it observes", () => {
       }
       throw new Error(`unexpected fetch: ${url}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
     // Force the capture path to blow up.
     delete process.env.POSTHOG_API_KEY;
     process.env.POSTHOG_API_KEY = "";
@@ -270,7 +288,7 @@ describe("deployment tag (NEO-43) — one PostHog project serves all environment
     // fire the unique-users alert on every PR.
     process.env.CONVEX_CLOUD_URL = "https://first-starfish-800.convex.cloud";
     const t = convexTest(schema, modules);
-    vi.stubGlobal("fetch", (async (url: string | URL | Request) =>
+    stubFetch((async (url: string | URL | Request) =>
       String(url).includes("/login/bsc")
         ? jsonResponse({ success: true, message: "ok" })
         : (() => { throw new Error(`unexpected fetch: ${url}`); })()) as FetchStub);
