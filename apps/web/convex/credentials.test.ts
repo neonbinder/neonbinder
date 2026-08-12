@@ -32,6 +32,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { __resetContractCache } from "./credentials";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -51,6 +52,36 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+/**
+ * NEO-143: every authenticated browser-service call now pre-flights
+ * `GET /health` to read the service's contract version, so a Convex build can
+ * never speak a request shape the live service predates.
+ *
+ * These tests assert on the CREDENTIAL calls, so serve the probe centrally and
+ * keep it out of each test's recorded call list. Tests that exercise the guard
+ * itself stub `/health` directly — see the "contract guard" block at the end of
+ * this file.
+ */
+function stubFetch(handler: FetchStub) {
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).endsWith("/health")) {
+      return jsonResponse({
+        status: "ok",
+        environment: "test",
+        contractVersion: REQUIRED_CONTRACT_VERSION_FOR_TESTS,
+      });
+    }
+    return handler(url, init);
+  }) as FetchStub);
+}
+
+/**
+ * Mirrors REQUIRED_CONTRACT_VERSION in credentials.ts. Kept as a separate
+ * literal on purpose: if someone raises the requirement without shipping a
+ * service that advertises it, these tests should start failing.
+ */
+const REQUIRED_CONTRACT_VERSION_FOR_TESTS = 1;
 
 async function getRawEntry(t: ReturnType<typeof convexTest>, userId: string, site: string) {
   return t.run(async (ctx) => {
@@ -102,6 +133,11 @@ async function seedLiveLock(
 beforeEach(() => {
   // Loopback browser URL → getIdTokenClient short-circuits (no OIDC / no GCP creds).
   process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+  // NEO-143: the contract probe is cached at module scope for 60s. Without this
+  // reset the first test's probe would satisfy every later test, so a test that
+  // deliberately serves an OLD /health would silently pass against a stale
+  // "healthy" cache entry — the exact false-green the guard exists to prevent.
+  __resetContractCache();
 });
 
 afterEach(() => {
@@ -123,7 +159,7 @@ describe("saveCredentials — store branch (connect-and-store, NEO-141)", () => 
       if (u.includes("/login/bsc")) return jsonResponse({ success: true, message: "ok" });
       throw new Error(`unexpected fetch: ${init?.method} ${u}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -173,7 +209,7 @@ describe("saveCredentials — store branch (connect-and-store, NEO-141)", () => 
         : (() => {
             throw new Error(`unexpected fetch: ${url}`);
           })();
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -193,7 +229,7 @@ describe("saveCredentials — store branch (connect-and-store, NEO-141)", () => 
   test("a failed login stores NOTHING — no credentials, no needsReauth flag", async () => {
     const t = convexTest(schema, modules);
     const stub: FetchStub = async () => jsonResponse({ error: "bad request" }, 400);
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -220,7 +256,7 @@ describe("saveCredentials — store branch (connect-and-store, NEO-141)", () => 
     const stub: FetchStub = async (url) => {
       throw new Error(`should not have called fetch: ${String(url)}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -246,7 +282,7 @@ describe("saveCredentials — clear branch (atomic flag update, replaces deleteS
       }
       throw new Error(`unexpected fetch: ${init?.method} ${u}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -262,7 +298,7 @@ describe("saveCredentials — clear branch (atomic flag update, replaces deleteS
     await seedHasCredentials(t, USER_A, SITE);
 
     const stub: FetchStub = async () => jsonResponse({ error: "server error" }, 500);
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -282,7 +318,7 @@ describe("saveCredentials — rejects unsupported sites without any network call
     const stub: FetchStub = async (url) => {
       throw new Error(`should not have called fetch: ${String(url)}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -311,7 +347,7 @@ describe("getSiteToken — self-heal is lock-aware (security review finding, NEO
       }
       throw new Error(`unexpected fetch: ${u}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const token = await t
       .withIdentity({ subject: USER_A })
@@ -353,7 +389,7 @@ describe("getSiteToken — self-heal is lock-aware (security review finding, NEO
       }
       throw new Error(`unexpected fetch: ${u}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const token = await t
       .withIdentity({ subject: USER_A })
@@ -378,7 +414,7 @@ describe("getSiteToken — self-heals a stale hasCredentials flag (NEO-89)", () 
       if (u.includes("/token")) return jsonResponse({ error: "Credentials not found" }, 404);
       throw new Error(`unexpected fetch: ${u}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const token = await t
       .withIdentity({ subject: USER_A })
@@ -403,7 +439,7 @@ describe("getSiteToken — self-heals a stale hasCredentials flag (NEO-89)", () 
       if (u.includes("/login/")) return jsonResponse({ success: false, message: "down" }, 500);
       throw new Error(`unexpected fetch: ${u}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const token = await t
       .withIdentity({ subject: USER_A })
@@ -450,8 +486,7 @@ describe("getSiteToken — 204 means 'secret exists, nothing cached' (NEO-140)",
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, SITE);
     const seen = { loginAttempts: 0 };
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       tokenAndLoginStub(
         () => new Response(null, { status: 204 }),
         () => jsonResponse({ success: false, message: "marketplace down" }, 500),
@@ -492,7 +527,7 @@ describe("getSiteToken — 204 means 'secret exists, nothing cached' (NEO-140)",
       }
       throw new Error(`unexpected fetch: ${u}`);
     };
-    vi.stubGlobal("fetch", stub);
+    stubFetch(stub);
 
     const token = await t
       .withIdentity({ subject: USER_A })
@@ -513,8 +548,7 @@ describe("getSiteToken — legacy 404 'No token available' is NOT absence (NEO-1
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, SITE);
     const seen = { loginAttempts: 0 };
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       tokenAndLoginStub(
         () => jsonResponse({ error: "No token available" }, 404),
         () => jsonResponse({ success: false, message: "marketplace down" }, 500),
@@ -547,8 +581,7 @@ describe("getSiteToken — legacy 404 'No token available' is NOT absence (NEO-1
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, SITE);
     const seen = { loginAttempts: 0 };
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       tokenAndLoginStub(
         () =>
           new Response("<html>gateway error</html>", {
@@ -582,7 +615,7 @@ describe("getSiteToken — legacy 404 'No token available' is NOT absence (NEO-1
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, SITE);
     let tokenReads = 0;
-    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+    stubFetch((async (url: string | URL | Request) => {
       const u = String(url);
       if (u.includes("/token")) {
         tokenReads += 1;
@@ -608,7 +641,7 @@ describe("getSiteToken — legacy 404 'No token available' is NOT absence (NEO-1
     // for another by disabling the self-heal entirely.
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, SITE);
-    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+    stubFetch((async (url: string | URL | Request) => {
       if (String(url).includes("/token")) {
         return jsonResponse({ error: "Credentials not found" }, 404);
       }
@@ -629,8 +662,7 @@ describe("reauth_required — flag, never delete (NEO-141)", () => {
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, SITE);
     const seen = { loginAttempts: 0 };
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       tokenAndLoginStub(
         () => new Response(null, { status: 204 }),
         () =>
@@ -662,7 +694,7 @@ describe("reauth_required — flag, never delete (NEO-141)", () => {
   test("testSiteCredentials surfaces reauth_required as a failure and flags it", async () => {
     const t = convexTest(schema, modules);
     await seedHasCredentials(t, USER_A, SITE);
-    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+    stubFetch((async (url: string | URL | Request) => {
       if (String(url).includes("/login/")) {
         return jsonResponse(
           { error: "Authentication failed", error_class: "reauth_required" },
@@ -702,7 +734,7 @@ describe("reauth_required — flag, never delete (NEO-141)", () => {
       });
     });
 
-    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+    stubFetch((async (url: string | URL | Request) => {
       if (String(url).includes("/login/")) {
         return jsonResponse({ error: "still broken" }, 500);
       }
@@ -743,7 +775,7 @@ describe("self-recovery — a successful auth restores credential status (NEO-14
       });
     });
 
-    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+    stubFetch((async (url: string | URL | Request) => {
       if (String(url).includes("/login/bsc")) {
         return jsonResponse({ success: true, message: "ok", storeName: "Acme Cards" });
       }
@@ -759,5 +791,163 @@ describe("self-recovery — a successful auth restores credential status (NEO-14
     expect(entry?.hasCredentials).toBe(true);
     expect(entry?.needsReauth).toBeFalsy();
     expect(entry?.needsReauthSince).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-143 — browser-service contract guard
+//
+// Convex and the browser service go live at different moments, so every release
+// passes through a window where one is new and the other is old. Merging
+// NEO-141 turned that window into a production outage.
+//
+// The mode these tests exist for is the QUIET one. NEO-141 moved the password
+// onto a transient field of the login request; an older service ignores that
+// field and logs in with the stored secret instead, so a password change
+// appears to succeed while the OLD password is silently used. There is no way
+// to detect that from the response — by then the login has happened. So the
+// assertion that matters below is not "it failed", it is "/login was never
+// called at all".
+// ---------------------------------------------------------------------------
+describe("browser-service contract guard (NEO-143)", () => {
+  /** Stub that serves a chosen /health body and records every other call. */
+  function guardStub(health: unknown, status = 200) {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.endsWith("/health")) return jsonResponse(health, status);
+      calls.push(u);
+      return jsonResponse({ success: true, message: "ok" });
+    }) as FetchStub);
+    return calls;
+  }
+
+  test("a service predating the guard (no contractVersion) never receives the login", async () => {
+    const t = convexTest(schema, modules);
+    // Exactly what the currently-deployed pre-NEO-143 service answers.
+    const calls = guardStub({ status: "ok", environment: "prod" });
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+
+    expect(result.success).toBe(false);
+    // THE assertion: the request whose shape an old service would misread was
+    // never sent. A guard that fails after the call would be worthless here.
+    expect(calls).toHaveLength(0);
+    // And no credential was recorded on the back of it. (A row exists because
+    // withCredentialLock writes the lock before running the body; what matters
+    // is that it never flipped to hasCredentials.)
+    expect((await getRawEntry(t, USER_A, SITE))?.hasCredentials).toBeFalsy();
+  });
+
+  test("the failure is reported as a deploy in progress, not as bad credentials", async () => {
+    const t = convexTest(schema, modules);
+    guardStub({ status: "ok", environment: "prod", contractVersion: 0 });
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+
+    expect(result.success).toBe(false);
+    // Telling a user to re-check a correct password sends them to change it for
+    // no reason. The copy must point at the deploy, not at them.
+    expect(result.message).toMatch(/updating/i);
+    expect(result.message).not.toMatch(/check your username|password/i);
+  });
+
+  test("an unreachable /health blocks the call rather than assuming compatibility", async () => {
+    const t = convexTest(schema, modules);
+    const calls = guardStub({ error: "unavailable" }, 503);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+
+    expect(result.success).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a current service is probed once, then served from cache", async () => {
+    const t = convexTest(schema, modules);
+    let healthProbes = 0;
+    const logins: string[] = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.endsWith("/health")) {
+        healthProbes += 1;
+        return jsonResponse({ status: "ok", environment: "test", contractVersion: 1 });
+      }
+      logins.push(u);
+      return jsonResponse({ success: true, message: "ok" });
+    }) as FetchStub);
+
+    for (let i = 0; i < 3; i++) {
+      const result = await t
+        .withIdentity({ subject: USER_A })
+        .action(api.credentials.saveCredentials, {
+          site: SITE,
+          username: "real-user",
+          password: "real-pass",
+        });
+      expect(result.success).toBe(true);
+    }
+
+    expect(logins).toHaveLength(3);
+    // Cached — the probe must not become a per-request tax on every credential
+    // operation.
+    expect(healthProbes).toBe(1);
+  });
+
+  test("a too-old result is NOT cached, so recovery is immediate once promoted", async () => {
+    const t = convexTest(schema, modules);
+    let version = 0; // mid-deploy: old revision still serving
+    const logins: string[] = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.endsWith("/health")) {
+        return jsonResponse({ status: "ok", environment: "test", contractVersion: version });
+      }
+      logins.push(u);
+      return jsonResponse({ success: true, message: "ok" });
+    }) as FetchStub);
+
+    const blocked = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+    expect(blocked.success).toBe(false);
+    expect(logins).toHaveLength(0);
+
+    // The new revision reaches 100% traffic.
+    version = 1;
+
+    // Caching the negative would strand the user behind a 60s TTL after the
+    // service is already healthy — turning a seconds-long deploy window into a
+    // minutes-long outage.
+    const recovered = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.credentials.saveCredentials, {
+        site: SITE,
+        username: "real-user",
+        password: "real-pass",
+      });
+    expect(recovered.success).toBe(true);
+    expect(logins).toHaveLength(1);
   });
 });
