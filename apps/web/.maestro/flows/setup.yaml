@@ -391,9 +391,18 @@ tags:
           notVisible: "Confirm New Players & Teams"
           timeout: 30000
 
+# Strict count — the Base checklist is immutable once produced, so 335 is a
+# fixed fact, not "marketplace drift". Do NOT loosen it to hide a bug.
+#
+# Measured 2026-08-11 with the NEO-137 SportLots pagination fix in place: 335
+# cards, 335 carrying a BSC ref, 300 carrying a SportLots ref. The count is
+# BSC-driven and did NOT move when SL went from 88 refs to 300 — every extra SL
+# card matched an existing BSC card rather than adding a new one. That is
+# precisely why this count alone CANNOT catch an SL-truncation regression, and
+# why checklist-renders-rich-fields also asserts the per-card "SL" badge.
 - extendedWaitUntil:
     visible:
-      text: ".*Saved [0-9]+ cards.*"
+      text: ".*Saved 335 cards.*"
     timeout: 30000
 # A "#NNN" card row confirms the fetch + save pipeline ran end-to-end.
 - assertVisible:
@@ -726,3 +735,47 @@ tags:
     visible:
       text: ".*Saved 300 cards.*"
     timeout: 30000
+
+# ── SPORTLOTS PAGINATION GUARD (NEO-137) ────────────────────────────────────
+# Both marketplace badges must appear on this checklist's rows.
+#
+# This is THE regression guard for the SportLots multi-page fetch, and it lives
+# here rather than on Base for a measured reason. Numbers taken from dev on
+# 2026-08-11:
+#
+#   Base            335 cards, 335 BSC, 300 SL  <- SL covers #1-#300 only
+#   Gold Wave (here) 300 cards, 300 BSC, 300 SL  <- 100% coverage
+#
+# The CardChecklist virtuoso opens at the BOTTOM of the list and Maestro cannot
+# scroll it upward, so an "SL" assertion only works where the LAST cards carry
+# an SL ref. On Base they do not (BSC lists more cards than SL for that set),
+# and both a bare assertVisible and a scrollUntilVisible/UP were tried and
+# failed against a perfectly healthy fetch. Here coverage is total, so the
+# badge is present exactly where the virtuoso lands.
+#
+# And this set is >100 cards, which is what makes the guard meaningful:
+# fetchSportLotsChecklist used to POST listcards.tpl once and parse only that
+# response, truncating SportLots to a single page. A regression to that
+# behaviour strips SL refs from everything past the first page — including the
+# tail this assertion reads — and fails right here.
+#
+# ASSERT THE COMPOSED BADGE TEXT, NOT "SL".
+# Maestro matches a selector against the WHOLE text of a node. When the parent
+# variant exposes a source-label map — which it does here — CardChecklistItem
+# renders the SportLots badge as "SL: <label>" (e.g. "SL: 309111"), NOT a bare
+# "SL", so `assertVisible: "SL"` never matches and fails on a perfectly healthy
+# checklist. Verified from the failure screenshot: rows read
+# `#294  J.P. Martinez  [SN50] [SL: 309111] [BSC]`.
+#
+# "SL: " is also what makes this assertion card-specific. A bare "BSC" would be
+# ambiguous — the Multi-source panel above the list renders "BSC" as a column
+# header, so it passes even with no card row on screen (its SportLots header
+# reads "SPORTLOTS", which is why only the SL half failed). Per-card BSC
+# coverage is asserted separately in checklist-renders-rich-fields.
+- scrollUntilVisible:
+    element:
+      text: ".*#[0-9].*"
+    centerElement: true
+    timeout: 15000
+- assertVisible:
+    text: ".*SL: .*"

@@ -14,19 +14,30 @@ tags:
 # WHAT THIS TESTS:
 #   - Card numbers appear as "#NNN" in the left column of each row
 #   - BSC platform badge appears on marketplace-sourced cards
+#   - SL platform badge appears too — i.e. cards carry BOTH marketplace refs
 #   - RC badge appears for rookie cards (common in 2024 Topps Chrome Base)
 #
-# NOTE: the "SL" platform badge (a SportLots per-card match) DOES now render on
-# real Base cards after the NEO-91 fix to fetchSportLotsChecklist — verified live
-# on shared dev: 2024 Topps Chrome Base cards #1-88 (e.g. #1 Ohtani, #4 Freeman)
-# show BOTH "SL" and "BSC" (before NEO-91, zero cards carried
-# platformData.sportlots, so no "SL" badge existed anywhere). It is NOT asserted
-# here because the SL-matched cards are #1-88 — the TOP of the checklist — while
-# the CardChecklist virtuoso opens at the BOTTOM (initialTopMostItemIndex = last
-# card) and Maestro's page-level scroll cannot drive the inner virtuoso up to the
-# top, so a top card is unreachable in the 1024x629 headless viewport. A
-# row-level "SL" badge assertion is therefore not currently feasible in Maestro
-# (the fix is covered by unit tests + live verification instead). See NEO-91.
+# WHY THE "SL" BADGE IS NOT ASSERTED ON *THIS* CHECKLIST.
+#
+# Measured on dev 2026-08-11, after the NEO-137 SportLots pagination fix: Base
+# holds 335 cards, 335 with a BSC ref and 300 with a SportLots ref. SL covers
+# #1-#300, so the last ~35 cards legitimately carry no SL badge — BSC simply
+# lists more cards for this set than SportLots does.
+#
+# The CardChecklist virtuoso opens at the BOTTOM (initialTopMostItemIndex =
+# last card), which lands squarely in that SL-less tail. Both approaches were
+# tried and both fail against a perfectly healthy fetch:
+#   - a bare `assertVisible: "SL"`      -> "Assertion is false: SL is visible"
+#   - `scrollUntilVisible` direction UP -> "No visible element found: SL"
+# confirming that Maestro's page-level scroll cannot drive the inner virtuoso
+# upward, exactly as the pre-NEO-137 note claimed.
+#
+# The SL-coverage guard therefore lives in setup.yaml on the PARALLEL checklist
+# ("Gold Wave Refractors"), which measured 300 cards with 300 SportLots refs —
+# 100% coverage, so the badge is present at the virtuoso's landing position,
+# AND >100 cards, so a regression to single-page fetching would strip SL from
+# the tail and fail there. Asserting it on Base would prove nothing extra.
+#
 # Print-run ("/N") belongs to parallel variant types, not Base; not asserted.
 #
 # FLOW: launch → drill to Base (setup pre-synced) → verify rich fields on rows.
@@ -70,6 +81,10 @@ tags:
 
 # BSC platform badge appears on at least one card row.
 - assertVisible: "BSC"
+
+# The "SL" badge is deliberately NOT asserted here — see the header note. The
+# SL-coverage guard lives on the Parallel checklist in setup.yaml instead,
+# where coverage is 100%.
 
 # ============================================================
 # VERIFY RC BADGE — scroll through the list to find a rookie card.
