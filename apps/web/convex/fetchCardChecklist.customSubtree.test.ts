@@ -94,13 +94,24 @@ describe("fetchCardChecklist — custom subtree", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.cards).toEqual([]); // no marketplace cards — still correct
-    expect(result.unknownPlayers).toEqual(["Custom Subtree Player"]);
-    expect(result.batchId).toBeTruthy();
+    // NEO-137: fetch no longer resolves entities — nothing is an NB card
+    // until the operator pairs, so all three candidate buckets are empty for
+    // a custom subtree and the pending name surfaces from
+    // resolveChecklistEntities instead.
+    expect(result.autoMatched).toEqual([]);
+    expect(result.unmatchedBsc).toEqual([]);
+    expect(result.unmatchedSl).toEqual([]);
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId, sportId: result.sportId!, cards: [] },
+    );
+    expect(resolved.unknownPlayers).toEqual(["Custom Subtree Player"]);
+    expect(resolved.batchId).toBeTruthy();
 
     const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
       selectorOptionId,
-      batchId: result.batchId!,
+      batchId: resolved.batchId!,
     });
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Custom Subtree Player");
@@ -117,10 +128,15 @@ describe("fetchCardChecklist — custom subtree", () => {
     });
 
     expect(result.success).toBe(true);
-    expect(result.unknownPlayers).toEqual([]);
-    expect(result.unknownTeams).toEqual([]);
-    expect(result.batchId).toBeUndefined();
     expect(result.message).toContain("no marketplace data available");
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId, sportId: result.sportId!, cards: [] },
+    );
+    expect(resolved.unknownPlayers).toEqual([]);
+    expect(resolved.unknownTeams).toEqual([]);
+    expect(resolved.batchId).toBeUndefined();
   });
 
   test("two different users fetching the SAME custom subtree get separate, non-colliding batches", async () => {
@@ -135,12 +151,18 @@ describe("fetchCardChecklist — custom subtree", () => {
     const selectorOptionId = await seedCustomSport(t);
     await seedCustomCardWithPendingPlayer(t, selectorOptionId, "Shared Set Player");
 
-    const resultA = await asAdminA.action(api.selectorOptions.fetchCardChecklist, {
-      selectorOptionId,
-    });
-    const resultB = await asAdminB.action(api.selectorOptions.fetchCardChecklist, {
-      selectorOptionId,
-    });
+    const fetched = await asAdminA.action(
+      api.selectorOptions.fetchCardChecklist,
+      { selectorOptionId },
+    );
+    const resultA = await asAdminA.action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId, sportId: fetched.sportId!, cards: [] },
+    );
+    const resultB = await asAdminB.action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId, sportId: fetched.sportId!, cards: [] },
+    );
 
     expect(resultA.batchId).toBeTruthy();
     expect(resultB.batchId).toBeTruthy();

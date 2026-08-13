@@ -76,8 +76,10 @@ tags:
 - tapOn:
     id: "Edit card 999-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 - tapOn:
     id: "Card name"
 - eraseText: 40

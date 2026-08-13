@@ -3,7 +3,8 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
-import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem } from "./ReconciliationModal";
+import { primarySlot, slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
+import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
 
 type RawOptionsResult = {
   success: boolean;
@@ -12,6 +13,9 @@ type RawOptionsResult = {
   autoMatched: MatchedPair[];
   unmatchedBsc: PlatformItem[];
   unmatchedSl: PlatformItem[];
+  // NEO-137: ranked SL candidates per unmatched BSC row, including sets an
+  // auto-match already claimed. Feeds the modal's "Use this set too" affordance.
+  slCandidates?: SlCandidateGroup[];
   errors: Array<{ platform: string; message: string }>;
   message?: string;
 };
@@ -102,9 +106,16 @@ export default function VariantForm({
           setName: setNameValue,
           variantType: variantTypeValue,
         },
-        ...(baseVariant?.platformData?.sportlotsDisplay
-          ? { baseSlPrefix: baseVariant.platformData.sportlotsDisplay }
-          : {}),
+        // NEO-137: the SL display name is the PRIMARY SLOT's label. It used to
+        // live in platformData.sportlotsDisplay, a single string that had no
+        // meaning once a row could hold several SL sets.
+        ...(() => {
+          if (!baseVariant) return {};
+          const slot = primarySlot(baseVariant, "sportlots");
+          if (!slot) return {};
+          const label = slotLabel(baseVariant, "sportlots", slot);
+          return label ? { baseSlPrefix: label } : {};
+        })(),
       });
 
       if (!result.success) {
@@ -178,6 +189,10 @@ export default function VariantForm({
       reconciledItems: result.items.map((item) => ({
         value: item.value,
         platformData: item.platformData,
+        // Forwarded so every allocated slot gets the marketplace's own set
+        // name. A set may map to several sets per side, and without labels
+        // the slots are indistinguishable ids downstream.
+        platformLabels: item.platformLabels,
         metadata: item.metadata,
       })),
     });
@@ -261,36 +276,40 @@ export default function VariantForm({
             autoMatched: reconciliationData.autoMatched,
             unmatchedBsc: reconciliationData.unmatchedBsc,
             unmatchedSl: reconciliationData.unmatchedSl,
+            // NEO-137: lets the modal offer an already-claimed SL set to a
+            // second NB row (the 1996 Score shared-set case).
+            slCandidates: reconciliationData.slCandidates,
           }}
           showMetadata
           setName={setNameValue || ""}
           manufacturer={manufacturerValue || ""}
           extraSlPrefixes={(() => {
             // extraSlPrefixes wants human display strings for the SL prefix
-            // filter (sibling `sportlots` holds numeric radio IDs).
-            // Primary's display name comes from sportlotsDisplay (NEO-16).
-            // For multi-source rows (NEO-6), extra IDs may carry human
-            // labels in platformLabels.sportlots — include those too.
+            // filter (the stored value is a numeric SL radio ID).
+            // NEO-137: every attached SL slot carries a label, so this is
+            // simply "the label of each slot" — primary included. That
+            // subsumes the old sportlotsDisplay-plus-platformLabels union.
+            if (!baseVariant) return [];
             const prefixes: string[] = [];
             const seen = new Set<string>();
-            const push = (s?: string) => {
-              if (s && !seen.has(s)) {
-                seen.add(s);
-                prefixes.push(s);
+            for (const { slot } of slotEntries(baseVariant, "sportlots")) {
+              const label = slotLabel(baseVariant, "sportlots", slot);
+              if (label && !seen.has(label)) {
+                seen.add(label);
+                prefixes.push(label);
               }
-            };
-            push(baseVariant?.platformData?.sportlotsDisplay);
-            const slLabels = baseVariant?.platformLabels?.sportlots;
-            const sl = baseVariant?.platformData?.sportlots;
-            const ids = !sl ? [] : Array.isArray(sl) ? sl : [sl];
-            for (const id of ids) push(slLabels?.[id]);
+            }
             return prefixes;
           })()}
           usedSlPlatformValues={usedIdentifiers?.slPlatformValues}
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
           existingRows={existingVariantRows?.map((r) => ({
             value: r.value,
-            platformData: r.platformData,
+            // The modal speaks marketplace IDs, not slots.
+            platformData: {
+              bsc: slotIds(r, "bsc"),
+              sportlots: slotIds(r, "sportlots"),
+            },
             metadata: r.metadata,
           }))}
         />

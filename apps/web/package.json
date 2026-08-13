@@ -24,6 +24,7 @@
     "setup:e2e": "./setup-maestro.sh",
     "setup:e2e:signin": "./setup-maestro-signin.sh",
     "test:e2e:check": "./check-e2e-env.sh",
+    "e2e:clean-chrome": "./lib-e2e-chrome.sh",
     "test:e2e": "PATH=$HOME/.maestro/bin:$PATH ./run-e2e-smoke.sh",
     "test:e2e:signin": "PATH=$HOME/.maestro/bin:$PATH maestro test --platform web --config .maestro/config.yaml -e APP_URL=${APP_URL:-http://localhost:3000} .maestro/flows/auth/sign-in.yaml",
     "test:e2e:dashboard": "PATH=$HOME/.maestro/bin:$PATH maestro test --platform web --config .maestro/config.yaml -e APP_URL=${APP_URL:-http://localhost:3000} .maestro/flows/dashboard/view-collection.yaml",

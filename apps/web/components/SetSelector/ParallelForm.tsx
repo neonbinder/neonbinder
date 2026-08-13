@@ -3,7 +3,8 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
-import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem } from "./ReconciliationModal";
+import { slotIds } from "../../convex/platformSlots";
+import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
 
 type RawOptionsResult = {
   success: boolean;
@@ -12,6 +13,9 @@ type RawOptionsResult = {
   autoMatched: MatchedPair[];
   unmatchedBsc: PlatformItem[];
   unmatchedSl: PlatformItem[];
+  // NEO-137: ranked SL candidates per unmatched BSC row, including sets an
+  // auto-match already claimed. Feeds the modal's "Use this set too" affordance.
+  slCandidates?: SlCandidateGroup[];
   errors: Array<{ platform: string; message: string }>;
   message?: string;
 };
@@ -146,6 +150,10 @@ export default function ParallelForm({
       reconciledItems: result.items.map((item) => ({
         value: item.value,
         platformData: item.platformData,
+        // Forwarded so every allocated slot gets the marketplace's own set
+        // name. A set may map to several sets per side, and without labels
+        // the slots are indistinguishable ids downstream.
+        platformLabels: item.platformLabels,
         metadata: item.metadata,
       })),
     });
@@ -219,6 +227,9 @@ export default function ParallelForm({
             autoMatched: reconciliationData.autoMatched,
             unmatchedBsc: reconciliationData.unmatchedBsc,
             unmatchedSl: reconciliationData.unmatchedSl,
+            // NEO-137: lets the modal offer an already-claimed SL set to a
+            // second NB row (the 1996 Score shared-set case).
+            slCandidates: reconciliationData.slCandidates,
           }}
           showMetadata
           setName={setNameValue || ""}
@@ -227,7 +238,11 @@ export default function ParallelForm({
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
           existingRows={existingParallelRows.map((r) => ({
             value: r.value,
-            platformData: r.platformData,
+            // The modal speaks marketplace IDs, not slots (NEO-137).
+            platformData: {
+              bsc: slotIds(r, "bsc"),
+              sportlots: slotIds(r, "sportlots"),
+            },
             metadata: r.metadata,
           }))}
         />

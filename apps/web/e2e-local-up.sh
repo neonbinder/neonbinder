@@ -34,6 +34,19 @@ BOOTSTRAP_STAGGER="${BOOTSTRAP_STAGGER:-90}"
 mkdir -p .e2e-local maestro-report/logs
 STOP_FILE="$ROOT/.e2e-local/stop"; rm -f "$STOP_FILE"
 
+# Chrome resolution + orphan sweeper (NEO-138). Fail before bootstrapping two
+# workers over ~2 minutes rather than after: without a Chrome for Testing build
+# every flow would run in a 1x1 viewport and fail.
+# shellcheck source=lib-e2e-chrome.sh
+source "$ROOT/lib-e2e-chrome.sh"
+require_chrome_for_testing || exit 1
+
+# A previous harness that was SIGKILLed (or a flow that hit its timeout) leaves
+# its browser alive — Maestro sets chromedriver's `detach` option. Sweep before
+# starting so this run isn't contending with ghosts. Safe: matches only
+# automation profiles and the Chrome for Testing binary, never a real browser.
+kill_orphan_e2e_chrome
+
 DOTENV=()
 [ -f .env.convex ] && DOTENV=(npx dotenv-cli -e .env.convex --)
 
@@ -75,7 +88,11 @@ pids=()
 cleanup() {
   echo; echo "stopping workers…"; touch "$STOP_FILE"
   for p in "${pids[@]}"; do kill "$p" 2>/dev/null; done
-  wait 2>/dev/null; rm -f "$STOP_FILE"; exit 0
+  wait 2>/dev/null; rm -f "$STOP_FILE"
+  # Killing the worker doesn't kill its browser (chromedriver `detach`), so
+  # sweep on the way out — otherwise every Ctrl-C leaks a ~280MB Chrome.
+  kill_orphan_e2e_chrome
+  exit 0
 }
 trap cleanup INT TERM
 

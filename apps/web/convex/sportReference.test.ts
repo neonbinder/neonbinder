@@ -50,7 +50,8 @@ async function seedTree(t: ReturnType<typeof convexTest>) {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
-      platformData: { bsc: "baseball", sportlots: "BB" },
+      platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       children: [],
       sportConfig: BASEBALL_CONFIG,
       lastUpdated: Date.now(),
@@ -325,8 +326,8 @@ describe("NEO-96 sportConfig is seeded at sport-row creation", () => {
     expect(row?.sportConfig?.skuCode).toBe("BB");
     expect(row?.sportConfig?.wikidata?.sportQid).toBe("Q5369");
     // The marketplace wire formats stay where they belong — NOT in sportConfig.
-    expect(row?.platformData.bsc).toBe("baseball");
-    expect(row?.platformData.sportlots).toBe("BB");
+    expect(row?.platformData.bsc).toEqual({ b0: "baseball" });
+    expect(row?.platformData.sportlots).toEqual({ s0: "BB" });
   });
 
   test("an unmapped sport gets no config, and that is not an error", async () => {
@@ -397,8 +398,8 @@ describe("NEO-96 renameSelectorOption", () => {
     });
 
     const row = await t.run(async (ctx) => ctx.db.get(sportId));
-    expect(row?.platformData.bsc).toBe("baseball");
-    expect(row?.platformData.sportlots).toBe("BB");
+    expect(row?.platformData.bsc).toEqual({ b0: "baseball" });
+    expect(row?.platformData.sportlots).toEqual({ s0: "BB" });
     // Config is likewise preserved, so SKUs and enrichment survive the rename.
     expect(row?.sportConfig?.skuCode).toBe("BB");
   });

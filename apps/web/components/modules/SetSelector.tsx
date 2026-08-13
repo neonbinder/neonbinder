@@ -45,6 +45,7 @@ import type { GenericId } from "convex/values";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
 
@@ -162,8 +163,20 @@ export default function SetSelector() {
     // suppress the auto-prompt on every freshly-synced Base. Only the
     // SportLots value is exclusively written by BaseSetPicker, so its
     // presence is the reliable "user has mapped this Base" signal.
-    stableVariantTypeFlagsRef.current.hasMapping =
-      !!selectedVariantType?.platformData?.sportlots;
+    //
+    // NEO-137: count SLOTS, never truthiness. `platformData.sportlots` used to
+    // be a string, where `!!` was a correct emptiness test. It is a Record now,
+    // and `!!{}` is ALWAYS true — so a row carrying an empty-but-present
+    // sportlots map (every side that has been attached and then fully detached,
+    // since only `pruneEmptySides` removes the key) would report itself mapped.
+    // The user would get the "Re-map Base" button instead of the auto-opening
+    // picker, with no way to reach the picker except that button — the mapping
+    // silently looks done when nothing is attached. Same class as the
+    // typeof-string / Array.isArray narrowings this ticket replaced elsewhere:
+    // type-legal against a Record, and wrong.
+    stableVariantTypeFlagsRef.current.hasMapping = selectedVariantType
+      ? slotIds(selectedVariantType, "sportlots").length > 0
+      : false;
     stableVariantTypeFlagsRef.current.value = selectedVariantType?.value ?? "";
   }
   const isBaseVariantTypeSelected = stableVariantTypeFlagsRef.current.isBase;
@@ -266,26 +279,37 @@ export default function SetSelector() {
     if (!cardChecklistRow) return {};
     const out: SourceChips = {};
     for (const side of ["bsc", "sportlots"] as const) {
-      const raw = cardChecklistRow.platformData?.[side];
-      const ids = raw === undefined ? [] : Array.isArray(raw) ? raw : [raw];
-      if (ids.length <= 1) continue;
-      const labels = cardChecklistRow.platformLabels?.[side] ?? {};
-      const primaryId =
-        cardChecklistRow.primaryPlatformId?.[side] ?? ids[0];
+      // NEO-137: chips are keyed by SLOT, matching what cards store in
+      // platformData.<side>.src. Keying them by marketplace id would not
+      // survive a row holding the same set in two slots, and would not match
+      // what the per-card filter compares against.
+      const entries = slotEntries(cardChecklistRow, side);
+      if (entries.length <= 1) continue;
+      const primarySlotKey =
+        cardChecklistRow.primaryPlatformId?.[side] ?? entries[0].slot;
       out[side] = {
-        primaryId,
-        chips: ids.map((id) => ({ id, label: labels[id] ?? id })),
+        primaryId: primarySlotKey,
+        chips: entries.map((e) => ({
+          id: e.slot,
+          label: slotLabel(cardChecklistRow, side, e.slot),
+        })),
       };
     }
     return out;
   }, [cardChecklistRow]);
-  const sourceLabelMaps = useMemo(
-    () => ({
-      bsc: cardChecklistRow?.platformLabels?.bsc ?? {},
-      sportlots: cardChecklistRow?.platformLabels?.sportlots ?? {},
-    }),
-    [cardChecklistRow],
-  );
+  // Slot -> display label, for the per-card source badge. Falls back to the
+  // marketplace id via slotLabel when a slot carries no label.
+  const sourceLabelMaps = useMemo(() => {
+    const build = (side: "bsc" | "sportlots"): Record<string, string> => {
+      if (!cardChecklistRow) return {};
+      const out: Record<string, string> = {};
+      for (const { slot } of slotEntries(cardChecklistRow, side)) {
+        out[slot] = slotLabel(cardChecklistRow, side, slot);
+      }
+      return out;
+    };
+    return { bsc: build("bsc"), sportlots: build("sportlots") };
+  }, [cardChecklistRow]);
 
   return (
     <div className="max-w-full mx-auto p-6 flex flex-col gap-6">

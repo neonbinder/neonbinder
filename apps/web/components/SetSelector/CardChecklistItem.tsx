@@ -18,13 +18,11 @@ type CardChecklistItemProps = {
     autographType?: string;
     cardVariation?: string;
     features?: Record<string, string>;
+    // NEO-137: `ref` is the card's marketplace identity, `src` the slot on
+    // the parent row naming which marketplace SET it came from.
     platformData: {
-      bsc?: string;
-      sportlots?: string;
-    };
-    sourcePlatformIds?: {
-      bsc?: string;
-      sportlots?: string;
+      bsc?: { ref: string; src?: string };
+      sportlots?: { ref: string; src?: string };
     };
     isCustom?: boolean;
     // NEO-21: present only on guest rows — a card printed in another product
@@ -165,39 +163,43 @@ export default function CardChecklistItem({
           })}
         </div>
       )}
-      {/* Platform badges */}
+      {/* Platform badges.
+
+          These answer ONE question — which marketplaces can this card be listed
+          to — so the visible text is always the bare platform tag. NEO-6 briefly
+          rendered the source-set label inline ("SL: Base Set"), but on a 500-row
+          checklist that detail is noise: every row repeats the same label, and
+          which slot a card came from is a pairing concern, not a listing one.
+          The label survives as a tooltip, and CardPairingModal still shows it
+          inline because there it IS the thing being decided.
+
+          One style for both sides, deliberately: two visually distinct badges
+          carrying identical text would imply a distinction the row no longer
+          draws. */}
       <div className="flex gap-1 shrink-0 items-center flex-wrap justify-end">
-        {/* NEO-6 source-set badges: rendered only when the parent variant
-            exposes a label map for that side AND this card carries a
-            sourcePlatformIds entry. Replaces the bare "SL" / "BSC" tag
-            with the operator-given label (e.g. "Series 2"). */}
-        {sourceLabelMaps?.sportlots[card.sourcePlatformIds?.sportlots ?? ""] ? (
+        {card.platformData.sportlots && (
           <span
-            className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-200 border border-blue-300 dark:border-blue-700"
-            title={`SL source: ${card.sourcePlatformIds?.sportlots}`}
+            className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300"
+            title={
+              sourceLabelMaps?.sportlots[card.platformData.sportlots.src ?? ""]
+                ? `SL source: ${sourceLabelMaps.sportlots[card.platformData.sportlots.src!]}`
+                : "Listable on SportLots"
+            }
           >
-            SL: {sourceLabelMaps.sportlots[card.sourcePlatformIds!.sportlots!]}
+            SL
           </span>
-        ) : (
-          card.platformData.sportlots && (
-            <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
-              SL
-            </span>
-          )
         )}
-        {sourceLabelMaps?.bsc[card.sourcePlatformIds?.bsc ?? ""] ? (
+        {card.platformData.bsc && (
           <span
-            className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-200 border border-blue-300 dark:border-blue-700"
-            title={`BSC source: ${card.sourcePlatformIds?.bsc}`}
+            className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300"
+            title={
+              sourceLabelMaps?.bsc[card.platformData.bsc.src ?? ""]
+                ? `BSC source: ${sourceLabelMaps.bsc[card.platformData.bsc.src!]}`
+                : "Listable on BuySportsCards"
+            }
           >
-            BSC: {sourceLabelMaps.bsc[card.sourcePlatformIds!.bsc!]}
+            BSC
           </span>
-        ) : (
-          card.platformData.bsc && (
-            <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
-              BSC
-            </span>
-          )
         )}
         {card.isCustom && (
           <span className="text-xs px-1 py-0.5 rounded bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700">

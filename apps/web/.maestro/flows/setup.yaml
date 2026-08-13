@@ -333,6 +333,40 @@ tags:
 - tapOn:
     text: ".*Fetch from Marketplaces.*|Refresh"
 
+# NEO-137 — the card-pairing step now runs BEFORE any card is generated.
+# Sync returns candidates (matched / BSC-only / SportLots-only) and nothing is
+# written until Confirm. "Keep all" on both columns preserves exactly what a
+# pre-NEO-137 sync produced, which is what keeps the strict card counts below
+# honest: this seed must provision the SAME baseline as before, so it keeps
+# every candidate rather than silently narrowing the checklist.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 60000
+
 # First fetch: all players/teams are new → EntityReviewWizard opens.
 - extendedWaitUntil:
     visible:
@@ -364,9 +398,18 @@ tags:
           notVisible: "Confirm New Players & Teams"
           timeout: 30000
 
+# Strict count — the Base checklist is immutable once produced, so 335 is a
+# fixed fact, not "marketplace drift". Do NOT loosen it to hide a bug.
+#
+# Measured 2026-08-11 with the NEO-137 SportLots pagination fix in place: 335
+# cards, 335 carrying a BSC ref, 300 carrying a SportLots ref. The count is
+# BSC-driven and did NOT move when SL went from 88 refs to 300 — every extra SL
+# card matched an existing BSC card rather than adding a new one. That is
+# precisely why this count alone CANNOT catch an SL-truncation regression, and
+# why checklist-renders-rich-fields also asserts the per-card "SL" badge.
 - extendedWaitUntil:
     visible:
-      text: ".*Saved [0-9]+ cards.*"
+      text: ".*Saved 335 cards.*"
     timeout: 30000
 # A "#NNN" card row confirms the fetch + save pipeline ran end-to-end.
 - assertVisible:
@@ -418,24 +461,29 @@ tags:
       # ReconciliationModal STRUCTURE coverage — folded in from the retired
       # insert-variant-flow / cascade/sets-inserts (which couldn't survive a
       # pre-saved column). Verify the modal before saving the matched rows.
+      # NEO-137 — the dialog builds NB SETS now, not marketplace pairs. Its two
+      # sections are Ready (sets that will be written) and Pending (marketplace
+      # sets not yet assigned to one). The old "N matched, N BSC-only, N SL-only"
+      # summary and the "Unmatched" heading no longer exist, and "keep as
+      # platform-only" is gone entirely — a set with mappings on one side only
+      # is ordinary now, not a special case needing its own shelf.
+      # Assert only what is ABOVE THE FOLD. The dialog body is its own
+      # overflow-y-auto scroller, and with a real set the Ready list runs long
+      # enough to push Pending and its two columns off a 1024x629 viewport —
+      # asserting them here failed for layout reasons, not behaviour.
+      # The header subtitle carries both counts and never scrolls away, so it
+      # gives the same structural coverage for free. The Pending columns are
+      # asserted properly (filtered, with counts) in
+      # inserts-1996-score-one-nb-set-two-bsc-sources, which scrolls to them.
       - assertVisible:
-          text: ".*[0-9]+ matched.*"
+          text: ".*[0-9]+ ready.*"
       - assertVisible:
-          text: ".*BSC-only.*"
-      - assertVisible:
-          text: ".*SL-only.*"
+          text: ".*Ready \\([0-9]+\\).*"
       - scrollUntilVisible:
           element:
-            text: ".*Unmatched.*"
-      - assertVisible:
-          text: ".*BSC.*"
-      - assertVisible:
-          text: ".*SportLots.*"
-      - scrollUntilVisible:
-          element:
-            text: ".*Save [0-9]+ matched.*"
+            text: ".*Save [0-9]+ sets.*"
       - tapOn:
-          text: ".*Save [0-9]+ matched.*"
+          text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
           notVisible: "Reconcile Inserts"
           timeout: 30000
@@ -474,6 +522,37 @@ tags:
     timeout: 15000
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
+# NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
+# columns reproduces exactly what a pre-NEO-137 sync produced, which is what
+# keeps the strict card counts below honest: this seed must provision the SAME
+# baseline as before, not a silently narrowed one.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 90000
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -547,24 +626,29 @@ tags:
       # ReconciliationModal STRUCTURE coverage — folded in from the retired
       # cascade/sets-parallels (which couldn't survive a pre-saved column).
       # Verify the modal before saving the matched rows.
+      # NEO-137 — the dialog builds NB SETS now, not marketplace pairs. Its two
+      # sections are Ready (sets that will be written) and Pending (marketplace
+      # sets not yet assigned to one). The old "N matched, N BSC-only, N SL-only"
+      # summary and the "Unmatched" heading no longer exist, and "keep as
+      # platform-only" is gone entirely — a set with mappings on one side only
+      # is ordinary now, not a special case needing its own shelf.
+      # Assert only what is ABOVE THE FOLD. The dialog body is its own
+      # overflow-y-auto scroller, and with a real set the Ready list runs long
+      # enough to push Pending and its two columns off a 1024x629 viewport —
+      # asserting them here failed for layout reasons, not behaviour.
+      # The header subtitle carries both counts and never scrolls away, so it
+      # gives the same structural coverage for free. The Pending columns are
+      # asserted properly (filtered, with counts) in
+      # inserts-1996-score-one-nb-set-two-bsc-sources, which scrolls to them.
       - assertVisible:
-          text: ".*[0-9]+ matched.*"
+          text: ".*[0-9]+ ready.*"
       - assertVisible:
-          text: ".*BSC-only.*"
-      - assertVisible:
-          text: ".*SL-only.*"
+          text: ".*Ready \\([0-9]+\\).*"
       - scrollUntilVisible:
           element:
-            text: ".*BSC.*"
-      # R6 — scrollUntilVisible already asserts the ".*BSC.*" element is visible;
-      # the redundant assertVisible of the same target was removed.
-      - assertVisible:
-          text: ".*SportLots.*"
-      - scrollUntilVisible:
-          element:
-            text: ".*Save [0-9]+ matched.*"
+            text: ".*Save [0-9]+ sets.*"
       - tapOn:
-          text: ".*Save [0-9]+ matched.*"
+          text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
           notVisible: "Reconcile Parallels"
           timeout: 30000
@@ -602,6 +686,37 @@ tags:
     timeout: 15000
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
+# NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
+# columns reproduces exactly what a pre-NEO-137 sync produced, which is what
+# keeps the strict card counts below honest: this seed must provision the SAME
+# baseline as before, not a silently narrowed one.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 90000
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -637,3 +752,44 @@ tags:
     visible:
       text: ".*Saved 300 cards.*"
     timeout: 30000
+
+# ── SPORTLOTS PAGINATION GUARD (NEO-137) ────────────────────────────────────
+# Both marketplace badges must appear on this checklist's rows.
+#
+# This is THE regression guard for the SportLots multi-page fetch, and it lives
+# here rather than on Base for a measured reason. Numbers taken from dev on
+# 2026-08-11:
+#
+#   Base            335 cards, 335 BSC, 300 SL  <- SL covers #1-#300 only
+#   Gold Wave (here) 300 cards, 300 BSC, 300 SL  <- 100% coverage
+#
+# The CardChecklist virtuoso opens at the BOTTOM of the list and Maestro cannot
+# scroll it upward, so an "SL" assertion only works where the LAST cards carry
+# an SL ref. On Base they do not (BSC lists more cards than SL for that set),
+# and both a bare assertVisible and a scrollUntilVisible/UP were tried and
+# failed against a perfectly healthy fetch. Here coverage is total, so the
+# badge is present exactly where the virtuoso lands.
+#
+# And this set is >100 cards, which is what makes the guard meaningful:
+# fetchSportLotsChecklist used to POST listcards.tpl once and parse only that
+# response, truncating SportLots to a single page. A regression to that
+# behaviour strips SL refs from everything past the first page — including the
+# tail this assertion reads — and fails right here.
+#
+# THE BADGE IS A BARE "SL" — and that is unambiguous here, for a reason worth
+# keeping. Maestro matches a selector against the WHOLE text of a node, so "SL"
+# matches only a node whose text is exactly "SL". The badge used to compose the
+# source label into it ("SL: 309111") and this assertion read ".*SL: .*"; the
+# label moved to a tooltip, so the composed form no longer exists.
+#
+# Note the asymmetry with BSC: a bare "BSC" WOULD be ambiguous, because the
+# Multi-source panel above the list renders "BSC" as a column header and would
+# satisfy the assertion with no card row on screen at all. Its SportLots header
+# reads "SPORTLOTS", which full-matches nothing, so "SL" stays card-specific.
+# Per-card BSC coverage is asserted separately in checklist-renders-rich-fields.
+- scrollUntilVisible:
+    element:
+      text: ".*#[0-9].*"
+    centerElement: true
+    timeout: 15000
+- assertVisible: "SL"

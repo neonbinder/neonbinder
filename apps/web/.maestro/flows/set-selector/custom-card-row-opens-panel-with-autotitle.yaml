@@ -90,8 +90,10 @@ tags:
 # ============================================================
 
 # Drawer opened (row-body click worked) — the "Card name" input appears.
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 # Header confirms it is THIS card's panel.
 - assertVisible:
     text: ".*Card #779-${ATTEMPT_ID}.*"

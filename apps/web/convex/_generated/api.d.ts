@@ -34,6 +34,7 @@ import type * as features_generateListing from "../features/generateListing.js";
 import type * as http from "../http.js";
 import type * as myFunctions from "../myFunctions.js";
 import type * as observability from "../observability.js";
+import type * as platformSlots from "../platformSlots.js";
 import type * as players from "../players.js";
 import type * as posthog from "../posthog.js";
 import type * as publicProfile from "../publicProfile.js";
@@ -81,6 +82,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   myFunctions: typeof myFunctions;
   observability: typeof observability;
+  platformSlots: typeof platformSlots;
   players: typeof players;
   posthog: typeof posthog;
   publicProfile: typeof publicProfile;

@@ -73,7 +73,35 @@ fi
 
 MAESTRO="$HOME/.maestro/bin/maestro"
 CONFIG=".maestro/config.yaml"
-APP_URL="${APP_URL:-https://localhost:3000}"
+
+# Chrome for Testing is MANDATORY locally (NEO-138). Branded Google Chrome
+# exposes chrome://omnibox-popup CDP targets ahead of the real tab, and Maestro
+# — whose CdpTarget model has no `type` field to filter on — drives the popup
+# widget instead, giving every flow a 1x1 viewport (heightPixels=1) and 1x1
+# failure screenshots. No-op in CI, where setup-chrome already installs a
+# non-branded build. See lib-e2e-chrome.sh for the full write-up.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-e2e-chrome.sh"
+require_chrome_for_testing || exit 1
+[ -n "$SE_BROWSER_PATH" ] && echo "🌐 Chrome: $SE_BROWSER_PATH"
+
+# Plain HTTP, matching CI exactly: the maestro-runner action stands up a Node
+# http.createServer proxy on localhost:3000 forwarding to the Vercel preview, so
+# every green CI run has always driven `http://localhost:3000`.
+#
+# This used to default to https://localhost:3000 (vite-plugin-mkcert) — the one
+# part of the local setup that diverged from CI, and it broke every local flow.
+# Against the mkcert HTTPS server, Chrome for Testing hangs after `launchApp`
+# and Selenium's getCurrentUrl blocks until its 180s timeout:
+#   CommandFailed: Timeout when executing request (GET .../url)
+# with a blank (but correctly sized, 1024x625) screenshot — which reads exactly
+# like a product bug. Same browser, same driver, same flow over HTTP passes in
+# 19s. Branded Chrome appears to cope only because it is a long-lived profile;
+# chromedriver hands Chrome for Testing a fresh --user-data-dir every run.
+#
+# http://localhost is a secure context per spec, so Clerk, crypto.subtle and
+# service workers behave exactly as they do under TLS. vite-keeper.sh sets
+# VITE_DEV_DISABLE_HTTPS=1 so the server it starts matches this default.
+APP_URL="${APP_URL:-http://localhost:3000}"
 # Unique username per run to avoid "already taken" in profile flows.
 # Must match the profile validation regex ^[a-z0-9-]+$ (no underscores).
 TEST_USERNAME="${TEST_USERNAME:-neontester-$(date +%s)}"

@@ -5,14 +5,18 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import AttachSetsDialog from "./AttachSetsDialog";
+import { slotEntries, slotLabel } from "../../convex/platformSlots";
 
 /**
  * Per-row attached-sets panel (NEO-6 phase 1). Renders chip stacks for the
- * BSC and SL IDs attached to a variantType / insert / parallel row, with
- * the reconciliation primary clearly marked. Operator can:
+ * BSC and SL IDs attached to a variantType / insert / parallel row. Every
+ * source is presented equally — see the note on the chip's <li> for why the
+ * old "PRIMARY" badge was removed. Operator can:
  *   • Open the combined attach dialog to add more BSC/SL IDs.
  *   • Rename the label on any chip inline (Enter to save, Escape to cancel).
- *   • Remove any non-primary chip with the × button.
+ *   • Remove any chip with the × button. Removing the slot the reconciler
+ *     owns still takes one extra confirm — it is the one a later sync could
+ *     re-add — but that is phrased as a consequence, not as a rank.
  *
  * Keyboard model:
  *   Tab     — cycles between chip controls and the Attach button.
@@ -21,10 +25,17 @@ import AttachSetsDialog from "./AttachSetsDialog";
  */
 type Side = "bsc" | "sportlots";
 
-function toArray(v: string | string[] | undefined): string[] {
-  if (v === undefined) return [];
-  return Array.isArray(v) ? v : [v];
-}
+/**
+ * NEO-137: a chip is one SLOT, not one marketplace id. The same marketplace
+ * set can legitimately occupy more than one slot, and detach/rename now key on
+ * the slot because an id is no longer a unique handle on this row.
+ */
+type SlotChip = {
+  slot: string;
+  id: string;
+  label: string;
+  isPrimary: boolean;
+};
 
 export default function MultiSourcePanel({
   selectorOptionId,
@@ -49,13 +60,13 @@ export default function MultiSourcePanel({
   // box mid-interaction (NEO-85 dropped-tap class). These hooks must precede
   // the early returns below so hook order stays unconditional (Rules of Hooks),
   // hence the `row?.`/guarded bodies for the not-yet-loaded case.
-  const bscIds = useMemo(
-    () => toArray(row?.platformData.bsc),
-    [row?.platformData.bsc],
+  const bscEntries = useMemo(
+    () => (row ? slotEntries(row, "bsc") : []),
+    [row],
   );
-  const slIds = useMemo(
-    () => toArray(row?.platformData.sportlots),
-    [row?.platformData.sportlots],
+  const slEntries = useMemo(
+    () => (row ? slotEntries(row, "sportlots") : []),
+    [row],
   );
   const parentFilters = useMemo<Record<string, string>>(() => {
     const filters: Record<string, string> = {};
@@ -69,10 +80,10 @@ export default function MultiSourcePanel({
   }, [chain, row]);
   const alreadyAttached = useMemo(
     () => ({
-      bsc: new Set(bscIds),
-      sportlots: new Set(slIds),
+      bsc: new Set(bscEntries.map((e) => e.id)),
+      sportlots: new Set(slEntries.map((e) => e.id)),
     }),
-    [bscIds, slIds],
+    [bscEntries, slEntries],
   );
 
   if (!row || !chain) return null;
@@ -84,8 +95,23 @@ export default function MultiSourcePanel({
     return null;
   }
 
-  const primaryBsc = row.primaryPlatformId?.bsc ?? bscIds[0];
-  const primarySl = row.primaryPlatformId?.sportlots ?? slIds[0];
+  // Falls back to the lowest-numbered slot, matching primarySlot() on the
+  // backend, so the UI marks the same chip the reconciler treats as primary.
+  const primaryBscSlot = row.primaryPlatformId?.bsc ?? bscEntries[0]?.slot;
+  const primarySlSlot =
+    row.primaryPlatformId?.sportlots ?? slEntries[0]?.slot;
+
+  const toChips = (
+    entries: Array<{ slot: string; id: string }>,
+    side: Side,
+    primary: string | undefined,
+  ): SlotChip[] =>
+    entries.map((e) => ({
+      slot: e.slot,
+      id: e.id,
+      label: slotLabel(row, side, e.slot),
+      isPrimary: e.slot === primary,
+    }));
 
   // Hide only for genuinely custom user-created rows, which have no
   // marketplace concept at all. Marketplace-backed rows stay reachable even
@@ -118,36 +144,32 @@ export default function MultiSourcePanel({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <SideColumn
           title="BSC"
-          ids={bscIds}
-          labels={row.platformLabels?.bsc ?? {}}
-          primaryId={primaryBsc}
-          onDetach={(id, opts) =>
+          chips={toChips(bscEntries, "bsc", primaryBscSlot)}
+          onDetach={(slot, opts) =>
             detach({
               selectorOptionId,
               side: "bsc",
-              id,
+              slot,
               confirmPrimary: opts?.confirmPrimary,
             })
           }
-          onRename={(id, label) =>
-            rename({ selectorOptionId, side: "bsc", id, label })
+          onRename={(slot, label) =>
+            rename({ selectorOptionId, side: "bsc", slot, label })
           }
         />
         <SideColumn
           title="SportLots"
-          ids={slIds}
-          labels={row.platformLabels?.sportlots ?? {}}
-          primaryId={primarySl}
-          onDetach={(id, opts) =>
+          chips={toChips(slEntries, "sportlots", primarySlSlot)}
+          onDetach={(slot, opts) =>
             detach({
               selectorOptionId,
               side: "sportlots",
-              id,
+              slot,
               confirmPrimary: opts?.confirmPrimary,
             })
           }
-          onRename={(id, label) =>
-            rename({ selectorOptionId, side: "sportlots", id, label })
+          onRename={(slot, label) =>
+            rename({ selectorOptionId, side: "sportlots", slot, label })
           }
         />
       </div>
@@ -167,30 +189,18 @@ export default function MultiSourcePanel({
 
 function SideColumn({
   title,
-  ids,
-  labels,
-  primaryId,
+  chips,
   onDetach,
   onRename,
 }: {
   title: string;
-  ids: string[];
-  labels: Record<string, string>;
-  primaryId: string | undefined;
+  chips: SlotChip[];
   onDetach: (
-    id: string,
+    slot: string,
     opts?: { confirmPrimary?: boolean },
   ) => Promise<unknown>;
-  onRename: (id: string, label: string) => Promise<unknown>;
+  onRename: (slot: string, label: string) => Promise<unknown>;
 }) {
-  const chips = useMemo(() => {
-    return ids.map((id) => ({
-      id,
-      label: labels[id] ?? id,
-      isPrimary: id === primaryId,
-    }));
-  }, [ids, labels, primaryId]);
-
   return (
     <div>
       <header className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
@@ -202,7 +212,7 @@ function SideColumn({
         <ul className="flex flex-col gap-1.5">
           {chips.map((chip) => (
             <Chip
-              key={chip.id}
+              key={chip.slot}
               chip={chip}
               onDetach={onDetach}
               onRename={onRename}
@@ -221,12 +231,12 @@ function Chip({
   onDetach,
   onRename,
 }: {
-  chip: { id: string; label: string; isPrimary: boolean };
+  chip: SlotChip;
   onDetach: (
-    id: string,
+    slot: string,
     opts?: { confirmPrimary?: boolean },
   ) => Promise<unknown>;
-  onRename: (id: string, label: string) => Promise<unknown>;
+  onRename: (slot: string, label: string) => Promise<unknown>;
 }) {
   const [mode, setMode] = useState<ChipMode>("idle");
   const [draft, setDraft] = useState(chip.label);
@@ -243,7 +253,7 @@ function Chip({
     }
     setBusy(true);
     try {
-      await onRename(chip.id, trimmed);
+      await onRename(chip.slot, trimmed);
       setMode("idle");
       setErr(null);
     } catch (e) {
@@ -258,7 +268,7 @@ function Chip({
     setBusy(true);
     setErr(null);
     try {
-      await onDetach(chip.id, { confirmPrimary: chip.isPrimary });
+      await onDetach(chip.slot, { confirmPrimary: chip.isPrimary });
       setMode("idle");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -273,13 +283,13 @@ function Chip({
         role="alert"
       >
         <span className="flex-1 min-w-0 truncate text-sm text-gray-100">
-          Remove primary mapping “{chip.label}”?
+          Remove “{chip.label}”? A later sync of this row could re-add it.
         </span>
         <button
           type="button"
           onClick={handleDetach}
           disabled={busy}
-          aria-label={`Confirm remove primary ${chip.label}`}
+          aria-label={`Confirm remove ${chip.label}`}
           className="text-xs font-semibold text-[#FF2EB3] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1"
         >
           Confirm
@@ -288,7 +298,7 @@ function Chip({
           type="button"
           onClick={() => setMode("idle")}
           disabled={busy}
-          aria-label={`Cancel remove primary ${chip.label}`}
+          aria-label={`Cancel remove ${chip.label}`}
           className="text-xs text-gray-400 hover:text-gray-200 focus:text-gray-200 focus:outline-none px-1"
         >
           Cancel
@@ -303,21 +313,27 @@ function Chip({
   }
 
   return (
-    <li
-      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${
-        chip.isPrimary
-          ? "border-[#00D558] bg-[#00D558]/10"
-          : "border-gray-700 bg-gray-800"
-      }`}
-    >
-      {chip.isPrimary && (
-        <span
-          className="text-[10px] uppercase font-bold text-[#00D558]"
-          aria-label="Primary source"
-        >
-          Primary
-        </span>
-      )}
+    // No "PRIMARY" badge, deliberately.
+    //
+    // `primaryPlatformId` is bookkeeping — it records which slot the RECONCILER
+    // owns and refreshes, so operator-attached extras survive a re-sync. It says
+    // nothing about the cards. Rendering it as "PRIMARY" invited the reading it
+    // does not have: that this source is where the cards were released and the
+    // others are secondary. For a set like 1996 Score DCAP, split across two BSC
+    // sets, every source is equally primary and the badge was just wrong.
+    //
+    // The provenance concept the badge appeared to express is real but rarer
+    // than 1-in-100 sets (2021 Score's last 20 cards were released in
+    // Chronicles — primary there, secondary in Score). When it is modelled it
+    // gets its own SECONDARY tag on the sources that carry it; silence means
+    // primary, which is the overwhelming default.
+    // items-start, and the name/slug wrap as a pair: the NAME is what the
+    // operator reads, so it gets the full width and the slug drops to a second
+    // line when they will not both fit. Previously both were `truncate`
+    // siblings on one row, which clipped the name ("Dugout Collection Artist's
+    // Proof…") while the slug — the part nobody reads — survived intact.
+    <li className="flex items-start gap-2 px-3 py-1.5 rounded border border-gray-700 bg-gray-800">
+      <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-2">
       {mode === "editing" ? (
         <Input
           bare
@@ -337,7 +353,7 @@ function Chip({
           }}
           onBlur={commitRename}
           aria-label={`Edit label for ${chip.id}`}
-          className="flex-1 min-w-0 px-2 py-0.5 text-sm"
+          className="w-full min-w-0 px-2 py-0.5 text-sm"
         />
       ) : (
         <button
@@ -347,20 +363,21 @@ function Chip({
             setMode("editing");
           }}
           aria-label={`Rename label for ${chip.id}`}
-          className="flex-1 min-w-0 text-left truncate text-sm text-gray-100 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+          className="min-w-0 text-left break-words text-sm text-gray-100 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
         >
           {chip.label}
         </button>
       )}
-      <span className="text-[10px] text-gray-500 truncate" aria-hidden>
+      <span className="text-[10px] text-gray-500 break-all" aria-hidden>
         {chip.id}
       </span>
+      </div>
       {chip.isPrimary ? (
         <button
           type="button"
           onClick={() => setMode("confirming")}
           disabled={busy}
-          aria-label={`Remove primary ${chip.label}`}
+          aria-label={`Remove ${chip.label}`}
           className="text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none px-1"
         >
           ×
