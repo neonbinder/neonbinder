@@ -26,23 +26,49 @@ Added with owner approval for NEO-137 Phase 5. It is the ONLY set in the
 catalog that exhibits the shape the feature exists for, so the feature cannot
 be end-to-end tested without it:
 
-| BSC | SportLots |
-| -- | -- |
-| Dugout Collection Artist's Proofs Series 1 | *(none — one shared set)* |
-| Dugout Collection Artist's Proofs Series 2 | Dugout Collection Artists Proofs |
+| source | set | cards |
+| -- | -- | -- |
+| BSC | Dugout Collection Artist's Proofs Series 1 | 110 |
+| BSC | Dugout Collection Artist's Proofs Series 2 | 110 |
+| SportLots | Dugout Collection Artists Proofs | 220 (`#A1-`, `#B1-`) |
 
 BSC splits the Artist's Proofs into two series; SportLots carries one combined
-set. `computeMatches` splices each match out of BOTH arrays, so the single SL
-set is consumed by whichever series matches first and the other is left with
-nothing. Proving that an operator can bind BOTH series to that one SL set is
-the acceptance criterion of NEO-137, and no other registered set can express
-it.
+set. Proving that ONE NeonBinder set can map to BOTH BSC sets and that single
+SportLots set is the acceptance criterion of NEO-137, and no other registered
+set can express it.
+
+**What the flow leaves behind** (this IS the contract — the flow reconciles on
+every run, so these are the values it re-establishes):
+
+| | |
+| -- | -- |
+| NB insert rows | exactly ONE, named `Dugout Collection Artists Proofs` |
+| its BSC mappings | both series |
+| its SportLots mappings | the one combined set |
+| its card checklist | **220** cards, every one paired across both marketplaces |
+
+220 is also the fan-out regression guard. BSC does not OR multi-value facets:
+before `fetchBscChecklist` fanned out one request per source set, this exact
+configuration returned 200 OK with zero rows and the UI reported "0 BSC cards".
+A count of 110 means only one BSC source was fetched. Do not loosen it.
 
 **Sole-writer, not read-only.** Unlike the Topps Chrome anchor, this set is NOT
 pre-synced by `setup.yaml` and is NOT read-only: the reconciliation IS the
-thing under test, so the flow must perform it. Exactly one flow may ever touch
-this set — `inserts-shared-sl-set-1996-score.yaml`. Adding a second would
-reintroduce the cross-runner interference the read-only rule exists to prevent.
+thing under test, so the flows must perform it.
+
+TWO flows touch this set, and only these two:
+
+| flow | tag | does |
+| -- | -- | -- |
+| `inserts-1996-score-one-nb-set-two-bsc-sources` | `provides:score-1996-multisource` | reconciles the set |
+| `checklist-1996-score-fetches-both-bsc-sources` | `requires:score-1996-multisource` | fetches its cards |
+
+They are ORDERED by the dep graph on a single shard, so they never overlap —
+this is not the cross-runner interference the read-only rule exists to prevent.
+They are two flows rather than one because doing both in a single flow measured
+350-530s against a 600s per-flow kill; raising the timeout would only have
+hidden that a ten-minute flow is a bad citizen on a shared queue. Adding a
+THIRD flow against this set would reintroduce the real hazard.
 Keeping it out of `setup.yaml` also means its sync cost is paid by one flow
 rather than added to every run's seed.
 

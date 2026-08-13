@@ -345,7 +345,7 @@ tags:
     timeout: 60000
 - runFlow:
     when:
-      visible: "Match Cards"
+      visible: "Match Cards.*"
     commands:
       - runFlow:
           when:
@@ -364,7 +364,7 @@ tags:
       - tapOn:
           id: "Confirm card matches"
       - extendedWaitUntil:
-          notVisible: "Match Cards"
+          notVisible: "Match Cards.*"
           timeout: 60000
 
 # First fetch: all players/teams are new → EntityReviewWizard opens.
@@ -527,7 +527,7 @@ tags:
     timeout: 90000
 - runFlow:
     when:
-      visible: "Match Cards"
+      visible: "Match Cards.*"
     commands:
       - runFlow:
           when:
@@ -546,7 +546,7 @@ tags:
       - tapOn:
           id: "Confirm card matches"
       - extendedWaitUntil:
-          notVisible: "Match Cards"
+          notVisible: "Match Cards.*"
           timeout: 90000
 - extendedWaitUntil:
     visible:
@@ -686,7 +686,7 @@ tags:
     timeout: 90000
 - runFlow:
     when:
-      visible: "Match Cards"
+      visible: "Match Cards.*"
     commands:
       - runFlow:
           when:
@@ -705,7 +705,7 @@ tags:
       - tapOn:
           id: "Confirm card matches"
       - extendedWaitUntil:
-          notVisible: "Match Cards"
+          notVisible: "Match Cards.*"
           timeout: 90000
 - extendedWaitUntil:
     visible:

@@ -141,6 +141,10 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     fireEvent.change(title, {
       target: { value: "Dugout Collection Artists Proofs" },
     });
+    // Committed on blur, not per keystroke — dispatching a reducer action per
+    // character re-renders every row of the modal between characters, which is
+    // how controlled inputs drop keystrokes here.
+    fireEvent.blur(title);
 
     fireEvent.click(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
@@ -322,5 +326,43 @@ describe("ReconciliationModal — restoring saved rows", () => {
       "dcap-series-2",
     ]);
     expect(items[0].platformData.sportlots).toEqual(["884412"]);
+  });
+
+  test("removing a set returns EVERY mapping to Pending, not just one", () => {
+    // Disband is the undo for a wrong auto-match. It has to release both sides
+    // or the released set is stranded: invisible in Pending and unreachable to
+    // re-pair, with the only recovery being Cancel and re-sync.
+    renderModal(allPending());
+    fireEvent.click(screen.getByText(BSC_S1.value));
+    fireEvent.click(screen.getByText(SL_COMBINED.value));
+    expect(screen.getByText(/Save 1 sets/)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText(`Remove set ${BSC_S1.value}`));
+
+    expect(screen.getByText(/Save 0 sets/)).toBeTruthy();
+    // Both halves are pending again — each offers its solo affordance, which
+    // only renders for a Pending item.
+    expect(
+      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText(`Make ${SL_COMBINED.value} its own NeonBinder set`),
+    ).toBeTruthy();
+  });
+
+  test("an emptied title snaps back rather than saving a nameless set", () => {
+    renderModal(allPending());
+    fireEvent.click(screen.getByText(BSC_S1.value));
+    fireEvent.click(screen.getByText(SL_COMBINED.value));
+
+    const title = screen.getByLabelText(
+      `NeonBinder set name for ${BSC_S1.value}`,
+    );
+    fireEvent.change(title, { target: { value: "   " } });
+    fireEvent.blur(title);
+
+    expect(
+      screen.getByLabelText(`NeonBinder set name for ${BSC_S1.value}`),
+    ).toHaveProperty("value", BSC_S1.value);
   });
 });

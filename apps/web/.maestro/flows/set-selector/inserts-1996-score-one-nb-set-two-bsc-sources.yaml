@@ -1,0 +1,254 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Inserts — ONE NeonBinder set maps to TWO BSC sets and one SportLots set (1996 Score, NEO-137)"
+tags:
+  - set-selector
+  - provides:score-1996-multisource
+---
+# R1 — ONE FEATURE: a NeonBinder set maps to 0-N BSC sets and 0-N SportLots
+# sets, the two sides independent. This is the SET-level half of NEO-137's
+# acceptance criterion; the card-level half is
+# `checklist-1996-score-fetches-both-bsc-sources`, which `requires:` the state
+# this flow provides.
+#
+# WHY TWO FLOWS. Both halves need 1996 Score, and doing both in one flow put a
+# cold insert sync, a reconcile, a cold two-source card fetch AND the entity
+# wizard inside a single flow. Measured pieces put that at 350-530s against a
+# 600s per-flow kill (MAESTRO_FLOW_TIMEOUT_SEC). Raising the timeout would have
+# hidden the real problem: a ten-minute flow is a bad citizen on a shared
+# 8-runner queue whether or not it passes. Split, each half is comfortable.
+#
+# WHY THIS SET (see .maestro/SET-REGISTRY.md):
+#   1996 Score is the only set in the catalog with the shape the feature exists
+#   for. BSC splits Dugout Collection Artist's Proofs into Series 1 and
+#   Series 2; SportLots carries one combined set of 220 cards:
+#
+#     BSC  Dugout Collection Artist's Proofs Series 1   110 cards
+#     BSC  Dugout Collection Artist's Proofs Series 2   110 cards
+#     SL   Dugout Collection Artists Proofs             220 cards (#A1-, #B1-)
+#
+#   The pre-existing Topps Chrome anchor is an ordinary 1:1 mapping and can
+#   never exercise this.
+#
+# SOLE WRITER, NOT READ-ONLY:
+#   Every other flow treats real sets as read-only, because 8 runners drain the
+#   queue concurrently. Here the reconciliation IS the thing under test, so this
+#   flow must perform it. Only this flow and its `requires:` partner may ever
+#   touch 1996 Score, and the dep graph orders them on one shard.
+#
+# WHAT THIS TESTS — the reconcile dialog builds NB sets, not pairs:
+#   - auto-matches arrive in Ready; unmatched marketplace sets sit in Pending
+#   - a Pending set is ATTACHED to an existing Ready set, giving that one NB set
+#     two BSC mappings — the 0-N-per-side capability itself
+#   - the NB set is RENAMED; the title is ours and is what persists
+#   - saving produces ONE insert row, not two
+#   - both sources show in the multi-source panel, neither marked "primary"
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO Baseball / 1996 / Score / Score
+# The util handles the search-input-per-column cascade. 1996 Score is NOT
+# pre-synced, so the util's 60s ceiling on the variant-type reveal covers the
+# cold BSC + SL fetch for this hierarchy.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "1996"
+      MANUFACTURER: "Score"
+      SET: "Score"
+
+# ============================================================
+# STEP 1 — ENTER THE Insert VARIANT TYPE
+# Selecting it kicks the cross-platform auto-sync, which surfaces the
+# reconcile dialog. 240s matches setup.yaml's sanctioned ceiling for a COLD
+# insert-level BSC + SL fetch — this set has never been synced.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Insert"
+# REQUIRED, not optional. setup.yaml performs a global Set Builder reset before
+# any flow runs, so 1996 Score is always absent when this flow starts and
+# selecting Insert always opens the reconcile dialog.
+#
+# This used to be a `when: visible: "Reconcile Inserts"` branch that silently
+# skipped the whole reconcile if rows already existed. That turned a stale-state
+# problem into a baffling failure three steps later: a leftover hand-built row
+# from a manual dev session made the flow assert a name it had never typed. If
+# the dialog does not appear, the set is dirty and this flow cannot test what it
+# exists to test — so fail here, where the message says so.
+- extendedWaitUntil:
+    visible: "Reconcile Inserts"
+    timeout: 240000
+
+# ── THE TWO SECTIONS ──────────────────────────────────────────────
+# Ready holds NB sets that will be written; Pending holds marketplace
+# sets not yet assigned to one. Anything left in Pending is discarded.
+- assertVisible:
+    text: ".*Ready \\([0-9]+\\).*"
+- assertVisible:
+    text: ".*Pending \\([0-9]+\\).*"
+
+# The auto-matcher pairs Series 2 with the combined SL set at 78% and
+# leaves Series 1 stranded — `computeMatches` splices its match out of
+# both arrays, so the single SL set is consumed by whichever series
+# scored first. That behaviour is UNCHANGED by NEO-137 and is what makes
+# this fixture reproducible. If the winning series ever flips, this
+# assertion is the canary and fails here rather than timing out below.
+- assertVisible:
+    id: "NeonBinder set name for Dugout Collection Artist's Proofs Series 2"
+
+# ── ATTACH THE SECOND BSC SET TO THAT SAME NB SET ─────────────────
+# Four BSC inserts share the "Dugout Collection" prefix, so filter to
+# "Artist" — that leaves exactly ONE pending BSC item, Series 1.
+- tapOn:
+    id: "Filter BSC items"
+    waitToSettleTimeoutMs: 250
+- inputText: "Artist"
+- extendedWaitUntil:
+    visible:
+      text: ".*BSC \\(1 of [0-9]+\\).*"
+    timeout: 15000
+
+# Selecting a Pending item arms it; every Ready set then offers to take
+# it. Tapping by aria-label composes BOTH names, so this can only hit the
+# intended set even with a dozen Ready rows on screen.
+- tapOn:
+    text: "Dugout Collection Artist's Proofs Series 1"
+    retryTapIfNoChange: true
+- scrollUntilVisible:
+    element:
+      id: "Add Dugout Collection Artist's Proofs Series 1 to Dugout Collection Artist's Proofs Series 2"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Add Dugout Collection Artist's Proofs Series 1 to Dugout Collection Artist's Proofs Series 2"
+    retryTapIfNoChange: true
+
+# Consumed from Pending — the BSC column is now empty under the filter.
+- extendedWaitUntil:
+    visible:
+      text: ".*BSC \\(0 of [0-9]+\\).*"
+    timeout: 10000
+
+# ── RENAME — THE TITLE IS OURS ────────────────────────────────────
+# The set defaults to the BSC name that seeded it. Neither series name
+# describes a set that now covers both, so give it ours. Committed on
+# blur/Enter rather than per keystroke; see ReadySetRow for why.
+- tapOn:
+    id: "NeonBinder set name for Dugout Collection Artist's Proofs Series 2"
+    waitToSettleTimeoutMs: 250
+- eraseText: 60
+- inputText: "Dugout Collection Artists Proofs"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "NeonBinder set name for Dugout Collection Artists Proofs"
+    timeout: 10000
+
+# ── SAVE ──────────────────────────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: ".*Save [0-9]+ sets.*"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    text: ".*Save [0-9]+ sets.*"
+- extendedWaitUntil:
+    notVisible: "Reconcile Inserts"
+    timeout: 60000
+
+# ============================================================
+# STEP 2 — ONE INSERT ROW, CARRYING OUR NAME
+#
+# The acceptance criterion at set level. Two BSC sets collapsed into a single
+# NeonBinder set, named by us rather than by either marketplace.
+#
+# RE-DRILL FIRST — the columns row is overflow-x-auto, and saving leaves it at
+# whatever horizontal offset the dialog was opened from, which pushes the
+# Inserts column off to the RIGHT. Maestro has no horizontal scroll, so nothing
+# can recover it; the util's openLink resets both axes to a nav-safe position.
+# The row is already saved, so re-entering "Insert" renders the column directly
+# instead of re-opening the reconcile dialog.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "1996"
+      MANUFACTURER: "Score"
+      SET: "Score"
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Insert"
+
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 60000
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Artist"
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Dugout Collection Artists Proofs.*"
+      below:
+        id: "Search inserts"
+    timeout: 20000
+
+# The per-series rows must NOT exist — one NB set, not two. Under the "Artist"
+# filter this column shows only Artist's Proofs rows, so a surviving
+# "Series 1"/"Series 2" row would be visible here.
+- assertNotVisible:
+    text: ".*Artist's Proofs Series [12].*"
+
+# ============================================================
+# STEP 3 — BOTH BSC SOURCES ARE ATTACHED, NEITHER IS "PRIMARY"
+#
+# The multi-source panel is the only place the 0-N mapping is visible at rest.
+# `primaryPlatformId` records which slot the RECONCILER owns — not where cards
+# were released — so surfacing it as a PRIMARY badge implied a provenance claim
+# it does not make. Both sources are equal here.
+# ============================================================
+
+- tapOn:
+    text: ".*Dugout Collection Artists Proofs.*"
+    below:
+      id: "Search inserts"
+- scrollUntilVisible:
+    element:
+      text: "Multi-source sets"
+    centerElement: true
+    timeout: 20000
+
+- assertVisible: "Multi-source sets"
+- assertVisible:
+    text: ".*Dugout Collection Artist's Proofs Series 1.*"
+- assertVisible:
+    text: ".*Dugout Collection Artist's Proofs Series 2.*"
+- assertNotVisible:
+    text: ".*PRIMARY.*"

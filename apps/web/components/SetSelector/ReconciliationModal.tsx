@@ -460,6 +460,24 @@ function ReadySetRow({
   const [expanded, setExpanded] = useState(false);
   const { setNodeRef, isOver } = useDroppable({ id: `ready-${set.key}` });
 
+  // Title is edited against a LOCAL draft and committed on blur / Enter.
+  //
+  // Dispatching RENAME per keystroke would re-render the whole modal — every
+  // Ready row, every Pending column — between characters, which is the
+  // controlled-input keystroke-drop this codebase has been bitten by before.
+  // It is not hypothetical here: a real reconcile can hold a dozen-plus sets.
+  // `key` is stable and never reused, so seeding from props is safe.
+  const [titleDraft, setTitleDraft] = useState(set.title);
+  const commitTitle = () => {
+    const next = titleDraft.trim();
+    // An empty title would save a nameless set; snap back instead.
+    if (!next) {
+      setTitleDraft(set.title);
+      return;
+    }
+    if (next !== set.title) onRename(next);
+  };
+
   const confidenceColor =
     set.confidence >= 0.9
       ? "text-green-400"
@@ -502,8 +520,20 @@ function ReadySetRow({
         <Input
           bare
           type="text"
-          value={set.title}
-          onChange={(e) => onRename(e.target.value)}
+          value={titleDraft}
+          onChange={(e) => setTitleDraft(e.target.value)}
+          onBlur={commitTitle}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitTitle();
+              (e.target as HTMLInputElement).blur();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setTitleDraft(set.title);
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
           aria-label={`NeonBinder set name for ${set.title}`}
           className="flex-1 min-w-0 px-2 py-1 text-sm font-medium text-gray-100 bg-gray-900/60 border border-gray-700 rounded focus:border-[#00B7FF]"
         />

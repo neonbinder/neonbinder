@@ -11,8 +11,8 @@ tags:
 #
 # WHAT THIS TESTS:
 #   - Sync opens "Match Cards" rather than committing straight away.
-#   - The three-bucket vocabulary is present (Matched / BSC only / SportLots
-#     only) plus the keep shelf — the same affordances as set reconciliation.
+#   - The dialog NAMES the set it is for, and — since every Future Stars card
+#     pairs — opens with the matched list expanded and no empty columns.
 #   - The footer states how many cards will be saved.
 #   - Cancel writes nothing: the status message says so and the card count on
 #     the set is unchanged.
@@ -124,40 +124,47 @@ tags:
 # pairings replay into the matched bucket (sticky re-sync) — which is itself
 # worth seeing exercised against live marketplace data.
 - extendedWaitUntil:
-    visible: "Match Cards"
+    visible: "Match Cards.*"
     timeout: 90000
 
 # ============================================================
-# STEP 2 — THE THREE BUCKETS + KEEP SHELF ARE PRESENT
-# Same vocabulary as set reconciliation. Counts are data-dependent (they vary
-# with what the marketplaces return today), so assert the SECTIONS exist rather
-# than pinning numbers — a count assertion here would be brittle against live
-# marketplace data, and the exact-count rule applies to card checklists, not to
-# these live-derived buckets.
+# STEP 2 — THE DIALOG IDENTIFIES ITSELF AND STATES WHAT IT WILL SAVE
+#
+# The unmatched columns and keep shelf are DELIBERATELY NOT asserted here any
+# more. They render only when there is something unmatched, and "Future Stars"
+# is 20 cards with 20 BSC and 20 SportLots refs — every card pairs, so on this
+# set the dialog correctly shows no columns at all. Asserting "BSC only (0)"
+# would be asserting scaffolding that describes work that does not exist.
+#
+# Where each half is covered instead:
+#   - the fully-matched presentation, against an immutable 220-card count:
+#     checklist-1996-score-fetches-both-bsc-sources
+#   - the columns, keep-all and keep shelf, over every bucket permutation:
+#     CardPairingModal.test.tsx
+# What THIS flow uniquely proves is unchanged: a real marketplace sync opens
+# the dialog instead of writing cards, and cancelling writes nothing.
 # ============================================================
 
-# Top of the dialog body — these are in view as soon as it opens.
+# The header names the set. This dialog is modal and can run to hundreds of
+# rows; an operator who steps away needs to be able to tell what they are
+# looking at. `setLabel` was a documented prop that the caller never passed,
+# so the heading read a bare "Match Cards" until NEO-137.
 - assertVisible:
-    text: ".*Matched \\([0-9]+\\).*"
-- assertVisible:
-    text: ".*BSC only \\([0-9]+\\).*"
-- assertVisible:
-    text: ".*SportLots only \\([0-9]+\\).*"
-# "Keep all" per column: a set that simply is not on the other marketplace can
-# produce hundreds of legitimate unmatched cards, and keeping them one at a
-# time is not a workflow. setup.yaml relies on these to provision the same
-# baseline it always has. They sit in the column headers, still above the fold.
-- assertVisible:
-    id: "Keep all BSC-only cards"
-- assertVisible:
-    id: "Keep all SportLots-only cards"
+    text: ".*Match Cards — Future Stars.*"
 
-# DELIBERATELY NOT ASSERTED HERE: the keep-shelf section itself.
+# Nothing is unmatched here, so the matched list opens EXPANDED rather than
+# behind a "▶ Matched (20)" disclosure — the rows are the only thing worth
+# reviewing, so hiding them served no one.
+- assertVisible:
+    text: ".*Unlink.*"
+
+# NOT ASSERTED: the keep shelf.
 #
-# It is the last section of the dialog's own scrollable body, so at the
-# 1024x629 headless viewport it sits below the fold, and Maestro cannot drive
-# that inner overflow — `scrollUntilVisible` reported
-# "No visible element found" rather than scrolling to it.
+# When it does render (a set with unmatched cards), it is the last section of
+# the dialog's own scrollable body, so at the 1024x629 headless viewport it
+# sits below the fold, and Maestro cannot drive that inner overflow —
+# `scrollUntilVisible` reported "No visible element found" rather than
+# scrolling to it.
 #
 # Rather than contort the flow (or reshape the UI to suit a test), the shelf's
 # behaviour is covered where it belongs: CardPairingModal.test.tsx has 12 unit
@@ -181,7 +188,7 @@ tags:
     id: "Cancel card matching"
     retryTapIfNoChange: true
 - extendedWaitUntil:
-    notVisible: "Match Cards"
+    notVisible: "Match Cards.*"
     timeout: 10000
 - assertVisible: "Sync cancelled — no cards saved."
 

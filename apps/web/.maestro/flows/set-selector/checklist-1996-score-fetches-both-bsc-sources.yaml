@@ -1,0 +1,172 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — a two-source NeonBinder set fetches cards from BOTH BSC sets (1996 Score, NEO-137)"
+tags:
+  - set-selector
+  - requires:score-1996-multisource
+---
+# R1 — ONE FEATURE: the BSC per-source fan-out. This is the card-level half of
+# NEO-137; `inserts-1996-score-one-nb-set-two-bsc-sources` builds the set this
+# flow reads and is pulled in automatically by the `requires:` tag above.
+#
+# THE REGRESSION THIS EXISTS FOR:
+#   BSC does not OR multi-value facets. Sending both series slugs in one
+#   request returns 200 OK with an EMPTY body. Measured on dev 2026-08-12 —
+#   one slug returned 110 cards, two returned 0 — and the UI reported
+#   "0 BSC cards" with no error anywhere, because a failed BSC result and a
+#   genuinely empty one collapse into the same empty array.
+#
+#   220 is therefore the assertion that matters: it is reachable ONLY if both
+#   sources were fetched and merged. 110 means one source. A unit test
+#   (convex/fetchBscChecklist.fanOut.test.ts) pins the adapter's request shape;
+#   only this flow proves the whole path against live marketplace data.
+#
+# ALSO COVERED — the pairing dialog with nothing left to reconcile:
+#   every one of the 220 cards pairs, so the dialog must open EXPANDED and NAME
+#   the set rather than showing a collapsed "Matched (220)" above two "(0)"
+#   columns and a keep shelf describing cards that do not exist.
+#
+# R3 — DEDUP: `checklist-pairing-dialog-cancel` covers the same dialog's cancel
+#   path on Future Stars. This flow uniquely covers a MULTI-SOURCE fetch.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Set Selector"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO THE SET THE PRODUCER FLOW BUILT
+# Already reconciled and saved, so entering Insert renders the column directly
+# instead of opening the reconcile dialog.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "1996"
+      MANUFACTURER: "Score"
+      SET: "Score"
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Insert"
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 60000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Artist"
+- extendedWaitUntil:
+    visible:
+      text: ".*Dugout Collection Artists Proofs.*"
+      below:
+        id: "Search inserts"
+    timeout: 20000
+- tapOn:
+    text: ".*Dugout Collection Artists Proofs.*"
+    below:
+      id: "Search inserts"
+# ============================================================
+# STEP 1 — FETCH CARDS FROM BOTH BSC SOURCES
+#
+# THE FAN-OUT REGRESSION. BSC does not OR multi-value facets: sending both
+# series slugs in one request returns 200 OK with an empty body. Measured on
+# dev 2026-08-12 — one slug returned 110 cards, two returned 0 — and the UI
+# reported "0 BSC cards" with no error anywhere, because a failed/empty BSC
+# result is indistinguishable from "the marketplace had nothing".
+#
+# 220 is therefore the assertion that matters: it is only reachable if BOTH
+# sources were fetched and merged.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*Fetch from Marketplaces.*|Refresh"
+    centerElement: true
+    timeout: 30000
+- tapOn:
+    text: ".*Fetch from Marketplaces.*|Refresh"
+
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*"
+    timeout: 120000
+
+# ============================================================
+# STEP 2 — THE PAIRING DIALOG, FULLY MATCHED
+#
+# Every one of the 220 cards pairs across both marketplaces, so there is
+# nothing to reconcile. The dialog must say so rather than showing a collapsed
+# "▶ Matched (220)" above two "(0)" columns and a keep shelf describing cards
+# that do not exist.
+# ============================================================
+
+# Named — an operator who steps away must be able to tell which set this is.
+- assertVisible:
+    text: ".*Match Cards — Dugout Collection Artists Proofs.*"
+
+# Expanded, not collapsed: the card rows are on screen without a disclosure tap.
+- assertVisible:
+    text: ".*Unlink.*"
+
+# The empty scaffolding is omitted entirely.
+- assertNotVisible:
+    text: ".*BSC only.*"
+- assertNotVisible:
+    text: ".*SportLots only.*"
+- assertNotVisible:
+    text: ".*Nothing kept.*"
+
+# BOTH BSC sources fetched and merged. Strict count — card checklists are
+# immutable once produced, so 220 is a fixed fact, not marketplace drift.
+# Do NOT loosen this to hide a fan-out regression; 110 means one source.
+- assertVisible:
+    text: ".*220 cards will be saved.*"
+
+- tapOn:
+    id: "Confirm card matches"
+- extendedWaitUntil:
+    notVisible: "Match Cards.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 3 — SAVE THROUGH THE ENTITY WIZARD
+#
+# 220 fresh cards surface hundreds of unknown players; the bulk-confirm footer
+# button is the sanctioned path (setup.yaml documents why per-item draining is
+# not viable — each item is gated by the 3s/item Wikidata queue).
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+    timeout: 120000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - tapOn:
+          text: ".*Add All Remaining as New.*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm & Save.*"
+          timeout: 60000
+      - tapOn:
+          text: ".*Confirm & Save.*"
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 60000
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved 220 cards.*"
+    timeout: 60000
