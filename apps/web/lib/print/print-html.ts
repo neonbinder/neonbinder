@@ -1,7 +1,7 @@
 /**
  * NEO-118 — print an arbitrary HTML fragment at an exact physical page size.
  *
- * ## Why not reuse `printSvg()` from app/qr-code/page.tsx
+ * ## Why not reuse `printSvg()` from app/print/qr/page.tsx
  * That helper opens a popup, `document.write`s into it, and prints on
  * `win.onload`. It works often enough for an occasional QR code, but it has
  * three failure modes that matter for something printed on every package:
