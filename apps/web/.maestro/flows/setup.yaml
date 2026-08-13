@@ -476,9 +476,9 @@ tags:
           text: ".*SportLots.*"
       - scrollUntilVisible:
           element:
-            text: ".*Save [0-9]+ matched.*"
+            text: ".*Save [0-9]+ sets.*"
       - tapOn:
-          text: ".*Save [0-9]+ matched.*"
+          text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
           notVisible: "Reconcile Inserts"
           timeout: 30000
@@ -636,9 +636,9 @@ tags:
           text: ".*SportLots.*"
       - scrollUntilVisible:
           element:
-            text: ".*Save [0-9]+ matched.*"
+            text: ".*Save [0-9]+ sets.*"
       - tapOn:
-          text: ".*Save [0-9]+ matched.*"
+          text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
           notVisible: "Reconcile Parallels"
           timeout: 30000
@@ -766,23 +766,20 @@ tags:
 # behaviour strips SL refs from everything past the first page — including the
 # tail this assertion reads — and fails right here.
 #
-# ASSERT THE COMPOSED BADGE TEXT, NOT "SL".
-# Maestro matches a selector against the WHOLE text of a node. When the parent
-# variant exposes a source-label map — which it does here — CardChecklistItem
-# renders the SportLots badge as "SL: <label>" (e.g. "SL: 309111"), NOT a bare
-# "SL", so `assertVisible: "SL"` never matches and fails on a perfectly healthy
-# checklist. Verified from the failure screenshot: rows read
-# `#294  J.P. Martinez  [SN50] [SL: 309111] [BSC]`.
+# THE BADGE IS A BARE "SL" — and that is unambiguous here, for a reason worth
+# keeping. Maestro matches a selector against the WHOLE text of a node, so "SL"
+# matches only a node whose text is exactly "SL". The badge used to compose the
+# source label into it ("SL: 309111") and this assertion read ".*SL: .*"; the
+# label moved to a tooltip, so the composed form no longer exists.
 #
-# "SL: " is also what makes this assertion card-specific. A bare "BSC" would be
-# ambiguous — the Multi-source panel above the list renders "BSC" as a column
-# header, so it passes even with no card row on screen (its SportLots header
-# reads "SPORTLOTS", which is why only the SL half failed). Per-card BSC
-# coverage is asserted separately in checklist-renders-rich-fields.
+# Note the asymmetry with BSC: a bare "BSC" WOULD be ambiguous, because the
+# Multi-source panel above the list renders "BSC" as a column header and would
+# satisfy the assertion with no card row on screen at all. Its SportLots header
+# reads "SPORTLOTS", which full-matches nothing, so "SL" stays card-specific.
+# Per-card BSC coverage is asserted separately in checklist-renders-rich-fields.
 - scrollUntilVisible:
     element:
       text: ".*#[0-9].*"
     centerElement: true
     timeout: 15000
-- assertVisible:
-    text: ".*SL: .*"
+- assertVisible: "SL"

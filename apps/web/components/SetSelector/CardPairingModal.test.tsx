@@ -39,6 +39,7 @@ function renderModal(
     autoMatched: Array<{ card: PairingCard; confidence: number }>;
     unmatchedBsc: PairingCard[];
     unmatchedSl: PairingCard[];
+    setLabel: string;
   }> = {},
 ) {
   const onConfirm = vi.fn().mockResolvedValue(undefined);
@@ -47,6 +48,7 @@ function renderModal(
       isOpen
       onClose={vi.fn()}
       onConfirm={onConfirm}
+      setLabel={overrides.setLabel}
       initialData={{
         autoMatched: overrides.autoMatched ?? [],
         unmatchedBsc: overrides.unmatchedBsc ?? [],
@@ -171,8 +173,8 @@ describe("CardPairingModal", () => {
       autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 0.78 }],
     });
 
-    // Matched section is collapsed by default.
-    fireEvent.click(screen.getByLabelText("Expand matched cards"));
+    // With nothing unmatched the section opens EXPANDED, so no disclosure to
+    // click first (see the "nothing left to reconcile" describe below).
     fireEvent.click(screen.getByLabelText("Unlink #1 Griffey"));
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
 
@@ -184,7 +186,7 @@ describe("CardPairingModal", () => {
     renderModal({
       autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 0.78 }],
     });
-    fireEvent.click(screen.getByLabelText("Expand matched cards"));
+    // Opens expanded — nothing is unmatched.
     expect(screen.getByText("78%")).toBeTruthy();
   });
 
@@ -238,5 +240,81 @@ describe("CardPairingModal", () => {
     expect(screen.getByText("1 card will be saved")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Keep #77 SL Only as SportLots-only"));
     expect(screen.getByText("2 cards will be saved")).toBeTruthy();
+  });
+});
+
+/**
+ * The fully-matched case. Reported from live use: after the BSC fan-out fix a
+ * 220-card insert paired completely, and the dialog still opened COLLAPSED —
+ * "▶ Matched (220)" above two "(0)" columns, two dead filter inputs, and
+ * "Nothing kept — every unmatched card above will be discarded" describing
+ * cards that did not exist. Every visible element referred to work that was
+ * not there, and the one thing worth reviewing was hidden behind a disclosure.
+ */
+describe("CardPairingModal — nothing left to reconcile", () => {
+  test("opens with the matched list EXPANDED when nothing is unmatched", () => {
+    renderModal({
+      autoMatched: [
+        { card: pairedCard("1", "Greg Maddux"), confidence: 1 },
+        { card: pairedCard("2", "Pedro Martinez"), confidence: 1 },
+      ],
+    });
+
+    // The cards themselves are on screen, not behind a collapsed section.
+    expect(screen.getByText(/Greg Maddux/)).toBeTruthy();
+    expect(screen.getByText(/Pedro Martinez/)).toBeTruthy();
+    expect(screen.getByLabelText("Collapse matched cards")).toBeTruthy();
+  });
+
+  test("still opens COLLAPSED when there is unmatched work to do", () => {
+    // Collapsing exists to point attention at the columns below; that reason
+    // holds whenever the columns have anything in them.
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Greg Maddux"), confidence: 1 }],
+      unmatchedBsc: [bscCard("99", "BSC Only")],
+    });
+
+    expect(screen.queryByText(/Greg Maddux/)).toBeNull();
+    expect(screen.getByLabelText("Expand matched cards")).toBeTruthy();
+  });
+
+  test("hides the empty columns and keep shelf entirely", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Greg Maddux"), confidence: 1 }],
+    });
+
+    expect(screen.queryByText(/BSC only/)).toBeNull();
+    expect(screen.queryByText(/SportLots only/)).toBeNull();
+    expect(screen.queryByText(/Keeping/)).toBeNull();
+    expect(screen.queryByText(/Nothing kept/)).toBeNull();
+    // The discard warning is false when no column can hold anything.
+    expect(screen.queryByText(/Anything left in a column/)).toBeNull();
+    expect(screen.getByText(/Every card paired across both marketplaces/)).toBeTruthy();
+  });
+
+  test("unlinking a pair brings the columns straight back", () => {
+    // The flag is derived from CURRENT state, not the opening snapshot, so the
+    // dialog must not strand the operator with no way to re-pair.
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Greg Maddux"), confidence: 1 }],
+    });
+    expect(screen.queryByText(/BSC only/)).toBeNull();
+
+    fireEvent.click(screen.getByLabelText(/^Unlink /));
+
+    expect(screen.getByText(/BSC only/)).toBeTruthy();
+    expect(screen.getByText(/SportLots only/)).toBeTruthy();
+    expect(screen.getByText(/Keeping/)).toBeTruthy();
+  });
+
+  test("the header names the set so a distracted operator can tell where they are", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Greg Maddux"), confidence: 1 }],
+      setLabel: "Dugout Collection Artist's Proofs",
+    });
+
+    expect(
+      screen.getByText(/Match Cards — Dugout Collection Artist's Proofs/),
+    ).toBeTruthy();
   });
 });

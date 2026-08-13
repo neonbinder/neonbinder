@@ -4395,8 +4395,10 @@ export const fetchCardChecklist = action({
         message?: string;
       };
       const fetchBsc = async (): Promise<BscFetchResult> => {
-        // BSC's bulk-upload API accepts multi-value facets in one call and
-        // tags each card with its source set slug — no fan-out needed.
+        // The adapter fans out internally — one request per BSC source set.
+        // BSC does NOT OR multi-value facets: two variantName values return
+        // 200 OK with zero rows (measured on dev 2026-08-12, 1996 Score).
+        // The comment that used to be here asserted the opposite.
         return await ctx.runAction(
           api.adapters.buysportscards.fetchBscChecklist,
           {

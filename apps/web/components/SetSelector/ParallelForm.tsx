@@ -14,7 +14,7 @@ type RawOptionsResult = {
   unmatchedBsc: PlatformItem[];
   unmatchedSl: PlatformItem[];
   // NEO-137: ranked SL candidates per unmatched BSC row, including sets an
-  // auto-match already claimed. Feeds the modal's "Link shared" affordance.
+  // auto-match already claimed. Feeds the modal's "Use this set too" affordance.
   slCandidates?: SlCandidateGroup[];
   errors: Array<{ platform: string; message: string }>;
   message?: string;
@@ -150,6 +150,10 @@ export default function ParallelForm({
       reconciledItems: result.items.map((item) => ({
         value: item.value,
         platformData: item.platformData,
+        // Forwarded so every allocated slot gets the marketplace's own set
+        // name. A set may map to several sets per side, and without labels
+        // the slots are indistinguishable ids downstream.
+        platformLabels: item.platformLabels,
         metadata: item.metadata,
       })),
     });

@@ -39,18 +39,40 @@ export type ItemMetadata = {
   isParallel?: boolean;
 };
 
-type MatchedPairWithMetadata = MatchedPair & { metadata?: ItemMetadata };
+/**
+ * A NeonBinder set under construction.
+ *
+ * NB is the system of record. A set has a title that belongs to US, and maps
+ * to 0-N BSC sets and 0-N SportLots sets — the two sides completely
+ * independent of each other. A marketplace id on a set records how that
+ * marketplace happens to carve up the same cards; it is not an ownership claim
+ * and not a scarce resource, so the same id may appear on any number of sets.
+ *
+ * This replaced a pair-shaped model (`{bsc, sl}`, one id per side) whose every
+ * awkwardness came from treating marketplace sets as exclusive: an item with no
+ * partner needed a special "keep as platform-only" shelf, and a set wanted by
+ * two rows produced a winner and a loser.
+ */
+export type ReadySet = {
+  /** Stable local key. Not persisted — `title` is the identity on save. */
+  key: string;
+  /** The NeonBinder set name. Operator-editable; this is our data. */
+  title: string;
+  bsc: PlatformItem[];
+  sl: PlatformItem[];
+  metadata?: ItemMetadata;
+  /** Auto-match score, for display only. 0 once an operator has touched it. */
+  confidence: number;
+};
 
 type ReconciliationState = {
-  matched: MatchedPairWithMetadata[];
-  unmatchedBsc: PlatformItem[];
-  unmatchedSl: PlatformItem[];
-  // User-marked "save as platform-only" items. Default Confirm only writes
-  // matched + kept; remaining unmatched items are discarded so SL noise
-  // (variants of other variantTypes that came back from dealsets.tpl) is
-  // dropped without manual cleanup.
-  keptBsc: PlatformItem[];
-  keptSl: PlatformItem[];
+  /** Sets that will be written on save. */
+  ready: ReadySet[];
+  /** Marketplace sets not yet assigned to any NB set. NOT saved. */
+  pendingBsc: PlatformItem[];
+  pendingSl: PlatformItem[];
+  /** Monotonic source of ReadySet keys. Never rewound, so a key is never reused. */
+  seq: number;
 };
 
 /**
@@ -67,144 +89,195 @@ export type SlCandidateGroup = {
   }>;
 };
 
+type Side = "bsc" | "sl";
+
 type ReconciliationAction =
-  | { type: "LINK"; bscValue: string; slValue: string }
-  | { type: "LINK_SHARED"; bscValue: string; sl: PlatformItem; confidence: number }
-  | { type: "UNLINK"; index: number }
-  | { type: "UPDATE_METADATA"; index: number; metadata: ItemMetadata }
-  | { type: "KEEP_BSC"; value: string }
-  | { type: "KEEP_SL"; value: string }
-  | { type: "UNKEEP_BSC"; value: string }
-  | { type: "UNKEEP_SL"; value: string };
+  // Two pending items become a new set. The 1:1 case, which is 95%+ of real
+  // reconciliation and stays a single drag.
+  | { type: "PROMOTE_PAIR"; bsc: PlatformItem; sl: PlatformItem }
+  // One item becomes a set on its own. Replaces "keep as platform-only":
+  // a set with ids on one side only is ordinary, not special.
+  | { type: "PROMOTE_SOLO"; side: Side; item: PlatformItem }
+  // An item joins an existing set. This is what makes 0-N per side reachable,
+  // in both directions.
+  | { type: "ATTACH"; key: string; side: Side; item: PlatformItem }
+  | { type: "DETACH"; key: string; side: Side; platformValue: string }
+  | { type: "DISBAND"; key: string }
+  | { type: "RENAME"; key: string; title: string }
+  | { type: "UPDATE_METADATA"; key: string; metadata: ItemMetadata };
 
 export type ReconciledResult = {
   items: Array<{
     value: string;
+    // Arrays, not single ids: a set maps to 0-N per side. The mutation has
+    // accepted `string | string[]` all along and allocates one slot per
+    // element on insert — it was only this modal that could not express it.
     platformData: {
-      bsc?: string;
-      sportlots?: string;
+      bsc?: string[];
+      sportlots?: string[];
+    };
+    // Marketplace display name per id, so each slot gets a meaningful label.
+    // With several sets on a side, "which one is this" is otherwise unanswerable.
+    platformLabels?: {
+      bsc?: Record<string, string>;
+      sportlots?: Record<string, string>;
     };
     metadata?: ItemMetadata;
   }>;
 };
+
+/**
+ * Remove an item from a Pending column IF it is there.
+ *
+ * An item being mapped does NOT consume it: a marketplace set may back any
+ * number of NB sets, so the same item can be mapped again later from the
+ * "already mapped" reveal. Only the first mapping empties it out of Pending;
+ * subsequent ones find nothing to remove and leave the column alone.
+ */
+function withoutPending(
+  list: PlatformItem[],
+  item: PlatformItem,
+): PlatformItem[] {
+  return list.some((i) => i.platformValue === item.platformValue)
+    ? list.filter((i) => i.platformValue !== item.platformValue)
+    : list;
+}
 
 function reconciliationReducer(
   state: ReconciliationState,
   action: ReconciliationAction,
 ): ReconciliationState {
   switch (action.type) {
-    case "LINK": {
-      const bscIndex = state.unmatchedBsc.findIndex(
-        (item) => item.value === action.bscValue,
-      );
-      const slIndex = state.unmatchedSl.findIndex(
-        (item) => item.value === action.slValue,
-      );
-      if (bscIndex === -1 || slIndex === -1) return state;
-
-      const bscItem = state.unmatchedBsc[bscIndex];
-      const slItem = state.unmatchedSl[slIndex];
-
+    case "PROMOTE_PAIR": {
       return {
         ...state,
-        matched: [
-          ...state.matched,
+        seq: state.seq + 1,
+        ready: [
+          ...state.ready,
           {
-            displayName: bscItem.value,
-            bsc: bscItem,
-            sl: slItem,
+            key: `set-${state.seq}`,
+            // BSC names are closer to how collectors say a set's name, so it
+            // wins the default. The operator can rename — the title is ours.
+            title: action.bsc.value,
+            bsc: [action.bsc],
+            sl: [action.sl],
             confidence: 0,
           },
         ],
-        unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== bscIndex),
-        unmatchedSl: state.unmatchedSl.filter((_, i) => i !== slIndex),
+        pendingBsc: withoutPending(state.pendingBsc, action.bsc),
+        pendingSl: withoutPending(state.pendingSl, action.sl),
       };
     }
-    case "LINK_SHARED": {
-      // The SL set here is ALREADY claimed by another matched pair, so unlike
-      // LINK it is not removed from anywhere — both NB rows keep pointing at
-      // it. That shared pointer IS the N:M mapping; storeReconciledOptions
-      // allocates each row its own slot for the same marketplace id.
-      const bscIndex = state.unmatchedBsc.findIndex(
-        (item) => item.value === action.bscValue,
-      );
-      if (bscIndex === -1) return state;
-      const bscItem = state.unmatchedBsc[bscIndex];
+    case "PROMOTE_SOLO": {
       return {
         ...state,
-        matched: [
-          ...state.matched,
+        seq: state.seq + 1,
+        ready: [
+          ...state.ready,
           {
-            displayName: bscItem.value,
-            bsc: bscItem,
-            sl: action.sl,
-            confidence: action.confidence,
+            key: `set-${state.seq}`,
+            title: action.item.value,
+            bsc: action.side === "bsc" ? [action.item] : [],
+            sl: action.side === "sl" ? [action.item] : [],
+            confidence: 0,
           },
         ],
-        unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== bscIndex),
+        pendingBsc:
+          action.side === "bsc"
+            ? withoutPending(state.pendingBsc, action.item)
+            : state.pendingBsc,
+        pendingSl:
+          action.side === "sl"
+            ? withoutPending(state.pendingSl, action.item)
+            : state.pendingSl,
       };
     }
-    case "UNLINK": {
-      const pair = state.matched[action.index];
-      if (!pair) return state;
+    case "ATTACH": {
+      const target = state.ready.find((s) => s.key === action.key);
+      if (!target) return state;
+      // Same marketplace id twice on ONE set would make two slots pointing at
+      // the same place. Across DIFFERENT sets it is fine and expected — that is
+      // the 1996 Score case, where one SportLots set legitimately backs two NB
+      // sets — so this check is per-set, never global.
+      const existing = action.side === "bsc" ? target.bsc : target.sl;
+      if (existing.some((i) => i.platformValue === action.item.platformValue)) {
+        return state;
+      }
       return {
         ...state,
-        matched: state.matched.filter((_, i) => i !== action.index),
-        unmatchedBsc: [...state.unmatchedBsc, pair.bsc],
-        unmatchedSl: [...state.unmatchedSl, pair.sl],
+        ready: state.ready.map((s) =>
+          s.key === action.key
+            ? {
+                ...s,
+                bsc: action.side === "bsc" ? [...s.bsc, action.item] : s.bsc,
+                sl: action.side === "sl" ? [...s.sl, action.item] : s.sl,
+              }
+            : s,
+        ),
+        pendingBsc:
+          action.side === "bsc"
+            ? withoutPending(state.pendingBsc, action.item)
+            : state.pendingBsc,
+        pendingSl:
+          action.side === "sl"
+            ? withoutPending(state.pendingSl, action.item)
+            : state.pendingSl,
+      };
+    }
+    case "DETACH": {
+      const target = state.ready.find((s) => s.key === action.key);
+      if (!target) return state;
+      const from = action.side === "bsc" ? target.bsc : target.sl;
+      const item = from.find((i) => i.platformValue === action.platformValue);
+      if (!item) return state;
+      const remaining = from.filter(
+        (i) => i.platformValue !== action.platformValue,
+      );
+      const nextSet: ReadySet = {
+        ...target,
+        bsc: action.side === "bsc" ? remaining : target.bsc,
+        sl: action.side === "sl" ? remaining : target.sl,
+      };
+      // A set with nothing mapped has no reason to exist — it would save as a
+      // row with an empty platformData and never sync anything.
+      const emptied = nextSet.bsc.length === 0 && nextSet.sl.length === 0;
+      return {
+        ...state,
+        ready: emptied
+          ? state.ready.filter((s) => s.key !== action.key)
+          : state.ready.map((s) => (s.key === action.key ? nextSet : s)),
+        pendingBsc:
+          action.side === "bsc" ? [...state.pendingBsc, item] : state.pendingBsc,
+        pendingSl:
+          action.side === "sl" ? [...state.pendingSl, item] : state.pendingSl,
+      };
+    }
+    case "DISBAND": {
+      const target = state.ready.find((s) => s.key === action.key);
+      if (!target) return state;
+      return {
+        ...state,
+        ready: state.ready.filter((s) => s.key !== action.key),
+        pendingBsc: [...state.pendingBsc, ...target.bsc],
+        pendingSl: [...state.pendingSl, ...target.sl],
+      };
+    }
+    case "RENAME": {
+      return {
+        ...state,
+        ready: state.ready.map((s) =>
+          s.key === action.key ? { ...s, title: action.title } : s,
+        ),
       };
     }
     case "UPDATE_METADATA": {
-      const newMatched = [...state.matched];
-      if (newMatched[action.index]) {
-        newMatched[action.index] = {
-          ...newMatched[action.index],
-          metadata: {
-            ...(newMatched[action.index].metadata || {}),
-            ...action.metadata,
-          },
-        };
-      }
-      return { ...state, matched: newMatched };
-    }
-    case "KEEP_BSC": {
-      const idx = state.unmatchedBsc.findIndex((it) => it.value === action.value);
-      if (idx === -1) return state;
-      const item = state.unmatchedBsc[idx];
       return {
         ...state,
-        unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== idx),
-        keptBsc: [...state.keptBsc, item],
-      };
-    }
-    case "KEEP_SL": {
-      const idx = state.unmatchedSl.findIndex((it) => it.value === action.value);
-      if (idx === -1) return state;
-      const item = state.unmatchedSl[idx];
-      return {
-        ...state,
-        unmatchedSl: state.unmatchedSl.filter((_, i) => i !== idx),
-        keptSl: [...state.keptSl, item],
-      };
-    }
-    case "UNKEEP_BSC": {
-      const idx = state.keptBsc.findIndex((it) => it.value === action.value);
-      if (idx === -1) return state;
-      const item = state.keptBsc[idx];
-      return {
-        ...state,
-        keptBsc: state.keptBsc.filter((_, i) => i !== idx),
-        unmatchedBsc: [...state.unmatchedBsc, item],
-      };
-    }
-    case "UNKEEP_SL": {
-      const idx = state.keptSl.findIndex((it) => it.value === action.value);
-      if (idx === -1) return state;
-      const item = state.keptSl[idx];
-      return {
-        ...state,
-        keptSl: state.keptSl.filter((_, i) => i !== idx),
-        unmatchedSl: [...state.unmatchedSl, item],
+        ready: state.ready.map((s) =>
+          s.key === action.key
+            ? { ...s, metadata: { ...(s.metadata ?? {}), ...action.metadata } }
+            : s,
+        ),
       };
     }
     default:
@@ -357,138 +430,132 @@ function DraggableItem({
   );
 }
 
-// ===== KEPT ITEM (platform-only, draggable for unkeep via X) =====
+// ===== READY SET ROW =====
 
-function KeptItemRow({
-  value,
-  platform,
-  onUnkeep,
-}: {
-  value: string;
-  platform: "bsc" | "sl";
-  onUnkeep: () => void;
-}) {
-  const platformLabel = platform === "bsc" ? "BSC" : "SL";
-  const platformColor =
-    platform === "bsc"
-      ? "bg-blue-900/40 text-blue-300 border-blue-700"
-      : "bg-purple-900/40 text-purple-300 border-purple-700";
-
-  return (
-    <div className="px-3 py-2 rounded-lg border border-amber-700 bg-amber-900/10 text-sm font-medium flex items-center gap-2">
-      <span
-        className={`text-[10px] px-1.5 py-0.5 rounded border ${platformColor} shrink-0`}
-      >
-        {platformLabel}
-      </span>
-      <span className="text-gray-200 break-words flex-1">{value}</span>
-      <button
-        onClick={onUnkeep}
-        className="text-xs text-pink-400 hover:text-pink-300 px-2 py-0.5 rounded hover:bg-pink-900/20"
-        title="Send back to unmatched"
-        aria-label={`Remove ${value} from save list`}
-      >
-        ✕
-      </button>
-    </div>
-  );
-}
-
-// ===== KEEP SHELF (drop target for "save as platform-only") =====
-
-function KeepShelf({ children, isEmpty }: { children: React.ReactNode; isEmpty: boolean }) {
-  const { setNodeRef, isOver } = useDroppable({ id: "keep-shelf" });
-  return (
-    <div
-      ref={setNodeRef}
-      className={`mt-4 rounded-lg border-2 border-dashed transition-colors p-3 ${
-        isOver
-          ? "border-amber-400 bg-amber-900/10"
-          : isEmpty
-            ? "border-gray-700 bg-gray-900/30"
-            : "border-amber-700/60 bg-amber-900/5"
-      }`}
-    >
-      <div className="text-xs text-amber-400 font-medium uppercase tracking-wide mb-2">
-        Keep as platform-only (drop unmatched items here)
-      </div>
-      {isEmpty ? (
-        <p className="text-xs text-gray-500 italic py-2">
-          By default, only matched pairs are saved. Drag items from the
-          BSC or SL columns above to keep them as platform-only entries.
-        </p>
-      ) : (
-        <div className="space-y-1.5">{children}</div>
-      )}
-    </div>
-  );
-}
-
-// ===== MATCHED ROW =====
-
-function MatchedRow({
-  pair,
-  index,
-  onUnlink,
+/**
+ * One NeonBinder set: our editable title, plus every marketplace set mapped to
+ * it. Also a drop target — dragging a pending item here attaches it, which is
+ * how a set grows past the 1:1 case in either direction.
+ */
+function ReadySetRow({
+  set,
+  onRename,
+  onDetach,
+  onDisband,
+  onAttachClick,
+  attachHint,
   showMetadata,
   onUpdateMetadata,
 }: {
-  pair: MatchedPairWithMetadata;
-  index: number;
-  onUnlink: () => void;
+  set: ReadySet;
+  onRename: (title: string) => void;
+  onDetach: (side: Side, platformValue: string) => void;
+  onDisband: () => void;
+  onAttachClick?: () => void;
+  /** Label for the pending item that would be attached, when one is selected. */
+  attachHint?: string;
   showMetadata?: boolean;
   onUpdateMetadata?: (metadata: ItemMetadata) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const { setNodeRef, isOver } = useDroppable({ id: `ready-${set.key}` });
+
   const confidenceColor =
-    pair.confidence >= 0.9
+    set.confidence >= 0.9
       ? "text-green-400"
-      : pair.confidence >= 0.75
+      : set.confidence >= 0.75
         ? "text-yellow-400"
         : "text-orange-400";
 
+  const chip = (side: Side, item: PlatformItem) => (
+    <span
+      key={`${side}-${item.platformValue}`}
+      className={`inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border ${
+        side === "bsc"
+          ? "bg-blue-900/40 text-blue-200 border-blue-700"
+          : "bg-purple-900/40 text-purple-200 border-purple-700"
+      }`}
+    >
+      <span className="opacity-70">{side === "bsc" ? "BSC" : "SL"}</span>
+      <span className="break-words">{item.value}</span>
+      <button
+        type="button"
+        onClick={() => onDetach(side, item.platformValue)}
+        className="text-pink-400 hover:text-pink-300 px-0.5 rounded"
+        title="Remove this mapping"
+        aria-label={`Remove ${item.value} from ${set.title}`}
+      >
+        ✕
+      </button>
+    </span>
+  );
+
   return (
-    <div className="border-l-4 border-[#00D558] bg-gray-800/50 rounded-r-lg p-3 mb-2">
+    <div
+      ref={setNodeRef}
+      className={`border-l-4 border-[#00D558] rounded-r-lg p-3 mb-2 transition-colors ${
+        isOver ? "bg-[#00B7FF]/10 ring-1 ring-[#00B7FF]" : "bg-gray-800/50"
+      }`}
+    >
       <div className="flex items-center gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start gap-2 text-sm">
-            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-blue-900/40 text-blue-300 border-blue-700 shrink-0 mt-0.5">
-              BSC
-            </span>
-            <span className="text-gray-200 break-words">{pair.bsc.value}</span>
-          </div>
-          <div className="flex items-start gap-2 text-sm mt-1">
-            <span className="text-[10px] px-1.5 py-0.5 rounded border bg-purple-900/40 text-purple-300 border-purple-700 shrink-0 mt-0.5">
-              SL
-            </span>
-            <span className="text-gray-400 break-words">{pair.sl.value}</span>
-          </div>
-        </div>
-        {pair.confidence > 0 && (
-          <span className={`text-xs ${confidenceColor}`}>
-            {Math.round(pair.confidence * 100)}%
+        {/* The title is OUR set name, so it is an input, not a label. */}
+        <Input
+          bare
+          type="text"
+          value={set.title}
+          onChange={(e) => onRename(e.target.value)}
+          aria-label={`NeonBinder set name for ${set.title}`}
+          className="flex-1 min-w-0 px-2 py-1 text-sm font-medium text-gray-100 bg-gray-900/60 border border-gray-700 rounded focus:border-[#00B7FF]"
+        />
+        {set.confidence > 0 && (
+          <span className={`text-xs shrink-0 ${confidenceColor}`}>
+            {Math.round(set.confidence * 100)}%
           </span>
         )}
         {showMetadata && (
           <button
             onClick={() => setExpanded(!expanded)}
             className="text-xs text-gray-400 hover:text-gray-200 px-2"
+            aria-label={`Toggle details for ${set.title}`}
           >
             {expanded ? "▲" : "▼"}
           </button>
         )}
         <button
-          onClick={onUnlink}
-          className="text-xs text-pink-400 hover:text-pink-300 px-2 py-1 rounded hover:bg-pink-900/20"
-          title="Unlink"
+          onClick={onDisband}
+          className="text-xs text-pink-400 hover:text-pink-300 px-2 py-1 rounded hover:bg-pink-900/20 shrink-0"
+          title="Remove this set (its mappings return to Pending)"
+          aria-label={`Remove set ${set.title}`}
         >
           ✕
         </button>
       </div>
 
+      <div className="flex flex-wrap gap-1.5 mt-2">
+        {set.bsc.map((i) => chip("bsc", i))}
+        {set.sl.map((i) => chip("sl", i))}
+        {set.bsc.length === 0 && (
+          <span className="text-[11px] text-gray-500 italic">no BSC mapping</span>
+        )}
+        {set.sl.length === 0 && (
+          <span className="text-[11px] text-gray-500 italic">no SL mapping</span>
+        )}
+      </div>
+
+      {onAttachClick && (
+        <button
+          type="button"
+          onClick={onAttachClick}
+          className="mt-2 text-[11px] font-semibold rounded px-2 py-1 bg-[#00B7FF] text-gray-900 hover:bg-[#33C6FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]"
+          aria-label={`Add ${attachHint} to ${set.title}`}
+        >
+          Add “{attachHint}” to this set
+        </button>
+      )}
+
       {showMetadata && expanded && onUpdateMetadata && (
         <MetadataEditor
-          metadata={pair.metadata || {}}
+          metadata={set.metadata || {}}
           onChange={onUpdateMetadata}
         />
       )}
@@ -570,19 +637,19 @@ export default function ReconciliationModal({
     [usedBscPlatformValues],
   );
   // Build the initial state once from a snapshot of initialData + existingRows.
-  // Saved rows are bucketed into matched (both platforms set), keptBsc (only
-  // bsc), or keptSl (only sportlots). Their platformValues are then removed
-  // from the fresh auto-match and unmatched lists so re-running doesn't
-  // duplicate work.
+  //
+  // Previously-saved rows come back as Ready sets with ALL of their mappings
+  // restored. The old code kept only the first id per side (`firstBsc`), which
+  // silently dropped operator-attached extras every time the modal reopened —
+  // invisible, because the row still looked plausible with one id.
   const initialState: ReconciliationState = useMemo(() => {
-    const matched: MatchedPairWithMetadata[] = [];
-    const keptBsc: PlatformItem[] = [];
-    const keptSl: PlatformItem[] = [];
+    const ready: ReadySet[] = [];
     const usedBsc = new Set<string>();
     const usedSl = new Set<string>();
+    let seq = 0;
 
-    // Build platform-value → fresh PlatformItem lookup so matched rows can
-    // surface the up-to-date display value when available.
+    // platformValue → freshest PlatformItem, so restored rows show the current
+    // marketplace display name rather than the NB title we saved them under.
     const bscByPv = new Map<string, PlatformItem>();
     for (const item of initialData.unmatchedBsc) bscByPv.set(item.platformValue, item);
     for (const m of initialData.autoMatched) bscByPv.set(m.bsc.platformValue, m.bsc);
@@ -590,65 +657,69 @@ export default function ReconciliationModal({
     for (const item of initialData.unmatchedSl) slByPv.set(item.platformValue, item);
     for (const m of initialData.autoMatched) slByPv.set(m.sl.platformValue, m.sl);
 
-    const firstBsc = (bsc: string | string[] | undefined): string | undefined => {
-      if (typeof bsc === "string") return bsc;
-      if (Array.isArray(bsc) && bsc.length > 0) return bsc[0];
-      return undefined;
-    };
+    const toIds = (v: string | string[] | undefined): string[] =>
+      typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
 
     for (const row of existingRows) {
-      const bscPv = firstBsc(row.platformData.bsc);
-      // SL now widened to string|string[] — use the same first-value heuristic.
-      const slPv = firstBsc(row.platformData.sportlots);
-      if (bscPv && slPv) {
-        const bscItem = bscByPv.get(bscPv) ?? { value: row.value, platformValue: bscPv };
-        const slItem = slByPv.get(slPv) ?? { value: row.value, platformValue: slPv };
-        matched.push({
-          displayName: row.value,
-          bsc: bscItem,
-          sl: slItem,
-          confidence: 1,
-          metadata: row.metadata,
-        });
-        usedBsc.add(bscPv);
-        usedSl.add(slPv);
-      } else if (bscPv) {
-        keptBsc.push(bscByPv.get(bscPv) ?? { value: row.value, platformValue: bscPv });
-        usedBsc.add(bscPv);
-      } else if (slPv) {
-        keptSl.push(slByPv.get(slPv) ?? { value: row.value, platformValue: slPv });
-        usedSl.add(slPv);
-      }
+      const bscIds = toIds(row.platformData.bsc);
+      const slIds = toIds(row.platformData.sportlots);
+      if (bscIds.length === 0 && slIds.length === 0) continue;
+      ready.push({
+        key: `set-${seq++}`,
+        title: row.value,
+        bsc: bscIds.map(
+          (id) => bscByPv.get(id) ?? { value: row.value, platformValue: id },
+        ),
+        sl: slIds.map(
+          (id) => slByPv.get(id) ?? { value: row.value, platformValue: id },
+        ),
+        confidence: 0,
+        metadata: row.metadata,
+      });
+      for (const id of bscIds) usedBsc.add(id);
+      for (const id of slIds) usedSl.add(id);
     }
 
-    // Append fresh auto-matches that don't conflict with anything we already
-    // restored from existing rows.
+    // Auto-matches that do not collide with anything already restored. These
+    // are suggestions the reconciler made; they arrive as Ready because 95%+
+    // of them are right, and a wrong one is one ✕ away from Pending.
     for (const m of initialData.autoMatched) {
-      if (usedBsc.has(m.bsc.platformValue) || usedSl.has(m.sl.platformValue)) continue;
-      matched.push({ ...m });
+      if (usedBsc.has(m.bsc.platformValue) || usedSl.has(m.sl.platformValue)) {
+        continue;
+      }
+      ready.push({
+        key: `set-${seq++}`,
+        title: m.displayName,
+        bsc: [m.bsc],
+        sl: [m.sl],
+        confidence: m.confidence,
+      });
       usedBsc.add(m.bsc.platformValue);
       usedSl.add(m.sl.platformValue);
     }
 
     return {
-      matched,
-      unmatchedBsc: initialData.unmatchedBsc.filter(
+      ready,
+      pendingBsc: initialData.unmatchedBsc.filter(
         (it) => !usedBsc.has(it.platformValue),
       ),
-      unmatchedSl: initialData.unmatchedSl.filter(
+      pendingSl: initialData.unmatchedSl.filter(
         (it) => !usedSl.has(it.platformValue),
       ),
-      keptBsc,
-      keptSl,
+      seq,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [state, dispatch] = useReducer(reconciliationReducer, initialState);
 
-  const [selectedBsc, setSelectedBsc] = useState<string | null>(null);
+  // ONE selection at a time, either side. Clicking the opposite side pairs
+  // them; clicking a Ready set attaches to it. Drag does the same things but
+  // is not keyboard-operable, so the click path is the accessible one.
+  const [selected, setSelected] = useState<{ side: Side; value: string } | null>(
+    null,
+  );
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const [matchedCollapsed, setMatchedCollapsed] = useState(true);
   // Default SL-side prefixes: full set name, set name with manufacturer
   // prefix stripped, plus any caller-supplied extras (typically the SL Base
   // anchor's name). De-duped and lowercased.
@@ -676,6 +747,11 @@ export default function ReconciliationModal({
   const [slFilter, setSlFilter] = useState<string>("");
   const [showAllSl, setShowAllSl] = useState<boolean>(false);
   const [bscFilter, setBscFilter] = useState<string>("");
+  // Reveal marketplace sets that some NB set already maps. NOT a sharing
+  // concept — mapping never consumed anything, this just keeps the default
+  // list short by hiding what is already accounted for.
+  const [showMappedBsc, setShowMappedBsc] = useState<boolean>(false);
+  const [showMappedSl, setShowMappedSl] = useState<boolean>(false);
 
   // The "Show all" toggle controls the SL prefix filter only. The typed
   // query is applied as a secondary contains-search on top of whatever
@@ -688,49 +764,75 @@ export default function ReconciliationModal({
   const slQuery = useMemo(() => slFilter.trim().toLowerCase(), [slFilter]);
   const bscQuery = useMemo(() => bscFilter.trim().toLowerCase(), [bscFilter]);
 
-  // Filter unmatched columns by platformValue only. The same display value
-  // can legitimately appear across variantTypes ("Inception" exists as both
-  // a Base and a Parallel) — only the underlying platform identifier is a
-  // true "already claimed" signal. usedValueSet would otherwise hide items
-  // the user just unlinked, leaving them no way to re-pair manually.
-  const filteredUnmatchedSl = useMemo(() => {
-    return state.unmatchedSl.filter((item) => {
+  // Filter pending columns by platformValue only. The same display value can
+  // legitimately appear across variantTypes ("Inception" exists as both a Base
+  // and a Parallel) — only the underlying platform identifier identifies a set.
+  //
+  // NOTE what is deliberately NOT here: nothing is hidden because some other NB
+  // set already maps to it. `usedSlPlatformValues` scopes this modal to its own
+  // level; within it, a marketplace set may be mapped by any number of NB sets.
+  const filteredPendingSl = useMemo(() => {
+    return state.pendingSl.filter((item) => {
       if (usedSlSet.has(item.platformValue)) return false;
       const v = item.value.toLowerCase();
-      // Prefix filter (skipped when "Show all" is checked).
       if (
         activeSlPrefixes.length > 0 &&
         !activeSlPrefixes.some((p) => v.startsWith(p))
       ) {
         return false;
       }
-      // Substring search within the prefix-filtered list.
       if (slQuery && !v.includes(slQuery)) return false;
       return true;
     });
-  }, [state.unmatchedSl, activeSlPrefixes, slQuery, usedSlSet]);
+  }, [state.pendingSl, activeSlPrefixes, slQuery, usedSlSet]);
 
-  const filteredUnmatchedBsc = useMemo(() => {
-    return state.unmatchedBsc.filter((item) => {
+  const filteredPendingBsc = useMemo(() => {
+    return state.pendingBsc.filter((item) => {
       if (usedBscSet.has(item.platformValue)) return false;
       if (!bscQuery) return true;
       return item.value.toLowerCase().includes(bscQuery);
     });
-  }, [state.unmatchedBsc, usedBscSet, bscQuery]);
+  }, [state.pendingBsc, usedBscSet, bscQuery]);
+
+  // One entry per marketplace id already mapped by some NB set, carrying the
+  // titles that map it so the operator can see where it is in use.
+  const mappedItems = useCallback(
+    (side: Side): Array<{ item: PlatformItem; usedBy: string[] }> => {
+      const byPv = new Map<string, { item: PlatformItem; usedBy: string[] }>();
+      for (const set of state.ready) {
+        for (const item of side === "bsc" ? set.bsc : set.sl) {
+          const hit = byPv.get(item.platformValue);
+          if (hit) hit.usedBy.push(set.title);
+          else byPv.set(item.platformValue, { item, usedBy: [set.title] });
+        }
+      }
+      return [...byPv.values()];
+    },
+    [state.ready],
+  );
+
+  // Resolve a dragged/clicked value to its item, whether it is still pending or
+  // already mapped somewhere.
+  const resolveItem = useCallback(
+    (side: Side, value: string): PlatformItem | undefined => {
+      const pending = (side === "bsc" ? state.pendingBsc : state.pendingSl).find(
+        (i) => i.value === value,
+      );
+      if (pending) return pending;
+      for (const set of state.ready) {
+        const hit = (side === "bsc" ? set.bsc : set.sl).find(
+          (i) => i.value === value,
+        );
+        if (hit) return hit;
+      }
+      return undefined;
+    },
+    [state.pendingBsc, state.pendingSl, state.ready],
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor),
-  );
-
-  // Build ID maps for DnD
-  const bscIds = useMemo(
-    () => state.unmatchedBsc.map((item) => `bsc-${item.value}`),
-    [state.unmatchedBsc],
-  );
-  const slIds = useMemo(
-    () => state.unmatchedSl.map((item) => `sl-${item.value}`),
-    [state.unmatchedSl],
   );
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -746,94 +848,126 @@ export default function ReconciliationModal({
       const activeId = active.id as string;
       const overId = over.id as string;
 
-      const isActiveBsc = activeId.startsWith("bsc-");
-      const isOverSl = overId.startsWith("sl-");
-      const isActiveSl = activeId.startsWith("sl-");
-      const isOverBsc = overId.startsWith("bsc-");
+      // Values are sliced, not `replace`d — replace strips the first occurrence
+      // anywhere in the string, which corrupts any value containing the prefix.
+      const activeSide: Side | null = activeId.startsWith("bsc-")
+        ? "bsc"
+        : activeId.startsWith("sl-")
+          ? "sl"
+          : null;
+      if (!activeSide) return;
+      const activeValue = activeId.slice(activeSide.length + 1);
 
-      const isOverKeepShelf =
-        overId === "keep-shelf" || overId.startsWith("kept-");
+      const activeItem = resolveItem(activeSide, activeValue);
+      if (!activeItem) return;
 
-      if (isActiveBsc && isOverSl) {
+      // Dropped on a Ready set → join it.
+      if (overId.startsWith("ready-")) {
         dispatch({
-          type: "LINK",
-          bscValue: activeId.replace("bsc-", ""),
-          slValue: overId.replace("sl-", ""),
+          type: "ATTACH",
+          key: overId.slice("ready-".length),
+          side: activeSide,
+          item: activeItem,
         });
-      } else if (isActiveSl && isOverBsc) {
-        dispatch({
-          type: "LINK",
-          bscValue: overId.replace("bsc-", ""),
-          slValue: activeId.replace("sl-", ""),
-        });
-      } else if (isActiveBsc && isOverKeepShelf) {
-        dispatch({ type: "KEEP_BSC", value: activeId.replace("bsc-", "") });
-      } else if (isActiveSl && isOverKeepShelf) {
-        dispatch({ type: "KEEP_SL", value: activeId.replace("sl-", "") });
+        return;
       }
+
+      // Dropped on the opposite side's pending item → the two become a set.
+      const overSide: Side | null = overId.startsWith("bsc-")
+        ? "bsc"
+        : overId.startsWith("sl-")
+          ? "sl"
+          : null;
+      if (!overSide || overSide === activeSide) return;
+      const overItem = resolveItem(overSide, overId.slice(overSide.length + 1));
+      if (!overItem) return;
+
+      dispatch({
+        type: "PROMOTE_PAIR",
+        bsc: activeSide === "bsc" ? activeItem : overItem,
+        sl: activeSide === "sl" ? activeItem : overItem,
+      });
     },
-    [],
+    [resolveItem],
   );
 
-  // Click-to-link: click BSC item then click SL item
-  const handleBscClick = useCallback(
-    (value: string) => {
-      if (selectedBsc === value) {
-        setSelectedBsc(null);
-      } else {
-        setSelectedBsc(value);
+  // Click-to-link, the keyboard-reachable mirror of the drags above.
+  const handlePendingClick = useCallback(
+    (side: Side, value: string) => {
+      if (selected && selected.side !== side) {
+        const here = resolveItem(side, value);
+        const there = resolveItem(selected.side, selected.value);
+        if (here && there) {
+          dispatch({
+            type: "PROMOTE_PAIR",
+            bsc: side === "bsc" ? here : there,
+            sl: side === "sl" ? here : there,
+          });
+        }
+        setSelected(null);
+        return;
       }
+      setSelected(
+        selected && selected.side === side && selected.value === value
+          ? null
+          : { side, value },
+      );
     },
-    [selectedBsc],
+    [selected, resolveItem],
   );
 
-  const handleSlClick = useCallback(
-    (value: string) => {
-      if (selectedBsc) {
-        dispatch({ type: "LINK", bscValue: selectedBsc, slValue: value });
-        setSelectedBsc(null);
-      }
+  const handleAttachClick = useCallback(
+    (key: string) => {
+      if (!selected) return;
+      const item = resolveItem(selected.side, selected.value);
+      if (item) dispatch({ type: "ATTACH", key, side: selected.side, item });
+      setSelected(null);
     },
-    [selectedBsc],
+    [selected, resolveItem],
+  );
+
+  const handlePromoteSolo = useCallback(
+    (side: Side, value: string) => {
+      const item = resolveItem(side, value);
+      if (item) dispatch({ type: "PROMOTE_SOLO", side, item });
+      setSelected(null);
+    },
+    [resolveItem],
   );
 
   const handleConfirm = useCallback(async () => {
     setConfirming(true);
     try {
-      const items: ReconciledResult["items"] = [];
+      const items: ReconciledResult["items"] = state.ready.map((set) => {
+        const bscLabels: Record<string, string> = {};
+        for (const i of set.bsc) bscLabels[i.platformValue] = i.value;
+        const slLabels: Record<string, string> = {};
+        for (const i of set.sl) slLabels[i.platformValue] = i.value;
 
-      // Matched pairs: both platforms
-      for (const pair of state.matched) {
-        items.push({
-          value: pair.displayName,
+        return {
+          value: set.title.trim() || set.bsc[0]?.value || set.sl[0]?.value || "",
           platformData: {
-            bsc: pair.bsc.platformValue,
-            sportlots: pair.sl.platformValue,
+            ...(set.bsc.length > 0
+              ? { bsc: set.bsc.map((i) => i.platformValue) }
+              : {}),
+            ...(set.sl.length > 0
+              ? { sportlots: set.sl.map((i) => i.platformValue) }
+              : {}),
           },
-          metadata: pair.metadata,
-        });
-      }
+          ...(set.bsc.length > 0 || set.sl.length > 0
+            ? {
+                platformLabels: {
+                  ...(set.bsc.length > 0 ? { bsc: bscLabels } : {}),
+                  ...(set.sl.length > 0 ? { sportlots: slLabels } : {}),
+                },
+              }
+            : {}),
+          metadata: set.metadata,
+        };
+      });
 
-      // Kept BSC-only: user explicitly opted to save
-      for (const item of state.keptBsc) {
-        items.push({
-          value: item.value,
-          platformData: { bsc: item.platformValue },
-        });
-      }
-
-      // Kept SL-only: user explicitly opted to save
-      for (const item of state.keptSl) {
-        items.push({
-          value: item.value,
-          platformData: { sportlots: item.platformValue },
-        });
-      }
-
-      // Anything still in state.unmatchedBsc / state.unmatchedSl is intentionally
-      // discarded — SL especially returns siblings from other variantTypes that
-      // don't belong to this set.
-
+      // Anything left in Pending is intentionally discarded — SL especially
+      // returns siblings from other variantTypes that don't belong here.
       await onConfirm({ items });
     } finally {
       setConfirming(false);
@@ -864,13 +998,130 @@ export default function ReconciliationModal({
         ? "Variants of Variants"
         : level);
 
-  const keptCount = state.keptBsc.length + state.keptSl.length;
-  const saveCount = state.matched.length + keptCount;
-  const totalItems =
-    state.matched.length +
-    state.unmatchedBsc.length +
-    state.unmatchedSl.length +
-    keptCount;
+  const saveCount = state.ready.length;
+  const pendingCount = state.pendingBsc.length + state.pendingSl.length;
+
+  const renderPendingColumn = (side: Side) => {
+    const isBsc = side === "bsc";
+    const filtered = isBsc ? filteredPendingBsc : filteredPendingSl;
+    const all = isBsc ? state.pendingBsc : state.pendingSl;
+    const query = isBsc ? bscQuery : slQuery;
+    // Already-mapped sets, revealed on request. Mapping never consumed them —
+    // this toggle only keeps the default list to what still needs attention.
+    const showMapped = isBsc ? showMappedBsc : showMappedSl;
+    const mapped = showMapped
+      ? mappedItems(side).filter(
+          ({ item }) =>
+            !query || item.value.toLowerCase().includes(query),
+        )
+      : [];
+
+    return (
+      <div>
+        <div
+          className={`text-xs font-medium uppercase tracking-wide mb-2 ${
+            isBsc ? "text-blue-400" : "text-purple-400"
+          }`}
+        >
+          {isBsc ? "BSC" : "SportLots"} ({filtered.length}
+          {filtered.length !== all.length ? ` of ${all.length}` : ""})
+        </div>
+        <FilterInput
+          value={isBsc ? bscFilter : slFilter}
+          onChange={isBsc ? setBscFilter : setSlFilter}
+          placeholder={isBsc ? "Filter BSC items..." : "Search SportLots items..."}
+          ariaLabel={isBsc ? "Filter BSC items" : "Search SportLots items"}
+        />
+        {isBsc ? (
+          // Spacer keeps the two lists' tops aligned; only SL has a prefix
+          // filter worth toggling.
+          <div className="mb-2 h-[18px]" aria-hidden="true" />
+        ) : (
+          <label className="flex items-center gap-2 mb-2 text-xs text-gray-400 select-none cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showAllSl}
+              onChange={(e) => setShowAllSl(e.target.checked)}
+              aria-label="Show all SportLots items"
+              className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-1 focus:ring-purple-400"
+            />
+            Show all SportLots items
+          </label>
+        )}
+        <label className="flex items-center gap-2 mb-2 text-xs text-gray-400 select-none cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showMapped}
+            onChange={(e) =>
+              (isBsc ? setShowMappedBsc : setShowMappedSl)(e.target.checked)
+            }
+            aria-label={`Show ${isBsc ? "BSC" : "SportLots"} sets already mapped`}
+            className={`h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 focus:ring-1 ${
+              isBsc
+                ? "text-blue-500 focus:ring-blue-400"
+                : "text-purple-500 focus:ring-purple-400"
+            }`}
+          />
+          Show sets already mapped
+        </label>
+        <div className="space-y-1.5 min-h-[60px]">
+          {filtered.map((item) => (
+            <div key={`${side}-${item.value}`}>
+              <DraggableItem
+                id={`${side}-${item.value}`}
+                value={item.value}
+                platform={side}
+                isSelected={
+                  selected?.side === side && selected.value === item.value
+                }
+                onClick={() => handlePendingClick(side, item.value)}
+              />
+              <button
+                type="button"
+                onClick={() => handlePromoteSolo(side, item.value)}
+                className="mt-1 text-[11px] text-gray-400 hover:text-[#00B7FF] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00B7FF] rounded px-1"
+                aria-label={`Make ${item.value} its own NeonBinder set`}
+              >
+                + Make its own set
+              </button>
+            </div>
+          ))}
+          {mapped.map(({ item, usedBy }) => (
+            <div key={`mapped-${side}-${item.value}`}>
+              <DraggableItem
+                id={`${side}-${item.value}`}
+                value={item.value}
+                platform={side}
+                isSelected={
+                  selected?.side === side && selected.value === item.value
+                }
+                onClick={() => handlePendingClick(side, item.value)}
+              />
+              <p className="text-[11px] text-gray-500 mt-0.5 px-1 truncate">
+                mapped to {usedBy.join(", ")}
+              </p>
+            </div>
+          ))}
+          {all.length === 0 && mapped.length === 0 && (
+            <p className="text-xs text-gray-500 italic py-2">
+              Nothing pending on {isBsc ? "BSC" : "SportLots"}
+            </p>
+          )}
+          {all.length > 0 && filtered.length === 0 && (
+            <p className="text-xs text-gray-500 italic py-2">
+              {query
+                ? `No ${isBsc ? "BSC" : "SL"} items contain "${query}"`
+                : !isBsc && activeSlPrefixes.length > 0
+                  ? `No SL items start with ${activeSlPrefixes
+                      .map((p) => `"${p}"`)
+                      .join(" or ")}`
+                  : "Nothing to show"}
+            </p>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return createPortal(
     // NEO-71-74 QA fix: see BaseSetPicker.tsx for why this nested <Theme> is
@@ -890,273 +1141,93 @@ export default function ReconciliationModal({
             Reconcile {levelLabel}
           </h2>
           <p className="text-sm text-gray-400 mt-1">
-            {state.matched.length} matched
-            {keptCount > 0 ? `, ${keptCount} kept` : ""},{" "}
-            {state.unmatchedBsc.length} BSC-only,{" "}
-            {state.unmatchedSl.length} SL-only ({totalItems} total)
+            {saveCount} ready
+            {pendingCount > 0 ? `, ${pendingCount} pending` : ""}
           </p>
         </div>
 
-        {/* Scrollable body */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
-          {/* Auto-matched section (collapsible) */}
-          {state.matched.length > 0 && (
+        {/* One DndContext over BOTH sections — a pending item is dragged onto a
+            Ready set, so they cannot be in separate contexts. */}
+        <DndContext
+          sensors={sensors}
+          collisionDetection={pointerWithin}
+          onDragStart={handleDragStart}
+          onDragEnd={handleDragEnd}
+        >
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6">
+            {/* ── READY ─────────────────────────────────────────────── */}
             <div>
-              <button
-                onClick={() => setMatchedCollapsed(!matchedCollapsed)}
-                className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-2 hover:text-gray-100 transition-colors"
-              >
-                <span className="text-xs">{matchedCollapsed ? "▶" : "▼"}</span>
-                <span>Matched ({state.matched.length})</span>
-                {matchedCollapsed && (
-                  <span className="text-xs text-gray-500">— click to review</span>
-                )}
-              </button>
-              {!matchedCollapsed && state.matched.map((pair, index) => (
-                <MatchedRow
-                  key={`${pair.bsc.value}-${pair.sl.value}`}
-                  pair={pair}
-                  index={index}
-                  onUnlink={() => dispatch({ type: "UNLINK", index })}
-                  showMetadata={showMetadata}
-                  onUpdateMetadata={(metadata) =>
-                    dispatch({ type: "UPDATE_METADATA", index, metadata })
-                  }
-                />
-              ))}
+              <h3 className="text-sm font-medium text-gray-300 mb-1">
+                Ready ({state.ready.length})
+              </h3>
+              <p className="text-xs text-gray-500 mb-2">
+                These become NeonBinder sets. The title is ours — edit it freely.
+                Each set can map to any number of BSC and SportLots sets.
+              </p>
+              {state.ready.length === 0 ? (
+                <p className="text-xs text-gray-500 italic py-2">
+                  No sets yet. Pair two items below, or make one its own set.
+                </p>
+              ) : (
+                state.ready.map((set) => (
+                  <ReadySetRow
+                    key={set.key}
+                    set={set}
+                    showMetadata={showMetadata}
+                    attachHint={selected?.value}
+                    onAttachClick={
+                      selected ? () => handleAttachClick(set.key) : undefined
+                    }
+                    onRename={(title) =>
+                      dispatch({ type: "RENAME", key: set.key, title })
+                    }
+                    onDetach={(side, platformValue) =>
+                      dispatch({ type: "DETACH", key: set.key, side, platformValue })
+                    }
+                    onDisband={() => dispatch({ type: "DISBAND", key: set.key })}
+                    onUpdateMetadata={(metadata) =>
+                      dispatch({ type: "UPDATE_METADATA", key: set.key, metadata })
+                    }
+                  />
+                ))
+              )}
             </div>
-          )}
 
-          {/* Unmatched + Keep shelf section with shared DnD */}
-          {(state.unmatchedBsc.length > 0 ||
-            state.unmatchedSl.length > 0 ||
-            keptCount > 0) && (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={pointerWithin}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-            >
-              <div>
-                <h3 className="text-sm font-medium text-gray-300 mb-2">
-                  Unmatched — drag to link, or drag down to "keep as platform-only"
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  {/* BSC column */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-xs text-blue-400 font-medium uppercase tracking-wide">
-                        BSC ({filteredUnmatchedBsc.length}
-                        {filteredUnmatchedBsc.length !== state.unmatchedBsc.length
-                          ? ` of ${state.unmatchedBsc.length}`
-                          : ""}
-                        )
-                      </div>
-                    </div>
-                    <FilterInput
-                      value={bscFilter}
-                      onChange={setBscFilter}
-                      placeholder="Filter BSC items..."
-                      ariaLabel="Filter BSC items"
-                    />
-                    {/* Spacer matches the SL column's "Show all" checkbox row
-                        so both list tops line up. */}
-                    <div className="mb-2 h-[18px]" aria-hidden="true" />
-                    <div className="space-y-1.5 min-h-[60px]">
-                      {filteredUnmatchedBsc.map((item) => {
-                        // NEO-137: SL sets an auto-match already claimed, still
-                        // offered to THIS row. Confirming one creates the
-                        // M-NB-rows-to-1-marketplace-set mapping — the 1996
-                        // Score case, where Artist's Proofs Series 1 and 2 both
-                        // belong to one SportLots set and the greedy matcher can
-                        // only ever give it to whichever matched first.
-                        //
-                        // Offered, never applied automatically: the two series
-                        // are not distinguishable from the data (each can hold a
-                        // card #1), so only an operator can say which is which.
-                        const shared = (initialData.slCandidates ?? [])
-                          .find((g) => g.bsc.platformValue === item.platformValue)
-                          ?.candidates.filter((c) => c.alreadyMatched) ?? [];
-                        return (
-                          <div key={`bsc-${item.value}`}>
-                            <DraggableItem
-                              id={`bsc-${item.value}`}
-                              value={item.value}
-                              platform="bsc"
-                              isSelected={selectedBsc === item.value}
-                              onClick={() => handleBscClick(item.value)}
-                            />
-                            {shared.length > 0 && (
-                              <ul className="mt-1 mb-1.5 pl-2 border-l border-amber-700/60 space-y-1">
-                                {shared.slice(0, 3).map((c) => (
-                                  <li
-                                    key={`shared-${item.value}-${c.sl.platformValue}`}
-                                    className="flex items-center justify-between gap-2"
-                                  >
-                                    <span className="text-[11px] text-amber-300/90 truncate">
-                                      {c.sl.value}
-                                      <span className="text-gray-500">
-                                        {" "}
-                                        · {Math.round(c.confidence * 100)}% · already linked
-                                      </span>
-                                    </span>
-                                    <button
-                                      type="button"
-                                      className="text-[11px] text-cyan-300 hover:text-cyan-200 whitespace-nowrap"
-                                      onClick={() =>
-                                        dispatch({
-                                          type: "LINK_SHARED",
-                                          bscValue: item.value,
-                                          sl: c.sl,
-                                          confidence: c.confidence,
-                                        })
-                                      }
-                                      aria-label={`Also link ${item.value} to shared set ${c.sl.value}`}
-                                    >
-                                      Link shared
-                                    </button>
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                        );
-                      })}
-                      {state.unmatchedBsc.length === 0 && (
-                        <p className="text-xs text-gray-500 italic py-2">
-                          All BSC items matched
-                        </p>
-                      )}
-                      {state.unmatchedBsc.length > 0 &&
-                        filteredUnmatchedBsc.length === 0 &&
-                        bscQuery && (
-                          <p className="text-xs text-gray-500 italic py-2">
-                            No BSC items contain "{bscQuery}"
-                          </p>
-                        )}
-                    </div>
-                  </div>
-
-                  {/* SL column */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="text-xs text-purple-400 font-medium uppercase tracking-wide">
-                        SportLots ({filteredUnmatchedSl.length}
-                        {filteredUnmatchedSl.length !== state.unmatchedSl.length
-                          ? ` of ${state.unmatchedSl.length}`
-                          : ""}
-                        )
-                      </div>
-                    </div>
-                    <FilterInput
-                      value={slFilter}
-                      onChange={setSlFilter}
-                      placeholder="Search SportLots items..."
-                      ariaLabel="Search SportLots items"
-                    />
-                    <label className="flex items-center gap-2 mb-2 text-xs text-gray-400 select-none cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={showAllSl}
-                        onChange={(e) => setShowAllSl(e.target.checked)}
-                        aria-label="Show all SportLots items"
-                        className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-purple-500 focus:ring-1 focus:ring-purple-400"
-                      />
-                      Show all SportLots items
-                    </label>
-                    <div className="space-y-1.5 min-h-[60px]">
-                      {filteredUnmatchedSl.map((item) => (
-                        <DraggableItem
-                          key={`sl-${item.value}`}
-                          id={`sl-${item.value}`}
-                          value={item.value}
-                          platform="sl"
-                          onClick={
-                            selectedBsc
-                              ? () => handleSlClick(item.value)
-                              : undefined
-                          }
-                        />
-                      ))}
-                      {state.unmatchedSl.length === 0 && (
-                        <p className="text-xs text-gray-500 italic py-2">
-                          All SL items matched
-                        </p>
-                      )}
-                      {state.unmatchedSl.length > 0 &&
-                        filteredUnmatchedSl.length === 0 &&
-                        (slQuery ? (
-                          <p className="text-xs text-gray-500 italic py-2">
-                            No SL items contain "{slQuery}"
-                            {activeSlPrefixes.length > 0
-                              ? " in the filtered list"
-                              : ""}
-                          </p>
-                        ) : (
-                          activeSlPrefixes.length > 0 && (
-                            <p className="text-xs text-gray-500 italic py-2">
-                              No SL items start with{" "}
-                              {activeSlPrefixes.map((p, i) => (
-                                <span key={p}>
-                                  {i > 0 ? " or " : ""}
-                                  "{p}"
-                                </span>
-                              ))}
-                            </p>
-                          )
-                        ))}
-                    </div>
-                  </div>
-                </div>
-
-                <KeepShelf isEmpty={keptCount === 0}>
-                  {state.keptBsc.map((item) => (
-                    <KeptItemRow
-                      key={`kept-bsc-${item.value}`}
-                      value={item.value}
-                      platform="bsc"
-                      onUnkeep={() =>
-                        dispatch({ type: "UNKEEP_BSC", value: item.value })
-                      }
-                    />
-                  ))}
-                  {state.keptSl.map((item) => (
-                    <KeptItemRow
-                      key={`kept-sl-${item.value}`}
-                      value={item.value}
-                      platform="sl"
-                      onUnkeep={() =>
-                        dispatch({ type: "UNKEEP_SL", value: item.value })
-                      }
-                    />
-                  ))}
-                </KeepShelf>
+            {/* ── PENDING ───────────────────────────────────────────── */}
+            <div>
+              <h3 className="text-sm font-medium text-gray-300 mb-1">
+                Pending ({pendingCount})
+              </h3>
+              <p className="text-xs text-gray-500 mb-2">
+                Drag one onto the other to make a set, or onto a set above to add
+                it there. Anything left here is not saved.
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+                {renderPendingColumn("bsc")}
+                {renderPendingColumn("sl")}
               </div>
+            </div>
+          </div>
 
-              <DragOverlay>
-                {activeDragItem && (
-                  <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
-                    <span className="text-gray-200">
-                      {activeDragItem.value}
-                    </span>
-                  </div>
-                )}
-              </DragOverlay>
-            </DndContext>
-          )}
-        </div>
+          <DragOverlay>
+            {activeDragItem && (
+              <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
+                <span className="text-gray-200">{activeDragItem.value}</span>
+              </div>
+            )}
+          </DragOverlay>
+        </DndContext>
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
           <NeonButton cancel onClick={onClose} disabled={confirming}>
             Cancel
           </NeonButton>
-          <NeonButton onClick={handleConfirm} disabled={confirming || saveCount === 0}>
-            {confirming
-              ? "Saving..."
-              : keptCount > 0
-                ? `Save ${state.matched.length} matched + ${keptCount} kept`
-                : `Save ${state.matched.length} matched`}
+          <NeonButton
+            onClick={handleConfirm}
+            disabled={confirming || saveCount === 0}
+          >
+            {confirming ? "Saving..." : `Save ${saveCount} sets`}
           </NeonButton>
         </div>
       </div>

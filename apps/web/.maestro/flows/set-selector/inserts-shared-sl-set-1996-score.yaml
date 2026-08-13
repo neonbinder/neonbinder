@@ -113,10 +113,12 @@ tags:
       - assertVisible:
           text: ".*Dugout Collection Artists Proofs.*"
 
-      # Bind the second row to the same SL set. The aria-label is composed
-      # from both names, so this can only match the intended offer.
+      # Bind the second row to the same SL set. The BSC filter above narrowed
+      # the column to one row, so exactly one offer is on screen and this text
+      # is unambiguous. (It is the visible button label, not the aria-label —
+      # that one composes both set names and is asserted in the unit test.)
       - tapOn:
-          text: "Link shared"
+          text: "Use this set too"
           retryTapIfNoChange: true
 
       # The offer is consumed — the row moved into matched.

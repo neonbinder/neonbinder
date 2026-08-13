@@ -32,6 +32,11 @@ tags:
 # confirming that Maestro's page-level scroll cannot drive the inner virtuoso
 # upward, exactly as the pre-NEO-137 note claimed.
 #
+# (Those runs predate the badge-text change — the badge then read
+# "SL: <label>" and now reads a bare "SL". That is irrelevant to the reasoning
+# here: the tail rows carry no SportLots ref at all, so NO form of the badge
+# renders on them. The coverage gap is the blocker, not the selector.)
+#
 # The SL-coverage guard therefore lives in setup.yaml on the PARALLEL checklist
 # ("Gold Wave Refractors"), which measured 300 cards with 300 SportLots refs —
 # 100% coverage, so the badge is present at the virtuoso's landing position,

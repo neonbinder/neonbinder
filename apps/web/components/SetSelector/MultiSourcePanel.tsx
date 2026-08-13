@@ -9,11 +9,14 @@ import { slotEntries, slotLabel } from "../../convex/platformSlots";
 
 /**
  * Per-row attached-sets panel (NEO-6 phase 1). Renders chip stacks for the
- * BSC and SL IDs attached to a variantType / insert / parallel row, with
- * the reconciliation primary clearly marked. Operator can:
+ * BSC and SL IDs attached to a variantType / insert / parallel row. Every
+ * source is presented equally — see the note on the chip's <li> for why the
+ * old "PRIMARY" badge was removed. Operator can:
  *   • Open the combined attach dialog to add more BSC/SL IDs.
  *   • Rename the label on any chip inline (Enter to save, Escape to cancel).
- *   • Remove any non-primary chip with the × button.
+ *   • Remove any chip with the × button. Removing the slot the reconciler
+ *     owns still takes one extra confirm — it is the one a later sync could
+ *     re-add — but that is phrased as a consequence, not as a rank.
  *
  * Keyboard model:
  *   Tab     — cycles between chip controls and the Attach button.
@@ -280,13 +283,13 @@ function Chip({
         role="alert"
       >
         <span className="flex-1 min-w-0 truncate text-sm text-gray-100">
-          Remove primary mapping “{chip.label}”?
+          Remove “{chip.label}”? A later sync of this row could re-add it.
         </span>
         <button
           type="button"
           onClick={handleDetach}
           disabled={busy}
-          aria-label={`Confirm remove primary ${chip.label}`}
+          aria-label={`Confirm remove ${chip.label}`}
           className="text-xs font-semibold text-[#FF2EB3] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1"
         >
           Confirm
@@ -295,7 +298,7 @@ function Chip({
           type="button"
           onClick={() => setMode("idle")}
           disabled={busy}
-          aria-label={`Cancel remove primary ${chip.label}`}
+          aria-label={`Cancel remove ${chip.label}`}
           className="text-xs text-gray-400 hover:text-gray-200 focus:text-gray-200 focus:outline-none px-1"
         >
           Cancel
@@ -310,21 +313,27 @@ function Chip({
   }
 
   return (
-    <li
-      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${
-        chip.isPrimary
-          ? "border-[#00D558] bg-[#00D558]/10"
-          : "border-gray-700 bg-gray-800"
-      }`}
-    >
-      {chip.isPrimary && (
-        <span
-          className="text-[10px] uppercase font-bold text-[#00D558]"
-          aria-label="Primary source"
-        >
-          Primary
-        </span>
-      )}
+    // No "PRIMARY" badge, deliberately.
+    //
+    // `primaryPlatformId` is bookkeeping — it records which slot the RECONCILER
+    // owns and refreshes, so operator-attached extras survive a re-sync. It says
+    // nothing about the cards. Rendering it as "PRIMARY" invited the reading it
+    // does not have: that this source is where the cards were released and the
+    // others are secondary. For a set like 1996 Score DCAP, split across two BSC
+    // sets, every source is equally primary and the badge was just wrong.
+    //
+    // The provenance concept the badge appeared to express is real but rarer
+    // than 1-in-100 sets (2021 Score's last 20 cards were released in
+    // Chronicles — primary there, secondary in Score). When it is modelled it
+    // gets its own SECONDARY tag on the sources that carry it; silence means
+    // primary, which is the overwhelming default.
+    // items-start, and the name/slug wrap as a pair: the NAME is what the
+    // operator reads, so it gets the full width and the slug drops to a second
+    // line when they will not both fit. Previously both were `truncate`
+    // siblings on one row, which clipped the name ("Dugout Collection Artist's
+    // Proof…") while the slug — the part nobody reads — survived intact.
+    <li className="flex items-start gap-2 px-3 py-1.5 rounded border border-gray-700 bg-gray-800">
+      <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-2">
       {mode === "editing" ? (
         <Input
           bare
@@ -344,7 +353,7 @@ function Chip({
           }}
           onBlur={commitRename}
           aria-label={`Edit label for ${chip.id}`}
-          className="flex-1 min-w-0 px-2 py-0.5 text-sm"
+          className="w-full min-w-0 px-2 py-0.5 text-sm"
         />
       ) : (
         <button
@@ -354,20 +363,21 @@ function Chip({
             setMode("editing");
           }}
           aria-label={`Rename label for ${chip.id}`}
-          className="flex-1 min-w-0 text-left truncate text-sm text-gray-100 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+          className="min-w-0 text-left break-words text-sm text-gray-100 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
         >
           {chip.label}
         </button>
       )}
-      <span className="text-[10px] text-gray-500 truncate" aria-hidden>
+      <span className="text-[10px] text-gray-500 break-all" aria-hidden>
         {chip.id}
       </span>
+      </div>
       {chip.isPrimary ? (
         <button
           type="button"
           onClick={() => setMode("confirming")}
           disabled={busy}
-          aria-label={`Remove primary ${chip.label}`}
+          aria-label={`Remove ${chip.label}`}
           className="text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none px-1"
         >
           ×

@@ -102,6 +102,13 @@ export default function CardChecklist({
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
   });
+  // Names the set in the pairing dialog's header. That dialog is modal and can
+  // be hundreds of rows long — without this it says only "Match Cards" and an
+  // operator who steps away has no way to tell which set they came back to.
+  // Convex dedupes same-arg queries, so this costs no extra round trip.
+  const variantRow = useQuery(api.selectorOptions.getSelectorOptionById, {
+    id: variantId,
+  });
   // NEO-26: walk the ancestor chain once at this layer so every
   // CardChecklistItem below can hand the resolved sport to TeamPicker
   // (typeahead filter) + CardFeaturesEditor (applicability filter).
@@ -685,6 +692,7 @@ export default function CardChecklist({
             setSyncMessage("Sync cancelled — no cards saved.");
           }}
           onConfirm={handlePairingConfirm}
+          setLabel={variantRow?.value}
           initialData={{
             autoMatched: pendingPairing.autoMatched,
             unmatchedBsc: pendingPairing.unmatchedBsc,

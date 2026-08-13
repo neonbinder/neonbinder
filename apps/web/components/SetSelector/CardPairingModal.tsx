@@ -253,8 +253,23 @@ export default function CardPairingModal({
   const [selectedBsc, setSelectedBsc] = useState<string | null>(null);
   const [bscFilter, setBscFilter] = useState("");
   const [slFilter, setSlFilter] = useState("");
-  const [matchedCollapsed, setMatchedCollapsed] = useState(true);
+  // Collapsed by default ONLY when there is unmatched work to do — the point
+  // of collapsing is to put the operator's attention on the columns below.
+  // With nothing unmatched there are no columns, and a collapsed dialog shows
+  // three empty sections and a "▶ Matched (220)" the operator has to expand to
+  // see anything at all.
+  const [matchedCollapsed, setMatchedCollapsed] = useState(
+    initialData.unmatchedBsc.length > 0 || initialData.unmatchedSl.length > 0,
+  );
   const [confirming, setConfirming] = useState(false);
+  // Everything paired and nothing set aside: the columns and keep shelf have
+  // nothing to show and only add noise. Derived from CURRENT state, not the
+  // initial snapshot, so unlinking a pair brings the columns straight back.
+  const nothingToReconcile =
+    state.unmatchedBsc.length === 0 &&
+    state.unmatchedSl.length === 0 &&
+    state.keptBsc.length === 0 &&
+    state.keptSl.length === 0;
   const bscFieldClass = useFieldTestClass();
   const slFieldClass = useFieldTestClass();
 
@@ -372,9 +387,9 @@ export default function CardPairingModal({
               Match Cards{setLabel ? ` — ${setLabel}` : ""}
             </h2>
             <p className="text-xs text-gray-400 mt-1">
-              No cards are saved until you confirm. Anything left in a column
-              below is discarded — keep a card to save it as
-              single-marketplace.
+              {nothingToReconcile
+                ? "Every card paired across both marketplaces. Review and confirm — no cards are saved until you do."
+                : "No cards are saved until you confirm. Anything left in a column below is discarded — keep a card to save it as single-marketplace."}
             </p>
           </header>
 
@@ -422,7 +437,11 @@ export default function CardPairingModal({
               )}
             </section>
 
-            {/* Unmatched columns */}
+            {/* Unmatched columns — omitted entirely when both are empty.
+                Two headers reading "(0)" over two dead filter inputs is not
+                information; it just buries the matched list the operator
+                actually came to review. */}
+            {!nothingToReconcile && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <section>
                 <div className="flex items-center justify-between mb-2">
@@ -565,8 +584,13 @@ export default function CardPairingModal({
                 </ul>
               </section>
             </div>
+            )}
 
-            {/* Keep shelf — same affordance the set-level dialog has. */}
+            {/* Keep shelf — same affordance the set-level dialog has. Hidden
+                alongside the columns: with nothing unmatched there is nothing
+                that could be kept, so "Nothing kept — every unmatched card
+                above will be discarded" describes cards that do not exist. */}
+            {!nothingToReconcile && (
             <section className="border-t border-gray-700 pt-3">
               <h3 className="text-sm font-semibold text-gray-200 mb-2">
                 Keeping ({state.keptBsc.length + state.keptSl.length})
@@ -626,6 +650,7 @@ export default function CardPairingModal({
                 </ul>
               )}
             </section>
+            )}
           </div>
 
           <footer className="p-4 border-t border-gray-700 flex items-center justify-between">
