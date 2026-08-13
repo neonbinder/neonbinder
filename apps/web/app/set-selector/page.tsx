@@ -2,6 +2,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import SetSelector from "../../components/modules/SetSelector";
 import AdminTools from "../../components/SetSelector/AdminTools";
+import TeamColorAdmin from "../../components/SetSelector/TeamColorAdmin";
 import MissingCredentialsBanner from "../../components/SetSelector/MissingCredentialsBanner";
 
 const REQUIRED_SITES = ["buysportscards", "sportlots"];
@@ -50,6 +51,10 @@ export default function SetSelectorPage() {
           Build set parameters using marketplace APIs with searchable dropdowns
         </p>
         <AdminTools />
+        {/* NEO-147: the team-colors worklist. Lives here rather than on
+            /print/spine-label because resolving an ambiguous match writes to
+            globally-shared team rows — an admin job, not a collector's. */}
+        <TeamColorAdmin />
       </div>
       <div className="px-6 pb-6">
         <SetSelector />

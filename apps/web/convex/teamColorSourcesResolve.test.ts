@@ -306,3 +306,78 @@ describe("refreshIndex", () => {
     ).rejects.toThrow(/admin/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// The admin worklist
+// ---------------------------------------------------------------------------
+
+describe("teams.listColorReview", () => {
+  async function seedReviewFixture(t: ReturnType<typeof convexTest>) {
+    await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const base = { sportId, lastUpdated: 1_700_000_000_000 };
+      await ctx.db.insert("teams", {
+        ...base,
+        name: "Resolved Team",
+        nameNormalized: "resolved team",
+        colors: { primary: "#ab0008" },
+      });
+      await ctx.db.insert("teams", {
+        ...base,
+        name: "Huskies",
+        nameNormalized: "huskies",
+        colorCandidates: [
+          { name: "a huskies", url: "https://teamcolorcodes.com/a-colors/" },
+          { name: "b huskies", url: "https://teamcolorcodes.com/b-colors/" },
+        ],
+      });
+      await ctx.db.insert("teams", {
+        ...base,
+        name: "Estrellas Orientales",
+        nameNormalized: "estrellas orientales",
+      });
+    });
+  }
+
+  test("splits the work into the two buckets a human handles differently", async () => {
+    const t = convexTest(schema, modules);
+    await seedReviewFixture(t);
+
+    const review = await t
+      .withIdentity({ subject: "admin", role: "admin" })
+      .query(api.teams.listColorReview, {});
+
+    expect(review.ambiguous.map((r) => r.name)).toEqual(["Huskies"]);
+    expect(review.missing.map((r) => r.name)).toEqual(["Estrellas Orientales"]);
+    expect(review.resolvedCount).toBe(1);
+    expect(review.totalCount).toBe(3);
+  });
+
+  test("does not list an ambiguous team as also missing", async () => {
+    // It has no colors, but it needs a CHOICE, not manual entry — showing it
+    // in both buckets would invite entering colors that the next pick erases.
+    const t = convexTest(schema, modules);
+    await seedReviewFixture(t);
+
+    const review = await t
+      .withIdentity({ subject: "admin", role: "admin" })
+      .query(api.teams.listColorReview, {});
+
+    expect(review.missing.map((r) => r.name)).not.toContain("Huskies");
+  });
+
+  test("requires admin", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t
+        .withIdentity({ subject: "someone", role: "user" })
+        .query(api.teams.listColorReview, {}),
+    ).rejects.toThrow(/admin/i);
+  });
+});

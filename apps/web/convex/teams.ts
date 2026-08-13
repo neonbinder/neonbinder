@@ -459,3 +459,52 @@ export const enrichUnenrichedTeams = mutation({
     return { enqueued: needsColors.length };
   },
 });
+
+/** Rows returned per bucket by `listColorReview`. Enough to work through, not a browse. */
+const COLOR_REVIEW_PAGE = 50;
+
+/**
+ * NEO-147: the admin team-colors worklist.
+ *
+ * Two buckets, because they need different actions from the human:
+ *
+ *  - `ambiguous` — the backfill matched several source pages and refused to
+ *    guess. One click resolves it (`teamColorSources.chooseColorSource`).
+ *  - `missing` — no colors and no resolved source. Either the backfill has not
+ *    reached this row yet, or no source will ever carry it (Estrellas
+ *    Orientales), in which case the fix is typing two hex values.
+ *
+ * `resolvedCount` is reported so the admin can see the backfill making
+ * progress rather than inferring it from a shrinking worklist.
+ */
+export const listColorReview = query({
+  args: { sportId: v.optional(v.id("selectorOptions")) },
+  returns: v.object({
+    ambiguous: v.array(teamDocValidator),
+    missing: v.array(teamDocValidator),
+    resolvedCount: v.number(),
+    totalCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    const rows = args.sportId
+      ? await ctx.db
+          .query("teams")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+          .collect()
+      : await ctx.db.query("teams").collect();
+
+    const ambiguous = rows.filter((t) => (t.colorCandidates?.length ?? 0) > 0);
+    const missing = rows.filter(
+      (t) => !t.colors?.primary && (t.colorCandidates?.length ?? 0) === 0,
+    );
+
+    return {
+      ambiguous: ambiguous.slice(0, COLOR_REVIEW_PAGE),
+      missing: missing.slice(0, COLOR_REVIEW_PAGE),
+      resolvedCount: rows.filter((t) => Boolean(t.colors?.primary)).length,
+      totalCount: rows.length,
+    };
+  },
+});
