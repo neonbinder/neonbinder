@@ -6,6 +6,9 @@ Slice 2b: SAM added to the cascade; text-count + classify-error gates
           applied uniformly across every crop strategy via the wrapper
           in `app.cropper`. Main.py is now a thin layer: auth + upload
           validation → cropper.crop() → response packaging.
+NEO-149:  `/jobs` — asynchronous zip batches read from and written back to
+          GCS. Same thin-layer rule: this file does auth, request shape and
+          error-code mapping; everything else is `app.jobs`.
 """
 
 from __future__ import annotations
@@ -16,13 +19,25 @@ import logging
 import os
 from typing import Annotated
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app import cropper
+from app import cropper, jobs
 from app.classify import ClassifyError
 from app.cropper import STRATEGY_NAMES, CropRejected, UnknownStrategyError
+from app.jobs import layout
+from app.jobs.layout import InvalidJobIdentifierError
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +46,12 @@ app = FastAPI(title="neonbinder-preprocess", version="0.3.0")
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 ALLOWED_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+# Retry-After sent with both of the job endpoints' 503s. A busy instance is
+# busy for the length of a batch (minutes), but with max-instances 3 a retry
+# 30s later can land on a different, idle instance — so this is sized to "try
+# somewhere else soon", not "wait for this batch to finish".
+JOB_RETRY_AFTER_SECONDS = 30
 
 
 class CropStrategyOutput(BaseModel):
@@ -92,6 +113,82 @@ class ProcessResponse(BaseModel):
     text_count: int
     cropped_source: str
     cropped_image_b64: str | None
+
+
+class JobSubmitRequest(BaseModel):
+    """Body for POST /jobs.
+
+    **There is no object-path field, and there must never be one.** Both
+    `neonbinder-convex` and the preprocess runtime SA hold bucket-wide
+    `objectViewer` on the placeholder bucket, so a caller-supplied path would
+    make this endpoint a cross-user read oracle. The service takes the two
+    identifiers and derives every key itself (`app.jobs.layout`); the caller's
+    authority to use them was established by Convex, which owns the
+    `placeholderJobs` ownership row and re-derives the same path from it.
+    """
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+
+
+class JobSubmitResponse(BaseModel):
+    """202 body for POST /jobs.
+
+    `state` is always `queued`: the work has been claimed, not started. Poll
+    `GET /jobs/{job_id}` for everything after that.
+    """
+
+    job_id: str
+    user_id: str
+    state: str
+    input_uri: str
+    output_prefix: str
+
+
+class JobProgress(BaseModel):
+    """Per-image counters. `processed + failed` is the work done so far."""
+
+    total_images: int
+    processed_images: int
+    failed_images: int
+
+
+class JobResult(BaseModel):
+    """Batch outcome. Populated once the job reaches a terminal state.
+
+    `manifest_uri` points at the full document — per-image records, pairs with
+    their merged identity, unpaired images and per-image failure reasons. It is
+    read directly from GCS rather than proxied through this service.
+    """
+
+    manifest_uri: str | None
+    pairs: int
+    unmatched: int
+    resolver_calls: int
+
+
+class JobStatusResponse(BaseModel):
+    """Body for GET /jobs/{job_id}.
+
+    `state` is one of `queued`, `running`, `succeeded`, `failed` — or
+    `stalled`, which is never *stored*: it is what a caller is told when a
+    non-terminal job's status log has gone quiet for longer than
+    `app.jobs.state.STALE_AFTER_MS`, meaning the instance running it died. A
+    stalled job cannot be resumed; resubmit under a fresh job id.
+
+    Timestamps are epoch milliseconds, matching what Convex stores.
+    """
+
+    job_id: str
+    user_id: str
+    state: str
+    sequence: int
+    created_at: int
+    updated_at: int
+    progress: JobProgress
+    result: JobResult
+    error_code: str | None
+    error_detail: str | None
 
 
 def _verify_internal_key(x_internal_key: str | None) -> None:
@@ -317,3 +414,130 @@ async def crop_alternatives(
     )
 
     return CropResponse(crops=crops)
+
+
+# HTTP status + machine error code for each way a submission can be refused.
+# Kept as one table so the wire contract is readable in a single place — the
+# NEO-151 Convex adapter branches on `error_code`, never on the prose detail.
+_SUBMIT_ERRORS: tuple[tuple[type[Exception], int, str], ...] = (
+    (InvalidJobIdentifierError, status.HTTP_400_BAD_REQUEST, "INVALID_IDENTIFIER"),
+    (jobs.JobsNotConfiguredError, status.HTTP_503_SERVICE_UNAVAILABLE, "JOBS_NOT_CONFIGURED"),
+    (jobs.InstanceBusyError, status.HTTP_503_SERVICE_UNAVAILABLE, "INSTANCE_BUSY"),
+    (jobs.InputNotFoundError, status.HTTP_404_NOT_FOUND, "INPUT_NOT_FOUND"),
+    (jobs.InputTooLargeError, status.HTTP_413_CONTENT_TOO_LARGE, "INPUT_TOO_LARGE"),
+    (jobs.JobAlreadySubmittedError, status.HTTP_409_CONFLICT, "JOB_ALREADY_SUBMITTED"),
+)
+
+
+def _submit_error_response(exc: Exception) -> JSONResponse:
+    for exc_type, http_status, code in _SUBMIT_ERRORS:
+        if isinstance(exc, exc_type):
+            return JSONResponse(
+                status_code=http_status,
+                content={"error_code": code, "detail": str(exc)},
+                # Both 503s are transient: no bucket configured is a deploy in
+                # progress, a busy instance frees up when its batch finishes.
+                headers=(
+                    {"Retry-After": str(JOB_RETRY_AFTER_SECONDS)}
+                    if http_status == status.HTTP_503_SERVICE_UNAVAILABLE
+                    else None
+                ),
+            )
+    raise exc
+
+
+@app.post("/jobs", response_model=JobSubmitResponse, status_code=status.HTTP_202_ACCEPTED)
+def submit_job(
+    request: JobSubmitRequest,
+    background_tasks: BackgroundTasks,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> JobSubmitResponse | JSONResponse:
+    """Claim a zip batch and start it in the background.
+
+    Returns 202 as soon as the job is claimed — the batch itself is minutes of
+    SAM inference and cannot be a request. Everything after this point is
+    observed through `GET /jobs/{job_id}`, which reads the durable status log
+    rather than any in-process state, so a poll landing on a different instance
+    (or on a cold one) answers correctly. See `app.jobs` for the reasoning.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `INPUT_NOT_FOUND` (404),
+    `JOB_ALREADY_SUBMITTED` (409), `INPUT_TOO_LARGE` (413),
+    `JOBS_NOT_CONFIGURED` / `INSTANCE_BUSY` (503, both retryable).
+    """
+    _verify_internal_key(x_internal_key)
+
+    try:
+        bucket = jobs.resolve_bucket()
+        job_status = jobs.submit_job(request.user_id, request.job_id)
+    except Exception as exc:
+        logger.info("jobs: submit refused (%s)", type(exc).__name__)
+        return _submit_error_response(exc)
+
+    background_tasks.add_task(jobs.execute_job, request.user_id, request.job_id, job_status)
+
+    return JobSubmitResponse(
+        job_id=job_status.job_id,
+        user_id=job_status.user_id,
+        state=job_status.state,
+        input_uri=f"gs://{bucket}/{layout.input_object(request.user_id, request.job_id)}",
+        output_prefix=f"gs://{bucket}/{layout.output_prefix(request.user_id, request.job_id)}",
+    )
+
+
+@app.get("/jobs/{job_id}", response_model=JobStatusResponse)
+def get_job_status(
+    job_id: str,
+    user_id: Annotated[str, Query(description="The Clerk subject id that owns the job.")],
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> JobStatusResponse | JSONResponse:
+    """Read a job's latest durable status snapshot.
+
+    `user_id` is required because it is half of the object prefix the status
+    log lives under — the service does not maintain an index from job id to
+    owner, deliberately: that index is the `placeholderJobs` row in Convex, and
+    duplicating it here would be a second place for an ownership check to be
+    wrong.
+    """
+    _verify_internal_key(x_internal_key)
+
+    try:
+        job_status = jobs.load_status(user_id, job_id)
+    except InvalidJobIdentifierError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error_code": "INVALID_IDENTIFIER", "detail": str(exc)},
+        )
+    except jobs.JobsNotConfiguredError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"error_code": "JOBS_NOT_CONFIGURED", "detail": str(exc)},
+            headers={"Retry-After": str(JOB_RETRY_AFTER_SECONDS)},
+        )
+
+    if job_status is None:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error_code": "JOB_NOT_FOUND", "detail": "no status log for this job"},
+        )
+
+    return JobStatusResponse(
+        job_id=job_status.job_id,
+        user_id=job_status.user_id,
+        state=jobs.derive_state(job_status),
+        sequence=job_status.sequence,
+        created_at=job_status.created_at,
+        updated_at=job_status.updated_at,
+        progress=JobProgress(
+            total_images=job_status.total_images,
+            processed_images=job_status.processed_images,
+            failed_images=job_status.failed_images,
+        ),
+        result=JobResult(
+            manifest_uri=job_status.manifest_uri,
+            pairs=job_status.pairs,
+            unmatched=job_status.unmatched,
+            resolver_calls=job_status.resolver_calls,
+        ),
+        error_code=job_status.error_code,
+        error_detail=job_status.error_detail,
+    )

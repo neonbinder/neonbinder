@@ -145,10 +145,6 @@ class _CountingResolver:
         )
         return classify_card(data)
 
-    @property
-    def call_count(self) -> int:
-        return len(self.calls)
-
 
 class ImageUnprocessableError(Exception):
     """One image could not be turned into an output object.
