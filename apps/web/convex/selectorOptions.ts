@@ -2673,6 +2673,7 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
   crossListingsDeleted: number;
   playersDeleted: number;
   teamsDeleted: number;
+  leaguesDeleted: number;
 }> {
     let selectorOptionsDeleted = 0;
     while (true) {
@@ -2733,12 +2734,25 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
       if (!result.hasMore) break;
     }
 
+    // NEO-156: leagues go last, after the teams that reference them, so an
+    // interrupted reset never leaves teams pointing at deleted leagues.
+    let leaguesDeleted = 0;
+    while (true) {
+      const result = await ctx.runMutation(
+        internal.selectorOptions.resetLeaguesBatch,
+        {},
+      );
+      leaguesDeleted += result.deleted;
+      if (!result.hasMore) break;
+    }
+
     return {
       selectorOptionsDeleted,
       cardChecklistDeleted,
       crossListingsDeleted,
       playersDeleted,
       teamsDeleted,
+      leaguesDeleted,
     };
 }
 
@@ -2770,6 +2784,7 @@ export const resetSetBuilderData = action({
     crossListingsDeleted: v.number(),
     playersDeleted: v.number(),
     teamsDeleted: v.number(),
+    leaguesDeleted: v.number(),
   }),
   handler: async (
     ctx,
@@ -2779,6 +2794,7 @@ export const resetSetBuilderData = action({
     crossListingsDeleted: number;
     playersDeleted: number;
     teamsDeleted: number;
+    leaguesDeleted: number;
   }> => {
     // CLIENT-CALLABLE entry point (the AdminTools button). Both guards live
     // here now rather than in each batch mutation: this is the only path a
@@ -2852,6 +2868,7 @@ export const resetSetBuilderDataFromCli = internalAction({
     crossListingsDeleted: v.number(),
     playersDeleted: v.number(),
     teamsDeleted: v.number(),
+    leaguesDeleted: v.number(),
   }),
   handler: async (
     ctx,
@@ -2861,6 +2878,7 @@ export const resetSetBuilderDataFromCli = internalAction({
     crossListingsDeleted: number;
     playersDeleted: number;
     teamsDeleted: number;
+    leaguesDeleted: number;
   }> => {
     // Same auth posture as the button — the batch mutations below enforce
     // requireAdmin, which `--identity` satisfies. This entry point differs
@@ -2994,6 +3012,32 @@ export const resetPlayersBatch = internalMutation({
  * Internal: delete up to RESET_BATCH_SIZE rows from teams.
  * Used by resetSetBuilderData (action) in a loop until no rows remain.
  */
+/**
+ * Internal: delete up to RESET_BATCH_SIZE rows from `leagues`.
+ *
+ * NEO-156 added this alongside the teams batch. A reset that wipes teams but
+ * leaves their leagues standing is not a clean slate — it leaves league rows
+ * nothing references, which then quietly collide with the ones seeding
+ * recreates.
+ */
+export const resetLeaguesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    // Auth here rather than at the entry point, same as every other batch —
+    // see the note in resetSelectorOptionsBatch.
+    await requireAdmin(ctx);
+    const rows = await ctx.db.query("leagues").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
 export const resetTeamsBatch = internalMutation({
   args: {},
   returns: v.object({
