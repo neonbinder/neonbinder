@@ -461,19 +461,24 @@ tags:
       # ReconciliationModal STRUCTURE coverage — folded in from the retired
       # insert-variant-flow / cascade/sets-inserts (which couldn't survive a
       # pre-saved column). Verify the modal before saving the matched rows.
+      # NEO-137 — the dialog builds NB SETS now, not marketplace pairs. Its two
+      # sections are Ready (sets that will be written) and Pending (marketplace
+      # sets not yet assigned to one). The old "N matched, N BSC-only, N SL-only"
+      # summary and the "Unmatched" heading no longer exist, and "keep as
+      # platform-only" is gone entirely — a set with mappings on one side only
+      # is ordinary now, not a special case needing its own shelf.
+      # Assert only what is ABOVE THE FOLD. The dialog body is its own
+      # overflow-y-auto scroller, and with a real set the Ready list runs long
+      # enough to push Pending and its two columns off a 1024x629 viewport —
+      # asserting them here failed for layout reasons, not behaviour.
+      # The header subtitle carries both counts and never scrolls away, so it
+      # gives the same structural coverage for free. The Pending columns are
+      # asserted properly (filtered, with counts) in
+      # inserts-1996-score-one-nb-set-two-bsc-sources, which scrolls to them.
       - assertVisible:
-          text: ".*[0-9]+ matched.*"
+          text: ".*[0-9]+ ready.*"
       - assertVisible:
-          text: ".*BSC-only.*"
-      - assertVisible:
-          text: ".*SL-only.*"
-      - scrollUntilVisible:
-          element:
-            text: ".*Unmatched.*"
-      - assertVisible:
-          text: ".*BSC.*"
-      - assertVisible:
-          text: ".*SportLots.*"
+          text: ".*Ready \\([0-9]+\\).*"
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
@@ -621,19 +626,24 @@ tags:
       # ReconciliationModal STRUCTURE coverage — folded in from the retired
       # cascade/sets-parallels (which couldn't survive a pre-saved column).
       # Verify the modal before saving the matched rows.
+      # NEO-137 — the dialog builds NB SETS now, not marketplace pairs. Its two
+      # sections are Ready (sets that will be written) and Pending (marketplace
+      # sets not yet assigned to one). The old "N matched, N BSC-only, N SL-only"
+      # summary and the "Unmatched" heading no longer exist, and "keep as
+      # platform-only" is gone entirely — a set with mappings on one side only
+      # is ordinary now, not a special case needing its own shelf.
+      # Assert only what is ABOVE THE FOLD. The dialog body is its own
+      # overflow-y-auto scroller, and with a real set the Ready list runs long
+      # enough to push Pending and its two columns off a 1024x629 viewport —
+      # asserting them here failed for layout reasons, not behaviour.
+      # The header subtitle carries both counts and never scrolls away, so it
+      # gives the same structural coverage for free. The Pending columns are
+      # asserted properly (filtered, with counts) in
+      # inserts-1996-score-one-nb-set-two-bsc-sources, which scrolls to them.
       - assertVisible:
-          text: ".*[0-9]+ matched.*"
+          text: ".*[0-9]+ ready.*"
       - assertVisible:
-          text: ".*BSC-only.*"
-      - assertVisible:
-          text: ".*SL-only.*"
-      - scrollUntilVisible:
-          element:
-            text: ".*BSC.*"
-      # R6 — scrollUntilVisible already asserts the ".*BSC.*" element is visible;
-      # the redundant assertVisible of the same target was removed.
-      - assertVisible:
-          text: ".*SportLots.*"
+          text: ".*Ready \\([0-9]+\\).*"
       - scrollUntilVisible:
           element:
             text: ".*Save [0-9]+ sets.*"
