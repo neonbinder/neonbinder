@@ -6,7 +6,7 @@ import {
   ArchiveBoxIcon,
   PrinterIcon,
   UserIcon,
-  SquaresPlusIcon,
+  WrenchScrewdriverIcon,
 } from "@heroicons/react/24/outline";
 import { useIsAdmin } from "@/src/hooks/useIsAdmin";
 
@@ -42,9 +42,14 @@ export const NAV_ITEMS: NavItem[] = [
     activeColor: "text-neon-yellow",
   },
   {
-    label: "Set Builder",
-    path: "/set-selector",
-    icon: SquaresPlusIcon,
+    // NEO-155 — one tab for every admin tool. This was "Set Builder" →
+    // /set-selector, and that page had become where anything admin-only
+    // landed (NEO-147's team colors worklist was the tipping point). Set
+    // Builder is now a section under /admin alongside Teams, with Players,
+    // Features and Leagues to follow. Same move as NEO-145 made for /print.
+    label: "Admin",
+    path: "/admin",
+    icon: WrenchScrewdriverIcon,
     glowClass: "binder-tab-glow-orange",
     activeColor: "text-neon-orange",
     requiresAdmin: true,

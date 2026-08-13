@@ -14,6 +14,7 @@ import * as Sentry from "@sentry/react";
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
 import BinderLayout from "@/src/layouts/binder-layout";
 import AdminLayout from "@/src/layouts/AdminLayout";
+import AdminSectionLayout from "@/src/layouts/admin-section-layout";
 
 // Pages
 import Home from "@/app/page";
@@ -37,7 +38,9 @@ import ProfilePublic from "@/app/profile/public/page";
 import ProfileCredentials from "@/app/profile/credentials/page";
 import ProfileShipping from "@/app/profile/shipping/page";
 import ProfilePrizes from "@/app/profile/prizes/page";
-import SetSelector from "@/app/set-selector/page";
+import AdminHub from "@/app/admin/page";
+import AdminSetBuilder from "@/app/admin/set-builder/page";
+import AdminTeams from "@/app/admin/teams/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
 import PrintHub from "@/app/print/page";
@@ -124,9 +127,24 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 element={<Navigate to="/print/qr" replace />}
               />
               <Route path="/design/primitives" element={<DesignPrimitives />} />
-              {/* Admin-only routes — redirected to /dashboard for non-admins */}
+              {/* Admin-only routes — redirected to /dashboard for non-admins.
+                  AdminLayout is the AUTHORIZATION gate; AdminSectionLayout
+                  inside it is the visual shell with the sub-tabs (NEO-155). */}
               <Route element={<AdminLayout />}>
-                <Route path="/set-selector" element={<SetSelector />} />
+                <Route path="/admin" element={<AdminSectionLayout />}>
+                  <Route index element={<AdminHub />} />
+                  <Route path="set-builder" element={<AdminSetBuilder />} />
+                  <Route path="teams" element={<AdminTeams />} />
+                </Route>
+                {/* The old top-level route. Kept forever rather than 404ing:
+                    it is bookmarked, and ~48 Maestro flows navigate here by
+                    URL (/testing/sign-in?redirect=/set-selector) instead of
+                    tapping the nav tab — this redirect is what keeps them
+                    green across the rename. */}
+                <Route
+                  path="/set-selector"
+                  element={<Navigate to="/admin/set-builder" replace />}
+                />
               </Route>
             </Route>
           </Route>

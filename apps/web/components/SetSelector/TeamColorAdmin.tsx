@@ -9,7 +9,11 @@ import NeonButton from "@/components/modules/NeonButton";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 
 /**
- * NEO-147 — the team colors worklist, on the Set Builder admin page.
+ * NEO-147 — the team colors worklist, at /admin/teams.
+ *
+ * It first shipped bolted onto the Set Builder page; NEO-155 gave the admin
+ * tools a section and moved it to a page about teams. Headings start at h3
+ * because that page owns the h2 and the section layout owns the h1.
  *
  * Spine labels print a player's name in team colors, and `teams.colors` was
  * populated on 0 of 58 prod rows. The backfill
@@ -295,7 +299,7 @@ export default function TeamColorAdmin({
   return (
     <section className="mb-8 p-4 rounded-lg border border-neon-purple/40 bg-neon-purple/5 space-y-4">
       <div>
-        <h2 className="text-lg font-semibold text-neon-purple">Team Colors</h2>
+        <h3 className="text-lg font-semibold text-neon-purple">Team Colors</h3>
         <p className="text-sm text-slate-400">
           Spine labels print in team colors. {review.resolvedCount} of{" "}
           {review.totalCount} teams have them.
@@ -345,9 +349,9 @@ export default function TeamColorAdmin({
         <>
           {review.ambiguous.length > 0 && (
             <div className="space-y-2">
-              <h3 className="text-sm font-semibold text-slate-300">
+              <h4 className="text-sm font-semibold text-slate-300">
                 Ambiguous — pick the right team ({review.ambiguous.length})
-              </h3>
+              </h4>
               <ul className="space-y-2">
                 {review.ambiguous.map((team) => (
                   <CandidateRow key={team._id} team={team} />
@@ -358,9 +362,9 @@ export default function TeamColorAdmin({
 
           {review.missing.length > 0 && (
             <div className="space-y-2">
-              <h3 className="text-sm font-semibold text-slate-300">
+              <h4 className="text-sm font-semibold text-slate-300">
                 No colors yet ({review.missing.length})
-              </h3>
+              </h4>
               <ul className="space-y-2">
                 {review.missing.map((team) => (
                   <ManualColorRow key={team._id} team={team} />

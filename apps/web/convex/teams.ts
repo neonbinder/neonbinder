@@ -297,8 +297,8 @@ export const applyEnrichmentInternal = internalMutation({
 });
 
 /**
- * Per-team enrichment, on demand — the "Discover" button in the Set Builder
- * team editor (NEO-147).
+ * Per-team enrichment, on demand — the "Discover" button on the team editor
+ * at /admin/teams (NEO-147; moved there from the Set Builder page by NEO-155).
  *
  * NEO-147 added `requireAdmin`. This action predates any caller (it had none
  * until the team editor), and as a public action with no authorization check
