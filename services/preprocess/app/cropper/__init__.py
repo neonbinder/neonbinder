@@ -10,6 +10,13 @@ classical contour, ...) is just a matter of appending to `_STRATEGIES`.
 The gates are applied in the wrapper, not in each strategy, so a new
 cropper can't accidentally skip fallback logic.
 
+Identity extraction is **injectable** (`classify` on `crop()`). `/process`
+leaves it at the default and pays for a Haiku call per winning crop. The
+NEO-149 zip job passes `skip_classify`, which runs the whole cascade —
+validator gates, Vision orient, text counts — without ever calling Haiku,
+because `app.pairing.pair_batch` pairs most images from `text_count` alone and
+only wants identity for the few it cannot. See `app.jobs` for the cost model.
+
 Gates (applied to every strategy uniformly):
 
 1. **Geometric validation** (`validator.is_plausible_crop`) — min size,
@@ -64,6 +71,25 @@ MIN_ABSOLUTE_TEXT_COUNT = 1
 
 # Type for a crop strategy: takes raw image bytes, returns cropped bytes or None.
 CropStrategy = Callable[[bytes], bytes | None]
+
+# Type for the cascade's identity step: takes the *rotated* winning crop and
+# returns its identity fields, or None when the caller has opted out of paying
+# for identity at all (see `skip_classify`).
+Classifier = Callable[[bytes], ClassifyResult | None]
+
+
+def skip_classify(_rotated_bytes: bytes) -> None:
+    """A `Classifier` that spends nothing and reports no identity.
+
+    Passed by the NEO-149 zip job so a batch can run the crop cascade —
+    including the Vision orient every gate depends on — without a Haiku call
+    per image. The resulting `CropResult.classification` is None, which reads
+    as "nobody asked", not "asked and found nothing"; the job later resolves
+    identity lazily for the handful of images `app.pairing.pair_batch` cannot
+    pair from `text_count` alone.
+    """
+    return None
+
 
 # Ordered list of server-side crop strategies. Each one flows through the
 # same two-gate wrapper (`_try_stage` below). Stored as (name, module, attr)
@@ -185,13 +211,21 @@ class CropResult:
     client doesn't already have — i.e. the response should include
     `cropped_image_b64`. False for precropped (client uploaded those exact
     bytes) and passthrough (client uploaded the raw image).
+
+    **The flag is only meaningful when the caller supplied the input bytes.**
+    It encodes "you already have these" — true for a multipart upload, false
+    for a zip member the caller never sent us. `app.jobs` therefore ignores it
+    and always writes its output object; see the note in that module.
+
+    `classification` is None when the caller passed `skip_classify`. It never
+    is on the `/process` path, which leaves `classify` at its default.
     """
 
     image_bytes: bytes
     source: str
     returned_bytes_differ: bool
     orientation: OrientationResult
-    classification: ClassifyResult
+    classification: ClassifyResult | None
 
 
 @dataclass(frozen=True)
@@ -208,6 +242,16 @@ class CropRejected:
     reason: str
 
 
+def _resolve_classifier(classify: Classifier | None) -> Classifier:
+    """Fall back to the module-level `classify_card` at call time.
+
+    Resolved here rather than as a default argument value so tests that
+    `monkeypatch.setattr(cropper, "classify_card", ...)` still take effect —
+    a default argument would have captured the original function at import.
+    """
+    return classify if classify is not None else classify_card
+
+
 def _try_stage(
     *,
     source: str,
@@ -215,6 +259,7 @@ def _try_stage(
     source_area_bytes: bytes,
     text_threshold: int,
     returned_bytes_differ: bool,
+    classify: Classifier,
 ) -> CropResult | None:
     """Apply the uniform two-gate check to a candidate crop.
 
@@ -237,7 +282,7 @@ def _try_stage(
         return None
 
     rotated = rotate_image_bytes(candidate_bytes, orient.rotation_degrees)
-    classification = classify_card(rotated)
+    classification = classify(rotated)
 
     return CropResult(
         image_bytes=candidate_bytes,
@@ -248,7 +293,9 @@ def _try_stage(
     )
 
 
-def _try_precropped_only(precropped_bytes: bytes) -> CropResult | CropRejected:
+def _try_precropped_only(
+    precropped_bytes: bytes, *, classify: Classifier
+) -> CropResult | CropRejected:
     """Crop-only mode: caller supplied only a crop, no original.
 
     Two gates still apply, adapted to the missing-original constraint:
@@ -278,7 +325,7 @@ def _try_precropped_only(precropped_bytes: bytes) -> CropResult | CropRejected:
         return CropRejected(reason="insufficient_text")
 
     rotated = rotate_image_bytes(precropped_bytes, orient.rotation_degrees)
-    classification = classify_card(rotated)
+    classification = classify(rotated)
 
     return CropResult(
         image_bytes=precropped_bytes,
@@ -293,6 +340,7 @@ def crop(
     *,
     image_bytes: bytes | None,
     precropped_bytes: bytes | None,
+    classify: Classifier | None = None,
 ) -> CropResult | CropRejected:
     """Run the crop cascade and return the winning result.
 
@@ -312,7 +360,14 @@ def crop(
     The baseline orient on `image_bytes` is computed up front — one extra
     Vision call relative to the old precropped-short-circuit path — so the
     text-count gate applies uniformly to every stage, including precropped.
+
+    `classify` overrides the identity step. It defaults to `classify_card`
+    (one Haiku call on the winning crop); pass `skip_classify` to run the
+    gates and the orient without paying for identity, which is what the
+    NEO-149 zip job does.
     """
+    classifier = _resolve_classifier(classify)
+
     # ── Crop-only mode ─────────────────────────────────────────────────
     # Caller opted into the "don't upload the original" fast path. No
     # fallback cascade is available; reject with a specific reason if
@@ -320,7 +375,7 @@ def crop(
     if image_bytes is None:
         if precropped_bytes is None:
             raise ValueError("crop() requires at least one of image_bytes or precropped_bytes")
-        return _try_precropped_only(precropped_bytes)
+        return _try_precropped_only(precropped_bytes, classify=classifier)
 
     # ── Baseline — used for the text-count threshold AND as the passthrough
     # fallback orient. Computed once, reused throughout.
@@ -342,6 +397,7 @@ def crop(
         source_area_bytes=image_bytes,
         text_threshold=text_threshold,
         returned_bytes_differ=False,
+        classify=classifier,
     )
     if result is not None:
         return result
@@ -358,6 +414,7 @@ def crop(
             source_area_bytes=image_bytes,
             text_threshold=text_threshold,
             returned_bytes_differ=True,
+            classify=classifier,
         )
         if result is not None:
             return result
@@ -368,7 +425,7 @@ def crop(
     # honest "preprocess couldn't identify this card" signal.
     logger.info("cascade: falling through to passthrough")
     rotated = rotate_image_bytes(image_bytes, baseline_orient.rotation_degrees)
-    passthrough_classification = classify_card(rotated)
+    passthrough_classification = classifier(rotated)
     return CropResult(
         image_bytes=image_bytes,
         source="passthrough",

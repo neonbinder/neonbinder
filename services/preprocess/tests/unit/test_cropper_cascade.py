@@ -8,6 +8,10 @@ strategy. Every stage now:
 
 Tests stub `detect_orientation` and `classify_card` on the `cropper`
 module binding because that's where `crop()` imports them.
+
+`TestClassifierInjection` covers the NEO-149 addition: `crop(classify=...)`,
+and specifically `skip_classify`, which runs every gate but never spends a
+Haiku call.
 """
 
 from __future__ import annotations
@@ -500,3 +504,109 @@ class TestCropResultShape:
         assert result.orientation.rotation_degrees == 90
         assert result.classification.players == ["Jeter"]
         assert result.classification.card_number == "2"
+
+
+class TestClassifierInjection:
+    """`crop(classify=...)` — the NEO-149 classify-free cascade path.
+
+    The zip job needs `text_count` (which the Vision orient already produces)
+    without a Haiku call per image, so the identity step is injectable. These
+    tests assert the injection actually replaces the default rather than
+    running alongside it.
+    """
+
+    def test_skip_classify_returns_none_classification(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient(_orient(text_count=42))
+        classify_calls = stub_classify(_classify())
+        disable_server_strategies()
+
+        result = crop(
+            image_bytes=_card_jpeg(),
+            precropped_bytes=None,
+            classify=cropper.skip_classify,
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.classification is None
+        # The whole point: the paid call never happened...
+        assert classify_calls == []
+        # ...but the free signal the pairing pre-pass runs on still did.
+        assert result.orientation.text_count == 42
+
+    def test_skip_classify_on_passthrough_fallback(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        # A sub-MIN_SIDE_PX image fails the validator at stage 1 and every
+        # server strategy declines, so the cascade falls all the way through
+        # to passthrough — which has its own, separate classify call site.
+        stub_orient()
+        classify_calls = stub_classify(_classify())
+        disable_server_strategies()
+
+        result = crop(
+            image_bytes=_tiny_jpeg(),
+            precropped_bytes=None,
+            classify=cropper.skip_classify,
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.source == "passthrough"
+        assert result.classification is None
+        assert classify_calls == []
+
+    def test_skip_classify_on_crop_only_path(self, stub_orient, stub_classify):
+        stub_orient(_orient(text_count=7))
+        classify_calls = stub_classify(_classify())
+
+        result = crop(
+            image_bytes=None,
+            precropped_bytes=_card_jpeg(),
+            classify=cropper.skip_classify,
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.classification is None
+        assert classify_calls == []
+
+    def test_custom_classifier_is_used_instead_of_default(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        default_calls = stub_classify(_classify())
+        disable_server_strategies()
+        injected: list[bytes] = []
+
+        def _injected(image_bytes: bytes) -> ClassifyResult:
+            injected.append(image_bytes)
+            return _classify(player="Injected")
+
+        result = crop(
+            image_bytes=_card_jpeg(),
+            precropped_bytes=None,
+            classify=_injected,
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.classification is not None
+        assert result.classification.players == ["Injected"]
+        assert len(injected) == 1
+        assert default_calls == []
+
+    def test_default_still_resolves_the_patched_module_attribute(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        # Guards the reason `classify` defaults to None rather than to
+        # `classify_card`: a default argument would capture the pre-patch
+        # function and every existing monkeypatch-based test would go blind.
+        stub_orient()
+        calls = stub_classify(_classify(player="Patched"))
+        disable_server_strategies()
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None)
+
+        assert isinstance(result, CropResult)
+        assert result.classification is not None
+        assert result.classification.players == ["Patched"]
+        assert len(calls) == 1

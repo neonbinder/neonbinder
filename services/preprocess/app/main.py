@@ -220,12 +220,21 @@ async def process(
     if result.returned_bytes_differ:
         cropped_image_b64 = base64.b64encode(result.image_bytes).decode("ascii")
 
+    # `/process` never passes `classify=`, so the cascade always classified.
+    # Only the zip job (`app.jobs`) opts out, and it doesn't come through here.
+    classification = result.classification
+    if classification is None:  # pragma: no cover - unreachable on this path
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="cascade returned no classification",
+        )
+
     return ProcessResponse(
-        players=list(result.classification.players),
-        player=result.classification.player,
-        team=result.classification.team,
-        card_number=result.classification.card_number,
-        side=result.classification.side,
+        players=list(classification.players),
+        player=classification.player,
+        team=classification.team,
+        card_number=classification.card_number,
+        side=classification.side,
         rotation_degrees=result.orientation.rotation_degrees,
         orient_confidence=result.orientation.confidence,
         text_count=result.orientation.text_count,
