@@ -45,6 +45,17 @@ const teamDocValidator = v.object({
     primary: v.optional(v.string()),
     secondary: v.optional(v.string()),
   })),
+  // NEO-147 — see the schema for what these two mean and why ambiguity parks
+  // in `colorCandidates` instead of being guessed.
+  colorSource: v.optional(v.object({
+    url: v.string(),
+    matchedName: v.string(),
+    resolvedAt: v.number(),
+  })),
+  colorCandidates: v.optional(v.array(v.object({
+    name: v.string(),
+    url: v.string(),
+  }))),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
     espnId: v.optional(v.string()),
@@ -285,15 +296,166 @@ export const applyEnrichmentInternal = internalMutation({
   },
 });
 
+/**
+ * Per-team enrichment, on demand — the "Discover" button in the Set Builder
+ * team editor (NEO-147).
+ *
+ * NEO-147 added `requireAdmin`. This action predates any caller (it had none
+ * until the team editor), and as a public action with no authorization check
+ * it let any client spend an outbound ESPN/Wikidata/teamColorCodes round-trip
+ * per call, for any team id, at any rate. Enrichment writes to globally-shared
+ * team rows, so it belongs behind the same boundary as every other write here.
+ *
+ * Errors are swallowed rather than thrown: enrichment is best-effort by
+ * design (`lookupTeamEnrichment` returns null when no source matches), and the
+ * caller's job is to show the user what landed on the row, not to distinguish
+ * "no match" from "source was down". The editor re-reads the team after this
+ * resolves, so an unchanged row IS the "found nothing" signal.
+ */
 export const enrichFromWikidata = action({
   args: { id: v.id("teams") },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
+    await requireAdmin(ctx);
     try {
       await ctx.runAction(internal.adapters.wikidata.enrichTeam, { teamId: args.id });
     } catch (error) {
       console.error("[teams.enrichFromWikidata] failed:", error);
     }
     return null;
+  },
+});
+
+/**
+ * NEO-147: manual field entry for the team editor.
+ *
+ * The counterpart to Discover — for the teams no source will ever carry
+ * (Estrellas Orientales, an Arizona League affiliate) and for correcting a
+ * source that matched the wrong franchise.
+ *
+ * Every field is optional-and-clearable: passing `null` erases it, omitting it
+ * leaves it alone. That distinction matters because "" and "unset" are
+ * different states for `colors.primary` — an empty string would render as a
+ * transparent swatch rather than falling back to manual entry.
+ *
+ * `name` changes rewrite `nameNormalized` too, or the row becomes invisible to
+ * every by_name_normalized lookup that resolves sync results back onto it.
+ */
+export const saveTeamFields = mutation({
+  args: {
+    id: v.id("teams"),
+    name: v.optional(v.string()),
+    league: v.optional(v.union(v.string(), v.null())),
+    city: v.optional(v.union(v.string(), v.null())),
+    yearsActive: v.optional(
+      v.union(
+        v.object({ from: v.number(), to: v.optional(v.number()) }),
+        v.null(),
+      ),
+    ),
+    colors: v.optional(
+      v.union(
+        v.object({
+          primary: v.optional(v.string()),
+          secondary: v.optional(v.string()),
+        }),
+        v.null(),
+      ),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const existing = await ctx.db.get(args.id);
+    if (!existing) throw new Error("Team not found");
+
+    const patch: Record<string, unknown> = { lastUpdated: Date.now() };
+
+    if (args.name !== undefined) {
+      const trimmed = args.name.trim();
+      if (!trimmed) throw new Error("Team name cannot be empty");
+      patch.name = trimmed;
+      patch.nameNormalized = normalizeTeamName(trimmed);
+    }
+    if (args.league !== undefined) patch.league = args.league ?? undefined;
+    if (args.city !== undefined) patch.city = args.city ?? undefined;
+    if (args.yearsActive !== undefined) {
+      patch.yearsActive = args.yearsActive ?? undefined;
+    }
+    if (args.colors !== undefined) {
+      patch.colors = args.colors ?? undefined;
+    }
+
+    await ctx.db.patch(args.id, patch);
+    return null;
+  },
+});
+
+/**
+ * How many teams one "enrich the unenriched" pass will pick up.
+ *
+ * The queue paces itself at INTER_ENTITY_DELAY_MS (3s) per team, so this is a
+ * duration cap as much as a count: 50 teams is ~2.5 minutes of trickle. The
+ * pass is idempotent and cheap to repeat, so draining a large backlog is
+ * several clicks rather than one long-running job that can fail halfway.
+ */
+const ENRICH_UNENRICHED_BATCH = 50;
+
+/**
+ * NEO-147: enqueue every team that still has no colors.
+ *
+ * Two populations need this, for different reasons:
+ *
+ *  - Career teams created by commitCardChecklist's `resolveTeamIdByName`
+ *    BEFORE that path started enqueueing them (see the NEO-147 note there).
+ *    They were inserted bare and had no route to enrichment at all.
+ *  - Teams whose enrichment genuinely ran but found nothing at the time. The
+ *    58-row prod survey showed espnId 0/58 — ESPN carries no NPB, MiLB,
+ *    Dominican winter league, or NCAA baseball, which is most of that table.
+ *    Now that `enrichTeam` also resolves against teamcolorcodes.com (see
+ *    convex/teamColorSources.ts), re-running them can succeed where it
+ *    previously could not.
+ *
+ * Selecting on "no colors AND no resolved source" is what makes repeat passes
+ * cheap without tracking attempt counts. `colorSource` is the durable "this
+ * one is done" marker — it is written both by an automatic resolution and by a
+ * human picking from `colorCandidates`, so neither gets re-fetched on the next
+ * pass.
+ *
+ * A team that no source will ever carry (Estrellas Orientales) still has
+ * neither, so it stays in the result set and is retried on each pass. That is
+ * the deliberate cost of not recording failures, bounded by the batch cap;
+ * entering its colors by hand in the editor removes it permanently.
+ */
+export const enrichUnenrichedTeams = mutation({
+  args: {
+    sportId: v.optional(v.id("selectorOptions")),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({ enqueued: v.number() }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const limit = Math.min(args.limit ?? ENRICH_UNENRICHED_BATCH, ENRICH_UNENRICHED_BATCH);
+
+    const rows = args.sportId
+      ? await ctx.db
+          .query("teams")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+          .collect()
+      : await ctx.db.query("teams").collect();
+
+    const needsColors = rows
+      .filter((t) => !t.colors?.primary && !t.colorSource)
+      .slice(0, limit)
+      .map((t) => t._id);
+
+    if (needsColors.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.adapters.wikidata.processEnrichmentQueue,
+        { playerIds: [], teamIds: needsColors },
+      );
+    }
+    return { enqueued: needsColors.length };
   },
 });

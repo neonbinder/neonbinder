@@ -480,19 +480,35 @@ export const enrichTeam = internalAction({
       internal.selectorOptions.getSportEnrichmentContext,
       { sportId: team.sportId },
     );
-    if (!sportCtx) return null;
 
-    const result = await lookupTeamEnrichment(team.name, sportCtx);
-    if (!result) return null;
+    // NEO-147: this block used to `return null` when the sport had no
+    // enrichment context, or when neither ESPN nor Wikidata matched. Colors
+    // now run regardless, because those early returns excluded exactly the
+    // population that needs colors most: every NPB, MiLB and Dominican winter
+    // league row misses on both sources, and a survey of all 58 prod teams
+    // found espnId on 0 of them.
+    if (sportCtx) {
+      const result = await lookupTeamEnrichment(team.name, sportCtx);
+      if (result) {
+        await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
+          id: args.teamId,
+          league: result.league,
+          city: result.city,
+          yearsActive: result.yearsActive,
+          colors: result.colors,
+          wikidataId: result.wikidataId,
+          espnId: result.espnId,
+        });
+      }
+    }
 
-    await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
-      id: args.teamId,
-      league: result.league,
-      city: result.city,
-      yearsActive: result.yearsActive,
-      colors: result.colors,
-      wikidataId: result.wikidataId,
-      espnId: result.espnId,
+    // NEO-147: teamcolorcodes.com, deliberately LAST so it wins over ESPN's
+    // colors when it resolves — it is the better-covered source, and where
+    // both answer they agree. It is a no-op for a team already carrying
+    // `colorSource`, and it writes nothing at all when the name is ambiguous
+    // (that parks in `colorCandidates` for a human instead).
+    await ctx.runAction(internal.teamColorSources.resolveTeamColors, {
+      teamId: args.teamId,
     });
     return null;
   },

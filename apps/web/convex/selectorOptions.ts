@@ -4566,6 +4566,20 @@ export const commitCardChecklist = mutation({
     // the user reviewed directly — same behavior as today's
     // teams.findOrCreateInternal, inlined here since a mutation can't call
     // another mutation via ctx.runMutation.
+    //
+    // NEO-147: "minimal at insert" is still right, but until now it also
+    // meant "never enriched at all". A team the user reviewed goes through
+    // processEntityReviewQueue → lookupTeamEnrichment before it is created,
+    // so it lands with league/city/colors already on it. A team born HERE
+    // skipped that entirely and had no other path to it —
+    // processEnrichmentQueue (the queue built for exactly this) had zero
+    // callers, so these rows stayed bare forever. Spine labels read
+    // teams.colors, so "bare forever" is now user-visible.
+    //
+    // Collect them and enqueue after the writes land (see the scheduler call
+    // at the end of this mutation) rather than enriching inline: enrichment
+    // is a network round-trip per team and this is a mutation.
+    const enrichmentTeamIds: Array<Id<"teams">> = [];
     const resolveTeamIdByName = async (rawName: string): Promise<Id<"teams">> => {
       const normalized = norm(rawName);
       const existing = await ctx.db
@@ -4575,12 +4589,14 @@ export const commitCardChecklist = mutation({
         )
         .first();
       if (existing) return existing._id;
-      return await ctx.db.insert("teams", {
+      const id = await ctx.db.insert("teams", {
         name: rawName.trim(),
         nameNormalized: normalized,
         sportId: args.sportId,
         lastUpdated: Date.now(),
       });
+      enrichmentTeamIds.push(id);
+      return id;
     };
 
     const playerIdByName = new Map<string, Id<"players">>();
@@ -5016,6 +5032,27 @@ export const commitCardChecklist = mutation({
       for (const row of reviewRows) {
         await ctx.db.delete(row._id);
       }
+    }
+
+    // NEO-147: enrich the career teams created by resolveTeamIdByName above.
+    // Deliberately NOT the reviewed teams in `createdTeamIds` — those already
+    // carry whatever processEntityReviewQueue's lookupTeamEnrichment found
+    // before they were inserted, so re-running it here would be a second
+    // identical network round-trip per team for the same answer. Only the
+    // rows that had no enrichment path at all are enqueued.
+    //
+    // This is the first live caller of processEnrichmentQueue. It paces
+    // itself one entity at a time with INTER_ENTITY_DELAY_MS between, so a
+    // fetch that creates fifty career teams produces a slow trickle rather
+    // than fifty concurrent requests. `playerIds` is empty because players
+    // created here were already enriched from the wizard's own preview (see
+    // the NEO-92 note above).
+    if (enrichmentTeamIds.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.adapters.wikidata.processEnrichmentQueue,
+        { playerIds: [], teamIds: enrichmentTeamIds },
+      );
     }
 
     // NEO-90: same chained-queue shape, for BSC per-card team resolution.
