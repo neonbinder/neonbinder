@@ -206,7 +206,11 @@ describe("every team-creation path attaches a league", () => {
   });
 });
 
-describe("backfillLeagueIds", () => {
+describe("legacy league conversion", () => {
+  // NEO-156 replaced the bulk `backfillLeagueIds` button with a per-team
+  // conversion that rides along with "Discover". A migration nobody has to
+  // remember to run beats a button that becomes useless the moment it works.
+
   async function seedLegacyTeam(
     t: ReturnType<typeof convexTest>,
     sportId: Id<"selectorOptions">,
@@ -229,13 +233,12 @@ describe("backfillLeagueIds", () => {
     const sportId = await seedSport(t);
     const teamId = await seedLegacyTeam(t, sportId, "Montreal Expos", "National League");
 
-    const result = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.backfillLeagueIds, {});
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
 
-    expect(result).toEqual({ converted: 1, remaining: 0 });
     const team = await t.run(async (ctx) => ctx.db.get(teamId));
     expect(team!.leagueId).toBeDefined();
+    const league = await t.run(async (ctx) => ctx.db.get(team!.leagueId!));
+    expect(league!.name).toBe("National League");
     // Never leave both — a row carrying two answers to the same question is
     // how the drift starts again.
     expect(team!.league).toBeUndefined();
@@ -244,65 +247,54 @@ describe("backfillLeagueIds", () => {
   test("dedupes teams sharing a legacy league name into one row", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await seedLegacyTeam(t, sportId, "Expos", "National League");
-    await seedLegacyTeam(t, sportId, "Cubs", "National League");
+    const a = await seedLegacyTeam(t, sportId, "Expos", "National League");
+    const b = await seedLegacyTeam(t, sportId, "Cubs", "National League");
 
-    await t.withIdentity(ADMIN).mutation(api.leagues.backfillLeagueIds, {});
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: a });
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: b });
 
     expect(await leagues(t)).toHaveLength(1);
   });
 
-  test("is re-runnable and never overwrites an assigned league", async () => {
+  test("never overwrites a league an operator assigned by hand", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
-    await t.withIdentity(ADMIN).mutation(api.leagues.backfillLeagueIds, {});
-    const first = await t.run(async (ctx) => ctx.db.get(teamId));
-
-    const second = await t
+    const assigned = await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.backfillLeagueIds, {});
+      .mutation(api.leagues.create, { name: "Pacific Coast League", sportId });
+    const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
+    await t.run(async (ctx) => ctx.db.patch(teamId, { leagueId: assigned }));
 
-    expect(second).toEqual({ converted: 0, remaining: 0 });
-    const after = await t.run(async (ctx) => ctx.db.get(teamId));
-    expect(after!.leagueId).toBe(first!.leagueId);
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
+
+    const team = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(team!.leagueId).toBe(assigned);
   });
 
-  test("leaves teams with neither field alone", async () => {
-    // Those are the creation-time resolver's job, not the backfill's.
+  test("is a no-op for a team with no legacy string", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await seedLegacyTeam(t, sportId, "Bare Team", undefined);
+    const teamId = await seedLegacyTeam(t, sportId, "Bare Team", undefined);
 
-    const result = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.backfillLeagueIds, {});
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
 
-    expect(result).toEqual({ converted: 0, remaining: 0 });
+    const team = await t.run(async (ctx) => ctx.db.get(teamId));
+    expect(team!.leagueId).toBeUndefined();
     expect(await leagues(t)).toHaveLength(0);
   });
 
-  test("reports what is left when the batch caps out", async () => {
+  test("is re-runnable", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    for (const n of ["A", "B", "C"]) {
-      await seedLegacyTeam(t, sportId, `Team ${n}`, "National League");
-    }
+    const teamId = await seedLegacyTeam(t, sportId, "Expos", "National League");
 
-    const result = await t
-      .withIdentity(ADMIN)
-      .mutation(api.leagues.backfillLeagueIds, { limit: 2 });
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
+    const first = await t.run(async (ctx) => ctx.db.get(teamId));
+    await t.mutation(internal.teams.convertLegacyLeagueInternal, { id: teamId });
+    const second = await t.run(async (ctx) => ctx.db.get(teamId));
 
-    expect(result).toEqual({ converted: 2, remaining: 1 });
-  });
-
-  test("requires admin", async () => {
-    const t = convexTest(schema, modules);
-    await expect(
-      t
-        .withIdentity({ subject: "u", role: "user" })
-        .mutation(api.leagues.backfillLeagueIds, {}),
-    ).rejects.toThrow(/admin/i);
+    expect(second!.leagueId).toBe(first!.leagueId);
+    expect(await leagues(t)).toHaveLength(1);
   });
 });
 

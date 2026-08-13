@@ -503,10 +503,17 @@ export const enrichTeam = internalAction({
     }
 
     // NEO-147: teamcolorcodes.com, deliberately LAST so it wins over ESPN's
-    // colors when it resolves — it is the better-covered source, and where
-    // both answer they agree. It is a no-op for a team already carrying
-    // `colorSource`, and it writes nothing at all when the name is ambiguous
-    // (that parks in `colorCandidates` for a human instead).
+    // colors when it resolves — it is the better-covered source, and where both
+    // answer they agree. A no-op for a team already carrying `colorSource`, and
+    // it writes nothing at all when the name is ambiguous (that parks in
+    // `colorCandidates` for a human instead).
+    //
+    // NEO-156 note on cost: this now reads the sitemap live (~1.5MB per team)
+    // rather than consulting a cached index, so a newly discovered team is one
+    // such read. That is the intended trade — a team gets its colors the moment
+    // it appears, with no stale local copy of the site to maintain. It stays
+    // affordable ONLY because the queue paces one team every
+    // INTER_ENTITY_DELAY_MS; nothing may call this in a tight loop.
     await ctx.runAction(internal.teamColorSources.resolveTeamColors, {
       teamId: args.teamId,
     });

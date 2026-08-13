@@ -27,9 +27,6 @@ import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 type Team = Doc<"teams">;
 type League = Doc<"leagues">;
 
-/** Mirrors the server-side batch cap, for the button's explanatory text. */
-const ENRICH_BATCH = 50;
-
 /** Sentinel for the "no league" option — a select's value must be a string. */
 const NO_LEAGUE = "";
 /** Sentinel for the inline "add a new league" option. */
@@ -174,19 +171,41 @@ function TeamDetail({
   };
 
   /**
-   * Re-run every source for this one team. Best-effort by design: the action
-   * swallows source errors, so the row simply updates or does not. An
-   * unchanged row IS the "found nothing" signal.
+   * Re-run every source for this one team.
+   *
+   * A new team already gets this automatically when it is created; this is the
+   * manual re-run for a team that predates the pipeline, whose sources had
+   * nothing at the time, or whose colors matched the wrong franchise. It
+   * always forces the color search — "search again" is the entire point of
+   * pressing it, so skipping an already-resolved team would make the button
+   * appear to do nothing.
+   *
+   * The outcome is reported rather than left to "watch the row and see",
+   * because a live sitemap search takes a few seconds and three of its five
+   * outcomes change nothing visible on the row.
    */
   const discover = async () => {
     setBusy("discover");
     onStatus(null);
     try {
-      await enrichFromWikidata({ id: team._id });
-      onStatus({
-        text: `Searched every source for ${team.name}. An unchanged row means nothing was found.`,
-        isError: false,
-      });
+      const outcome = await enrichFromWikidata({ id: team._id, force: true });
+      const message: Record<typeof outcome, { text: string; isError: boolean }> = {
+        resolved: { text: `Found colors for ${team.name}.`, isError: false },
+        ambiguous: {
+          text: `Several source pages match “${team.name}”. Pick the right one above.`,
+          isError: false,
+        },
+        "no-match": {
+          text: `No color source lists ${team.name}. Enter colors by hand below.`,
+          isError: false,
+        },
+        unreadable: {
+          text: `Found a page for ${team.name} but could not read colors from it.`,
+          isError: true,
+        },
+        skipped: { text: `Nothing to look up for ${team.name}.`, isError: false },
+      };
+      onStatus(message[outcome]);
     } catch (e) {
       onStatus({
         text: e instanceof Error ? e.message : "Discovery failed",
@@ -403,17 +422,11 @@ function TeamDetail({
 export default function TeamManagement() {
   const management = useQuery(api.teams.listForManagement, {});
   const leagues = useQuery(api.leagues.list, {});
-  const indexStatus = useQuery(api.teamColorSources.indexStatus);
-
-  const refreshIndex = useAction(api.teamColorSources.refreshIndex);
-  const enrichUnenriched = useMutation(api.teams.enrichUnenrichedTeams);
-  const backfillLeagues = useMutation(api.leagues.backfillLeagueIds);
 
   const [filter, setFilter] = useState("");
   const [leagueFilter, setLeagueFilter] = useState<string>("all");
   const [selectedId, setSelectedId] = useState<Id<"teams"> | null>(null);
   const [status, setStatus] = useState<Status>(null);
-  const [busy, setBusy] = useState<string | null>(null);
 
   // The filter takes focus on arrival: the reason to open this screen is to
   // work on a particular team, and typing its name is how you find it.
@@ -442,84 +455,12 @@ export default function TeamManagement() {
   const selected = teams.find((t) => t._id === selectedId) ?? null;
   const needingAttention = teams.filter((t) => attentionFor(t) !== null).length;
 
-  const run = async (key: string, fn: () => Promise<string>) => {
-    setBusy(key);
-    setStatus(null);
-    try {
-      setStatus({ text: await fn(), isError: false });
-    } catch (e) {
-      setStatus({
-        text: e instanceof Error ? e.message : "Something went wrong",
-        isError: true,
-      });
-    } finally {
-      setBusy(null);
-    }
-  };
-
   if (management === undefined) {
     return <p className="text-sm text-slate-400">Loading teams…</p>;
   }
 
   return (
     <div className="space-y-4">
-      {/* Bulk operations. Kept above the master-detail because they act on the
-          whole table, not on the selected team. */}
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 p-3">
-        <NeonButton
-          type="button"
-          secondary
-          disabled={busy !== null}
-          onClick={() =>
-            run("refresh", async () => {
-              const r = await refreshIndex();
-              return r.indexed === 0
-                ? "Could not reach the color source — the existing index was left alone."
-                : `Indexed ${r.indexed} source pages (${r.removed} stale removed).`;
-            })
-          }
-        >
-          {busy === "refresh" ? "Refreshing…" : "Refresh color index"}
-        </NeonButton>
-        <NeonButton
-          type="button"
-          secondary
-          disabled={busy !== null || (indexStatus?.count ?? 0) === 0}
-          onClick={() =>
-            run("enrich", async () => {
-              const { enqueued } = await enrichUnenriched({});
-              return enqueued === 0
-                ? "Nothing left to enrich."
-                : `Queued ${enqueued} teams. They resolve one at a time over the next few minutes.`;
-            })
-          }
-        >
-          {busy === "enrich" ? "Queueing…" : `Enrich up to ${ENRICH_BATCH} teams`}
-        </NeonButton>
-        <NeonButton
-          type="button"
-          secondary
-          disabled={busy !== null}
-          onClick={() =>
-            run("backfill", async () => {
-              const r = await backfillLeagues({});
-              return r.converted === 0
-                ? "No legacy league names left to convert."
-                : `Converted ${r.converted} legacy league names (${r.remaining} remaining).`;
-            })
-          }
-        >
-          {busy === "backfill" ? "Converting…" : "Backfill legacy leagues"}
-        </NeonButton>
-        <span className="text-xs text-slate-400">
-          {indexStatus === undefined
-            ? ""
-            : indexStatus.count === 0
-              ? "Color index is empty — refresh it first."
-              : `${indexStatus.count} source pages indexed.`}
-        </span>
-      </div>
-
       {status && (
         <p
           className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}

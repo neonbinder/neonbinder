@@ -325,31 +325,95 @@ export const applyEnrichmentInternal = internalMutation({
 });
 
 /**
- * Per-team enrichment, on demand — the "Discover" button on the team editor
- * at /admin/teams (NEO-147; moved there from the Set Builder page by NEO-155).
+ * "Discover" — re-run every source for ONE team, on demand.
  *
- * NEO-147 added `requireAdmin`. This action predates any caller (it had none
- * until the team editor), and as a public action with no authorization check
- * it let any client spend an outbound ESPN/Wikidata/teamColorCodes round-trip
- * per call, for any team id, at any rate. Enrichment writes to globally-shared
- * team rows, so it belongs behind the same boundary as every other write here.
+ * A newly created team already gets this automatically: every creation path
+ * enqueues it, and `adapters/wikidata.enrichTeam` resolves league, city, years
+ * and colors for it. This action is the manual counterpart — for a team that
+ * predates the pipeline, one whose sources had nothing at the time, or one
+ * whose match turned out to be the wrong franchise.
  *
- * Errors are swallowed rather than thrown: enrichment is best-effort by
- * design (`lookupTeamEnrichment` returns null when no source matches), and the
- * caller's job is to show the user what landed on the row, not to distinguish
- * "no match" from "source was down". The editor re-reads the team after this
- * resolves, so an unchanged row IS the "found nothing" signal.
+ * NEO-156 folded the legacy league conversion in here. It was a bulk
+ * "backfill legacy leagues" button, which is a control that becomes
+ * permanently useless the moment it succeeds; doing it as a side effect of
+ * work already happening means the migration finishes without anyone
+ * remembering to run it.
+ *
+ * `force` re-runs the color search for a team that already has a resolved
+ * source — otherwise that step is skipped as already done.
+ *
+ * Returns the color outcome so the UI can say what happened. Enrichment errors
+ * stay swallowed: it is best-effort by design, and an unchanged row IS the
+ * "found nothing" signal.
  */
 export const enrichFromWikidata = action({
+  args: { id: v.id("teams"), force: v.optional(v.boolean()) },
+  returns: v.union(
+    v.literal("resolved"),
+    v.literal("ambiguous"),
+    v.literal("no-match"),
+    v.literal("skipped"),
+    v.literal("unreadable"),
+  ),
+  handler: async (ctx, args): Promise<
+    "resolved" | "ambiguous" | "no-match" | "skipped" | "unreadable"
+  > => {
+    await requireAdmin(ctx);
+
+    await ctx.runMutation(internal.teams.convertLegacyLeagueInternal, {
+      id: args.id,
+    });
+
+    try {
+      await ctx.runAction(internal.adapters.wikidata.enrichTeam, {
+        teamId: args.id,
+      });
+    } catch (error) {
+      console.error("[teams.enrichFromWikidata] enrichment failed:", error);
+    }
+
+    // enrichTeam already attempts colors, but skips a team that has a resolved
+    // source. `force` is the whole reason this runs again: re-searching a bad
+    // match is the operator's remedy for a wrong franchise.
+    if (!args.force) return "skipped";
+    try {
+      return await ctx.runAction(internal.teamColorSources.resolveTeamColors, {
+        teamId: args.id,
+        force: true,
+      });
+    } catch (error) {
+      console.error("[teams.enrichFromWikidata] color lookup failed:", error);
+      return "unreadable";
+    }
+  },
+});
+
+/**
+ * NEO-156: convert this one team's legacy free-text `league` into a real
+ * league row, if it still has one.
+ *
+ * Replaces the bulk `leagues.backfillLeagueIds` mutation. A no-op for a team
+ * with no legacy string or an existing `leagueId`, so it never overwrites a
+ * league an operator assigned by hand.
+ */
+export const convertLegacyLeagueInternal = internalMutation({
   args: { id: v.id("teams") },
   returns: v.null(),
-  handler: async (ctx, args): Promise<null> => {
-    await requireAdmin(ctx);
-    try {
-      await ctx.runAction(internal.adapters.wikidata.enrichTeam, { teamId: args.id });
-    } catch (error) {
-      console.error("[teams.enrichFromWikidata] failed:", error);
-    }
+  handler: async (ctx, args) => {
+    const team = await ctx.db.get(args.id);
+    if (!team?.league || team.leagueId) return null;
+
+    const leagueId = await findOrCreateLeague(ctx, {
+      name: team.league,
+      sportId: team.sportId,
+    });
+    await ctx.db.patch(args.id, {
+      leagueId,
+      // Clear the string as it converts, so a row never carries two answers to
+      // the same question.
+      league: undefined,
+      lastUpdated: Date.now(),
+    });
     return null;
   },
 });
@@ -443,74 +507,6 @@ export const saveTeamFields = mutation({
   },
 });
 
-/**
- * How many teams one "enrich the unenriched" pass will pick up.
- *
- * The queue paces itself at INTER_ENTITY_DELAY_MS (3s) per team, so this is a
- * duration cap as much as a count: 50 teams is ~2.5 minutes of trickle. The
- * pass is idempotent and cheap to repeat, so draining a large backlog is
- * several clicks rather than one long-running job that can fail halfway.
- */
-const ENRICH_UNENRICHED_BATCH = 50;
-
-/**
- * NEO-147: enqueue every team that still has no colors.
- *
- * Two populations need this, for different reasons:
- *
- *  - Career teams created by commitCardChecklist's `resolveTeamIdByName`
- *    BEFORE that path started enqueueing them (see the NEO-147 note there).
- *    They were inserted bare and had no route to enrichment at all.
- *  - Teams whose enrichment genuinely ran but found nothing at the time. The
- *    58-row prod survey showed espnId 0/58 — ESPN carries no NPB, MiLB,
- *    Dominican winter league, or NCAA baseball, which is most of that table.
- *    Now that `enrichTeam` also resolves against teamcolorcodes.com (see
- *    convex/teamColorSources.ts), re-running them can succeed where it
- *    previously could not.
- *
- * Selecting on "no colors AND no resolved source" is what makes repeat passes
- * cheap without tracking attempt counts. `colorSource` is the durable "this
- * one is done" marker — it is written both by an automatic resolution and by a
- * human picking from `colorCandidates`, so neither gets re-fetched on the next
- * pass.
- *
- * A team that no source will ever carry (Estrellas Orientales) still has
- * neither, so it stays in the result set and is retried on each pass. That is
- * the deliberate cost of not recording failures, bounded by the batch cap;
- * entering its colors by hand in the editor removes it permanently.
- */
-export const enrichUnenrichedTeams = mutation({
-  args: {
-    sportId: v.optional(v.id("selectorOptions")),
-    limit: v.optional(v.number()),
-  },
-  returns: v.object({ enqueued: v.number() }),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const limit = Math.min(args.limit ?? ENRICH_UNENRICHED_BATCH, ENRICH_UNENRICHED_BATCH);
-
-    const rows = args.sportId
-      ? await ctx.db
-          .query("teams")
-          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-          .collect()
-      : await ctx.db.query("teams").collect();
-
-    const needsColors = rows
-      .filter((t) => !t.colors?.primary && !t.colorSource)
-      .slice(0, limit)
-      .map((t) => t._id);
-
-    if (needsColors.length > 0) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.adapters.wikidata.processEnrichmentQueue,
-        { playerIds: [], teamIds: needsColors },
-      );
-    }
-    return { enqueued: needsColors.length };
-  },
-});
 
 /**
  * NEO-156: the whole team list, for Team Management.

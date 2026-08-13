@@ -29,20 +29,61 @@ const COLOR_PAGE = `<html><body><article><div class="entry-content">
   <h2>Saitama Seibu Lions Pantone Color Codes</h2>
 </div></article></body></html>`;
 
-function stubPageFetch(body: string | null): ReturnType<typeof vi.fn> {
-  const mock = vi.fn(async () =>
-    body === null
-      ? ({ ok: false, status: 404, text: async () => "" } as unknown as Response)
-      : ({ ok: true, status: 200, text: async () => body } as unknown as Response),
-  );
+/**
+ * NEO-156: there is no cached index any more, so a test must stand up the
+ * whole live path — the sitemap index, the child listing the team, and the
+ * team page itself. That is more setup than seeding a table row, and it is the
+ * point: these cases now exercise what production actually does.
+ */
+const SITEMAP_INDEX_URL = "https://teamcolorcodes.com/wp-sitemap.xml";
+const CHILD_URL = "https://teamcolorcodes.com/post-sitemap.xml";
+
+function stubSite(opts: {
+  /** Team page URLs the sitemap lists. */
+  urls?: string[];
+  /** Body served for a team page; null makes the page 404. */
+  page?: string | null;
+  /** Make the whole site unreachable. */
+  down?: boolean;
+}): ReturnType<typeof vi.fn> {
+  const { urls = [], page = COLOR_PAGE, down = false } = opts;
+  const mock = vi.fn(async (url: string) => {
+    if (down) throw new Error("network down");
+    const u = String(url);
+    if (u === SITEMAP_INDEX_URL) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          `<sitemapindex><sitemap><loc>${CHILD_URL}</loc></sitemap></sitemapindex>`,
+      } as unknown as Response;
+    }
+    if (u === CHILD_URL) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          `<urlset>${urls.map((x) => `<url><loc>${x}</loc></url>`).join("")}</urlset>`,
+      } as unknown as Response;
+    }
+    if (page === null) {
+      return { ok: false, status: 404, text: async () => "" } as unknown as Response;
+    }
+    return { ok: true, status: 200, text: async () => page } as unknown as Response;
+  });
   vi.stubGlobal("fetch", mock);
   return mock;
 }
 
+/** How many team PAGES (not sitemaps) a run fetched. */
+const pageFetches = (mock: ReturnType<typeof vi.fn>) =>
+  mock.mock.calls
+    .map((c) => String(c[0]))
+    .filter((u) => u !== SITEMAP_INDEX_URL && u !== CHILD_URL);
+
 async function seed(
   t: ReturnType<typeof convexTest>,
   teamName: string,
-  sources: Array<{ name: string; nameKey: string; url: string }>,
 ): Promise<Id<"teams">> {
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
@@ -52,9 +93,6 @@ async function seed(
       children: [],
       lastUpdated: 1_700_000_000_000,
     });
-    for (const s of sources) {
-      await ctx.db.insert("teamColorSources", { ...s, refreshedAt: 1_700_000_000_000 });
-    }
     return ctx.db.insert("teams", {
       name: teamName,
       nameNormalized: normalizeTeamName(teamName),
@@ -72,20 +110,14 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// resolveTeamColors
+// resolveTeamColors — now a live search, no cached index
 // ---------------------------------------------------------------------------
 
 describe("resolveTeamColors", () => {
   test("a unique match writes colors and provenance", async () => {
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Saitama Seibu Lions", [
-      {
-        name: "saitama seibu lions",
-        nameKey: "saitama seibu lions",
-        url: "https://teamcolorcodes.com/saitama-seibu-lions-color-codes/",
-      },
-    ]);
-    stubPageFetch(COLOR_PAGE);
+    const teamId = await seed(t, "Saitama Seibu Lions");
+    stubSite({ urls: ["https://teamcolorcodes.com/saitama-seibu-lions-color-codes/"] });
 
     const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
       teamId,
@@ -94,9 +126,7 @@ describe("resolveTeamColors", () => {
     expect(outcome).toBe("resolved");
     const team = await getTeam(t, teamId);
     expect(team!.colors).toEqual({ primary: "#ab0008", secondary: "#01214b" });
-    expect(team!.colorSource!.url).toBe(
-      "https://teamcolorcodes.com/saitama-seibu-lions-color-codes/",
-    );
+    expect(team!.colorSource!.url).toBe("https://teamcolorcodes.com/saitama-seibu-lions-color-codes/");
     expect(team!.colorSource!.matchedName).toBe("saitama seibu lions");
   });
 
@@ -104,14 +134,8 @@ describe("resolveTeamColors", () => {
     // "UConn Huskies baseball" is a Set Builder artifact. The site has no such
     // name, but the suffix must not be what prevents the match.
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "UConn Huskies baseball", [
-      {
-        name: "uconn huskies",
-        nameKey: "uconn huskies",
-        url: "https://teamcolorcodes.com/uconn-huskies-colors/",
-      },
-    ]);
-    stubPageFetch(COLOR_PAGE);
+    const teamId = await seed(t, "UConn Huskies baseball");
+    stubSite({ urls: ["https://teamcolorcodes.com/uconn-huskies-colors/"] });
 
     const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
       teamId,
@@ -124,11 +148,13 @@ describe("resolveTeamColors", () => {
     // The site carries 10+ distinct "Huskies". Picking one would silently
     // print a binder in another school's colors.
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Huskies", [
-      { name: "huskies", nameKey: "huskies", url: "https://teamcolorcodes.com/a-colors/" },
-      { name: "huskies", nameKey: "huskies", url: "https://teamcolorcodes.com/b-colors/" },
-    ]);
-    const fetchMock = stubPageFetch(COLOR_PAGE);
+    const teamId = await seed(t, "Huskies");
+    const fetchMock = stubSite({
+      urls: [
+        "https://teamcolorcodes.com/huskies-color-codes/",
+        "https://teamcolorcodes.com/huskies-colors/",
+      ],
+    });
 
     const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
       teamId,
@@ -139,14 +165,14 @@ describe("resolveTeamColors", () => {
     expect(team!.colors).toBeUndefined();
     expect(team!.colorSource).toBeUndefined();
     expect(team!.colorCandidates).toHaveLength(2);
-    // Ambiguity is decided from the index alone — no page is fetched.
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Ambiguity is decided from the sitemap alone — no team page is fetched.
+    expect(pageFetches(fetchMock)).toEqual([]);
   });
 
-  test("no match writes nothing and stays eligible for the next pass", async () => {
+  test("no match writes nothing and stays eligible for a retry", async () => {
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Estrellas Orientales", []);
-    stubPageFetch(COLOR_PAGE);
+    const teamId = await seed(t, "Estrellas Orientales");
+    stubSite({ urls: ["https://teamcolorcodes.com/saitama-seibu-lions-color-codes/"] });
 
     const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
       teamId,
@@ -158,16 +184,29 @@ describe("resolveTeamColors", () => {
     expect(team!.colorSource).toBeUndefined();
   });
 
-  test("an already-resolved team is skipped without fetching", async () => {
-    // This is what makes repeat backfill passes cheap.
+  test("a search that now finds nothing clears a stale ambiguity", async () => {
+    // Leaving old candidates on screen after the operator asked again would
+    // show them a choice that no longer exists.
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Saitama Seibu Lions", [
-      {
-        name: "saitama seibu lions",
-        nameKey: "saitama seibu lions",
-        url: "https://teamcolorcodes.com/saitama-seibu-lions-color-codes/",
-      },
-    ]);
+    const teamId = await seed(t, "Estrellas Orientales");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(teamId, {
+        colorCandidates: [
+          { name: "stale", url: "https://teamcolorcodes.com/stale-colors/" },
+        ],
+      });
+    });
+    stubSite({ urls: [] });
+
+    await t.action(internal.teamColorSources.resolveTeamColors, { teamId });
+
+    const team = await getTeam(t, teamId);
+    expect(team!.colorCandidates).toBeUndefined();
+  });
+
+  test("an already-resolved team is skipped without touching the network", async () => {
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Saitama Seibu Lions");
     await t.run(async (ctx) => {
       await ctx.db.patch(teamId, {
         colorSource: {
@@ -177,28 +216,47 @@ describe("resolveTeamColors", () => {
         },
       });
     });
-    const fetchMock = stubPageFetch(COLOR_PAGE);
+    const fetchMock = stubSite({ urls: ["https://teamcolorcodes.com/saitama-seibu-lions-color-codes/"] });
 
     const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
       teamId,
     });
 
     expect(outcome).toBe("skipped");
+    // Not one request — not even the sitemap. A live search is ~1.5MB, so
+    // skipping has to happen before any fetch, not after.
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test("an unreadable page does NOT mark the team done", async () => {
-    // Otherwise a transient failure would permanently exclude the team from
-    // every future backfill pass.
+  test("force re-searches a team whose match was wrong", async () => {
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Saitama Seibu Lions", [
-      {
-        name: "saitama seibu lions",
-        nameKey: "saitama seibu lions",
-        url: "https://teamcolorcodes.com/saitama-seibu-lions-color-codes/",
-      },
-    ]);
-    stubPageFetch(null);
+    const teamId = await seed(t, "Saitama Seibu Lions");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(teamId, {
+        colorSource: {
+          url: "https://teamcolorcodes.com/wrong-franchise-colors/",
+          matchedName: "wrong franchise",
+          resolvedAt: 1_700_000_000_000,
+        },
+      });
+    });
+    stubSite({ urls: ["https://teamcolorcodes.com/saitama-seibu-lions-color-codes/"] });
+
+    const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
+      teamId,
+      force: true,
+    });
+
+    expect(outcome).toBe("resolved");
+    const team = await getTeam(t, teamId);
+    expect(team!.colorSource!.url).toBe("https://teamcolorcodes.com/saitama-seibu-lions-color-codes/");
+  });
+
+  test("an unreadable page does NOT mark the team done", async () => {
+    // Otherwise a transient failure would permanently exclude the team.
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Saitama Seibu Lions");
+    stubSite({ urls: ["https://teamcolorcodes.com/saitama-seibu-lions-color-codes/"], page: null });
 
     const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
       teamId,
@@ -209,101 +267,30 @@ describe("resolveTeamColors", () => {
     expect(team!.colorSource).toBeUndefined();
   });
 
+  test("an unreachable site is a no-match, not a crash", async () => {
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Saitama Seibu Lions");
+    stubSite({ down: true });
+
+    await expect(
+      t.action(internal.teamColorSources.resolveTeamColors, { teamId }),
+    ).resolves.toBe("no-match");
+  });
+
   test("resolving clears a previously parked ambiguity", async () => {
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Saitama Seibu Lions", [
-      {
-        name: "saitama seibu lions",
-        nameKey: "saitama seibu lions",
-        url: "https://teamcolorcodes.com/saitama-seibu-lions-color-codes/",
-      },
-    ]);
+    const teamId = await seed(t, "Saitama Seibu Lions");
     await t.run(async (ctx) => {
       await ctx.db.patch(teamId, {
         colorCandidates: [{ name: "old", url: "https://teamcolorcodes.com/old-colors/" }],
       });
     });
-    stubPageFetch(COLOR_PAGE);
+    stubSite({ urls: ["https://teamcolorcodes.com/saitama-seibu-lions-color-codes/"] });
 
     await t.action(internal.teamColorSources.resolveTeamColors, { teamId });
 
     const team = await getTeam(t, teamId);
     expect(team!.colorCandidates).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// enrichTeam — the early-return removal
-// ---------------------------------------------------------------------------
-
-describe("enrichTeam colour fallthrough", () => {
-  test("resolves colours even when the sport has no enrichment context", async () => {
-    // The regression guard for NEO-147's core finding: enrichTeam used to
-    // `return null` before colours whenever ESPN/Wikidata could not help, which
-    // excluded every NPB, MiLB and Dominican winter league row — the exact
-    // population with no colours. The seeded sport row here carries no
-    // `sportConfig`, so `getSportEnrichmentContext` yields nothing.
-    const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Saitama Seibu Lions", [
-      {
-        name: "saitama seibu lions",
-        nameKey: "saitama seibu lions",
-        url: "https://teamcolorcodes.com/saitama-seibu-lions-color-codes/",
-      },
-    ]);
-    stubPageFetch(COLOR_PAGE);
-
-    await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
-
-    const team = await getTeam(t, teamId);
-    expect(team!.colors).toEqual({ primary: "#ab0008", secondary: "#01214b" });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// refreshIndex
-// ---------------------------------------------------------------------------
-
-describe("refreshIndex", () => {
-  test("an unreachable site never empties an existing index", async () => {
-    // A transient outage must not destroy every resolved match.
-    const t = convexTest(schema, modules);
-    await t.run(async (ctx) => {
-      await ctx.db.insert("teamColorSources", {
-        name: "milwaukee brewers",
-        nameKey: "milwaukee brewers",
-        url: "https://teamcolorcodes.com/milwaukee-brewers-color-codes/",
-        refreshedAt: 1_700_000_000_000,
-      });
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new Error("network down");
-      }),
-    );
-
-    const result = await t
-      .withIdentity({ subject: "admin", role: "admin" })
-      .action(api.teamColorSources.refreshIndex, {});
-
-    // It reports having done nothing, rather than reporting a successful
-    // refresh that happened to index zero pages.
-    expect(result).toEqual({ indexed: 0, removed: 0 });
-    const rows = await t.run(async (ctx) => ctx.db.query("teamColorSources").collect());
-    expect(rows).toHaveLength(1);
-  });
-
-  test("requires admin", async () => {
-    const t = convexTest(schema, modules);
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => "" } as unknown as Response)));
-
-    await expect(
-      t.withIdentity({ subject: "someone", role: "user" }).action(
-        api.teamColorSources.refreshIndex,
-        {},
-      ),
-    ).rejects.toThrow(/admin/i);
   });
 });
 
@@ -318,7 +305,7 @@ describe("chooseColorSource", () => {
   ];
 
   async function seedAmbiguous(t: ReturnType<typeof convexTest>) {
-    const teamId = await seed(t, "Huskies", []);
+    const teamId = await seed(t, "Huskies");
     await t.run(async (ctx) => {
       await ctx.db.patch(teamId, { colorCandidates: HUSKIES_CANDIDATES });
     });
@@ -328,7 +315,7 @@ describe("chooseColorSource", () => {
   test("resolves the candidate at the given index", async () => {
     const t = convexTest(schema, modules);
     const teamId = await seedAmbiguous(t);
-    stubPageFetch(COLOR_PAGE);
+    stubSite({ urls: [] });
 
     const outcome = await t
       .withIdentity({ subject: "admin", role: "admin" })
@@ -353,7 +340,7 @@ describe("chooseColorSource", () => {
     // URL is not a rejected request, it is not a representable one.
     const t = convexTest(schema, modules);
     const teamId = await seedAmbiguous(t);
-    const fetchMock = stubPageFetch(COLOR_PAGE);
+    const fetchMock = stubSite({ urls: [] });
 
     await expect(
       t.withIdentity({ subject: "admin", role: "admin" }).action(
@@ -368,7 +355,7 @@ describe("chooseColorSource", () => {
   test("refuses an index the server never offered", async () => {
     const t = convexTest(schema, modules);
     const teamId = await seedAmbiguous(t);
-    const fetchMock = stubPageFetch(COLOR_PAGE);
+    const fetchMock = stubSite({ urls: [] });
 
     await expect(
       t.withIdentity({ subject: "admin", role: "admin" }).action(
@@ -381,8 +368,8 @@ describe("chooseColorSource", () => {
 
   test("refuses when the team has no parked candidates", async () => {
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Huskies", []);
-    const fetchMock = stubPageFetch(COLOR_PAGE);
+    const teamId = await seed(t, "Huskies");
+    const fetchMock = stubSite({ urls: [] });
 
     await expect(
       t.withIdentity({ subject: "admin", role: "admin" }).action(

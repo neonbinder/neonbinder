@@ -21,7 +21,7 @@
  *     predicting which. "UConn Huskies" is served from
  *     `/connecticut-huskies-colors/`; both `/uconn-huskies-color-codes/` and
  *     `/connecticut-huskies-color-codes/` are 404s. The sitemap must be
- *     enumerated and matched against. See `fetchTeamColorSourceIndex`.
+ *     read and matched against. See `findTeamColorPages`.
  *
  *  2. PAGES CARRY HISTORICAL COLORS. The Milwaukee Brewers page lists 11
  *     colorblocks across 5 eras (current, 2018-2019, alternate, 2000-2017,
@@ -33,10 +33,11 @@
  *     not its intent. Nothing here fetches it — the sitemap makes search
  *     unnecessary.
  *
- * Politeness: this is a CACHED BACKFILL, never a live render-path dependency.
- * The index is fetched once and persisted (`convex/teamColorSources.ts`);
- * individual team pages are fetched one at a time, paced by the enrichment
- * queue's INTER_ENTITY_DELAY_MS.
+ * Politeness: every function here is reached only from an explicit,
+ * one-team-at-a-time operator action ("Discover" in Team Management). Nothing
+ * in this module may be put behind a bulk loop, a background queue, or a render
+ * path — one search reads the sitemap index plus up to four children (~1.5MB),
+ * which is affordable once on a click and abusive in a loop.
  */
 
 const BASE_URL = "https://teamcolorcodes.com";
@@ -67,12 +68,10 @@ const ALLOWED_HOSTS = new Set(["teamcolorcodes.com", "www.teamcolorcodes.com"]);
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 /**
- * Ceiling on child sitemaps followed from the index (4 as of 2026-08-13), and
- * on rows one refresh may produce (~2190 today). Both lists come from the
- * remote site, so both are bounded rather than trusted.
+ * Ceiling on child sitemaps followed from the index (4 as of 2026-08-13). The
+ * list comes from the remote site, so it is bounded rather than trusted.
  */
 const MAX_CHILD_SITEMAPS = 25;
-const MAX_INDEX_ENTRIES = 20_000;
 
 /**
  * True only for an `https://` URL on {@link ALLOWED_HOSTS}. Exported so the
@@ -230,23 +229,42 @@ export function parseSitemapLocs(xml: string): string[] {
 }
 
 /**
- * Enumerate the whole site into a normalized-name → URL index.
+ * Find the source pages whose name matches this team, reading the sitemap
+ * LIVE.
  *
- * Fetches the Yoast sitemap index and each child (4 as of 2026-08-13:
- * post-sitemap, post-sitemap2, post-sitemap3, page-sitemap; ~2245 URLs, of
- * which ~2190 are team pages). Child count is read from the index rather than
- * hardcoded so a fifth sitemap is picked up automatically.
+ * NEO-156 removed the cached index this used to build. The site's ~2190 pages
+ * were mirrored into a Convex table that an operator had to remember to
+ * refresh, which is a second copy of someone else's data that goes stale
+ * silently — a team added upstream simply stopped being findable until someone
+ * pressed a button. Reading the sitemap at the moment of the search has no such
+ * failure mode.
  *
- * Returns [] rather than throwing on any failure — the caller treats an empty
- * index as "could not refresh", not as "the site has no teams".
+ * The cost is honest: the sitemap index plus up to four children, roughly
+ * 1.5MB, per search. That is affordable precisely because this is a manual,
+ * one-team-at-a-time action — it must never be put behind a bulk loop or a
+ * render path.
+ *
+ * Children are fetched one at a time and searched as they arrive, returning as
+ * soon as a child yields a hit, so the common case costs fewer than the full
+ * four. The whole child list is only read when the team is not on the site at
+ * all.
+ *
+ * Returns every match, because "several pages match this name" is a real and
+ * common answer — the site carries 10+ distinct "Huskies" — and the caller
+ * must put that to a human rather than guess.
  */
-export async function fetchTeamColorSourceIndex(): Promise<TeamColorSourceEntry[]> {
+export async function findTeamColorPages(
+  teamName: string,
+): Promise<TeamColorSourceEntry[]> {
+  const key = colorSourceMatchKey(teamName);
+  if (!key) return [];
+
   const indexXml = await fetchText(SITEMAP_INDEX_URL);
   if (!indexXml) return [];
 
-  // The index is remote content: filter it to on-host `.xml` and cap how many
-  // we will follow, so a changed (or tampered) index cannot turn one refresh
-  // into an unbounded fan-out of outbound requests.
+  // The index is remote content: filter to on-host `.xml` and cap how many we
+  // will follow, so a changed (or tampered) index cannot turn one search into
+  // an unbounded fan-out of outbound requests.
   const childSitemaps = parseSitemapLocs(indexXml)
     .filter((u) => u.toLowerCase().endsWith(".xml") && isAllowedSourceUrl(u))
     .slice(0, MAX_CHILD_SITEMAPS);
@@ -255,26 +273,24 @@ export async function fetchTeamColorSourceIndex(): Promise<TeamColorSourceEntry[
     return [];
   }
 
-  const byName = new Map<string, TeamColorSourceEntry>();
   for (const sitemapUrl of childSitemaps) {
     const xml = await fetchText(sitemapUrl);
     if (!xml) continue;
+
+    const matches: TeamColorSourceEntry[] = [];
+    const seen = new Set<string>();
     for (const loc of parseSitemapLocs(xml)) {
       const name = teamNameFromSourceUrl(loc);
       if (!name) continue;
-      const key = colorSourceMatchKey(name);
-      if (!key) continue;
-      // First writer wins. Duplicates across sitemaps are the same page.
-      if (!byName.has(key)) byName.set(key, { name, url: loc });
-      if (byName.size >= MAX_INDEX_ENTRIES) {
-        console.warn(
-          `[teamColorCodes] index truncated at ${MAX_INDEX_ENTRIES} entries`,
-        );
-        return [...byName.values()];
-      }
+      if (colorSourceMatchKey(name) !== key) continue;
+      if (seen.has(loc)) continue;
+      seen.add(loc);
+      matches.push({ name, url: loc });
     }
+    if (matches.length > 0) return matches;
   }
-  return [...byName.values()];
+
+  return [];
 }
 
 function normalizeHex(raw: string): string | null {

@@ -553,27 +553,6 @@ export default defineSchema({
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
 
-  // NEO-147: the cached teamcolorcodes.com sitemap, ~2190 team pages.
-  //
-  // This exists because the site's slugs cannot be constructed — two suffixes
-  // are in live use with no rule predicting which, so "UConn Huskies" is at
-  // /connecticut-huskies-colors/ while the obvious guesses 404. Matching has
-  // to go through an enumerated index.
-  //
-  // It is a table rather than an in-memory cache because enrichment runs one
-  // team per action invocation (paced by INTER_ENTITY_DELAY_MS), so a
-  // process-local cache would die between teams and re-fetch ~1.5MB of sitemap
-  // per team. Refreshed explicitly by an admin, never on a read path.
-  teamColorSources: defineTable({
-    // Display name derived from the slug, e.g. "connecticut huskies".
-    name: v.string(),
-    // `colorSourceMatchKey(name)` — order-preserving, unlike
-    // teams.normalizeTeamName's token sort. Both sides of a comparison are
-    // real team names here, so preserving order keeps the match honest.
-    nameKey: v.string(),
-    url: v.string(),
-    refreshedAt: v.number(),
-  }).index("by_name_key", ["nameKey"]),
 
   // NEO-92: per-fetch review queue backing the step-through "new players &
   // teams" wizard (replaces the old single-screen checkbox dialog). One row

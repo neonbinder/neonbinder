@@ -16,7 +16,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   colorSourceMatchKey,
-  fetchTeamColorSourceIndex,
+  findTeamColorPages,
   fetchTeamColors,
   parseCurrentTeamColors,
   parseSitemapLocs,
@@ -216,58 +216,130 @@ describe("parseCurrentTeamColors", () => {
 });
 
 // ---------------------------------------------------------------------------
-// fetchTeamColorSourceIndex
+// findTeamColorPages — the live search that replaced the cached index
 // ---------------------------------------------------------------------------
 
-describe("fetchTeamColorSourceIndex", () => {
+describe("findTeamColorPages", () => {
   function stubSite(pages: Record<string, string>) {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => {
-        const body = pages[String(url)];
-        if (body === undefined) {
-          return { ok: false, status: 404, text: async () => "" } as unknown as Response;
-        }
-        return { ok: true, status: 200, text: async () => body } as unknown as Response;
-      }),
-    );
+    const mock = vi.fn(async (url: string) => {
+      const body = pages[String(url)];
+      if (body === undefined) {
+        return { ok: false, status: 404, text: async () => "" } as unknown as Response;
+      }
+      return { ok: true, status: 200, text: async () => body } as unknown as Response;
+    });
+    vi.stubGlobal("fetch", mock);
+    return mock;
   }
 
-  test("walks the index into every child sitemap and keeps only team pages", async () => {
+  const INDEX = `<sitemapindex>
+    <sitemap><loc>https://teamcolorcodes.com/post-sitemap.xml</loc></sitemap>
+    <sitemap><loc>https://teamcolorcodes.com/post-sitemap2.xml</loc></sitemap>
+  </sitemapindex>`;
+
+  test("finds a team through the sitemap", async () => {
     stubSite({
-      "https://teamcolorcodes.com/wp-sitemap.xml": `<sitemapindex>
-        <sitemap><loc>https://teamcolorcodes.com/post-sitemap.xml</loc></sitemap>
-        <sitemap><loc>https://teamcolorcodes.com/page-sitemap.xml</loc></sitemap>
-      </sitemapindex>`,
+      "https://teamcolorcodes.com/wp-sitemap.xml": INDEX,
       "https://teamcolorcodes.com/post-sitemap.xml": `<urlset>
         <url><loc>https://teamcolorcodes.com/</loc></url>
         <url><loc>https://teamcolorcodes.com/milwaukee-brewers-color-codes/</loc></url>
-        <url><loc>https://teamcolorcodes.com/connecticut-huskies-colors/</loc></url>
-      </urlset>`,
-      "https://teamcolorcodes.com/page-sitemap.xml": `<urlset>
-        <url><loc>https://teamcolorcodes.com/saitama-seibu-lions-color-codes/</loc></url>
       </urlset>`,
     });
 
-    const index = await fetchTeamColorSourceIndex();
+    const matches = await findTeamColorPages("Milwaukee Brewers");
 
-    expect(index).toHaveLength(3);
-    expect(index.map((e) => e.name)).toEqual([
-      "milwaukee brewers",
-      "connecticut huskies",
-      "saitama seibu lions",
+    expect(matches).toEqual([
+      {
+        name: "milwaukee brewers",
+        url: "https://teamcolorcodes.com/milwaukee-brewers-color-codes/",
+      },
     ]);
   });
 
-  test("never fetches the robots-disallowed search path", async () => {
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      text: async () => "<sitemapindex></sitemapindex>",
-    } as unknown as Response));
-    vi.stubGlobal("fetch", fetchMock);
+  test("stops at the first child sitemap that yields a hit", async () => {
+    // The cost control that makes a live search affordable: the common case
+    // does not read all four children.
+    const fetchMock = stubSite({
+      "https://teamcolorcodes.com/wp-sitemap.xml": INDEX,
+      "https://teamcolorcodes.com/post-sitemap.xml": `<urlset>
+        <url><loc>https://teamcolorcodes.com/milwaukee-brewers-color-codes/</loc></url>
+      </urlset>`,
+      "https://teamcolorcodes.com/post-sitemap2.xml": `<urlset>
+        <url><loc>https://teamcolorcodes.com/other-team-colors/</loc></url>
+      </urlset>`,
+    });
 
-    await fetchTeamColorSourceIndex();
+    await findTeamColorPages("Milwaukee Brewers");
+
+    const fetched = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(fetched).toContain("https://teamcolorcodes.com/post-sitemap.xml");
+    expect(fetched).not.toContain("https://teamcolorcodes.com/post-sitemap2.xml");
+  });
+
+  test("reads on into later children when the first has no match", async () => {
+    stubSite({
+      "https://teamcolorcodes.com/wp-sitemap.xml": INDEX,
+      "https://teamcolorcodes.com/post-sitemap.xml": `<urlset>
+        <url><loc>https://teamcolorcodes.com/other-team-colors/</loc></url>
+      </urlset>`,
+      "https://teamcolorcodes.com/post-sitemap2.xml": `<urlset>
+        <url><loc>https://teamcolorcodes.com/connecticut-huskies-colors/</loc></url>
+      </urlset>`,
+    });
+
+    const matches = await findTeamColorPages("Connecticut Huskies");
+
+    expect(matches.map((m) => m.url)).toEqual([
+      "https://teamcolorcodes.com/connecticut-huskies-colors/",
+    ]);
+  });
+
+  test("returns EVERY match, because ambiguity must reach a human", async () => {
+    // The site carries 10+ distinct "Huskies". Returning one would be a guess.
+    stubSite({
+      "https://teamcolorcodes.com/wp-sitemap.xml": INDEX,
+      "https://teamcolorcodes.com/post-sitemap.xml": `<urlset>
+        <url><loc>https://teamcolorcodes.com/huskies-color-codes/</loc></url>
+        <url><loc>https://teamcolorcodes.com/huskies-colors/</loc></url>
+      </urlset>`,
+    });
+
+    const matches = await findTeamColorPages("Huskies");
+
+    expect(matches).toHaveLength(2);
+  });
+
+  test("matches through the sport suffix our college rows carry", async () => {
+    stubSite({
+      "https://teamcolorcodes.com/wp-sitemap.xml": INDEX,
+      "https://teamcolorcodes.com/post-sitemap.xml": `<urlset>
+        <url><loc>https://teamcolorcodes.com/uconn-huskies-colors/</loc></url>
+      </urlset>`,
+    });
+
+    const matches = await findTeamColorPages("UConn Huskies baseball");
+
+    expect(matches).toHaveLength(1);
+  });
+
+  test("returns empty for a team the site does not carry", async () => {
+    stubSite({
+      "https://teamcolorcodes.com/wp-sitemap.xml": INDEX,
+      "https://teamcolorcodes.com/post-sitemap.xml": `<urlset>
+        <url><loc>https://teamcolorcodes.com/milwaukee-brewers-color-codes/</loc></url>
+      </urlset>`,
+      "https://teamcolorcodes.com/post-sitemap2.xml": `<urlset></urlset>`,
+    });
+
+    await expect(findTeamColorPages("Estrellas Orientales")).resolves.toEqual([]);
+  });
+
+  test("never fetches the robots-disallowed search path", async () => {
+    const fetchMock = stubSite({
+      "https://teamcolorcodes.com/wp-sitemap.xml": INDEX,
+    });
+
+    await findTeamColorPages("Anything");
 
     for (const call of fetchMock.mock.calls) {
       expect(String(call[0])).not.toContain("/search/");
@@ -275,17 +347,17 @@ describe("fetchTeamColorSourceIndex", () => {
     }
   });
 
-  test("returns empty rather than throwing when the index is unreachable", async () => {
+  test("returns empty rather than throwing when the site is unreachable", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         throw new Error("network down");
       }),
     );
-    await expect(fetchTeamColorSourceIndex()).resolves.toEqual([]);
+    await expect(findTeamColorPages("Milwaukee Brewers")).resolves.toEqual([]);
   });
 
-  test("skips a child sitemap that fails without losing the others", async () => {
+  test("skips a child sitemap that fails without giving up on the rest", async () => {
     stubSite({
       "https://teamcolorcodes.com/wp-sitemap.xml": `<sitemapindex>
         <sitemap><loc>https://teamcolorcodes.com/broken.xml</loc></sitemap>
@@ -296,9 +368,9 @@ describe("fetchTeamColorSourceIndex", () => {
       </urlset>`,
     });
 
-    const index = await fetchTeamColorSourceIndex();
+    const matches = await findTeamColorPages("Milwaukee Brewers");
 
-    expect(index.map((e) => e.name)).toEqual(["milwaukee brewers"]);
+    expect(matches).toHaveLength(1);
   });
 });
 
