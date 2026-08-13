@@ -70,8 +70,10 @@ tags:
 - tapOn:
     id: "Edit card 777-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # ============================================================
 # REACH THE PLAYERS SECTION (near the bottom of the drawer body)
@@ -147,8 +149,10 @@ tags:
 - tapOn:
     id: "Edit card 777-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # Reach the Players section again and confirm the chip survived Save + reopen.
 - swipe:

@@ -12,6 +12,7 @@ what's intentionally divergent, and how to reproduce CI conditions on a Mac.
 | `.maestro/version` | Maestro CLI version (e.g. `2.6.0`) | `setup-maestro.sh`, CI workflow |
 | `.java-version` | Java major version (jenv-compatible) | `setup-maestro.sh`, CI's `actions/setup-java` |
 | `.sdkmanrc` | Java + distribution (Temurin LTS) | sdkman auto-env |
+| `.maestro/chrome-version` | Chrome for Testing version (**local only**) | `setup-maestro.sh`, `lib-e2e-chrome.sh`, `test:e2e:check` |
 
 Bumping any pin is a single PR. After editing the pin file:
 
@@ -24,12 +25,38 @@ npm run test:e2e:check              # verifies installed = pinned
 CI re-installs from scratch each run, so it always picks up the new pin
 without a separate step.
 
+### Why Chrome is pinned locally but not in CI
+
+Local runs **must** drive Chrome for Testing, never branded Google Chrome.
+Branded Chrome exposes `chrome://omnibox-popup.top-chrome/` CDP targets *ahead
+of* the real tab, and Maestro's `CdpTarget` model carries no `type` field to
+filter them out — so it navigates the omnibox popup widget instead of the tab.
+Every flow then runs in a 1×1 viewport:
+
+```
+DeviceInfo(platform=WEB, widthPixels=830, heightPixels=1)
+```
+
+with 1×1 failure screenshots. Assertions on content at the very top of the page
+still pass, so it reads exactly like a product bug (NEO-138). Chrome for Testing
+exposes no such targets.
+
+CI needs no pin: `browser-actions/setup-chrome` already installs a non-branded
+build, which is why CI stayed green through the entire outage. The upshot is a
+small deliberate divergence — local reports `1024×625`, CI `1024×629`.
+
+`run-e2e-smoke.sh`, `run-e2e-queue.sh` and `e2e-local-up.sh` all resolve and
+export `SE_BROWSER_PATH` via `lib-e2e-chrome.sh` and **refuse to start** without
+it. Setting `SE_BROWSER_PATH` yourself overrides the pin, except that pointing
+it at branded Chrome is rejected outright.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `npm run setup:e2e` | Install pinned Maestro + Java (idempotent; safe to re-run) |
-| `npm run test:e2e:check` | Verify installed Maestro + Java match the pins; print actionable next steps if not |
+| `npm run setup:e2e` | Install pinned Maestro + Java + Chrome for Testing (idempotent; safe to re-run) |
+| `npm run test:e2e:check` | Verify installed Maestro + Java + Chrome match the pins; print actionable next steps if not |
+| `npm run e2e:clean-chrome` | Kill Chrome/chromedriver processes a previous run left detached (never touches your real browser) |
 | `npm run test:e2e` | Run the full suite (smoke + regression) |
 | `npm run test:e2e:smoke` | Smoke tag only |
 | `npm run test:e2e:regression` | Regression tag only |
@@ -118,6 +145,7 @@ bug, not a flow bug:
 | --- | --- | --- |
 | Maestro CLI version | `.maestro/version` | `setup-maestro.sh`, CI's install step, `test:e2e:check` |
 | Java major version | `.java-version` | `setup-maestro.sh`, CI's `actions/setup-java`, `test:e2e:check` |
+| Chrome build (local) | `.maestro/chrome-version` | `lib-e2e-chrome.sh` (hard gate in every local runner), `test:e2e:check` |
 | Worker parallelism | `MAESTRO_PARALLELISM=3` | CI workflow, `test:e2e:like-ci` |
 | Convex DB state at "setup-done" | `setup.yaml` calls `Reset Set Builder Data` | Cascade flow itself |
 | Cascade dependency ordering | `requires:` / `provides:` tags | `run-e2e-smoke.sh` topo-sort + cascade-prerequisite check (NEO-23) |
@@ -138,7 +166,23 @@ two buckets.
 3. **JVM crash on macOS (Maestro 2.6 + OpenJDK 23).** Symptom:
    `hs_err_pid*.log` in cwd, flow stops mid-execution with no failure
    assertion. Fix: switch to Java 21 (`.java-version` and `.sdkmanrc`
-   already pin this; use jenv or sdkman to honor them).
+   already pin this; use jenv or sdkman to honor them). Note Java 21 gets
+   flows to *start*, not to *pass* — item 3b is a separate fault.
+
+3b. **Everything below the fold is "missing" locally (NEO-138).** Symptom:
+   assertions near the top of the page pass, anything lower fails, and even
+   `scrollUntilVisible` with a 20s budget can't find it. Before forming any
+   hypothesis about the flow or the product, check the geometry:
+
+   ```bash
+   grep heightPixels= maestro-report/debug/<flow>/maestro.log
+   sips -g pixelHeight maestro-report/debug/<flow>/screenshot-❌-*.png
+   ```
+
+   `heightPixels=1` and a 1×1 PNG mean Maestro is driving branded Chrome's
+   omnibox popup instead of the tab. Fix: `npm run test:e2e:check`, then
+   `./setup-maestro.sh`. The runners gate on this now, so it should only be
+   reachable by overriding `SE_BROWSER_PATH` by hand.
 4. **Convex preview state leaks across CI runs.** Per-PR Convex previews
    persist for the life of the PR. `setup.yaml` clicks "Reset Set Builder
    Data" which wipes `selectorOptions`, `cardChecklist`, `players`, and

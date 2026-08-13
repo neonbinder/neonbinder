@@ -733,113 +733,163 @@ export const fetchBscChecklist = action({
         filters.variant = [args.parentFilters.variantType.toLowerCase()];
       }
 
-      // Single call — confirmed live: BSC's /search/bulk-upload/results
-      // ignores `size`/`page` and returns the full filtered result set
-      // in one response. No pagination loop. We pass `size` as a defense
-      // anyway in case behavior changes upstream.
+      // FAN OUT — one request per variantName slug. Do NOT batch them.
       //
-      // Hard cap at 5000 cards to stay well under Convex's 8192 array
-      // length limit on action return values. Most sets are ≤1000; the
-      // largest mainstream sets (e.g. Bowman Chrome) are ~600 cards. A
-      // 5000-card response would be surprising and worth investigating.
+      // Measured live on dev 2026-08-12, 1996 Score inserts:
+      //   filters.variantName = ["…series-2"]                  -> returned=110
+      //   filters.variantName = ["…series-2", "…series-1"]      -> returned=0
+      // BSC answers 200 OK with an EMPTY body for a multi-value facet — it does
+      // not OR them. The comment that used to sit here claimed the opposite
+      // ("accepts multi-value facets in one call … no fan-out needed"); it was
+      // never true and nothing caught it, because the checklist tests mock this
+      // adapter at the validator boundary and never sent two values.
+      //
+      // The failure mode is silent and nasty: a well-formed query, no error, an
+      // empty checklist, and a UI that reports "0 BSC cards" as though the
+      // marketplace simply had nothing.
+      //
+      // Sequential, not parallel: the 401 path refreshes `activeToken` and the
+      // refreshed value has to be visible to the requests that follow.
       const MAX_CARDS = 5000;
-      const body = {
-        condition: "all",
-        page: 0,
-        size: MAX_CARDS,
-        sort: "default",
-        filters,
-      };
-      // Wrapped so we can retry once with a fresh token on 401. BSC's API
-      // can intermittently 401 with a token our cache still thinks is fresh
-      // (BSC's token TTL doesn't always match what they advertise, especially
-      // under load). Rather than failing the whole fetch, refresh and retry.
-      const doFetch = async (token: string): Promise<Response> => {
-        return await fetch(`${BSC_API_BASE}/search/bulk-upload/results`, {
-          method: "POST",
-          headers: bscHeaders(token),
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(BSC_CHECKLIST_FETCH_TIMEOUT_MS),
-        });
-      };
+      const variantNames = filters.variantName ?? [];
+      const fanOut: Array<string | undefined> =
+        variantNames.length > 0 ? variantNames : [undefined];
 
-      let response: Response;
       let activeToken = tokenResult.token;
-      try {
-        response = await doFetch(activeToken);
-      } catch (err) {
-        const isTimeout = err instanceof Error && err.name === "TimeoutError";
-        const msg = isTimeout
-          ? `BSC API request timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
-          : `BSC API request failed: ${err instanceof Error ? err.message : String(err)}`;
-        return { success: false, cards: [], message: msg };
-      }
 
-      if (response.status === 401) {
-        console.warn(
-          `[fetchBscChecklist] BSC API 401 with cached token — forcing re-auth and retrying once`,
-        );
-        // Drain the failed response body to free the socket before retrying.
-        await response.text().catch(() => "");
-        const reAuth = (await ctx.runAction(internal.credentials.authenticateBsc, {})) as {
-          success: boolean;
-          message?: string;
+      type OneResult =
+        | { ok: true; raw: Record<string, unknown>[] }
+        | { ok: false; message: string };
+
+      const runOne = async (slug: string | undefined): Promise<OneResult> => {
+        const callFilters: Record<string, string[]> = slug
+          ? { ...filters, variantName: [slug] }
+          : filters;
+        // BSC's /search/bulk-upload/results ignores `size`/`page` and returns
+        // the full filtered set in one response — confirmed live. `size` is
+        // passed as a defense in case that changes.
+        const body = {
+          condition: "all",
+          page: 0,
+          size: MAX_CARDS,
+          sort: "default",
+          filters: callFilters,
         };
-        if (!reAuth.success) {
-          console.error(
-            `[fetchBscChecklist] re-auth failed after 401: ${reAuth.message ?? "(no message)"}`,
-          );
-          return {
-            success: false,
-            cards: [],
-            message: `BSC API 401 and re-auth failed`,
-          };
-        }
-        const refreshedToken: { success: boolean; token?: string; error?: string } =
-          await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
-        if (!refreshedToken.success || !refreshedToken.token) {
-          return {
-            success: false,
-            cards: [],
-            message: refreshedToken.error || "No BSC token available after re-auth",
-          };
-        }
-        activeToken = refreshedToken.token;
+        const doFetch = async (token: string): Promise<Response> =>
+          await fetch(`${BSC_API_BASE}/search/bulk-upload/results`, {
+            method: "POST",
+            headers: bscHeaders(token),
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(BSC_CHECKLIST_FETCH_TIMEOUT_MS),
+          });
+
+        let response: Response;
         try {
           response = await doFetch(activeToken);
         } catch (err) {
           const isTimeout = err instanceof Error && err.name === "TimeoutError";
-          const msg = isTimeout
-            ? `BSC API retry timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
-            : `BSC API retry failed: ${err instanceof Error ? err.message : String(err)}`;
-          return { success: false, cards: [], message: msg };
+          return {
+            ok: false,
+            message: isTimeout
+              ? `BSC API request timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
+              : `BSC API request failed: ${err instanceof Error ? err.message : String(err)}`,
+          };
         }
+
+        // BSC intermittently 401s with a token our cache still thinks is fresh
+        // (their TTL doesn't always match what they advertise, especially under
+        // load). Refresh and retry once rather than failing the whole fetch.
+        if (response.status === 401) {
+          console.warn(
+            `[fetchBscChecklist] BSC API 401 with cached token — forcing re-auth and retrying once`,
+          );
+          await response.text().catch(() => "");
+          const reAuth = (await ctx.runAction(
+            internal.credentials.authenticateBsc,
+            {},
+          )) as { success: boolean; message?: string };
+          if (!reAuth.success) {
+            console.error(
+              `[fetchBscChecklist] re-auth failed after 401: ${reAuth.message ?? "(no message)"}`,
+            );
+            return { ok: false, message: `BSC API 401 and re-auth failed` };
+          }
+          const refreshed: { success: boolean; token?: string; error?: string } =
+            await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
+          if (!refreshed.success || !refreshed.token) {
+            return {
+              ok: false,
+              message: refreshed.error || "No BSC token available after re-auth",
+            };
+          }
+          activeToken = refreshed.token;
+          try {
+            response = await doFetch(activeToken);
+          } catch (err) {
+            const isTimeout = err instanceof Error && err.name === "TimeoutError";
+            return {
+              ok: false,
+              message: isTimeout
+                ? `BSC API retry timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
+                : `BSC API retry failed: ${err instanceof Error ? err.message : String(err)}`,
+            };
+          }
+        }
+
+        if (!response.ok) {
+          return { ok: false, message: `BSC API error: ${response.status}` };
+        }
+
+        const data = await response.json();
+        const results = Array.isArray(data) ? data : [];
+        const raw: Record<string, unknown>[] = [];
+        for (const r of results) {
+          if (r && typeof r === "object") raw.push(r as Record<string, unknown>);
+          if (raw.length >= MAX_CARDS) break;
+        }
+        console.log(
+          `[fetchBscChecklist] variantName=${slug ?? "(none)"} returned=${results.length} kept=${raw.length}`,
+        );
+        if (results.length >= MAX_CARDS) {
+          console.warn(
+            `[fetchBscChecklist] hit MAX_CARDS=${MAX_CARDS} ceiling — set may be larger than expected.`,
+          );
+        }
+        return { ok: true, raw };
+      };
+
+      const tagged: Array<{
+        raw: Record<string, unknown>;
+        queriedSlug?: string;
+      }> = [];
+      const failures: string[] = [];
+      for (const slug of fanOut) {
+        const res = await runOne(slug);
+        if (!res.ok) {
+          failures.push(`${slug ?? "(no variant)"}: ${res.message}`);
+          continue;
+        }
+        for (const raw of res.raw) tagged.push({ raw, queriedSlug: slug });
       }
 
-      if (!response.ok) {
+      // Fail the whole fetch if ANY request failed. A partial checklist is
+      // worse than none: commit replaces the stored checklist, so silently
+      // returning the slugs that happened to succeed would delete the cards
+      // belonging to the one that didn't — and it would look like a clean run.
+      if (failures.length > 0) {
         return {
           success: false,
           cards: [],
-          message: `BSC API error: ${response.status}`,
+          message:
+            failures.length === fanOut.length
+              ? `BSC error: ${failures.join("; ")}`
+              : `BSC returned only ${fanOut.length - failures.length} of ${fanOut.length} source sets — refusing a partial checklist: ${failures.join("; ")}`,
         };
       }
 
-      const data = await response.json();
-      const results = Array.isArray(data) ? data : [];
-      const rawCards: Record<string, unknown>[] = [];
-      for (const r of results) {
-        if (r && typeof r === "object") rawCards.push(r as Record<string, unknown>);
-        if (rawCards.length >= MAX_CARDS) break;
-      }
-
       console.log(
-        `[fetchBscChecklist] returned=${results.length} kept=${rawCards.length} (bulk-upload catalog)`,
+        `[fetchBscChecklist] ${fanOut.length} request(s) -> ${tagged.length} raw rows (bulk-upload catalog)`,
       );
-      if (results.length >= MAX_CARDS) {
-        console.warn(
-          `[fetchBscChecklist] hit MAX_CARDS=${MAX_CARDS} ceiling — set may be larger than expected.`,
-        );
-      }
 
       // Map raw → checklist card shape. Bulk-upload row keys are:
       //   id, setName, players (string), cardNo, playerAttribute,
@@ -849,8 +899,9 @@ export const fetchBscChecklist = action({
       // don't exist on the catalog template. `team`/`teams` are populated
       // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
       // the raw response itself never carries a separate team field.
-      const cards = rawCards
-        .map((r) => {
+      const seenRefs = new Set<string>();
+      const cards = tagged
+        .map(({ raw: r, queriedSlug }) => {
           const cardNumberRaw = r.cardNo ?? r.cardNumber ?? r.number;
           const cardNumber = typeof cardNumberRaw === "string" || typeof cardNumberRaw === "number"
             ? String(cardNumberRaw).trim()
@@ -877,14 +928,18 @@ export const fetchBscChecklist = action({
             ? String(platformRefRaw)
             : undefined;
 
-          // NEO-6: BSC's bulk-upload row carries the source set slug per
-          // card. When the variant has multiple BSC IDs attached (single
-          // call returns the union), this is how we tell them apart.
-          const sourceBscSetSlugRaw = r.setName;
-          const sourceBscSetSlug =
-            typeof sourceBscSetSlugRaw === "string" && sourceBscSetSlugRaw.trim()
-              ? sourceBscSetSlugRaw.trim()
+          // Source attribution: prefer the slug WE queried. `r.setName` is the
+          // parent set ("score" for a 1996 Score insert), which never matches a
+          // slot on an insert row — so before the fan-out, per-card source
+          // resolution silently found nothing and the BSC SOURCE chips could
+          // not tell two attached sets apart. Fall back to r.setName for levels
+          // with no variantName facet (Base), where it IS the row's own slug.
+          const rawSetName = r.setName;
+          const fallbackSlug =
+            typeof rawSetName === "string" && rawSetName.trim()
+              ? rawSetName.trim()
               : undefined;
+          const sourceBscSetSlug = queriedSlug ?? fallbackSlug;
 
           return {
             cardNumber,
@@ -901,7 +956,15 @@ export const fetchBscChecklist = action({
             sourceBscSetSlug,
           };
         })
-        .filter((c): c is NonNullable<typeof c> => c !== null);
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        // Dedupe by BSC card id — overlapping source sets can legitimately
+        // return the same card twice once several are mapped to one NB set.
+        .filter((c) => {
+          if (!c.platformRef) return true;
+          if (seenRefs.has(c.platformRef)) return false;
+          seenRefs.add(c.platformRef);
+          return true;
+        });
 
       return {
         success: true,

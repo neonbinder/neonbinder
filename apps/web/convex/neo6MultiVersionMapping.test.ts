@@ -39,6 +39,20 @@ const modules = (import.meta as unknown as {
 // ---------------------------------------------------------------------------
 
 /** Admin identity that satisfies requireAdmin (role="admin" in JWT). */
+/**
+ * NEO-137: platformData is a SLOT MAP now. Tests assert on marketplace IDs
+ * (what an operator sees) rather than slot keys wherever the slot itself is
+ * not the point.
+ */
+function idsOf(
+  map: Record<string, string> | undefined,
+): string[] {
+  if (!map) return [];
+  return Object.entries(map)
+    .sort(([a], [b]) => Number(a.slice(1)) - Number(b.slice(1)))
+    .map(([, id]) => id);
+}
+
 const ADMIN_IDENTITY = {
   subject: "admin_user_001",
   issuer: "https://clerk.example.com",
@@ -71,7 +85,8 @@ async function insertParent(
     return await ctx.db.insert("selectorOptions", {
       level: override?.level ?? "setName",
       value: override?.value ?? "2022 Topps",
-      platformData: { bsc: "bsc-setname-01", sportlots: "sl-setname-01" },
+      platformData: { bsc: { b0: "bsc-setname-01" }, sportlots: { s0: "sl-setname-01" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       children: [],
       lastUpdated: Date.now(),
     });
@@ -90,16 +105,10 @@ async function insertVariantWithExtras(
     return await ctx.db.insert("selectorOptions", {
       level: "variantType",
       value: "Base Set",
-      platformData: {
-        sportlots: ["primary-id", "extra-id-1", "extra-id-2"],
-      },
-      primaryPlatformId: { sportlots: "primary-id" },
-      platformLabels: {
-        sportlots: {
-          "extra-id-1": "Series 2",
-          "extra-id-2": "Series 3",
-        },
-      },
+      platformData: { sportlots: { s0: "primary-id", s1: "extra-id-1", s2: "extra-id-2" } },
+      platformSlotSeq: { sportlots: 3 },
+      primaryPlatformId: { sportlots: "s0" },
+      platformLabels: { sportlots: { s1: "Series 2", s2: "Series 3" } },
       parentId,
       children: [],
       lastUpdated: Date.now(),
@@ -147,22 +156,25 @@ describe("storeReconciledOptions", () => {
     expect(rows).toHaveLength(1);
     const row = rows[0];
 
-    // Primary slot is refreshed to the new ID.
-    expect(row.primaryPlatformId?.sportlots).toBe("primary-id-refreshed");
+    // NEO-137: the primary SLOT is reused and its id refreshed. Reusing the
+    // key is what keeps this row's cards resolving across a marketplace
+    // re-slug — retiring it on a routine re-sync would orphan the checklist.
+    expect(row.primaryPlatformId?.sportlots).toBe("s0");
+    expect(row.platformData.sportlots?.s0).toBe("primary-id-refreshed");
 
     // platformData contains refreshed primary + both extras.
-    const slIds = row.platformData.sportlots as string[];
+    const slIds = idsOf(row.platformData.sportlots);
     expect(slIds).toContain("primary-id-refreshed");
     expect(slIds).toContain("extra-id-1");
     expect(slIds).toContain("extra-id-2");
-    expect(slIds[0]).toBe("primary-id-refreshed"); // primary is first
+    expect(slIds[0]).toBe("primary-id-refreshed"); // primary is the lowest slot
 
-    // Extra labels are preserved.
-    expect(row.platformLabels?.sportlots?.["extra-id-1"]).toBe("Series 2");
-    expect(row.platformLabels?.sportlots?.["extra-id-2"]).toBe("Series 3");
+    // Extras keep their slots, so their labels survive untouched.
+    expect(row.platformLabels?.sportlots?.s1).toBe("Series 2");
+    expect(row.platformLabels?.sportlots?.s2).toBe("Series 3");
 
-    // Refreshed primary has no label entry (reconciler does not produce labels).
-    expect(row.platformLabels?.sportlots?.["primary-id-refreshed"]).toBeUndefined();
+    // Refreshed primary has no label entry (reconciler produced none here).
+    expect(row.platformLabels?.sportlots?.s0).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -203,18 +215,20 @@ describe("storeReconciledOptions", () => {
     // Primary is gone from primaryPlatformId.
     expect(row.primaryPlatformId?.sportlots).toBeUndefined();
 
-    // Extras still attached.
-    const slIds = Array.isArray(row.platformData.sportlots)
-      ? row.platformData.sportlots
-      : row.platformData.sportlots
-        ? [row.platformData.sportlots]
-        : [];
+    // Extras still attached, in their original slots.
+    const slIds = idsOf(row.platformData.sportlots);
     expect(slIds).toContain("extra-id-1");
     expect(slIds).toContain("extra-id-2");
 
+    // The dropped primary's slot key is RETIRED, not recycled: the counter is
+    // never rewound, so a future attach cannot hand s0 to a different set
+    // while cards still point at it.
+    expect(row.platformData.sportlots?.s0).toBeUndefined();
+    expect(row.platformSlotSeq?.sportlots).toBeGreaterThanOrEqual(3);
+
     // Labels for extras are preserved.
-    expect(row.platformLabels?.sportlots?.["extra-id-1"]).toBe("Series 2");
-    expect(row.platformLabels?.sportlots?.["extra-id-2"]).toBe("Series 3");
+    expect(row.platformLabels?.sportlots?.s1).toBe("Series 2");
+    expect(row.platformLabels?.sportlots?.s2).toBe("Series 3");
   });
 
   // -------------------------------------------------------------------------
@@ -269,8 +283,9 @@ describe("attachPlatformIds", () => {
       return ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Base",
-        platformData: { sportlots: "sl-base-01" },
-        primaryPlatformId: { sportlots: "sl-base-01" },
+        platformData: { sportlots: { s0: "sl-base-01" } },
+      platformSlotSeq: { sportlots: 1 },
+        primaryPlatformId: { sportlots: "s0" },
         parentId,
         children: [],
         lastUpdated: Date.now(),
@@ -294,9 +309,7 @@ describe("attachPlatformIds", () => {
     expect(result.attachedCount).toBe(2);
 
     const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    const slIds = Array.isArray(row!.platformData.sportlots)
-      ? row!.platformData.sportlots
-      : [row!.platformData.sportlots];
+    const slIds = idsOf(row!.platformData.sportlots);
 
     // Original primary is still present.
     expect(slIds).toContain("sl-base-01");
@@ -305,8 +318,8 @@ describe("attachPlatformIds", () => {
     expect(slIds).toContain("sl-series3");
 
     // Labels written.
-    expect(row!.platformLabels?.sportlots?.["sl-series2"]).toBe("Series 2");
-    expect(row!.platformLabels?.sportlots?.["sl-series3"]).toBe("Series 3");
+    expect(row!.platformLabels?.sportlots?.s1).toBe("Series 2");
+    expect(row!.platformLabels?.sportlots?.s2).toBe("Series 3");
   });
 
   // -------------------------------------------------------------------------
@@ -327,7 +340,8 @@ describe("attachPlatformIds", () => {
         return ctx.db.insert("selectorOptions", {
           level,
           value,
-          platformData: { bsc: "bsc-01" },
+          platformData: { bsc: { b0: "bsc-01" } },
+      platformSlotSeq: { bsc: 1 },
           children: [],
           lastUpdated: Date.now(),
         });
@@ -354,9 +368,10 @@ describe("attachPlatformIds", () => {
       return ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Base",
-        platformData: { bsc: ["bsc-01", "bsc-02"] },
-        primaryPlatformId: { bsc: "bsc-01" },
-        platformLabels: { bsc: { "bsc-02": "Gold" } },
+        platformData: { bsc: { b0: "bsc-01", b1: "bsc-02" } },
+      platformSlotSeq: { bsc: 2 },
+        primaryPlatformId: { bsc: "b0" },
+        platformLabels: { bsc: { b1: "Gold" } },
         parentId,
         children: [],
         lastUpdated: Date.now(),
@@ -376,13 +391,11 @@ describe("attachPlatformIds", () => {
     expect(result.attachedCount).toBe(0);
 
     const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    const bscIds = Array.isArray(row!.platformData.bsc)
-      ? row!.platformData.bsc
-      : [row!.platformData.bsc];
+    const bscIds = idsOf(row!.platformData.bsc);
     // No duplicate.
     expect(bscIds.filter((id) => id === "bsc-02")).toHaveLength(1);
     // Label was overwritten (intentional).
-    expect(row!.platformLabels?.bsc?.["bsc-02"]).toBe("Gold Updated");
+    expect(row!.platformLabels?.bsc?.b1).toBe("Gold Updated");
   });
 
   // -------------------------------------------------------------------------
@@ -397,7 +410,8 @@ describe("attachPlatformIds", () => {
       return ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Base",
-        platformData: { bsc: "bsc-01" },
+        platformData: { bsc: { b0: "bsc-01" } },
+      platformSlotSeq: { bsc: 1 },
         parentId,
         children: [],
         lastUpdated: Date.now(),
@@ -410,6 +424,107 @@ describe("attachPlatformIds", () => {
         additions: { bsc: [{ id: "bsc-new", label: "Label" }] },
       }),
     ).rejects.toThrow();
+  });
+});
+
+// ===========================================================================
+// setVariantTypePlatformData — the Base Set picker's write path
+// ===========================================================================
+
+describe("setVariantTypePlatformData", () => {
+  /**
+   * REGRESSION (NEO-137): this handler used to spread the incoming WIRE ids
+   * straight over `row.platformData`, producing a mixed object like
+   * `{ bsc: { b0: "x" }, sportlots: "884412" }` that the schema rejects. The
+   * mutation threw, the Base Set picker never closed, and setup.yaml failed
+   * with `"Select Base Set" is not visible` — taking the entire E2E lane down
+   * with it, since every other flow depends on the seed.
+   *
+   * There was no unit test on this path, which is why CI found it and the
+   * local suite did not.
+   */
+  test("converts wire marketplace ids into slots and stores the SL display name as the slot label", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await insertParent(t);
+    const baseId: Id<"selectorOptions"> = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        parentId,
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.setVariantTypePlatformData, {
+      variantTypeId: baseId,
+      platformData: {
+        bsc: "2024-topps-chrome-base",
+        sportlots: "884412",
+        sportlotsDisplay: "2024 Topps Chrome",
+      },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    // Slot-keyed, NOT a bare id spread over the map.
+    expect(row!.platformData.bsc).toEqual({ b0: "2024-topps-chrome-base" });
+    expect(row!.platformData.sportlots).toEqual({ s0: "884412" });
+    // sportlotsDisplay becomes the SL slot's label — that is what replaced it.
+    expect(row!.platformLabels?.sportlots).toEqual({ s0: "2024 Topps Chrome" });
+    expect(row!.platformSlotSeq).toEqual({ bsc: 1, sportlots: 1 });
+  });
+
+  test("re-picking a different SL set reuses the slot so the row's cards keep resolving", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await insertParent(t);
+    const baseId: Id<"selectorOptions"> = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: { sportlots: { s0: "884412" } },
+        platformSlotSeq: { sportlots: 1 },
+        primaryPlatformId: { sportlots: "s0" },
+        parentId,
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.setVariantTypePlatformData, {
+      variantTypeId: baseId,
+      platformData: { sportlots: "999999", sportlotsDisplay: "Corrected Set" },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    // Same slot key, refreshed id — cards pointing at s0 stay valid.
+    expect(row!.platformData.sportlots).toEqual({ s0: "999999" });
+    expect(row!.platformLabels?.sportlots).toEqual({ s0: "Corrected Set" });
+  });
+
+  test("rejects a non-Base variantType", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const parentId = await insertParent(t);
+    const insertId: Id<"selectorOptions"> = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        platformData: {},
+        parentId,
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: insertId,
+        platformData: { sportlots: "884412" },
+      }),
+    ).rejects.toThrow(/only operates on Base variantTypes/);
   });
 });
 
@@ -431,26 +546,24 @@ describe("detachPlatformId", () => {
     const result = await asAdmin.mutation(api.selectorOptions.detachPlatformId, {
       selectorOptionId: rowId,
       side: "sportlots",
-      id: "extra-id-1",
+      // NEO-137: keyed by SLOT — a marketplace id is no longer a unique
+      // handle on a row, so "detach that set" would be ambiguous.
+      slot: "s1", // extra-id-1
     });
 
     expect(result.success).toBe(true);
 
     const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    const slIds = Array.isArray(row!.platformData.sportlots)
-      ? row!.platformData.sportlots
-      : row!.platformData.sportlots
-        ? [row!.platformData.sportlots]
-        : [];
+    const slIds = idsOf(row!.platformData.sportlots);
 
     expect(slIds).not.toContain("extra-id-1");
     expect(slIds).toContain("primary-id"); // primary untouched
     expect(slIds).toContain("extra-id-2"); // other extra untouched
 
     // Label for the detached id is gone.
-    expect(row!.platformLabels?.sportlots?.["extra-id-1"]).toBeUndefined();
+    expect(row!.platformLabels?.sportlots?.s1).toBeUndefined();
     // Label for the surviving extra is still there.
-    expect(row!.platformLabels?.sportlots?.["extra-id-2"]).toBe("Series 3");
+    expect(row!.platformLabels?.sportlots?.s2).toBe("Series 3");
   });
 
   // -------------------------------------------------------------------------
@@ -467,7 +580,7 @@ describe("detachPlatformId", () => {
       asAdmin.mutation(api.selectorOptions.detachPlatformId, {
         selectorOptionId: rowId,
         side: "sportlots",
-        id: "primary-id",
+        slot: "s0", // primary-id
       }),
     ).rejects.toThrow(/Refusing to detach the reconciliation primary/);
   });
@@ -485,7 +598,8 @@ describe("detachPlatformId", () => {
       return ctx.db.insert("selectorOptions", {
         level: "insert",
         value: "Black Refractor",
-        platformData: { bsc: ["bsc-implicit-primary", "bsc-extra"] },
+        platformData: { bsc: { b0: "bsc-implicit-primary", b1: "bsc-extra" } },
+      platformSlotSeq: { bsc: 2 },
         // NOTE: no primaryPlatformId field
         parentId,
         children: [],
@@ -497,7 +611,7 @@ describe("detachPlatformId", () => {
       asAdmin.mutation(api.selectorOptions.detachPlatformId, {
         selectorOptionId: rowId,
         side: "bsc",
-        id: "bsc-implicit-primary",
+        slot: "b0", // bsc-implicit-primary
       }),
     ).rejects.toThrow(/Refusing to detach the reconciliation primary/);
   });
@@ -515,18 +629,14 @@ describe("detachPlatformId", () => {
     const result = await asAdmin.mutation(api.selectorOptions.detachPlatformId, {
       selectorOptionId: rowId,
       side: "sportlots",
-      id: "primary-id",
+      slot: "s0", // primary-id
       confirmPrimary: true,
     });
 
     expect(result.success).toBe(true);
 
     const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    const slIds = Array.isArray(row!.platformData.sportlots)
-      ? row!.platformData.sportlots
-      : row!.platformData.sportlots
-        ? [row!.platformData.sportlots]
-        : [];
+    const slIds = idsOf(row!.platformData.sportlots);
 
     // Detached id is gone.
     expect(slIds).not.toContain("primary-id");
@@ -540,10 +650,10 @@ describe("detachPlatformId", () => {
 
     // The detached id's label entry (there was none for "primary-id" to
     // begin with, but confirm no stray entry was created) is absent...
-    expect(row!.platformLabels?.sportlots?.["primary-id"]).toBeUndefined();
+    expect(row!.platformLabels?.sportlots?.s0).toBeUndefined();
     // ...and the surviving extra's label is untouched.
-    expect(row!.platformLabels?.sportlots?.["extra-id-1"]).toBe("Series 2");
-    expect(row!.platformLabels?.sportlots?.["extra-id-2"]).toBe("Series 3");
+    expect(row!.platformLabels?.sportlots?.s1).toBe("Series 2");
+    expect(row!.platformLabels?.sportlots?.s2).toBe("Series 3");
   });
 
   // -------------------------------------------------------------------------
@@ -560,8 +670,9 @@ describe("detachPlatformId", () => {
       return ctx.db.insert("selectorOptions", {
         level: "insert",
         value: "Black Refractor",
-        platformData: { bsc: "bsc-sole-primary" },
-        platformLabels: { bsc: { "bsc-sole-primary": "Sole Primary" } },
+        platformData: { bsc: { b0: "bsc-sole-primary" } },
+      platformSlotSeq: { bsc: 1 },
+        platformLabels: { bsc: { b0: "Sole Primary" } },
         // NOTE: no primaryPlatformId field — array[0] is the implicit primary.
         parentId,
         children: [],
@@ -572,7 +683,7 @@ describe("detachPlatformId", () => {
     const result = await asAdmin.mutation(api.selectorOptions.detachPlatformId, {
       selectorOptionId: rowId,
       side: "bsc",
-      id: "bsc-sole-primary",
+      slot: "b0", // bsc-sole-primary
       confirmPrimary: true,
     });
 
@@ -585,7 +696,7 @@ describe("detachPlatformId", () => {
     // No effective primary remains.
     expect(row!.primaryPlatformId?.bsc).toBeUndefined();
     // No dangling label entry for the detached id.
-    expect(row!.platformLabels?.bsc?.["bsc-sole-primary"]).toBeUndefined();
+    expect(row!.platformLabels?.bsc?.b0).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -602,7 +713,7 @@ describe("detachPlatformId", () => {
       asUser.mutation(api.selectorOptions.detachPlatformId, {
         selectorOptionId: rowId,
         side: "sportlots",
-        id: "primary-id",
+        slot: "s0", // primary-id
         confirmPrimary: true,
       }),
     ).rejects.toThrow();
@@ -629,7 +740,7 @@ describe("renamePlatformLabel", () => {
       {
         selectorOptionId: rowId,
         side: "sportlots",
-        id: "extra-id-1",
+        slot: "s1", // extra-id-1
         label: "Series 2 Revised",
       },
     );
@@ -637,9 +748,9 @@ describe("renamePlatformLabel", () => {
     expect(result.success).toBe(true);
 
     const row = await t.run(async (ctx) => ctx.db.get(rowId));
-    expect(row!.platformLabels?.sportlots?.["extra-id-1"]).toBe("Series 2 Revised");
+    expect(row!.platformLabels?.sportlots?.s1).toBe("Series 2 Revised");
     // Other label untouched.
-    expect(row!.platformLabels?.sportlots?.["extra-id-2"]).toBe("Series 3");
+    expect(row!.platformLabels?.sportlots?.s2).toBe("Series 3");
   });
 
   // -------------------------------------------------------------------------
@@ -656,7 +767,7 @@ describe("renamePlatformLabel", () => {
       asAdmin.mutation(api.selectorOptions.renamePlatformLabel, {
         selectorOptionId: rowId,
         side: "sportlots",
-        id: "extra-id-1",
+        slot: "s1",
         label: "",
       }),
     ).rejects.toThrow(/Label cannot be empty/);
@@ -676,7 +787,7 @@ describe("renamePlatformLabel", () => {
       asAdmin.mutation(api.selectorOptions.renamePlatformLabel, {
         selectorOptionId: rowId,
         side: "sportlots",
-        id: "extra-id-1",
+        slot: "s1",
         label: "   ",
       }),
     ).rejects.toThrow(/Label cannot be empty/);
@@ -696,9 +807,9 @@ describe("renamePlatformLabel", () => {
       asAdmin.mutation(api.selectorOptions.renamePlatformLabel, {
         selectorOptionId: rowId,
         side: "sportlots",
-        id: "not-attached-id",
+        slot: "s99", // never allocated on this row
         label: "Some Label",
       }),
-    ).rejects.toThrow(/Cannot rename label for unattached id/);
+    ).rejects.toThrow(/Cannot rename label for unattached slot/);
   });
 });

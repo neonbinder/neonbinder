@@ -2,6 +2,7 @@ import {
   query,
   mutation,
   action,
+  internalAction,
   internalMutation,
   internalQuery,
   ActionCtx,
@@ -29,17 +30,152 @@ import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+import {
+  cardPlatformDataValidator,
+  cardPlatformWireDataValidator,
+  selectorOptionFields,
+  selectorOptionLevelValidator,
+} from "./schema";
+import {
+  allocateSlots,
+  detachSlot,
+  idForSlot,
+  initialSlots,
+  isSlotKeyForSide,
+  primarySlot,
+  pruneEmptySides,
+  setPrimarySlotId,
+  slotEntries,
+  slotForId,
+  slotIds,
+  slotLabel,
+} from "./platformSlots";
+
+// The wire still speaks marketplace IDs — clients know nothing about slots.
+function wireToIds(v: string | string[] | undefined): string[] {
+  if (v === undefined) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
+type WirePlatformData = {
+  bsc?: { ref: string; setId?: string };
+  sportlots?: { ref: string; setId?: string };
+};
+
+type StoredPlatformData = {
+  bsc?: { ref: string; src?: string };
+  sportlots?: { ref: string; src?: string };
+};
+
+/**
+ * NEO-137 — resolve incoming cards' WIRE platformData (marketplace set ids)
+ * into STORED platformData (slot keys on the card's own parent row).
+ *
+ * A stored card's `src` always names a slot on its own parent, which is what
+ * makes the pointer unambiguous. So any source set a card names that is not
+ * yet attached to that parent gets a slot allocated here — the operator's
+ * "as long as they are connected at the parent" rule, enforced at write time
+ * rather than assumed.
+ *
+ * A ref with no `setId` (a marketplace that returned no source tag) resolves
+ * against the side's PRIMARY slot, which is the only sensible reading: the
+ * card came from whichever set this row syncs by default.
+ *
+ * Returns the per-side lookup plus any row patch needed to record newly
+ * allocated slots. The caller applies the patch — the counter and the map it
+ * guards must move together.
+ */
+async function resolveCardSlots(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null> } },
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<
+  (pd: WirePlatformData, existing?: StoredPlatformData) => StoredPlatformData
+> {
+  const row = await ctx.db.get(selectorOptionId);
+  if (!row) return () => ({});
+
+  const slotById: Record<"bsc" | "sportlots", Record<string, string>> = {
+    bsc: {},
+    sportlots: {},
+  };
+  for (const side of ["bsc", "sportlots"] as const) {
+    for (const { slot, id } of slotEntries(row, side)) slotById[side][id] = slot;
+  }
+  const primaryBySide = {
+    bsc: primarySlot(row, "bsc"),
+    sportlots: primarySlot(row, "sportlots"),
+  };
+
+  return (
+    pd: WirePlatformData,
+    existing?: StoredPlatformData,
+  ): StoredPlatformData => {
+    const out: StoredPlatformData = {};
+    for (const side of ["bsc", "sportlots"] as const) {
+      const wire = pd?.[side];
+      if (!wire) continue;
+
+      let src: string | undefined;
+      if (wire.setId) {
+        // Resolve ONLY against sets already attached to the parent row.
+        //
+        // This used to ALLOCATE a slot for any set id a card named, which
+        // contradicted the invariant stated on `cardPlatformRefValidator` in
+        // schema.ts ("cannot participate in sync-by-set until an operator
+        // attaches the set it came from"). The id is not ours: on the BSC side
+        // it is `r.setName` straight out of the marketplace's bulk-upload
+        // response, so a rename or a display-name/slug divergence would have
+        // silently grown this row's mapping — and `fetchCardChecklist` filters
+        // its next BSC query on ALL attached slots, so an injected slug would
+        // then widen a privileged outbound fetch to an unrelated set.
+        //
+        // Attaching a marketplace set stays an operator action
+        // (AttachSetsDialog / reconciliation), consistent with every other
+        // confirmation gate in this feature.
+        src = slotById[side][wire.setId];
+      } else if (existing?.[side]?.src) {
+        // No source tag from the marketplace: keep whatever this card was
+        // already attributed to rather than snapping it back to the primary,
+        // which would silently repoint a card bound to an operator-attached
+        // extra slot.
+        src = existing[side]!.src;
+      } else {
+        src = primaryBySide[side];
+      }
+
+      // Keep the ref even when no slot resolves — it is still this card's
+      // marketplace identity. It just cannot participate in sync-by-set until
+      // an operator attaches the set it came from, and surfaces as
+      // unattributed until then.
+      out[side] = { ref: wire.ref, ...(src ? { src } : {}) };
+    }
+    return out;
+  };
+}
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
-const levelValidator = v.union(
-  v.literal("sport"),
-  v.literal("year"),
-  v.literal("manufacturer"),
-  v.literal("setName"),
-  v.literal("variantType"),
-  v.literal("insert"),
-  v.literal("parallel"),
-);
+const levelValidator = selectorOptionLevelValidator;
+
+/**
+ * NEO-137 phase 0 — the full `selectorOptions` document as a `returns`
+ * validator, built FROM the schema rather than re-listing its fields.
+ *
+ * Convex validates `returns` strictly, so any query returning whole rows must
+ * enumerate every field the row can carry. Four queries here used to do that
+ * by hand, and they drifted: `getInsertTreeByVariantType` was missing
+ * `platformLabels`, `primaryPlatformId` and `sportConfig`, which threw
+ * `Object contains extra field 'primaryPlatformId'` in prod for every
+ * reconciled row and broke Group Parallels. `sportConfig` had already caused
+ * the same outage once (NEO-96).
+ *
+ * Deriving from `selectorOptionFields` means a field added to the table is in
+ * all four validators automatically. Do NOT re-inline these fields.
+ */
+const selectorOptionDocValidator = v.object({
+  _id: v.id("selectorOptions"),
+  _creationTime: v.number(),
+  ...selectorOptionFields,
+});
 
 const metadataValidator = v.optional(v.object({
   cardNumberPrefix: v.optional(v.string()),
@@ -67,50 +203,7 @@ export const getSelectorOptions = query({
     level: levelValidator,
     parentId: v.optional(v.id("selectorOptions")),
   },
-  returns: v.array(
-    v.object({
-      _id: v.id("selectorOptions"),
-      _creationTime: v.number(),
-      level: levelValidator,
-      value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
-      primaryPlatformId: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
-      // NEO-96: sport-level rows carry their own config. Convex validates
-      // `returns` STRICTLY, so every validator that enumerates selectorOptions
-      // fields must list it or the query fails at runtime with
-      // "Object contains extra field `sportConfig`".
-      sportConfig: v.optional(v.object({
-        skuCode: v.optional(v.string()),
-        league: v.optional(v.string()),
-        espn: v.optional(v.object({
-          path: v.string(),
-          leagueName: v.string(),
-        })),
-        wikidata: v.optional(v.object({
-          sportQid: v.string(),
-          hallOfFameQid: v.optional(v.string()),
-        })),
-      })),
-      parentId: v.optional(v.id("selectorOptions")),
-      children: v.optional(v.array(v.id("selectorOptions"))),
-      isCustom: v.optional(v.boolean()),
-      createdByUserId: v.optional(v.string()),
-      metadata: metadataValidator,
-      features: featuresValidator,
-      lastUpdated: v.number(),
-    }),
-  ),
+  returns: v.array(selectorOptionDocValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, parentId } = args;
@@ -176,15 +269,12 @@ export const getUsedInsertIdentifiersBySet = query({
         .collect();
       for (const ins of inserts) {
         values.push(ins.value);
-        if (typeof ins.platformData.sportlots === "string") {
-          slPlatformValues.push(ins.platformData.sportlots);
-        }
-        const bsc = ins.platformData.bsc;
-        if (typeof bsc === "string") {
-          bscPlatformValues.push(bsc);
-        } else if (Array.isArray(bsc)) {
-          bscPlatformValues.push(...bsc);
-        }
+        // NEO-137: both sides read through the same helper. The SL branch
+        // used to handle only the `string` case and silently skipped arrays,
+        // so an insert mapped to several SL sets did not register any of them
+        // as used and could be double-claimed by a sibling variantType.
+        slPlatformValues.push(...slotIds(ins, "sportlots"));
+        bscPlatformValues.push(...slotIds(ins, "bsc"));
       }
     }
 
@@ -204,15 +294,8 @@ export const getBaseVariantBySet = query({
     v.null(),
     v.object({
       value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
+      platformData: selectorOptionFields.platformData,
+      platformLabels: selectorOptionFields.platformLabels,
     }),
   ),
   handler: async (ctx, args) => {
@@ -239,51 +322,7 @@ export const getBaseVariantBySet = query({
 
 export const getSelectorOptionById = query({
   args: { id: v.id("selectorOptions") },
-  returns: v.union(
-    v.null(),
-    v.object({
-      _id: v.id("selectorOptions"),
-      _creationTime: v.number(),
-      level: levelValidator,
-      value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
-      primaryPlatformId: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
-      // NEO-96: sport-level rows carry their own config. Convex validates
-      // `returns` STRICTLY, so every validator that enumerates selectorOptions
-      // fields must list it or the query fails at runtime with
-      // "Object contains extra field `sportConfig`".
-      sportConfig: v.optional(v.object({
-        skuCode: v.optional(v.string()),
-        league: v.optional(v.string()),
-        espn: v.optional(v.object({
-          path: v.string(),
-          leagueName: v.string(),
-        })),
-        wikidata: v.optional(v.object({
-          sportQid: v.string(),
-          hallOfFameQid: v.optional(v.string()),
-        })),
-      })),
-      parentId: v.optional(v.id("selectorOptions")),
-      children: v.optional(v.array(v.id("selectorOptions"))),
-      isCustom: v.optional(v.boolean()),
-      createdByUserId: v.optional(v.string()),
-      metadata: metadataValidator,
-      features: featuresValidator,
-      lastUpdated: v.number(),
-    }),
-  ),
+  returns: v.union(v.null(), selectorOptionDocValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     return await ctx.db.get(args.id);
@@ -296,51 +335,7 @@ export const findByLevelAndValue = query({
     value: v.string(),
     parentId: v.optional(v.id("selectorOptions")),
   },
-  returns: v.union(
-    v.null(),
-    v.object({
-      _id: v.id("selectorOptions"),
-      _creationTime: v.number(),
-      level: levelValidator,
-      value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
-      platformLabels: v.optional(v.object({
-        bsc: v.optional(v.record(v.string(), v.string())),
-        sportlots: v.optional(v.record(v.string(), v.string())),
-      })),
-      primaryPlatformId: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
-      // NEO-96: sport-level rows carry their own config. Convex validates
-      // `returns` STRICTLY, so every validator that enumerates selectorOptions
-      // fields must list it or the query fails at runtime with
-      // "Object contains extra field `sportConfig`".
-      sportConfig: v.optional(v.object({
-        skuCode: v.optional(v.string()),
-        league: v.optional(v.string()),
-        espn: v.optional(v.object({
-          path: v.string(),
-          leagueName: v.string(),
-        })),
-        wikidata: v.optional(v.object({
-          sportQid: v.string(),
-          hallOfFameQid: v.optional(v.string()),
-        })),
-      })),
-      parentId: v.optional(v.id("selectorOptions")),
-      children: v.optional(v.array(v.id("selectorOptions"))),
-      isCustom: v.optional(v.boolean()),
-      createdByUserId: v.optional(v.string()),
-      metadata: metadataValidator,
-      features: featuresValidator,
-      lastUpdated: v.number(),
-    }),
-  ),
+  returns: v.union(v.null(), selectorOptionDocValidator),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const options = await ctx.db
@@ -398,11 +393,8 @@ export const getAncestorChain = query({
       _id: v.id("selectorOptions"),
       level: levelValidator,
       value: v.string(),
-      platformData: v.object({
-        bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-        sportlotsDisplay: v.optional(v.string()),
-      }),
+      platformData: selectorOptionFields.platformData,
+      platformLabels: selectorOptionFields.platformLabels,
       metadata: metadataValidator,
       // NEO-24: surface ancestor features so callers (commitCardChecklist
       // inheritance merge, SetFeaturesPanel) can resolve effective values
@@ -417,7 +409,14 @@ export const getAncestorChain = query({
       _id: Id<"selectorOptions">;
       level: Level;
       value: string;
-      platformData: { bsc?: string | string[]; sportlots?: string };
+      platformData: {
+        bsc?: Record<string, string>;
+        sportlots?: Record<string, string>;
+      };
+      platformLabels?: {
+        bsc?: Record<string, string>;
+        sportlots?: Record<string, string>;
+      };
       metadata?: { cardNumberPrefix?: string; isInsert?: boolean; isParallel?: boolean };
       features?: Record<string, string>;
       isCustom?: boolean;
@@ -432,6 +431,7 @@ export const getAncestorChain = query({
         level: option.level,
         value: option.value,
         platformData: option.platformData || {},
+        platformLabels: option.platformLabels,
         metadata: option.metadata,
         features: option.features,
         isCustom: option.isCustom,
@@ -634,14 +634,7 @@ export const getCardChecklist = query({
         front: v.optional(v.string()),
         back: v.optional(v.string()),
       })),
-      platformData: v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      }),
-      sourcePlatformIds: v.optional(v.object({
-        bsc: v.optional(v.string()),
-        sportlots: v.optional(v.string()),
-      })),
+      platformData: cardPlatformDataValidator,
       isCustom: v.optional(v.boolean()),
       pendingPlayerNames: v.optional(v.array(v.string())),
       pendingTeamNames: v.optional(v.array(v.string())),
@@ -808,10 +801,10 @@ export const storeSelectorOptions = mutation({
     const warnIfIncomplete = (
       rowId: Id<"selectorOptions"> | "new",
       value: string,
-      pd: { bsc?: string | string[]; sportlots?: string | string[] },
+      bscId: string | undefined,
     ) => {
       if (!BSC_REQUIRED_LEVELS.has(level)) return;
-      if (pd.bsc) return;
+      if (bscId) return;
       console.warn(
         `[storeSelectorOptions] row missing BSC platform slug — level=${level} ` +
           `value=${value} id=${rowId}. Downstream BSC fetches will hit the ` +
@@ -823,14 +816,45 @@ export const storeSelectorOptions = mutation({
       const normalizedValue = option.value.toLowerCase().trim();
       processedValues.add(normalizedValue);
 
+      // The wire still speaks marketplace IDs. These upper levels
+      // (sport/year/manufacturer/setName) carry exactly one per side.
+      const incomingBsc = wireToIds(option.platformData.bsc)[0];
+      const incomingSl = wireToIds(option.platformData.sportlots)[0];
+
       const existing = existingByValue.get(normalizedValue);
       if (existing) {
-        // Merge platformData onto existing (preserves custom entries)
-        const mergedPlatformData = {
-          ...existing.platformData,
-          ...option.platformData,
+        // NEO-137: refresh the PRIMARY SLOT's id per side rather than merging
+        // raw ids. Reusing the slot key is what keeps this row's cards
+        // resolving when a marketplace re-slugs a set — the id changes, the
+        // set does not. An absent incoming id leaves the side untouched here
+        // (unlike the reconciler, this generic sync never clears a mapping).
+        let working: {
+          platformData: typeof existing.platformData;
+          platformLabels: typeof existing.platformLabels;
+          platformSlotSeq: typeof existing.platformSlotSeq;
+        } = {
+          platformData: existing.platformData,
+          platformLabels: existing.platformLabels,
+          platformSlotSeq: existing.platformSlotSeq,
         };
-        warnIfIncomplete(existing._id, option.value, mergedPlatformData);
+        for (const [side, incoming] of [
+          ["bsc", incomingBsc],
+          ["sportlots", incomingSl],
+        ] as const) {
+          if (!incoming) continue;
+          const next = setPrimarySlotId(working, side, incoming);
+          working = {
+            platformData: next.platformData,
+            platformLabels: next.platformLabels,
+            platformSlotSeq: next.platformSlotSeq,
+          };
+        }
+        const mergedPlatformData = pruneEmptySides({ ...working.platformData });
+        warnIfIncomplete(
+          existing._id,
+          option.value,
+          slotIds({ platformData: mergedPlatformData }, "bsc")[0],
+        );
 
         // NEO-85: only patch when the merged data actually differs from what's
         // stored. A no-op patch still invalidates every query that read this
@@ -843,6 +867,10 @@ export const storeSelectorOptions = mutation({
           mergedPlatformData,
           existing.platformData,
         );
+        const slotSeqChanged = !valuesDeepEqual(
+          working.platformSlotSeq ?? {},
+          existing.platformSlotSeq ?? {},
+        );
 
         // NEO-96: backfill sportConfig onto a sport row that predates it (or
         // whose earlier sync ran before defaults existed). Only ever ADDS —
@@ -853,9 +881,12 @@ export const storeSelectorOptions = mutation({
             ? sportConfigDefaultsFor(option.value)
             : undefined;
 
-        if (platformDataChanged || sportConfigBackfill) {
+        if (platformDataChanged || slotSeqChanged || sportConfigBackfill) {
           await ctx.db.patch(existing._id, {
             ...(platformDataChanged ? { platformData: mergedPlatformData } : {}),
+            ...(slotSeqChanged
+              ? { platformSlotSeq: working.platformSlotSeq }
+              : {}),
             ...(sportConfigBackfill ? { sportConfig: sportConfigBackfill } : {}),
             lastUpdated: Date.now(),
           });
@@ -864,7 +895,7 @@ export const storeSelectorOptions = mutation({
         // patched it — skipping the patch must not drop it from the ordering.
         insertedIds.push(existing._id);
       } else {
-        warnIfIncomplete("new", option.value, option.platformData);
+        warnIfIncomplete("new", option.value, incomingBsc);
         const features = {
           ...(parentFeatures ?? {}),
           ...deriveOwnLevelFeatures(level, option.value),
@@ -875,10 +906,17 @@ export const storeSelectorOptions = mutation({
         // convex/sportConfig.ts.
         const sportConfig =
           level === "sport" ? sportConfigDefaultsFor(option.value) : undefined;
+        const alloc = initialSlots({
+          ...(incomingBsc ? { bsc: [{ id: incomingBsc }] } : {}),
+          ...(incomingSl ? { sportlots: [{ id: incomingSl }] } : {}),
+        });
         const id = await ctx.db.insert("selectorOptions", {
           level,
           value: option.value,
-          platformData: option.platformData,
+          platformData: alloc.platformData,
+          ...(Object.keys(alloc.platformSlotSeq).length > 0
+            ? { platformSlotSeq: alloc.platformSlotSeq }
+            : {}),
           parentId,
           children: [],
           ...(Object.keys(features).length > 0 ? { features } : {}),
@@ -1012,6 +1050,22 @@ export const addCustomSelectorOption = mutation({
 // SportLots adapter, label-quality drift, etc).
 const MAX_ATTACHED_PER_SIDE = 10;
 const MAX_LABEL_LENGTH = 200;
+
+// NEO-137 (security review): the card-write paths fan out into a single parent
+// `selectorOptions` doc and are read back by four public queries. A batch large
+// enough to approach Convex's 1 MB document limit would wedge every subsequent
+// write to that row. The largest real checklist in the catalog is ~300 cards
+// (2024 Topps Chrome Gold Wave Refractors), so this is far above any genuine
+// use while still bounding the blast radius.
+const MAX_CARDS_PER_COMMIT = 5000;
+
+function assertCardBatchWithinLimits(cards: unknown[], fnName: string): void {
+  if (cards.length > MAX_CARDS_PER_COMMIT) {
+    throw new Error(
+      `${fnName}: ${cards.length} cards exceeds the ${MAX_CARDS_PER_COMMIT}-card limit for a single call`,
+    );
+  }
+}
 //
 // A canonical NeonBinder variant (variantType / insert / parallel row) can
 // map to multiple BSC and/or SL set IDs. The reconciliation primary is
@@ -1025,19 +1079,6 @@ const platformSideValidator = v.union(
   v.literal("bsc"),
   v.literal("sportlots"),
 );
-
-// Normalize platformData side to an array. Mirrors the helper in
-// setReconciliation.ts but kept local to avoid a cross-file import.
-function pdSideToArray(v: string | string[] | undefined): string[] {
-  if (v === undefined) return [];
-  return Array.isArray(v) ? v : [v];
-}
-
-function packPdSide(ids: string[]): string | string[] | undefined {
-  if (ids.length === 0) return undefined;
-  if (ids.length === 1) return ids[0];
-  return ids;
-}
 
 /**
  * Attach one or more BSC/SL set IDs to an existing canonical row, with
@@ -1101,43 +1142,41 @@ export const attachPlatformIds = mutation({
       }
     }
 
-    const mergedPD: { bsc?: string | string[]; sportlots?: string | string[] } = {
-      bsc: row.platformData.bsc,
-      sportlots: row.platformData.sportlots,
-    };
-    const mergedLabels: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
-    } = {
-      bsc: { ...(row.platformLabels?.bsc ?? {}) },
-      sportlots: { ...(row.platformLabels?.sportlots ?? {}) },
-    };
-
-    let attached = 0;
+    // Cap check runs before allocation so a batch that would overflow fails
+    // atomically rather than attaching a prefix of itself.
     for (const side of ["bsc", "sportlots"] as const) {
       const additions = args.additions[side] ?? [];
       if (additions.length === 0) continue;
-      const current = pdSideToArray(mergedPD[side]);
-      const currentSet = new Set(current);
-      for (const { id, label } of additions) {
-        if (!id) continue;
-        if (!currentSet.has(id)) {
-          if (current.length >= MAX_ATTACHED_PER_SIDE) {
-            throw new Error(
-              `attachPlatformIds: cap of ${MAX_ATTACHED_PER_SIDE} attached IDs per side reached (side=${side})`,
-            );
-          }
-          current.push(id);
-          currentSet.add(id);
-          attached += 1;
-        }
-        // Label overwrites are intentional — operator may re-attach with a
-        // cleaner label and expect it to stick. We've already validated
-        // non-empty + length in the pass above.
-        mergedLabels[side]![id] = label.trim();
+      const alreadyAttached = new Set(slotIds(row, side));
+      const genuinelyNew = additions.filter(
+        ({ id }) => id && !alreadyAttached.has(id),
+      ).length;
+      if (alreadyAttached.size + genuinelyNew > MAX_ATTACHED_PER_SIDE) {
+        throw new Error(
+          `attachPlatformIds: cap of ${MAX_ATTACHED_PER_SIDE} attached IDs per side reached (side=${side})`,
+        );
       }
-      mergedPD[side] = packPdSide(current);
     }
+
+    // NEO-137: each genuinely-new ID gets a fresh slot from the row's
+    // never-rewound counter. Re-attaching an ID already present is a no-op for
+    // platformData but still refreshes its label — an operator re-attaching
+    // with a cleaner name expects it to stick.
+    //
+    // Nothing here checks whether another row already holds the same
+    // marketplace ID, deliberately: two sibling rows pointing at one
+    // marketplace set is exactly the M:1 mapping this ticket adds.
+    const alloc = allocateSlots(row, {
+      bsc: (args.additions.bsc ?? [])
+        .filter(({ id }) => id)
+        .map(({ id, label }) => ({ id, label: label.trim() })),
+      sportlots: (args.additions.sportlots ?? [])
+        .filter(({ id }) => id)
+        .map(({ id, label }) => ({ id, label: label.trim() })),
+    });
+    const mergedPD = alloc.platformData;
+    const mergedLabels = alloc.platformLabels;
+    const attached = alloc.attachedCount;
 
     // Strip empty label objects so we don't write `{ bsc: {} }`.
     const labelsPatch: {
@@ -1155,6 +1194,13 @@ export const attachPlatformIds = mutation({
       platformData: mergedPD,
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      // The counter moves in the SAME patch as the map it guards. Splitting
+      // them would let a crash in between hand the next allocation a slot key
+      // that is already in use.
+      platformSlotSeq:
+        Object.keys(alloc.platformSlotSeq).length > 0
+          ? alloc.platformSlotSeq
+          : undefined,
       lastUpdated: Date.now(),
     });
 
@@ -1187,7 +1233,11 @@ export const detachPlatformId = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     side: platformSideValidator,
-    id: v.string(),
+    // NEO-137: the SLOT key, not the marketplace ID. A marketplace ID is no
+    // longer a unique handle on a row — the same set can legitimately occupy
+    // more than one slot, and "detach that set" would be ambiguous. The slot
+    // is exactly what the UI renders a row per.
+    slot: v.string(),
     confirmPrimary: v.optional(v.boolean()),
   },
   returns: v.object({
@@ -1202,32 +1252,25 @@ export const detachPlatformId = mutation({
         `selectorOptions row not found: ${args.selectorOptionId}`,
       );
     }
-    const current = pdSideToArray(row.platformData[args.side]);
-    const primary =
-      row.primaryPlatformId?.[args.side] ?? current[0];
-    const isPrimary = args.id === primary;
+    if (!isSlotKeyForSide(args.side, args.slot)) {
+      throw new Error(
+        `detachPlatformId: "${args.slot}" is not a valid ${args.side} slot key`,
+      );
+    }
+    const attachedId = idForSlot(row, args.side, args.slot);
+    if (attachedId === undefined) {
+      return { success: true, message: "Nothing to detach (slot not attached)" };
+    }
+    const isPrimary = args.slot === primarySlot(row, args.side);
     if (isPrimary && !args.confirmPrimary) {
       throw new Error(
-        `Refusing to detach the reconciliation primary (${args.side}=${args.id}). ` +
+        `Refusing to detach the reconciliation primary (${args.side}=${attachedId}). ` +
           `Pass confirmPrimary to detach it anyway, or re-run set reconciliation to change the primary.`,
       );
     }
-    if (!current.includes(args.id)) {
-      return { success: true, message: "Nothing to detach (id not attached)" };
-    }
-    const remaining = current.filter((x) => x !== args.id);
-    const newLabels = { ...(row.platformLabels?.[args.side] ?? {}) };
-    delete newLabels[args.id];
 
-    const labelsPatch: {
-      bsc?: Record<string, string>;
-      sportlots?: Record<string, string>;
-    } = { ...(row.platformLabels ?? {}) };
-    if (Object.keys(newLabels).length > 0) {
-      labelsPatch[args.side] = newLabels;
-    } else {
-      delete labelsPatch[args.side];
-    }
+    const detached = detachSlot(row, args.side, args.slot);
+    const labelsPatch = pruneEmptySides({ ...detached.platformLabels });
 
     let primaryPatch: { bsc?: string; sportlots?: string } | undefined;
     if (isPrimary) {
@@ -1237,12 +1280,14 @@ export const detachPlatformId = mutation({
     }
 
     await ctx.db.patch(row._id, {
-      platformData: {
-        ...row.platformData,
-        [args.side]: packPdSide(remaining),
-      },
+      platformData: pruneEmptySides({ ...detached.platformData }),
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      // platformSlotSeq is deliberately NOT patched — the counter never
+      // rewinds, so this slot key is retired for good. Any card still pointing
+      // at it now resolves to nothing and surfaces as an orphaned ref, which
+      // is recoverable; silently repointing it at a different set is not.
+      //
       // Only touch primaryPlatformId when we actually detached the primary —
       // leave it untouched otherwise (matches the rest of this mutation's
       // minimal-patch convention).
@@ -1261,7 +1306,9 @@ export const renamePlatformLabel = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     side: platformSideValidator,
-    id: v.string(),
+    // NEO-137: the SLOT key — see detachPlatformId for why the marketplace ID
+    // is no longer a unique handle.
+    slot: v.string(),
     label: v.string(),
   },
   returns: v.object({
@@ -1276,20 +1323,27 @@ export const renamePlatformLabel = mutation({
         `selectorOptions row not found: ${args.selectorOptionId}`,
       );
     }
-    const attached = pdSideToArray(row.platformData[args.side]);
-    if (!attached.includes(args.id)) {
+    if (!isSlotKeyForSide(args.side, args.slot)) {
       throw new Error(
-        `Cannot rename label for unattached id (${args.side}=${args.id})`,
+        `renamePlatformLabel: "${args.slot}" is not a valid ${args.side} slot key`,
+      );
+    }
+    if (idForSlot(row, args.side, args.slot) === undefined) {
+      throw new Error(
+        `Cannot rename label for unattached slot (${args.side}=${args.slot})`,
       );
     }
     const trimmed = args.label.trim();
     if (!trimmed) {
       throw new Error("Label cannot be empty");
     }
+    if (trimmed.length > MAX_LABEL_LENGTH) {
+      throw new Error(`Label exceeds ${MAX_LABEL_LENGTH} chars`);
+    }
 
     const sideLabels = {
       ...(row.platformLabels?.[args.side] ?? {}),
-      [args.id]: trimmed,
+      [args.slot]: trimmed,
     };
     const labelsPatch: {
       bsc?: Record<string, string>;
@@ -1419,10 +1473,9 @@ const richChecklistCardValidator = v.object({
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
-  platformData: v.object({
-    bsc: v.optional(v.string()),
-    sportlots: v.optional(v.string()),
-  }),
+  // WIRE shape — marketplace set ids. Resolved to slots on the card's own
+  // parent row at write time (NEO-137).
+  platformData: cardPlatformWireDataValidator,
 });
 
 /**
@@ -1519,6 +1572,7 @@ export const storeCardChecklist = mutation({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { selectorOptionId, cards } = args;
+    assertCardBatchWithinLimits(cards, "storeCardChecklist");
 
     // Get existing cards for this variant
     const existingCards = await ctx.db
@@ -1533,6 +1587,10 @@ export const storeCardChecklist = mutation({
       existingByNumber.set(card.cardNumber, card);
     }
 
+    // NEO-137: incoming refs name marketplace SET ids; stored refs name a slot
+    // on this card's own parent row. Resolve once for the whole batch.
+    const toStoredPlatformData = await resolveCardSlots(ctx, selectorOptionId);
+
     const processedNumbers = new Set<string>();
 
     for (let i = 0; i < cards.length; i++) {
@@ -1541,10 +1599,10 @@ export const storeCardChecklist = mutation({
 
       const existing = existingByNumber.get(card.cardNumber);
       if (existing) {
-        // Merge platform data — keep prior IDs if the new payload omits one side
+        // Merge platform data — keep prior refs if the new payload omits one side
         const mergedPlatformData = {
           ...existing.platformData,
-          ...card.platformData,
+          ...toStoredPlatformData(card.platformData, existing.platformData),
         };
         await ctx.db.patch(existing._id, {
           cardName: card.cardName,
@@ -1575,7 +1633,7 @@ export const storeCardChecklist = mutation({
           printRun: card.printRun,
           autographType: card.autographType,
           cardVariation: card.cardVariation,
-          platformData: card.platformData,
+          platformData: toStoredPlatformData(card.platformData),
           sortOrder: i,
           lastUpdated: Date.now(),
         });
@@ -2226,44 +2284,8 @@ export const getInsertTreeByVariantType = query({
   args: { variantTypeId: v.id("selectorOptions") },
   returns: v.array(
     v.object({
-      insert: v.object({
-        _id: v.id("selectorOptions"),
-        _creationTime: v.number(),
-        level: levelValidator,
-        value: v.string(),
-        platformData: v.object({
-          bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-          sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-          sportlotsDisplay: v.optional(v.string()),
-        }),
-        parentId: v.optional(v.id("selectorOptions")),
-        children: v.optional(v.array(v.id("selectorOptions"))),
-        isCustom: v.optional(v.boolean()),
-        createdByUserId: v.optional(v.string()),
-        metadata: metadataValidator,
-          features: featuresValidator,
-        lastUpdated: v.number(),
-      }),
-      parallels: v.array(
-        v.object({
-          _id: v.id("selectorOptions"),
-          _creationTime: v.number(),
-          level: levelValidator,
-          value: v.string(),
-          platformData: v.object({
-            bsc: v.optional(v.union(v.string(), v.array(v.string()))),
-            sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
-            sportlotsDisplay: v.optional(v.string()),
-          }),
-          parentId: v.optional(v.id("selectorOptions")),
-          children: v.optional(v.array(v.id("selectorOptions"))),
-          isCustom: v.optional(v.boolean()),
-          createdByUserId: v.optional(v.string()),
-          metadata: metadataValidator,
-              features: featuresValidator,
-          lastUpdated: v.number(),
-        }),
-      ),
+      insert: selectorOptionDocValidator,
+      parallels: v.array(selectorOptionDocValidator),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2527,9 +2549,13 @@ export const applyParallelGroupings = mutation({
 export const setVariantTypePlatformData = mutation({
   args: {
     variantTypeId: v.id("selectorOptions"),
+    // WIRE shape — marketplace ids. Converted to slots below (NEO-137).
     platformData: v.object({
       bsc: v.optional(v.union(v.string(), v.array(v.string()))),
       sportlots: v.optional(v.union(v.string(), v.array(v.string()))),
+      // The SL set's human display name. Stored as the SL slot's LABEL, which
+      // is what replaced `platformData.sportlotsDisplay` — a single display
+      // string stopped meaning anything once a row could hold several SL sets.
       sportlotsDisplay: v.optional(v.string()),
     }),
     metadata: v.optional(v.object({
@@ -2558,10 +2584,48 @@ export const setVariantTypePlatformData = mutation({
         `setVariantTypePlatformData only operates on Base variantTypes; got "${row.value}"`,
       );
     }
+    // NEO-137: the incoming ids must be resolved to SLOTS. Spreading them
+    // straight over `row.platformData` used to produce a mixed object
+    // ({ bsc: { b0: "x" }, sportlots: "884412" }) that the schema rejects —
+    // which broke the Base Set picker, and with it setup.yaml.
+    let working: {
+      platformData: typeof row.platformData;
+      platformLabels: typeof row.platformLabels;
+      platformSlotSeq: typeof row.platformSlotSeq;
+    } = {
+      platformData: row.platformData,
+      platformLabels: row.platformLabels,
+      platformSlotSeq: row.platformSlotSeq,
+    };
+    for (const [side, incoming, label] of [
+      ["bsc", wireToIds(args.platformData.bsc)[0], undefined],
+      [
+        "sportlots",
+        wireToIds(args.platformData.sportlots)[0],
+        args.platformData.sportlotsDisplay,
+      ],
+    ] as const) {
+      if (!incoming) continue;
+      const next = setPrimarySlotId(working, side, incoming, label);
+      working = {
+        platformData: next.platformData,
+        platformLabels: next.platformLabels,
+        platformSlotSeq: next.platformSlotSeq,
+      };
+    }
+
+    const labels = pruneEmptySides({ ...(working.platformLabels ?? {}) });
     const merged: Record<string, unknown> = {
-      platformData: { ...row.platformData, ...args.platformData },
+      platformData: pruneEmptySides({ ...working.platformData }),
       lastUpdated: Date.now(),
     };
+    if (Object.keys(labels).length > 0) merged.platformLabels = labels;
+    if (
+      working.platformSlotSeq &&
+      Object.keys(working.platformSlotSeq).length > 0
+    ) {
+      merged.platformSlotSeq = working.platformSlotSeq;
+    }
     if (args.metadata) {
       merged.metadata = { ...(row.metadata || {}), ...args.metadata };
     }
@@ -2597,48 +2661,18 @@ export const updateSelectorOptionMetadata = mutation({
 // ===== ADMIN UTILITIES =====
 
 /**
- * Full reset of Set Builder data. Deletes every row in `selectorOptions`
- * and `cardChecklist`. Intended for dev cleanup between test runs.
- *
- * Two layers of safety (enforced in the internal mutations below):
- * 1. requireAdmin — only the admin role can call this from a signed-in session.
- * 2. ALLOW_RESET_SET_BUILDER_DATA env var — must be set to "true" on the
- *    Convex deployment. Set on dev + preview + integration-test deployments
- *    (where E2E tests reset state between runs); unset on production.
- *    Without this gate, the admin user could accidentally wipe production
- *    data by clicking "Reset Set Builder Data" while pointed at prod.
- *
- * Implementation: this is an action that loops a paginated internal
- * mutation. A single mutation has a per-execution read limit of 4096
- * rows; on dev deployments where selectorOptions has accumulated many
- * thousands of rows from prior test runs, a single-pass `.collect()`
- * was throwing "Too many reads in a single function execution".
+ * The reset itself, shared by BOTH entry points so they cannot drift:
+ * `resetSetBuilderData` (the AdminTools button) and
+ * `resetSetBuilderDataFromCli` (`npx convex run`). Authorisation belongs to
+ * the caller — this function performs the delete unconditionally.
  */
-const RESET_BATCH_SIZE = 500;
-
-export const resetSetBuilderData = action({
-  args: {},
-  returns: v.object({
-    selectorOptionsDeleted: v.number(),
-    cardChecklistDeleted: v.number(),
-    crossListingsDeleted: v.number(),
-    playersDeleted: v.number(),
-    teamsDeleted: v.number(),
-  }),
-  handler: async (
-    ctx,
-  ): Promise<{
-    selectorOptionsDeleted: number;
-    cardChecklistDeleted: number;
-    crossListingsDeleted: number;
-    playersDeleted: number;
-    teamsDeleted: number;
-  }> => {
-    // Auth and env-var gate are enforced in the internal mutations called
-    // below — keeping the destructive guard as close to the actual delete
-    // as possible. If either check fails on the first batch, the loop
-    // exits before any rows are deleted.
-
+async function runSetBuilderReset(ctx: ActionCtx): Promise<{
+  selectorOptionsDeleted: number;
+  cardChecklistDeleted: number;
+  crossListingsDeleted: number;
+  playersDeleted: number;
+  teamsDeleted: number;
+}> {
     let selectorOptionsDeleted = 0;
     while (true) {
       const result = await ctx.runMutation(
@@ -2705,6 +2739,134 @@ export const resetSetBuilderData = action({
       playersDeleted,
       teamsDeleted,
     };
+}
+
+/**
+ * Full reset of Set Builder data. Deletes every row in `selectorOptions`
+ * and `cardChecklist`. Intended for dev cleanup between test runs.
+ *
+ * Two layers of safety (enforced in the internal mutations below):
+ * 1. requireAdmin — only the admin role can call this from a signed-in session.
+ * 2. ALLOW_RESET_SET_BUILDER_DATA env var — must be set to "true" on the
+ *    Convex deployment. Set on dev + preview + integration-test deployments
+ *    (where E2E tests reset state between runs); unset on production.
+ *    Without this gate, the admin user could accidentally wipe production
+ *    data by clicking "Reset Set Builder Data" while pointed at prod.
+ *
+ * Implementation: this is an action that loops a paginated internal
+ * mutation. A single mutation has a per-execution read limit of 4096
+ * rows; on dev deployments where selectorOptions has accumulated many
+ * thousands of rows from prior test runs, a single-pass `.collect()`
+ * was throwing "Too many reads in a single function execution".
+ */
+const RESET_BATCH_SIZE = 500;
+
+export const resetSetBuilderData = action({
+  args: {},
+  returns: v.object({
+    selectorOptionsDeleted: v.number(),
+    cardChecklistDeleted: v.number(),
+    crossListingsDeleted: v.number(),
+    playersDeleted: v.number(),
+    teamsDeleted: v.number(),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{
+    selectorOptionsDeleted: number;
+    cardChecklistDeleted: number;
+    crossListingsDeleted: number;
+    playersDeleted: number;
+    teamsDeleted: number;
+  }> => {
+    // CLIENT-CALLABLE entry point (the AdminTools button). Both guards live
+    // here now rather than in each batch mutation: this is the only path a
+    // browser can reach, so it is the only path that needs them.
+    //
+    // `ALLOW_RESET_SET_BUILDER_DATA` is deliberately UNSET on prod so a
+    // misdirected click cannot wipe production. Keeping that check down in the
+    // batch mutations meant the CLI inherited it too, which would have forced
+    // arming this button on prod just to run a reset from a terminal — see
+    // `resetSetBuilderDataFromCli` below.
+    await requireAdmin(ctx);
+    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
+      throw new Error(
+        "Reset Set Builder Data is not enabled in this environment. " +
+          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
+      );
+    }
+
+    return await runSetBuilderReset(ctx);
+  },
+});
+
+/**
+ * CLI entry point for the SAME reset the AdminTools button performs.
+ *
+ * Runs the identical batch mutations as `resetSetBuilderData` above — one
+ * implementation, so the two paths cannot drift.
+ *
+ *   # dev (your personal deployment)
+ *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
+ *     '{"confirm":"RESET"}' --identity '{"role":"admin"}'
+ *
+ *   # production
+ *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
+ *     '{"confirm":"RESET"}' --identity '{"role":"admin"}' --prod
+ *
+ * `--identity` IS REQUIRED — do not drop it. The batch mutations this calls
+ * each run `requireAdmin`, which reads `ctx.auth.getUserIdentity()`. A bare
+ * `convex run` carries no identity at all, so without the flag the very first
+ * batch throws `Not authenticated` and nothing is deleted.
+ *
+ * `--identity` IS NOT A SECURITY CONTROL. Anyone running `convex run` can
+ * fabricate any identity they like, admin included. The thing that actually
+ * gates this is your Convex login: reaching `--prod` requires prod deploy
+ * credentials. That is the real "logged in as me" check, and `requireAdmin`
+ * stays on the batch mutations as defence-in-depth for other callers, not as
+ * the boundary that protects prod.
+ *
+ * WHY THE `ALLOW_RESET_SET_BUILDER_DATA` GUARD IS NOT REPEATED HERE:
+ *
+ *   That flag exists to stop the AdminTools BUTTON wiping prod by a
+ *   misdirected click, which is why it is unset there. An `internalAction` is
+ *   unreachable from any client, so the flag would add no safety here — it
+ *   would only force you to arm the button on prod in order to run a reset
+ *   from a terminal, which is strictly worse.
+ *
+ * PRACTICAL NOTE: run this with the app CLOSED. Resetting while the Set
+ * Selector is open lets the page immediately re-sync the sport column and
+ * write the rows straight back — which is exactly what happened on dev during
+ * NEO-137.
+ */
+export const resetSetBuilderDataFromCli = internalAction({
+  args: {
+    // `convex run` is one tab-completion away from a neighbouring function
+    // name and this is unrecoverable, so make the intent explicit.
+    confirm: v.literal("RESET"),
+  },
+  returns: v.object({
+    selectorOptionsDeleted: v.number(),
+    cardChecklistDeleted: v.number(),
+    crossListingsDeleted: v.number(),
+    playersDeleted: v.number(),
+    teamsDeleted: v.number(),
+  }),
+  handler: async (
+    ctx,
+  ): Promise<{
+    selectorOptionsDeleted: number;
+    cardChecklistDeleted: number;
+    crossListingsDeleted: number;
+    playersDeleted: number;
+    teamsDeleted: number;
+  }> => {
+    // Same auth posture as the button — the batch mutations below enforce
+    // requireAdmin, which `--identity` satisfies. This entry point differs
+    // from the button in exactly one way: it does not require
+    // ALLOW_RESET_SET_BUILDER_DATA, so prod can be reset from a terminal
+    // without arming a prod-wiping button in the UI.
+    return await runSetBuilderReset(ctx);
   },
 });
 
@@ -2719,13 +2881,16 @@ export const resetSelectorOptionsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("selectorOptions").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2745,13 +2910,16 @@ export const resetCardChecklistBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("cardChecklist").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2774,13 +2942,16 @@ export const resetCardCrossListingsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("cardCrossListings").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2800,13 +2971,16 @@ export const resetPlayersBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("players").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -2826,13 +3000,16 @@ export const resetTeamsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
+    // Auth stays HERE, as close to the delete as possible — restored after it
+    // was briefly hoisted to the entry points. `convex run --identity` can
+    // satisfy this from the CLI, so moving it bought nothing and cost the
+    // defence-in-depth the original author put here deliberately.
+    //
+    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
+    // stop a misdirected CLICK in AdminTools, so it belongs on the
+    // client-callable entry point only. Keeping it here would force arming
+    // that button on prod merely to run a reset from a terminal.
     await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
     const rows = await ctx.db.query("teams").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -3293,12 +3470,15 @@ export const fetchAggregatedOptions = action({
 
         for (const ancestor of chain) {
           const lvl = ancestor.level;
-          if (ancestor.platformData?.sportlots) {
-            slPlatformFilters[lvl] = ancestor.platformData.sportlots;
+          // NEO-137: adapters filter on marketplace IDs and know nothing about
+          // slots, so read the ids out of the slot map.
+          const slIds = slotIds(ancestor, "sportlots");
+          const bscIdsForLevel = slotIds(ancestor, "bsc");
+          if (slIds.length > 0) {
+            slPlatformFilters[lvl] = slIds[0];
           }
-          if (ancestor.platformData?.bsc) {
-            const bscVal = ancestor.platformData.bsc;
-            bscPlatformFilters[lvl] = Array.isArray(bscVal) ? bscVal : [bscVal];
+          if (bscIdsForLevel.length > 0) {
+            bscPlatformFilters[lvl] = bscIdsForLevel;
           } else if (BSC_REQUIRED.has(lvl)) {
             aggMissingBsc.push(`${lvl}=${ancestor.value}`);
           } else if (ancestor.value) {
@@ -3636,7 +3816,10 @@ export const syncSetsAcrossManufacturers = action({
         _id: Id<"selectorOptions">;
         level: Level;
         value: string;
-        platformData: { bsc?: string | string[]; sportlots?: string };
+        platformData: {
+          bsc?: Record<string, string>;
+          sportlots?: Record<string, string>;
+        };
         isCustom?: boolean;
       }> = await ctx.runQuery(
         api.selectorOptions.getAncestorChain,
@@ -3662,15 +3845,15 @@ export const syncSetsAcrossManufacturers = action({
 
       // Build BSC filters (sport + year only)
       const bscPlatformFilters: Record<string, string[]> = {};
-      if (sportAncestor.platformData?.bsc) {
-        const v = sportAncestor.platformData.bsc;
-        bscPlatformFilters.sport = Array.isArray(v) ? v : [v];
+      const sportBscIds = slotIds(sportAncestor, "bsc");
+      const yearBscIds = slotIds(yearAncestor, "bsc");
+      if (sportBscIds.length > 0) {
+        bscPlatformFilters.sport = sportBscIds;
       } else {
         bscPlatformFilters.sport = [sportAncestor.value.toLowerCase()];
       }
-      if (yearAncestor.platformData?.bsc) {
-        const v = yearAncestor.platformData.bsc;
-        bscPlatformFilters.year = Array.isArray(v) ? v : [v];
+      if (yearBscIds.length > 0) {
+        bscPlatformFilters.year = yearBscIds;
       } else {
         bscPlatformFilters.year = [yearAncestor.value.toLowerCase()];
       }
@@ -3890,10 +4073,11 @@ interface ReconciledCard {
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
-  platformData: { bsc?: string; sportlots?: string };
-  // NEO-6: per-card source set IDs when the variant has multiple attached.
-  // Drives the "Series 1 / Series 2" filter and the per-card source badge.
-  sourcePlatformIds?: { bsc?: string; sportlots?: string };
+  // NEO-137: WIRE shape — each ref carries the marketplace SET it came from,
+  // so the source travels with the ref instead of in a parallel
+  // `sourcePlatformIds` that could drift out of step. Commit resolves `setId`
+  // to a slot on the card's own parent row.
+  platformData: WirePlatformData;
   /**
    * Reconciliation marker for cards that landed on only one side. UI
    * surfaces these as needing human review; reconciled cards (from both
@@ -3914,18 +4098,10 @@ const previewCardValidator = v.object({
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
-  platformData: v.object({
-    bsc: v.optional(v.string()),
-    sportlots: v.optional(v.string()),
-  }),
-  // NEO-6: source set IDs per side (only populated when variant has
-  // multiple attached IDs on that side).
-  sourcePlatformIds: v.optional(
-    v.object({
-      bsc: v.optional(v.string()),
-      sportlots: v.optional(v.string()),
-    }),
-  ),
+  // NEO-137: ref + the marketplace set it came from. Replaces the separate
+  // `sourcePlatformIds`, which carried the full set id on every card. This is
+  // the WIRE shape — commit resolves `setId` to a slot on the parent row.
+  platformData: cardPlatformWireDataValidator,
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
 });
 
@@ -3950,40 +4126,28 @@ export const fetchCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
   },
+  // NEO-137: three buckets rather than a flat card list. Nothing here is an
+  // NB card yet — these are candidates for the operator to pair, keep, or
+  // discard, mirroring set reconciliation's vocabulary exactly.
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     sportId: v.optional(v.id("selectorOptions")),
-    cards: v.array(previewCardValidator),
-    unknownPlayers: v.array(v.string()),
-    unknownTeams: v.array(v.string()),
-    // NEO-92: present whenever unknownPlayers/unknownTeams is non-empty —
-    // the review wizard subscribes to this batch via entityReviewQueue.
-    batchId: v.optional(v.string()),
+    autoMatched: v.array(
+      v.object({ card: previewCardValidator, confidence: v.number() }),
+    ),
+    unmatchedBsc: v.array(previewCardValidator),
+    unmatchedSl: v.array(previewCardValidator),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
     message: string;
     sportId?: Id<"selectorOptions">;
-    cards: Array<{
-      cardNumber: string;
-      cardName: string;
-      team?: string;
-      teams?: string[];
-      players?: string[];
-      attributes?: string[];
-      isRookie?: boolean;
-      isRelic?: boolean;
-      printRun?: number;
-      autographType?: string;
-      cardVariation?: string;
-      platformData: { bsc?: string; sportlots?: string };
-      sourcePlatformIds?: { bsc?: string; sportlots?: string };
-      unmatched?: "bsc" | "sl";
-    }>;
-    unknownPlayers: string[];
-    unknownTeams: string[];
-    batchId?: string;
+    // Structural duplicate of ReconciledCard removed (NEO-137) — it drifted
+    // from the interface it mirrors the moment platformData changed shape.
+    autoMatched: Array<{ card: ReconciledCard; confidence: number }>;
+    unmatchedBsc: ReconciledCard[];
+    unmatchedSl: ReconciledCard[];
   }> => {
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
@@ -4015,13 +4179,14 @@ export const fetchCardChecklist = action({
         if (ancestor.metadata?.cardNumberPrefix) {
           cardNumberPrefix = ancestor.metadata.cardNumberPrefix;
         }
-        if (ancestor.platformData?.sportlots) {
-          const slVal = ancestor.platformData.sportlots;
-          slPlatformFilters[ancestor.level] = Array.isArray(slVal) ? slVal : [slVal];
+        // NEO-137: adapters filter on marketplace IDs; slots are internal.
+        const ancestorSlIds = slotIds(ancestor, "sportlots");
+        const ancestorBscIds = slotIds(ancestor, "bsc");
+        if (ancestorSlIds.length > 0) {
+          slPlatformFilters[ancestor.level] = ancestorSlIds;
         }
-        if (ancestor.platformData?.bsc) {
-          const bscVal = ancestor.platformData.bsc;
-          bscPlatformFilters[ancestor.level] = Array.isArray(bscVal) ? bscVal : [bscVal];
+        if (ancestorBscIds.length > 0) {
+          bscPlatformFilters[ancestor.level] = ancestorBscIds;
         }
       }
 
@@ -4036,31 +4201,19 @@ export const fetchCardChecklist = action({
         console.log(
           `[fetchCardChecklist] custom subtree detected — skipping BSC/SL`,
         );
-        // No marketplace cards exist for a custom subtree (correctly always
-        // `cards: []`), but its own custom cards can still carry unresolved
-        // pendingPlayerNames/pendingTeamNames — resolve those and open the
-        // review wizard for them the same way the marketplace path does.
-        // Without this, a custom-only set's pending names could never be
-        // resolved via the wizard at all (see resolveUnknownsAndStartBatch's
-        // doc comment for why this is a real, previously-unclosed gap).
-        const { unknownPlayers, unknownTeams, batchId } = sportId
-          ? await resolveUnknownsAndStartBatch(ctx, {
-              selectorOptionId: args.selectorOptionId,
-              sportId,
-              sportLabel: sportLabel ?? "",
-            })
-          : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
+        // No marketplace cards exist for a custom subtree. Its own custom
+        // cards can still carry unresolved pendingPlayerNames /
+        // pendingTeamNames, but resolving those is now
+        // `resolveChecklistEntities`' job (NEO-137) — it runs on the
+        // confirmed set and handles the no-marketplace case identically.
         return {
           success: true,
           message:
-            unknownPlayers.length || unknownTeams.length
-              ? `Custom selector subtree — ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation.`
-              : "Custom selector subtree — no marketplace data available; add custom cards.",
+            "Custom selector subtree — no marketplace data available; add custom cards.",
           sportId,
-          cards: [],
-          unknownPlayers,
-          unknownTeams,
-          batchId,
+          autoMatched: [],
+          unmatchedBsc: [],
+          unmatchedSl: [],
         };
       }
 
@@ -4089,7 +4242,12 @@ export const fetchCardChecklist = action({
       const BSC_REQUIRED_LEVELS = new Set(["sport", "year", "setName"]);
       const missingBsc: string[] = [];
       for (const ancestor of chain) {
-        if (BSC_REQUIRED_LEVELS.has(ancestor.level) && !ancestor.platformData?.bsc) {
+        // NEO-137: check for an actual ID, not truthiness of the slot map —
+        // an empty `{}` is truthy and would silently satisfy this precondition.
+        if (
+          BSC_REQUIRED_LEVELS.has(ancestor.level) &&
+          slotIds(ancestor, "bsc").length === 0
+        ) {
           missingBsc.push(`${ancestor.level}=${ancestor.value}`);
         }
       }
@@ -4104,9 +4262,9 @@ export const fetchCardChecklist = action({
           success: false,
           message: msg,
           sportId,
-          cards: [],
-          unknownPlayers: [],
-          unknownTeams: [],
+          autoMatched: [],
+          unmatchedBsc: [],
+          unmatchedSl: [],
         };
       }
 
@@ -4237,8 +4395,10 @@ export const fetchCardChecklist = action({
         message?: string;
       };
       const fetchBsc = async (): Promise<BscFetchResult> => {
-        // BSC's bulk-upload API accepts multi-value facets in one call and
-        // tags each card with its source set slug — no fan-out needed.
+        // The adapter fans out internally — one request per BSC source set.
+        // BSC does NOT OR multi-value facets: two variantName values return
+        // 200 OK with zero rows (measured on dev 2026-08-12, 1996 Score).
+        // The comment that used to be here asserted the opposite.
         return await ctx.runAction(
           api.adapters.buysportscards.fetchBscChecklist,
           {
@@ -4288,6 +4448,86 @@ export const fetchCardChecklist = action({
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
       }
 
+      // NEO-137 — STICKY PAIRING. An operator's confirmed pairing must survive
+      // a re-sync, otherwise a shared marketplace set has to be hand-paired
+      // again on every fetch and the assignment is not really persisted.
+      //
+      // Re-deriving from scratch is not good enough: the whole point of this
+      // ticket is that the BSC↔SL pairing is NOT inferable (two series can each
+      // contain a card #1), so a fresh guess would silently overwrite the
+      // operator's answer with the wrong one.
+      //
+      // Already-committed rows carry the answer in platformData.{bsc,sportlots}.
+      // Index the SL ref an operator previously bound to each BSC ref and
+      // honour it ahead of every heuristic below.
+      const committed = await ctx.runQuery(
+        api.selectorOptions.getCardChecklist,
+        { selectorOptionId: args.selectorOptionId },
+      );
+      const storedSlRefByBscRef = new Map<string, string>();
+      const storedSlRefs = new Set<string>();
+      for (const row of committed) {
+        const bscRef = row.platformData?.bsc?.ref;
+        const slRef = row.platformData?.sportlots?.ref;
+        if (slRef) storedSlRefs.add(slRef);
+        if (bscRef && slRef) storedSlRefByBscRef.set(bscRef, slRef);
+      }
+      const slByPlatformRef = new Map<string, typeof slCards[0]>();
+      // INDISTINGUISHABLE (NEO-137 accounting): two SportLots rows sharing BOTH
+      // card number and description. SL exposes no per-card id, so the
+      // description IS the identity (NEO-91) — when it collides there is
+      // genuinely nothing left to tell the rows apart except ordinal position
+      // in the scrape, which is not stable across re-scrapes. Report it; do
+      // NOT guess, because a wrong guess here silently binds a card to the
+      // wrong marketplace row and looks identical to a correct one.
+      const indistinguishableSlRefs: string[] = [];
+      for (const c of slCards) {
+        if (!c.platformRef) continue;
+        if (slByPlatformRef.has(c.platformRef)) {
+          indistinguishableSlRefs.push(c.platformRef);
+          continue; // first occurrence wins; the duplicate is reported, not used
+        }
+        slByPlatformRef.set(c.platformRef, c);
+      }
+      if (indistinguishableSlRefs.length > 0) {
+        console.warn(
+          `[fetchCardChecklist] ${indistinguishableSlRefs.length} SportLots row(s) ` +
+            `are indistinguishable (same card number AND description) — only ` +
+            `ordinal position separates them and that is not stable. Not guessed: ` +
+            indistinguishableSlRefs.slice(0, 5).join(" | "),
+        );
+      }
+      // A stored ref that no longer appears in the marketplace's response is
+      // ORPHANED — SportLots edited the description out from under us. Report
+      // it; never silently drop the card it belonged to.
+      const orphanedSlRefs = [...storedSlRefs].filter(
+        (ref) => !slByPlatformRef.has(ref),
+      );
+      if (orphanedSlRefs.length > 0) {
+        console.warn(
+          `[fetchCardChecklist] ${orphanedSlRefs.length} stored SportLots ref(s) ` +
+            `no longer resolve — the marketplace changed the description: ` +
+            orphanedSlRefs.slice(0, 5).join(" | "),
+        );
+      }
+
+      // NEO-137: three buckets, not one flat list. No NB card exists until
+      // the operator pairs — same vocabulary as set reconciliation (matched /
+      // unmatched-BSC / unmatched-SL) and the same keep shelf for a
+      // deliberately-single-sided card.
+      //
+      // This is also what holds a shared SL set's sibling-owned cards: when
+      // two NB rows draw from one SL set, the other row's cards simply land
+      // in unmatchedSl and are dropped unless the operator keeps them, rather
+      // than being materialised as bogus cards under this row.
+      const autoMatchedCards: Array<{
+        card: ReconciledCard;
+        confidence: number;
+      }> = [];
+      const unmatchedBscCards: ReconciledCard[] = [];
+      const unmatchedSlCards: ReconciledCard[] = [];
+      // `out` stays as the union of everything, purely so the team-lookup and
+      // entity-bucketing passes below can walk every candidate once.
       const out: ReconciledCard[] = [];
       const claimedSlNumbers = new Set<string>();
 
@@ -4297,13 +4537,21 @@ export const fetchCardChecklist = action({
           ? bsc.cardNumber.slice(cardNumberPrefix.length)
           : bsc.cardNumber;
 
+        // Operator's stored answer first — it outranks every heuristic.
+        const storedSlRef = bsc.platformRef
+          ? storedSlRefByBscRef.get(bsc.platformRef)
+          : undefined;
         let sl: typeof slCards[0] | undefined =
-          (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
+          (storedSlRef && slByPlatformRef.get(storedSlRef))
+          || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
           || slByNumber.get(bsc.cardNumber)
           || slByNumber.get(stripped);
+        const fromStoredPairing =
+          storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
 
         // 2. Fuzzy fallback: pick the unclaimed SL card whose first player
         //    name is most similar to BSC's first player. Threshold 0.92.
+        let fuzzyScore: number | undefined;
         if (!sl && bsc.players?.[0]) {
           const target = normalizeName(bsc.players[0]);
           let best: { card: typeof slCards[0]; score: number } | null = null;
@@ -4316,9 +4564,18 @@ export const fetchCardChecklist = action({
               best = { card: candidate, score };
             }
           }
-          if (best) sl = best.card;
+          if (best) {
+            sl = best.card;
+            fuzzyScore = best.score;
+          }
         }
 
+        // Confidence: an exact number / sportlotsRef hit is certain; a
+        // Jaro-Winkler name match is not. Surfaced so the operator can see
+        // which pairings deserve a second look.
+        // A previously-confirmed pairing is certain by definition — it is the
+        // operator's own answer being replayed, not a guess.
+        const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
         if (sl) claimedSlNumbers.add(sl.cardNumber);
 
         const attributes = Array.from(new Set([
@@ -4329,15 +4586,7 @@ export const fetchCardChecklist = action({
         const players = bsc.players ?? (sl?.players ?? undefined);
         const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
 
-        const sourcePlatformIds =
-          bsc.sourceBscSetSlug || sl?.sourceSlSetId
-            ? {
-                bsc: bsc.sourceBscSetSlug,
-                sportlots: sl?.sourceSlSetId,
-              }
-            : undefined;
-
-        out.push({
+        const candidate: ReconciledCard = {
           cardNumber: bsc.cardNumber,
           cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
           team: bsc.team ?? sl?.team,
@@ -4349,20 +4598,43 @@ export const fetchCardChecklist = action({
           printRun,
           autographType: bsc.autographType ?? sl?.autographType,
           cardVariation: bsc.cardVariation,
+          // NEO-137: each ref carries the marketplace SET it came from, so
+          // the source travels with the ref rather than in a parallel
+          // `sourcePlatformIds` object that could fall out of step with it.
+          // Commit resolves `setId` to a slot on this card's parent row.
           platformData: {
-            bsc: bsc.platformRef,
-            sportlots: sl?.platformRef,
+            ...(bsc.platformRef
+              ? {
+                  bsc: {
+                    ref: bsc.platformRef,
+                    ...(bsc.sourceBscSetSlug
+                      ? { setId: bsc.sourceBscSetSlug }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(sl?.platformRef
+              ? {
+                  sportlots: {
+                    ref: sl.platformRef,
+                    ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
+                  },
+                }
+              : {}),
           },
-          sourcePlatformIds,
-        });
+          ...(sl ? {} : { unmatched: "sl" as const }),
+        };
+        out.push(candidate);
+        if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
+        else unmatchedBscCards.push(candidate);
       }
 
-      // 3. SL cards never claimed by BSC: emit as unmatched-bsc rows so
-      //    a human can review (they may be valid cards BSC's seller catalog
-      //    doesn't carry, or genuine numbering mismatches we should fix).
+      // 3. SL cards no BSC card claimed. These are NOT turned into NB cards
+      //    on their own any more — they are offered for the operator to pair
+      //    or deliberately keep.
       for (const sl of slCards) {
         if (claimedSlNumbers.has(sl.cardNumber)) continue;
-        out.push({
+        const slOnly: ReconciledCard = {
           cardNumber: sl.cardNumber,
           cardName: sl.cardName || `Card #${sl.cardNumber}`,
           team: sl.team,
@@ -4373,12 +4645,18 @@ export const fetchCardChecklist = action({
           isRelic: sl.attributes?.includes("RELIC") || undefined,
           printRun: sl.printRun,
           autographType: sl.autographType,
-          platformData: { sportlots: sl.platformRef },
-          sourcePlatformIds: sl.sourceSlSetId
-            ? { sportlots: sl.sourceSlSetId }
-            : undefined,
+          platformData: sl.platformRef
+            ? {
+                sportlots: {
+                  ref: sl.platformRef,
+                  ...(sl.sourceSlSetId ? { setId: sl.sourceSlSetId } : {}),
+                },
+              }
+            : {},
           unmatched: "bsc",
-        });
+        };
+        out.push(slOnly);
+        unmatchedSlCards.push(slOnly);
       }
 
       // 4. NEO-90: resolve team names for regular BSC cards that don't
@@ -4395,62 +4673,122 @@ export const fetchCardChecklist = action({
       if (needsTeamLookup.length > 0) {
         const teamNames: Record<string, string> = await ctx.runAction(
           internal.adapters.buysportscards.fetchBscCardTeamNames,
-          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!) },
+          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!.ref) },
         );
         for (const c of needsTeamLookup) {
-          const name = teamNames[c.platformData.bsc!];
+          const name = teamNames[c.platformData.bsc!.ref];
           if (name) c.teams = [name];
         }
       }
 
-      // 5. Bucket unique player + team names against existing tables.
-      //    Deduped by NORMALIZED name (not raw trimmed string) — two
-      //    spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr")
-      //    used to produce two separate unknowns + two Wikidata lookups;
-      //    first-seen display spelling wins. Skip bucketing entirely if we
-      //    can't infer sport (sets without a sport ancestor — shouldn't
-      //    happen but guard anyway).
-      const additionalPlayerNames: string[] = [];
-      const additionalTeamNames: string[] = [];
-      for (const c of out) {
-        for (const p of c.players ?? []) additionalPlayerNames.push(p);
-        for (const t of c.teams ?? []) additionalTeamNames.push(t);
-        if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
-      }
-      const { unknownPlayers, unknownTeams, batchId } = sportId
-        ? await resolveUnknownsAndStartBatch(ctx, {
-            selectorOptionId: args.selectorOptionId,
-            sportId,
-            sportLabel: sportLabel ?? "",
-            additionalPlayerNames,
-            additionalTeamNames,
-          })
-        : { unknownPlayers: [], unknownTeams: [], batchId: undefined };
-
+      // 5. NEO-137: entity resolution NO LONGER happens here.
+      //    Nothing is an NB card yet — the operator has not paired. Creating
+      //    players and teams for candidates they are about to discard would
+      //    be work done on data that may never exist, and the user asked for
+      //    pairing to come before the Wikidata / player / team syncs.
+      //    `resolveChecklistEntities` runs on the CONFIRMED set instead.
       console.log(
-        `[fetchCardChecklist] reconciled ${out.length} cards`,
-        `(${unknownPlayers.length} new players, ${unknownTeams.length} new teams)`,
+        `[fetchCardChecklist] ${autoMatchedCards.length} paired, ` +
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
       );
 
       return {
         success: true,
-        message: `Found ${out.length} cards${unknownPlayers.length || unknownTeams.length ? `; ${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation` : ""}`,
+        message:
+          `${autoMatchedCards.length} matched, ` +
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
         sportId,
-        cards: out,
-        unknownPlayers,
-        unknownTeams,
-        batchId,
+        autoMatched: autoMatchedCards,
+        unmatchedBsc: unmatchedBscCards,
+        unmatchedSl: unmatchedSlCards,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
       return {
         success: false,
         message: `Failed to fetch checklist: ${error instanceof Error ? error.message : "Unknown error"}`,
-        cards: [],
-        unknownPlayers: [],
-        unknownTeams: [],
+        autoMatched: [],
+        unmatchedBsc: [],
+        unmatchedSl: [],
       };
     }
+  },
+});
+
+/**
+ * Action — NEO-137: resolve player/team unknowns for the CONFIRMED card set.
+ *
+ * This used to be step 5 of `fetchCardChecklist`. It moved out because
+ * nothing fetched is an NB card until the operator has paired: bucketing
+ * names from candidates they are about to discard would create players and
+ * teams for cards that never exist, and the operator asked for pairing to
+ * happen before the Wikidata / player / team syncs.
+ *
+ * Callers pass the cards they actually intend to commit (confirmed pairs plus
+ * anything held on the keep shelf). Also covers the custom-subtree case,
+ * where there are no marketplace cards at all but the row's own custom cards
+ * can still carry unresolved pendingPlayerNames / pendingTeamNames.
+ */
+export const resolveChecklistEntities = action({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    sportId: v.id("selectorOptions"),
+    cards: v.array(previewCardValidator),
+  },
+  returns: v.object({
+    unknownPlayers: v.array(v.string()),
+    unknownTeams: v.array(v.string()),
+    // Present whenever there are unknowns — the review wizard subscribes to
+    // this batch via entityReviewQueue.
+    batchId: v.optional(v.string()),
+  }),
+  handler: async (ctx, args): Promise<{
+    unknownPlayers: string[];
+    unknownTeams: string[];
+    batchId?: string;
+  }> => {
+    await requireAdmin(ctx);
+    assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
+
+    // `sportId` used to be derived server-side inside fetchCardChecklist; it
+    // now round-trips through the browser, so it must be re-validated rather
+    // than trusted. A wrong id would bucket every name against the wrong
+    // sport (making them all look unknown) and stamp review rows with a row
+    // that has no sportConfig, silently disabling Wikidata enrichment.
+    const chainForSport = await ctx.runQuery(
+      api.selectorOptions.getAncestorChain,
+      { id: args.selectorOptionId },
+    );
+    const sportAncestor = chainForSport.find((a) => a.level === "sport");
+    if (!sportAncestor || sportAncestor._id !== args.sportId) {
+      throw new Error(
+        "resolveChecklistEntities: sportId is not the sport ancestor of selectorOptionId",
+      );
+    }
+
+    // Deduped by NORMALIZED name inside resolveUnknownsAndStartBatch — two
+    // spellings of one player ("Ken Griffey Jr." vs "Ken Griffey Jr") must
+    // not produce two unknowns and two Wikidata lookups.
+    const additionalPlayerNames: string[] = [];
+    const additionalTeamNames: string[] = [];
+    for (const c of args.cards) {
+      for (const p of c.players ?? []) additionalPlayerNames.push(p);
+      for (const t of c.teams ?? []) additionalTeamNames.push(t);
+      if (c.team && !c.teams?.length) additionalTeamNames.push(c.team);
+    }
+
+    const sportRow = await ctx.runQuery(
+      api.selectorOptions.getSelectorOptionById,
+      { id: args.sportId },
+    );
+
+    return await resolveUnknownsAndStartBatch(ctx, {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+      sportLabel: sportRow?.value ?? "",
+      additionalPlayerNames,
+      additionalTeamNames,
+    });
   },
 });
 
@@ -4486,6 +4824,7 @@ export const commitCardChecklist = mutation({
     createdTeamIds: Array<Id<"teams">>;
   }> => {
     await requireAdmin(ctx);
+    assertCardBatchWithinLimits(args.cards, "commitCardChecklist");
     const userId = await getCurrentUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
@@ -4731,10 +5070,17 @@ export const commitCardChecklist = mutation({
         printRun: c.printRun,
         autographType: c.autographType,
         cardVariation: c.cardVariation,
+        // NEO-137: WIRE shape here (marketplace set ids); resolved to slots
+        // just below so a stored card's `src` always names a slot on its own
+        // parent row.
         platformData: c.platformData,
-        sourcePlatformIds: c.sourcePlatformIds,
       };
     });
+
+    const toStoredPlatformData = await resolveCardSlots(
+      ctx,
+      args.selectorOptionId,
+    );
 
     // Same delete-stale-rows behavior as before, inlined here so we can
     // keep the rich-card persistence path under a single mutation entry.
@@ -4819,9 +5165,11 @@ export const commitCardChecklist = mutation({
       const newSortOrder = targetSortOrder.get(card.cardNumber) ?? i;
       const existing = existingByNumber.get(card.cardNumber);
       if (existing) {
+        // Merge per side so a sync that resolves only one marketplace does not
+        // wipe the other side's confirmed ref.
         const mergedPlatformData = {
           ...existing.platformData,
-          ...card.platformData,
+          ...toStoredPlatformData(card.platformData, existing.platformData),
         };
         await ctx.db.patch(existing._id, {
           cardName: card.cardName,
@@ -4835,7 +5183,6 @@ export const commitCardChecklist = mutation({
           autographType: card.autographType,
           cardVariation: card.cardVariation,
           platformData: mergedPlatformData,
-          sourcePlatformIds: card.sourcePlatformIds,
           sortOrder: newSortOrder,
           lastUpdated: Date.now(),
         });
@@ -4912,8 +5259,7 @@ export const commitCardChecklist = mutation({
           printRun: card.printRun,
           autographType: card.autographType,
           cardVariation: card.cardVariation,
-          platformData: card.platformData,
-          sourcePlatformIds: card.sourcePlatformIds,
+          platformData: toStoredPlatformData(card.platformData),
           // NEO-24: inherit ancestor + derive per-card on insert. Existing
           // rows are owned by the propagation engine; never clobbered here.
           ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),

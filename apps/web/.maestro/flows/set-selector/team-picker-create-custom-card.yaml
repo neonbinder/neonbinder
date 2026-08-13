@@ -67,8 +67,10 @@ tags:
 - tapOn:
     id: "Edit card 776-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # ============================================================
 # CREATE A BRAND-NEW TEAM AND ATTACH IT
@@ -125,8 +127,10 @@ tags:
 - tapOn:
     id: "Edit card 776-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # The chip survived Save + reopen (its label resolves from the created team row).
 - assertVisible:

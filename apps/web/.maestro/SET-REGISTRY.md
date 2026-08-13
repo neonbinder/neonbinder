@@ -18,11 +18,75 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
+| Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-shared-sl-set-1996-score.yaml` — **sole writer** |
+
+### 1996 Score — approved for NEO-137, sole-writer
+
+Added with owner approval for NEO-137 Phase 5. It is the ONLY set in the
+catalog that exhibits the shape the feature exists for, so the feature cannot
+be end-to-end tested without it:
+
+| source | set | cards |
+| -- | -- | -- |
+| BSC | Dugout Collection Artist's Proofs Series 1 | 110 |
+| BSC | Dugout Collection Artist's Proofs Series 2 | 110 |
+| SportLots | Dugout Collection Artists Proofs | 220 (`#A1-`, `#B1-`) |
+
+BSC splits the Artist's Proofs into two series; SportLots carries one combined
+set. Proving that ONE NeonBinder set can map to BOTH BSC sets and that single
+SportLots set is the acceptance criterion of NEO-137, and no other registered
+set can express it.
+
+**What the flow leaves behind** (this IS the contract — the flow reconciles on
+every run, so these are the values it re-establishes):
+
+| | |
+| -- | -- |
+| NB insert rows | exactly ONE, named `Dugout Collection Artists Proofs` |
+| its BSC mappings | both series |
+| its SportLots mappings | the one combined set |
+| its card checklist | **220** cards, every one paired across both marketplaces |
+
+220 is also the fan-out regression guard. BSC does not OR multi-value facets:
+before `fetchBscChecklist` fanned out one request per source set, this exact
+configuration returned 200 OK with zero rows and the UI reported "0 BSC cards".
+A count of 110 means only one BSC source was fetched. Do not loosen it.
+
+**Sole-writer, not read-only.** Unlike the Topps Chrome anchor, this set is NOT
+pre-synced by `setup.yaml` and is NOT read-only: the reconciliation IS the
+thing under test, so the flows must perform it.
+
+Exactly ONE flow may ever touch this set —
+`inserts-1996-score-one-nb-set-two-bsc-sources.yaml`. Adding a second would
+reintroduce the cross-runner interference the read-only rule exists to prevent.
+
+It was briefly split into a `provides:`/`requires:` pair. That was wrong: CI does
+NOT use the dep-graph scheduler. `run-e2e-queue.sh` enqueues in LPT order
+(alphabetical without timing history) and 8 runners claim from a shared queue
+with no dependency handling — `requires:`/`provides:` are the LOCAL picker's
+feature only. Any flow in that queue must be independent of every other.
+Keeping it out of `setup.yaml` also means its sync cost is paid by one flow
+rather than added to every run's seed.
 
 **No other real set exists in the suite.** If a flow needs marketplace-backed
 data that isn't in the table above, it must either sync it itself (and accept the
 30–90s cost, with owner approval) or — far more often the right answer — use a
 per-worker custom set (see below).
+
+### The one sanctioned read-only visitor
+
+`checklist-pairing-dialog-cancel` (NEO-137) syncs `Insert → Future Stars` on the
+real anchor and then **cancels** the card-pairing dialog. Cancel returns before
+`commitCardChecklist`, so nothing is written and the set is left exactly as
+`setup.yaml` provisioned it — it reads, it does not write.
+
+It cannot use a custom set: a custom subtree is short-circuited before any
+marketplace fetch (`isCustomSubtree`, NEO-22), so it produces no candidates, and
+`CardChecklist` deliberately skips the pairing dialog when all three buckets are
+empty. The dialog is only reachable with real marketplace data.
+
+NEO-137's Phase 5 also calls for a full 1996 Score map-out. That needs a NEW
+real set and therefore explicit owner approval — it is **not** in the suite.
 
 ### READ-ONLY means read-only
 

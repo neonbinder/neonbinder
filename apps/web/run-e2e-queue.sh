@@ -136,6 +136,14 @@ fi
 
 MAESTRO="$HOME/.maestro/bin/maestro"
 CONFIG=".maestro/config.yaml"
+
+# Chrome for Testing is MANDATORY locally (NEO-138) — branded Chrome's
+# omnibox-popup CDP targets give every flow a 1x1 viewport. Enforced here too,
+# not just in run-e2e-smoke.sh: this is the runner the local queue harness and
+# CI's sharded jobs actually drive flows with. See lib-e2e-chrome.sh.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-e2e-chrome.sh"
+require_chrome_for_testing || exit 1
+
 # TEST_USERNAME is generated FRESH PER FLOW RUN inside run_flow (below), NOT once
 # here. This is a persistent daemon worker that runs the same flow many times, so
 # a username fixed at worker-start would collide ("Username already taken") on the

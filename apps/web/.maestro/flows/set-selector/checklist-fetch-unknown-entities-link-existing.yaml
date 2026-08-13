@@ -290,8 +290,10 @@ tags:
 - tapOn:
     id: "Edit card 8002-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 # The drawer is right-anchored (~480px); a viewport-centre scroll lands on the
 # backdrop, so drive its inner scroll with manual swipes at x=80% to reach the
 # Players section near the bottom (same idiom as player-picker-create-custom-card).

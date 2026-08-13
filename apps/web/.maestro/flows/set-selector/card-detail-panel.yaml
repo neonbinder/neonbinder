@@ -90,8 +90,10 @@ tags:
 
 # The drawer opens. The header shows "Card #888-<ATTEMPT_ID}".
 # Card name input appears with autofocus.
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # Assert the new drawer title (NEO-25 delta 3: was "Edit card #", now "Card #").
 - assertVisible:
@@ -193,8 +195,10 @@ tags:
 - assertNotVisible: "Discard unsaved changes?"
 
 # Card name input is still visible (drawer is still open).
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # ============================================================
 # DIRTY-GUARD: verify the × button also triggers the guard
@@ -255,8 +259,10 @@ tags:
     waitToSettleTimeoutMs: 2000
 
 # Drawer reopens — wait for Card name input.
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # The card name input should reflect the saved name (Renamed Detail Player ...).
 # Use a ".*" suffix regex because Maestro web's eraseText leaves the last

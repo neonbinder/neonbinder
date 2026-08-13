@@ -82,8 +82,10 @@ tags:
 
 - tapOn:
     id: "Open add card form"
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 - inputText: "889-${ATTEMPT_ID}"
 - tapOn: "Player name"
 - inputText: "Team Feature Player ${ATTEMPT_ID}"
@@ -117,8 +119,10 @@ tags:
 - tapOn:
     id: "Edit card 889-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # The TeamPicker container has aria-label "Team picker".
 - assertVisible:
@@ -217,8 +221,10 @@ tags:
 - tapOn:
     id: "Edit card 889-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # Only the "+ Add team" trigger — no chip.
 - assertVisible:

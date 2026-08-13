@@ -46,14 +46,16 @@ async function seedTree(
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: sportValue,
-      platformData: { bsc: "bsc-baseball", sportlots: "sl-baseball" },
+      platformData: { bsc: { b0: "bsc-baseball" }, sportlots: { s0: "sl-baseball" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       children: [],
       lastUpdated: Date.now(),
     });
     const setNameId = await ctx.db.insert("selectorOptions", {
       level: "setName",
       value: "2024 Topps",
-      platformData: { bsc: "x", sportlots: "y" },
+      platformData: { bsc: { b0: "x" }, sportlots: { s0: "y" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       parentId: sportId,
       children: [],
       lastUpdated: Date.now(),
@@ -62,7 +64,8 @@ async function seedTree(
     const variantTypeId = await ctx.db.insert("selectorOptions", {
       level: "variantType",
       value: "Base",
-      platformData: { bsc: "x", sportlots: "y" },
+      platformData: { bsc: { b0: "x" }, sportlots: { s0: "y" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       parentId: setNameId,
       children: [],
       lastUpdated: Date.now(),
@@ -193,7 +196,8 @@ describe("backfillTeamToOnCardIds", () => {
       ctx.db.insert("selectorOptions", {
         level: "setName",
         value: "Orphaned set",
-        platformData: { bsc: "x" },
+        platformData: { bsc: { b0: "x" } },
+      platformSlotSeq: { bsc: 1 },
         children: [],
         lastUpdated: Date.now(),
       }),

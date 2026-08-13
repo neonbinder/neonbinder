@@ -1,6 +1,16 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Checklist — review wizard: admin manually adds career-team history to a player row (chip appears, invalid input is a no-op, wizard advances on Add as New)"
+# NO COLON IN THIS NAME. Maestro derives the failure-screenshot FILENAME from
+# the flow name, and actions/upload-artifact rejects any path containing a colon
+# ("The path for one of the files in artifact is not valid ... Contains the
+# following character:  Colon :"). That fails the whole runner job — after the
+# flows themselves have passed — so CI goes red on a green test run.
+#
+# It only fires when this flow fails at least once and leaves a
+# `screenshot-❌-…(<flow name>).png` behind, which is why it lay dormant from
+# 2026-07-24 (#73) until it took down runner (3) on PR #149. Keep flow names to
+# em dashes and commas.
+name: "Checklist — review wizard adds career-team history to a player row (chip appears, invalid input is a no-op, wizard advances on Add as New)"
 tags:
   - set-selector
   - regression
