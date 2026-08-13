@@ -111,11 +111,13 @@ app.use(limiter);
 // or rename the field without updating apps/web/convex/credentials.ts —
 // a missing field reads as version 0 and will (deliberately) fail every
 // credential operation loudly.
-// Deliberately does NOT report the Cloud Run revision name. It would be handy
-// for diagnosing a mismatched pair, but this route carries no app-layer auth of
-// its own, and the serving revision is already visible in Cloud Run's console
-// and logs to anyone entitled to see it. Not worth widening what an unverified
-// caller can learn for a convenience.
+// Deliberately does NOT report the Cloud Run revision name. Not for exposure
+// reasons — this route is IAM-gated like every other one (verified 2026-08-12:
+// only named service accounts hold roles/run.invoker on this service in both
+// projects; there is no allUsers binding, and an unauthenticated GET /health
+// gets a 403 from Cloud Run before Express sees it). It is omitted simply
+// because nothing needs it: the guard keys off contractVersion alone, and the
+// serving revision is already in Cloud Run's console and logs.
 app.get("/health", (_req: Request, res: Response) => {
   res.json({
     status: "ok",

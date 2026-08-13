@@ -198,10 +198,10 @@ half a credential pair is a 400 rather than a silent fallback.)
 
 ### The mechanical check
 
-`GET /health` reports `contractVersion` — and deliberately not the serving
-revision name, since this route carries no app-layer auth of its own. Before any
-authenticated call, Convex
-probes it (`assertBrowserContract` in `apps/web/convex/credentials.ts`) and
+`GET /health` reports `contractVersion`. It deliberately does not report the
+serving revision name — not for exposure reasons (the route is IAM-gated like
+every other one), but because nothing needs it. Before any authenticated call,
+Convex probes it (`assertBrowserContract` in `apps/web/convex/credentials.ts`) and
 refuses to send a request the live service may misinterpret, surfacing a
 "service is updating" message instead of guessing. A service predating NEO-143
 reports no field at all and is read as version 0 — deliberately failing closed.
