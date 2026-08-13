@@ -170,6 +170,65 @@ export const list = query({
   },
 });
 
+/**
+ * Default and maximum result counts for `search`.
+ *
+ * A typeahead list is read, not scrolled — past roughly ten rows the user is
+ * better served by typing another character than by scanning further. The cap
+ * matters more than the default: it is what stops a caller quietly turning
+ * this back into the 500-row fetch it replaces.
+ */
+const SEARCH_DEFAULT_LIMIT = 10;
+const SEARCH_MAX_LIMIT = 25;
+
+/**
+ * NEO-147: server-side player typeahead, backing the `PlayerAutocomplete`
+ * primitive.
+ *
+ * The four typeaheads that predate this (SetSelector's PlayerPicker,
+ * TeamPicker, EntityLinkSearch, CareerTeamEntry) each fetch up to 500 rows and
+ * filter in the browser with `.includes()`. That holds for an admin working
+ * inside a single sport; it does not hold for a collector searching every
+ * player we know from the spine-label designer. This queries the `search_name`
+ * index instead — see the schema for why that indexes `name` and deliberately
+ * not `nameNormalized`.
+ *
+ * `sportId` is an optional filter rather than a requirement: the spine-label
+ * designer has no sport context (a collector simply types a name), while an
+ * admin surface that does have one should pass it to keep results relevant.
+ *
+ * An empty query returns nothing rather than "the first N players" — a
+ * typeahead that suggests before you type is noise, and it would also be an
+ * unbounded browse of the table.
+ *
+ * Public, like `list` and `get` above: player rows are globally-shared
+ * reference data and `toPublicPlayer` strips `createdByUserId`.
+ */
+export const search = query({
+  args: {
+    query: v.string(),
+    sportId: v.optional(v.id("selectorOptions")),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(playerDocPublicValidator),
+  handler: async (ctx, args) => {
+    const term = args.query.trim();
+    if (!term) return [];
+
+    const limit = Math.min(args.limit ?? SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
+
+    const docs = await ctx.db
+      .query("players")
+      .withSearchIndex("search_name", (q) => {
+        const search = q.search("name", term);
+        return args.sportId ? search.eq("sportId", args.sportId) : search;
+      })
+      .take(limit);
+
+    return docs.map(toPublicPlayer);
+  },
+});
+
 export const get = query({
   args: { id: v.id("players") },
   returns: v.union(playerDocPublicValidator, v.null()),

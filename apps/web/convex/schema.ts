@@ -357,7 +357,23 @@ export default defineSchema({
     // duplicates and could blow past Convex's 4096 document-scan budget on
     // a single mutation.
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
-    .index("by_sport_id", ["sportId"]),
+    .index("by_sport_id", ["sportId"])
+    // NEO-147: the first search index in the codebase, backing
+    // `PlayerAutocomplete`. Every typeahead before this one fetched up to 500
+    // rows and filtered client-side with `.includes()` — workable for an admin
+    // scoped to one sport, not for a collector searching the whole player
+    // universe from the spine-label designer.
+    //
+    // Indexed on `name`, NOT `nameNormalized`: `normalizePlayerName()` sorts
+    // the name's tokens alphabetically for dedup, so "Ken Griffey Jr" is
+    // stored as "griffey jr ken". Prefix search over that returns nonsense
+    // ordering and misses the obvious query. The search index does its own
+    // tokenization and is case-insensitive, so the raw display name is both
+    // correct and what the user is actually typing.
+    .searchIndex("search_name", {
+      searchField: "name",
+      filterFields: ["sportId"],
+    }),
 
   // Teams — first-class entity. Modeled with city + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
