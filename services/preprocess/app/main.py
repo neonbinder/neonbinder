@@ -33,7 +33,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app import cropper, jobs
+from app import cropper, imaging, jobs
 from app.classify import ClassifyError
 from app.cropper import STRATEGY_NAMES, CropRejected, UnknownStrategyError
 from app.jobs import layout
@@ -226,6 +226,18 @@ async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"{field} exceeds max size of {MAX_IMAGE_BYTES} bytes",
         )
+    # Byte size says very little about decode cost: a 506 KB PNG can expand to
+    # 484 MB of raster, and the cascade decodes each image several times over
+    # with copies live at once. `check_raster_size` reads the header only, and
+    # stays silent about images whose header it cannot parse — those still fail
+    # further down the cascade exactly as they did before, with the same 502.
+    try:
+        imaging.check_raster_size(data)
+    except imaging.RasterTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"{field} exceeds max size of {imaging.MAX_IMAGE_PIXELS} pixels",
+        ) from exc
     return data
 
 
@@ -468,12 +480,23 @@ def submit_job(
 
     try:
         bucket = jobs.resolve_bucket()
-        job_status = jobs.submit_job(request.user_id, request.job_id)
+        claim = jobs.submit_job(request.user_id, request.job_id)
     except Exception as exc:
         logger.info("jobs: submit refused (%s)", type(exc).__name__)
         return _submit_error_response(exc)
 
-    background_tasks.add_task(jobs.execute_job, request.user_id, request.job_id, job_status)
+    # Starlette runs background tasks only after the response has been sent, so
+    # this may never run at all — a timeout or a disconnect is enough. The slot
+    # it would release is a lease that expires on its own for exactly that
+    # reason; see `app.jobs.JOB_SLOT_TTL_SECONDS`.
+    background_tasks.add_task(
+        jobs.execute_job,
+        request.user_id,
+        request.job_id,
+        claim.status,
+        slot_token=claim.slot_token,
+    )
+    job_status = claim.status
 
     return JobSubmitResponse(
         job_id=job_status.job_id,

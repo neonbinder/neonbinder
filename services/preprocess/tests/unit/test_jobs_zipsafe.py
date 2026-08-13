@@ -25,6 +25,7 @@ from __future__ import annotations
 import io
 import os
 import struct
+import tracemalloc
 import zipfile
 
 import pytest
@@ -53,6 +54,21 @@ HOSTILE_NAMES = [
     ("photo\x00.jpg", "entry_name_control_character"),
     ("photo\n.jpg", "entry_name_control_character"),
     ("photo\r.jpg", "entry_name_control_character"),
+    ("photo\u007f.jpg", "entry_name_control_character"),
+    ("photo\u0085.jpg", "entry_name_control_character"),
+    ("photo\u2028.jpg", "entry_name_control_character"),
+    ("photo\u2029.jpg", "entry_name_control_character"),
+    # Bidi overrides: these render as something other than what they are, which
+    # is how "photo\u202egpj.jpg" is shown to a reviewer as "photo.jpg.jpg".
+    ("photo\u202a.jpg", "entry_name_control_character"),
+    ("photo\u202b.jpg", "entry_name_control_character"),
+    ("photo\u202c.jpg", "entry_name_control_character"),
+    ("photo\u202d.jpg", "entry_name_control_character"),
+    ("photo\u202egpj.jpg", "entry_name_control_character"),
+    ("photo\u2066.jpg", "entry_name_control_character"),
+    ("photo\u2067.jpg", "entry_name_control_character"),
+    ("photo\u2068.jpg", "entry_name_control_character"),
+    ("photo\u2069.jpg", "entry_name_control_character"),
     ("x" * 300 + ".jpg", "entry_name_too_long"),
     ("é" * 200 + ".jpg", "entry_name_too_long"),
 ]
@@ -107,6 +123,61 @@ def build_zip(
 def members(data: bytes, *, object_size: int | None = None) -> list:
     stream = io.BytesIO(data)
     return list(iter_zip_members(stream, object_size=object_size or len(data)))
+
+
+def zip64_bomb(entry_count: int, *, honest_eocd: bool = False) -> bytes:
+    """An archive whose Zip64 record and 32-bit EOCD deliberately disagree.
+
+    Reproduces the finding that made `MAX_CENTRAL_DIRECTORY_BYTES` inert. The
+    32-bit EOCD declares one entry and a 46-byte directory — well inside every
+    ceiling — while a Zip64 record twenty bytes earlier declares `entry_count`
+    entries and the real directory size. CPython's `_EndRecData64` prefers the
+    Zip64 record whenever the locator signature is present, with **no sentinel
+    required in the 32-bit record**, so a guard reading only the 32-bit fields
+    validates a number the parser never uses.
+    """
+    header = struct.pack(
+        "<4s4B4HL2L5H2L",
+        b"PK\x01\x02",
+        20,
+        0,
+        20,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    )
+    directory = header * entry_count
+    directory_bytes = len(directory)
+
+    zip64_eocd = struct.pack(
+        "<4sQ2H2L4Q",
+        b"PK\x06\x06",
+        44,
+        45,
+        45,
+        0,
+        0,
+        entry_count,
+        entry_count,
+        directory_bytes,
+        0,
+    )
+    zip64_locator = struct.pack("<4sLQL", b"PK\x06\x07", 0, directory_bytes, 1)
+    declared = (entry_count, directory_bytes) if honest_eocd else (1, 46)
+    eocd = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, declared[0], declared[0], declared[1], 0, 0)
+    return directory + zip64_eocd + zip64_locator + eocd
 
 
 def rewrite_eocd(
@@ -226,6 +297,79 @@ class TestCentralDirectoryGuards:
         payload = b"\x00" * 64 + EOCD_SIGNATURE + struct.pack("<HHHHIIH", 0, 0, 1, 1, 46, 0, 0)
         with pytest.raises(ZipRejectedError, match="not_a_zip"):
             members(payload)
+
+    def test_zip64_locator_override_is_refused(self):
+        # The regression that made the directory ceiling inert. The 32-bit
+        # record this guard used to read declares 1 entry / 46 bytes; the Zip64
+        # record CPython actually prefers declares 200000 / 9.2 MB. Without the
+        # override resolution this call returns DirectoryInfo(1, 46) and
+        # ZipFile then allocates ~75 MiB.
+        data = zip64_bomb(200_000)
+        with pytest.raises(ZipRejectedError, match="too_many_entries"):
+            read_central_directory_info(io.BytesIO(data), len(data))
+
+    def test_zip64_bomb_is_refused_before_the_allocation(self):
+        # The post-parse `len(infolist())` re-check rejected this archive even
+        # before the fix — but only after ZipFile had already built 200000
+        # ZipInfos, which is the entire attack. So the assertion here is on
+        # peak heap, not on the exception: the rejection has to happen in front
+        # of the allocation, not behind it.
+        data = zip64_bomb(200_000)
+
+        tracemalloc.start()
+        try:
+            with pytest.raises(ZipRejectedError, match="too_many_entries"):
+                members(data)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        # Reading the archive at all costs one copy of it. Anything approaching
+        # a multiple of that means the directory was parsed.
+        assert peak < 4 * len(data)
+
+    def test_zip64_override_directory_size_ceiling(self, monkeypatch):
+        # Same override path, tripping the *size* ceiling rather than the count
+        # ceiling — the one that actually bounds ZipFile's buffer.
+        monkeypatch.setattr(zipsafe, "MAX_ZIP_ENTRIES", 1_000_000)
+        data = zip64_bomb(100_000)
+        with pytest.raises(ZipRejectedError, match="central_directory_too_large"):
+            read_central_directory_info(io.BytesIO(data), len(data))
+
+    def test_zip64_override_within_the_ceilings_is_allowed(self):
+        # Not every Zip64 record is an attack. One declaring a small directory
+        # must pass, or writers that emit Zip64 unconditionally break.
+        data = zip64_bomb(3, honest_eocd=True)
+        info = read_central_directory_info(io.BytesIO(data), len(data))
+        assert info.entry_count == 3
+        assert info.directory_bytes == 3 * 46
+
+    def test_a_locator_with_no_record_falls_back_to_the_32_bit_fields(self):
+        # CPython falls back when the record signature is missing, so rejecting
+        # here would refuse archives it happily opens.
+        data = bytearray(zip64_bomb(3, honest_eocd=True))
+        at = data.find(b"PK\x06\x06")
+        data[at : at + 4] = b"XXXX"
+        info = read_central_directory_info(io.BytesIO(bytes(data)), len(data))
+        assert info.entry_count == 3
+
+    def test_capped_reader_bounds_the_parse_even_if_every_ceiling_is_wrong(self, monkeypatch):
+        # Belt and braces. Neuter the metadata guard completely *and* raise the
+        # post-parse entry ceiling out of the way, so the byte cap on the read
+        # is the only thing left standing. A short read makes CPython parse
+        # fewer entries or raise BadZipFile; neither can allocate past the cap,
+        # whatever field this module misread to get there.
+        monkeypatch.setattr(zipsafe, "read_central_directory_info", lambda *a, **k: None)
+        monkeypatch.setattr(zipsafe, "MAX_ZIP_ENTRIES", 10_000_000)
+        monkeypatch.setattr(zipsafe, "MAX_CENTRAL_DIRECTORY_BYTES", 4096)
+        data = zip64_bomb(200_000)
+
+        try:
+            found = members(data)
+        except ZipRejectedError:
+            return  # BadZipFile from the truncated buffer is an acceptable outcome
+        # 4096 bytes of directory holds 89 headers, not 200000.
+        assert len(found) <= 4096 // 46
 
     def test_lying_entry_count_caught_after_the_parse(self, monkeypatch):
         # A forged EOCD that understates its entry count slips the pre-parse
@@ -421,3 +565,29 @@ class TestCountCandidateEntries:
             count_candidate_entries(
                 io.BytesIO(data), object_size=zipsafe.MAX_INPUT_OBJECT_BYTES + 1
             )
+
+
+class TestZip64OverrideEdges:
+    def test_a_locator_with_no_room_for_its_record_is_ignored(self):
+        # A locator signature can sit where a Zip64 record could not physically
+        # precede it. CPython's seek fails there and it falls back to the
+        # 32-bit fields, so this must too rather than reading whatever bytes
+        # happen to be in front of the locator.
+        locator = zipsafe.ZIP64_LOCATOR_SIGNATURE + b"\x00" * 16
+        eocd = struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, 1, 1, 46, 0, 0)
+        blob = locator + eocd
+        assert len(locator) < zipsafe.ZIP64_EOCD_BYTES
+
+        info = read_central_directory_info(io.BytesIO(blob), len(blob))
+
+        assert info.entry_count == 1
+        assert info.directory_bytes == 46
+
+    def test_bare_read_on_the_capped_stream_is_bounded(self):
+        # `zipfile._EndRecData` calls `fp.read()` with no argument, which means
+        # "to EOF" — the one call shape that would sail past a naive cap.
+        stream = zipsafe._ReadCappedStream(io.BytesIO(b"x" * 5000), max_read_bytes=64)
+        assert len(stream.read()) == 64
+        stream.uncap()
+        stream.seek(0)
+        assert len(stream.read()) == 5000

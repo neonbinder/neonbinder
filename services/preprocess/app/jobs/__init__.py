@@ -47,6 +47,13 @@ per-instance concurrency of 3 is sized for short `/process` calls, not for
 minute-long batches, so jobs get their own much smaller limit and a busy
 instance answers a submission with 503 rather than accepting work it will not
 do well.
+
+**Slots expire.** The thing that releases a slot is a background task that only
+runs after the response has been sent, so a submission whose response never
+lands takes a slot nothing will ever give back. Left alone that turns three
+timed-out submits — which an ordinary client retry policy produces on its own —
+into a permanently 503ing feature. `JOB_SLOT_TTL_SECONDS` bounds the damage to
+a reclaimable lease instead.
 """
 
 from __future__ import annotations
@@ -54,6 +61,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
+from dataclasses import dataclass
 
 from app.jobs import layout, runner
 from app.jobs.gcs import ObjectAlreadyExistsError, ObjectRef, ObjectStore
@@ -63,11 +72,13 @@ from app.jobs.zipsafe import MAX_INPUT_OBJECT_BYTES
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "JOB_SLOT_TTL_SECONDS",
     "MAX_ACTIVE_JOBS_PER_INSTANCE",
     "InputNotFoundError",
     "InputTooLargeError",
     "InstanceBusyError",
     "JobAlreadySubmittedError",
+    "JobClaim",
     "JobStatus",
     "JobsNotConfiguredError",
     "derive_state",
@@ -84,8 +95,30 @@ __all__ = [
 # signal — the retry can land somewhere else.
 MAX_ACTIVE_JOBS_PER_INSTANCE = 1
 
+# How long a slot may be held before another submission may reclaim it.
+#
+# Slots have to expire, because the thing that releases them is not guaranteed
+# to run. `submit_job` takes a slot and the route hands `execute_job` to
+# Starlette's `BackgroundTasks`, which only runs **after** the response has been
+# sent. If the response never lands — a Convex or load-balancer timeout, a
+# client disconnect during the two GCS round-trips this endpoint makes — the
+# task never runs and nothing ever calls `_release_slot`. At
+# `MAX_ACTIVE_JOBS_PER_INSTANCE = 1` and max-instances 3, three timed-out
+# submissions would wedge the whole feature into permanent 503 INSTANCE_BUSY.
+# A Convex retry policy produces that on its own; no attacker required.
+#
+# 15 minutes is roughly a 300-image batch at 3s an image, which covers the
+# overwhelming majority of real uploads end to end. A batch longer than that
+# may find its slot reclaimed and a second batch admitted alongside it — and
+# that is the right direction to be wrong in. The slot exists to protect
+# throughput, not correctness: over-admitting costs a slower batch, while
+# under-admitting costs a dead feature until the instance is recycled.
+JOB_SLOT_TTL_SECONDS = 15 * 60
+
 _slot_lock = threading.Lock()
-_active_jobs = 0
+# token -> monotonic timestamp at which the slot was taken.
+_active_slots: dict[int, float] = {}
+_next_slot_token = 0
 
 _default_store: ObjectStore | None = None
 
@@ -129,26 +162,63 @@ def resolve_bucket() -> str:
     return bucket
 
 
-def _try_acquire_slot() -> bool:
-    global _active_jobs
+def _try_acquire_slot() -> int | None:
+    """Take a batch slot, reclaiming any that have outlived their TTL.
+
+    Returns an opaque token to release the slot with, or None when the instance
+    is already at capacity. The token matters: releasing by decrementing a
+    counter would let a late release from a reclaimed slot free somebody else's.
+    """
+    global _next_slot_token
+    now = time.monotonic()
     with _slot_lock:
-        if _active_jobs >= MAX_ACTIVE_JOBS_PER_INSTANCE:
-            return False
-        _active_jobs += 1
-        return True
+        expired = [
+            token
+            for token, taken_at in _active_slots.items()
+            if now - taken_at > JOB_SLOT_TTL_SECONDS
+        ]
+        for token in expired:
+            # Almost always means a submission was accepted but its background
+            # task never ran. Worth a warning: it is invisible otherwise.
+            logger.warning("jobs: reclaiming batch slot %d after %ds", token, JOB_SLOT_TTL_SECONDS)
+            del _active_slots[token]
+
+        if len(_active_slots) >= MAX_ACTIVE_JOBS_PER_INSTANCE:
+            return None
+
+        _next_slot_token += 1
+        _active_slots[_next_slot_token] = now
+        return _next_slot_token
 
 
-def _release_slot() -> None:
-    global _active_jobs
+def _release_slot(token: int | None) -> None:
+    """Give a slot back. Idempotent, and a no-op for an already-reclaimed one."""
+    if token is None:
+        return
     with _slot_lock:
-        _active_jobs = max(0, _active_jobs - 1)
+        _active_slots.pop(token, None)
 
 
-def submit_job(user_id: str, job_id: str, *, store: ObjectStore | None = None) -> JobStatus:
-    """Claim a job and return its initial `queued` snapshot.
+@dataclass(frozen=True)
+class JobClaim:
+    """A successful submission: the queued snapshot plus the slot it holds.
 
-    On success the caller **must** arrange for `execute_job` to run with the
-    returned status: it owns the instance slot this acquired, and releases it.
+    The token is handed straight back to `execute_job`, which releases it. It
+    is not part of the wire contract — a caller never sees it.
+    """
+
+    status: JobStatus
+    slot_token: int
+
+
+def submit_job(user_id: str, job_id: str, *, store: ObjectStore | None = None) -> JobClaim:
+    """Claim a job and return its initial `queued` snapshot plus its slot.
+
+    On success the caller **should** arrange for `execute_job` to run with the
+    returned claim, which releases the slot. If that never happens — the
+    response times out before Starlette runs its background tasks, say — the
+    slot expires on its own after `JOB_SLOT_TTL_SECONDS` rather than wedging
+    this instance forever.
 
     Raises, in the order checked: `InvalidJobIdentifierError` (bad id shape),
     `JobsNotConfiguredError`, `InstanceBusyError`, `InputNotFoundError`, `InputTooLargeError`,
@@ -158,7 +228,8 @@ def submit_job(user_id: str, job_id: str, *, store: ObjectStore | None = None) -
     bucket = resolve_bucket()
     active_store = store or get_store()
 
-    if not _try_acquire_slot():
+    slot_token = _try_acquire_slot()
+    if slot_token is None:
         raise InstanceBusyError("instance is already running a batch job")
 
     try:
@@ -179,11 +250,11 @@ def submit_job(user_id: str, job_id: str, *, store: ObjectStore | None = None) -
         except ObjectAlreadyExistsError as exc:
             raise JobAlreadySubmittedError(f"job {job_id} has already been submitted") from exc
     except Exception:
-        _release_slot()
+        _release_slot(slot_token)
         raise
 
     logger.info("job %s: submitted (%d bytes of input)", job_id, stat.size)
-    return status
+    return JobClaim(status=status, slot_token=slot_token)
 
 
 def execute_job(
@@ -191,6 +262,7 @@ def execute_job(
     job_id: str,
     status: JobStatus,
     *,
+    slot_token: int | None = None,
     store: ObjectStore | None = None,
     bucket: str | None = None,
 ) -> JobStatus:
@@ -198,7 +270,8 @@ def execute_job(
 
     Handed to `BackgroundTasks` by the submit route. Never raises: `run_job`
     turns every failure into a terminal status snapshot, and the slot is
-    released either way.
+    released either way. If this never runs at all, the slot expires instead —
+    see `JOB_SLOT_TTL_SECONDS`.
     """
     try:
         return runner.run_job(
@@ -209,7 +282,7 @@ def execute_job(
             status=status,
         )
     finally:
-        _release_slot()
+        _release_slot(slot_token)
 
 
 def load_status(user_id: str, job_id: str, *, store: ObjectStore | None = None) -> JobStatus | None:

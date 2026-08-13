@@ -29,7 +29,7 @@ from PIL import Image
 
 from app import cropper
 from app.classify import ClassifyResult
-from app.jobs import layout, runner
+from app.jobs import layout, runner, zipsafe
 from app.jobs.gcs import ObjectStore
 from app.jobs.state import JobStatusLog, new_status
 from app.orient import OrientationResult
@@ -586,3 +586,65 @@ class TestDegradedWrites:
 
         assert final is status
         assert final.state == "queued"
+
+
+class TestRasterBombs:
+    """A pixel bomb must cost one failure record, not the instance.
+
+    The finding these cover: every byte ceiling in `app.jobs.zipsafe` is
+    cleared by a 506 KB PNG that decodes to 484 MB, so the guard has to be
+    counted in pixels and applied before the first full-size decode.
+    """
+
+    def test_a_raster_bomb_is_one_failure_and_the_batch_survives(
+        self, client, store, no_server_strategies, classify_must_not_be_called, stub_vision
+    ):
+        bomb = io.BytesIO()
+        # 8000x8000 = 64 MP: half a megabyte on disk, 192 MB decoded, and well
+        # under every byte ceiling the archive guards apply.
+        Image.new("RGB", (8_000, 8_000), (255, 255, 255)).save(bomb, format="PNG", compress_level=9)
+        payload = bomb.getvalue()
+        assert len(payload) < zipsafe.RATIO_CHECK_MIN_BYTES
+        assert len(payload) < zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
+
+        batch = Batch()
+        batch.add_raw("bomb.png", payload)
+        batch.add_image("real_card.jpg", FRONT_WORDS)
+        stub_vision(batch)
+
+        status = run(store, client, batch)
+
+        assert status.state == "succeeded"
+        assert status.processed_images == 1
+        assert status.failed_images == 1
+        failures = manifest_of(client)["failures"]
+        assert failures[0]["entry_name"] == "bomb.png"
+        assert failures[0]["reason"] == "image_too_many_pixels"
+
+    def test_the_bomb_is_rejected_before_it_is_decoded(
+        self,
+        client,
+        store,
+        no_server_strategies,
+        classify_must_not_be_called,
+        stub_vision,
+        monkeypatch,
+    ):
+        # Rejecting it after a decode would already have cost the memory. The
+        # EXIF transpose is the first full-size decode in the pipeline, so it
+        # must never see the bomb.
+        bomb = io.BytesIO()
+        Image.new("RGB", (8_000, 8_000), (255, 255, 255)).save(bomb, format="PNG", compress_level=9)
+        batch = Batch()
+        batch.add_raw("bomb.png", bomb.getvalue())
+        stub_vision(batch)
+
+        def _must_not_decode(_data):
+            raise AssertionError("a raster bomb reached the first decode")
+
+        monkeypatch.setattr(runner, "apply_exif_orientation", _must_not_decode)
+
+        status = run(store, client, batch)
+
+        assert status.state == "failed"
+        assert manifest_of(client)["failures"][0]["reason"] == "image_too_many_pixels"

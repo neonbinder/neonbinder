@@ -136,3 +136,42 @@ class TestOutputImageObject:
         assert layout.output_image_object(USER, JOB, 7, "jpg") == (
             f"placeholders/{USER}/{JOB}/output/images/0007.jpg"
         )
+
+
+class TestTrailingNewlineAnchoring:
+    """The regression the `\\A..\\Z` anchors exist to prevent.
+
+    Python's `$` also matches immediately *before* a trailing newline, so
+    `^user_abc$` accepts `"user_abc\\n"`. A newline inside an object-path
+    segment is exactly the kind of thing that survives one encoder and confuses
+    the next, so both patterns anchor with `\\Z`, which means end-of-string and
+    nothing else. These assert the property directly on the patterns rather
+    than only through `validate_identifiers`, so the anchors cannot be loosened
+    back to `$` without a failure that names the reason.
+    """
+
+    @pytest.mark.parametrize("user_id", ["user_abc\n", "user_2abcDEF123\n"])
+    def test_user_pattern_rejects_a_trailing_newline(self, user_id):
+        assert layout.CLERK_USER_ID_PATTERN.match(user_id) is None
+        with pytest.raises(InvalidJobIdentifierError, match="user_id"):
+            layout.validate_identifiers(user_id, JOB)
+
+    def test_job_pattern_rejects_a_trailing_newline(self):
+        assert layout.JOB_ID_PATTERN.match(f"{JOB}\n") is None
+        with pytest.raises(InvalidJobIdentifierError, match="job_id"):
+            layout.validate_identifiers(USER, f"{JOB}\n")
+
+    def test_the_valid_forms_still_match(self):
+        assert layout.CLERK_USER_ID_PATTERN.match(USER) is not None
+        assert layout.JOB_ID_PATTERN.match(JOB) is not None
+
+
+class TestConvexMirror:
+    def test_this_side_is_the_stricter_of_the_two(self):
+        # The Convex regex (convex/adapters/placeholderUploads.ts) is
+        # /^user_[A-Za-z0-9]+$/ with no length bound. The asymmetry is
+        # documented rather than assumed away, and it fails closed: an id
+        # Convex would mint a policy for can be refused here, never the
+        # reverse. This pins the direction.
+        long_body = "user_" + "a" * 200
+        assert layout.CLERK_USER_ID_PATTERN.match(long_body) is None

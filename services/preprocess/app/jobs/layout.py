@@ -33,10 +33,16 @@ import re
 # It is a bucket name, not a secret.
 BUCKET_ENV = "GCS_PLACEHOLDER_BUCKET"
 
-# Clerk subject IDs are `user_` plus a base62 body. Mirrors CLERK_USER_ID_RE in
-# convex/adapters/placeholderUploads.ts, with an added length bound: this value
-# becomes a literal object-path segment, and an unbounded one is a way to push a
-# key past GCS's 1024-byte name limit and get an error we would have to guess at.
+# Clerk subject IDs are `user_` plus a base62 body.
+#
+# Modelled on CLERK_USER_ID_RE in convex/adapters/placeholderUploads.ts but
+# deliberately **not identical** to it: that one is `/^user_[A-Za-z0-9]+$/`,
+# with no upper bound on the body. This is the stricter of the two, so the
+# asymmetry fails closed — an id Convex would happily mint a policy for can
+# still be refused here, never the reverse. The bound exists because the value
+# becomes a literal object-path segment, and an unbounded one is a way to push
+# a key past GCS's 1024-byte name limit and get back an error we would have to
+# guess at.
 #
 # Anchored with \A..\Z, NOT ^..$. In Python `$` also matches immediately before
 # a trailing newline, so `^user_abc$` happily accepts "user_abc\n" — and a

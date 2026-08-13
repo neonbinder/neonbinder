@@ -6,11 +6,16 @@ retryable ones, the status projection including the read-time-only `stalled`
 state, and the two things the request shape deliberately does *not* have — an
 object path, and a job-id-to-owner index on this side of the boundary.
 
+`TestSlotLease` covers the admission slot's expiry, including the case that
+matters most: a submission whose background task never runs at all.
+
 Storage is the in-memory fake driven through `app.jobs`' injectable store; the
 background task itself is stubbed, since `test_jobs_runner` owns the pipeline.
 """
 
 from __future__ import annotations
+
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -36,7 +41,7 @@ def client(monkeypatch) -> FakeStorageClient:
     monkeypatch.setenv("INTERNAL_API_KEY", KEY)
     monkeypatch.setenv(layout.BUCKET_ENV, BUCKET)
     monkeypatch.setattr(jobs, "_default_store", ObjectStore(client=fake))
-    monkeypatch.setattr(jobs, "_active_jobs", 0)
+    monkeypatch.setattr(jobs, "_active_slots", {})
     return fake
 
 
@@ -50,9 +55,9 @@ def no_background(monkeypatch) -> list[tuple]:
     """Capture the background task instead of running the pipeline."""
     started: list[tuple] = []
 
-    def _fake(user_id, job_id, status, **kwargs):
+    def _fake(user_id, job_id, status, *, slot_token=None, **kwargs):
         started.append((user_id, job_id, status))
-        jobs._release_slot()
+        jobs._release_slot(slot_token)
 
     monkeypatch.setattr(jobs, "execute_job", _fake)
     return started
@@ -152,7 +157,8 @@ class TestSubmit:
         assert response.headers["retry-after"] == str(JOB_RETRY_AFTER_SECONDS)
 
     def test_a_busy_instance_is_a_retryable_503(self, client, api, no_background, monkeypatch):
-        monkeypatch.setattr(jobs, "_active_jobs", jobs.MAX_ACTIVE_JOBS_PER_INSTANCE)
+        held = {token: time.monotonic() for token in range(jobs.MAX_ACTIVE_JOBS_PER_INSTANCE)}
+        monkeypatch.setattr(jobs, "_active_slots", held)
         seed_input(client)
         response = submit(api)
         assert response.status_code == 503
@@ -281,7 +287,7 @@ class TestFacade:
         assert built == [1]
 
     def test_execute_job_releases_the_slot_even_when_the_run_explodes(self, client, monkeypatch):
-        monkeypatch.setattr(jobs, "_active_jobs", 1)
+        monkeypatch.setattr(jobs, "_active_slots", {7: time.monotonic()})
 
         def _boom(**kwargs):
             raise RuntimeError("run_job should never raise, but if it did")
@@ -289,14 +295,14 @@ class TestFacade:
         monkeypatch.setattr(jobs.runner, "run_job", _boom)
 
         with pytest.raises(RuntimeError):
-            jobs.execute_job(USER, JOB, new_status(USER, JOB))
+            jobs.execute_job(USER, JOB, new_status(USER, JOB), slot_token=7)
 
         # Leaking the slot would wedge this instance into answering every
         # later submission with INSTANCE_BUSY until it was restarted.
-        assert jobs._active_jobs == 0
+        assert jobs._active_slots == {}
 
     def test_execute_job_runs_the_pipeline_and_releases_the_slot(self, client, monkeypatch):
-        monkeypatch.setattr(jobs, "_active_jobs", 1)
+        monkeypatch.setattr(jobs, "_active_slots", {7: time.monotonic()})
         seen: list[dict] = []
 
         def _run(**kwargs):
@@ -306,9 +312,9 @@ class TestFacade:
         monkeypatch.setattr(jobs.runner, "run_job", _run)
 
         status = new_status(USER, JOB)
-        assert jobs.execute_job(USER, JOB, status) is status
+        assert jobs.execute_job(USER, JOB, status, slot_token=7) is status
         assert seen[0]["bucket"] == BUCKET
-        assert jobs._active_jobs == 0
+        assert jobs._active_slots == {}
 
     def test_an_unexpected_submit_failure_is_not_swallowed(self, client, api, monkeypatch):
         # The error table maps the refusals this endpoint knows about. Anything
@@ -321,3 +327,71 @@ class TestFacade:
 
         with pytest.raises(ValueError):
             submit(api)
+
+
+class TestSlotLease:
+    """A batch slot is a lease, not a lock.
+
+    `submit_job` takes a slot and `execute_job` releases it — but Starlette
+    only runs background tasks *after* both `send()` calls, so a response that
+    never lands (Convex or LB timeout, a disconnect during the two GCS round
+    trips) means the task never runs and nothing ever releases. At
+    MAX_ACTIVE_JOBS_PER_INSTANCE = 1 with max-instances 3, three of those would
+    wedge the feature into permanent 503 INSTANCE_BUSY. An ordinary client
+    retry policy is enough to cause it.
+    """
+
+    def test_a_never_scheduled_task_does_not_wedge_the_instance(self, client, api, monkeypatch):
+        seed_input(client)
+
+        # Submit and then simply never run the background task, exactly as a
+        # response that timed out on its way to the client would.
+        claim = jobs.submit_job(USER, JOB)
+        assert claim.slot_token in jobs._active_slots
+        # The slot is genuinely held, so the instance really is refusing work.
+        with pytest.raises(jobs.InstanceBusyError):
+            jobs.submit_job(USER, JOB)
+
+        # Once the lease is older than its TTL another submission reclaims it.
+        stale = time.monotonic() - jobs.JOB_SLOT_TTL_SECONDS - 1
+        jobs._active_slots[claim.slot_token] = stale
+
+        reclaimed = jobs._try_acquire_slot()
+        assert reclaimed is not None
+        assert claim.slot_token not in jobs._active_slots
+
+    def test_a_live_slot_is_not_reclaimed_early(self, client):
+        token = jobs._try_acquire_slot()
+        assert token is not None
+        # Still inside its TTL, so the instance is genuinely busy.
+        assert jobs._try_acquire_slot() is None
+
+    def test_a_reclaimed_slot_cannot_free_its_successor(self, client, monkeypatch):
+        # Why the token exists. With a bare counter, a late release from a
+        # lease that had already been reclaimed would decrement somebody else's
+        # slot and let a third batch in behind it.
+        first = jobs._try_acquire_slot()
+        jobs._active_slots[first] = time.monotonic() - jobs.JOB_SLOT_TTL_SECONDS - 1
+        second = jobs._try_acquire_slot()
+
+        jobs._release_slot(first)  # the abandoned task finally wakes up
+
+        assert second in jobs._active_slots
+        assert jobs._try_acquire_slot() is None
+
+    def test_the_ttl_covers_a_realistic_batch(self):
+        from app.jobs.zipsafe import MAX_ZIP_ENTRIES
+
+        # Long enough for the overwhelming majority of real uploads to finish
+        # inside it, and deliberately shorter than the theoretical worst case:
+        # over-admitting costs throughput, under-admitting kills the feature.
+        typical_batch_images = 300
+        assert jobs.JOB_SLOT_TTL_SECONDS >= typical_batch_images * 3
+        assert jobs.JOB_SLOT_TTL_SECONDS < MAX_ZIP_ENTRIES * 3
+
+    def test_releasing_a_null_token_is_a_no_op(self, client):
+        # `execute_job` defaults `slot_token` to None so it stays directly
+        # callable (tests, and any future caller that never took a slot).
+        token = jobs._try_acquire_slot()
+        jobs._release_slot(None)
+        assert token in jobs._active_slots

@@ -131,6 +131,41 @@ class TestRequestValidation:
         )
         assert response.status_code == 413
 
+    def test_raster_bomb_returns_413_despite_a_tiny_byte_count(self, monkeypatch):
+        # A 506 KB PNG that decodes to 484 MB clears the byte ceiling by a
+        # factor of 65. `/process` decodes each upload several times over in
+        # the cascade, so it needs the pixel ceiling too.
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        buffer = io.BytesIO()
+        Image.new("RGB", (13_000, 13_000), (255, 255, 255)).save(
+            buffer, format="PNG", compress_level=9
+        )
+        payload = buffer.getvalue()
+        assert len(payload) < MAX_IMAGE_BYTES
+
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("bomb.png", payload, "image/png")},
+        )
+
+        assert response.status_code == 413
+        assert "pixels" in response.json()["detail"]
+
+    def test_undecodable_bytes_are_not_turned_into_a_413(self, monkeypatch):
+        # The pixel check is tolerant of headers it cannot parse, so junk that
+        # used to reach the cascade and 502 still does. Diagnosing "not an
+        # image" as "too large" would be a worse answer than the cascade's.
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("junk.jpg", b"not an image at all", "image/jpeg")},
+        )
+        assert response.status_code != 413
+
     def test_missing_file_field_returns_400_missing_image(self):
         """With image+precropped both optional, an empty request is a
         MISSING_IMAGE 400 rather than a FastAPI-level 422."""

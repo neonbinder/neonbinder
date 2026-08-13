@@ -293,6 +293,13 @@ HTTP/1.1 202 Accepted
 | 503 | `JOBS_NOT_CONFIGURED` | `GCS_PLACEHOLDER_BUCKET` unset. Retryable (`Retry-After: 30`). |
 | 503 | `INSTANCE_BUSY` | This instance is already running a batch. Retryable (`Retry-After: 30`). |
 
+`INSTANCE_BUSY` comes from a per-instance admission slot, which is a **lease
+rather than a lock**: it is released by a background task that only runs after
+the response has been sent, so a submission whose response never lands would
+otherwise hold it forever. Slots expire after 15 minutes. A batch longer than
+that may find a second batch admitted alongside it, which is the safe direction
+— the slot protects throughput, not correctness.
+
 ```http
 GET /jobs/{job_id}?user_id=user_2abc...
 ```
@@ -371,7 +378,10 @@ clockwise, so anywhere a client applies a service-reported rotation itself —
 the cascade, so `rotation_degrees` is always relative to the normalised image.
 `exif_orientation` records the tag that was found (1 = nothing to do).
 
-**Partial failure.** One unprocessable image never fails the batch. It lands in
+**Partial failure.** One unprocessable image never fails the batch. `reason`
+is a stable machine string — `unsupported_image_type`, `entry_too_large`,
+`entry_name_traversal`, `symlink_entry`, `encrypted_entry`, `entry_unreadable`,
+`image_too_many_pixels`, `crop_failed`. It lands in
 `failures` with a reason and the other 399 complete. A batch where *nothing*
 survived is reported as `failed` with `error_code: no_processable_images` — the
 manifest is still written so the reason is visible.
@@ -391,13 +401,25 @@ decompressed.
 | Per entry | 32 MB | Identical to `MAX_IMAGE_BYTES` on `/process` — an image the multipart route refuses must not get in through the zip door. |
 | Total expansion | 2 GiB | 4x the compressed ceiling. JPEGs deflate to ~1.0x, PNG-heavy zips to ~2x. |
 | Compression ratio | 100:1 | Already-compressed image formats sit at 1.0-1.2x; a zeros-bomb is 1000:1+. Only applied above 1 MiB, where ratios stop being noise. |
+| Decoded pixels | 50 MP | The only ceiling not counted in bytes, and the one the others cannot substitute for: a flat 13000x13000 PNG is 506 KB on disk and 484 MB decoded, clearing every row above. 50 MP admits a 48 MP phone photo and bounds one raster at ~150 MB. |
 
-Zip64 is refused outright: it is only needed past 65534 entries or a 4 GB
-directory, both far outside the limits above.
+The central-directory ceiling is applied to the metadata CPython will
+**actually use**, which is not always what the 32-bit end-of-central-directory
+record says: a Zip64 locator overrides the entry count and directory size with
+no sentinel required, so the Zip64 record is resolved and checked too. The read
+that builds the directory is additionally capped in bytes, so the allocation
+stays bounded even if that arithmetic is ever wrong again.
+
+The pixel ceiling is enforced twice: `PIL.Image.MAX_IMAGE_PIXELS` is lowered
+process-wide (covering decode paths inside the crop strategies), and the job
+reads dimensions from the lazy image header before the first full-size decode,
+so a raster bomb is one `image_too_many_pixels` failure record rather than an
+OOM. `/process` and `/crop` apply the same ceiling and answer 413.
 
 Entry names are rejected for `..` segments, a leading `/`, a drive letter, a
-backslash, control characters (NUL included) or a length over 255 bytes — but
-that is the second line of defence. Output keys are derived from an entry's
+backslash, control characters (NUL included), non-ASCII line breaks and
+bidirectional overrides (which make a name render as something other than what
+it is), or a length over 255 bytes — but that is the second line of defence. Output keys are derived from an entry's
 **zip ordinal**, never its name, so a member called `../../etc/passwd` has
 nowhere to go regardless. Symlink and encrypted entries are refused too.
 

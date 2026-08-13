@@ -57,6 +57,7 @@ from app import cropper
 from app.classify import ClassifyResult, classify_card
 from app.cropper._utils import rotate_image_bytes
 from app.exif import apply_exif_orientation
+from app.imaging import RasterTooLargeError, check_raster_size
 from app.jobs import layout
 from app.jobs.gcs import ObjectRef, ObjectStore
 from app.jobs.state import PROGRESS_CHECKPOINT_IMAGES, JobStatus, JobStatusLog, now_ms
@@ -173,6 +174,16 @@ def process_member(
     """
     if member.data is None:  # pragma: no cover - callers filter rejected members
         raise ImageUnprocessableError(member.reason or "no_data")
+
+    # Pixels, not bytes. A 506 KB PNG can decode to 484 MB, which clears every
+    # ceiling in `app.jobs.zipsafe` — see `app.imaging` for why bytes are the
+    # wrong unit. Read from the lazy header here, before the EXIF transpose
+    # becomes the first of several full-size decodes, so a raster bomb costs
+    # one failure record rather than the instance.
+    try:
+        check_raster_size(member.data)
+    except RasterTooLargeError as exc:
+        raise ImageUnprocessableError("image_too_many_pixels") from exc
 
     normalised, exif_orientation = apply_exif_orientation(member.data)
 
