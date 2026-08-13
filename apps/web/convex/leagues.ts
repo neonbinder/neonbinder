@@ -21,7 +21,7 @@ import {
   type MutationCtx,
 } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { requireAdmin } from "./auth";
+import { getCurrentUserId, requireAdmin } from "./auth";
 import { sportConfigDefaultsFor } from "./sportConfig";
 
 export const leagueDocValidator = v.object({
@@ -133,17 +133,20 @@ export async function resolveDefaultLeagueId(
 // ---------------------------------------------------------------------------
 
 /**
- * Leagues for a sport, or all of them. Drives the Team Management league
- * filter and the edit panel's dropdown.
+ * Leagues for a sport, or all of them. Drives Team Management's league filter
+ * and edit dropdown, and the spine-label designer's team picker.
  *
- * Admin-gated: leagues are only surfaced in admin tooling today, and gating
- * now is cheaper than discovering later that an ungated query grew a caller.
+ * Signed-in rather than admin: NEO-156 gave the designer a league filter, and
+ * that is a collector-facing screen. Leagues are globally-shared reference
+ * data — a name and an abbreviation, no user content — so the only thing worth
+ * gating is cost, and a signed-in check covers that. Returns empty rather than
+ * throwing so a signed-out render is a quiet no-op.
  */
 export const list = query({
   args: { sportId: v.optional(v.id("selectorOptions")) },
   returns: v.array(leagueDocValidator),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    if (!(await getCurrentUserId(ctx))) return [];
     const rows = args.sportId
       ? await ctx.db
           .query("leagues")

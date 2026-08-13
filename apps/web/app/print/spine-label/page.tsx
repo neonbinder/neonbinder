@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { Input } from "@/components/primitives";
+import { Autocomplete, Input } from "@/components/primitives";
 // The shared `Button` primitive is a light-surface control (bg-white,
 // text-slate-900). These pages are dark, and the rest of the app reaches for
 // NeonButton here — see components/SetSelector/AdminTools.tsx.
@@ -65,6 +65,12 @@ import { pickDefaultTeamYear } from "@/lib/players/team-tenure";
 const FALLBACK_BACKGROUND = "#101820";
 const FALLBACK_TEXT = "#ffffff";
 
+/**
+ * Rows the free-form team picker offers at once. A typeahead list is read, not
+ * scrolled: past this, typing another character beats scanning further.
+ */
+const TEAM_PICKER_RESULTS = 12;
+
 /** On-screen preview width. The sheet is 8.5in, so this is ~44% scale. */
 const PREVIEW_WIDTH_PX = 380;
 
@@ -72,6 +78,10 @@ export default function SpineLabelPage() {
   const [labels, setLabels] = useState<SpineLabel[]>([]);
 
   const [player, setPlayer] = useState<PlayerSearchResult | null>(null);
+  // Free-form team picker: its own query text and league filter, independent of
+  // the player's career teams above.
+  const [teamQuery, setTeamQuery] = useState("");
+  const [leagueFilter, setLeagueFilter] = useState<string>("all");
   const [name, setName] = useState("");
   const [selectedTeamId, setSelectedTeamId] = useState<Id<"teams"> | null>(null);
 
@@ -90,6 +100,42 @@ export default function SpineLabelPage() {
     api.teams.getManyByIds,
     teamIds.length > 0 ? { ids: teamIds } : "skip",
   );
+
+  // Every team we know, for the free-form picker. Filtered on the client the
+  // same way Team Management does it — right at today's scale, and the query's
+  // own cap is what keeps that honest as the table grows.
+  const allTeams = useQuery(api.teams.listForPicker, {});
+  const allLeagues = useQuery(api.leagues.list, {});
+  const leagueList = useMemo(() => allLeagues ?? [], [allLeagues]);
+
+  const teamMatches = useMemo(() => {
+    const needle = teamQuery.trim().toLowerCase();
+    if (!needle) return [];
+    return (allTeams ?? [])
+      .filter((t) => {
+        if (leagueFilter !== "all" && t.leagueId !== leagueFilter) return false;
+        return t.name.toLowerCase().includes(needle);
+      })
+      .slice(0, TEAM_PICKER_RESULTS);
+  }, [allTeams, teamQuery, leagueFilter]);
+
+  /**
+   * Apply a picked team's colors.
+   *
+   * Marks the colors as touched, unlike the career-team chips: picking a team
+   * by hand is an explicit choice and must outrank the player's longest-tenure
+   * default, which would otherwise keep winning while a player is also
+   * selected. A team with no colors leaves the fields alone — see
+   * `applyTeamColors`.
+   */
+  const applyPickedTeamColors = (team: {
+    colors?: { primary?: string; secondary?: string };
+  }) => {
+    if (!team.colors?.primary) return;
+    setColorsTouched(true);
+    setBackground(team.colors.primary);
+    setText(team.colors.secondary ?? FALLBACK_TEXT);
+  };
 
   /**
    * Apply a team's colors to the fields.
@@ -165,6 +211,17 @@ export default function SpineLabelPage() {
   // one that already exists and only has its text changed is not.
   const [addStatus, setAddStatus] = useState("");
 
+  /**
+   * Bumped when the form resets, to remount `PlayerAutocomplete`.
+   *
+   * That component owns its own query text (it debounces it before querying),
+   * so clearing `player` here does not empty its box — the previous player's
+   * name would sit there looking selected. A key change is the least
+   * surprising way to reset a child that owns state, short of making its text
+   * a controlled prop it has no other reason to expose.
+   */
+  const [formGeneration, setFormGeneration] = useState(0);
+
   const addLabel = () => {
     if (!canAdd) return;
     // Captured before the update so both the updater below and the status
@@ -189,6 +246,23 @@ export default function SpineLabelPage() {
     setAddStatus(
       `Added ${addedName} to the sheet. ${newCount} label${newCount === 1 ? "" : "s"} queued.`,
     );
+
+    // Clear the designer for the next label. Leaving the previous name and
+    // colours in place made a queue of several binders read as though nothing
+    // had happened — the form looked identical after the click, and the only
+    // evidence was a row appearing in a list on the other side of the page.
+    //
+    // The SHEET settings (spine width, label height) deliberately survive:
+    // they describe the paper, not the label, and every label on one sheet
+    // shares them. Re-picking them per label would be busywork.
+    setFormGeneration((g) => g + 1);
+    setPlayer(null);
+    setName("");
+    setTeamQuery("");
+    setSelectedTeamId(null);
+    setColorsTouched(false);
+    setBackground(FALLBACK_BACKGROUND);
+    setText(FALLBACK_TEXT);
   };
 
   // Removing a label unmounts that exact li/button — React does not restore
@@ -273,7 +347,7 @@ export default function SpineLabelPage() {
         <div className="space-y-6">
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-300">Player</h3>
-            <PlayerAutocomplete onSelect={onSelectPlayer} />
+            <PlayerAutocomplete key={formGeneration} onSelect={onSelectPlayer} />
             <Input
               label="Name on the label"
               value={name}
@@ -324,6 +398,62 @@ export default function SpineLabelPage() {
               </div>
             </section>
           )}
+
+          {/* Any team, for a name typed by hand.
+              The career-team chips above only exist when a PLAYER was picked
+              and that player has `teamYears`. Typing a name straight in — the
+              common case for a team binder, or a player we do not hold — left
+              nowhere to get colours from but the hex fields. This picks any
+              team we know, filtered the same way Team Management filters:
+              league, then type-to-narrow. */}
+          <section className="space-y-2">
+            <h3 className="text-sm font-semibold text-slate-300">
+              Team colors
+            </h3>
+            <div className="flex flex-wrap items-start gap-3">
+              <div>
+                <label
+                  htmlFor="spine-league-filter"
+                  className="block text-sm font-medium mb-1"
+                >
+                  League
+                </label>
+                <select
+                  id="spine-league-filter"
+                  value={leagueFilter}
+                  onChange={(e) => setLeagueFilter(e.target.value)}
+                  className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                >
+                  <option value="all">All leagues</option>
+                  {leagueList.map((league) => (
+                    <option key={league._id} value={league._id}>
+                      {league.abbreviation ?? league.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex-1 min-w-[16rem]">
+                <span className="block text-sm font-medium mb-1">Team</span>
+                <Autocomplete
+                  query={teamQuery}
+                  onQueryChange={setTeamQuery}
+                  items={teamMatches}
+                  getKey={(t) => t._id}
+                  getLabel={(t) => t.name}
+                  getDescription={(t) =>
+                    t.colors?.primary ? undefined : "no colors"
+                  }
+                  onSelect={(t) => {
+                    setTeamQuery(t.name);
+                    applyPickedTeamColors(t);
+                  }}
+                  label="Find a team"
+                  placeholder="Start typing a team name…"
+                  emptyMessage="No teams match"
+                />
+              </div>
+            </div>
+          </section>
 
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-300">Colors</h3>
@@ -392,7 +522,12 @@ export default function SpineLabelPage() {
                 </button>
               ))}
             </div>
-            <div className="flex flex-wrap items-end gap-3">
+            {/* items-START, not items-end: only the height field carries
+                helperText, and aligning on the bottom pushed the two inputs to
+                different heights on the row. Aligning tops lines the labels and
+                the fields up, and the helper text hangs below where it
+                belongs. */}
+            <div className="flex flex-wrap items-start gap-3">
               <Input
                 label="Spine width (in)"
                 type="number"

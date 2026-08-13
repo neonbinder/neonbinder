@@ -321,10 +321,22 @@ describe("leagues.list", () => {
     ]);
   });
 
-  test("requires admin", async () => {
+  test("is readable by any signed-in user, not just admins", async () => {
+    // NEO-156: the spine-label designer's team picker filters by league, and
+    // that is a collector-facing screen. Leagues carry no user content.
     const t = convexTest(schema, modules);
-    await expect(
-      t.withIdentity({ subject: "u", role: "user" }).query(api.leagues.list, {}),
-    ).rejects.toThrow(/admin/i);
+    const sportId = await seedSport(t);
+    await t.withIdentity(ADMIN).mutation(api.leagues.create, { name: "MLB", sportId });
+
+    const rows = await t
+      .withIdentity({ subject: "u", role: "user" })
+      .query(api.leagues.list, {});
+
+    expect(rows.map((r) => r.name)).toEqual(["MLB"]);
+  });
+
+  test("returns nothing to a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.leagues.list, {})).resolves.toEqual([]);
   });
 });

@@ -2,7 +2,7 @@ import { query, mutation, internalMutation, internalQuery, action } from "./_gen
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { requireAdmin } from "./auth";
+import { getCurrentUserId, requireAdmin } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 
 /**
@@ -508,6 +508,42 @@ export const saveTeamFields = mutation({
 });
 
 
+/** Hard ceiling on rows returned by the team list queries below. */
+const TEAM_MANAGEMENT_CAP = 2000;
+
+/**
+ * NEO-156: teams for a picker, for any signed-in user.
+ *
+ * The spine-label designer needs to offer teams to a COLLECTOR, and
+ * `listForManagement` above is admin-only. Same rows, different audience —
+ * teams are globally-shared reference data with no user content on them, so
+ * the only thing being gated is cost.
+ *
+ * Signed-in rather than fully public for the same reason as `players.search`:
+ * a deployment URL ships in the client bundle, and an ungated list of every
+ * team is free read amplification for anyone who wants it. Returns empty
+ * rather than throwing, so a signed-out render is a quiet no-op.
+ *
+ * Filtering is the client's job, as on the admin screen — right at today's
+ * scale, and the explicit cap is what stops that being silently wrong later.
+ */
+export const listForPicker = query({
+  args: { sportId: v.optional(v.id("selectorOptions")) },
+  returns: v.array(teamDocValidator),
+  handler: async (ctx, args) => {
+    if (!(await getCurrentUserId(ctx))) return [];
+
+    const rows = args.sportId
+      ? await ctx.db
+          .query("teams")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+          .take(TEAM_MANAGEMENT_CAP)
+      : await ctx.db.query("teams").take(TEAM_MANAGEMENT_CAP);
+
+    return rows.sort((a, b) => a.name.localeCompare(b.name));
+  },
+});
+
 /**
  * NEO-156: the whole team list, for Team Management.
  *
@@ -523,7 +559,6 @@ export const saveTeamFields = mutation({
  * `.collect()` that would one day exceed Convex's read limit and fail as an
  * error rather than a slow query.
  */
-const TEAM_MANAGEMENT_CAP = 2000;
 
 export const listForManagement = query({
   args: { sportId: v.optional(v.id("selectorOptions")) },
