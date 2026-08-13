@@ -1,0 +1,570 @@
+name: Preprocess deploy
+
+# The post-merge prod deploy lane for services/preprocess, extracted verbatim
+# from preprocess.yml in NEO-143 so that release.yml can ORDER it ahead of the
+# web/Convex release. The jobs below are unchanged; only the trigger moved.
+#
+# Nothing in apps/web or services/browser calls preprocess at the time of this
+# change, so it was not part of the contract breakage that motivated NEO-143.
+# It is folded into the ordered release anyway for one reason: leaving a second
+# independent push-to-main deploy driver re-creates the same class of problem
+# the moment preprocess gains a Convex caller — which is imminent (UI screens
+# depending on it are in flight).
+#
+# Do NOT give this workflow a `push:` trigger. release.yml is the single driver
+# of push-to-main deploys. `workflow_dispatch` is retained for the dev-only
+# validation path; inside a called workflow `github.event_name` is the CALLER's
+# event, so a release.yml invocation correctly reads as `push` and the prod
+# guards below behave exactly as they did in preprocess.yml.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  # Serialize per ref and never cancel — a cancelled deploy can leave a revision
+  # parked at 0% traffic with its scratch tag attached (NEO-114).
+  group: preprocess-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/preprocess
+
+env:
+  SERVICE: neonbinder-preprocess
+  REGION: us-central1
+  DEV_PROJECT: neonbinder-dev
+  PROD_PROJECT: neonbinder
+  DEV_IMAGE: gcr.io/neonbinder-dev/neonbinder-preprocess
+  PROD_IMAGE: gcr.io/neonbinder/neonbinder-preprocess
+
+jobs:
+  test:
+    name: Lint + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          # Action INPUT, so `defaults.run` does NOT apply — this resolves from
+          # the workspace root and must carry the prefix explicitly.
+          cache-dependency-path: services/preprocess/requirements*.txt
+      # pip, pytest and --cov=app are all cwd-relative and depend on the
+      # workflow-level `working-directory`. Ruff does not: `ruff check .` from
+      # the repo root walks the tree to the same files and resolves config
+      # per-file. Keeping the cwd right is still required for the other three.
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  # ---------------------------------------------------------------------------
+  # Push-to-main flow.
+  #
+  #   test -> build-push -> deploy-dev -> dev-smoke -> dev-promote
+  #                                                        |
+  #                                                   deploy-prod
+  #                                                        |
+  #                                                    prod-smoke
+  #                                                        |
+  #                                                   prod-promote
+  #
+  # Build happens ONCE; the same image bytes are retagged for prod. BOTH envs
+  # use blue/green (no_traffic + sha tag, smoke the tagged URL, then promote),
+  # so a failed smoke leaves that environment serving its previous revision and
+  # there is nothing to roll back.
+  #
+  # This is the NEO-67 fix. The source deployed dev at 100% traffic FIRST and
+  # then smoked it, so a failure meant dev was already broken; a `dev-rollback`
+  # job tried to repair that using the NEO-34 `status.traffic[0].revisionName`
+  # query, which can select a revision that is not the one actually serving.
+  # Deploying at 0% removes the entire failure class instead of patching it.
+  # ---------------------------------------------------------------------------
+
+  build-push:
+    name: Build + push image (dev + prod GCR)
+    needs: test
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      short_sha: ${{ steps.short.outputs.short_sha }}
+      deploy_tag: ${{ steps.short.outputs.deploy_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: short
+        name: Compute sha tag
+        run: |
+          set -euo pipefail
+          SHORT="$(echo "$GITHUB_SHA" | cut -c1-7)"
+          echo "short_sha=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "deploy_tag=sha-$SHORT" >> "$GITHUB_OUTPUT"
+
+      - name: Auth to dev
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Configure Docker for GCR (dev)
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build + push to dev GCR
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build -t "$DEV_IMAGE:$SHA" -t "$DEV_IMAGE:latest" .
+          docker push "$DEV_IMAGE:$SHA"
+          docker push "$DEV_IMAGE:latest"
+
+      # The prod steps below are guarded on `push` so a validation
+      # `workflow_dispatch` can exercise the dev build without ever writing to
+      # the production registry. The source had no such guard.
+      - name: Re-auth to prod
+        if: github.event_name == 'push'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+
+      - name: Configure Docker for GCR (prod)
+        if: github.event_name == 'push'
+        run: gcloud auth configure-docker --quiet
+
+      - name: Retag + push to prod GCR
+        if: github.event_name == 'push'
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Same image bytes, new tags under the prod project path — prod never
+          # rebuilds, so what smoke passed in dev is bit-identical to prod.
+          docker tag "$DEV_IMAGE:$SHA" "$PROD_IMAGE:$SHA"
+          docker tag "$DEV_IMAGE:$SHA" "$PROD_IMAGE:latest"
+          docker push "$PROD_IMAGE:$SHA"
+          docker push "$PROD_IMAGE:latest"
+
+  deploy-dev:
+    name: Deploy dev (no-traffic, sha tag)
+    needs: build-push
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      new_revision: ${{ steps.capture-new.outputs.new_revision }}
+      tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
+      prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: capture-prev
+        name: Capture dev's currently-serving revision
+        # REPORTING INPUT ONLY — this feeds report-failure's blast-radius line.
+        # It is NOT a rollback source. The new revision lands at 0% traffic and
+        # is promoted only after dev-smoke passes, so on any failure path dev
+        # never stopped serving this revision. Do not reintroduce a rollback
+        # job from the presence of this step (NEO-67 / NEO-34).
+        run: |
+          PREV=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.traffic[0].revisionName)')
+          echo "Previous dev revision: $PREV"
+          echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to dev Cloud Run (no_traffic + sha tag)
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: neonbinder-preprocess
+          region: us-central1
+          image: gcr.io/neonbinder-dev/neonbinder-preprocess:${{ github.sha }}
+          project_id: neonbinder-dev
+          env_vars: |
+            ENVIRONMENT=dev
+            GOOGLE_CLOUD_PROJECT=neonbinder-dev
+          no_traffic: true
+          tag: ${{ needs.build-push.outputs.deploy_tag }}
+
+      - id: capture-new
+        name: Capture new dev revision + tagged URL
+        env:
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          NEW=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.latestCreatedRevisionName)')
+          TAGGED_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "::error::tagged URL for tag=$TAG not found on service."
+            exit 1
+          fi
+          echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+  dev-smoke:
+    name: Smoke dev (tagged URL)
+    needs: deploy-dev
+    if: github.event_name == 'push' && needs.deploy-dev.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/preprocess/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Fetch internal API key (dev)
+        env:
+          SMOKE_TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+        run: |
+          set -euo pipefail
+          KEY=$(gcloud secrets versions access latest --secret=internal-api-key --project="$DEV_PROJECT")
+          echo "::add-mask::$KEY"
+          [ -n "$KEY" ] || { echo "::error::internal-api-key came back empty"; exit 1; }
+          [ -n "${SMOKE_TARGET_URL:-}" ] || { echo "::error::SMOKE_TARGET_URL is empty"; exit 1; }
+          echo "SMOKE_INTERNAL_KEY=$KEY" >> "$GITHUB_ENV"
+
+      - name: Run smoke tests against dev tagged URL
+        env:
+          SMOKE_TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+        run: pytest tests/smoke -v
+
+  dev-promote:
+    name: Promote dev to 100%
+    needs: [build-push, deploy-dev, dev-smoke]
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.dev-smoke.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Promote and drop the scratch tag
+        env:
+          NEW_REVISION: ${{ needs.deploy-dev.outputs.new_revision }}
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          # ONE atomic call (NEO-114). Promoting and then removing the tag in a
+          # separate step leaves a window — and if the second call is skipped
+          # entirely, as the source workflow did deliberately, the tag keeps the
+          # revision addressable and therefore warm forever. That is what pinned
+          # idle instances and drove the cost incident.
+          gcloud run services update-traffic "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --to-revisions="$NEW_REVISION=100" \
+            --remove-tags="$TAG"
+
+  deploy-prod:
+    name: Deploy prod (no-traffic, sha tag)
+    needs: [build-push, dev-promote]
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.dev-promote.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      new_revision: ${{ steps.capture-new.outputs.new_revision }}
+      tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
+      prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: capture-prev
+        name: Capture prod's currently-serving revision
+        # Reporting input only — same rationale as deploy-dev's copy.
+        run: |
+          PREV=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --format='value(status.traffic[0].revisionName)')
+          echo "Previous prod revision: $PREV"
+          echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to prod Cloud Run (no_traffic + sha tag)
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: neonbinder-preprocess
+          region: us-central1
+          image: gcr.io/neonbinder/neonbinder-preprocess:${{ github.sha }}
+          project_id: neonbinder
+          env_vars: |
+            ENVIRONMENT=prod
+            GOOGLE_CLOUD_PROJECT=neonbinder
+          no_traffic: true
+          tag: ${{ needs.build-push.outputs.deploy_tag }}
+
+      - id: capture-new
+        name: Capture new prod revision + tagged URL
+        env:
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          NEW=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --format='value(status.latestCreatedRevisionName)')
+          TAGGED_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "::error::tagged URL for tag=$TAG not found on service."
+            exit 1
+          fi
+          echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+  prod-smoke:
+    name: Smoke prod (tagged URL)
+    needs: deploy-prod
+    if: github.event_name == 'push' && needs.deploy-prod.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/preprocess/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Fetch internal API key (prod)
+        env:
+          SMOKE_TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+        run: |
+          set -euo pipefail
+          KEY=$(gcloud secrets versions access latest --secret=internal-api-key --project="$PROD_PROJECT")
+          echo "::add-mask::$KEY"
+          [ -n "$KEY" ] || { echo "::error::internal-api-key came back empty"; exit 1; }
+          [ -n "${SMOKE_TARGET_URL:-}" ] || { echo "::error::SMOKE_TARGET_URL is empty"; exit 1; }
+          echo "SMOKE_INTERNAL_KEY=$KEY" >> "$GITHUB_ENV"
+
+      - name: Run smoke tests against prod tagged URL
+        env:
+          SMOKE_TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+        run: pytest tests/smoke -v
+
+  prod-promote:
+    name: Promote prod to 100%
+    needs: [build-push, deploy-prod, prod-smoke]
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.prod-smoke.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Promote and drop the scratch tag
+        env:
+          NEW_REVISION: ${{ needs.deploy-prod.outputs.new_revision }}
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "$SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --to-revisions="$NEW_REVISION=100" \
+            --remove-tags="$TAG"
+
+  # Unified failure report: fires if any stage between test and promote failed.
+  # Identifies the FIRST failed stage so the issue title names the actionable
+  # step.
+  report-failure:
+    name: Report deploy failure
+    needs: [test, build-push, deploy-dev, dev-smoke, dev-promote, deploy-prod, prod-smoke, prod-promote]
+    if: |
+      always() && github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && (
+        needs.test.result == 'failure' ||
+        needs.build-push.result == 'failure' ||
+        needs.deploy-dev.result == 'failure' ||
+        needs.dev-smoke.result == 'failure' ||
+        needs.dev-promote.result == 'failure' ||
+        needs.deploy-prod.result == 'failure' ||
+        needs.prod-smoke.result == 'failure' ||
+        needs.prod-promote.result == 'failure'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - name: Open GitHub issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          R_TEST: ${{ needs.test.result }}
+          R_BUILD: ${{ needs.build-push.result }}
+          R_DEV: ${{ needs.deploy-dev.result }}
+          R_DEV_SMOKE: ${{ needs.dev-smoke.result }}
+          R_DEV_PROMOTE: ${{ needs.dev-promote.result }}
+          R_PROD: ${{ needs.deploy-prod.result }}
+          R_PROD_SMOKE: ${{ needs.prod-smoke.result }}
+          R_PROMOTE: ${{ needs.prod-promote.result }}
+          NEW_REV: ${{ needs.deploy-prod.outputs.new_revision }}
+          DEV_NEW_REV: ${{ needs.deploy-dev.outputs.new_revision }}
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+          TAGGED_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          DEV_TAGGED_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+          PROD_PREV: ${{ needs.deploy-prod.outputs.prev_revision }}
+          DEV_PREV: ${{ needs.deploy-dev.outputs.prev_revision }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Values are quoted because `STAGE=test` would otherwise read as an
+          # assignment of the `test` shell builtin (shellcheck SC2209).
+          if   [ "$R_TEST" = "failure" ];        then STAGE="test"
+          elif [ "$R_BUILD" = "failure" ];       then STAGE="build-push"
+          elif [ "$R_DEV" = "failure" ];         then STAGE="deploy-dev"
+          elif [ "$R_DEV_SMOKE" = "failure" ];   then STAGE="dev-smoke"
+          elif [ "$R_DEV_PROMOTE" = "failure" ]; then STAGE="dev-promote"
+          elif [ "$R_PROD" = "failure" ];        then STAGE="deploy-prod"
+          elif [ "$R_PROD_SMOKE" = "failure" ];  then STAGE="prod-smoke"
+          elif [ "$R_PROMOTE" = "failure" ];     then STAGE="prod-promote"
+          else STAGE="unknown"
+          fi
+
+          case "$STAGE" in
+            test|build-push)
+              BLAST="No infra touched. Dev and prod both still serving their previous revisions." ;;
+            deploy-dev|dev-smoke)
+              BLAST="Dev has a parked revision at 0% traffic (\`$DEV_NEW_REV\`, tag \`$TAG\`) and is STILL SERVING \`$DEV_PREV\`. Prod never touched. Tagged URL for poking: $DEV_TAGGED_URL" ;;
+            dev-promote)
+              BLAST="Dev blue/green smoke passed but the traffic shift itself failed. Dev is still serving \`$DEV_PREV\`. Prod never touched." ;;
+            deploy-prod|prod-smoke)
+              BLAST="Dev is serving main's HEAD. Prod has a parked revision at 0% traffic (\`$NEW_REV\`, tag \`$TAG\`) and is still serving \`$PROD_PREV\`. Tagged URL for poking: $TAGGED_URL" ;;
+            prod-promote)
+              BLAST="Dev is serving main's HEAD. Prod blue/green smoke passed but the traffic shift itself failed. Prod is still serving \`$PROD_PREV\` — re-run the promote job or investigate update-traffic errors." ;;
+            *)
+              BLAST="Unknown failure mode — check the run directly." ;;
+          esac
+
+          cat > body.md <<EOF
+          Preprocess deploy failed at **\`$STAGE\`** for commit \`$SHA\`.
+
+          **Blast radius:** $BLAST
+
+          **Stage results**
+          | Stage | Result |
+          |---|---|
+          | test | \`$R_TEST\` |
+          | build-push | \`$R_BUILD\` |
+          | deploy-dev | \`$R_DEV\` |
+          | dev-smoke | \`$R_DEV_SMOKE\` |
+          | dev-promote | \`$R_DEV_PROMOTE\` |
+          | deploy-prod | \`$R_PROD\` |
+          | prod-smoke | \`$R_PROD_SMOKE\` |
+          | prod-promote | \`$R_PROMOTE\` |
+
+          **Links**
+          - Deploy run: $RUN_URL
+
+          Fix forward in a new PR; close this issue when a subsequent green deploy lands.
+          EOF
+
+          # \${{ github.repository }}, not a hardcoded slug. The source hardcoded
+          # the (now archived) standalone repo, which this token cannot write to
+          # — so the failure reporter would itself fail, silently, at the end of
+          # a job that only runs when something is already broken.
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Preprocess deploy failed at ${STAGE}: ${SHA}" \
+            --body-file body.md

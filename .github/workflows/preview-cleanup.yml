@@ -4,6 +4,30 @@ on:
   pull_request:
     types: [closed]
 
+# ⚠️ DO NOT close-and-reopen a PR to re-run CI. It fires this workflow.
+#
+# "Close/reopen to re-trigger the pipeline" is a common reflex and it is a trap
+# here: `types: [closed]` cannot distinguish "done with this PR" from "about to
+# reopen it". Closing tears the previews down; reopening does NOT rebuild them,
+# because the head SHA is unchanged and both Vercel and Convex reuse the
+# existing — now deleted — preview by name. Observed on PR #154:
+#
+#   attempt 1  wire-browser-url polled pr-154---….run.app → HTTP 404
+#              (this workflow had just removed the Cloud Run tag)
+#   attempt 2  the browser preview was back, but `convex env set --deployment
+#              earnest-wren-763` failed with "You don't have access to the
+#              selected project": the Vercel preview was not rebuilt on reopen,
+#              so its index.html still advertised a Convex preview deployment
+#              that no longer existed.
+#
+# Only a new commit recovers it — only a new SHA forces fresh previews.
+#
+# To re-run CI, in order of preference:
+#   * push a real commit (the E2E work-queue is keyed by E2E_RUN_ID, so a fresh
+#     run id is needed anyway once a queue has been drained);
+#   * `gh run rerun <id> --failed`, valid ONLY when the E2E job never ran, so
+#     there is no work-queue for that run id to collide with.
+#
 # When a PR closes (merged or not), tear down its per-PR previews:
 #
 #  1. cleanup            — browser preview on dev Cloud Run (browser.yml stands it

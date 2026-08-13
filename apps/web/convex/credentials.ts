@@ -119,7 +119,7 @@ async function getIdTokenClient(audience: string): Promise<IdTokenClient | null>
   return client;
 }
 
-async function browserAuthHeaders(): Promise<Record<string, string>> {
+async function buildAuthHeaders(): Promise<Record<string, string>> {
   // Send requests to browserUrl() (possibly a tagged pr-N--- preview host) but
   // mint the OIDC token against the base service URL that Cloud Run expects.
   const client = await getIdTokenClient(oidcAudienceFor(browserUrl()));
@@ -133,6 +133,132 @@ async function browserAuthHeaders(): Promise<Record<string, string>> {
   authHeaders.forEach((value, key) => {
     headers[key] = value;
   });
+  return headers;
+}
+
+// ---------------------------------------------------------------------------
+// NEO-143: browser-service contract guard
+//
+// Convex and the browser service ship from the same commit but go live at
+// different moments, so every release passes through a window where one side is
+// new and the other is old. release.yml now promotes the browser service to
+// 100% BEFORE it pushes Convex, which makes "service is older than Convex" a
+// bug rather than a routine state — but ordering alone is a process guarantee,
+// and NEO-143 happened because nothing mechanical was watching.
+//
+// This is the mechanical check. Before any authenticated call, we confirm the
+// service that will answer is new enough to understand it.
+//
+// What it prevents is not the loud failure — it is the SILENT one. NEO-141
+// moved the marketplace password onto a transient field of the login request.
+// An older service ignores that field and logs in with the stored secret
+// instead, so a user changing their password sees success while the old
+// password is quietly used. Detecting that after the response is useless; the
+// login already happened. Hence a pre-flight probe, not a response header.
+// ---------------------------------------------------------------------------
+
+/**
+ * The minimum `contractVersion` this Convex build requires from the browser
+ * service. Raise this in the SAME release that starts speaking a new shape, and
+ * only after a release in which the service already advertises that version.
+ * See services/browser/src/contract-version.ts for the bump procedure.
+ */
+const REQUIRED_CONTRACT_VERSION = 1;
+
+const CONTRACT_CACHE_TTL_MS = 60_000;
+const HEALTH_TIMEOUT_MS = 10_000;
+
+/** Thrown when the live browser service is too old for this Convex build. */
+export class BrowserServiceOutdatedError extends Error {
+  /**
+   * What the user should actually be told. The generic "could not reach X"
+   * copy the credential actions fall back to would be wrong here: the service
+   * is reachable and the credentials may be perfectly good — the deploy is
+   * simply mid-flight. Telling someone to re-check a correct password sends
+   * them to change it for no reason.
+   */
+  readonly userMessage =
+    "The marketplace connection service is updating right now. Nothing was changed — please try again in a moment.";
+
+  constructor(
+    readonly serviceVersion: number,
+    readonly requiredVersion: number,
+  ) {
+    super(
+      `Browser service contract v${serviceVersion} is older than the required v${requiredVersion}. ` +
+        `Refusing to send a request it may silently misinterpret.`,
+    );
+    this.name = "BrowserServiceOutdatedError";
+  }
+}
+
+/**
+ * User-facing copy for a failed credential operation. Keeps the mid-deploy case
+ * distinguishable from a genuine connectivity or credential problem.
+ */
+function credentialFailureMessage(error: unknown, site: string): string {
+  if (error instanceof BrowserServiceOutdatedError) return error.userMessage;
+  return `Could not reach ${siteDisplayName(site)} to verify your credentials. Nothing was saved — please try again.`;
+}
+
+let cachedContract: { url: string; version: number; checkedAt: number } | null = null;
+
+/** Reset the cached contract probe. Exported for tests. */
+export function __resetContractCache() {
+  cachedContract = null;
+}
+
+async function assertBrowserContract(headers: Record<string, string>): Promise<void> {
+  const url = browserUrl();
+  const now = Date.now();
+
+  // Only a SATISFIED result is cached-and-trusted. A cached "too old" is
+  // re-probed every time: during a deploy the service is being replaced
+  // underneath us, and making the user wait out a TTL after it is already
+  // healthy would turn a 2-second window into a minute-long outage.
+  if (
+    cachedContract &&
+    cachedContract.url === url &&
+    cachedContract.version >= REQUIRED_CONTRACT_VERSION &&
+    now - cachedContract.checkedAt < CONTRACT_CACHE_TTL_MS
+  ) {
+    return;
+  }
+
+  const response = await fetch(`${url}/health`, {
+    method: "GET",
+    headers,
+    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Browser service health check failed (${response.status}) — refusing to send a request whose shape it may not support.`,
+    );
+  }
+  const body = (await response.json().catch(() => ({}))) as { contractVersion?: unknown };
+
+  // A service predating NEO-143 does not report the field at all. Treat that as
+  // version 0 — it is exactly the "old service" case this guard exists for, and
+  // defaulting it to "probably fine" would defeat the entire mechanism.
+  const version = typeof body.contractVersion === "number" ? body.contractVersion : 0;
+  cachedContract = { url, version, checkedAt: now };
+
+  if (version < REQUIRED_CONTRACT_VERSION) {
+    throw new BrowserServiceOutdatedError(version, REQUIRED_CONTRACT_VERSION);
+  }
+}
+
+/**
+ * Auth headers for a browser-service call, gated on the contract check.
+ *
+ * Every outbound call funnels through here — including `loginWithRetry`, which
+ * calls `fetch` directly rather than `browserFetch`. That is deliberate: the
+ * login path is the one NEO-141 broke, so the guard is placed where it cannot
+ * be bypassed by adding another call site.
+ */
+async function browserAuthHeaders(): Promise<Record<string, string>> {
+  const headers = await buildAuthHeaders();
+  await assertBrowserContract(headers);
   return headers;
 }
 
@@ -315,7 +441,7 @@ export const saveCredentials = action({
           );
           return {
             success: false,
-            message: `Could not reach ${siteDisplayName(args.site)} to verify your credentials. Nothing was saved — please try again.`,
+            message: credentialFailureMessage(error, args.site),
           };
         }
       }, {
@@ -931,6 +1057,14 @@ async function loginWithRetry(
       );
       return { success: false, data: null, detail, diagnostic, errorClass: err.error_class };
     } catch (e) {
+      // NEO-143: a contract-guard refusal is NOT a login failure and must not
+      // be flattened into one. Returning success:false here would report "check
+      // your username and password" for a request we deliberately never sent —
+      // sending the user to change a password that is perfectly good, which is
+      // precisely the kind of quiet misattribution the guard exists to remove.
+      // Let it propagate to the action's catch, which renders the deploy-aware
+      // message.
+      if (e instanceof BrowserServiceOutdatedError) throw e;
       // Network/timeout to the browser service — do not retry (avoid hammering).
       detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
       console.log(`[${label}] login request threw: ${detail}`);

@@ -7,6 +7,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { __resetContractCache } from "./credentials";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -207,6 +208,20 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /**
+ * NEO-143: every authenticated browser-service call pre-flights `GET /health`
+ * for the contract version. Serve it centrally so these tests keep asserting on
+ * the credential calls only.
+ */
+function stubFetch(handler: FetchStub) {
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).endsWith("/health")) {
+      return jsonResponse({ status: "ok", environment: "test", contractVersion: 1 });
+    }
+    return handler(url, init);
+  }) as FetchStub);
+}
+
+/**
  * Build a fetch stub for the browser credential endpoints. `metadata` controls
  * what GET /credentials/<key>/metadata returns: a 404 (no secret) or an object
  * with the currently-stored username. Every POST /login/<site> — the store path
@@ -329,6 +344,9 @@ describe("seedMyTestCredentials", () => {
   beforeEach(() => {
     // Loopback browser URL → getIdTokenClient short-circuits (no OIDC / no GCP creds).
     process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    // NEO-143: the contract probe is cached at module scope; reset it so tests
+    // cannot inherit a previous test's "healthy" result.
+    __resetContractCache();
     process.env.DEV_SPORTLOTS_USERNAME = SL_USERNAME;
     process.env.DEV_SPORTLOTS_PASSWORD = SL_PASSWORD;
     process.env.DEV_BSC_USERNAME = BSC_USERNAME;
@@ -347,8 +365,7 @@ describe("seedMyTestCredentials", () => {
   test("skips re-store (preserves token) when the stored username is already correct", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
     );
 
@@ -382,8 +399,7 @@ describe("seedMyTestCredentials", () => {
         ],
       });
     });
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
     );
 
@@ -416,8 +432,7 @@ describe("seedMyTestCredentials", () => {
     // only place that can mint a replacement.
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({
         metadata: {
           username: SL_USERNAME,
@@ -445,8 +460,7 @@ describe("seedMyTestCredentials", () => {
     // is the correct direction for an ambiguous signal.
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({
         metadata: { username: SL_USERNAME, hasToken: false },
         puts,
@@ -464,8 +478,7 @@ describe("seedMyTestCredentials", () => {
   test("re-stores from env when the stored username is stale (self-heal)", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: "old-stale@example.com" }, puts }),
     );
 
@@ -489,7 +502,7 @@ describe("seedMyTestCredentials", () => {
   test("stores from env when no secret exists yet (metadata 404)", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal("fetch", makeCredentialFetch({ metadata: 404, puts }));
+    stubFetch(makeCredentialFetch({ metadata: 404, puts }));
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -507,8 +520,7 @@ describe("seedMyTestCredentials", () => {
   test("treats benign casing/whitespace drift as a match (no needless re-store)", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: `  ${SL_USERNAME.toUpperCase()} ` }, puts }),
     );
 
@@ -524,7 +536,7 @@ describe("seedMyTestCredentials", () => {
     delete process.env.DEV_SPORTLOTS_USERNAME;
     const t = convexTest(schema, modules);
     let fetchCalled = false;
-    vi.stubGlobal("fetch", (async () => {
+    stubFetch((async () => {
       fetchCalled = true;
       throw new Error("fetch must not be called when env creds are missing");
     }) as unknown as typeof fetch);
@@ -541,8 +553,7 @@ describe("seedMyTestCredentials", () => {
     // correct → skip
     const tOk = convexTest(schema, modules);
     const putsOk: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: BSC_USERNAME }, puts: putsOk }),
     );
     const okResult = await tOk
@@ -555,8 +566,7 @@ describe("seedMyTestCredentials", () => {
     vi.unstubAllGlobals();
     const tStale = convexTest(schema, modules);
     const putsStale: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: "stale-bsc@example.com" }, puts: putsStale }),
     );
     const staleResult = await tStale

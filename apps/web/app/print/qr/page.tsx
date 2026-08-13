@@ -2,12 +2,9 @@
 
 import { useState, useRef, useCallback } from "react";
 import { useQuery } from "convex/react";
-import { api } from "../../convex/_generated/api";
-import NeonButton from "../../components/modules/NeonButton";
-import {
-  QrCodeSvg,
-  BinderFinderPattern,
-} from "../../components/modules/QrCode";
+import { api } from "@/convex/_generated/api";
+import NeonButton from "@/components/modules/NeonButton";
+import { QrCodeSvg, BinderFinderPattern } from "@/components/modules/QrCode";
 import {
   QrCodeIcon,
   ArrowDownTrayIcon,
@@ -134,7 +131,8 @@ export default function QrCodePage() {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-center">
         <QrCodeIcon className="w-20 h-20 text-neon-pink mb-6" />
-        <h1 className="text-3xl font-bold mb-3">QR Code Generator</h1>
+        {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
+        <h2 className="text-3xl font-bold mb-3">QR Code Generator</h2>
         <p className="text-gray-400 max-w-md mb-6">
           Set up your public profile first to generate sale QR codes.
         </p>
@@ -150,7 +148,7 @@ export default function QrCodePage() {
       <div className="text-center">
         <QrCodeIcon className="w-16 h-16 text-neon-green mx-auto mb-4" />
         <div className="flex items-center justify-center gap-3 mb-2">
-          <h1 className="text-3xl font-bold">QR Code Generator</h1>
+          <h2 className="text-3xl font-bold">QR Code Generator</h2>
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-neon-green/15 text-neon-green border border-neon-green/30">
             Free During Beta
           </span>

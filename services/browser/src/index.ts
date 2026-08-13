@@ -2,6 +2,7 @@ import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { SUPPORTED_SITES } from "./adapters";
+import { CONTRACT_VERSION } from "./contract-version";
 import { BSCAdapter } from "./adapters/bsc-adapter";
 import { SportlotsAdapter } from "./adapters/sportlots-adapter";
 import { LoginDiagnostic } from "./services/login-diagnostic";
@@ -101,9 +102,28 @@ app.use(limiter);
 // when the service was still --allow-unauthenticated. The /health endpoint
 // remains public so Cloud Run's HTTP probe can reach it.
 
-// Health endpoint
+// Health endpoint.
+//
+// `contractVersion` (NEO-143) is what Convex reads to decide whether this
+// service is new enough to understand the request it is about to send. It must
+// stay on /health specifically: this is the one route Convex can call before it
+// commits to a request shape, and it is cheap enough to poll. Do not remove it
+// or rename the field without updating apps/web/convex/credentials.ts —
+// a missing field reads as version 0 and will (deliberately) fail every
+// credential operation loudly.
+// Deliberately does NOT report the Cloud Run revision name. Not for exposure
+// reasons — this route is IAM-gated like every other one (verified 2026-08-12:
+// only named service accounts hold roles/run.invoker on this service in both
+// projects; there is no allUsers binding, and an unauthenticated GET /health
+// gets a 403 from Cloud Run before Express sees it). It is omitted simply
+// because nothing needs it: the guard keys off contractVersion alone, and the
+// serving revision is already in Cloud Run's console and logs.
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", environment: ENV });
+  res.json({
+    status: "ok",
+    environment: ENV,
+    contractVersion: CONTRACT_VERSION,
+  });
 });
 
 // Get list of supported sites

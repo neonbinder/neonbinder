@@ -1,0 +1,355 @@
+name: Release
+
+# NEO-143 — the SINGLE driver of every push-to-main production deploy.
+#
+# The problem this exists to remove: Vercel (web + Convex) and Cloud Run
+# (browser service) used to deploy on completely independent schedules from the
+# same merge commit. Merging NEO-141 produced a ~5.5 minute window in which new
+# Convex code called the OLD browser service, and nobody could connect
+# SportLots for the duration. Nothing in CI could have caught it — every test
+# runs both halves at the same commit, which is the one state a deploy never
+# passes through.
+#
+# The fix is ordering: servers lead their clients.
+#
+#   browser-deploy.yml ─┐
+#   (to 100% traffic)   ├──> web (Convex push, then staged SPA, smoke, promote)
+#   preprocess-deploy ──┘
+#
+# WHY THIS ORDER: Convex is the *client* of the browser service, and the SPA is
+# the client of Convex. A service must be able to serve the new shape before
+# anything starts speaking it.
+#
+# ────────────────────────────────────────────────────────────────────────────
+# WHAT THIS CANNOT DO, AND WHY IT IS NOT A BUG
+#
+# Convex has no blue/green. A project has ONE shared production deployment and
+# that deployment owns its own database, so there is no second backend to park
+# a new version on and no traffic to switch. `npx convex deploy` pushes and the
+# new functions are live immediately. Preview deployments have their own
+# separate, empty data, so they are not a green copy of production either.
+#
+# Concretely: `vercel build` below is where `npx convex deploy` runs, so PROD
+# CONVEX FLIPS MID-JOB — after the services are at 100%, but before the SPA is
+# promoted. The old SPA therefore talks to new Convex for the smoke+promote
+# window, and longer for already-open browser tabs. That window is irreducible.
+#
+# It is made safe by two things, NOT by this workflow:
+#   1. The runtime contract guard in apps/web/convex/credentials.ts, which
+#      refuses to call a browser service too old to understand the request
+#      instead of silently falling back.
+#   2. Expand/contract discipline on the Convex API surface, so a still-cached
+#      old SPA keeps working across the flip.
+# See services/browser/README.md ("Release contract") before changing either
+# side of the Convex<->browser boundary.
+# ────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  # Never cancel a release in flight. A cancelled run can leave prod Convex
+  # flipped with the SPA un-promoted, or a Cloud Run revision parked at 0%.
+  # Back-to-back merges serialize instead.
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The production Convex deployment the built SPA must point at. Hardcoded on
+  # purpose: this is an ASSERTION, and a value that drifts with the build would
+  # assert nothing. It is already public (it ships in the served HTML as
+  # <meta name="x-convex-url">). This is the guard against NEO-65's class of
+  # bug — a production build wired to the wrong Convex deployment.
+  EXPECTED_CONVEX_URL: https://first-starfish-800.convex.cloud
+
+jobs:
+  # Which services actually changed. These mirror the `paths:` filters that used
+  # to live on each workflow's `push:` trigger. Note the deploy-lane files are
+  # matched, not the PR-lane ones — a change to browser.yml alone affects only
+  # pre-merge CI and should not trigger a production deploy.
+  changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      browser: ${{ steps.detect.outputs.browser }}
+      preprocess: ${{ steps.detect.outputs.preprocess }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: detect
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          # `github.event.before` is all-zeroes when the ref was just created,
+          # and can be unreachable after a force-push. In any case where a
+          # trustworthy base cannot be established, FAIL SAFE by deploying
+          # everything — skipping a service that actually changed is the
+          # failure mode this whole workflow exists to prevent.
+          BASE=""
+          if [ -n "${BEFORE//0/}" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            BASE="$BEFORE"
+          else
+            BASE="$(git rev-parse 'HEAD^' 2>/dev/null || true)"
+          fi
+
+          if [ -z "$BASE" ]; then
+            echo "No usable diff base (before=$BEFORE). Deploying all services."
+            echo "browser=true" >> "$GITHUB_OUTPUT"
+            echo "preprocess=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Diffing $BASE..$GITHUB_SHA"
+          CHANGED="$(git diff --name-only "$BASE" "$GITHUB_SHA")"
+          echo "$CHANGED"
+
+          browser=false
+          preprocess=false
+          if grep -qE '^services/browser/|^\.github/workflows/browser-deploy\.yml$' <<<"$CHANGED"; then
+            browser=true
+          fi
+          if grep -qE '^services/preprocess/|^\.github/workflows/preprocess-deploy\.yml$' <<<"$CHANGED"; then
+            preprocess=true
+          fi
+          echo "browser=$browser"       >> "$GITHUB_OUTPUT"
+          echo "preprocess=$preprocess" >> "$GITHUB_OUTPUT"
+
+  # Prove we can actually finish the release BEFORE anything deploys.
+  #
+  # Learned the hard way on run 31642167681: a bad `vercel pull` invocation was
+  # only discovered AFTER both service lanes had promoted to 100%, leaving prod
+  # on new services with old Convex/SPA. That skew is the safe direction and
+  # users were unaffected — but a half-applied release is exactly what this
+  # workflow exists to prevent, and finding out 30 minutes in is avoidable.
+  #
+  # ~20s, and it fails the whole release before a single revision moves.
+  preflight:
+    name: Verify Vercel credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Install Vercel CLI
+        run: npm i -g vercel@48.2.0
+      - name: whoami + project access
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ] || [ -z "${VERCEL_ORG_ID:-}" ] || [ -z "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "::error::VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID must all be set as repo secrets."
+            exit 1
+          fi
+          vercel whoami --token="$VERCEL_TOKEN"
+          # Scope matters as much as validity: a personal-scoped token paired
+          # with a team VERCEL_ORG_ID authenticates fine and then cannot see the
+          # project. Pulling the env is the cheapest real proof of both.
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+  # Both service lanes run in parallel — neither depends on the other. Each
+  # ends with its prod revision at 100% traffic.
+  browser:
+    name: Browser service
+    needs: [changes, preflight]
+    if: needs.changes.outputs.browser == 'true'
+    uses: ./.github/workflows/browser-deploy.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+
+  preprocess:
+    name: Preprocess service
+    needs: [changes, preflight]
+    if: needs.changes.outputs.preprocess == 'true'
+    uses: ./.github/workflows/preprocess-deploy.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+
+  # The web release. Runs only once every service that changed is serving at
+  # 100%. A SKIPPED service lane is fine (it did not change); a failed or
+  # cancelled one is not.
+  web:
+    name: Release web + Convex
+    needs: [changes, preflight, browser, preprocess]
+    if: >-
+      always()
+      && needs.changes.result == 'success'
+      && needs.preflight.result == 'success'
+      && needs.browser.result != 'failure'
+      && needs.browser.result != 'cancelled'
+      && needs.preprocess.result != 'failure'
+      && needs.preprocess.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # NO working-directory. The Vercel project's own Root Directory is already
+    # `apps/web`, and the CLI composes that onto the cwd — running from apps/web
+    # made it look for `apps/web/apps/web` and fail (run 31655145099). Every
+    # command in this job must run from the repo root. Note setup-node's
+    # node-version-file / cache-dependency-path below are ACTION INPUTS, which
+    # resolve from the workspace root regardless, so they keep their prefixes.
+    outputs:
+      convex_pushed: ${{ steps.deploy.outcome }}
+      staged_url: ${{ steps.deploy.outputs.url }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Vercel CLI
+        run: npm i -g vercel@48.2.0
+
+      # THE CONVEX CUTOVER, and the staged deploy, in one step.
+      #
+      # The build runs ON VERCEL, not here. `vercel build` (a local build, then
+      # `deploy --prebuilt`) looks tidier but cannot work for this project: the
+      # Vercel CLI refuses a local build for a project pinned to Node 24.x
+      # ("Found invalid Node.js Version: 24.x ... set Node.js Version to 22.x",
+      # run 31653173626), while Vercel's hosted builder supports 24.x happily.
+      # Building remotely is also the faithful thing — it is how every previous
+      # production build ran — and it keeps CONVEX_DEPLOY_KEY on Vercel's side
+      # rather than pulling a production secret onto the runner.
+      #
+      # apps/web/vercel.json's buildCommand is
+      # `npx convex deploy --cmd-url-env-var-name VITE_CONVEX_URL --cmd 'npm run build'`,
+      # so the hosted build pushes production Convex AND builds the SPA against
+      # the resulting URL. They cannot be separated without giving up the
+      # guarantee that the SPA is built against the Convex it will talk to.
+      #
+      # `--skip-domain` makes it a real production deployment that no domain
+      # points at yet: neonbinder.io keeps serving the previous build until
+      # `promote` below. So everything after this step is recoverable by simply
+      # NOT promoting — but the Convex push inside it is not.
+      - name: Deploy staged (hosted build; pushes production Convex)
+        id: deploy
+        run: |
+          set -euo pipefail
+          URL="$(vercel deploy --prod --skip-domain --token="$VERCEL_TOKEN")"
+          if [ -z "$URL" ]; then
+            echo "::error::vercel deploy returned no URL"; exit 1
+          fi
+          echo "Staged deployment: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke the staged deployment
+        env:
+          STAGED_URL: ${{ steps.deploy.outputs.url }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -euo pipefail
+
+          # 1. The staged build serves.
+          html="$(curl -sS --fail-with-body --max-time 30 \
+                    -H "x-vercel-protection-bypass: $BYPASS" "$STAGED_URL/")"
+
+          # 2. It is wired to the PRODUCTION Convex deployment. A prod build
+          #    pointing at a preview/dev Convex is exactly NEO-65.
+          convex="$(printf '%s' "$html" \
+            | grep -oE 'name="x-convex-url" content="[^"]*"' \
+            | grep -oE 'https://[a-z0-9-]+\.convex\.cloud' | head -1 || true)"
+          if [ "$convex" != "$EXPECTED_CONVEX_URL" ]; then
+            echo "::error::staged build points at '$convex', expected '$EXPECTED_CONVEX_URL'"
+            exit 1
+          fi
+
+          # 3. That Convex deployment is actually answering — this is the push
+          #    from the build step, live.
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$convex/version")"
+          [ "$code" = "200" ] || { echo "::error::Convex $convex/version returned $code"; exit 1; }
+
+          # 4. The hashed bundle is really served, not just index.html rewritten
+          #    back at us by the SPA catch-all rewrite.
+          asset="$(printf '%s' "$html" | grep -oE '/assets/[A-Za-z0-9._-]+\.js' | head -1 || true)"
+          [ -n "$asset" ] || { echo "::error::no hashed /assets/*.js in staged index"; exit 1; }
+          code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 \
+                    -H "x-vercel-protection-bypass: $BYPASS" "$STAGED_URL$asset")"
+          [ "$code" = "200" ] || { echo "::error::asset $asset returned $code"; exit 1; }
+
+          echo "Smoke passed: $STAGED_URL -> $convex"
+
+      # The flip. Only now does neonbinder.io serve the new build.
+      - name: Promote to production
+        env:
+          STAGED_URL: ${{ steps.deploy.outputs.url }}
+        run: vercel promote "$STAGED_URL" --token="$VERCEL_TOKEN"
+
+  # A web-lane failure has an unusual blast radius worth spelling out: if it
+  # failed at or after `Build`, production Convex is ALREADY on the new code
+  # while neonbinder.io still serves the old SPA. That is a supported state
+  # (expand/contract exists for exactly this), but it must not pass silently.
+  report-web-failure:
+    name: Report web release failure
+    needs: web
+    if: always() && needs.web.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open GitHub issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_OUTCOME: ${{ needs.web.outputs.convex_pushed }}
+          STAGED_URL: ${{ needs.web.outputs.staged_url }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # NOTE: with a HOSTED build, a failed deploy step is ambiguous — the
+          # build may have pushed Convex and then failed on the SPA build. Say
+          # so rather than guessing; the version endpoint settles it.
+          if [ "$BUILD_OUTCOME" = "success" ]; then
+            BLAST="**Production Convex is already on \`$SHA\`.** The build step
+          completed, which is where \`npx convex deploy\` runs. neonbinder.io is
+          still serving the PREVIOUS SPA because the promote did not happen.
+          Staged (un-promoted) deployment: ${STAGED_URL:-none}.
+
+          The old SPA is now running against new Convex. That is the state
+          expand/contract is designed to survive — verify the site works, then
+          fix forward. Do NOT assume rolling back the SPA fixes anything; the
+          Convex push is not reverted by it."
+          else
+            BLAST="The staged deploy did not complete. Because the build runs on
+          Vercel and \`npx convex deploy\` runs *inside* it, whether production
+          Convex was pushed is **not knowable from this job** — the build may
+          have pushed Convex and then failed building the SPA.
+
+          Check before assuming: \`curl -s https://first-starfish-800.convex.cloud/version\`
+          against the value from before the merge. neonbinder.io is definitely
+          unchanged (no promote happened). Services (browser/preprocess) may
+          already have been promoted — check the run."
+          fi
+          cat > body.md <<EOF
+          Web release failed for commit \`$SHA\`.
+
+          **Blast radius:** $BLAST
+
+          [Release run]($RUN_URL)
+          EOF
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Web release failed: ${SHA}" \
+            --body-file body.md
