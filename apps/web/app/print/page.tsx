@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import { QrCodeIcon, TagIcon } from "@heroicons/react/24/outline";
+import { QrCodeIcon, Squares2X2Icon, TagIcon } from "@heroicons/react/24/outline";
 import { SECTIONS } from "@/src/layouts/print-layout";
 
 /**
@@ -34,6 +34,12 @@ const TOOL_DETAILS: Record<
       "Generate a QR code for an in-person sale that buyers scan to add to their running total.",
     icon: QrCodeIcon,
     accent: "text-neon-pink group-hover:border-neon-pink/50",
+  },
+  "/print/placeholders": {
+    description:
+      "Print a 3 × 3 sheet of 2.5″ × 3.5″ placeholders — one sheet fills one 9-pocket binder page.",
+    icon: Squares2X2Icon,
+    accent: "text-neon-purple group-hover:border-neon-purple/50",
   },
 };
 
