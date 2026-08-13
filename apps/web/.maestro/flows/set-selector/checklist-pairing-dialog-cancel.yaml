@@ -138,7 +138,7 @@ tags:
 #
 # Where each half is covered instead:
 #   - the fully-matched presentation, against an immutable 220-card count:
-#     checklist-1996-score-fetches-both-bsc-sources
+#     inserts-1996-score-one-nb-set-two-bsc-sources
 #   - the columns, keep-all and keep shelf, over every bucket permutation:
 #     CardPairingModal.test.tsx
 # What THIS flow uniquely proves is unchanged: a real marketplace sync opens

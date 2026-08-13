@@ -56,19 +56,15 @@ A count of 110 means only one BSC source was fetched. Do not loosen it.
 pre-synced by `setup.yaml` and is NOT read-only: the reconciliation IS the
 thing under test, so the flows must perform it.
 
-TWO flows touch this set, and only these two:
+Exactly ONE flow may ever touch this set —
+`inserts-1996-score-one-nb-set-two-bsc-sources.yaml`. Adding a second would
+reintroduce the cross-runner interference the read-only rule exists to prevent.
 
-| flow | tag | does |
-| -- | -- | -- |
-| `inserts-1996-score-one-nb-set-two-bsc-sources` | `provides:score-1996-multisource` | reconciles the set |
-| `checklist-1996-score-fetches-both-bsc-sources` | `requires:score-1996-multisource` | fetches its cards |
-
-They are ORDERED by the dep graph on a single shard, so they never overlap —
-this is not the cross-runner interference the read-only rule exists to prevent.
-They are two flows rather than one because doing both in a single flow measured
-350-530s against a 600s per-flow kill; raising the timeout would only have
-hidden that a ten-minute flow is a bad citizen on a shared queue. Adding a
-THIRD flow against this set would reintroduce the real hazard.
+It was briefly split into a `provides:`/`requires:` pair. That was wrong: CI does
+NOT use the dep-graph scheduler. `run-e2e-queue.sh` enqueues in LPT order
+(alphabetical without timing history) and 8 runners claim from a shared queue
+with no dependency handling — `requires:`/`provides:` are the LOCAL picker's
+feature only. Any flow in that queue must be independent of every other.
 Keeping it out of `setup.yaml` also means its sync cost is paid by one flow
 rather than added to every run's seed.
 

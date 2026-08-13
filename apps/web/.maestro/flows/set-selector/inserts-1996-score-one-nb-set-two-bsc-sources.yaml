@@ -3,20 +3,27 @@ url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selecto
 name: "Inserts — ONE NeonBinder set maps to TWO BSC sets and one SportLots set (1996 Score, NEO-137)"
 tags:
   - set-selector
-  - provides:score-1996-multisource
 ---
 # R1 — ONE FEATURE: a NeonBinder set maps to 0-N BSC sets and 0-N SportLots
-# sets, the two sides independent. This is the SET-level half of NEO-137's
-# acceptance criterion; the card-level half is
-# `checklist-1996-score-fetches-both-bsc-sources`, which `requires:` the state
-# this flow provides.
+# sets, the two sides independent. This flow covers that end to end — the
+# reconcile that builds the set, and the card fetch that proves both sources
+# are read.
 #
-# WHY TWO FLOWS. Both halves need 1996 Score, and doing both in one flow put a
-# cold insert sync, a reconcile, a cold two-source card fetch AND the entity
-# wizard inside a single flow. Measured pieces put that at 350-530s against a
-# 600s per-flow kill (MAESTRO_FLOW_TIMEOUT_SEC). Raising the timeout would have
-# hidden the real problem: a ten-minute flow is a bad citizen on a shared
-# 8-runner queue whether or not it passes. Split, each half is comfortable.
+# WHY ONE FLOW, having briefly been two. I split it on a guess that the combined
+# runtime (cold insert sync + reconcile + cold two-source fetch + entity wizard)
+# would approach the 600s per-flow kill, and joined the halves with the
+# harness's provides:/requires: tags. That was wrong twice over:
+#   - MEASURED, the halves are 2m17s and 1m23s. Combined is ~4 minutes. The
+#     estimate that justified the split was pure pessimism.
+#   - CI does not use the dep-graph scheduler at all. `run-e2e-queue.sh`
+#     enqueues in LPT order (alphabetical when a flow has no timing history) and
+#     8 runners claim from a shared queue with NO requires:/provides: handling —
+#     that is the local picker's feature only. "checklist-1996-…" sorts before
+#     "inserts-1996-…", so the consumer would have been claimed before the
+#     producer built the set, and failed.
+# The suite's model is: `seed` provisions the baseline, and every queue flow is
+# INDEPENDENT of every other. A flow that needs state another flow creates does
+# not belong in that queue.
 #
 # WHY THIS SET (see .maestro/SET-REGISTRY.md):
 #   1996 Score is the only set in the catalog with the shape the feature exists
@@ -33,10 +40,10 @@ tags:
 # SOLE WRITER, NOT READ-ONLY:
 #   Every other flow treats real sets as read-only, because 8 runners drain the
 #   queue concurrently. Here the reconciliation IS the thing under test, so this
-#   flow must perform it. Only this flow and its `requires:` partner may ever
-#   touch 1996 Score, and the dep graph orders them on one shard.
+#   flow must perform it. Exactly ONE flow may ever touch 1996 Score — this one.
 #
-# WHAT THIS TESTS — the reconcile dialog builds NB sets, not pairs:
+# WHAT THIS TESTS — the reconcile dialog builds NB sets, not pairs, AND those
+# sets then fetch from every source mapped to them:
 #   - auto-matches arrive in Ready; unmatched marketplace sets sit in Pending
 #   - a Pending set is ATTACHED to an existing Ready set, giving that one NB set
 #     two BSC mappings — the 0-N-per-side capability itself
@@ -273,3 +280,99 @@ tags:
     text: ".*Dugout Collection Artist's Proofs Series 2.*"
 - assertNotVisible:
     text: ".*PRIMARY.*"
+
+# ============================================================
+# STEP 4 — FETCH CARDS FROM BOTH BSC SOURCES
+#
+# THE FAN-OUT REGRESSION. BSC does not OR multi-value facets: sending both
+# series slugs in one request returns 200 OK with an empty body. Measured on
+# dev 2026-08-12 — one slug returned 110 cards, two returned 0 — and the UI
+# reported "0 BSC cards" with no error anywhere, because a failed/empty BSC
+# result is indistinguishable from "the marketplace had nothing".
+#
+# 220 is therefore the assertion that matters: it is only reachable if BOTH
+# sources were fetched and merged.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*Fetch from Marketplaces.*|Refresh"
+    centerElement: true
+    timeout: 30000
+- tapOn:
+    text: ".*Fetch from Marketplaces.*|Refresh"
+
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*"
+    timeout: 120000
+
+# ============================================================
+# STEP 5 — THE PAIRING DIALOG, FULLY MATCHED
+#
+# Every one of the 220 cards pairs across both marketplaces, so there is
+# nothing to reconcile. The dialog must say so rather than showing a collapsed
+# "▶ Matched (220)" above two "(0)" columns and a keep shelf describing cards
+# that do not exist.
+# ============================================================
+
+# Named — an operator who steps away must be able to tell which set this is.
+- assertVisible:
+    text: ".*Match Cards — Dugout Collection Artists Proofs.*"
+
+# Expanded, not collapsed: the card rows are on screen without a disclosure tap.
+- assertVisible:
+    text: ".*Unlink.*"
+
+# The empty scaffolding is omitted entirely.
+- assertNotVisible:
+    text: ".*BSC only.*"
+- assertNotVisible:
+    text: ".*SportLots only.*"
+- assertNotVisible:
+    text: ".*Nothing kept.*"
+
+# BOTH BSC sources fetched and merged. Strict count — card checklists are
+# immutable once produced, so 220 is a fixed fact, not marketplace drift.
+# Do NOT loosen this to hide a fan-out regression; 110 means one source.
+- assertVisible:
+    text: ".*220 cards will be saved.*"
+
+- tapOn:
+    id: "Confirm card matches"
+- extendedWaitUntil:
+    notVisible: "Match Cards.*"
+    timeout: 60000
+
+# ============================================================
+# STEP 6 — SAVE THROUGH THE ENTITY WIZARD
+#
+# 220 fresh cards surface hundreds of unknown players; the bulk-confirm footer
+# button is the sanctioned path (setup.yaml documents why per-item draining is
+# not viable — each item is gated by the 3s/item Wikidata queue).
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+    timeout: 120000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - tapOn:
+          text: ".*Add All Remaining as New.*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm & Save.*"
+          timeout: 60000
+      - tapOn:
+          text: ".*Confirm & Save.*"
+      - extendedWaitUntil:
+          notVisible: "Confirm New Players & Teams"
+          timeout: 60000
+
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved 220 cards.*"
+    timeout: 60000
