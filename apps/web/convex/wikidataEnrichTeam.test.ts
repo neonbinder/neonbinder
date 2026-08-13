@@ -148,6 +148,21 @@ async function insertTeam(
 const getTeam = (t: ReturnType<typeof convexTest>, id: Id<"teams">) =>
   t.run(async (ctx) => ctx.db.get(id));
 
+/**
+ * NEO-156: enrichment reports a league NAME but stores a league ROW, so these
+ * cases resolve the reference to assert on. A name-shaped assertion would have
+ * kept passing against the free-text field this replaced.
+ */
+const getLeagueName = async (
+  t: ReturnType<typeof convexTest>,
+  id: Id<"teams">,
+) =>
+  t.run(async (ctx) => {
+    const team = await ctx.db.get(id);
+    if (!team?.leagueId) return undefined;
+    return (await ctx.db.get(team.leagueId))?.name;
+  });
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -186,7 +201,7 @@ describe("enrichTeam", () => {
 
     const team = await getTeam(t, teamId);
     // ESPN wins for city/league even though Wikidata also resolved them.
-    expect(team!.league).toBe("Major League Baseball");
+    expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
     expect(team!.city).toBe("Washington");
     expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#ba122b" });
     // Wikidata is the only source for yearsActive/wikidataId.
@@ -219,7 +234,7 @@ describe("enrichTeam", () => {
     await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
 
     const team = await getTeam(t, teamId);
-    expect(team!.league).toBe("Major League Baseball");
+    expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
     expect(team!.city).toBe("Washington");
     expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#ba122b" });
     expect(team!.externalIds?.espnId).toBe("20");
@@ -250,7 +265,7 @@ describe("enrichTeam", () => {
     await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
 
     const team = await getTeam(t, teamId);
-    expect(team!.league).toBe("National League");
+    expect(await getLeagueName(t, teamId)).toBe("National League");
     expect(team!.city).toBe("Montreal");
     expect(team!.yearsActive).toEqual({ from: 1969, to: 2004 });
     expect(team!.externalIds?.wikidataId).toBe("Q1130155");

@@ -32,6 +32,7 @@ import type * as features_deriveCardFeatures from "../features/deriveCardFeature
 import type * as features_expectedFeatures from "../features/expectedFeatures.js";
 import type * as features_generateListing from "../features/generateListing.js";
 import type * as http from "../http.js";
+import type * as leagues from "../leagues.js";
 import type * as myFunctions from "../myFunctions.js";
 import type * as observability from "../observability.js";
 import type * as platformSlots from "../platformSlots.js";
@@ -80,6 +81,7 @@ declare const fullApi: ApiFromModules<{
   "features/expectedFeatures": typeof features_expectedFeatures;
   "features/generateListing": typeof features_generateListing;
   http: typeof http;
+  leagues: typeof leagues;
   myFunctions: typeof myFunctions;
   observability: typeof observability;
   platformSlots: typeof platformSlots;

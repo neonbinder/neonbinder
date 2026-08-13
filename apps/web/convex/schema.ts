@@ -458,6 +458,35 @@ export default defineSchema({
       filterFields: ["sportId"],
     }),
 
+  // NEO-156: leagues as a first-class entity.
+  //
+  // `teams.league` was a free-text string, and nothing populated it reliably —
+  // 0 of 35 dev teams and 2 of 58 prod teams carried one. Every team belongs to
+  // a league, so the relationship is modelled rather than typed.
+  //
+  // A REFERENCE, not a copied display label. Same lesson as NEO-96: when
+  // `teams.sport`/`players.primarySport` held display strings, three writers
+  // populated them with two different casings and reads silently missed each
+  // other, duplicating entities. A league renamed here stays the same row.
+  //
+  // Rows are seeded on demand from the sport's `sportConfig` — `league` gives
+  // the abbreviation ("MLB") and `espn.leagueName` the full name ("Major League
+  // Baseball") — so neither is invented here. Leagues an operator adds by hand
+  // carry whatever they typed.
+  leagues: defineTable({
+    name: v.string(),
+    // Short form for dense UI (a team list showing league beside each name).
+    // Optional because an operator-added league may only have one form.
+    abbreviation: v.optional(v.string()),
+    nameNormalized: v.string(),
+    // Leagues are per-sport: "National League" means nothing without one, and
+    // two sports can legitimately hold the same league name.
+    sportId: v.id("selectorOptions"),
+    lastUpdated: v.number(),
+  })
+    .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
+    .index("by_sport_id", ["sportId"]),
+
   // Teams — first-class entity. Modeled with city + yearsActive to support
   // defunct franchises (Expos → Nationals, SuperSonics, etc.) since vintage
   // sets reference teams that no longer exist.
@@ -466,6 +495,15 @@ export default defineSchema({
     nameNormalized: v.string(),
     // NEO-96: reference, not a copied display label — see players.sportId.
     sportId: v.id("selectorOptions"),
+    // NEO-156: the league this team plays in. Every creation path attaches one
+    // through `leagues.resolveDefaultLeagueId`, so a team without it is either
+    // a pre-NEO-156 row or one whose sport has no configured league.
+    leagueId: v.optional(v.id("leagues")),
+    // DEPRECATED (NEO-156) — the free-text predecessor of `leagueId`. Kept so
+    // existing rows still validate and so the backfill has something to read;
+    // `backfillLeagueIds` resolves it to a real row. Nothing writes it any
+    // more, and reads prefer `leagueId`. Remove once prod shows zero rows
+    // carrying it and no `leagueId`.
     league: v.optional(v.string()),
     city: v.optional(v.string()),
     yearsActive: v.optional(v.object({

@@ -30,6 +30,7 @@ import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import {
   cardPlatformDataValidator,
   cardPlatformWireDataValidator,
@@ -4932,6 +4933,8 @@ export const commitCardChecklist = mutation({
         name: rawName.trim(),
         nameNormalized: normalized,
         sportId: args.sportId,
+        // NEO-156: every team-creation path attaches a league.
+        leagueId: await resolveDefaultLeagueId(ctx, args.sportId),
         lastUpdated: Date.now(),
       });
       enrichmentTeamIds.push(id);
@@ -5034,12 +5037,22 @@ export const commitCardChecklist = mutation({
         continue;
       }
       const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
+      // NEO-156: the wizard's enrichment carries a league NAME. Resolve it to
+      // a real row rather than storing the string, so two spellings of one
+      // league cannot become two leagues. Falls back to the sport's default
+      // when enrichment found none, so this path attaches a league either way.
+      const leagueId = enrichment?.league
+        ? await findOrCreateLeague(ctx, {
+            name: enrichment.league,
+            sportId: args.sportId,
+          })
+        : await resolveDefaultLeagueId(ctx, args.sportId);
       const id = await ctx.db.insert("teams", {
         name: name.trim(),
         nameNormalized: normalized,
         sportId: args.sportId,
         lastUpdated: Date.now(),
-        ...(enrichment?.league ? { league: enrichment.league } : {}),
+        ...(leagueId ? { leagueId } : {}),
         ...(enrichment?.city ? { city: enrichment.city } : {}),
         ...(enrichment?.yearsActive ? { yearsActive: enrichment.yearsActive } : {}),
         ...(enrichment?.colors ? { colors: enrichment.colors } : {}),

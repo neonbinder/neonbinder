@@ -410,7 +410,7 @@ describe("chooseColorSource", () => {
 // The admin worklist
 // ---------------------------------------------------------------------------
 
-describe("teams.listColorReview", () => {
+describe("teams.listForManagement", () => {
   async function seedReviewFixture(t: ReturnType<typeof convexTest>) {
     await t.run(async (ctx) => {
       const sportId = await ctx.db.insert("selectorOptions", {
@@ -444,31 +444,43 @@ describe("teams.listColorReview", () => {
     });
   }
 
-  test("splits the work into the two buckets a human handles differently", async () => {
+  test("returns every team, name-sorted, for the master list", async () => {
+    // NEO-156 replaced NEO-147's two pre-computed buckets with the rows
+    // themselves: the screen is master-detail over all teams and derives
+    // "needs a pick" / "needs colors" from colorCandidates and colors.
     const t = convexTest(schema, modules);
     await seedReviewFixture(t);
 
-    const review = await t
+    const result = await t
       .withIdentity({ subject: "admin", role: "admin" })
-      .query(api.teams.listColorReview, {});
+      .query(api.teams.listForManagement, {});
 
-    expect(review.ambiguous.map((r) => r.name)).toEqual(["Huskies"]);
-    expect(review.missing.map((r) => r.name)).toEqual(["Estrellas Orientales"]);
-    expect(review.resolvedCount).toBe(1);
-    expect(review.totalCount).toBe(3);
+    expect(result.teams.map((r) => r.name)).toEqual([
+      "Estrellas Orientales",
+      "Huskies",
+      "Resolved Team",
+    ]);
+    expect(result.totalCount).toBe(3);
+    expect(result.truncated).toBe(false);
   });
 
-  test("does not list an ambiguous team as also missing", async () => {
-    // It has no colors, but it needs a CHOICE, not manual entry — showing it
-    // in both buckets would invite entering colors that the next pick erases.
+  test("carries the facts the screen derives its attention states from", async () => {
     const t = convexTest(schema, modules);
     await seedReviewFixture(t);
 
-    const review = await t
+    const result = await t
       .withIdentity({ subject: "admin", role: "admin" })
-      .query(api.teams.listColorReview, {});
+      .query(api.teams.listForManagement, {});
 
-    expect(review.missing.map((r) => r.name)).not.toContain("Huskies");
+    const byName = new Map(result.teams.map((r) => [r.name, r]));
+    // Needs a pick: several sources matched, so nothing was applied.
+    expect(byName.get("Huskies")!.colorCandidates).toHaveLength(2);
+    expect(byName.get("Huskies")!.colors).toBeUndefined();
+    // Needs colors: no candidates and nothing resolved.
+    expect(byName.get("Estrellas Orientales")!.colorCandidates).toBeUndefined();
+    expect(byName.get("Estrellas Orientales")!.colors).toBeUndefined();
+    // Done.
+    expect(byName.get("Resolved Team")!.colors?.primary).toBe("#ab0008");
   });
 
   test("requires admin", async () => {
@@ -476,7 +488,7 @@ describe("teams.listColorReview", () => {
     await expect(
       t
         .withIdentity({ subject: "someone", role: "user" })
-        .query(api.teams.listColorReview, {}),
+        .query(api.teams.listForManagement, {}),
     ).rejects.toThrow(/admin/i);
   });
 });

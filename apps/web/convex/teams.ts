@@ -3,6 +3,7 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
+import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 
 /**
  * Lowercase + strip punctuation + token-sort. Same shape as the player
@@ -35,6 +36,9 @@ const teamDocValidator = v.object({
   nameNormalized: v.string(),
   // NEO-96: reference to the sport-level selectorOptions row.
   sportId: v.id("selectorOptions"),
+  // NEO-156: reference to the league row. `league` below is its deprecated
+  // free-text predecessor, kept only until the backfill drains — see the schema.
+  leagueId: v.optional(v.id("leagues")),
   league: v.optional(v.string()),
   city: v.optional(v.string()),
   yearsActive: v.optional(v.object({
@@ -98,6 +102,10 @@ export const findOrCreate = mutation({
       name: args.name.trim(),
       nameNormalized: normalized,
       sportId: args.sportId,
+      // NEO-156: every creation path attaches a league. Undefined when the
+      // sport has no configured one (a custom sport) — legitimate, and
+      // assignable later in Team Management.
+      leagueId: await resolveDefaultLeagueId(ctx, args.sportId),
       lastUpdated: Date.now(),
     });
   },
@@ -165,6 +173,8 @@ export const seedTestTeams = mutation({
         name: seed.name,
         nameNormalized: normalized,
         sportId: baseballRow._id,
+        // NEO-156 — see the note in findOrCreate.
+        leagueId: await resolveDefaultLeagueId(ctx, baseballRow._id),
         lastUpdated: Date.now(),
       });
       created += 1;
@@ -243,6 +253,10 @@ export const findOrCreateInternal = internalMutation({
       name: args.name.trim(),
       nameNormalized: normalized,
       sportId: args.sportId,
+      // NEO-156: every creation path attaches a league. Undefined when the
+      // sport has no configured one (a custom sport) — legitimate, and
+      // assignable later in Team Management.
+      leagueId: await resolveDefaultLeagueId(ctx, args.sportId),
       lastUpdated: Date.now(),
     });
   },
@@ -272,7 +286,7 @@ export const applyEnrichmentInternal = internalMutation({
     if (!existing) return null;
 
     const patch: {
-      league?: string;
+      leagueId?: Id<"leagues">;
       city?: string;
       yearsActive?: { from: number; to?: number };
       colors?: { primary?: string; secondary?: string };
@@ -280,7 +294,21 @@ export const applyEnrichmentInternal = internalMutation({
       lastUpdated: number;
     } = { lastUpdated: Date.now() };
 
-    if (args.league !== undefined) patch.league = args.league;
+    // NEO-156: enrichment reports a league NAME (ESPN's full league name, or
+    // Wikidata's label). Resolve it to a row rather than storing the string —
+    // otherwise "Major League Baseball" from ESPN and "Major League Baseball"
+    // from Wikidata are two facts about the same league with nothing tying
+    // them together, which is exactly the drift NEO-96 fixed for sports.
+    //
+    // Only ever fills a GAP: a league an operator assigned by hand in Team
+    // Management outranks whatever a source guessed, so enrichment must not
+    // overwrite it.
+    if (args.league !== undefined && !existing.leagueId) {
+      patch.leagueId = await findOrCreateLeague(ctx, {
+        name: args.league,
+        sportId: existing.sportId,
+      });
+    }
     if (args.city !== undefined) patch.city = args.city;
     if (args.yearsActive !== undefined) patch.yearsActive = args.yearsActive;
     if (args.colors !== undefined) patch.colors = args.colors;
@@ -348,7 +376,10 @@ export const saveTeamFields = mutation({
   args: {
     id: v.id("teams"),
     name: v.optional(v.string()),
-    league: v.optional(v.union(v.string(), v.null())),
+    // NEO-156: a reference, picked from the league dropdown. `null` clears it.
+    // The free-text `league` predecessor is not settable here — assigning a
+    // league by typing is exactly what created the drift this replaced.
+    leagueId: v.optional(v.union(v.id("leagues"), v.null())),
     city: v.optional(v.union(v.string(), v.null())),
     yearsActive: v.optional(
       v.union(
@@ -380,7 +411,12 @@ export const saveTeamFields = mutation({
       patch.name = trimmed;
       patch.nameNormalized = normalizeTeamName(trimmed);
     }
-    if (args.league !== undefined) patch.league = args.league ?? undefined;
+    if (args.leagueId !== undefined) {
+      patch.leagueId = args.leagueId ?? undefined;
+      // Assigning a league supersedes the legacy string, so a row never
+      // carries two answers to the same question.
+      patch.league = undefined;
+    }
     if (args.city !== undefined) patch.city = args.city ?? undefined;
     if (args.yearsActive !== undefined) {
       patch.yearsActive = args.yearsActive ?? undefined;
@@ -476,30 +512,29 @@ export const enrichUnenrichedTeams = mutation({
   },
 });
 
-/** Rows returned per bucket by `listColorReview`. Enough to work through, not a browse. */
-const COLOR_REVIEW_PAGE = 50;
-
 /**
- * NEO-147: the admin team-colors worklist.
+ * NEO-156: the whole team list, for Team Management.
  *
- * Two buckets, because they need different actions from the human:
+ * Replaces NEO-147's `listColorReview`, which returned two pre-computed
+ * buckets (ambiguous / missing colors). The screen is now master-detail over
+ * every team, so the client needs the rows themselves and derives those states
+ * from `colorCandidates` and `colors` — the same two facts, without the server
+ * deciding in advance which of them the operator is allowed to see.
  *
- *  - `ambiguous` — the backfill matched several source pages and refused to
- *    guess. One click resolves it (`teamColorSources.chooseColorSource`).
- *  - `missing` — no colors and no resolved source. Either the backfill has not
- *    reached this row yet, or no source will ever carry it (Estrellas
- *    Orientales), in which case the fix is typing two hex values.
- *
- * `resolvedCount` is reported so the admin can see the backfill making
- * progress rather than inferring it from a shrinking worklist.
+ * Filtering and sorting are the client's job. That is right at today's scale
+ * (58 prod teams) and wrong past a few thousand, at which point this becomes a
+ * paginated search — hence the explicit cap rather than an unbounded
+ * `.collect()` that would one day exceed Convex's read limit and fail as an
+ * error rather than a slow query.
  */
-export const listColorReview = query({
+const TEAM_MANAGEMENT_CAP = 2000;
+
+export const listForManagement = query({
   args: { sportId: v.optional(v.id("selectorOptions")) },
   returns: v.object({
-    ambiguous: v.array(teamDocValidator),
-    missing: v.array(teamDocValidator),
-    resolvedCount: v.number(),
+    teams: v.array(teamDocValidator),
     totalCount: v.number(),
+    truncated: v.boolean(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -508,19 +543,16 @@ export const listColorReview = query({
       ? await ctx.db
           .query("teams")
           .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-          .collect()
-      : await ctx.db.query("teams").collect();
+          .take(TEAM_MANAGEMENT_CAP + 1)
+      : await ctx.db.query("teams").take(TEAM_MANAGEMENT_CAP + 1);
 
-    const ambiguous = rows.filter((t) => (t.colorCandidates?.length ?? 0) > 0);
-    const missing = rows.filter(
-      (t) => !t.colors?.primary && (t.colorCandidates?.length ?? 0) === 0,
-    );
+    const truncated = rows.length > TEAM_MANAGEMENT_CAP;
+    const teams = rows.slice(0, TEAM_MANAGEMENT_CAP);
+    teams.sort((a, b) => a.name.localeCompare(b.name));
 
-    return {
-      ambiguous: ambiguous.slice(0, COLOR_REVIEW_PAGE),
-      missing: missing.slice(0, COLOR_REVIEW_PAGE),
-      resolvedCount: rows.filter((t) => Boolean(t.colors?.primary)).length,
-      totalCount: rows.length,
-    };
+    // Reported rather than silently dropped: a list that quietly stops at 2000
+    // reads as "that is all the teams", which is the kind of wrong the
+    // operator cannot see.
+    return { teams, totalCount: teams.length, truncated };
   },
 });

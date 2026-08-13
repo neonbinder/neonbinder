@@ -198,8 +198,12 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const team2 = await t.run(async (ctx) => ctx.db.get(player!.teamYears![1].teamId));
     expect(team1!.name).toBe("Los Angeles Angels");
     expect(team2!.name).toBe("Los Angeles Angels of Anaheim");
-    // Deliberately minimal — no enrichment fields on the incidental team row.
-    expect(team1!.league).toBeUndefined();
+    // Still deliberately minimal on ENRICHMENT — an incidental career team is
+    // not looked up at commit time. NEO-156 changed one thing about that: the
+    // league is not enrichment, it is a structural fact every team gets at
+    // creation from its sport's config, so this row carries one.
+    expect(team1!.league).toBeUndefined(); // the deprecated free-text field
+    expect(team1!.leagueId).toBeDefined();
     expect(team1!.externalIds).toBeUndefined();
 
     // The card itself resolved to this new player.
@@ -403,7 +407,13 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
         .first(),
     );
     expect(team).not.toBeNull();
-    expect(team!.league).toBe("Major League Baseball");
+    // NEO-156: the wizard's enrichment carries a league NAME; the row stores a
+    // reference to a real league. Resolve it rather than asserting a string,
+    // which would have kept passing against the field this replaced.
+    const league = await t.run(async (ctx) =>
+      team!.leagueId ? ctx.db.get(team!.leagueId) : null,
+    );
+    expect(league?.name).toBe("Major League Baseball");
     expect(team!.city).toBe("Anaheim");
     expect(team!.yearsActive).toEqual({ from: 1961, to: undefined });
     expect(team!.colors).toEqual({ primary: "#BA0021", secondary: "#003263" });
