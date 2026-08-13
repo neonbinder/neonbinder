@@ -378,39 +378,6 @@ function TeamDetail({
         </NeonButton>
       </div>
 
-      {/* Provenance. Shown because "where did this color come from" is the
-          first question when one looks wrong, and the answer is otherwise
-          invisible. */}
-      <dl className="border-t border-slate-800 pt-3 text-xs text-slate-400 space-y-1">
-        {team.colorSource ? (
-          <div className="flex gap-2">
-            <dt>Colors matched</dt>
-            <dd>
-              <span className="text-slate-300">
-                {team.colorSource.matchedName}
-              </span>{" "}
-              on teamcolorcodes.com
-            </dd>
-          </div>
-        ) : (
-          <div className="flex gap-2">
-            <dt>Colors</dt>
-            <dd>no source resolved yet</dd>
-          </div>
-        )}
-        {team.externalIds?.wikidataId && (
-          <div className="flex gap-2">
-            <dt>Wikidata</dt>
-            <dd className="text-slate-300">{team.externalIds.wikidataId}</dd>
-          </div>
-        )}
-        {team.externalIds?.espnId && (
-          <div className="flex gap-2">
-            <dt>ESPN</dt>
-            <dd className="text-slate-300">{team.externalIds.espnId}</dd>
-          </div>
-        )}
-      </dl>
     </div>
   );
 }
