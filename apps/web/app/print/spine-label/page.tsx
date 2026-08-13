@@ -1,8 +1,12 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { Button, Input } from "@/components/primitives";
+import { Input } from "@/components/primitives";
+// The shared `Button` primitive is a light-surface control (bg-white,
+// text-slate-900). These pages are dark, and the rest of the app reaches for
+// NeonButton here — see components/SetSelector/AdminTools.tsx.
+import NeonButton from "@/components/modules/NeonButton";
 import {
   PlayerAutocomplete,
   type PlayerSearchResult,
@@ -152,20 +156,55 @@ export default function SpineLabelPage() {
 
   const canAdd = name.trim().length > 0 && colorsValid;
 
+  // Adding/removing a label doesn't move focus (Add stays put so the user can
+  // add several in a row; Remove's own button unmounts, which is handled
+  // separately below), so neither outcome is otherwise programmatically
+  // announced — WCAG 4.1.3 Status Messages. `addStatus` is a persistent
+  // visually-hidden live region rather than a mounted-on-demand node: a
+  // dynamically-INSERTED live region is unreliable in Safari/VoiceOver, but
+  // one that already exists and only has its text changed is not.
+  const [addStatus, setAddStatus] = useState("");
+
   const addLabel = () => {
     if (!canAdd) return;
+    // Captured before the update so both the updater below and the status
+    // message agree on what "the new label" and "the new count" are.
+    // `Date.now()` itself stays inside the setState updater (not hoisted out
+    // next to this) — `react-hooks/purity` treats a component-body call as
+    // impure-during-render, but a call made from inside the updater function
+    // passed to setState is the sanctioned place for it.
+    const addedName = name.trim();
+    const newCount = labels.length + 1;
     setLabels((current) => [
       ...current,
       {
         // Date.now alone collides when two labels are added in the same tick;
         // the index keeps keys unique without pulling in a uuid dependency.
         id: `${Date.now()}-${current.length}`,
-        name: name.trim(),
+        name: addedName,
         background: normalizedBackground!,
         text: normalizedText!,
       },
     ]);
+    setAddStatus(
+      `Added ${addedName} to the sheet. ${newCount} label${newCount === 1 ? "" : "s"} queued.`,
+    );
   };
+
+  // Removing a label unmounts that exact li/button — React does not restore
+  // focus on unmount, so without this it silently reverts to <body>, which is
+  // disorienting for a keyboard/screen-reader user removing several labels in
+  // a row. Moving focus to the (now updated) "Sheet" heading both repairs
+  // focus and, since its own text already states the new count, doubles as
+  // the removal's status announcement without a second live region.
+  const sheetHeadingRef = useRef<HTMLHeadingElement>(null);
+  const prevLabelCountRef = useRef(labels.length);
+  useEffect(() => {
+    if (labels.length < prevLabelCountRef.current) {
+      sheetHeadingRef.current?.focus();
+    }
+    prevLabelCountRef.current = labels.length;
+  }, [labels.length]);
 
   const removeLabel = (id: string) => {
     setLabels((current) => current.filter((label) => label.id !== id));
@@ -216,6 +255,9 @@ export default function SpineLabelPage() {
 
   return (
     <div className="space-y-6">
+      <div className="sr-only" role="status" aria-live="polite">
+        {addStatus}
+      </div>
       <div>
         <h2 className="text-2xl font-semibold mb-1">Spine Labels</h2>
         <p className="text-sm text-slate-400">
@@ -243,7 +285,7 @@ export default function SpineLabelPage() {
           {teamIds.length > 0 && (
             <section className="space-y-2">
               <h3 className="text-sm font-semibold text-slate-300">Team</h3>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-400">
                 Defaults to the team {player?.name} spent longest with.
               </p>
               <div className="flex flex-wrap gap-2" role="group" aria-label="Team colors">
@@ -274,7 +316,7 @@ export default function SpineLabelPage() {
                       />
                       {team.name}
                       {!hasColors && (
-                        <span className="text-xs text-slate-500">(no colors)</span>
+                        <span className="text-xs text-slate-400">(no colors)</span>
                       )}
                     </button>
                   );
@@ -304,9 +346,9 @@ export default function SpineLabelPage() {
                 }}
                 className="w-32"
               />
-              <Button type="button" variant="outline" onClick={invert}>
+              <NeonButton type="button" secondary onClick={invert}>
                 Invert
-              </Button>
+              </NeonButton>
             </div>
 
             <p className="text-xs" aria-live="polite">
@@ -369,7 +411,7 @@ export default function SpineLabelPage() {
                 className="w-36"
               />
             </div>
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-slate-400">
               {perSheet} label{perSheet === 1 ? "" : "s"} per sheet at{" "}
               {widthIn}
               &Prime; wide.
@@ -385,9 +427,9 @@ export default function SpineLabelPage() {
             </p>
           </section>
 
-          <Button type="button" variant="primary" onClick={addLabel} disabled={!canAdd}>
+          <NeonButton type="button" onClick={addLabel} disabled={!canAdd}>
             Add to sheet
-          </Button>
+          </NeonButton>
         </div>
 
         {/* ---------------------------------------------------------------- */}
@@ -395,18 +437,21 @@ export default function SpineLabelPage() {
         {/* ---------------------------------------------------------------- */}
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-300">
+            <h3
+              ref={sheetHeadingRef}
+              tabIndex={-1}
+              className="text-sm font-semibold text-slate-300 rounded-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+            >
               Sheet ({labels.length} label{labels.length === 1 ? "" : "s"},{" "}
               {sheetCount} page{sheetCount === 1 ? "" : "s"})
             </h3>
-            <Button
+            <NeonButton
               type="button"
-              variant="primary"
               onClick={handlePrint}
               disabled={labels.length === 0 || printing}
             >
               {printing ? "Printing…" : "Print"}
-            </Button>
+            </NeonButton>
           </div>
 
           {labels.length > 0 && (
@@ -422,14 +467,14 @@ export default function SpineLabelPage() {
                     style={{ background: label.background }}
                   />
                   <span className="flex-1">{label.name}</span>
-                  <Button
+                  <NeonButton
                     type="button"
-                    variant="ghost"
+                    cancel
                     onClick={() => removeLabel(label.id)}
                     aria-label={`Remove ${label.name} from the sheet`}
                   >
                     Remove
-                  </Button>
+                  </NeonButton>
                 </li>
               ))}
             </ul>
@@ -438,7 +483,7 @@ export default function SpineLabelPage() {
           <div>
             <h3 className="text-sm font-semibold text-slate-300 mb-2">Preview</h3>
             {previewLabels.length === 0 ? (
-              <p className="text-sm text-slate-500">
+              <p className="text-sm text-slate-400">
                 Pick a player, or type a name, to see the label.
               </p>
             ) : (
@@ -466,7 +511,7 @@ export default function SpineLabelPage() {
                 </div>
               </div>
             )}
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-2 text-xs text-slate-400">
               Preview shows the first page. Dashed lines are cut guides and are
               printed inside the label, so cutting removes them.
             </p>

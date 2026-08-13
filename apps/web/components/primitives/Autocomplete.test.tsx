@@ -178,8 +178,19 @@ describe("Autocomplete — ARIA", () => {
     );
   });
 
-  it("reports collapsed when there is nothing to offer", () => {
+  it("reports expanded whenever the popup is shown, results or not", () => {
+    // aria-expanded tracks popup VISIBILITY, not result count. The empty state
+    // renders a real listbox holding a disabled "No matches" option, so
+    // reporting collapsed would contradict both what the user sees and the
+    // aria-controls element being present in the accessibility tree.
     render(<Harness items={[]} />);
+    openList();
+    expect(input()!.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("reports collapsed before the user types, when no popup exists", () => {
+    render(<Harness initialQuery="" />);
     openList();
     expect(input()!.getAttribute("aria-expanded")).toBe("false");
   });

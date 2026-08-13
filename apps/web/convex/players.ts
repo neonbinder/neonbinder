@@ -1,7 +1,7 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { getCurrentUserId } from "./auth";
+import { getCurrentUserId, requireAdmin } from "./auth";
 import type { Id } from "./_generated/dataModel";
 
 /**
@@ -203,6 +203,15 @@ const SEARCH_MAX_LIMIT = 25;
  *
  * Public, like `list` and `get` above: player rows are globally-shared
  * reference data and `toPublicPlayer` strips `createdByUserId`.
+ *
+ * Unlike `list`/`get`/`getManyByIds` above, this one DOES require a signed-in
+ * caller. Not for confidentiality — the data is the same public reference data
+ * — but for cost. A Convex deployment URL ships in the client bundle, so an
+ * ungated public query is internet-reachable by anyone, and search is the most
+ * expensive query class Convex offers; this is the codebase's first search
+ * index. Every real caller (`/print/spine-label`, `/design/primitives`) already
+ * sits behind `ProtectedLayout`, so the check costs nothing functionally.
+ * Returns empty rather than throwing, so a signed-out render is a quiet no-op.
  */
 export const search = query({
   args: {
@@ -212,6 +221,8 @@ export const search = query({
   },
   returns: v.array(playerDocPublicValidator),
   handler: async (ctx, args) => {
+    if (!(await getCurrentUserId(ctx))) return [];
+
     const term = args.query.trim();
     if (!term) return [];
 
@@ -315,6 +326,11 @@ export const enrichFromWikidata = action({
   args: { id: v.id("players") },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
+    // NEO-147: gated for the same reason as the `teams` twin, and it had the
+    // same shape — a public action with no authorization and no callers, which
+    // let any client spend an outbound Wikidata round-trip per call, for any
+    // player id, at any rate. Enrichment writes to globally-shared player rows.
+    await requireAdmin(ctx);
     try {
       await ctx.runAction(internal.adapters.wikidata.enrichPlayer, { playerId: args.id });
     } catch (error) {

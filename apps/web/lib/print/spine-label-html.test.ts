@@ -128,6 +128,24 @@ describe("spineSheetHtml — escaping", () => {
     });
     expect(html).not.toContain('";evil:"');
   });
+
+  it("drops a non-hex color rather than emitting it into the style attribute", () => {
+    // Escaping alone is not enough in a `style="..."` attribute: the HTML
+    // parser decodes `&quot;` back to a quote before the CSS parser sees the
+    // value, and `;` is never escaped — so an escaped-but-unvalidated color
+    // still injects whole CSS declarations. The value has to be rejected, not
+    // just escaped.
+    const html = spineSheetHtml({
+      labels: [
+        { ...label("x"), background: "#fff;background:url(https://evil.test/)" },
+      ],
+      widthIn: 2,
+      heightIn: 10.5,
+    });
+    expect(html).not.toContain("evil.test");
+    expect(html).not.toContain("url(");
+    expect(html).toContain("background:#ffffff;");
+  });
 });
 
 describe("spineSheetCss", () => {

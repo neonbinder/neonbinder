@@ -2,7 +2,10 @@ import React, { useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
-import { Button, Input } from "@/components/primitives";
+import { Input } from "@/components/primitives";
+// Dark surface — see the note in app/print/spine-label/page.tsx. This panel
+// sits directly beneath AdminTools, which uses NeonButton for the same reason.
+import NeonButton from "@/components/modules/NeonButton";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 
 /**
@@ -110,7 +113,7 @@ function ManualColorRow({ team }: { team: Team }) {
         <ColorSwatch hex={team.colors?.secondary} label="Secondary" />
         <span className="text-sm font-medium">{team.name}</span>
         {team.league && (
-          <span className="text-xs text-slate-500">{team.league}</span>
+          <span className="text-xs text-slate-400">{team.league}</span>
         )}
       </div>
 
@@ -129,26 +132,25 @@ function ManualColorRow({ team }: { team: Team }) {
           onChange={(e) => setSecondary(e.target.value)}
           className="w-32"
         />
-        <Button
+        <NeonButton
           type="button"
-          variant="primary"
           onClick={save}
           disabled={!canSave || busy !== null}
         >
           {busy === "save" ? "Saving…" : "Save"}
-        </Button>
-        <Button
+        </NeonButton>
+        <NeonButton
           type="button"
-          variant="outline"
+          secondary
           onClick={discover}
           disabled={busy !== null}
         >
           {busy === "discover" ? "Searching…" : "Discover"}
-        </Button>
+        </NeonButton>
       </div>
 
       {ratio !== null && (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-slate-400">
           Contrast {ratio.toFixed(1)}:1
         </p>
       )}
@@ -186,21 +188,21 @@ function CandidateRow({ team }: { team: Team }) {
     <li className="rounded-md border border-slate-800 p-3 space-y-2">
       <div className="flex items-center gap-2">
         <span className="text-sm font-medium">{team.name}</span>
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-slate-400">
           {team.colorCandidates?.length} possible matches
         </span>
       </div>
       <ul className="flex flex-wrap gap-2">
         {(team.colorCandidates ?? []).map((candidate) => (
           <li key={candidate.url}>
-            <Button
+            <NeonButton
               type="button"
-              variant="outline"
+              secondary
               onClick={() => choose(candidate.url)}
               disabled={busy !== null}
             >
               {busy === candidate.url ? "Applying…" : candidate.name}
-            </Button>
+            </NeonButton>
           </li>
         ))}
       </ul>
@@ -225,20 +227,31 @@ export default function TeamColorAdmin({
 
   const [refreshing, setRefreshing] = useState(false);
   const [enqueueing, setEnqueueing] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  // `isError` travels with the text rather than being inferred from it, so the
+  // banner below can pick `role="alert"` (assertive) for a failure and
+  // `role="status"` (polite) for a success — collapsing both onto one role
+  // means a screen reader user could miss a failure entirely.
+  const [message, setMessage] = useState<{ text: string; isError: boolean } | null>(
+    null,
+  );
 
   const handleRefresh = async () => {
     setRefreshing(true);
     setMessage(null);
     try {
       const result = await refreshIndex();
-      setMessage(
-        result.indexed === 0
-          ? "Could not reach the color source — the existing index was left alone."
-          : `Indexed ${result.indexed} pages (${result.removed} stale removed).`,
-      );
+      setMessage({
+        text:
+          result.indexed === 0
+            ? "Could not reach the color source — the existing index was left alone."
+            : `Indexed ${result.indexed} pages (${result.removed} stale removed).`,
+        isError: result.indexed === 0,
+      });
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Refresh failed");
+      setMessage({
+        text: e instanceof Error ? e.message : "Refresh failed",
+        isError: true,
+      });
     } finally {
       setRefreshing(false);
     }
@@ -249,13 +262,18 @@ export default function TeamColorAdmin({
     setMessage(null);
     try {
       const { enqueued } = await enrichUnenrichedTeamsArgs(enrichUnenriched, sportId);
-      setMessage(
-        enqueued === 0
-          ? "Nothing left to enrich."
-          : `Queued ${enqueued} teams. They resolve one at a time over the next few minutes.`,
-      );
+      setMessage({
+        text:
+          enqueued === 0
+            ? "Nothing left to enrich."
+            : `Queued ${enqueued} teams. They resolve one at a time over the next few minutes.`,
+        isError: false,
+      });
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Could not queue teams");
+      setMessage({
+        text: e instanceof Error ? e.message : "Could not queue teams",
+        isError: true,
+      });
     } finally {
       setEnqueueing(false);
     }
@@ -277,23 +295,23 @@ export default function TeamColorAdmin({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button
+        <NeonButton
           type="button"
-          variant="outline"
+          secondary
           onClick={handleRefresh}
           disabled={refreshing}
         >
           {refreshing ? "Refreshing…" : "Refresh color index"}
-        </Button>
-        <Button
+        </NeonButton>
+        <NeonButton
           type="button"
-          variant="outline"
+          secondary
           onClick={handleEnrich}
           disabled={enqueueing || (indexStatus?.count ?? 0) === 0}
         >
           {enqueueing ? "Queueing…" : `Enrich up to ${ENRICH_BATCH} teams`}
-        </Button>
-        <span className="text-xs text-slate-500">
+        </NeonButton>
+        <span className="text-xs text-slate-400">
           {indexStatus === undefined
             ? ""
             : indexStatus.count === 0
@@ -303,8 +321,11 @@ export default function TeamColorAdmin({
       </div>
 
       {message && (
-        <p className="text-sm text-slate-300" role="status">
-          {message}
+        <p
+          className={`text-sm ${message.isError ? "text-neon-pink" : "text-slate-300"}`}
+          role={message.isError ? "alert" : "status"}
+        >
+          {message.text}
         </p>
       )}
 

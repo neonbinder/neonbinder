@@ -52,6 +52,32 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** `#rgb` or `#rrggbb`, which is the whole of what {@link SpineLabel} promises. */
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/** Used when a color fails {@link HEX_COLOR}. Legible, and obviously not a team. */
+const FALLBACK_BACKGROUND = "#ffffff";
+const FALLBACK_TEXT = "#000000";
+
+/**
+ * Colors are interpolated into a `style="..."` attribute, and HTML escaping is
+ * NOT sufficient there. The HTML parser decodes entities in an attribute value
+ * BEFORE the CSS parser ever sees it, so `&quot;` is a real quote again by the
+ * time it matters — and `;` is not escaped at all. `#fff;background:url(...)`
+ * would therefore inject whole CSS declarations into the printed page and the
+ * preview even though nothing about it "escapes the attribute".
+ *
+ * An allowlist is the fix rather than more escaping: the type already says hex,
+ * every caller normalizes to hex (`lib/print/contrast.ts#normalizeHexColor`),
+ * so anything else is either a bug or an attack and the fallback is correct for
+ * both. This keeps the guarantee at the point of interpolation instead of
+ * spread across every current and future caller.
+ */
+function cssColor(value: string, fallback: string): string {
+  const trimmed = value.trim();
+  return HEX_COLOR.test(trimmed) ? trimmed : fallback;
+}
+
 /**
  * CSS for the sheet. Kept separate from the body because `printHtmlDocument`
  * takes them separately (it owns `@page` and the print-color-adjust reset).
@@ -153,8 +179,8 @@ export function spineSheetHtml(options: SpineSheetOptions): string {
           return (
             `<div class="label" style="height:${segmentHeight}in;">` +
             `<div class="label-face" style="margin-top:-${pieceOffset}in;` +
-            `background:${escapeHtml(label.background)};` +
-            `color:${escapeHtml(label.text)};` +
+            `background:${cssColor(label.background, FALLBACK_BACKGROUND)};` +
+            `color:${cssColor(label.text, FALLBACK_TEXT)};` +
             `font-size:${fontIn.toFixed(3)}in;">${escapeHtml(label.name)}</div>` +
             `</div>`
           );

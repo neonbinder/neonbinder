@@ -308,6 +308,81 @@ describe("refreshIndex", () => {
 });
 
 // ---------------------------------------------------------------------------
+// chooseColorSource — the client-supplied URL
+// ---------------------------------------------------------------------------
+
+describe("chooseColorSource", () => {
+  test("applies a URL the server itself parked on the row", async () => {
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Huskies", []);
+    const url = "https://teamcolorcodes.com/connecticut-huskies-colors/";
+    await t.run(async (ctx) => {
+      await ctx.db.patch(teamId, {
+        colorCandidates: [{ name: "connecticut huskies", url }],
+      });
+    });
+    stubPageFetch(COLOR_PAGE);
+
+    const outcome = await t
+      .withIdentity({ subject: "admin", role: "admin" })
+      .action(api.teamColorSources.chooseColorSource, { teamId, url });
+
+    expect(outcome).toBe("resolved");
+    const team = await getTeam(t, teamId);
+    expect(team!.colorSource?.url).toBe(url);
+  });
+
+  test("refuses a URL that is not a source this team was offered", async () => {
+    // The whole SSRF surface: `url` is client-supplied and fetched from inside
+    // Convex's network, so an admin session must not be able to steer it.
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Huskies", []);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(teamId, {
+        colorCandidates: [
+          { name: "a", url: "https://teamcolorcodes.com/a-colors/" },
+        ],
+      });
+    });
+    const fetchMock = stubPageFetch(COLOR_PAGE);
+
+    await expect(
+      t.withIdentity({ subject: "admin", role: "admin" }).action(
+        api.teamColorSources.chooseColorSource,
+        { teamId, url: "https://teamcolorcodes.com/not-offered-colors/" },
+      ),
+    ).rejects.toThrow(/not a known color source/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("refuses an off-host URL outright", async () => {
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Huskies", []);
+    const fetchMock = stubPageFetch(COLOR_PAGE);
+
+    await expect(
+      t.withIdentity({ subject: "admin", role: "admin" }).action(
+        api.teamColorSources.chooseColorSource,
+        { teamId, url: "http://169.254.169.254/latest/meta-data/" },
+      ),
+    ).rejects.toThrow(/unsupported color source/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("requires admin", async () => {
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Huskies", []);
+
+    await expect(
+      t.withIdentity({ subject: "someone", role: "user" }).action(
+        api.teamColorSources.chooseColorSource,
+        { teamId, url: "https://teamcolorcodes.com/a-colors/" },
+      ),
+    ).rejects.toThrow(/admin/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // The admin worklist
 // ---------------------------------------------------------------------------
 

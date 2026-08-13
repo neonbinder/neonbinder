@@ -350,4 +350,44 @@ describe("fetchTeamColors", () => {
       "neonbinder.io",
     );
   });
+
+  test("never issues a request off the source host", async () => {
+    // A Convex action's fetch runs inside our backend's network, so a URL that
+    // reached here unchecked would be an SSRF primitive — cloud metadata,
+    // private ranges, anything else reachable from Convex egress.
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => page("<h2>Team Primary Colors</h2>"),
+    } as unknown as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (const url of [
+      "http://169.254.169.254/latest/meta-data/",
+      "http://localhost:8080/",
+      "https://teamcolorcodes.com.evil.test/x-colors/",
+      "http://teamcolorcodes.com/x-colors/",
+      "not a url",
+    ]) {
+      await expect(fetchTeamColors(url)).resolves.toBeNull();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("discards a response that redirected off the source host", async () => {
+    // Redirects are followed on purpose (/wp-sitemap.xml 301s), so the landing
+    // host has to be checked as well as the requested one.
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      url: "https://evil.test/x-colors/",
+      text: async () =>
+        page(`<h2>Team Primary Colors</h2>${colorblock("#ab0008")}<h2>Next</h2>`),
+    } as unknown as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchTeamColors("https://teamcolorcodes.com/x-colors/"),
+    ).resolves.toBeNull();
+  });
 });

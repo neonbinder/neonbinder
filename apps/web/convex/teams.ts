@@ -326,6 +326,9 @@ export const enrichFromWikidata = action({
   },
 });
 
+/** `#rgb` or `#rrggbb`. The only colour form `teams.colors` is allowed to hold. */
+const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
 /**
  * NEO-147: manual field entry for the team editor.
  *
@@ -383,6 +386,19 @@ export const saveTeamFields = mutation({
       patch.yearsActive = args.yearsActive ?? undefined;
     }
     if (args.colors !== undefined) {
+      // Validated at the write, not just in the UI. These values are
+      // interpolated into a `style="..."` attribute by
+      // lib/print/spine-label-html.ts, which defends itself with its own
+      // allowlist — but storing only real hex keeps the row self-describing
+      // and means a future consumer inherits the guarantee rather than having
+      // to rediscover it.
+      if (args.colors !== null) {
+        for (const value of [args.colors.primary, args.colors.secondary]) {
+          if (value !== undefined && !HEX_COLOR.test(value)) {
+            throw new Error(`Not a hex color: ${value}`);
+          }
+        }
+      }
       patch.colors = args.colors ?? undefined;
     }
 

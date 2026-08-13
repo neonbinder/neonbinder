@@ -44,6 +44,53 @@ const SITEMAP_INDEX_URL = `${BASE_URL}/wp-sitemap.xml`;
 const FETCH_TIMEOUT_MS = 15_000;
 
 /**
+ * The ONLY hosts this adapter may fetch. Every URL it handles arrives from
+ * somewhere it does not control — the sitemap's own `<loc>` elements, a row in
+ * the cached index, or an admin's click in the team editor — and a Convex
+ * action's `fetch` runs inside our backend's network, not the user's. Without
+ * this check a URL that reached `fetchText` would be a server-side request
+ * forgery primitive: cloud metadata endpoints, private ranges, anything else
+ * reachable from Convex egress.
+ *
+ * `www.` is included because the site serves both and either could appear in a
+ * canonical URL; nothing else is.
+ */
+const ALLOWED_HOSTS = new Set(["teamcolorcodes.com", "www.teamcolorcodes.com"]);
+
+/**
+ * Hard ceiling on a single response.
+ *
+ * The whole sitemap set is ~1.5MB and a team page is ~100KB, so 4MB is far
+ * above anything legitimate. It bounds two things: the memory an action holds
+ * for one body, and the input the regex parsers below scan.
+ */
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Ceiling on child sitemaps followed from the index (4 as of 2026-08-13), and
+ * on rows one refresh may produce (~2190 today). Both lists come from the
+ * remote site, so both are bounded rather than trusted.
+ */
+const MAX_CHILD_SITEMAPS = 25;
+const MAX_INDEX_ENTRIES = 20_000;
+
+/**
+ * True only for an `https://` URL on {@link ALLOWED_HOSTS}. Exported so the
+ * callers that hand user-supplied URLs to this adapter can reject early with a
+ * useful message rather than getting a silent null.
+ */
+export function isAllowedSourceUrl(raw: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== "https:") return false;
+  return ALLOWED_HOSTS.has(parsed.hostname.toLowerCase());
+}
+
+/**
  * Identifies us and gives the site owner a way to make contact. Same shape as
  * the ESPN adapter's UA — this is a courtesy source with no contract, so being
  * anonymous would be the wrong posture.
@@ -127,6 +174,10 @@ export function teamNameFromSourceUrl(url: string): string | null {
 }
 
 async function fetchText(url: string): Promise<string | null> {
+  if (!isAllowedSourceUrl(url)) {
+    console.warn(`[teamColorCodes] refused off-host url=${url}`);
+    return null;
+  }
   try {
     const response = await fetch(url, {
       headers: { "User-Agent": USER_AGENT },
@@ -138,7 +189,35 @@ async function fetchText(url: string): Promise<string | null> {
       );
       return null;
     }
-    return await response.text();
+    // Redirects are FOLLOWED deliberately — `/wp-sitemap.xml` 301s to
+    // `/sitemap_index.xml`, so refusing them would break the index refresh.
+    // That means the check above only covers the first hop, and where we
+    // actually landed has to be checked too, or a redirect from the source
+    // site would carry us (and the parsed result) off-host.
+    const finalUrl = typeof response.url === "string" ? response.url : "";
+    if (finalUrl && !isAllowedSourceUrl(finalUrl)) {
+      console.warn(
+        `[teamColorCodes] refused off-host redirect url=${url} landed=${finalUrl}`,
+      );
+      return null;
+    }
+    const declaredLength = Number(
+      response.headers?.get?.("content-length") ?? "",
+    );
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+      console.warn(
+        `[teamColorCodes] response too large declared=${declaredLength} url=${url}`,
+      );
+      return null;
+    }
+    const text = await response.text();
+    if (text.length > MAX_RESPONSE_BYTES) {
+      console.warn(
+        `[teamColorCodes] response too large bytes=${text.length} url=${url}`,
+      );
+      return null;
+    }
+    return text;
   } catch (error) {
     console.warn(`[teamColorCodes] fetch threw url=${url}`, error);
     return null;
@@ -165,9 +244,12 @@ export async function fetchTeamColorSourceIndex(): Promise<TeamColorSourceEntry[
   const indexXml = await fetchText(SITEMAP_INDEX_URL);
   if (!indexXml) return [];
 
-  const childSitemaps = parseSitemapLocs(indexXml).filter((u) =>
-    u.toLowerCase().endsWith(".xml"),
-  );
+  // The index is remote content: filter it to on-host `.xml` and cap how many
+  // we will follow, so a changed (or tampered) index cannot turn one refresh
+  // into an unbounded fan-out of outbound requests.
+  const childSitemaps = parseSitemapLocs(indexXml)
+    .filter((u) => u.toLowerCase().endsWith(".xml") && isAllowedSourceUrl(u))
+    .slice(0, MAX_CHILD_SITEMAPS);
   if (childSitemaps.length === 0) {
     console.warn("[teamColorCodes] sitemap index listed no child sitemaps");
     return [];
@@ -184,6 +266,12 @@ export async function fetchTeamColorSourceIndex(): Promise<TeamColorSourceEntry[
       if (!key) continue;
       // First writer wins. Duplicates across sitemaps are the same page.
       if (!byName.has(key)) byName.set(key, { name, url: loc });
+      if (byName.size >= MAX_INDEX_ENTRIES) {
+        console.warn(
+          `[teamColorCodes] index truncated at ${MAX_INDEX_ENTRIES} entries`,
+        );
+        return [...byName.values()];
+      }
     }
   }
   return [...byName.values()];

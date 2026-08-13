@@ -26,6 +26,7 @@ import {
   colorSourceMatchKey,
   fetchTeamColorSourceIndex,
   fetchTeamColors,
+  isAllowedSourceUrl,
 } from "./adapters/teamColorCodes";
 
 /**
@@ -150,11 +151,20 @@ export const refreshIndex = action({
   },
 });
 
-/** How many pages the index currently holds — drives the admin UI's empty state. */
+/**
+ * How many pages the index currently holds — drives the admin UI's empty state.
+ *
+ * Admin-gated like every other function on this table, and not only for
+ * symmetry: the handler reads up to 5000 documents per call, and a public
+ * Convex query is callable by anyone holding the deployment URL (which ships
+ * in the client bundle). Ungated, that is a free 5000-document read per
+ * request against our database on demand.
+ */
 export const indexStatus = query({
   args: {},
   returns: v.object({ count: v.number(), refreshedAt: v.union(v.number(), v.null()) }),
   handler: async (ctx) => {
+    await requireAdmin(ctx);
     // `take` bounds the read; the exact count past the cap is not interesting,
     // the UI only needs "empty / stale / populated".
     const rows = await ctx.db.query("teamColorSources").take(5000);
@@ -294,12 +304,51 @@ export const resolveTeamColors = internalAction({
  * Takes the URL the user picked out of `colorCandidates` rather than a colour,
  * so the row ends up indistinguishable from an automatic resolution — same
  * provenance, same skip behaviour on the next backfill.
+ *
+ * SECURITY: `url` is client-supplied and this action fetches it from inside
+ * Convex's network, which makes an unvalidated version of this a server-side
+ * request forgery primitive — admin-gated, but an admin session (or a CSRF-ish
+ * mistake in an admin surface) should not be able to point our backend at an
+ * arbitrary host. Two independent checks, either of which alone would close it:
+ *
+ *  1. The URL must be one the SERVER offered for THIS team — a parked
+ *     `colorCandidates` entry, or an index row under this team's name key.
+ *     That is exactly the set the UI can present, so it costs nothing.
+ *  2. `fetchTeamColors` refuses anything not on teamcolorcodes.com over
+ *     https (see `isAllowedSourceUrl`), including after redirects.
+ *
+ * A rejected URL throws rather than returning "unreadable": it is a caller
+ * error, not a bad page, and collapsing the two would hide tampering.
  */
 export const chooseColorSource = action({
   args: { teamId: v.id("teams"), url: v.string() },
   returns: v.union(v.literal("resolved"), v.literal("unreadable")),
   handler: async (ctx, args): Promise<"resolved" | "unreadable"> => {
     await requireAdmin(ctx);
+
+    if (!isAllowedSourceUrl(args.url)) {
+      throw new Error("Unsupported color source URL");
+    }
+
+    const team = await ctx.runQuery(internal.teams.getInternal, {
+      id: args.teamId,
+    });
+    if (!team) throw new Error("Team not found");
+
+    const offered = new Set(
+      (team.colorCandidates ?? []).map((candidate) => candidate.url),
+    );
+    if (!offered.has(args.url)) {
+      const nameKey = colorSourceMatchKey(team.name);
+      const indexed = nameKey
+        ? await ctx.runQuery(internal.teamColorSources.findByNameKeyInternal, {
+            nameKey,
+          })
+        : [];
+      if (!indexed.some((entry) => entry.url === args.url)) {
+        throw new Error("URL is not a known color source for this team");
+      }
+    }
 
     const parsed = await fetchTeamColors(args.url);
     if (!parsed || !parsed.primary) return "unreadable";
