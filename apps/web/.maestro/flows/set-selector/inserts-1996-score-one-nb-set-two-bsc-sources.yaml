@@ -99,15 +99,29 @@ tags:
 # sets not yet assigned to one. Anything left in Pending is discarded.
 - assertVisible:
     text: ".*Ready \\([0-9]+\\).*"
-# Pending sits below Ready inside the dialog's own overflow-y-auto body, and a
-# real set's Ready list is long enough to push it off a 1024x629 viewport.
-# Scroll to it before asserting — and this same scroll leaves the BSC filter
-# below in reach for the taps that follow.
-- scrollUntilVisible:
-    element:
-      text: ".*Pending \\([0-9]+\\).*"
-    centerElement: true
-    timeout: 15000
+
+# NARROW THE READY LIST FIRST — this is what makes the rest of the dialog
+# reachable at all.
+#
+# 1996 Score reconciles ~10 inserts, and the dialog body is its own
+# overflow-y-auto scroller. Maestro scrolls the PAGE, not that container, so
+# everything below a full-length Ready list is unreachable: `scrollUntilVisible`
+# on "Pending" returned "No visible element found" rather than scrolling to it.
+# The old dialog dodged this by collapsing its Matched section by default.
+#
+# Filtering Ready to one row pulls Pending, both columns and the Save button
+# back above the fold — and it is the same thing an operator does to find the
+# set they came to fix.
+- tapOn:
+    id: "Filter NeonBinder sets"
+    waitToSettleTimeoutMs: 250
+- inputText: "Artist"
+- extendedWaitUntil:
+    visible:
+      text: ".*Ready \\(1 of [0-9]+\\).*"
+    timeout: 10000
+- assertVisible:
+    text: ".*Pending \\([0-9]+\\).*"
 
 # The auto-matcher pairs Series 2 with the combined SL set at 78% and
 # leaves Series 1 stranded — `computeMatches` splices its match out of

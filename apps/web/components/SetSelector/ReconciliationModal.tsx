@@ -777,6 +777,7 @@ export default function ReconciliationModal({
   const [slFilter, setSlFilter] = useState<string>("");
   const [showAllSl, setShowAllSl] = useState<boolean>(false);
   const [bscFilter, setBscFilter] = useState<string>("");
+  const [readyFilter, setReadyFilter] = useState<string>("");
   // Reveal marketplace sets that some NB set already maps. NOT a sharing
   // concept — mapping never consumed anything, this just keeps the default
   // list short by hiding what is already accounted for.
@@ -823,6 +824,25 @@ export default function ReconciliationModal({
       return item.value.toLowerCase().includes(bscQuery);
     });
   }, [state.pendingBsc, usedBscSet, bscQuery]);
+
+  // A real reconcile can hold a dozen-plus Ready sets, which pushes Pending out
+  // of reach — the dialog body is its own scroller, so there is no getting back
+  // to it without a lot of wheel. Filtering by OUR title or by any mapped
+  // marketplace name keeps both halves usable, and it is how an operator finds
+  // the one set they came to fix.
+  const readyQuery = useMemo(
+    () => readyFilter.trim().toLowerCase(),
+    [readyFilter],
+  );
+  const filteredReady = useMemo(() => {
+    if (!readyQuery) return state.ready;
+    return state.ready.filter(
+      (set) =>
+        set.title.toLowerCase().includes(readyQuery) ||
+        set.bsc.some((i) => i.value.toLowerCase().includes(readyQuery)) ||
+        set.sl.some((i) => i.value.toLowerCase().includes(readyQuery)),
+    );
+  }, [state.ready, readyQuery]);
 
   // One entry per marketplace id already mapped by some NB set, carrying the
   // titles that map it so the operator can see where it is in use.
@@ -1188,18 +1208,36 @@ export default function ReconciliationModal({
             {/* ── READY ─────────────────────────────────────────────── */}
             <div>
               <h3 className="text-sm font-medium text-gray-300 mb-1">
-                Ready ({state.ready.length})
+                Ready ({filteredReady.length}
+                {filteredReady.length !== state.ready.length
+                  ? ` of ${state.ready.length}`
+                  : ""}
+                )
               </h3>
               <p className="text-xs text-gray-500 mb-2">
                 These become NeonBinder sets. The title is ours — edit it freely.
                 Each set can map to any number of BSC and SportLots sets.
               </p>
+              {state.ready.length > 0 && (
+                <div className="mb-2">
+                  <FilterInput
+                    value={readyFilter}
+                    onChange={setReadyFilter}
+                    placeholder="Filter sets..."
+                    ariaLabel="Filter NeonBinder sets"
+                  />
+                </div>
+              )}
               {state.ready.length === 0 ? (
                 <p className="text-xs text-gray-500 italic py-2">
                   No sets yet. Pair two items below, or make one its own set.
                 </p>
+              ) : filteredReady.length === 0 ? (
+                <p className="text-xs text-gray-500 italic py-2">
+                  No sets match "{readyQuery}"
+                </p>
               ) : (
-                state.ready.map((set) => (
+                filteredReady.map((set) => (
                   <ReadySetRow
                     key={set.key}
                     set={set}

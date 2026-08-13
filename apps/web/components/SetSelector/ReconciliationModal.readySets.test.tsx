@@ -350,6 +350,36 @@ describe("ReconciliationModal — restoring saved rows", () => {
     ).toBeTruthy();
   });
 
+  test("the Ready list can be filtered by our title OR by a mapped marketplace name", () => {
+    // Not cosmetic. The dialog body is its own scroller and Maestro — like a
+    // user with a trackpad — cannot easily get past a long Ready list to the
+    // Pending columns and Save below it. A real reconcile holds a dozen-plus
+    // sets. Filtering is how both halves stay reachable.
+    renderModal(allPending());
+    fireEvent.click(screen.getByText(BSC_S1.value));
+    fireEvent.click(screen.getByText(SL_COMBINED.value));
+    fireEvent.click(
+      screen.getByLabelText(`Make ${BSC_S2.value} its own NeonBinder set`),
+    );
+    expect(screen.getByText(/Ready \(2\)/)).toBeTruthy();
+
+    const filter = screen.getByLabelText("Filter NeonBinder sets");
+
+    // By OUR title.
+    fireEvent.change(filter, { target: { value: "Series 2" } });
+    expect(screen.getByText(/Ready \(1 of 2\)/)).toBeTruthy();
+
+    // By a MAPPED marketplace name — the SL set's name appears on neither
+    // title, so this only matches if mappings are searched too.
+    fireEvent.change(filter, { target: { value: "Artists Proofs" } });
+    expect(screen.getByText(/Ready \(1 of 2\)/)).toBeTruthy();
+
+    fireEvent.change(filter, { target: { value: "nothing matches this" } });
+    expect(screen.getByText(/No sets match/)).toBeTruthy();
+    // Filtering is a VIEW — it must not drop sets from what gets saved.
+    expect(screen.getByText(/Save 2 sets/)).toBeTruthy();
+  });
+
   test("an emptied title snaps back rather than saving a nameless set", () => {
     renderModal(allPending());
     fireEvent.click(screen.getByText(BSC_S1.value));
