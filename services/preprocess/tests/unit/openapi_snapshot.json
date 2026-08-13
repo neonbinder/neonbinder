@@ -129,6 +129,192 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "JobProgress": {
+        "description": "Per-image counters. `processed + failed` is the work done so far.",
+        "properties": {
+          "failed_images": {
+            "title": "Failed Images",
+            "type": "integer"
+          },
+          "processed_images": {
+            "title": "Processed Images",
+            "type": "integer"
+          },
+          "total_images": {
+            "title": "Total Images",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_images",
+          "processed_images",
+          "failed_images"
+        ],
+        "title": "JobProgress",
+        "type": "object"
+      },
+      "JobResult": {
+        "description": "Batch outcome. Populated once the job reaches a terminal state.\n\n`manifest_uri` points at the full document \u2014 per-image records, pairs with\ntheir merged identity, unpaired images and per-image failure reasons. It is\nread directly from GCS rather than proxied through this service.",
+        "properties": {
+          "manifest_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Uri"
+          },
+          "pairs": {
+            "title": "Pairs",
+            "type": "integer"
+          },
+          "resolver_calls": {
+            "title": "Resolver Calls",
+            "type": "integer"
+          },
+          "unmatched": {
+            "title": "Unmatched",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "manifest_uri",
+          "pairs",
+          "unmatched",
+          "resolver_calls"
+        ],
+        "title": "JobResult",
+        "type": "object"
+      },
+      "JobStatusResponse": {
+        "description": "Body for GET /jobs/{job_id}.\n\n`state` is one of `queued`, `running`, `succeeded`, `failed` \u2014 or\n`stalled`, which is never *stored*: it is what a caller is told when a\nnon-terminal job's status log has gone quiet for longer than\n`app.jobs.state.STALE_AFTER_MS`, meaning the instance running it died. A\nstalled job cannot be resumed; resubmit under a fresh job id.\n\nTimestamps are epoch milliseconds, matching what Convex stores.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Detail"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/JobProgress"
+          },
+          "result": {
+            "$ref": "#/components/schemas/JobResult"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "integer"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "user_id",
+          "state",
+          "sequence",
+          "created_at",
+          "updated_at",
+          "progress",
+          "result",
+          "error_code",
+          "error_detail"
+        ],
+        "title": "JobStatusResponse",
+        "type": "object"
+      },
+      "JobSubmitRequest": {
+        "description": "Body for POST /jobs.\n\n**There is no object-path field, and there must never be one.** Both\n`neonbinder-convex` and the preprocess runtime SA hold bucket-wide\n`objectViewer` on the placeholder bucket, so a caller-supplied path would\nmake this endpoint a cross-user read oracle. The service takes the two\nidentifiers and derives every key itself (`app.jobs.layout`); the caller's\nauthority to use them was established by Convex, which owns the\n`placeholderJobs` ownership row and re-derives the same path from it.",
+        "properties": {
+          "job_id": {
+            "description": "The jobId minted by createPlaceholderUploadUrl (a UUID).",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "The Clerk subject id that owns the job.",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "user_id"
+        ],
+        "title": "JobSubmitRequest",
+        "type": "object"
+      },
+      "JobSubmitResponse": {
+        "description": "202 body for POST /jobs.\n\n`state` is always `queued`: the work has been claimed, not started. Poll\n`GET /jobs/{job_id}` for everything after that.",
+        "properties": {
+          "input_uri": {
+            "title": "Input Uri",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "output_prefix": {
+            "title": "Output Prefix",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "user_id",
+          "state",
+          "input_uri",
+          "output_prefix"
+        ],
+        "title": "JobSubmitResponse",
+        "type": "object"
+      },
       "ProcessResponse": {
         "description": "Response body for POST /process.\n\n`players` is the canonical list of every player visible on the card\n(one entry for single-player cards, many for leaders/combo/dual-\nrookie/team set cards, empty when unidentifiable). `player` is a\nback-compat convenience: first entry or null.\n\n`rotation_degrees` is the CCW rotation that was applied to the chosen\ncrop before classification; clients that store the corrected image\nshould apply the same rotation to keep their copy aligned with what\nthe model actually saw.\n\n`cropped_source` tells the client which stage of the crop cascade\nwon. When it is `\"precropped\"` the client's upload was used as-is and\n`cropped_image_b64` will be null (the client already has the bytes\non disk). For every other source, the server produced new bytes and\nreturns them base64-encoded in `cropped_image_b64`.",
         "properties": {
@@ -344,6 +530,130 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/jobs": {
+      "post": {
+        "description": "Claim a zip batch and start it in the background.\n\nReturns 202 as soon as the job is claimed \u2014 the batch itself is minutes of\nSAM inference and cannot be a request. Everything after this point is\nobserved through `GET /jobs/{job_id}`, which reads the durable status log\nrather than any in-process state, so a poll landing on a different instance\n(or on a cold one) answers correctly. See `app.jobs` for the reasoning.\n\nFailure codes: `INVALID_IDENTIFIER` (400), `INPUT_NOT_FOUND` (404),\n`JOB_ALREADY_SUBMITTED` (409), `INPUT_TOO_LARGE` (413),\n`JOBS_NOT_CONFIGURED` / `INSTANCE_BUSY` (503, both retryable).",
+        "operationId": "submit_job_jobs_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobSubmitResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Job"
+      }
+    },
+    "/jobs/{job_id}": {
+      "get": {
+        "description": "Read a job's latest durable status snapshot.\n\n`user_id` is required because it is half of the object prefix the status\nlog lives under \u2014 the service does not maintain an index from job id to\nowner, deliberately: that index is the `placeholderJobs` row in Convex, and\nduplicating it here would be a second place for an ownership check to be\nwrong.",
+        "operationId": "get_job_status_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The Clerk subject id that owns the job.",
+            "in": "query",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "description": "The Clerk subject id that owns the job.",
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatusResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Status"
       }
     },
     "/process": {
