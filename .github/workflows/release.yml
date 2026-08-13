@@ -197,9 +197,12 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    defaults:
-      run:
-        working-directory: apps/web
+    # NO working-directory. The Vercel project's own Root Directory is already
+    # `apps/web`, and the CLI composes that onto the cwd — running from apps/web
+    # made it look for `apps/web/apps/web` and fail (run 31655145099). Every
+    # command in this job must run from the repo root. Note setup-node's
+    # node-version-file / cache-dependency-path below are ACTION INPUTS, which
+    # resolve from the workspace root regardless, so they keep their prefixes.
     outputs:
       convex_pushed: ${{ steps.deploy.outcome }}
       staged_url: ${{ steps.deploy.outputs.url }}
