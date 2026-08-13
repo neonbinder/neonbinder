@@ -290,10 +290,18 @@ jobs:
           echo "Smoke passed: $STAGED_URL -> $convex"
 
       # The flip. Only now does neonbinder.io serve the new build.
+      # --scope is REQUIRED here even though `deploy` above does not need it.
+      # `deploy` targets the project via VERCEL_ORG_ID / VERCEL_PROJECT_ID, but
+      # `promote` resolves a deployment BY URL and has no project context to
+      # infer the team from — this job deliberately has no `vercel pull`, so
+      # there is no .vercel/project.json either. Without it the CLI looks in the
+      # token's personal scope and fails with "Deployment belongs to a different
+      # team" (run 31657534503) — after the build has already pushed production
+      # Convex, which is the worst possible moment to fail.
       - name: Promote to production
         env:
           STAGED_URL: ${{ steps.deploy.outputs.url }}
-        run: vercel promote "$STAGED_URL" --token="$VERCEL_TOKEN"
+        run: vercel promote "$STAGED_URL" --scope neon-binder --token="$VERCEL_TOKEN"
 
   # A web-lane failure has an unusual blast radius worth spelling out: if it
   # failed at or after `Build`, production Convex is ALREADY on the new code
