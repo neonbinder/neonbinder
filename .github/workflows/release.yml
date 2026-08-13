@@ -201,7 +201,7 @@ jobs:
       run:
         working-directory: apps/web
     outputs:
-      convex_pushed: ${{ steps.build.outcome }}
+      convex_pushed: ${{ steps.deploy.outcome }}
       staged_url: ${{ steps.deploy.outputs.url }}
     env:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -218,31 +218,32 @@ jobs:
       - name: Install Vercel CLI
         run: npm i -g vercel@48.2.0
 
-      - name: Pull production environment
-        # --token is REQUIRED. The CLI does not read VERCEL_TOKEN from the
-        # environment for these commands: dropping the flag fails here with
-        # "No existing credentials found" (run 31642167681). GitHub masks the
-        # value in logs, so the flag costs nothing. Do not "clean this up".
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-
-      # THE CONVEX CUTOVER. apps/web/vercel.json's buildCommand is
+      # THE CONVEX CUTOVER, and the staged deploy, in one step.
+      #
+      # The build runs ON VERCEL, not here. `vercel build` (a local build, then
+      # `deploy --prebuilt`) looks tidier but cannot work for this project: the
+      # Vercel CLI refuses a local build for a project pinned to Node 24.x
+      # ("Found invalid Node.js Version: 24.x ... set Node.js Version to 22.x",
+      # run 31653173626), while Vercel's hosted builder supports 24.x happily.
+      # Building remotely is also the faithful thing — it is how every previous
+      # production build ran — and it keeps CONVEX_DEPLOY_KEY on Vercel's side
+      # rather than pulling a production secret onto the runner.
+      #
+      # apps/web/vercel.json's buildCommand is
       # `npx convex deploy --cmd-url-env-var-name VITE_CONVEX_URL --cmd 'npm run build'`,
-      # so this single step pushes production Convex AND builds the SPA against
-      # the resulting URL. There is no way to separate them without giving up
-      # the guarantee that the SPA is built against the Convex it will talk to.
-      # Everything after this point is recoverable by NOT promoting; this step
-      # is not.
-      - name: Build (pushes production Convex)
-        id: build
-        run: vercel build --prod --token="$VERCEL_TOKEN"
-
-      # Staged: a real production deployment that no domain points at yet.
-      # neonbinder.io keeps serving the previous build until `promote` below.
-      - name: Deploy staged (no domain)
+      # so the hosted build pushes production Convex AND builds the SPA against
+      # the resulting URL. They cannot be separated without giving up the
+      # guarantee that the SPA is built against the Convex it will talk to.
+      #
+      # `--skip-domain` makes it a real production deployment that no domain
+      # points at yet: neonbinder.io keeps serving the previous build until
+      # `promote` below. So everything after this step is recoverable by simply
+      # NOT promoting — but the Convex push inside it is not.
+      - name: Deploy staged (hosted build; pushes production Convex)
         id: deploy
         run: |
           set -euo pipefail
-          URL="$(vercel deploy --prebuilt --prod --skip-domain --token="$VERCEL_TOKEN")"
+          URL="$(vercel deploy --prod --skip-domain --token="$VERCEL_TOKEN")"
           if [ -z "$URL" ]; then
             echo "::error::vercel deploy returned no URL"; exit 1
           fi
@@ -314,6 +315,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # NOTE: with a HOSTED build, a failed deploy step is ambiguous — the
+          # build may have pushed Convex and then failed on the SPA build. Say
+          # so rather than guessing; the version endpoint settles it.
           if [ "$BUILD_OUTCOME" = "success" ]; then
             BLAST="**Production Convex is already on \`$SHA\`.** The build step
           completed, which is where \`npx convex deploy\` runs. neonbinder.io is
@@ -325,10 +329,15 @@ jobs:
           fix forward. Do NOT assume rolling back the SPA fixes anything; the
           Convex push is not reverted by it."
           else
-            BLAST="The build step did not complete, so \`npx convex deploy\` did
-          not push. Production Convex and neonbinder.io are both unchanged.
-          Services (browser/preprocess) may already have been promoted — check
-          the run."
+            BLAST="The staged deploy did not complete. Because the build runs on
+          Vercel and \`npx convex deploy\` runs *inside* it, whether production
+          Convex was pushed is **not knowable from this job** — the build may
+          have pushed Convex and then failed building the SPA.
+
+          Check before assuming: \`curl -s https://first-starfish-800.convex.cloud/version\`
+          against the value from before the merge. neonbinder.io is definitely
+          unchanged (no promote happened). Services (browser/preprocess) may
+          already have been promoted — check the run."
           fi
           cat > body.md <<EOF
           Web release failed for commit \`$SHA\`.
