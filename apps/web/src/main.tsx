@@ -43,6 +43,7 @@ import PrintLayout from "@/src/layouts/print-layout";
 import PrintHub from "@/app/print/page";
 import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
+import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
 import Inventory from "@/app/inventory/page";
 
@@ -109,6 +110,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route index element={<PrintHub />} />
                 <Route path="shipping" element={<PrintShipping />} />
                 <Route path="qr" element={<PrintQrCode />} />
+                <Route path="spine-label" element={<PrintSpineLabel />} />
               </Route>
               {/* The old top-level routes. They are linked from outside the app
                   and sit in people's bookmarks, so they stay forever as

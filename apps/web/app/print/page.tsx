@@ -1,5 +1,9 @@
 import { Link } from "react-router";
-import { QrCodeIcon, TagIcon } from "@heroicons/react/24/outline";
+import {
+  BookOpenIcon,
+  QrCodeIcon,
+  TagIcon,
+} from "@heroicons/react/24/outline";
 import { SECTIONS } from "@/src/layouts/print-layout";
 
 /**
@@ -8,8 +12,8 @@ import { SECTIONS } from "@/src/layouts/print-layout";
  * Bare /print lists the tools rather than redirecting to the first one, because
  * the sub-tabs above are a strip of names with no room to say what each tool
  * DOES. The hub is where a tool gets a sentence. It is also the landing page for
- * the two tools still to come (placeholder sheets, spine labels), so an empty
- * "pick a tool" screen is not a thing worth avoiding here.
+ * the tool still to come (placeholder sheets, NEO-146), so an empty "pick a
+ * tool" screen is not a thing worth avoiding here.
  *
  * The cards are driven by the same SECTIONS array the sub-tabs use, so a tool
  * cannot appear in one and be missing from the other.
@@ -34,6 +38,12 @@ const TOOL_DETAILS: Record<
       "Generate a QR code for an in-person sale that buyers scan to add to their running total.",
     icon: QrCodeIcon,
     accent: "text-neon-pink group-hover:border-neon-pink/50",
+  },
+  "/print/spine-label": {
+    description:
+      "Label a binder spine with a player's name in their team colors. Several labels print on one sheet.",
+    icon: BookOpenIcon,
+    accent: "text-neon-purple group-hover:border-neon-purple/50",
   },
 };
 
