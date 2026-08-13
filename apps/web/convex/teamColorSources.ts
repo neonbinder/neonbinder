@@ -28,6 +28,15 @@ import { action, internalMutation, internalAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 import { colorSourceMatchKey, fetchTeamColors, findTeamColorPages } from "./adapters/teamColorCodes";
+import { findSeedColors } from "../lib/teams/seed-team-lookup";
+
+/**
+ * Provenance marker for a colour that came from the bundled dataset rather
+ * than a scraped page. `colorSource.url` is otherwise a real page URL, and the
+ * Team Management panel shows it — so a seeded row needs to say so plainly
+ * instead of pointing at a page nobody fetched.
+ */
+const SEED_SOURCE_URL = "bundled:seed-team-colors";
 
 const sourceEntryValidator = v.object({
   name: v.string(),
@@ -106,6 +115,40 @@ export const resolveTeamColors = internalAction({
     if (!team) return "skipped";
     if (team.colorSource && !args.force) return "skipped";
     if (!colorSourceMatchKey(team.name)) return "no-match";
+
+    // NEO-156: the bundled dataset first — 135 teams across the six big
+    // leagues, offline and instant. Most lookups end here and never touch the
+    // network.
+    const seeded = findSeedColors(team.name);
+    if (seeded) {
+      await ctx.runMutation(internal.teamColorSources.applyColorsInternal, {
+        teamId: args.teamId,
+        colors: { primary: seeded.primary, secondary: seeded.secondary },
+        colorSource: {
+          url: SEED_SOURCE_URL,
+          matchedName: seeded.matchedName,
+          resolvedAt: Date.now(),
+        },
+      });
+      return "resolved";
+    }
+
+    // A miss is EXPECTED for the long tail the dataset does not carry — NCAA,
+    // NPB, MiLB, Dominican winter league — which is most of our table. It is
+    // reported anyway, because the aggregate is the useful signal: a rising
+    // miss rate for teams that SHOULD be in a covered league means the dataset
+    // has drifted from reality (a rename, an expansion franchise), and nothing
+    // else would surface that. Fire-and-forget — telemetry must never be what
+    // stops a colour lookup.
+    await ctx
+      .runAction(internal.posthog.captureEvent, {
+        distinctId: `team:${args.teamId}`,
+        event: "team_colors_seed_miss",
+        properties: { teamName: team.name, sportId: team.sportId },
+      })
+      .catch((error: unknown) => {
+        console.error("[teamColorSources] posthog capture failed:", error);
+      });
 
     const matches = await findTeamColorPages(team.name);
 

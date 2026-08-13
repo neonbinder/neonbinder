@@ -40,6 +40,7 @@ import type * as players from "../players.js";
 import type * as posthog from "../posthog.js";
 import type * as publicProfile from "../publicProfile.js";
 import type * as resolveRedirect from "../resolveRedirect.js";
+import type * as seedTeamColors from "../seedTeamColors.js";
 import type * as selectorOptions from "../selectorOptions.js";
 import type * as setReconciliation from "../setReconciliation.js";
 import type * as shipping from "../shipping.js";
@@ -89,6 +90,7 @@ declare const fullApi: ApiFromModules<{
   posthog: typeof posthog;
   publicProfile: typeof publicProfile;
   resolveRedirect: typeof resolveRedirect;
+  seedTeamColors: typeof seedTeamColors;
   selectorOptions: typeof selectorOptions;
   setReconciliation: typeof setReconciliation;
   shipping: typeof shipping;
