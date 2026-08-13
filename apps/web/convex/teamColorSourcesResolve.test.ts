@@ -308,54 +308,78 @@ describe("refreshIndex", () => {
 });
 
 // ---------------------------------------------------------------------------
-// chooseColorSource — the client-supplied URL
+// chooseColorSource — takes an index, never a URL
 // ---------------------------------------------------------------------------
 
 describe("chooseColorSource", () => {
-  test("applies a URL the server itself parked on the row", async () => {
-    const t = convexTest(schema, modules);
+  const HUSKIES_CANDIDATES = [
+    { name: "connecticut huskies", url: "https://teamcolorcodes.com/connecticut-huskies-colors/" },
+    { name: "washington huskies", url: "https://teamcolorcodes.com/washington-huskies-color-codes/" },
+  ];
+
+  async function seedAmbiguous(t: ReturnType<typeof convexTest>) {
     const teamId = await seed(t, "Huskies", []);
-    const url = "https://teamcolorcodes.com/connecticut-huskies-colors/";
     await t.run(async (ctx) => {
-      await ctx.db.patch(teamId, {
-        colorCandidates: [{ name: "connecticut huskies", url }],
-      });
+      await ctx.db.patch(teamId, { colorCandidates: HUSKIES_CANDIDATES });
     });
+    return teamId;
+  }
+
+  test("resolves the candidate at the given index", async () => {
+    const t = convexTest(schema, modules);
+    const teamId = await seedAmbiguous(t);
     stubPageFetch(COLOR_PAGE);
 
     const outcome = await t
       .withIdentity({ subject: "admin", role: "admin" })
-      .action(api.teamColorSources.chooseColorSource, { teamId, url });
+      .action(api.teamColorSources.chooseColorSource, {
+        teamId,
+        candidateIndex: 1,
+      });
 
     expect(outcome).toBe("resolved");
     const team = await getTeam(t, teamId);
-    expect(team!.colorSource?.url).toBe(url);
+    expect(team!.colorSource?.url).toBe(HUSKIES_CANDIDATES[1].url);
+    // Provenance comes from the stored candidate, so a human resolution is
+    // indistinguishable from an automatic one on the next backfill pass.
+    expect(team!.colorSource?.matchedName).toBe("washington huskies");
+    expect(team!.colorCandidates).toBeUndefined();
   });
 
-  test("refuses a URL that is not a source this team was offered", async () => {
-    // The whole SSRF surface: `url` is client-supplied and fetched from inside
-    // Convex's network, so an admin session must not be able to steer it.
+  test("accepts no URL at all — the SSRF surface is gone by construction", async () => {
+    // A Convex action's fetch runs inside Convex's network, so accepting a
+    // caller-supplied URL here would let an admin session aim the backend at
+    // an arbitrary host. The argument validator is the guarantee: passing a
+    // URL is not a rejected request, it is not a representable one.
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Huskies", []);
-    await t.run(async (ctx) => {
-      await ctx.db.patch(teamId, {
-        colorCandidates: [
-          { name: "a", url: "https://teamcolorcodes.com/a-colors/" },
-        ],
-      });
-    });
+    const teamId = await seedAmbiguous(t);
     const fetchMock = stubPageFetch(COLOR_PAGE);
 
     await expect(
       t.withIdentity({ subject: "admin", role: "admin" }).action(
         api.teamColorSources.chooseColorSource,
-        { teamId, url: "https://teamcolorcodes.com/not-offered-colors/" },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- deliberately malformed
+        { teamId, url: "http://169.254.169.254/latest/meta-data/" } as any,
       ),
-    ).rejects.toThrow(/not a known color source/i);
+    ).rejects.toThrow();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test("refuses an off-host URL outright", async () => {
+  test("refuses an index the server never offered", async () => {
+    const t = convexTest(schema, modules);
+    const teamId = await seedAmbiguous(t);
+    const fetchMock = stubPageFetch(COLOR_PAGE);
+
+    await expect(
+      t.withIdentity({ subject: "admin", role: "admin" }).action(
+        api.teamColorSources.chooseColorSource,
+        { teamId, candidateIndex: 7 },
+      ),
+    ).rejects.toThrow(/no such color source/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("refuses when the team has no parked candidates", async () => {
     const t = convexTest(schema, modules);
     const teamId = await seed(t, "Huskies", []);
     const fetchMock = stubPageFetch(COLOR_PAGE);
@@ -363,20 +387,20 @@ describe("chooseColorSource", () => {
     await expect(
       t.withIdentity({ subject: "admin", role: "admin" }).action(
         api.teamColorSources.chooseColorSource,
-        { teamId, url: "http://169.254.169.254/latest/meta-data/" },
+        { teamId, candidateIndex: 0 },
       ),
-    ).rejects.toThrow(/unsupported color source/i);
+    ).rejects.toThrow(/no such color source/i);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test("requires admin", async () => {
     const t = convexTest(schema, modules);
-    const teamId = await seed(t, "Huskies", []);
+    const teamId = await seedAmbiguous(t);
 
     await expect(
       t.withIdentity({ subject: "someone", role: "user" }).action(
         api.teamColorSources.chooseColorSource,
-        { teamId, url: "https://teamcolorcodes.com/a-colors/" },
+        { teamId, candidateIndex: 0 },
       ),
     ).rejects.toThrow(/admin/i);
   });

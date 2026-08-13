@@ -166,14 +166,22 @@ function ManualColorRow({ team }: { team: Team }) {
 /** One ambiguous team: pick which source page is actually this team. */
 function CandidateRow({ team }: { team: Team }) {
   const chooseColorSource = useAction(api.teamColorSources.chooseColorSource);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const choose = async (url: string) => {
-    setBusy(url);
+  /**
+   * Sends WHICH candidate, never the candidate's URL. The server already holds
+   * the list it offered; handing a scrape target back to it would make this an
+   * SSRF primitive. See the note on `chooseColorSource`.
+   */
+  const choose = async (candidateIndex: number) => {
+    setBusy(candidateIndex);
     setError(null);
     try {
-      const outcome = await chooseColorSource({ teamId: team._id, url });
+      const outcome = await chooseColorSource({
+        teamId: team._id,
+        candidateIndex,
+      });
       if (outcome === "unreadable") {
         setError("That page did not yield colors. Try another, or enter them by hand.");
       }
@@ -193,15 +201,15 @@ function CandidateRow({ team }: { team: Team }) {
         </span>
       </div>
       <ul className="flex flex-wrap gap-2">
-        {(team.colorCandidates ?? []).map((candidate) => (
+        {(team.colorCandidates ?? []).map((candidate, index) => (
           <li key={candidate.url}>
             <NeonButton
               type="button"
               secondary
-              onClick={() => choose(candidate.url)}
+              onClick={() => choose(index)}
               disabled={busy !== null}
             >
-              {busy === candidate.url ? "Applying…" : candidate.name}
+              {busy === index ? "Applying…" : candidate.name}
             </NeonButton>
           </li>
         ))}

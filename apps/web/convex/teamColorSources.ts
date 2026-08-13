@@ -26,7 +26,6 @@ import {
   colorSourceMatchKey,
   fetchTeamColorSourceIndex,
   fetchTeamColors,
-  isAllowedSourceUrl,
 } from "./adapters/teamColorCodes";
 
 /**
@@ -301,64 +300,57 @@ export const resolveTeamColors = internalAction({
 /**
  * Human resolution of an ambiguous match, from the team editor.
  *
- * Takes the URL the user picked out of `colorCandidates` rather than a colour,
- * so the row ends up indistinguishable from an automatic resolution — same
- * provenance, same skip behaviour on the next backfill.
+ * Scraping is otherwise entirely automatic — `resolveTeamColors` above matches
+ * against the cached index and fetches without anyone's involvement. This
+ * exists only for the case it deliberately refuses: a name matching several
+ * source pages (the site carries 10+ distinct "Huskies"). A human says which
+ * one is our team, and the row ends up indistinguishable from an automatic
+ * resolution — same provenance, same skip behaviour on the next backfill.
  *
- * SECURITY: `url` is client-supplied and this action fetches it from inside
- * Convex's network, which makes an unvalidated version of this a server-side
- * request forgery primitive — admin-gated, but an admin session (or a CSRF-ish
- * mistake in an admin surface) should not be able to point our backend at an
- * arbitrary host. Two independent checks, either of which alone would close it:
+ * SECURITY — why this takes an INDEX and not a URL:
  *
- *  1. The URL must be one the SERVER offered for THIS team — a parked
- *     `colorCandidates` entry, or an index row under this team's name key.
- *     That is exactly the set the UI can present, so it costs nothing.
- *  2. `fetchTeamColors` refuses anything not on teamcolorcodes.com over
- *     https (see `isAllowedSourceUrl`), including after redirects.
+ * The obvious API is "the client sends back the URL it picked", and it is
+ * wrong. A Convex action's `fetch` runs inside Convex's network, so accepting
+ * a caller-supplied URL here makes this a server-side request forgery
+ * primitive: an admin session, or any CSRF-shaped mistake on an admin surface,
+ * could aim our backend at an arbitrary host and read the outcome through the
+ * resolved/unreadable/timing signal. `requireAdmin` bounds WHO calls this, not
+ * WHERE it points.
  *
- * A rejected URL throws rather than returning "unreadable": it is a caller
- * error, not a bad page, and collapsing the two would hide tampering.
+ * Validating an incoming URL against the stored candidates would also close
+ * it, but it keeps the bad shape — a scrape target crossing the trust boundary
+ * with the server obliged to prove it is legitimate. Taking an index means no
+ * URL is ever accepted, so there is nothing to validate and no way to get the
+ * validation wrong later. The only URLs this module ever fetches are ones it
+ * put in the index itself.
+ *
+ * Colour VALUES are a different matter and do come from the client — see
+ * `teams.saveTeamFields`, which takes hex and never a URL. That is the
+ * fallback for teams no source will ever carry.
  */
 export const chooseColorSource = action({
-  args: { teamId: v.id("teams"), url: v.string() },
+  args: { teamId: v.id("teams"), candidateIndex: v.number() },
   returns: v.union(v.literal("resolved"), v.literal("unreadable")),
   handler: async (ctx, args): Promise<"resolved" | "unreadable"> => {
     await requireAdmin(ctx);
-
-    if (!isAllowedSourceUrl(args.url)) {
-      throw new Error("Unsupported color source URL");
-    }
 
     const team = await ctx.runQuery(internal.teams.getInternal, {
       id: args.teamId,
     });
     if (!team) throw new Error("Team not found");
 
-    const offered = new Set(
-      (team.colorCandidates ?? []).map((candidate) => candidate.url),
-    );
-    if (!offered.has(args.url)) {
-      const nameKey = colorSourceMatchKey(team.name);
-      const indexed = nameKey
-        ? await ctx.runQuery(internal.teamColorSources.findByNameKeyInternal, {
-            nameKey,
-          })
-        : [];
-      if (!indexed.some((entry) => entry.url === args.url)) {
-        throw new Error("URL is not a known color source for this team");
-      }
-    }
+    const candidate = (team.colorCandidates ?? [])[args.candidateIndex];
+    if (!candidate) throw new Error("No such color source for this team");
 
-    const parsed = await fetchTeamColors(args.url);
+    const parsed = await fetchTeamColors(candidate.url);
     if (!parsed || !parsed.primary) return "unreadable";
 
     await ctx.runMutation(internal.teamColorSources.applyColorsInternal, {
-      teamId: args.teamId as Id<"teams">,
+      teamId: args.teamId,
       colors: { primary: parsed.primary, secondary: parsed.secondary },
       colorSource: {
-        url: args.url,
-        matchedName: parsed.heading,
+        url: candidate.url,
+        matchedName: candidate.name,
         resolvedAt: Date.now(),
       },
     });
