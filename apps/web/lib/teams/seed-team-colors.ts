@@ -18,9 +18,23 @@
  * leagues, NOT a replacement for the live lookup — a miss here is normal and
  * falls through to the scraper.
  *
- * **Every one of the 30 NBA entries has an empty `hex`.** 135 of the 165 rows
- * carry colours. A row with none still seeds a team and a league; it just
- * cannot answer a colour lookup.
+ * **All 165 rows carry colours.** The NBA's 30 arrived empty in the original
+ * dataset and were filled from a second source, taking each team's CURRENT
+ * `colors` and deliberately ignoring its `retrocolors` — labelling a binder in
+ * a retired palette is precisely the failure the scraper's era-parsing exists
+ * to avoid.
+ *
+ * Two of those NBA values were corrected against the RGB in their own record,
+ * which contradicted the hex beside it:
+ *
+ *  - **Lakers gold** was `#F9A01B`, the Miami Heat's yellow, while its RGB
+ *    `(253,185,39)` says `#FDB927` — the real Lakers gold, and the one that
+ *    matters here because gold is their SECONDARY colour and therefore the
+ *    lettering on a Lakers spine.
+ *  - **Suns yellow** was `#000000` against an RGB of `(249,160,27)`.
+ *
+ * A "Black" entry whose RGB reads `(6,25,34)` is left as `#000000`: that
+ * near-black RGB repeats across many teams and is the artifact, not the hex.
  *
  * **The names are inconsistently dated.** It carries "Cleveland Indians"
  * (renamed Guardians in 2022) and "Los Angeles Angels of Anaheim" (renamed in
@@ -169,36 +183,36 @@ export const SEED_TEAMS: SeedTeam[] = [
   { name: "Sporting Kansas City", league: "mls", hex: ["#91b0d5", "#002b5c", "#9fa1a4"] },
   { name: "Toronto FC", league: "mls", hex: ["#d80016", "#313f49", "#a1aaad"] },
   { name: "Vancouver Whitecaps FC", league: "mls", hex: ["#12264c", "#85b7ea", "#838383"] },
-  { name: "Atlanta Hawks", league: "nba", hex: [] },
-  { name: "Boston Celtics", league: "nba", hex: [] },
-  { name: "Brooklyn Nets", league: "nba", hex: [] },
-  { name: "Charlotte Hornets", league: "nba", hex: [] },
-  { name: "Chicago Bulls", league: "nba", hex: [] },
-  { name: "Cleveland Cavaliers", league: "nba", hex: [] },
-  { name: "Dallas Mavericks", league: "nba", hex: [] },
-  { name: "Denver Nuggets", league: "nba", hex: [] },
-  { name: "Detroit Pistons", league: "nba", hex: [] },
-  { name: "Golden State Warriors", league: "nba", hex: [] },
-  { name: "Houston Rockets", league: "nba", hex: [] },
-  { name: "Indiana Pacers", league: "nba", hex: [] },
-  { name: "Los Angeles Clippers", league: "nba", hex: [] },
-  { name: "Los Angeles Lakers", league: "nba", hex: [] },
-  { name: "Memphis Grizzlies", league: "nba", hex: [] },
-  { name: "Miami Heat", league: "nba", hex: [] },
-  { name: "Milwaukee Bucks", league: "nba", hex: [] },
-  { name: "Minnesota Timberwolves", league: "nba", hex: [] },
-  { name: "New Orleans Pelicans", league: "nba", hex: [] },
-  { name: "New York Knicks", league: "nba", hex: [] },
-  { name: "Oklahoma City Thunder", league: "nba", hex: [] },
-  { name: "Orlando Magic", league: "nba", hex: [] },
-  { name: "Philadelphia 76ers", league: "nba", hex: [] },
-  { name: "Phoenix Suns", league: "nba", hex: [] },
-  { name: "Portland Trail Blazers", league: "nba", hex: [] },
-  { name: "Sacramento Kings", league: "nba", hex: [] },
-  { name: "San Antonio Spurs", league: "nba", hex: [] },
-  { name: "Toronto Raptors", league: "nba", hex: [] },
-  { name: "Utah Jazz", league: "nba", hex: [] },
-  { name: "Washington Wizards", league: "nba", hex: [] },
+  { name: "Atlanta Hawks", league: "nba", hex: ["#e03a3e", "#c1d32f", "#26282a"] },
+  { name: "Boston Celtics", league: "nba", hex: ["#007a33", "#ba9653", "#963821"] },
+  { name: "Brooklyn Nets", league: "nba", hex: ["#000000", "#ffffff"] },
+  { name: "Charlotte Hornets", league: "nba", hex: ["#1d1160", "#00788c", "#a1a1a4"] },
+  { name: "Chicago Bulls", league: "nba", hex: ["#ce1141", "#000000"] },
+  { name: "Cleveland Cavaliers", league: "nba", hex: ["#860038", "#041e42", "#fdbb30", "#000000"] },
+  { name: "Dallas Mavericks", league: "nba", hex: ["#00538c", "#002b5e", "#b8c4ca", "#000000"] },
+  { name: "Denver Nuggets", league: "nba", hex: ["#0e2240", "#fec524", "#8b2131", "#1d428a"] },
+  { name: "Detroit Pistons", league: "nba", hex: ["#c8102e", "#1d42ba", "#bec0c2", "#002d62"] },
+  { name: "Golden State Warriors", league: "nba", hex: ["#1d428a", "#ffc72c"] },
+  { name: "Houston Rockets", league: "nba", hex: ["#ce1141", "#000000", "#c4ced4"] },
+  { name: "Indiana Pacers", league: "nba", hex: ["#002d62", "#fdbb30", "#bec0c2"] },
+  { name: "Los Angeles Clippers", league: "nba", hex: ["#c8102e", "#1d428a", "#bec0c2", "#000000"] },
+  { name: "Los Angeles Lakers", league: "nba", hex: ["#552583", "#fdb927", "#000000"] },
+  { name: "Memphis Grizzlies", league: "nba", hex: ["#5d76a9", "#12173f", "#f5b112", "#707271"] },
+  { name: "Miami Heat", league: "nba", hex: ["#98002e", "#f9a01b", "#000000"] },
+  { name: "Milwaukee Bucks", league: "nba", hex: ["#00471b", "#eee1c6", "#0077c0", "#000000"] },
+  { name: "Minnesota Timberwolves", league: "nba", hex: ["#0c2340", "#236192", "#9ea2a2", "#78be20"] },
+  { name: "New Orleans Pelicans", league: "nba", hex: ["#0c2340", "#c8102e", "#85714d"] },
+  { name: "New York Knicks", league: "nba", hex: ["#006bb6", "#f58426", "#bec0c2", "#000000"] },
+  { name: "Oklahoma City Thunder", league: "nba", hex: ["#007ac1", "#ef3b24", "#002d62", "#fdbb30"] },
+  { name: "Orlando Magic", league: "nba", hex: ["#0077c0", "#c4ced4", "#000000"] },
+  { name: "Philadelphia 76ers", league: "nba", hex: ["#006bb6", "#ed174c", "#002b5c", "#c4ced4"] },
+  { name: "Phoenix Suns", league: "nba", hex: ["#1d1160", "#e56020", "#000000", "#63727a", "#f9a01b", "#b95915", "#bec0c2"] },
+  { name: "Portland Trail Blazers", league: "nba", hex: ["#e03a3e", "#000000"] },
+  { name: "Sacramento Kings", league: "nba", hex: ["#5a2d81", "#63727a", "#000000"] },
+  { name: "San Antonio Spurs", league: "nba", hex: ["#c4ced4", "#000000"] },
+  { name: "Toronto Raptors", league: "nba", hex: ["#ce1141", "#000000", "#a1a1a4", "#b4975a"] },
+  { name: "Utah Jazz", league: "nba", hex: ["#002b5c", "#00471b", "#f9a01b"] },
+  { name: "Washington Wizards", league: "nba", hex: ["#002b5c", "#e31837", "#c4ced4"] },
   { name: "Arizona Cardinals", league: "nfl", hex: ["#97233f", "#000000", "#ffb612", "#a5acaf"] },
   { name: "Atlanta Falcons", league: "nfl", hex: ["#a71930", "#000000", "#a5acaf"] },
   { name: "Baltimore Ravens", league: "nfl", hex: ["#241773", "#000000", "#9e7c0c", "#c60c30"] },

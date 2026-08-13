@@ -33,15 +33,32 @@ describe("the dataset itself", () => {
     ]);
   });
 
-  it("has colours for 135 of them, and none for any NBA team", () => {
-    const withColors = SEED_TEAMS.filter((t) => t.hex.length > 0);
-    expect(withColors).toHaveLength(135);
-    // Every single NBA row ships with an empty hex array. If that ever changes
-    // upstream this test should be updated, not deleted — the count is the
-    // point.
-    const nba = SEED_TEAMS.filter((t) => t.league === "nba");
-    expect(nba).toHaveLength(30);
-    expect(nba.every((t) => t.hex.length === 0)).toBe(true);
+  it("has colours for every team", () => {
+    // The NBA's 30 arrived empty in the original dataset and were filled from
+    // a second source. The count is the point: a row without colours cannot
+    // answer a lookup and silently falls through to the scrape.
+    expect(SEED_TEAMS.every((t) => t.hex.length > 0)).toBe(true);
+    expect(SEED_TEAMS.filter((t) => t.league === "nba")).toHaveLength(30);
+  });
+
+  it("uses current NBA colours, not retro ones", () => {
+    // The second source lists `retrocolors` alongside current ones. Taking
+    // those would label a binder in a palette the team retired — the same
+    // failure the scraper's era-parsing avoids.
+    // Hornets retro teal is #00778b; their current teal is #00788c.
+    const hornets = findSeedTeam("Charlotte Hornets")!;
+    expect(hornets.hex).toContain("#00788c");
+    expect(hornets.hex).not.toContain("#00778b");
+  });
+
+  it("corrects hex values their own record contradicts", () => {
+    // Lakers gold shipped as #f9a01b — the Miami Heat's yellow — while its RGB
+    // (253,185,39) says #fdb927. Gold is the Lakers' SECONDARY colour, so this
+    // is the lettering on a Lakers spine label.
+    const lakers = findSeedColors("Los Angeles Lakers")!;
+    expect(lakers.secondary).toBe("#fdb927");
+    // Suns yellow shipped as #000000 against an RGB of (249,160,27).
+    expect(findSeedTeam("Phoenix Suns")!.hex).toContain("#f9a01b");
   });
 
   it("stores every colour as lowercase #rrggbb", () => {
@@ -118,11 +135,10 @@ describe("findSeedColors", () => {
     expect(findSeedColors("Saitama Seibu Lions")).toBeNull();
   });
 
-  it("returns null for a team that exists here but has no colours", () => {
-    // Every NBA row. A row without colours cannot answer a colour lookup, so
-    // it must fall through to the live source rather than resolve to nothing.
-    expect(findSeedTeam("Boston Celtics")).not.toBeNull();
-    expect(findSeedColors("Boston Celtics")).toBeNull();
+  it("answers for an NBA team now that the gap is filled", () => {
+    const celtics = findSeedColors("Boston Celtics");
+    expect(celtics!.primary).toBe("#007a33");
+    expect(celtics!.secondary).toBe("#ba9653");
   });
 });
 

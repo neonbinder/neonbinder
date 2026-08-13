@@ -179,17 +179,19 @@ describe("seedFromBundledData", () => {
     expect(cleveland[0].name).toBe("Cleveland Guardians");
   });
 
-  test("creates colourless teams for a league with no colour data", async () => {
-    // Every NBA row has an empty hex. The team and league are still worth
-    // having; the colours simply fall through to the live lookup later.
+  test("seeds the NBA with colours too", async () => {
+    // These 30 arrived empty in the original dataset and were filled from a
+    // second source. Before that they seeded as colourless rows, which is the
+    // one case where seeding produced a team the spine designer could not use.
     const t = convexTest(schema, modules);
     await seedSports(t, ["Basketball"]);
 
     const result = await run(t);
 
     expect(result.teamsCreated).toBe(30);
-    expect(result.colorsApplied).toBe(0);
-    expect((await teams(t)).every((x) => x.colors === undefined)).toBe(true);
+    expect(result.colorsApplied).toBe(30);
+    const celtics = (await teams(t)).find((x) => x.name === "Boston Celtics");
+    expect(celtics!.colors).toEqual({ primary: "#007a33", secondary: "#ba9653" });
   });
 
   test("requires admin", async () => {
