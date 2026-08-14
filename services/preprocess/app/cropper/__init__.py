@@ -28,11 +28,27 @@ identify this card" and route to a manual path upstream.
 
 Source labels (order of preference):
     precropped      : client-supplied crop, or the raw upload as fallback
+    deskew          : OpenCV quad detect + perspective correction
     pil_trim_dark   : PIL blur + threshold + trim (card lighter than bg)
     pil_trim_light  : PIL blur + threshold + trim (card darker than bg)
     sam             : SAM ViT-B semantic segmentation
     haiku_bbox      : Anthropic Haiku bounding-box crop
     passthrough     : raw image forwarded unchanged
+
+Why `deskew` leads. It has to run before SAM — it is orders of magnitude
+cheaper (~90ms median on a 50MP photo vs SAM's 2-3s CPU inference) and
+handles the tilted-card case SAM would otherwise be needed for. Placing it
+before the PIL trims rather than after them is the measured call. The
+reason it matters: the gates cannot tell a real crop from a
+non-crop, because a whole 6144x8160 phone frame has aspect 0.753, only
+5.4% off card aspect, and covers 100% of itself. So it passes the
+validator, and whichever stage runs first and returns it, wins. Across the
+71 corpus images over 3000px, running deskew last leaves 16 winners that
+are >92% of the source (i.e. not crops at all); running it first leaves
+13, and converts four phone photos from "the entire photo" into a card
+crop at ≤1% aspect error. The cost is that deskew now gets first refusal
+on 156 scanner images — which is why it declines (returns None) rather
+than warping whenever the best quad it finds is the image frame.
 """
 
 from __future__ import annotations
@@ -42,7 +58,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.classify import ClassifyResult, classify_card
-from app.cropper import haiku_bbox, pil_trim, sam
+from app.cropper import deskew, haiku_bbox, pil_trim, sam
 from app.cropper._utils import rotate_image_bytes
 from app.cropper.validator import is_plausible_crop
 from app.orient import OrientationResult, detect_orientation
@@ -74,6 +90,7 @@ CropStrategy = Callable[[bytes], bytes | None]
 # because the candidate bytes come from a kwarg, not from applying a
 # function to `image_bytes`. Gate application is identical.
 _STRATEGIES: list[tuple[str, object, str]] = [
+    ("deskew", deskew, "deskew_crop"),
     ("pil_trim_dark", pil_trim, "trim_dark"),
     ("pil_trim_light", pil_trim, "trim_light"),
     ("sam", sam, "sam_crop"),

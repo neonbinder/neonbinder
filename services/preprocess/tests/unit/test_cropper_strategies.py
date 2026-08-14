@@ -22,7 +22,13 @@ from app.cropper import (
 
 class TestStrategyNames:
     def test_matches_internal_strategies_list(self):
-        assert STRATEGY_NAMES == ("pil_trim_dark", "pil_trim_light", "sam", "haiku_bbox")
+        assert STRATEGY_NAMES == (
+            "deskew",
+            "pil_trim_dark",
+            "pil_trim_light",
+            "sam",
+            "haiku_bbox",
+        )
 
     def test_is_a_tuple(self):
         # Tuple, not list — STRATEGY_NAMES is meant to be the canonical, immutable order.

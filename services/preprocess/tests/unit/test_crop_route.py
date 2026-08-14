@@ -36,12 +36,13 @@ def _jpeg(size: tuple[int, int] = (8, 8), color: str = "white") -> bytes:
 def _stub_all_strategies(monkeypatch, **overrides):
     """Stub each cropper to return the value (or callable) from overrides.
 
-    `overrides` keys match _STRATEGIES attr names: trim_dark, trim_light,
-    sam_crop, haiku_bbox_crop. A missing key defaults to None (strategy
-    returns None — ran cleanly, no crop). A value can be either bytes
-    (returned directly) or a callable (called with image_bytes).
+    `overrides` keys match _STRATEGIES attr names: deskew_crop, trim_dark,
+    trim_light, sam_crop, haiku_bbox_crop. A missing key defaults to None
+    (strategy returns None — ran cleanly, no crop). A value can be either
+    bytes (returned directly) or a callable (called with image_bytes).
     """
     defaults = {
+        "deskew_crop": None,
         "trim_dark": None,
         "trim_light": None,
         "sam_crop": None,
@@ -54,6 +55,7 @@ def _stub_all_strategies(monkeypatch, **overrides):
             return value
         return lambda _b: value
 
+    monkeypatch.setattr("app.cropper.deskew.deskew_crop", _wrap(defaults["deskew_crop"]))
     monkeypatch.setattr("app.cropper.pil_trim.trim_dark", _wrap(defaults["trim_dark"]))
     monkeypatch.setattr("app.cropper.pil_trim.trim_light", _wrap(defaults["trim_light"]))
     monkeypatch.setattr("app.cropper.sam.sam_crop", _wrap(defaults["sam_crop"]))
@@ -153,6 +155,7 @@ class TestAllStrategies:
     def test_no_strategy_runs_all_in_canonical_order(self, monkeypatch):
         _stub_all_strategies(
             monkeypatch,
+            deskew_crop=b"deskew",
             trim_dark=b"dark",
             trim_light=b"light",
             sam_crop=b"sam",
@@ -170,6 +173,7 @@ class TestAllStrategies:
         assert [c["strategy"] for c in body["crops"]] == list(STRATEGY_NAMES)
         assert [c["index"] for c in body["crops"]] == list(range(len(STRATEGY_NAMES)))
         assert [base64.b64decode(c["image_b64"]) for c in body["crops"]] == [
+            b"deskew",
             b"dark",
             b"light",
             b"sam",
@@ -180,6 +184,7 @@ class TestAllStrategies:
     def test_strategy_returning_none_has_null_b64_and_null_error(self, monkeypatch):
         _stub_all_strategies(
             monkeypatch,
+            deskew_crop=b"deskew",
             trim_dark=b"dark",
             trim_light=None,
             sam_crop=b"sam",
@@ -206,6 +211,7 @@ class TestAllStrategies:
 
         _stub_all_strategies(
             monkeypatch,
+            deskew_crop=b"deskew",
             trim_dark=b"dark",
             sam_crop=_boom,
         )
@@ -261,6 +267,7 @@ class TestSingleStrategy:
     def test_strategy_by_index_runs_only_that_one(self, monkeypatch):
         _stub_all_strategies(
             monkeypatch,
+            deskew_crop=b"deskew",
             trim_dark=b"dark",
             sam_crop=b"sam",
         )
