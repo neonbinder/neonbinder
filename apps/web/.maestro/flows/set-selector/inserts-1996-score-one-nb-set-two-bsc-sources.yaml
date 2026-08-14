@@ -368,11 +368,12 @@ tags:
           timeout: 60000
       - tapOn:
           text: ".*Confirm & Save.*"
-      - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
-          timeout: 60000
+      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
+      # a positive terminal signal proving the same thing and more, so this
+      # negative gate against a repainting node only added a failure mode.
 
 - extendedWaitUntil:
     visible:
       text: ".*Saved 220 cards.*"
-    timeout: 60000
+    # NEO-163: absorbs the removed notVisible gate's budget.
+    timeout: 120000
