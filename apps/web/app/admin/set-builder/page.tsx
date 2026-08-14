@@ -51,9 +51,14 @@ export default function AdminSetBuilderPage() {
   // nav-safe exactly like every other page; the columns row's overflow-x-auto
   // handles extra columns via horizontal scroll.
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
+      {/* The subtitle is load-bearing beyond decoration: ~47 Maestro flows wait
+          on "Build set parameters using marketplace APIs" as the signal that
+          THIS panel (not the nav, not the /admin hub card) has mounted. Do not
+          reword it without updating them. The h2 is visually small because the
+          cascade below needs the vertical room — see the layout's note. */}
       <div>
-        <h2 className="text-2xl font-semibold mb-1">Set Builder</h2>
+        <h2 className="text-lg font-semibold">Set Builder</h2>
         <p className="text-sm text-slate-400">
           Build set parameters using marketplace APIs with searchable dropdowns.
         </p>

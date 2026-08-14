@@ -149,6 +149,17 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── SPORT: Baseball ─────────────────────────────────────────────────────────
+# Scroll the cascade into view FIRST. `visible` is false for an element that
+# exists but sits below the fold, and extendedWaitUntil does not scroll — so on
+# the 1024x629 headless viewport this waited 60s for a "Baseball" that had
+# already rendered off-screen. NEO-155 put a section header above the cascade
+# and that is what pushed it down; the header has since been trimmed, but the
+# scroll is what makes this independent of how tall the chrome happens to be.
+- scrollUntilVisible:
+    element:
+      text: "Sports"
+    centerElement: true
+    timeout: 10000
 - runFlow:
     when:
       notVisible: "Baseball"

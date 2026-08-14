@@ -32,15 +32,15 @@ export const SECTIONS = [
 ];
 
 export default function AdminSectionLayout() {
+  // Deliberately compact. The Set Builder cascade lives below this chrome, and
+  // the headless E2E viewport is 1024x629 — the first version carried an h1, a
+  // section subtitle, the nav, a page h2 AND a page subtitle, which pushed the
+  // Sports column below the fold. "Baseball" rendered but was never VISIBLE, so
+  // setup.yaml failed and took the whole E2E suite with it. Every header line
+  // here costs the tool underneath it.
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold mb-2">Admin</h1>
-        <p className="text-muted-foreground">
-          Tools for managing the shared data every collector&rsquo;s binder is
-          built from.
-        </p>
-      </div>
+    <div className="space-y-4">
+      <h1 className="text-2xl font-bold">Admin</h1>
 
       <nav aria-label="Admin sections" className="border-b border-slate-800">
         {/* Wraps rather than scrolls horizontally: a scrolling strip would hide

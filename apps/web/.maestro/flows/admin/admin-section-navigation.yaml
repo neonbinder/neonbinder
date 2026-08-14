@@ -29,20 +29,26 @@ tags:
   - smoke
   - admin
 ---
-# Step 1: land on the admin hub. The blurb belongs to the section shell and
-# nothing else, so it is a sharper landing gate than the word "Admin" (which is
-# also the nav tab's own label).
+# Step 1: land on the admin hub.
+#
+# Gated on a HUB CARD's sentence, not on a heading. "Admin" is unusable — it is
+# the binder nav tab, the section h1 and part of "Admin Tools". The section
+# subtitle that used to serve here was deleted: it was one of five header lines
+# stacked above the Set Builder cascade, and on the 1024x629 headless viewport
+# that pushed the Sports column below the fold and broke setup.yaml. Anchoring
+# on chrome makes a flow hostage to how tall the chrome is; a card's own
+# sentence is content, and content is what this flow is actually about.
 - launchApp
 - extendedWaitUntil:
-    visible: ".*Tools for managing the shared data.*"
+    visible: ".*Build set parameters from marketplace data.*"
     timeout: 45000
 
-# Step 2: the hub lists both tools with a sentence each — that is the reason
-# bare /admin is a hub and not a redirect to the first tool. These two sentences
+# Step 2: the hub lists BOTH tools with a sentence each — that is the reason
+# bare /admin is a hub and not a redirect to the first tool. These sentences
 # exist nowhere else in the app, so they identify the cards unambiguously (the
 # tool NAMES appear twice on this page — once as a sub-tab, once as a card
-# heading — and so cannot be used as selectors here).
-- assertVisible: ".*Build set parameters from marketplace data.*"
+# heading — and so cannot be used as selectors here). Step 1 already proved the
+# Set Builder card; this is the one that proves the hub lists more than one.
 - assertVisible: ".*Resolve team colors, confirm ambiguous matches.*"
 
 # Step 3: open Team Management from its hub card. The description sits inside
