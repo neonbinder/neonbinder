@@ -394,9 +394,9 @@ tags:
           timeout: 30000
       - tapOn:
           text: ".*Confirm & Save.*"
-      - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
-          timeout: 30000
+      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
+      # is a positive terminal signal proving the same thing and more, so this
+      # negative gate against a repainting node only ever added a failure mode.
 
 # Strict count — the Base checklist is immutable once produced, so 335 is a
 # fixed fact, not "marketplace drift". Do NOT loosen it to hide a bug.
@@ -407,10 +407,23 @@ tags:
 # card matched an existing BSC card rather than adding a new one. That is
 # precisely why this count alone CANNOT catch an SL-truncation regression, and
 # why checklist-renders-rich-fields also asserts the per-card "SL" badge.
+# NEO-163 — this is now the ONLY gate on the save completing, and it absorbs
+# the budget the removed notVisible wait used to hold (30s + 30s), plus room.
+#
+# After "Confirm & Save" the wizard shows "Saving..." while the bulk row patch
+# and the card write land, and the header counts "N still being looked up" down
+# from the background Wikidata queue. On a slow runner that outran the old 30s
+# and killed the flow while the app was working correctly — this was the single
+# largest source of red CI, failing on unrelated branches about half the time.
+#
+# 120s is deliberate headroom, not a number tuned to one observed failure: the
+# seed flow's own ceiling is 600s and a healthy run reaches here around 3min.
+# If this ever times out, the save is genuinely broken — do not raise it again
+# without checking how long the write actually took.
 - extendedWaitUntil:
     visible:
       text: ".*Saved 335 cards.*"
-    timeout: 30000
+    timeout: 120000
 # A "#NNN" card row confirms the fetch + save pipeline ran end-to-end.
 - assertVisible:
     text: ".*#[0-9].*"
@@ -579,16 +592,18 @@ tags:
           timeout: 30000
       - tapOn:
           text: ".*Confirm & Save.*"
-      - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
-          timeout: 30000
+      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
+      # is a positive terminal signal proving the same thing and more, so this
+      # negative gate against a repainting node only ever added a failure mode.
 # Strict count — a card checklist is immutable once produced, so "Saved 20 cards"
 # is a fixed fact. If this number is ever wrong it's a real fetch/save regression,
 # not "marketplace drift" — do NOT loosen it to hide a bug.
 - extendedWaitUntil:
     visible:
       text: ".*Saved 20 cards.*"
-    timeout: 30000
+    # NEO-163: absorbs the removed notVisible gate's budget. See the note on the
+    # 335-card wait above. Smaller set, same failure shape if the runner is slow.
+    timeout: 120000
 
 # ════════════════════════════════════════════════════════════════════════════
 # RE-DRILL TO PARALLEL — NEO-62 Lever 1 (continued).
@@ -743,15 +758,17 @@ tags:
           timeout: 30000
       - tapOn:
           text: ".*Confirm & Save.*"
-      - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
-          timeout: 30000
+      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
+      # is a positive terminal signal proving the same thing and more, so this
+      # negative gate against a repainting node only ever added a failure mode.
 # Strict count — checklists are immutable once produced, so "Saved 300 cards" is
 # a fixed fact. A wrong number is a real fetch/save regression, not drift.
 - extendedWaitUntil:
     visible:
       text: ".*Saved 300 cards.*"
-    timeout: 30000
+    # NEO-163: absorbs the removed notVisible gate's budget. See the note on the
+    # 335-card wait above. This is the second-largest write in the seed.
+    timeout: 120000
 
 # ── SPORTLOTS PAGINATION GUARD (NEO-137) ────────────────────────────────────
 # Both marketplace badges must appear on this checklist's rows.
