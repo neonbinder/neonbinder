@@ -154,13 +154,54 @@ ASPECT_SIGNIFICANCE_BAND = 0.015
 # degenerate (a sliver from a partially-closed contour).
 MIN_WARPED_SIDE_PX = 20
 
-# Expand the detected quad outward from its centroid by this fraction
-# before warping. Detection runs at ≤1000px so each detection pixel is up
-# to ~8 original pixels on a 50MP photo; a hair of outward slack means that
-# quantization can only include a sliver of background rather than shave
-# the card's own border off. Kept small — the Swift original pads not at
-# all, and over-padding reintroduces the background wedges deskew removes.
-QUAD_EXPAND_FRACTION = 0.005
+# Dilate the detected quad outward by this fraction of its SHORTER side
+# before warping — a uniform pixel margin on all four edges, not a scale
+# about the centroid (see `_expand_quad`).
+#
+# The asymmetry that justifies it: these crops print full-bleed to the cut
+# line (NEO-152), so the knife removes a sliver of background for free, but
+# nothing can restore a logo the warp already cut off. Erring outward is
+# therefore strictly cheaper than erring inward. Detection also runs at
+# ≤1000px, so one detection pixel is up to ~8 original pixels on a 50MP
+# photo and the corners carry real quantization error.
+#
+# Chosen by measurement, not by copying the Swift: that file declares
+# `let padding: CGFloat = 30` at the top and never uses it.
+#
+# The margin is not free, and the cost is measurable. A uniform margin adds
+# the same pixels to both axes, so it pulls the output ratio toward 1.0 and
+# makes a portrait card's aspect error WORSE. Swept over the corpus, median
+# aspect error across deskew's wins runs 0.97% / 1.24% / 1.51% / 2.05% /
+# 2.47% at 0 / 0.5 / 1 / 2 / 3%. So the margin trades measured aspect
+# fidelity for clipping insurance, and 1% buys the insurance while leaving
+# the median error (1.51%) a long way clear of MAX_OUTPUT_ASPECT_ERROR.
+# In absolute terms that is ~10px on a 1000px-wide card and ~47px on a
+# 4700px one — enough to cover corner quantization, small enough that it
+# cannot reintroduce the background wedges deskew exists to remove.
+QUAD_MARGIN_FRACTION = 0.01
+
+# Ship nothing whose warped output is further than this from card aspect.
+#
+# A large post-warp aspect error is EVIDENCE THE QUAD WAS MIS-DETECTED —
+# most often a corner landed inside the card, so the warp cut the card
+# down. That is the one failure mode worth being strict about, because a
+# clipped card is not recoverable downstream: it prints full-bleed with the
+# logo already gone. Declining instead hands the image to the next cascade
+# stage, which is exactly the Swift original's "no rectangle found → pass
+# the file through" semantic applied one step later.
+#
+# The corpus separates cleanly here. Sorted by output aspect error,
+# deskew's wins run 9.98 / 8.08 / 6.87 / 6.81 / 5.64 | 3.18 / 2.78 / ...
+# — a 2.46pp gap with nothing in it, and 5% sits inside that gap. Above the
+# gap sit both known clippers: 2026-08-12-0022 (the "ZENITH" logo cut off
+# the top edge) and PXL_20250709_131656226 (a landscape card losing
+# "FRYAR" off the right). Below it, every win is a complete card.
+#
+# This costs deskew 5 of 39 wins, two of which (2026-08-11-0151 and -0165)
+# looked fine by eye. That is the intended trade: the fallback for both is
+# pil_trim_dark at 0.7% and 1.6% error, so nothing is lost, and a rule that
+# only ships what it is confident about is worth more than five extra wins.
+MAX_OUTPUT_ASPECT_ERROR = 0.05
 
 OUTPUT_JPEG_QUALITY = 92
 
@@ -182,10 +223,77 @@ def _order_corners(pts: np.ndarray) -> np.ndarray:
     return np.roll(clockwise, -top_left_index, axis=0).astype(np.float32)
 
 
-def _expand_quad(quad: np.ndarray, fraction: float = QUAD_EXPAND_FRACTION) -> np.ndarray:
-    """Scale the quad outward from its own centroid by `fraction`."""
+def _line_intersection(
+    a0: np.ndarray, a1: np.ndarray, b0: np.ndarray, b1: np.ndarray
+) -> np.ndarray | None:
+    """Intersection of the infinite lines a0→a1 and b0→b1, or None if parallel."""
+    da = a1 - a0
+    db = b1 - b0
+    denominator = float(da[0] * db[1] - da[1] * db[0])
+    if abs(denominator) < 1e-9:
+        return None
+    offset = b0 - a0
+    t = float(offset[0] * db[1] - offset[1] * db[0]) / denominator
+    return (a0 + da * t).astype(np.float32)
+
+
+def _expand_quad(quad: np.ndarray, margin_px: float) -> np.ndarray:
+    """Dilate the quad outward by a uniform `margin_px` on all four sides.
+
+    Each edge is pushed out along its own outward normal and the new
+    corners are the intersections of adjacent pushed edges. That keeps the
+    margin uniform in pixels whatever the quad's shape or rotation — unlike
+    scaling about the centroid, which grows each axis in proportion to its
+    own length and so pads a portrait card's long sides much more than its
+    short ones.
+
+    Returns the quad unchanged if the margin is non-positive or the
+    geometry degenerates (parallel adjacent edges).
+    """
+    if margin_px <= 0:
+        return quad
+
     centroid = quad.mean(axis=0)
-    return ((quad - centroid) * (1.0 + fraction) + centroid).astype(np.float32)
+    pushed: list[tuple[np.ndarray, np.ndarray]] = []
+    for index in range(4):
+        start = quad[index]
+        end = quad[(index + 1) % 4]
+        direction = end - start
+        normal = np.array([-direction[1], direction[0]], dtype=np.float32)
+        length = float(np.linalg.norm(normal))
+        if length < 1e-9:
+            return quad
+        normal /= length
+        # Point the normal away from the quad's interior.
+        if float(np.dot(normal, start - centroid)) < 0:
+            normal = -normal
+        shift = normal * margin_px
+        pushed.append((start + shift, end + shift))
+
+    expanded = []
+    for index in range(4):
+        previous_edge = pushed[(index - 1) % 4]
+        current_edge = pushed[index]
+        corner = _line_intersection(*previous_edge, *current_edge)
+        if corner is None:
+            return quad
+        expanded.append(corner)
+    return np.array(expanded, dtype=np.float32)
+
+
+def _clamp_quad(quad: np.ndarray, image_size: tuple[int, int]) -> np.ndarray:
+    """Clamp every corner inside the image.
+
+    Expansion can push a corner off the edge when the card was already
+    hard against it. warpPerspective would replicate border pixels there,
+    which is a smear rather than an error, but clamping keeps the output
+    honest about what was actually photographed.
+    """
+    width, height = image_size
+    clamped = quad.copy()
+    clamped[:, 0] = np.clip(clamped[:, 0], 0, width - 1)
+    clamped[:, 1] = np.clip(clamped[:, 1], 0, height - 1)
+    return clamped.astype(np.float32)
 
 
 def _quad_side_lengths(quad: np.ndarray) -> tuple[float, float]:
@@ -352,16 +460,50 @@ def _find_card_quad(bgr: np.ndarray) -> np.ndarray | None:
     return best_quad
 
 
+def _finalize_quad(
+    quad: np.ndarray, image_size: tuple[int, int]
+) -> tuple[np.ndarray, int, int] | None:
+    """Add the safety margin, clamp to the image, and vet the result.
+
+    Returns `(quad, out_width, out_height)` ready to warp, or None to
+    decline. Declining here is the module's core conservatism: a warped
+    output far off card aspect means the quad was mis-detected — almost
+    always a corner inside the card, which crops the card down — and a
+    clipped card is unrecoverable downstream. The cascade continues to the
+    next strategy instead.
+    """
+    width, height = _quad_side_lengths(quad)
+    margin_px = QUAD_MARGIN_FRACTION * min(width, height)
+    final = _clamp_quad(_expand_quad(quad, margin_px), image_size)
+
+    out_width, out_height = _quad_side_lengths(final)
+    out_w = int(round(out_width))
+    out_h = int(round(out_height))
+    if out_w < 1 or out_h < 1:
+        return None
+
+    output_error = _card_aspect_error(out_w, out_h)
+    if output_error > MAX_OUTPUT_ASPECT_ERROR:
+        logger.info(
+            "deskew: warped output %dx%d is %.1f%% off card aspect (max %.1f%%) — declining",
+            out_w,
+            out_h,
+            output_error * 100,
+            MAX_OUTPUT_ASPECT_ERROR * 100,
+        )
+        return None
+    return final, out_w, out_h
+
+
 def _warp(bgr: np.ndarray, quad: np.ndarray) -> np.ndarray | None:
     """Perspective-correct `bgr` so `quad` becomes the full output rectangle."""
     import cv2
 
-    expanded = _expand_quad(quad)
-    quad_width, quad_height = _quad_side_lengths(expanded)
-    out_w = int(round(quad_width))
-    out_h = int(round(quad_height))
-    if out_w < 1 or out_h < 1:
+    image_height, image_width = bgr.shape[:2]
+    finalized = _finalize_quad(quad, (image_width, image_height))
+    if finalized is None:
         return None
+    expanded, out_w, out_h = finalized
 
     destination = np.array(
         [[0, 0], [out_w - 1, 0], [out_w - 1, out_h - 1], [0, out_h - 1]],

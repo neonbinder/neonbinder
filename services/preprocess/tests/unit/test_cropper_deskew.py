@@ -28,8 +28,11 @@ from app.cropper.deskew import (
     ASPECT_SIGNIFICANCE_BAND,
     DETECT_ASPECT_TOLERANCE,
     FRAME_AREA_FRACTION,
+    MAX_OUTPUT_ASPECT_ERROR,
     _card_aspect_error,
+    _clamp_quad,
     _expand_quad,
+    _finalize_quad,
     _order_corners,
     _quad_side_lengths,
     _select_best_candidate,
@@ -132,13 +135,43 @@ class TestQuadGeometry:
     def test_aspect_error_of_a_square_is_large(self):
         assert _card_aspect_error(500, 500) > DETECT_ASPECT_TOLERANCE
 
-    def test_expand_quad_grows_about_the_centroid(self):
+    def test_expand_quad_adds_a_uniform_margin_on_every_side(self):
         quad = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], dtype=np.float32)
-        grown = _expand_quad(quad, 0.10)
+        grown = _expand_quad(quad, 5.0)
         assert np.allclose(grown.mean(axis=0), quad.mean(axis=0))
-        original_span = quad[:, 0].max() - quad[:, 0].min()
-        grown_span = grown[:, 0].max() - grown[:, 0].min()
-        assert grown_span == pytest.approx(original_span * 1.10)
+        assert np.allclose(grown, [[-5, -5], [105, -5], [105, 105], [-5, 105]], atol=1e-4)
+
+    def test_expand_quad_margin_is_uniform_on_a_non_square_quad(self):
+        """A portrait card must gain the same pixels on short and long sides.
+
+        Scaling about the centroid would add 10x more to the 1000px sides
+        than to the 100px ones; edge-normal offsetting adds 5px to each.
+        """
+        quad = np.array([[0, 0], [100, 0], [100, 1000], [0, 1000]], dtype=np.float32)
+        grown = _expand_quad(quad, 5.0)
+        assert grown[:, 0].max() - grown[:, 0].min() == pytest.approx(110.0)
+        assert grown[:, 1].max() - grown[:, 1].min() == pytest.approx(1010.0)
+
+    def test_expand_quad_is_a_noop_for_a_non_positive_margin(self):
+        quad = np.array([[0, 0], [100, 0], [100, 100], [0, 100]], dtype=np.float32)
+        assert np.allclose(_expand_quad(quad, 0.0), quad)
+
+    def test_expand_quad_handles_a_rotated_quad(self):
+        """A 45-degree diamond still gains the margin along its own normals."""
+        quad = np.array([[50, 0], [100, 50], [50, 100], [0, 50]], dtype=np.float32)
+        grown = _expand_quad(quad, 5.0)
+        original_w, original_h = _quad_side_lengths(_order_corners(quad))
+        grown_w, grown_h = _quad_side_lengths(_order_corners(grown))
+        assert grown_w - original_w == pytest.approx(10.0, abs=0.5)
+        assert grown_h - original_h == pytest.approx(10.0, abs=0.5)
+
+    def test_clamp_quad_keeps_corners_inside_the_image(self):
+        quad = np.array([[-20, -30], [1200, -5], [1200, 900], [-20, 900]], dtype=np.float32)
+        clamped = _clamp_quad(quad, (1000, 800))
+        assert clamped[:, 0].min() >= 0
+        assert clamped[:, 1].min() >= 0
+        assert clamped[:, 0].max() <= 999
+        assert clamped[:, 1].max() <= 799
 
 
 class TestDeskewHappyPath:
@@ -160,7 +193,7 @@ class TestDeskewHappyPath:
         result = deskew_crop(_render(canvas=canvas, quad=_rotated_card_quad(canvas, degrees)))
         assert result is not None
         width, height = _size(result)
-        assert _card_aspect_error(width, height) < 0.06
+        assert _card_aspect_error(width, height) <= MAX_OUTPUT_ASPECT_ERROR
         assert width / height == pytest.approx(CARD_ASPECT_PORTRAIT, rel=0.10)
 
     def test_output_is_full_resolution_not_detection_resolution(self):
@@ -362,3 +395,79 @@ class TestFailureHandling:
 
     def test_aspect_error_of_zero_height_is_infinite(self):
         assert _card_aspect_error(100, 0) == float("inf")
+
+
+class TestFinalizeQuadDeclines:
+    """The plausibility gate — deskew's last chance to not ship a bad crop.
+
+    A warped output far off card aspect means the quad was mis-detected,
+    almost always with a corner inside the card. That crops the card down,
+    and because these print full-bleed to the cut line (NEO-152) a clipped
+    logo is unrecoverable: the knife can remove background, but it cannot
+    put a logo back. So the gate declines and the cascade continues.
+    """
+
+    IMAGE_SIZE = (4000, 6000)
+
+    @staticmethod
+    def _rect(width: float, height: float, origin: tuple[float, float] = (500, 500)):
+        left, top = origin
+        return np.array(
+            [
+                [left, top],
+                [left + width, top],
+                [left + width, top + height],
+                [left, top + height],
+            ],
+            dtype=np.float32,
+        )
+
+    def test_accepts_a_card_shaped_quad(self):
+        result = _finalize_quad(self._rect(2000, 2800), self.IMAGE_SIZE)
+        assert result is not None
+        _quad, out_w, out_h = result
+        assert _card_aspect_error(out_w, out_h) <= MAX_OUTPUT_ASPECT_ERROR
+
+    def test_accepts_a_landscape_card(self):
+        result = _finalize_quad(self._rect(2800, 2000), self.IMAGE_SIZE)
+        assert result is not None
+
+    def test_declines_a_quad_that_clipped_the_cards_height(self):
+        """2026-08-12-0022's shape: too wide, i.e. vertical extent lost.
+
+        Aspect 0.759 against the card's 0.714 — the "ZENITH" logo was cut
+        off the top edge. The margin cannot rescue this (a uniform margin
+        pulls the ratio toward 1.0, making it worse), so it must decline.
+        """
+        assert _finalize_quad(self._rect(2000, 2635), self.IMAGE_SIZE) is None
+
+    def test_declines_a_clipped_landscape_card(self):
+        """PXL_20250709_131656226's shape: 1.549 against landscape's 1.400."""
+        assert _finalize_quad(self._rect(3099, 2000), self.IMAGE_SIZE) is None
+
+    def test_applies_the_margin_so_output_exceeds_the_detected_quad(self):
+        """The margin must actually reach the output, not just the quad."""
+        result = _finalize_quad(self._rect(2000, 2800), self.IMAGE_SIZE)
+        assert result is not None
+        _quad, out_w, out_h = result
+        assert out_w > 2000
+        assert out_h > 2800
+
+    def test_margin_is_uniform_in_pixels_across_both_axes(self):
+        result = _finalize_quad(self._rect(2000, 2800), self.IMAGE_SIZE)
+        assert result is not None
+        _quad, out_w, out_h = result
+        assert (out_w - 2000) == pytest.approx(out_h - 2800, abs=1)
+
+    def test_declines_a_degenerate_quad(self):
+        assert _finalize_quad(np.zeros((4, 2), dtype=np.float32), self.IMAGE_SIZE) is None
+
+    def test_output_stays_inside_the_image(self):
+        """A card hard against the frame edge must not warp from outside it."""
+        result = _finalize_quad(self._rect(2000, 2800, origin=(0, 0)), self.IMAGE_SIZE)
+        assert result is not None
+        quad, _out_w, _out_h = result
+        assert quad[:, 0].min() >= 0
+        assert quad[:, 1].min() >= 0
+        assert quad[:, 0].max() <= self.IMAGE_SIZE[0] - 1
+        assert quad[:, 1].max() <= self.IMAGE_SIZE[1] - 1
