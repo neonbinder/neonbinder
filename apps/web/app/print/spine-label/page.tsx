@@ -226,6 +226,15 @@ export default function SpineLabelPage() {
     setText(FALLBACK_TEXT);
   };
 
+  /**
+   * Which team control to show — never both.
+   *
+   * A matched player's own career teams are the answer to "whose colours",
+   * so putting a general team search beside them is two controls competing to
+   * set one value. A hand-typed name has no career teams, and gets the search.
+   */
+  const showCareerTeams = player !== null && teamIds.length > 0;
+
   // The longest-tenure default, recomputed when the player's teams arrive.
   const defaultTeamId = useMemo(() => {
     const best = pickDefaultTeamYear(
@@ -454,7 +463,7 @@ export default function SpineLabelPage() {
             />
           </section>
 
-          {teamIds.length > 0 && (
+          {showCareerTeams && (
             <section className="space-y-2">
               <h3 className="text-sm font-semibold text-slate-300">Team</h3>
               <p className="text-xs text-slate-400">
@@ -498,12 +507,11 @@ export default function SpineLabelPage() {
           )}
 
           {/* Any team, for a name typed by hand.
-              The career-team chips above only exist when a PLAYER was picked
-              and that player has `teamYears`. Typing a name straight in — the
-              common case for a team binder, or a player we do not hold — left
-              nowhere to get colours from but the hex fields. This picks any
-              team we know, filtered the same way Team Management filters:
-              league, then type-to-narrow. */}
+              Mutually exclusive with the career-team chips above: a matched
+              player's own teams ARE the answer, so offering a search for some
+              other team beside them is two controls competing to set one
+              thing. Typed names get the search, matched players get chips. */}
+          {!showCareerTeams && (
           <section className="space-y-2">
             <h3 className="text-sm font-semibold text-slate-300">
               Team colors
@@ -575,6 +583,7 @@ export default function SpineLabelPage() {
               )}
             </div>
           </section>
+          )}
 
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-300">Colors</h3>

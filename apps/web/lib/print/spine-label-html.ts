@@ -242,12 +242,21 @@ export function spineSheetHtml(options: SpineSheetOptions): string {
             heightIn,
             font.charWidthRatio,
           );
-          // Quoted only for a real family; the system stack IS a family LIST,
-          // and quoting it would look for one absurdly-named font.
+          // SINGLE quotes around the family, not double.
+          //
+          // This goes into a double-quoted HTML attribute, so `font-family:"Anton"`
+          // closes the `style="` attribute early and every declaration after it
+          // — background, colour, font-size — is silently dropped. The label
+          // renders as a white box in the default face, which is exactly what
+          // it did before this comment existed. Single quotes are valid CSS
+          // string delimiters and do not terminate the attribute.
+          //
+          // The system stack is left bare: it IS a family LIST, and quoting it
+          // would look for one absurdly-named font.
           const family =
             font.id === SYSTEM_SPINE_FONT.id
               ? font.family
-              : `"${font.family}", sans-serif`;
+              : `'${font.family}', sans-serif`;
           return (
             `<div class="label" style="width:${label.widthIn}in;height:${segmentHeight}in;">` +
             `<div class="label-face" style="margin-top:-${pieceOffset}in;` +

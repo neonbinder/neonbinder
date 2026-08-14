@@ -205,8 +205,26 @@ describe("spineSheetHtml — mixed typefaces", () => {
       labels: [label("A", 2, "a", anton), label("B", 2, "b", bungee)],
       heightIn: 10.5,
     });
-    expect(html).toContain('font-family:"Anton", sans-serif');
-    expect(html).toContain('font-family:"Bungee", sans-serif');
+    expect(html).toContain("font-family:'Anton', sans-serif");
+    expect(html).toContain("font-family:'Bungee', sans-serif");
+  });
+
+  it("never emits a double quote inside a style attribute", () => {
+    // The regression this exists for: `font-family:"Anton"` CLOSES the
+    // double-quoted style attribute, so background, colour and font-size are
+    // all silently dropped and the label prints as a white box in the default
+    // face. Nothing about the markup looks wrong until you render it.
+    const html = spineSheetHtml({
+      labels: [label("A", 2, "a", anton), label("B", 2, "b", bungee)],
+      heightIn: 10.5,
+    });
+    for (const attr of html.matchAll(/style="([^"]*)"/g)) {
+      expect(attr[1]).not.toContain('"');
+    }
+    // And the declarations that follow the family survive.
+    expect(html).toContain("background:#12284b");
+    expect(html).toContain("color:#ffc52f");
+    expect(html).toMatch(/font-size:[\d.]+in/);
   });
 
   it("does not quote the system stack, which is a family LIST", () => {
