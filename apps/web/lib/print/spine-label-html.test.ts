@@ -9,13 +9,20 @@
 import { describe, expect, it } from "vitest";
 import { spineSheetCss, spineSheetHtml, type SpineLabel } from "./spine-label-html";
 import { FULL_BINDER_HEIGHT_IN, MAX_LABEL_HEIGHT_IN } from "./spine-formats";
+import { SYSTEM_SPINE_FONT, spineFontById } from "./spine-fonts";
 
-const label = (name: string, widthIn = 2, id = name): SpineLabel => ({
+const label = (
+  name: string,
+  widthIn = 2,
+  id = name,
+  font = SYSTEM_SPINE_FONT,
+): SpineLabel => ({
   id,
   name,
   background: "#12284b",
   text: "#ffc52f",
   widthIn,
+  font,
 });
 
 const countSheets = (html: string) =>
@@ -184,6 +191,86 @@ describe("spineSheetHtml — mixed ring sizes", () => {
     });
     const sizes = [...html.matchAll(/font-size:([\d.]+)in/g)].map((m) => m[1]);
     expect(new Set(sizes).size).toBe(2);
+  });
+});
+
+describe("spineSheetHtml — mixed typefaces", () => {
+  // Typeface belongs to the binder, like ring size: one sheet can hold a
+  // Packers binder and a Pokemon binder.
+  const anton = spineFontById("anton");
+  const bungee = spineFontById("bungee");
+
+  it("sets each label in its own family", () => {
+    const html = spineSheetHtml({
+      labels: [label("A", 2, "a", anton), label("B", 2, "b", bungee)],
+      heightIn: 10.5,
+    });
+    expect(html).toContain('font-family:"Anton", sans-serif');
+    expect(html).toContain('font-family:"Bungee", sans-serif');
+  });
+
+  it("does not quote the system stack, which is a family LIST", () => {
+    const html = spineSheetHtml({
+      labels: [label("A", 2, "a", SYSTEM_SPINE_FONT)],
+      heightIn: 10.5,
+    });
+    expect(html).toContain(`font-family:${SYSTEM_SPINE_FONT.family}`);
+    expect(html).not.toContain(`font-family:"${SYSTEM_SPINE_FONT.family}"`);
+  });
+
+  it("sizes each name against ITS OWN face", () => {
+    // Anton is 0.398 em per character and Bungee 0.623, so the same name on
+    // the same spine cannot legitimately share a font size. Length-bound on
+    // purpose — a width-bound label caps both at the same value.
+    const long = "Bartolo Colon Extremely Long";
+    const html = spineSheetHtml({
+      labels: [label(long, 3, "a", anton), label(long, 3, "b", bungee)],
+      heightIn: 3,
+    });
+    const sizes = [...html.matchAll(/font-size:([\d.]+)in/g)].map((m) => m[1]);
+    expect(new Set(sizes).size).toBe(2);
+  });
+});
+
+describe("spineSheetCss — embedding", () => {
+  const anton = spineFontById("anton");
+  const bungee = spineFontById("bungee");
+
+  it("emits an @font-face for EVERY distinct font on the sheet", () => {
+    // Emitting only the first would print every other label in the fallback
+    // face — and only on paper, since the preview loads faces by URL.
+    const css = spineSheetCss({
+      labels: [label("A", 2, "a", anton), label("B", 2, "b", bungee)],
+      heightIn: 10.5,
+      fontSrcById: { anton: "data:font/woff2;base64,AAA", bungee: "data:font/woff2;base64,BBB" },
+    });
+    expect(css).toContain('font-family: "Anton"');
+    expect(css).toContain('font-family: "Bungee"');
+  });
+
+  it("emits one face per font, not one per label", () => {
+    const css = spineSheetCss({
+      labels: ["a", "b", "c"].map((id) => label(id, 2, id, anton)),
+      heightIn: 10.5,
+      fontSrcById: { anton: "data:font/woff2;base64,AAA" },
+    });
+    expect((css.match(/@font-face/g) ?? []).length).toBe(1);
+  });
+
+  it("skips a font with no source rather than emitting a broken rule", () => {
+    // The preview passes no sources at all — the page has already declared
+    // every face by URL, so a src-less @font-face would override it with
+    // nothing and blank the text.
+    const css = spineSheetCss({
+      labels: [label("A", 2, "a", anton)],
+      heightIn: 10.5,
+    });
+    expect(css).not.toContain("@font-face");
+  });
+
+  it("does not put a font-family on the shared label rule", () => {
+    const css = spineSheetCss({ labels: [], heightIn: 10.5 });
+    expect(css).not.toMatch(/\.label-face \{[^}]*font-family:/);
   });
 });
 

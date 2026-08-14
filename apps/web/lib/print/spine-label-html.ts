@@ -40,6 +40,15 @@ export interface SpineLabel {
    * sizes, and one sheet holds whatever mix fits across its 8in.
    */
   widthIn: number;
+  /**
+   * Typeface for THIS label. Per label for the same reason as the ring size —
+   * one binder is a Packers binder and the next is a Pokémon binder, and they
+   * do not want the same lettering just because they share a sheet.
+   *
+   * Carries the font's `charWidthRatio`, so the fitter sizes each name against
+   * the face it is actually set in.
+   */
+  font: SpineFont;
 }
 
 export interface SpineSheetOptions {
@@ -51,17 +60,16 @@ export interface SpineSheetOptions {
    * one sheet split into the same pieces, so a row cannot end up ragged.
    */
   heightIn: number;
-  /** Typeface for every label on the sheet. Defaults to the system stack. */
-  font?: SpineFont;
   /**
-   * `@font-face` src for {@link font}, if it needs embedding.
+   * `@font-face` sources, keyed by font id — for the fonts this sheet actually
+   * uses, which with a per-label typeface can be several at once.
    *
-   * The PRINT document gets a `data:` URI here so the iframe depends on no
-   * network at all; the on-screen preview passes nothing, because the page has
-   * already loaded the face by URL. Either way the CSS names one family, so
+   * The PRINT document gets `data:` URIs so the iframe depends on no network
+   * at all; the on-screen preview passes nothing, because the page has already
+   * declared every face by URL. Either way the CSS names the same families, so
    * preview and print cannot drift onto different typefaces.
    */
-  fontSrc?: string;
+  fontSrcById?: Record<string, string>;
   /**
    * Draw a hairline outline and corner ticks around each label.
    *
@@ -112,22 +120,28 @@ function cssColor(value: string, fallback: string): string {
  */
 export function spineSheetCss(options: SpineSheetOptions): string {
   const { heightIn, cutMarks = true } = options;
-  const font = options.font ?? SYSTEM_SPINE_FONT;
-  // Quoted only for a real family name; the system stack IS a font-family list
-  // and quoting it would look for one absurdly-named font.
-  const fontFamily =
-    font.id === SYSTEM_SPINE_FONT.id ? font.family : `"${font.family}", sans-serif`;
-  const face = options.fontSrc
-    ? `@font-face {
+
+  // One @font-face per DISTINCT font on the sheet. A sheet of five binders can
+  // legitimately use five typefaces, and emitting only the first would print
+  // four of them in the fallback face.
+  const seen = new Set<string>();
+  const faces: string[] = [];
+  for (const label of options.labels) {
+    const font = label.font ?? SYSTEM_SPINE_FONT;
+    if (seen.has(font.id)) continue;
+    seen.add(font.id);
+    const src = options.fontSrcById?.[font.id];
+    if (!src) continue;
+    faces.push(`@font-face {
         font-family: "${font.family}";
-        src: url(${options.fontSrc}) format("woff2");
+        src: url(${src}) format("woff2");
         font-weight: 400 900;
         font-display: block;
       }
-`
-    : "";
+`);
+  }
 
-  return `${face}
+  return `${faces.join("")}
       .sheet {
         box-sizing: border-box;
         width: ${PRINTABLE_WIDTH_IN + SHEET_MARGIN_IN * 2}in;
@@ -169,7 +183,8 @@ export function spineSheetCss(options: SpineSheetOptions): string {
            US book-spine convention and how a binder sits on a shelf. */
         writing-mode: vertical-rl;
         text-orientation: mixed;
-        font-family: ${fontFamily};
+        /* No font-family here: each label carries its own inline, because the
+           typeface belongs to the binder rather than the sheet. */
         font-weight: 700;
         letter-spacing: 0.02em;
         white-space: nowrap;
@@ -207,7 +222,6 @@ export function spineSheetCss(options: SpineSheetOptions): string {
  */
 export function spineSheetHtml(options: SpineSheetOptions): string {
   const { labels, heightIn } = options;
-  const font = options.font ?? SYSTEM_SPINE_FONT;
   if (labels.length === 0) return "";
 
   const rows = packLabelsIntoSheets(labels);
@@ -221,15 +235,23 @@ export function spineSheetHtml(options: SpineSheetOptions): string {
     for (const row of rows) {
       const cells = row
         .map((label) => {
+          const font = label.font ?? SYSTEM_SPINE_FONT;
           const fontIn = fitFontSizeIn(
             label.name,
             label.widthIn,
             heightIn,
             font.charWidthRatio,
           );
+          // Quoted only for a real family; the system stack IS a family LIST,
+          // and quoting it would look for one absurdly-named font.
+          const family =
+            font.id === SYSTEM_SPINE_FONT.id
+              ? font.family
+              : `"${font.family}", sans-serif`;
           return (
             `<div class="label" style="width:${label.widthIn}in;height:${segmentHeight}in;">` +
             `<div class="label-face" style="margin-top:-${pieceOffset}in;` +
+            `font-family:${family};` +
             `background:${cssColor(label.background, FALLBACK_BACKGROUND)};` +
             `color:${cssColor(label.text, FALLBACK_TEXT)};` +
             `font-size:${fontIn.toFixed(3)}in;">${escapeHtml(label.name)}</div>` +

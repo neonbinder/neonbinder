@@ -306,11 +306,12 @@ export default function SpineLabelPage() {
         name: addedName,
         background: normalizedBackground!,
         text: normalizedText!,
-        // Ring size travels WITH the label. `widthIn` stays in the form after
-        // an add so the next binder starts from the last one used — the common
-        // case is several binders of the same size — but changing it then only
-        // affects the label being designed, never one already queued.
+        // Ring size and typeface travel WITH the label. Both stay in the form
+        // after an add so the next binder starts from the last one used — a run
+        // of same-size, same-font binders is one choice — but changing either
+        // then affects only the label being designed, never one already queued.
         widthIn,
+        font,
       },
     ]);
     setAddStatus(
@@ -374,13 +375,14 @@ export default function SpineLabelPage() {
         background: normalizedBackground!,
         text: normalizedText!,
         widthIn,
+        font,
       }
     : null;
   const previewLabels: SpineLabel[] = draftLabel
     ? [...labels, draftLabel]
     : labels;
 
-  const sheetOptions = { labels: previewLabels, heightIn, font };
+  const sheetOptions = { labels: previewLabels, heightIn };
   const previewHtml = spineSheetHtml(sheetOptions);
   const previewCss = spineSheetCss(sheetOptions);
 
@@ -400,14 +402,18 @@ export default function SpineLabelPage() {
       // The print iframe is built from `srcdoc` and must depend on nothing —
       // a relative URL would not resolve, and a network fetch at print time
       // could lose the 3s font race and silently print the fallback face. So
-      // the chosen font is fetched HERE, where a failure is still visible, and
-      // inlined as a data URI.
-      const options = {
-        labels,
-        heightIn,
-        font,
-        fontSrc: await loadFontDataUrl(font),
-      };
+      // every font ON THE SHEET is fetched HERE, where a failure is still
+      // visible, and inlined as a data URI. Distinct fonts only: five labels
+      // in Anton are one download, not five.
+      const distinct = new Map(labels.map((l) => [l.font.id, l.font]));
+      const fontSrcById: Record<string, string> = {};
+      await Promise.all(
+        [...distinct.values()].map(async (f) => {
+          const src = await loadFontDataUrl(f);
+          if (src) fontSrcById[f.id] = src;
+        }),
+      );
+      const options = { labels, heightIn, fontSrcById };
       await printHtmlDocument({
         title: "Binder spine labels",
         bodyHtml: spineSheetHtml(options),
@@ -502,7 +508,10 @@ export default function SpineLabelPage() {
             <h3 className="text-sm font-semibold text-slate-300">
               Team colors
             </h3>
-            <div className="flex flex-wrap items-start gap-3">
+            {/* One grid, two equal columns: these are a matched pair of
+                filters, and letting the select hug its content while the team
+                box stretched made them look unrelated. */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
               <div>
                 <label
                   htmlFor="spine-league-filter"
@@ -514,7 +523,7 @@ export default function SpineLabelPage() {
                   id="spine-league-filter"
                   value={leagueFilter}
                   onChange={(e) => setLeagueFilter(e.target.value)}
-                  className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                  className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
                 >
                   <option value="all">All leagues</option>
                   {leagueList.map((league) => (
@@ -524,8 +533,8 @@ export default function SpineLabelPage() {
                   ))}
                 </select>
               </div>
-              <div className="flex-1 min-w-[16rem]">
-                <span className="block text-sm font-medium mb-1">Team</span>
+              <div>
+                <span className="block text-sm font-medium mb-1 text-slate-300">Team</span>
                 <Autocomplete
                   query={teamQuery}
                   onQueryChange={setTeamQuery}
@@ -761,18 +770,28 @@ export default function SpineLabelPage() {
                     className="h-3 w-3 rounded-full border border-slate-600"
                     style={{ background: label.background }}
                   />
-                  <span className="flex-1">{label.name}</span>
-                  {/* Each label keeps the ring size it was added with, so the
-                      list has to show it — otherwise a sheet of mixed sizes
-                      looks like a list of identical rows. */}
+                  {/* Set in its OWN face, and showing its own ring size: each
+                      label keeps what it was added with, so a sheet of mixed
+                      sizes and fonts would otherwise read as identical rows. */}
+                  <span
+                    className="flex-1 truncate"
+                    style={{
+                      fontFamily:
+                        label.font.id === "system"
+                          ? label.font.family
+                          : `"${label.font.family}", sans-serif`,
+                    }}
+                  >
+                    {label.name}
+                  </span>
                   <span className="text-xs text-slate-400">
-                    {label.widthIn}&Prime;
+                    {label.widthIn}&Prime; · {label.font.label}
                   </span>
                   <NeonButton
                     type="button"
                     cancel
                     onClick={() => removeLabel(label.id)}
-                    aria-label={`Remove ${label.name}, ${label.widthIn} inch spine, from the sheet`}
+                    aria-label={`Remove ${label.name}, ${label.widthIn} inch spine in ${label.font.label}, from the sheet`}
                   >
                     Remove
                   </NeonButton>
