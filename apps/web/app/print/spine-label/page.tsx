@@ -159,6 +159,14 @@ export default function SpineLabelPage() {
     // Colors are applied once `teams` resolves — see the effect-free handoff
     // in `defaultTeamId` below.
     setSelectedTeamId(null);
+    // Drop any team picked by hand for the PREVIOUS player. Without this, the
+    // manual pick's `colorsTouched` kept winning, so choosing a new player left
+    // the old team's name in the picker and its colours on the label — a
+    // baseball player wearing an NFL palette.
+    setTeamQuery("");
+    setColorsTouched(false);
+    setBackground(FALLBACK_BACKGROUND);
+    setText(FALLBACK_TEXT);
   };
 
   // The longest-tenure default, recomputed when the player's teams arrive.
@@ -284,21 +292,30 @@ export default function SpineLabelPage() {
     setLabels((current) => current.filter((label) => label.id !== id));
   };
 
-  // What the preview shows: the queued labels, or a live preview of the one
-  // being designed so the page is never a blank rectangle.
-  const previewLabels: SpineLabel[] =
-    labels.length > 0
-      ? labels
-      : canAdd
-        ? [
-            {
-              id: "preview",
-              name: name.trim(),
-              background: normalizedBackground!,
-              text: normalizedText!,
-            },
-          ]
-        : [];
+  /**
+   * The queued labels PLUS the one being designed.
+   *
+   * This was `labels.length > 0 ? labels : draft` — an either/or, which meant
+   * that the moment a single label was queued the preview stopped reflecting
+   * anything typed. You could design a second label and watch the preview sit
+   * unchanged on the first, with no way to see what you were making.
+   *
+   * Showing both is also the honest answer to "what will this sheet look
+   * like": the draft is what you get if you press Add, and it occupies the
+   * next slot. It leaves the preview the moment it IS added, because adding
+   * clears the form.
+   */
+  const draftLabel: SpineLabel | null = canAdd
+    ? {
+        id: "preview-draft",
+        name: name.trim(),
+        background: normalizedBackground!,
+        text: normalizedText!,
+      }
+    : null;
+  const previewLabels: SpineLabel[] = draftLabel
+    ? [...labels, draftLabel]
+    : labels;
 
   const sheetOptions = { labels: previewLabels, widthIn, heightIn };
   const previewHtml = spineSheetHtml(sheetOptions);
@@ -306,10 +323,12 @@ export default function SpineLabelPage() {
 
   const perSheet = labelsPerSheet(widthIn);
   const pieces = splitHeightIntoSegments(heightIn);
+  // Counts what will PRINT, i.e. the queued labels — not the draft, which is
+  // in the preview but not on the sheet until Add is pressed.
   const sheetCount =
-    previewLabels.length === 0
+    labels.length === 0
       ? 0
-      : Math.ceil(previewLabels.length / perSheet) * pieces.length;
+      : Math.ceil(labels.length / perSheet) * pieces.length;
 
   const handlePrint = async () => {
     if (labels.length === 0) return;
@@ -452,6 +471,26 @@ export default function SpineLabelPage() {
                   emptyMessage="No teams match"
                 />
               </div>
+              {teamQuery.trim().length > 0 && (
+                <div className="self-end">
+                  {/* Explicit, because the alternative is worse: clearing the
+                      team whenever the NAME changes would wipe your colours
+                      while you fixed a typo. Selecting a PLAYER does clear it
+                      automatically — that genuinely is a new subject. */}
+                  <NeonButton
+                    type="button"
+                    secondary
+                    onClick={() => {
+                      setTeamQuery("");
+                      setColorsTouched(false);
+                      setBackground(FALLBACK_BACKGROUND);
+                      setText(FALLBACK_TEXT);
+                    }}
+                  >
+                    Clear team
+                  </NeonButton>
+                </div>
+              )}
             </div>
           </section>
 
@@ -647,8 +686,9 @@ export default function SpineLabelPage() {
               </div>
             )}
             <p className="mt-2 text-xs text-slate-400">
-              Preview shows the first page. Dashed lines are cut guides and are
-              printed inside the label, so cutting removes them.
+              Preview shows the first page, including the label you are
+              designing — it joins the sheet when you press Add. Dashed lines
+              are cut guides, printed inside the label so cutting removes them.
             </p>
           </div>
         </div>
