@@ -2,6 +2,7 @@ import { Link } from "react-router";
 import {
   BookOpenIcon,
   QrCodeIcon,
+  Squares2X2Icon,
   TagIcon,
 } from "@heroicons/react/24/outline";
 import { SECTIONS } from "@/src/layouts/print-layout";
@@ -39,11 +40,17 @@ const TOOL_DETAILS: Record<
     icon: QrCodeIcon,
     accent: "text-neon-pink group-hover:border-neon-pink/50",
   },
+  "/print/placeholders": {
+    description:
+      "Print a 3 × 3 sheet of 2.5″ × 3.5″ placeholders — one sheet fills one 9-pocket binder page.",
+    icon: Squares2X2Icon,
+    accent: "text-neon-purple group-hover:border-neon-purple/50",
+  },
   "/print/spine-label": {
     description:
       "Label a binder spine with a player's name in their team colors. Several labels print on one sheet.",
     icon: BookOpenIcon,
-    accent: "text-neon-purple group-hover:border-neon-purple/50",
+    accent: "text-neon-blue group-hover:border-neon-blue/50",
   },
 };
 

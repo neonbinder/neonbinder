@@ -727,4 +727,42 @@ export default defineSchema({
   })
     .index("by_run_status", ["runId", "status"])
     .index("by_run_flow", ["runId", "flowPath"]),
+
+  // Placeholder-upload job ownership record (NEO-148). Written by
+  // createPlaceholderUploadUrl (convex/adapters/placeholderUploads.ts)
+  // immediately after minting the signed POST policy, so the row exists
+  // before the client ever uploads a byte.
+  //
+  // Its entire purpose is to make the path confinement enforceable AFTER
+  // mint time, not just at mint time: every downstream function (NEO-151/152)
+  // must take `jobId` ONLY, look up this row, verify `row.userId ===
+  // identity.subject`, and re-derive `objectPath` FROM THE ROW — never
+  // from a client-supplied argument.
+  //
+  // ============================================================
+  // NO FUNCTION ANYWHERE MAY ACCEPT `objectPath` AS AN ARGUMENT.
+  // ============================================================
+  // Both `neonbinder-convex` and the preprocess runtime SA hold
+  // bucket-wide `roles/storage.objectViewer` on the placeholder-uploads
+  // bucket (see neonbinder_ioc/main.tf) — they can read ANY user's
+  // object, not just the caller's own. `jobId` (opaque, unguessable,
+  // looked up server-side) is the only thing that keeps that bucket-wide
+  // read grant from becoming a cross-user read oracle. An `objectPath`
+  // argument would let a caller ask to read/process any other user's path
+  // directly, bypassing the ownership check entirely — it doesn't matter
+  // how well the check is written if the path never goes through it.
+  //
+  // Kept intentionally minimal: NEO-151 owns the full job lifecycle
+  // (progress counts, per-image status, failure states) and will extend
+  // this table with new fields as needed. What must NOT change when it
+  // does: `jobId` stays the only client-supplied handle.
+  placeholderJobs: defineTable({
+    jobId: v.string(), // server-generated (crypto.randomUUID()) in createPlaceholderUploadUrl
+    userId: v.string(), // Clerk user ID as string — ownership check is row.userId === identity.subject
+    objectPath: v.string(), // placeholders/{userId}/{jobId}/input.zip — re-derived server-side, never client input
+    createdAt: v.number(),
+    status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("failed")),
+  })
+    .index("by_job", ["jobId"])
+    .index("by_user", ["userId"]),
 });

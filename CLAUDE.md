@@ -183,6 +183,13 @@ Prerequisite: your user account needs `roles/iam.serviceAccountTokenCreator` on 
 # CLERK_SECRET_KEY             - Clerk secret (server-side / Convex only)
 # ENCRYPTION_KEY               - 32-char key for credential encryption
 # NEONBINDER_BROWSER_URL       - Browser service URL (Convex env; default: http://localhost:8080)
+# GCS_PLACEHOLDER_BUCKET       - Convex env only (set via `npx convex env set`, not .env.local).
+#                                 Name of the placeholder-uploads GCS bucket (NEO-148), e.g.
+#                                 neonbinder-placeholder-uploads-neonbinder-dev. Read by
+#                                 convex/adapters/placeholderUploads.ts. Unlike GCP_FEATURES_ENABLED-
+#                                 gated prizes code, this feature is NOT gated by that flag — it must
+#                                 work in dev. Value comes from the `placeholder_uploads_bucket_name`
+#                                 Terraform output in neonbinder_ioc.
 ```
 
 > Convex dev reads its own env from `.env.convex` when `npm run dev:backend` is used (see `apps/web/dev-backend.sh`).

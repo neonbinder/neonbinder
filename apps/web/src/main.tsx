@@ -44,6 +44,7 @@ import AdminTeams from "@/app/admin/teams/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
 import PrintHub from "@/app/print/page";
+import PrintPlaceholders from "@/app/print/placeholders/page";
 import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
 import PrintSpineLabel from "@/app/print/spine-label/page";
@@ -113,6 +114,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route index element={<PrintHub />} />
                 <Route path="shipping" element={<PrintShipping />} />
                 <Route path="qr" element={<PrintQrCode />} />
+                <Route path="placeholders" element={<PrintPlaceholders />} />
                 <Route path="spine-label" element={<PrintSpineLabel />} />
               </Route>
               {/* The old top-level routes. They are linked from outside the app

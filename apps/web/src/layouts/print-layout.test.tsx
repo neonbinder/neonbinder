@@ -36,6 +36,7 @@ function renderAt(path: string) {
           <Route index element={<PrintHub />} />
           <Route path="shipping" element={<div>shipping tool</div>} />
           <Route path="qr" element={<div>qr tool</div>} />
+          <Route path="placeholders" element={<div>placeholders tool</div>} />
           <Route path="spine-label" element={<div>spine label tool</div>} />
         </Route>
       </Routes>
@@ -55,6 +56,7 @@ describe("PrintLayout", () => {
     ).toEqual([
       ["Shipping", "/print/shipping"],
       ["QR Code", "/print/qr"],
+      ["Placeholders", "/print/placeholders"],
       ["Spine Labels", "/print/spine-label"],
     ]);
   });
@@ -62,6 +64,7 @@ describe("PrintLayout", () => {
   it.each([
     ["/print/shipping", "Shipping"],
     ["/print/qr", "QR Code"],
+    ["/print/placeholders", "Placeholders"],
     ["/print/spine-label", "Spine Labels"],
   ])("marks %s as the current page", (path, label) => {
     renderAt(path);

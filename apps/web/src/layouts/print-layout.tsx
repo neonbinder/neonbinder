@@ -27,6 +27,7 @@ import { api } from "@/convex/_generated/api";
 export const SECTIONS = [
   { label: "Shipping", path: "/print/shipping" },
   { label: "QR Code", path: "/print/qr" },
+  { label: "Placeholders", path: "/print/placeholders" },
   { label: "Spine Labels", path: "/print/spine-label" },
 ];
 
