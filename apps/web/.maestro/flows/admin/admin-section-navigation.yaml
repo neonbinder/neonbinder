@@ -1,0 +1,85 @@
+# R1 — Single feature: the /admin section (NEO-155). One admin nav destination
+# now opens a hub listing the admin tools, and its two sub-tabs — Set Builder
+# and Teams — each open their tool and can be switched between.
+#
+# SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
+# redirecting to /admin. No in-body login and no credential typing. The Set
+# Builder panel does need the worker's marketplace credentials to render its
+# cascade, and those come from the Phase-0 worker-bootstrap exactly as they do
+# for the ~48 existing set-selector flows — this flow adds no credential step of
+# its own.
+#
+# R2 — this cannot go green without the feature working. Every navigation is a
+# real tap followed by a hard assert on content that ONLY the destination
+# renders ("Team Management" for /admin/teams, the Set Builder panel's own
+# subtitle for /admin/set-builder). Nothing is conditional, so a sub-tab that
+# stopped routing fails the flow rather than skipping a branch.
+#
+# R3 — deliberately does NOT re-test the /set-selector -> /admin/set-builder
+# redirect: the ~48 existing set-selector flows all enter by that old URL and
+# gate on the same panel subtitle, so that redirect is already the most-covered
+# line in the suite. Duplicating it here would add nothing.
+#
+# R7/R7a — read-only navigation. Nothing is created, edited or deleted, and
+# nothing is touched inside the Set Builder cascade.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/admin&worker=${WORKER_INDEX || "0"}
+name: Admin — the hub and its Set Builder / Teams sub-tabs
+tags:
+  - smoke
+  - admin
+---
+# Step 1: land on the admin hub. The blurb belongs to the section shell and
+# nothing else, so it is a sharper landing gate than the word "Admin" (which is
+# also the nav tab's own label).
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Tools for managing the shared data.*"
+    timeout: 45000
+
+# Step 2: the hub lists both tools with a sentence each — that is the reason
+# bare /admin is a hub and not a redirect to the first tool. These two sentences
+# exist nowhere else in the app, so they identify the cards unambiguously (the
+# tool NAMES appear twice on this page — once as a sub-tab, once as a card
+# heading — and so cannot be used as selectors here).
+- assertVisible: ".*Build set parameters from marketplace data.*"
+- assertVisible: ".*Resolve team colors, confirm ambiguous matches.*"
+
+# Step 3: open Team Management from its hub card. The description sits inside
+# the card's link, so tapping it follows the link — this is the hub doing its
+# job, not a nav shortcut.
+- scrollUntilVisible:
+    element:
+      text: ".*Resolve team colors, confirm ambiguous matches.*"
+    centerElement: true
+- tapOn: ".*Resolve team colors, confirm ambiguous matches.*"
+- assertVisible: "Team Management"
+
+# Step 4: switch to the other tool with the sub-tab. On this page "Set Builder"
+# appears only in that nav strip, so it is unambiguous here.
+- scrollUntilVisible:
+    element:
+      text: "Set Builder"
+    centerElement: true
+- tapOn: "Set Builder"
+
+# The Set Builder PANEL's own subtitle. Deliberately not "Set Builder": that is
+# also the sub-tab's own label, which the section layout paints instantly on
+# every /admin route, so waiting on it would pass before the panel had mounted.
+# This sentence belongs to the panel alone — the /admin hub's card for the same
+# tool reads "Build set parameters FROM MARKETPLACE DATA…", so "using
+# marketplace APIs" is unique to the loaded panel and cannot be satisfied by the
+# hub we started on. (NEO-155 removed the old "Set Builder" <h1> that every
+# set-selector flow used to gate on; this string replaced it suite-wide.)
+# 7s default (R5): mounting a route is a page load and a Convex read, not a
+# marketplace round-trip.
+- assertVisible: ".*Build set parameters using marketplace APIs.*"
+
+# Step 5: and back again, via the Teams sub-tab. "Teams" appears only in the nav
+# strip on the Set Builder page, so this too is unambiguous.
+- scrollUntilVisible:
+    element:
+      text: "Teams"
+    centerElement: true
+- tapOn: "Teams"
+- assertVisible: "Team Management"

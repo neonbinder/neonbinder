@@ -397,10 +397,24 @@ export default function TeamManagement() {
 
   // The filter takes focus on arrival: the reason to open this screen is to
   // work on a particular team, and typing its name is how you find it.
+  //
+  // Keyed on `management`, not `[]`. An empty dep array runs the effect after
+  // the FIRST render — which is the `management === undefined` loading branch
+  // below, where this input does not exist yet. `filterRef.current` was null,
+  // the focus silently did nothing, and no effect re-ran once the input finally
+  // mounted. The screen looked completely correct and quietly ignored typing;
+  // an E2E flow that typed without tapping first is what exposed it.
+  //
+  // `hasFocusedRef` keeps it one-shot: `management` changes on every reactive
+  // update to the teams table, and yanking focus back mid-edit because someone
+  // else's write landed would be worse than never focusing at all.
   const filterRef = useRef<HTMLInputElement>(null);
+  const hasFocusedRef = useRef(false);
   useEffect(() => {
+    if (management === undefined || hasFocusedRef.current) return;
+    hasFocusedRef.current = true;
     filterRef.current?.focus();
-  }, []);
+  }, [management]);
 
   const teams = useMemo(() => management?.teams ?? [], [management]);
   const leagueList = useMemo(() => leagues ?? [], [leagues]);

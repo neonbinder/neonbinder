@@ -19,13 +19,13 @@ tags:
 
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # Worker-bootstrap has already seeded marketplace credentials server-side;
 # no credential-setup block needed here.
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
-- assertVisible: "Set Selector"
+- assertVisible: ".*Build set parameters using marketplace APIs.*"
 
 # ============================================================
 # STEP 1 — Add a custom sport entry
@@ -86,7 +86,7 @@ tags:
 # reloading rehydrates the column with the new entry already in `items`
 # and the input rendered cleanly below the navbar where Maestro can hit it.
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
-- assertVisible: "Set Selector"
+- assertVisible: ".*Build set parameters using marketplace APIs.*"
 
 # Find TestCustomSport-${ATTEMPT_ID} via the Sports column's search
 # input. The Sports column has an internal `max-h-[400px] overflow-y-auto`
@@ -114,7 +114,7 @@ tags:
 # This is the cleanest way to ensure "Sync Sports" is visible below the full list
 # before Step 2, without needing to interact with the search input state.
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
-- assertVisible: "Set Selector"
+- assertVisible: ".*Build set parameters using marketplace APIs.*"
 
 # Trigger a marketplace sync for sports.
 #
@@ -212,7 +212,7 @@ tags:
 # and scrolled the page; a fresh load ensures the search input is below
 # the navbar where Maestro can hit it (see comment in STEP 1).
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
-- assertVisible: "Set Selector"
+- assertVisible: ".*Build set parameters using marketplace APIs.*"
 
 # Find TestCustomSport-${ATTEMPT_ID} again after the re-sync. Same
 # search-input approach as STEP 1. Because ATTEMPT_ID is fresh per run,
@@ -234,7 +234,7 @@ tags:
 # This confirms the re-sync did not destroy the custom entry AND also wrote
 # marketplace data for the standard sports entries.
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
-- assertVisible: "Set Selector"
+- assertVisible: ".*Build set parameters using marketplace APIs.*"
 
 # Marketplace-synced entries should be visible in the unfiltered list.
 # SL/BSC pills now appear only on terminal items — non-terminal levels like

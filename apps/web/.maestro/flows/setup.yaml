@@ -94,7 +94,7 @@ tags:
 # both need one on the same visit. This is the setup track's cold-start budget
 # doing exactly what it exists for; do NOT copy this ceiling into a feature flow.
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 120000
 
 # ── GLOBAL RESET ────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ tags:
 # the sync — without this, "Baseball" never appears and the drill below fails.
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 20000
 
 # ════════════════════════════════════════════════════════════════════════════

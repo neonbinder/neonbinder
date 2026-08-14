@@ -34,7 +34,7 @@ tags:
 
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # Drill to a per-flow custom set; returns on the Inserts column (idle).

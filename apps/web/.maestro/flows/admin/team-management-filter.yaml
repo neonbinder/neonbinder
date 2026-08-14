@@ -1,0 +1,98 @@
+# R1 — Single feature: on /admin/teams an admin can filter the team list by
+# name, and a name that matches nothing gets a stated empty state on the master
+# side while the detail side keeps inviting a pick — rather than a blank box.
+#
+# SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
+# redirecting to /admin/teams. No in-body login, no credential step, no
+# dependency on another flow having run. /admin/teams is behind AdminLayout,
+# which bounces non-admins to /dashboard, so reaching this heading at all is
+# also proof the admin gate let us through.
+#
+# R2 — this cannot go green without the feature working. "zzzznotateam" is typed
+# into the filter and then asserted to BE in the filter, so a field that dropped
+# the keystrokes fails here rather than silently proceeding; the empty state and
+# the "0 of N" counter then both have to agree that the filter was applied.
+#
+# R7/R7a — read-only. Nothing is saved: we never tap "Save", and we never tap
+# "Discover" (it fires a live outbound fetch of teamcolorcodes.com's ~1.5MB
+# sitemap — slow, and a third-party call from CI). Teams are GLOBALLY shared
+# rows, so a flow that edited one would be visible to every concurrent worker;
+# this one only reads and filters.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE AUTOFOCUS CRITERION IS ASSERTED HERE, and it is asserted by NOT tapping.
+#
+# NEO-156 states "the filter takes focus on arrival". maestro-web delivers keys
+# to document.activeElement, so typing WITHOUT a preceding tap is the exact
+# user-visible test of that: if the page did not focus the field, the keystrokes
+# go nowhere and the assertion below fails.
+#
+# This flow caught the criterion NOT holding. The effect was
+# `useEffect(… , [])`, which fires after the FIRST render — and the first render
+# is the "Loading teams…" early return, when the input is not mounted and the
+# ref is null. Nothing re-ran once it did mount. The screen looked completely
+# correct and silently ignored typing; the failure screenshot showed 175 teams
+# loaded with the filter still on its placeholder. Fixed by keying the effect on
+# `management` with a one-shot guard.
+#
+# DO NOT "fix" a failure here by adding a tapOn. That deletes the criterion
+# rather than testing it — the tap would make the flow green against a screen
+# that never focused anything.
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# DELIBERATE COVERAGE LIMIT — the `teams` table is global and its contents depend
+# on the deployment, so no particular team can be named here without making the
+# flow green-or-red by accident. The detail panel (Name / League / City / years /
+# colours / Save) is therefore NOT exercised; only its unselected state is.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/admin/teams&worker=${WORKER_INDEX || "0"}
+name: Team Management — filtering to a name nothing matches reports no matches
+tags:
+  - smoke
+  - admin
+---
+# Step 1: land on Team Management.
+- launchApp
+- extendedWaitUntil:
+    visible: "Team Management"
+    timeout: 45000
+
+# Step 2: wait for the team list to finish loading. Until it does, the screen
+# renders only "Loading teams…" and the filter is not on the page at all. The
+# "N of M teams" counter belongs to the loaded screen alone, so it is the honest
+# signal that loading finished. 7s default (R5): an ordinary Convex read.
+- assertVisible: ".*of .* teams.*"
+
+# Step 3: the master-detail shell, with nothing selected yet — the DETAIL half
+# present and waiting. (Note this is a different sentence, on the other side of
+# the screen, from the master's "No teams match that filter." below.)
+- assertVisible: "Select a team to see and edit everything we know about it."
+
+# Step 4: filter to a name that matches no team that could ever exist, so the
+# outcome does not depend on what is in the globally-shared teams table.
+#
+# NO tapOn — that is the point. The keystrokes land on whatever the page
+# focused on arrival, so the assertion below fails if it focused nothing.
+- scrollUntilVisible:
+    element:
+      text: "Filter teams"
+    centerElement: true
+- inputText: "zzzznotateam"
+
+# The filter now HOLDS that text — maestro-web reports an input's value as its
+# text, so this is a direct read of where the keystrokes landed.
+- assertVisible: "zzzznotateam"
+
+# Step 5: the list narrowed to nothing and says so, instead of showing a blank
+# box. The counter agreeing at zero is the other half: it is composed as
+# "<visible> of <total> teams", so a leading 0 can only mean the filter was
+# applied. (Maestro text matching is fully anchored, so "0 of …" cannot be
+# satisfied by "10 of …".)
+- assertVisible: "No teams match that filter."
+- assertVisible: "0 of .* teams.*"
+
+# Step 6: filtering did not disturb the detail side — still nothing selected,
+# still inviting a pick. A regression that auto-selected the first row, or that
+# left a stale team in the panel, would fail here.
+- assertVisible: "Select a team to see and edit everything we know about it."

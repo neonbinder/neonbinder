@@ -239,9 +239,19 @@ and never a `tapOn`:
 ```yaml
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"     # the destination's <h1>, not the bootstrap
+    visible: ".*Build set parameters using marketplace APIs.*"   # the destination panel, not the bootstrap
     timeout: 45000
 ```
+
+> **NEO-155 note.** This example used to gate on `"Set Builder"`, the `<h1>` of
+> the old `/set-selector` page. That route now redirects to
+> `/admin/set-builder`, whose `<h1>` is the section shell's **"Admin"** and
+> whose panel is headed **"Set Builder"** — and *that* string is ALSO the
+> sub-tab NavLink, which the layout paints before the panel mounts, so gating on
+> it would pass early and race. Every flow now gates on the panel's own subtitle
+> instead (`Build set parameters using marketplace APIs …`), which the `/admin`
+> hub does not share — its card for the same tool reads "Build set parameters
+> **from marketplace data**".
 
 **Pick a marker unique to the destination.** The `[testing]` bootstrap screen
 renders nothing else, so *any* app text clears it — but that's a weak gate. The

@@ -13,7 +13,7 @@ tags:
     visible: "Set Builder requires marketplace credentials"
     timeout: 45000
 - assertVisible: ".*BuySportsCards and SportLots.*"
-- assertNotVisible: "Set Selector"
+- assertNotVisible: ".*Build set parameters using marketplace APIs.*"
 - assertNotVisible: "Sync Sports"
 
 # Verify the "Configure credentials" link navigates to the profile page.
