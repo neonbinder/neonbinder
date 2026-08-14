@@ -1,20 +1,23 @@
 /**
  * NEO-147 — the typefaces a spine label can be set in.
  *
- * All ten are self-hosted rather than loaded from a font CDN, for a reason
+ * All eleven are self-hosted rather than loaded from a font CDN, for a reason
  * specific to printing: `lib/print/print-html.ts` renders into an iframe from
  * `srcdoc` and waits at most 3 seconds for `document.fonts.ready`. A CDN font
  * that loaded slowly would silently print in the fallback face, and you would
  * only discover it on paper. The chosen font is inlined into the print
  * document as a data URI so that document depends on nothing.
  *
- * ## Why all ten cost almost nothing
+ * ## Why all eleven cost almost nothing
  *
  * Each is subset to Latin + Latin-1 + Latin Extended-A (enough for Martínez,
  * Peña, Šimek) and converted to WOFF2, and the three variable fonts are pinned
  * to a single heavy weight because a spine label is always bold. The raw TTFs
- * total 1.24MB; these total ~157KB. Teko alone goes 285KB → 7.7KB, because
+ * total ~1.27MB; these total ~170KB. Teko alone goes 285KB → 7.7KB, because
  * pinning the weight axis discards everything a label cannot select.
+ *
+ * Copyright and licence per font are recorded in `public/fonts/ATTRIBUTION.md`,
+ * which the OFL requires to travel with the files.
  *
  * A name outside that subset — Japanese, Cyrillic — falls back to the system
  * face for the whole label. Real given NPB teams are in the data, and
@@ -133,6 +136,15 @@ export const SPINE_FONTS: SpineFont[] = [
     charWidthRatio: 0.563,
     group: "Athletic",
     note: "Heavy but not condensed. Blunt.",
+  },
+  {
+    id: "stardos-stencil",
+    label: "Stardos Stencil",
+    family: "Stardos Stencil",
+    file: "stardos-stencil.woff2",
+    charWidthRatio: 0.483,
+    group: "Athletic",
+    note: "Stencil cut. Locker room and equipment crate.",
   },
   {
     id: "luckiest-guy",
