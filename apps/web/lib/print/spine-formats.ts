@@ -176,12 +176,15 @@ export function splitHeightIntoSegments(heightIn: number): number[] {
 const CAP_HEIGHT_RATIO = 0.62;
 
 /**
- * Rough width of one character as a fraction of font size, for the system
- * sans-serif stack at bold weight. Only used to decide when a long name must
- * shrink, so an approximation is fine — being slightly conservative means a
- * name is occasionally smaller than it strictly had to be, never clipped.
+ * Fallback character width when no font is given, in ems.
+ *
+ * NEO-147 originally hardcoded this for the system sans stack, which was the
+ * only choice. Every font now supplies its own MEASURED value — see
+ * `spine-fonts.ts` — because the real spread is 0.346 to 0.623, and using one
+ * number across that range does not merely approximate: it sets the condensed
+ * faces a third too small and lets the widest one run past the label's end.
  */
-const AVG_CHAR_WIDTH_RATIO = 0.55;
+const FALLBACK_CHAR_WIDTH_RATIO = 0.55;
 
 /** Fraction of the label's length the name may run to, leaving end margins. */
 const LENGTH_USAGE_RATIO = 0.9;
@@ -198,13 +201,14 @@ export function fitFontSizeIn(
   name: string,
   widthIn: number,
   heightIn: number,
+  charWidthRatio: number = FALLBACK_CHAR_WIDTH_RATIO,
 ): number {
   const trimmed = name.trim();
   const acrossLimit = widthIn * CAP_HEIGHT_RATIO;
   if (!trimmed) return acrossLimit;
 
-  const alongLimit =
-    (heightIn * LENGTH_USAGE_RATIO) / (trimmed.length * AVG_CHAR_WIDTH_RATIO);
+  const ratio = charWidthRatio > 0 ? charWidthRatio : FALLBACK_CHAR_WIDTH_RATIO;
+  const alongLimit = (heightIn * LENGTH_USAGE_RATIO) / (trimmed.length * ratio);
   return Math.min(acrossLimit, alongLimit);
 }
 

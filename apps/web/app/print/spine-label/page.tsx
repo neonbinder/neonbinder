@@ -34,6 +34,12 @@ import {
   spineSheetHtml,
   type SpineLabel,
 } from "@/lib/print/spine-label-html";
+import {
+  DEFAULT_SPINE_FONT_ID,
+  SPINE_FONTS,
+  spineFontById,
+  spineFontUrl,
+} from "@/lib/print/spine-fonts";
 import { pickDefaultTeamYear } from "@/lib/players/team-tenure";
 
 /**
@@ -72,6 +78,53 @@ const FALLBACK_TEXT = "#ffffff";
  */
 const TEAM_PICKER_RESULTS = 12;
 
+/**
+ * Fetch a font and return it as a `data:` URI for the print document.
+ *
+ * Returns undefined for the system stack (nothing to embed) and, deliberately,
+ * on failure: a label printed in the fallback face is a far better outcome
+ * than a print button that throws. `font-display: block` in the print CSS
+ * means the browser waits for the face it was given rather than flashing.
+ */
+async function loadFontDataUrl(font: {
+  file: string;
+  label: string;
+}): Promise<string | undefined> {
+  if (!font.file) return undefined;
+  try {
+    const response = await fetch(`/fonts/${font.file}`);
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buffer);
+    // Chunked rather than spread: a 20KB font is fine either way, but
+    // String.fromCharCode(...bytes) blows the argument limit on larger files
+    // and would fail only for whichever font someone adds later.
+    for (let i = 0; i < bytes.length; i += 8192) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    }
+    return `data:font/woff2;base64,${btoa(binary)}`;
+  } catch (error) {
+    console.error(`[spine-label] could not embed ${font.label}:`, error);
+    return undefined;
+  }
+}
+
+/**
+ * `@font-face` rules for the PREVIEW, by URL.
+ *
+ * Every face is declared once here rather than only the selected one, so
+ * switching fonts does not wait on a fetch mid-interaction. They are
+ * `font-display: swap` and only actually downloaded when something on the page
+ * is set in them — which, with the picker rendering each option in its own
+ * face, is when the picker first renders.
+ */
+const PREVIEW_FONT_FACES = SPINE_FONTS.filter((f) => f.file)
+  .map(
+    (f) => `@font-face{font-family:"${f.family}";src:url("${spineFontUrl(f)}") format("woff2");font-weight:400 900;font-display:swap;}`,
+  )
+  .join("");
+
 /** On-screen preview width. The sheet is 8.5in, so this is ~44% scale. */
 const PREVIEW_WIDTH_PX = 380;
 
@@ -91,7 +144,10 @@ export default function SpineLabelPage() {
 
   const [widthIn, setWidthIn] = useState(DEFAULT_SPINE_PRESET.widthIn);
   const [heightIn, setHeightIn] = useState(MAX_LABEL_HEIGHT_IN);
+  const [fontId, setFontId] = useState(DEFAULT_SPINE_FONT_ID);
   const [printing, setPrinting] = useState(false);
+
+  const font = spineFontById(fontId);
 
   const teamIds = useMemo(
     () => (player?.teamYears ?? []).map((entry) => entry.teamId),
@@ -324,7 +380,7 @@ export default function SpineLabelPage() {
     ? [...labels, draftLabel]
     : labels;
 
-  const sheetOptions = { labels: previewLabels, heightIn };
+  const sheetOptions = { labels: previewLabels, heightIn, font };
   const previewHtml = spineSheetHtml(sheetOptions);
   const previewCss = spineSheetCss(sheetOptions);
 
@@ -341,7 +397,17 @@ export default function SpineLabelPage() {
     if (labels.length === 0) return;
     setPrinting(true);
     try {
-      const options = { labels, heightIn };
+      // The print iframe is built from `srcdoc` and must depend on nothing —
+      // a relative URL would not resolve, and a network fetch at print time
+      // could lose the 3s font race and silently print the fallback face. So
+      // the chosen font is fetched HERE, where a failure is still visible, and
+      // inlined as a data URI.
+      const options = {
+        labels,
+        heightIn,
+        font,
+        fontSrc: await loadFontDataUrl(font),
+      };
       await printHtmlDocument({
         title: "Binder spine labels",
         bodyHtml: spineSheetHtml(options),
@@ -549,6 +615,47 @@ export default function SpineLabelPage() {
             </p>
           </section>
 
+          <section className="space-y-2">
+            <h3 className="text-sm font-semibold text-slate-300">Lettering</h3>
+            {/* Each option is set in its OWN face, which is the whole point —
+                a list of ten names in one font tells you nothing about how a
+                spine will look. Rendering them here is also what triggers the
+                downloads, so nothing is fetched until this is on screen. */}
+            <div
+              className="flex flex-wrap gap-2"
+              role="radiogroup"
+              aria-label="Label typeface"
+            >
+              {SPINE_FONTS.map((option) => {
+                const isActive = option.id === fontId;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={isActive}
+                    onClick={() => setFontId(option.id)}
+                    title={option.note}
+                    className={`rounded-md border px-3 py-1.5 text-lg leading-tight transition-colors focus:outline-none focus:ring-2 focus:ring-green-500 ${
+                      isActive
+                        ? "border-neon-teal text-neon-teal"
+                        : "border-slate-700 text-slate-300 hover:border-slate-500"
+                    }`}
+                    style={{
+                      fontFamily:
+                        option.id === "system"
+                          ? option.family
+                          : `"${option.family}", sans-serif`,
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-slate-400">{font.note}</p>
+          </section>
+
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-300">
               Binder size
@@ -700,6 +807,7 @@ export default function SpineLabelPage() {
                     transformOrigin: "top left",
                   }}
                 >
+                  <style>{PREVIEW_FONT_FACES}</style>
                   <style>{previewCss}</style>
                   <div dangerouslySetInnerHTML={{ __html: previewHtml }} />
                 </div>

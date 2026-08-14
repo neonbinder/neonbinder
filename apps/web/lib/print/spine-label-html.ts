@@ -21,6 +21,10 @@ import {
   rowRemainderIn,
   splitHeightIntoSegments,
 } from "./spine-formats";
+import {
+  SYSTEM_SPINE_FONT,
+  type SpineFont,
+} from "./spine-fonts";
 
 export interface SpineLabel {
   id: string;
@@ -47,6 +51,17 @@ export interface SpineSheetOptions {
    * one sheet split into the same pieces, so a row cannot end up ragged.
    */
   heightIn: number;
+  /** Typeface for every label on the sheet. Defaults to the system stack. */
+  font?: SpineFont;
+  /**
+   * `@font-face` src for {@link font}, if it needs embedding.
+   *
+   * The PRINT document gets a `data:` URI here so the iframe depends on no
+   * network at all; the on-screen preview passes nothing, because the page has
+   * already loaded the face by URL. Either way the CSS names one family, so
+   * preview and print cannot drift onto different typefaces.
+   */
+  fontSrc?: string;
   /**
    * Draw a hairline outline and corner ticks around each label.
    *
@@ -97,8 +112,22 @@ function cssColor(value: string, fallback: string): string {
  */
 export function spineSheetCss(options: SpineSheetOptions): string {
   const { heightIn, cutMarks = true } = options;
+  const font = options.font ?? SYSTEM_SPINE_FONT;
+  // Quoted only for a real family name; the system stack IS a font-family list
+  // and quoting it would look for one absurdly-named font.
+  const fontFamily =
+    font.id === SYSTEM_SPINE_FONT.id ? font.family : `"${font.family}", sans-serif`;
+  const face = options.fontSrc
+    ? `@font-face {
+        font-family: "${font.family}";
+        src: url(${options.fontSrc}) format("woff2");
+        font-weight: 400 900;
+        font-display: block;
+      }
+`
+    : "";
 
-  return `
+  return `${face}
       .sheet {
         box-sizing: border-box;
         width: ${PRINTABLE_WIDTH_IN + SHEET_MARGIN_IN * 2}in;
@@ -140,8 +169,7 @@ export function spineSheetCss(options: SpineSheetOptions): string {
            US book-spine convention and how a binder sits on a shelf. */
         writing-mode: vertical-rl;
         text-orientation: mixed;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-          Helvetica, Arial, sans-serif;
+        font-family: ${fontFamily};
         font-weight: 700;
         letter-spacing: 0.02em;
         white-space: nowrap;
@@ -179,6 +207,7 @@ export function spineSheetCss(options: SpineSheetOptions): string {
  */
 export function spineSheetHtml(options: SpineSheetOptions): string {
   const { labels, heightIn } = options;
+  const font = options.font ?? SYSTEM_SPINE_FONT;
   if (labels.length === 0) return "";
 
   const rows = packLabelsIntoSheets(labels);
@@ -192,7 +221,12 @@ export function spineSheetHtml(options: SpineSheetOptions): string {
     for (const row of rows) {
       const cells = row
         .map((label) => {
-          const fontIn = fitFontSizeIn(label.name, label.widthIn, heightIn);
+          const fontIn = fitFontSizeIn(
+            label.name,
+            label.widthIn,
+            heightIn,
+            font.charWidthRatio,
+          );
           return (
             `<div class="label" style="width:${label.widthIn}in;height:${segmentHeight}in;">` +
             `<div class="label-face" style="margin-top:-${pieceOffset}in;` +
