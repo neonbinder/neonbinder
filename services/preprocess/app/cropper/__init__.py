@@ -36,19 +36,26 @@ Source labels (order of preference):
     passthrough     : raw image forwarded unchanged
 
 Why `deskew` leads. It has to run before SAM — it is orders of magnitude
-cheaper (~90ms median on a 50MP photo vs SAM's 2-3s CPU inference) and
+cheaper (~93ms median on a 50MP photo vs SAM's 2-3s CPU inference) and
 handles the tilted-card case SAM would otherwise be needed for. Placing it
 before the PIL trims rather than after them is the measured call. The
-reason it matters: the gates cannot tell a real crop from a
-non-crop, because a whole 6144x8160 phone frame has aspect 0.753, only
-5.4% off card aspect, and covers 100% of itself. So it passes the
-validator, and whichever stage runs first and returns it, wins. Across the
-71 corpus images over 3000px, running deskew last leaves 16 winners that
-are >92% of the source (i.e. not crops at all); running it first leaves
-13, and converts four phone photos from "the entire photo" into a card
-crop at ≤1% aspect error. The cost is that deskew now gets first refusal
-on 156 scanner images — which is why it declines (returns None) rather
-than warping whenever the best quad it finds is the image frame.
+reason it matters: the gates cannot tell a real crop from a non-crop,
+because a whole 6144x8160 phone frame has aspect 0.753, only 5.4% off card
+aspect, and covers 100% of itself. So it passes the validator, and
+whichever stage runs first and returns it, wins. Across the 71 corpus
+images over 3000px, running deskew last leaves 16 winners that are >92% of
+the source (i.e. not crops at all); running it first leaves 13, turning
+PXL_20260813_112644720, PXL_20250320_005433897 and PXL_20250817_184721488
+from "the entire photo" into card crops at 0.3%, 2.8% and 3.2% aspect
+error.
+
+The cost of leading is that deskew gets first refusal on 156 scanner
+images that pil_trim already handles well, so it is built to decline —
+`deskew_crop` returns None whenever the best quad it finds is the image
+frame, and again if the warped output lands further than
+`MAX_OUTPUT_ASPECT_ERROR` from card aspect. Measured: of the 156 corpus
+images at or under pil_trim's 3000px detection cap, all 156 produce
+byte-identical cascade output with deskew in front.
 """
 
 from __future__ import annotations
