@@ -181,7 +181,13 @@ export function Autocomplete<T>({
             }
           }
         }}
-        className={`w-full ${inputClassName}`}
+        // `bare` Input supplies NO geometry — that is its contract, so the
+        // caller can drop it into existing markup. This component IS the
+        // standalone control, so it has to supply the same geometry the
+        // non-bare Input would (`px-3 py-2 text-base`). Without it the
+        // placeholder sits flush against the border and the field is shorter
+        // than every select beside it.
+        className={`w-full px-3 py-2 text-base ${inputClassName}`}
       />
 
       {showPopup && (
