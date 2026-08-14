@@ -18,17 +18,32 @@ Two public entrypoints — same pipeline, opposite threshold directions:
 Both are registered as separate strategies in the cascade so each goes
 through the validator + text-count gate independently. Most clean-card
 photos are one or the other; the cascade just runs whichever wins.
+
+**Coordinate spaces.** Detection runs on a downscaled copy (speed), but the
+crop is applied to the full-resolution original — the same detect-small /
+map-back pattern `sam._open_and_resize` uses. Returning the crop in
+downscaled coordinates was a real bug: `validator.is_plausible_crop`
+compares the candidate's area against the *original* upload's area, so a
+crop measured in downscaled pixels reads ~1/scale² too small. On a
+6144x8160 phone photo (scale 0.368) a crop genuinely covering 63.6% of the
+frame measured as 8.6% and was rejected by `MIN_AREA_FRACTION`. Keeping
+both spaces identical is what makes that comparison meaningful — and it
+also removes the 3000px cap on output resolution, which matters because
+these crops get printed.
 """
 
 from __future__ import annotations
 
+import math
 from io import BytesIO
 from typing import Literal
 
 from PIL import Image, ImageFilter
 
-# Downscale very large images before processing — libvips / PIL are slow on
-# 50MP+ inputs. 3000px longest edge is enough to find card edges reliably.
+# Detect on a copy no larger than this on the longest edge — PIL's blur +
+# threshold + getbbox pass is slow on 50MP+ inputs and 3000px is more than
+# enough to find card edges reliably. This bounds DETECTION only; the crop
+# is applied to the full-resolution original.
 MAX_LONGEST_EDGE_PX = 3000
 
 # Gaussian blur radius before thresholding. Smooths JPEG artifacts + film
@@ -51,13 +66,55 @@ BORDER_PX = 10
 Direction = Literal["above", "below"]
 
 
-def _maybe_downscale(img: Image.Image) -> Image.Image:
+def _open_and_resize(img: Image.Image) -> tuple[Image.Image, float]:
+    """Return `(detection_image, scale)` for the detection pass.
+
+    `scale` is the factor the original was multiplied by, so dividing a
+    detection-space coordinate by it maps back to the original. 1.0 when
+    the image was already small enough and no resize happened.
+
+    Named to match `sam._open_and_resize`, which does the same thing for
+    the SAM stage.
+    """
     longest = max(img.size)
     if longest <= MAX_LONGEST_EDGE_PX:
-        return img
+        return img, 1.0
     scale = MAX_LONGEST_EDGE_PX / longest
-    new_size = (int(img.width * scale), int(img.height * scale))
-    return img.resize(new_size, Image.Resampling.LANCZOS)
+    new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+    return img.resize(new_size, Image.Resampling.LANCZOS), scale
+
+
+def _map_box_to_original(
+    bbox: tuple[int, int, int, int],
+    *,
+    scale: float,
+    original_size: tuple[int, int],
+) -> tuple[int, int, int, int] | None:
+    """Map a detection-space bounding box back onto the full-resolution original.
+
+    Expands outward (floor the near edges, ceil the far ones) so the
+    1/scale-pixel quantization error introduced by detecting on a
+    downscaled copy can only ever *include* a sliver of background, never
+    shave a sliver off the card. Result is clamped to the original's
+    bounds. Returns None if the mapped box is degenerate.
+    """
+    left, top, right, bottom = bbox
+    orig_w, orig_h = original_size
+
+    if scale < 1.0:
+        left = math.floor(left / scale)
+        top = math.floor(top / scale)
+        right = math.ceil(right / scale)
+        bottom = math.ceil(bottom / scale)
+
+    left = max(0, min(left, orig_w))
+    top = max(0, min(top, orig_h))
+    right = max(0, min(right, orig_w))
+    bottom = max(0, min(bottom, orig_h))
+
+    if right - left < 1 or bottom - top < 1:
+        return None
+    return left, top, right, bottom
 
 
 def _trim_with_threshold(
@@ -81,9 +138,9 @@ def _trim_with_threshold(
         return None
 
     img = img.convert("RGB")
-    img = _maybe_downscale(img)
+    detect_img, scale = _open_and_resize(img)
 
-    blurred = img.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS))
+    blurred = detect_img.filter(ImageFilter.GaussianBlur(radius=BLUR_RADIUS))
     gray = blurred.convert("L")
 
     # Binary mask where foreground pixels are 255 and background is 0;
@@ -101,7 +158,14 @@ def _trim_with_threshold(
     if right - left < 1 or bottom - top < 1:
         return None
 
-    cropped = img.crop(bbox)
+    # Detection happened on the downscaled copy; the crop happens on the
+    # original. Without this map-back the output — and every area fraction
+    # the validator computes from it — would be in the wrong space.
+    mapped = _map_box_to_original(bbox, scale=scale, original_size=img.size)
+    if mapped is None:
+        return None
+
+    cropped = img.crop(mapped)
 
     # Add a black border so downstream cropping doesn't shave off a pixel-
     # thin slice of the card edge. Border color is cosmetic — it's padding

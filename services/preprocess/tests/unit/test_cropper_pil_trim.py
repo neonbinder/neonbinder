@@ -66,7 +66,15 @@ class TestTrimHappyPath:
             assert 1100 <= h <= 1100 + 2 * BORDER_PX + 10
 
     @pytest.mark.parametrize("trim_fn,card_color,bg_color", _VARIANTS)
-    def test_downscales_very_large_inputs(self, trim_fn, card_color, bg_color):
+    def test_oversized_input_is_cropped_at_full_resolution(self, trim_fn, card_color, bg_color):
+        """Detection downscales; the crop must still come from the original.
+
+        The 6000px canvas is over MAX_LONGEST_EDGE_PX so the detection pass
+        runs on a downscaled copy. The returned crop must nonetheless be in
+        ORIGINAL coordinates — a 3400x4000 card, not the ~0.5x version of
+        it. Returning downscaled bytes is the coordinate-space bug that made
+        `validator.MIN_AREA_FRACTION` reject good phone-photo crops.
+        """
         big = _card_on_background(
             card_color=card_color,
             bg_color=bg_color,
@@ -76,7 +84,34 @@ class TestTrimHappyPath:
         result = trim_fn(big)
         assert result is not None
         with Image.open(io.BytesIO(result)) as out:
-            assert max(out.size) <= MAX_LONGEST_EDGE_PX
+            w, h = out.size
+            assert max(w, h) > MAX_LONGEST_EDGE_PX, "output was capped at detection resolution"
+            # Card is 3400x4000 in original coordinates; allow the 10px
+            # border on each side plus the ~2px map-back quantization.
+            assert 3400 <= w <= 3400 + 2 * BORDER_PX + 20
+            assert 4000 <= h <= 4000 + 2 * BORDER_PX + 20
+
+    @pytest.mark.parametrize("trim_fn,card_color,bg_color", _VARIANTS)
+    def test_oversized_crop_area_fraction_matches_source_space(self, trim_fn, card_color, bg_color):
+        """The crop's area fraction must be measured against the same space.
+
+        This is the bug's actual symptom, asserted directly: the card
+        covers 3400*4000 / 5000*6000 = 45.3% of the source. Measured in
+        mismatched spaces it read as ~11%, and on a 6144x8160 phone photo
+        the same mismatch turned 63.6% into 8.6% — under MIN_AREA_FRACTION.
+        """
+        canvas = (5000, 6000)
+        big = _card_on_background(
+            card_color=card_color,
+            bg_color=bg_color,
+            canvas_size=canvas,
+            card_box=(800, 1000, 4200, 5000),
+        )
+        result = trim_fn(big)
+        assert result is not None
+        with Image.open(io.BytesIO(result)) as out:
+            fraction = (out.size[0] * out.size[1]) / (canvas[0] * canvas[1])
+        assert 0.45 <= fraction <= 0.47
 
 
 class TestTrimDarkRejects:
