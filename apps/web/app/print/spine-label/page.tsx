@@ -26,6 +26,7 @@ import {
   clampLabelHeight,
   clampSpineWidth,
   labelsPerSheet,
+  packLabelsIntoSheets,
   splitHeightIntoSegments,
 } from "@/lib/print/spine-formats";
 import {
@@ -249,6 +250,11 @@ export default function SpineLabelPage() {
         name: addedName,
         background: normalizedBackground!,
         text: normalizedText!,
+        // Ring size travels WITH the label. `widthIn` stays in the form after
+        // an add so the next binder starts from the last one used — the common
+        // case is several binders of the same size — but changing it then only
+        // affects the label being designed, never one already queued.
+        widthIn,
       },
     ]);
     setAddStatus(
@@ -311,30 +317,31 @@ export default function SpineLabelPage() {
         name: name.trim(),
         background: normalizedBackground!,
         text: normalizedText!,
+        widthIn,
       }
     : null;
   const previewLabels: SpineLabel[] = draftLabel
     ? [...labels, draftLabel]
     : labels;
 
-  const sheetOptions = { labels: previewLabels, widthIn, heightIn };
+  const sheetOptions = { labels: previewLabels, heightIn };
   const previewHtml = spineSheetHtml(sheetOptions);
   const previewCss = spineSheetCss(sheetOptions);
 
   const perSheet = labelsPerSheet(widthIn);
   const pieces = splitHeightIntoSegments(heightIn);
   // Counts what will PRINT, i.e. the queued labels — not the draft, which is
-  // in the preview but not on the sheet until Add is pressed.
+  // in the preview but not on the sheet until Add is pressed. Derived from the
+  // real packer rather than a division: with mixed ring sizes on one sheet,
+  // "labels ÷ per sheet" is no longer the answer.
   const sheetCount =
-    labels.length === 0
-      ? 0
-      : Math.ceil(labels.length / perSheet) * pieces.length;
+    labels.length === 0 ? 0 : packLabelsIntoSheets(labels).length * pieces.length;
 
   const handlePrint = async () => {
     if (labels.length === 0) return;
     setPrinting(true);
     try {
-      const options = { labels, widthIn, heightIn };
+      const options = { labels, heightIn };
       await printHtmlDocument({
         title: "Binder spine labels",
         bodyHtml: spineSheetHtml(options),
@@ -543,7 +550,14 @@ export default function SpineLabelPage() {
           </section>
 
           <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-slate-300">Size</h3>
+            <h3 className="text-sm font-semibold text-slate-300">
+              Binder size
+            </h3>
+            <p className="text-xs text-slate-400">
+              Ring size belongs to this binder. It carries over to the next
+              label so a run of same-size binders is one choice, and changing it
+              never touches a label already on the sheet.
+            </p>
             <div className="flex flex-wrap gap-2" role="group" aria-label="Spine width presets">
               {SPINE_PRESETS.map((preset) => (
                 <button
@@ -588,7 +602,7 @@ export default function SpineLabelPage() {
             <p className="text-xs text-slate-400">
               {perSheet} label{perSheet === 1 ? "" : "s"} per sheet at{" "}
               {widthIn}
-              &Prime; wide.
+              &Prime; wide — a sheet fits any mix that totals 8&Prime;.
               {pieces.length > 1 && (
                 <>
                   {" "}
@@ -641,11 +655,17 @@ export default function SpineLabelPage() {
                     style={{ background: label.background }}
                   />
                   <span className="flex-1">{label.name}</span>
+                  {/* Each label keeps the ring size it was added with, so the
+                      list has to show it — otherwise a sheet of mixed sizes
+                      looks like a list of identical rows. */}
+                  <span className="text-xs text-slate-400">
+                    {label.widthIn}&Prime;
+                  </span>
                   <NeonButton
                     type="button"
                     cancel
                     onClick={() => removeLabel(label.id)}
-                    aria-label={`Remove ${label.name} from the sheet`}
+                    aria-label={`Remove ${label.name}, ${label.widthIn} inch spine, from the sheet`}
                   >
                     Remove
                   </NeonButton>

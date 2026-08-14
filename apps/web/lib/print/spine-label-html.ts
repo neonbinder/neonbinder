@@ -17,7 +17,8 @@ import {
   PRINTABLE_WIDTH_IN,
   SHEET_MARGIN_IN,
   fitFontSizeIn,
-  labelsPerSheet,
+  packLabelsIntoSheets,
+  rowRemainderIn,
   splitHeightIntoSegments,
 } from "./spine-formats";
 
@@ -28,11 +29,23 @@ export interface SpineLabel {
   background: string;
   /** Hex, `#rrggbb`. The lettering. */
   text: string;
+  /**
+   * Spine width in inches — the RING SIZE of this binder.
+   *
+   * Per label, not per sheet: a collector labelling five binders has five ring
+   * sizes, and one sheet holds whatever mix fits across its 8in.
+   */
+  widthIn: number;
 }
 
 export interface SpineSheetOptions {
   labels: SpineLabel[];
-  widthIn: number;
+  /**
+   * Label height, in inches. Still per SHEET rather than per label: binders
+   * are all the same height, so this genuinely is a property of the paper,
+   * unlike the ring size. It also keeps tiling uniform — labels taller than
+   * one sheet split into the same pieces, so a row cannot end up ragged.
+   */
   heightIn: number;
   /**
    * Draw a hairline outline and corner ticks around each label.
@@ -83,8 +96,7 @@ function cssColor(value: string, fallback: string): string {
  * takes them separately (it owns `@page` and the print-color-adjust reset).
  */
 export function spineSheetCss(options: SpineSheetOptions): string {
-  const { widthIn, heightIn, cutMarks = true } = options;
-  const perSheet = labelsPerSheet(widthIn);
+  const { heightIn, cutMarks = true } = options;
 
   return `
       .sheet {
@@ -108,10 +120,11 @@ export function spineSheetCss(options: SpineSheetOptions): string {
          the whole thing; for a tiled one it clips the design to this piece's
          slice, which is what makes the two printed pieces splice into one
          continuous label rather than repeating the name twice. */
+      /* No width here: each label carries its own inline, because ring size
+         is a property of the binder rather than the sheet. */
       .label {
         box-sizing: border-box;
         position: relative;
-        width: ${widthIn}in;
         overflow: hidden;
         ${cutMarks ? "outline: 0.5pt dashed rgba(0, 0, 0, 0.35); outline-offset: -0.5pt;" : ""}
       }
@@ -133,10 +146,11 @@ export function spineSheetCss(options: SpineSheetOptions): string {
         letter-spacing: 0.02em;
         white-space: nowrap;
       }
-      /* Fills the row when fewer than a full row of labels remain, so the
-         last sheet's labels stay at the left edge rather than stretching. */
+      /* Fills whatever a row did not use, so labels stay at the left edge
+         rather than stretching. Width is inline per sheet — with mixed ring
+         sizes the remainder differs from sheet to sheet. */
       .spacer {
-        width: ${PRINTABLE_WIDTH_IN - widthIn * perSheet}in;
+        flex: none;
       }`;
 }
 
@@ -145,7 +159,9 @@ export function spineSheetCss(options: SpineSheetOptions): string {
  *
  * Two dimensions of chunking interact here:
  *
- *  - **Across a sheet**: `labelsPerSheet(widthIn)` labels sit side by side.
+ *  - **Across a sheet**: labels are packed into rows by `packLabelsIntoSheets`
+ *    until the next one would not fit the 8in printable width. Ring sizes
+ *    differ per binder, so a row is "whatever fits" rather than a fixed count.
  *  - **Down sheets**: a label taller than one sheet is split by
  *    `splitHeightIntoSegments`, and each segment is printed in the SAME
  *    position on consecutive sheets, so the user prints, cuts, and splices
@@ -154,16 +170,18 @@ export function spineSheetCss(options: SpineSheetOptions): string {
  * Sheets are emitted piece by piece — every label's piece 1, then every
  * label's piece 2 — so the sheets come out of the printer in the order they
  * are cut and spliced, rather than interleaved fragments the user has to sort.
+ * The same packing is reused for every piece, so a label sits in the same
+ * position on its piece-1 and piece-2 sheets.
  *
  * The name is sized and centred against the FULL height once, not per piece.
  * Sizing per piece would set the name to fit a 1in offcut and centre a second
  * copy in it; the window shifts over one design instead.
  */
 export function spineSheetHtml(options: SpineSheetOptions): string {
-  const { labels, widthIn, heightIn } = options;
+  const { labels, heightIn } = options;
   if (labels.length === 0) return "";
 
-  const perSheet = labelsPerSheet(widthIn);
+  const rows = packLabelsIntoSheets(labels);
   const segments = splitHeightIntoSegments(heightIn);
 
   const sheets: string[] = [];
@@ -171,13 +189,12 @@ export function spineSheetHtml(options: SpineSheetOptions): string {
 
   for (const segmentHeight of segments) {
     const pieceOffset = offsetIn;
-    for (let start = 0; start < labels.length; start += perSheet) {
-      const row = labels.slice(start, start + perSheet);
+    for (const row of rows) {
       const cells = row
         .map((label) => {
-          const fontIn = fitFontSizeIn(label.name, widthIn, heightIn);
+          const fontIn = fitFontSizeIn(label.name, label.widthIn, heightIn);
           return (
-            `<div class="label" style="height:${segmentHeight}in;">` +
+            `<div class="label" style="width:${label.widthIn}in;height:${segmentHeight}in;">` +
             `<div class="label-face" style="margin-top:-${pieceOffset}in;` +
             `background:${cssColor(label.background, FALLBACK_BACKGROUND)};` +
             `color:${cssColor(label.text, FALLBACK_TEXT)};` +
@@ -186,7 +203,8 @@ export function spineSheetHtml(options: SpineSheetOptions): string {
           );
         })
         .join("");
-      sheets.push(`<div class="sheet">${cells}<div class="spacer"></div></div>`);
+      const spacer = `<div class="spacer" style="width:${rowRemainderIn(row)}in;"></div>`;
+      sheets.push(`<div class="sheet">${cells}${spacer}</div>`);
     }
     offsetIn += segmentHeight;
   }

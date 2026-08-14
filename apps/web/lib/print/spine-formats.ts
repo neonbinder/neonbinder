@@ -87,6 +87,61 @@ export function labelsPerSheet(widthIn: number): number {
 }
 
 /**
+ * Floating-point slack when comparing inch widths.
+ *
+ * Widths come from `0.125` steps and arithmetic on them, so `2 + 2 + 2 + 2`
+ * can land a hair over `8`. Without slack that drops the fourth 2in label onto
+ * a second sheet, which is both wrong and invisible until you count the pages.
+ */
+const WIDTH_EPSILON_IN = 1e-6;
+
+/**
+ * Pack labels into sheets, filling each row across the printable width.
+ *
+ * NEO-147 originally gave every label on a sheet the same width, because the
+ * spine width was a property of the SHEET. It is not — it is the ring size of
+ * one binder, and a collector labelling five binders has five different ones.
+ * Width therefore travels with the label, and a sheet holds whatever fits.
+ *
+ * Greedy in input order rather than best-fit: the user is looking at a preview
+ * and a list, and a packer that reordered their labels to save paper would
+ * make that preview unpredictable. Saving the occasional sheet is not worth
+ * "why is Nolan Ryan first now".
+ *
+ * A label wider than the printable area still gets its own sheet rather than
+ * vanishing — clamped by the caller at entry, but never silently dropped here.
+ */
+export function packLabelsIntoSheets<T extends { widthIn: number }>(
+  labels: T[],
+): T[][] {
+  const sheets: T[][] = [];
+  let row: T[] = [];
+  let used = 0;
+
+  for (const label of labels) {
+    const width = Math.min(Math.max(label.widthIn, 0), PRINTABLE_WIDTH_IN);
+    if (row.length > 0 && used + width > PRINTABLE_WIDTH_IN + WIDTH_EPSILON_IN) {
+      sheets.push(row);
+      row = [];
+      used = 0;
+    }
+    row.push(label);
+    used += width;
+  }
+  if (row.length > 0) sheets.push(row);
+  return sheets;
+}
+
+/** Unused width left on a row, for the spacer that keeps labels left-aligned. */
+export function rowRemainderIn(row: Array<{ widthIn: number }>): number {
+  const used = row.reduce(
+    (sum, label) => sum + Math.min(Math.max(label.widthIn, 0), PRINTABLE_WIDTH_IN),
+    0,
+  );
+  return Math.max(0, PRINTABLE_WIDTH_IN - used);
+}
+
+/**
  * Split a requested height into per-sheet segments.
  *
  * At or under the cap this is a single segment and the answer is boring. Above

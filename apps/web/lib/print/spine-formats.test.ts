@@ -18,6 +18,8 @@ import {
   clampSpineWidth,
   fitFontSizeIn,
   labelsPerSheet,
+  packLabelsIntoSheets,
+  rowRemainderIn,
   splitHeightIntoSegments,
 } from "./spine-formats";
 
@@ -51,6 +53,60 @@ describe("labelsPerSheet", () => {
     expect(labelsPerSheet(12)).toBe(1);
     expect(labelsPerSheet(0)).toBe(1);
     expect(labelsPerSheet(Number.NaN)).toBe(1);
+  });
+});
+
+describe("packLabelsIntoSheets", () => {
+  // Ring size is a property of the binder, so a sheet holds whatever mix fits
+  // across its 8in rather than a fixed count of identical labels.
+  const w = (widthIn: number) => ({ widthIn });
+
+  it("fills a row up to the printable width", () => {
+    expect(packLabelsIntoSheets([w(2), w(2), w(2), w(2)])).toHaveLength(1);
+    expect(packLabelsIntoSheets([w(3), w(3), w(2)])).toHaveLength(1);
+  });
+
+  it("breaks to a new sheet when the next label would overflow", () => {
+    expect(packLabelsIntoSheets([w(3), w(3), w(3)])).toHaveLength(2);
+    expect(packLabelsIntoSheets([w(2), w(2), w(2), w(2), w(1)])).toHaveLength(2);
+  });
+
+  it("tolerates floating-point slack on an exactly-full row", () => {
+    // Widths come off 0.125 steps and arithmetic on them, so a sum that should
+    // be exactly 8 can land a hair over. Without slack the last label spills
+    // to a second sheet and nothing on screen explains why.
+    const eight = [w(8 / 3), w(8 / 3), w(8 / 3)];
+    expect(packLabelsIntoSheets(eight)).toHaveLength(1);
+  });
+
+  it("preserves input order rather than repacking to save paper", () => {
+    const rows = packLabelsIntoSheets([
+      { widthIn: 3, id: "a" },
+      { widthIn: 1, id: "b" },
+      { widthIn: 3, id: "c" },
+    ]);
+    expect(rows.flat().map((l) => l.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("gives an over-wide label its own sheet instead of dropping it", () => {
+    const rows = packLabelsIntoSheets([{ widthIn: 99 }, { widthIn: 2 }]);
+    expect(rows).toHaveLength(2);
+    expect(rows.flat()).toHaveLength(2);
+  });
+
+  it("returns nothing for nothing", () => {
+    expect(packLabelsIntoSheets([])).toEqual([]);
+  });
+});
+
+describe("rowRemainderIn", () => {
+  it("reports the unused width of a row", () => {
+    expect(rowRemainderIn([{ widthIn: 3 }, { widthIn: 2 }])).toBeCloseTo(3, 5);
+    expect(rowRemainderIn([{ widthIn: 2 }, { widthIn: 2 }, { widthIn: 2 }, { widthIn: 2 }])).toBeCloseTo(0, 5);
+  });
+
+  it("never goes negative for an over-wide label", () => {
+    expect(rowRemainderIn([{ widthIn: 99 }])).toBe(0);
   });
 });
 
