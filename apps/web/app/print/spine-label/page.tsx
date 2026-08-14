@@ -454,7 +454,24 @@ export default function SpineLabelPage() {
         <div className="space-y-6">
           <section className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-300">Player</h3>
-            <PlayerAutocomplete key={formGeneration} onSelect={onSelectPlayer} />
+            {/* A real <label>, not a styled span. The shared Input primitive
+                emits no id, so association is IMPLICIT — the label has to wrap
+                the control, and that wrapping is also what makes clicking the
+                label text focus the field. A span looks identical and does
+                neither.
+                The visible text and the control's accessible name are the same
+                string on purpose (WCAG 2.5.3 Label in Name): `label` here is
+                what becomes the input's aria-label. */}
+            <label className="block">
+              <span className="block text-sm font-medium mb-1 text-slate-300">
+                Find a player
+              </span>
+              <PlayerAutocomplete
+                key={formGeneration}
+                label="Find a player"
+                onSelect={onSelectPlayer}
+              />
+            </label>
             <Input
               label="Name on the label"
               value={name}
@@ -541,8 +558,10 @@ export default function SpineLabelPage() {
                   ))}
                 </select>
               </div>
-              <div>
-                <span className="block text-sm font-medium mb-1 text-slate-300">Team</span>
+              <label className="block">
+                <span className="block text-sm font-medium mb-1 text-slate-300">
+                  Find a team
+                </span>
                 <Autocomplete
                   query={teamQuery}
                   onQueryChange={setTeamQuery}
@@ -560,7 +579,7 @@ export default function SpineLabelPage() {
                   placeholder="Start typing a team name…"
                   emptyMessage="No teams match"
                 />
-              </div>
+              </label>
               {teamQuery.trim().length > 0 && (
                 <div className="self-end">
                   {/* Explicit, because the alternative is worse: clearing the

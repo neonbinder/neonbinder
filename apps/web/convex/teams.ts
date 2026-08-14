@@ -4,6 +4,7 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
+import { normalizePlayerName } from "./players";
 
 /**
  * Lowercase + strip punctuation + token-sort. Same shape as the player
@@ -126,7 +127,11 @@ export const findOrCreate = mutation({
  */
 export const seedTestTeams = mutation({
   args: {},
-  returns: v.object({ created: v.number(), existing: v.number() }),
+  returns: v.object({
+    created: v.number(),
+    existing: v.number(),
+    playersCreated: v.number(),
+  }),
   handler: async (ctx) => {
     await requireAdmin(ctx);
     if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
@@ -154,7 +159,22 @@ export const seedTestTeams = mutation({
       );
     }
 
-    const seeds = [{ name: "New York Yankees" }, { name: "New York Mets" }];
+    // Colours are part of the fixture, not decoration. After a reset the teams
+    // table is empty, so NOTHING has colours — and the spine-label designer,
+    // Team Management's detail panel and the contrast readout all read them.
+    // Without a deterministic pair here those surfaces can only be tested
+    // against whatever a deployment happens to hold, which is how they ended up
+    // with no E2E coverage at all.
+    const seeds = [
+      {
+        name: "New York Yankees",
+        colors: { primary: "#132448", secondary: "#c4ced3" },
+      },
+      {
+        name: "New York Mets",
+        colors: { primary: "#002d72", secondary: "#ff5910" },
+      },
+    ];
     let created = 0;
     let existing = 0;
     for (const seed of seeds) {
@@ -165,21 +185,90 @@ export const seedTestTeams = mutation({
           q.eq("nameNormalized", normalized),
         )
         .collect();
-      if (matches.find((t) => t.sportId === baseballRow._id)) {
+      const already = matches.find((t) => t.sportId === baseballRow._id);
+      if (already) {
         existing += 1;
+        // A fixture has to be AUTHORITATIVE, not merely present. A row that
+        // already exists — synced from a marketplace, or seeded from the
+        // bundled colour dataset — carries whatever colours that source gave
+        // it, which is not what the flows assert on. Repair it rather than
+        // skipping, or the fixture silently means something different on a
+        // deployment that was not freshly reset.
+        if (
+          already.colors?.primary !== seed.colors.primary ||
+          already.colors?.secondary !== seed.colors.secondary
+        ) {
+          await ctx.db.patch(already._id, {
+            colors: seed.colors,
+            lastUpdated: Date.now(),
+          });
+        }
         continue;
       }
       await ctx.db.insert("teams", {
         name: seed.name,
         nameNormalized: normalized,
         sportId: baseballRow._id,
+        colors: seed.colors,
         // NEO-156 — see the note in findOrCreate.
         leagueId: await resolveDefaultLeagueId(ctx, baseballRow._id),
         lastUpdated: Date.now(),
       });
       created += 1;
     }
-    return { created, existing };
+
+    // A fixture PLAYER with career teams, so the player-driven half of the
+    // spine designer is testable: picking a player must surface their teams as
+    // chips and default to the one they spent longest with.
+    //
+    // Two stints of deliberately different length — 10 years with the Yankees
+    // against 2 with the Mets — so "longest tenure" has something to be right
+    // or wrong about. A single-team fixture would pass whatever the logic did.
+    //
+    // The name is unmistakably a fixture so it cannot collide with a real
+    // player from the 2024 Topps Chrome sync this flow also performs.
+    const teamIdByName = new Map<string, Id<"teams">>();
+    for (const seed of seeds) {
+      const row = (
+        await ctx.db
+          .query("teams")
+          .withIndex("by_name_normalized", (q) =>
+            q.eq("nameNormalized", normalizeTeamName(seed.name)),
+          )
+          .collect()
+      ).find((t) => t.sportId === baseballRow._id);
+      if (row) teamIdByName.set(seed.name, row._id);
+    }
+
+    const FIXTURE_PLAYER = "E2E Fixture Player";
+    const playerNormalized = normalizePlayerName(FIXTURE_PLAYER);
+    const existingPlayer = (
+      await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", playerNormalized).eq("sportId", baseballRow._id),
+        )
+        .collect()
+    )[0];
+
+    let playersCreated = 0;
+    const yankees = teamIdByName.get("New York Yankees");
+    const mets = teamIdByName.get("New York Mets");
+    if (!existingPlayer && yankees && mets) {
+      await ctx.db.insert("players", {
+        name: FIXTURE_PLAYER,
+        nameNormalized: playerNormalized,
+        sportId: baseballRow._id,
+        teamYears: [
+          { teamId: yankees, fromYear: 2010, toYear: 2020 },
+          { teamId: mets, fromYear: 2021, toYear: 2023 },
+        ],
+        lastUpdated: Date.now(),
+      });
+      playersCreated += 1;
+    }
+
+    return { created, existing, playersCreated };
   },
 });
 

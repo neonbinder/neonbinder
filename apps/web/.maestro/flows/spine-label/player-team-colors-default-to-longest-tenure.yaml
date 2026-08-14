@@ -1,0 +1,90 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/print/spine-label&worker=${WORKER_INDEX || "0"}
+name: "Spine Labels — a player's colours default to their longest-tenure team"
+tags:
+  - regression
+  - spine-label
+---
+# R1 — Single feature: the PLAYER-driven half of the spine designer. Picking a
+# player fills the label with their name, surfaces their career teams as chips,
+# and defaults the colours to the team they spent longest with (NEO-147,
+# lib/players/team-tenure.ts). The sibling flow design-and-queue-a-spine-label
+# covers the hand-typed half, which uses a different control entirely — the two
+# are mutually exclusive on screen.
+#
+# SELF-CONTAINED (R3/R4) but DEPENDS ON THE FIXTURE. "E2E Fixture Player" is
+# seeded by setup.yaml's "Seed Test Teams" with TWO stints of deliberately
+# different length — 10 years with the Yankees, 2 with the Mets. That asymmetry
+# is the whole point: a fixture with one team, or two equal stints, would pass
+# whatever the tenure logic did. Do not use a real player from the Topps Chrome
+# sync; those come from marketplace data and their teamYears vary.
+#
+# R2 — this cannot go green without the feature working. It asserts the
+# defaulted colour is YANKEES navy specifically. A designer that surfaced the
+# chips but defaulted to the wrong team, or to no team, fails on the hex.
+
+- launchApp
+- extendedWaitUntil:
+    visible: "Spine Labels"
+    timeout: 45000
+
+# ── PICK THE FIXTURE PLAYER ─────────────────────────────────────────────────
+# The search runs against the players search index (NEO-147). "Fixture" is
+# enough to identify it and cannot collide with a real synced player.
+- scrollUntilVisible:
+    element:
+      text: "Find a player"
+    centerElement: true
+- tapOn: "Find a player"
+- inputText: "E2E Fixture"
+- extendedWaitUntil:
+    visible: "E2E Fixture Player"
+    timeout: 20000
+- tapOn: "E2E Fixture Player"
+
+# The pick fills the label's own text — the name field is independent of the
+# search box, so this proves the selection propagated rather than just echoing.
+- extendedWaitUntil:
+    visible: ".*Defaults to the team E2E Fixture Player spent longest with.*"
+    timeout: 15000
+
+# ── BOTH CAREER TEAMS ARE OFFERED ───────────────────────────────────────────
+# Chips, not the free-form team search: a matched player's own teams ARE the
+# answer, so the general search is deliberately not rendered here. Asserting
+# both proves teamYears was read in full rather than only its first entry.
+# Scrolled into view first: `visible` is false for an element that exists but
+# sits below the 1024x629 headless fold, and the chips sit under two fields.
+- scrollUntilVisible:
+    element:
+      text: "New York Yankees"
+    centerElement: true
+    timeout: 15000
+- assertVisible: "New York Yankees"
+- assertVisible: "New York Mets"
+
+# The free-form team picker must NOT be present — the two controls are mutually
+# exclusive, and showing both would be two controls competing to set one value.
+- assertNotVisible: "Find a team"
+
+# ── THE DEFAULT IS THE LONGEST STINT ────────────────────────────────────────
+# Yankees navy from the fixture. This is the assertion the whole flow exists
+# for: 10 Yankees years beat 2 Mets years, so the label comes up in #132448 and
+# NOT in the Mets' #002d72.
+- scrollUntilVisible:
+    element:
+      text: "Background"
+    centerElement: true
+    timeout: 10000
+- assertVisible: "#132448"
+- assertNotVisible: "#002d72"
+
+# ── OVERRIDING TO THE OTHER TEAM WORKS ──────────────────────────────────────
+# The default is a default, not a decision — NEO-147 requires the user can pick
+# any team in teamYears. Tapping the Mets chip swaps the colours.
+- tapOn: "New York Mets"
+- extendedWaitUntil:
+    visible: "#002d72"
+    timeout: 10000
+
+# Never tap "Print" — it opens the browser print dialog, which blocks every
+# subsequent Maestro command and wedges the run.

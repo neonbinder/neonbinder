@@ -32,7 +32,12 @@ type WipeBaseStatus =
 type SeedTeamsStatus =
   | { kind: "idle" }
   | { kind: "running" }
-  | { kind: "success"; created: number; existing: number }
+  | {
+      kind: "success";
+      created: number;
+      existing: number;
+      playersCreated: number;
+    }
   | { kind: "error"; message: string };
 
 /**
@@ -160,7 +165,8 @@ export default function AdminTools() {
       {seedTeamsStatus.kind === "success" && (
         <div className="mt-4 p-3 rounded-md bg-green-950/40 border border-green-800 text-green-200 text-sm">
           Seed complete: created {seedTeamsStatus.created} new team(s),{" "}
-          {seedTeamsStatus.existing} already existed.
+          {seedTeamsStatus.existing} already existed,{" "}
+          {seedTeamsStatus.playersCreated} fixture player(s).
           <button
             type="button"
             onClick={() => setSeedTeamsStatus({ kind: "idle" })}
