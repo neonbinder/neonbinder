@@ -46,6 +46,17 @@ phone photos, and each is a constant below with its measurement:
     scan (170 of the 227 corpus images) that is the honest answer: there
     is no perspective to correct, and pil_trim handles it downstream.
 
+**Being card-shaped is not the same as being the card.** Ranking finds the
+most card-like quad in the frame; it cannot tell whether that quad traces
+the card's actual outline. A quad sitting INSIDE the card is still
+card-shaped, warps to a clean 0.714, and so passes every aspect-based
+check — which is exactly how this module shipped clipped cards at 2.2% and
+3.0% output aspect error until human review caught them. The
+quad-integrity gate (`_quad_is_trustworthy`, and the constants block that
+documents it) is the separate line of evidence that closes that hole:
+edges must lie on real intensity discontinuities, and the quad must be
+shaped like a photographed rectangle.
+
 Public API: `deskew_crop(image_bytes) -> bytes | None`.
 """
 
@@ -153,6 +164,102 @@ ASPECT_SIGNIFICANCE_BAND = 0.015
 # Minimum warped side, in detection-space pixels, below which the quad is
 # degenerate (a sliver from a partially-closed contour).
 MIN_WARPED_SIDE_PX = 20
+
+# ── Quad-integrity gate ────────────────────────────────────────────────────
+#
+# `MAX_OUTPUT_ASPECT_ERROR` below is necessary but NOT sufficient, and the
+# gap between those two is what this section closes. Human review of the
+# 2026-08-14 sample set found deskew shipping visibly clipped cards at 2.2%
+# and 3.0% output aspect error — comfortably inside the 5% gate.
+#
+# The reason is structural: a quad that lands INSIDE the card is still
+# card-shaped, so it warps to a clean 0.714 and the aspect gate sees
+# nothing wrong. Aspect error detects a SKEWED quad; it is blind to an
+# INSET one. So integrity has to be judged on evidence the aspect ratio
+# cannot carry, and these two constants carry it:
+#
+#   1. Do the quad's edges actually lie on image edges? A real card
+#      boundary is a strong, continuous intensity discontinuity along its
+#      whole length. An edge invented inside the card crosses artwork and
+#      only intermittently lands on a gradient.
+#   2. Is the quad shaped like a photographed rectangle at all?
+#
+# All figures below are measured on the ORIGINAL corpus files. Re-encoded
+# copies shift per-edge support by 3-5pp — enough to flip a marginal image
+# — so re-measure against the originals, never against review renders.
+
+# An edge counts as "supported" when at least this fraction of samples
+# along it sit on a strong gradient.
+#
+# Measured over the 227-image corpus, every quad deskew still wins with
+# scores 85.9-100% on ALL FOUR edges; its ratio-based twin below is
+# equally lopsided. The rejects carry edges down at 0-52%. 0.60 sits in a
+# 25.9pp-wide empty band, so this is a coarse threshold on a bimodal
+# signal rather than a tuned one.
+MIN_EDGE_SUPPORT_FRACTION = 0.60
+
+# How many unsupported edges a quad may still be trusted with.
+#
+# One weak edge has to stay survivable — a single low-contrast side is
+# normal (a clear slab bevel against black foam has no gradient at all) —
+# while every confirmed clipper had two or more. Discrete separation, so
+# this is exact rather than tuned: allow one, decline at two.
+MAX_UNSUPPORTED_EDGES = 1
+
+# Maximum ratio between opposing sides of the quad before it is refused.
+#
+# Perspective legitimately foreshortens the far edge of a card, so some
+# inequality is expected and this cannot be tight. But 2026-08-12-0016 is
+# a FLATBED SCAN, where perspective is physically impossible, and its
+# mis-detected quad had opposing sides differing by 35% (with a 21.9°
+# corner deviation to match). Every retained win measures ≤1.02; the
+# rejects run 1.35, 1.40, 1.55. 1.25 sits in that gap.
+#
+# This is the check that catches a mis-detection whose edges DO have
+# gradient support — 0016's quad partially follows the real card outline,
+# so the support test alone clears it (its weakest edge is 59.4%, only
+# just under the bar, and only one edge is weak).
+MAX_OPPOSITE_SIDE_RATIO = 1.25
+
+# What the gate costs, stated plainly so it is not rediscovered later:
+# deskew's corpus wins drop 34 -> 28. Five of those six are quads with
+# almost no edge support that were cropping into the card; the sixth,
+# PXL_20250320_005433897, is a graded slab the reviewer called a good
+# crop, and it is a genuine loss — its bevel gives it edges at 26.6% and
+# 56.2%, the only marginal case in the corpus. It falls back to
+# pil_trim_dark returning ~96% of the frame.
+#
+# Losing it is the deliberate call: the whole cascade prints full-bleed to
+# the cut line (NEO-152), so shipping too much frame is recoverable with a
+# knife and shipping a clipped card is not. A threshold low enough to keep
+# the slab (0.55) would leave only a 1.2pp margin against a confirmed
+# clipper at 51.6% — fitting noise, not measuring a boundary.
+
+# Sampling geometry for the edge-support test, in detection-space pixels.
+# 64 samples resolves a patchy edge without making the test expensive
+# (~2ms/quad); the perpendicular search absorbs the corner quantization
+# that detecting at ≤1000px introduces.
+EDGE_SUPPORT_SAMPLES = 64
+EDGE_SUPPORT_PERP_PX = 3
+
+# "Strong gradient" is defined relative to the image rather than as an
+# absolute intensity, so the test behaves the same on a flat scanner bed
+# and a noisy hand-held photo. The 90th percentile keeps roughly the top
+# tenth of gradient magnitudes, which is where real card edges live.
+EDGE_SUPPORT_GRADIENT_PERCENTILE = 90
+
+# Absolute floor under that percentile — without it the gate fails OPEN.
+#
+# On a near-uniform frame more than 90% of pixels have zero gradient, so
+# the percentile itself lands at ~0, every sample clears it, and all four
+# edges report full support no matter where the quad sits. That is the
+# worst possible failure direction for a safety check.
+#
+# Measured across 117 corpus images the 90th percentile runs 12.2 to
+# 229.0 (median 129.6), so a floor of 10 sits below every real image and
+# never binds in practice; it exists purely to stop the relative
+# threshold collapsing on degenerate input.
+EDGE_SUPPORT_MIN_GRADIENT = 10.0
 
 # Dilate the detected quad outward by this fraction of its SHORTER side
 # before warping — a uniform pixel margin on all four edges, not a scale
@@ -325,6 +432,106 @@ def _card_aspect_error(width: float, height: float) -> float:
     )
 
 
+def _opposite_side_ratio(quad: np.ndarray) -> float:
+    """Ratio of the longer to the shorter of each opposing side pair, worst case.
+
+    1.0 is a perfect parallelogram. Perspective pushes it up legitimately —
+    the far edge of a tilted card really is shorter — so this only ever
+    catches gross mis-detection. Returns inf for a degenerate quad.
+    """
+    sides = [float(np.linalg.norm(quad[(index + 1) % 4] - quad[index])) for index in range(4)]
+    worst = 1.0
+    for first, second in ((sides[0], sides[2]), (sides[1], sides[3])):
+        shorter, longer = min(first, second), max(first, second)
+        if shorter <= 1e-9:
+            return float("inf")
+        worst = max(worst, longer / shorter)
+    return worst
+
+
+def _edge_support_fractions(gray: np.ndarray, quad: np.ndarray) -> list[float]:
+    """For each quad edge, the fraction of its length lying on a strong gradient.
+
+    `quad` must be in DETECTION space, matching `gray`. Samples run along
+    each edge and, at every sample, search `EDGE_SUPPORT_PERP_PX` either
+    side perpendicular for the strongest gradient — the perpendicular
+    search is what absorbs corner quantization from detecting at ≤1000px.
+
+    Samples falling outside the image contribute no support rather than
+    being clamped to the border, so a quad edge running off-frame is
+    honestly reported as unsupported instead of borrowing the edge pixel's
+    gradient.
+    """
+    import cv2
+
+    blurred = cv2.GaussianBlur(gray, BLUR_KERNEL, 0)
+    gradient = cv2.magnitude(
+        cv2.Sobel(blurred, cv2.CV_32F, 1, 0, ksize=3),
+        cv2.Sobel(blurred, cv2.CV_32F, 0, 1, ksize=3),
+    )
+    strong = max(
+        float(np.percentile(gradient, EDGE_SUPPORT_GRADIENT_PERCENTILE)),
+        EDGE_SUPPORT_MIN_GRADIENT,
+    )
+    height, width = gradient.shape
+
+    steps = (np.arange(EDGE_SUPPORT_SAMPLES, dtype=np.float32) + 0.5) / EDGE_SUPPORT_SAMPLES
+    offsets = np.arange(-EDGE_SUPPORT_PERP_PX, EDGE_SUPPORT_PERP_PX + 1, dtype=np.float32)
+
+    fractions: list[float] = []
+    for index in range(4):
+        start = quad[index]
+        direction = quad[(index + 1) % 4] - start
+        length = float(np.linalg.norm(direction))
+        if length < 1e-6:
+            fractions.append(0.0)
+            continue
+        normal = np.array([-direction[1], direction[0]], dtype=np.float32) / length
+
+        along = start + np.outer(steps, direction)  # (samples, 2)
+        points = along[:, None, :] + normal[None, None, :] * offsets[None, :, None]
+
+        xs = points[..., 0]
+        ys = points[..., 1]
+        inside = (xs >= 0) & (xs <= width - 1) & (ys >= 0) & (ys <= height - 1)
+        col = np.clip(np.rint(xs).astype(np.intp), 0, width - 1)
+        row = np.clip(np.rint(ys).astype(np.intp), 0, height - 1)
+
+        sampled = np.where(inside, gradient[row, col], 0.0)
+        fractions.append(float((sampled.max(axis=1) >= strong).mean()))
+    return fractions
+
+
+def _quad_is_trustworthy(gray: np.ndarray, quad: np.ndarray) -> bool:
+    """Reject a quad that is card-SHAPED but not the card's actual outline.
+
+    `quad` is in DETECTION space, matching `gray`. See the constants block
+    for why aspect error alone cannot make this call.
+    """
+    side_ratio = _opposite_side_ratio(quad)
+    if side_ratio > MAX_OPPOSITE_SIDE_RATIO:
+        logger.info(
+            "deskew: opposing sides differ by %.2fx (max %.2fx) — quad is not a "
+            "photographed rectangle, declining",
+            side_ratio,
+            MAX_OPPOSITE_SIDE_RATIO,
+        )
+        return False
+
+    supports = _edge_support_fractions(gray, quad)
+    unsupported = sum(1 for fraction in supports if fraction < MIN_EDGE_SUPPORT_FRACTION)
+    if unsupported > MAX_UNSUPPORTED_EDGES:
+        logger.info(
+            "deskew: %d of 4 quad edges lack gradient support (max %d allowed); "
+            "per-edge %s — quad is inside the card, declining",
+            unsupported,
+            MAX_UNSUPPORTED_EDGES,
+            [round(fraction, 2) for fraction in supports],
+        )
+        return False
+    return True
+
+
 def _detection_masks(gray: np.ndarray) -> list[np.ndarray]:
     """Build the binary masks a card outline might show up in.
 
@@ -445,19 +652,29 @@ def _find_card_quad(bgr: np.ndarray) -> np.ndarray | None:
                 if aspect_error > DETECT_ASPECT_TOLERANCE:
                     continue
 
-                candidates.append((aspect_error, area_fraction, quad / scale))
+                # Kept in DETECTION space: the integrity gate below samples
+                # `gray`, so the winner has to still be in its coordinates.
+                # The scale is divided back out once, on the way out.
+                candidates.append((aspect_error, area_fraction, quad))
 
     best = _select_best_candidate(candidates)
     if best is None:
         return None
 
     best_aspect_error, best_area_fraction, best_quad = best
+
+    # Card-shaped is not the same as being the card. Vetted here rather than
+    # in `_finalize_quad` because this is the last point at which the
+    # detection-space image is still in hand.
+    if not _quad_is_trustworthy(gray, best_quad):
+        return None
+
     logger.info(
         "deskew: quad aspect_err=%.3f area_frac=%.3f",
         best_aspect_error,
         best_area_fraction,
     )
-    return best_quad
+    return best_quad / scale
 
 
 def _finalize_quad(

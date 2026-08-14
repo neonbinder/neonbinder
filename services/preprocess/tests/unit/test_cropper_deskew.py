@@ -28,12 +28,18 @@ from app.cropper.deskew import (
     ASPECT_SIGNIFICANCE_BAND,
     DETECT_ASPECT_TOLERANCE,
     FRAME_AREA_FRACTION,
+    MAX_OPPOSITE_SIDE_RATIO,
     MAX_OUTPUT_ASPECT_ERROR,
+    MAX_UNSUPPORTED_EDGES,
+    MIN_EDGE_SUPPORT_FRACTION,
     _card_aspect_error,
     _clamp_quad,
+    _edge_support_fractions,
     _expand_quad,
     _finalize_quad,
+    _opposite_side_ratio,
     _order_corners,
+    _quad_is_trustworthy,
     _quad_side_lengths,
     _select_best_candidate,
     deskew_crop,
@@ -280,6 +286,144 @@ class TestRankingBeatsTheBorderTrap:
         cascade ships the whole photo instead of a crop.
         """
         assert 0.010 < ASPECT_SIGNIFICANCE_BAND < 0.0196
+
+
+class TestQuadIntegrityGate:
+    """The check that aspect error structurally cannot make.
+
+    A quad landing INSIDE the card is still card-shaped, so it warps to a
+    clean 0.714 and `MAX_OUTPUT_ASPECT_ERROR` never fires. Human review of
+    the 2026-08-14 sample set caught two such crops shipping clipped at
+    2.2% and 3.0%. These tests pin the two signals that do catch them.
+    """
+
+    CANVAS = (600, 800)
+    # left, top, width, height — 200/280 is exactly card aspect, and the
+    # card is centred so every edge has real background outside it. An
+    # edge flush against the frame would report no support simply because
+    # its samples fall off the image.
+    CARD = (200, 260, 200, 280)
+
+    def _gray(self, *, break_edges: int = 0) -> np.ndarray:
+        """A bright card on a dark field, with `break_edges` edges erased.
+
+        An edge is 'erased' by filling the background just outside it with
+        the card's own value, so no gradient survives there — which is what
+        a clear slab bevel against black foam looks like to Sobel.
+        """
+        import cv2
+
+        left, top, width, height = self.CARD
+        gray = np.full((self.CANVAS[1], self.CANVAS[0]), 20, dtype=np.uint8)
+        cv2.rectangle(gray, (left, top), (left + width, top + height), 230, -1)
+        # Interior texture so the card isn't a flat plane. Kept as a blob
+        # well clear of the inset quads below — a texture edge running
+        # along one of them would lend it exactly the support these tests
+        # are checking it does not have.
+        cv2.circle(gray, (left + width // 2, top + height // 2), 30, 120, -1)
+
+        pad = 12
+        if break_edges >= 1:  # top
+            gray[top - pad : top, left : left + width] = 230
+        if break_edges >= 2:  # bottom
+            gray[top + height : top + height + pad, left : left + width] = 230
+        if break_edges >= 3:  # left
+            gray[top : top + height, left - pad : left] = 230
+        return gray
+
+    def _outline(self) -> np.ndarray:
+        left, top, width, height = self.CARD
+        return np.array(
+            [[left, top], [left + width, top], [left + width, top + height], [left, top + height]],
+            dtype=np.float32,
+        )
+
+    def _inset(self, inset_px: int) -> np.ndarray:
+        left, top, width, height = self.CARD
+        return np.array(
+            [
+                [left + inset_px, top + inset_px],
+                [left + width - inset_px, top + inset_px],
+                [left + width - inset_px, top + height - inset_px],
+                [left + inset_px, top + height - inset_px],
+            ],
+            dtype=np.float32,
+        )
+
+    # ── opposite-side ratio ────────────────────────────────────────────
+    def test_ratio_of_a_rectangle_is_one(self):
+        assert _opposite_side_ratio(self._outline()) == pytest.approx(1.0, abs=1e-4)
+
+    def test_ratio_grows_with_trapezoid_skew(self):
+        """2026-08-12-0016's mis-detect measured 1.34 on a flatbed scan."""
+        quad = np.array([[0, 0], [400, 0], [300, 560], [100, 560]], dtype=np.float32)
+        assert _opposite_side_ratio(quad) == pytest.approx(2.0, abs=0.01)
+
+    def test_ratio_of_a_degenerate_quad_is_infinite(self):
+        quad = np.array([[0, 0], [0, 0], [300, 400], [0, 400]], dtype=np.float32)
+        assert _opposite_side_ratio(quad) == float("inf")
+
+    # ── edge support ───────────────────────────────────────────────────
+    def test_the_real_outline_is_supported_on_every_edge(self):
+        supports = _edge_support_fractions(self._gray(), self._outline())
+        assert len(supports) == 4
+        assert min(supports) >= MIN_EDGE_SUPPORT_FRACTION
+
+    def test_a_quad_inside_the_card_loses_support(self):
+        """The clipping failure mode: no card boundary under these edges."""
+        supports = _edge_support_fractions(self._gray(), self._inset(40))
+        assert sum(1 for s in supports if s < MIN_EDGE_SUPPORT_FRACTION) > MAX_UNSUPPORTED_EDGES
+
+    def test_a_zero_length_edge_reports_no_support(self):
+        quad = np.array([[100, 100], [100, 100], [400, 500], [100, 500]], dtype=np.float32)
+        assert _edge_support_fractions(self._gray(), quad)[0] == 0.0
+
+    # ── the gate itself ────────────────────────────────────────────────
+    def test_trusts_the_cards_real_outline(self):
+        assert _quad_is_trustworthy(self._gray(), self._outline()) is True
+
+    def test_tolerates_a_single_unsupported_edge(self):
+        """One low-contrast side is normal and must not be fatal.
+
+        A card whose edge abuts a similarly-toned background genuinely has
+        no gradient there. Only the SECOND weak edge is evidence that the
+        quad is not tracing a boundary at all.
+        """
+        assert _quad_is_trustworthy(self._gray(break_edges=1), self._outline()) is True
+
+    def test_declines_once_two_edges_are_unsupported(self):
+        assert _quad_is_trustworthy(self._gray(break_edges=2), self._outline()) is False
+
+    def test_declines_a_quad_inside_the_card(self):
+        assert _quad_is_trustworthy(self._gray(), self._inset(40)) is False
+
+    def test_declines_an_implausibly_skewed_quad_even_with_strong_edges(self):
+        """0016's quad partly follows the real outline, so support clears it.
+
+        The side-ratio check is the only thing that catches this one.
+        """
+        import cv2
+
+        gray = self._gray()
+        skewed = np.array([[150, 150], [450, 150], [400, 600], [200, 600]], dtype=np.float32)
+        cv2.polylines(gray, [skewed.astype(np.int32)], True, 230, 3)
+        assert _opposite_side_ratio(skewed) > MAX_OPPOSITE_SIDE_RATIO
+        assert _quad_is_trustworthy(gray, skewed) is False
+
+    # ── threshold guard rails ──────────────────────────────────────────
+    def test_thresholds_stay_inside_their_measured_separation(self):
+        """Both constants sit in an empty band; a nudge should fail loudly.
+
+        Measured on the ORIGINAL 227-image corpus: every retained deskew
+        win scores 85.9-100% on all four edges with an opposing-side ratio
+        <=1.02, while the rejects carry edges at 0-52% and ratios of
+        1.35-1.55. Dropping the support bar to 0.55 to rescue the one
+        marginal slab would leave 1.2pp against a confirmed clipper.
+        """
+        assert 0.55 < MIN_EDGE_SUPPORT_FRACTION < 0.86
+        assert 1.02 < MAX_OPPOSITE_SIDE_RATIO < 1.35
+        # Discrete, not tuned: the slab needs 1, the clippers had 2 and 3.
+        assert MAX_UNSUPPORTED_EDGES == 1
 
 
 class TestSelectBestCandidate:
