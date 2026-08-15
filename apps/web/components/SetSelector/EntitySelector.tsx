@@ -124,30 +124,40 @@ function EntitySelector({
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold">{title}</h2>
         </div>
-        {/* Height-matched to the loaded rows (p-3 + border ≈ 50px, space-y-2)
-            so the column doesn't resize when data lands and shove its siblings
-            out from under Maestro's coordinate taps.
+        {/* EXACTLY ONE placeholder row. Keep it that way.
+            The first version of this reserved FIVE rows (~282px) to "match"
+            the loaded column so nothing reflowed when data landed. That
+            reasoning was wrong and it broke the seed flow deterministically.
 
-            DELIBERATELY NOT ANIMATED. `animate-pulse` here would run an
-            infinite CSS animation on an admin screen that a coordinate-tap
-            driver works on, for as long as any column is loading. This repo
-            has already spent NEO-85 chasing movement that shifted elements out
-            from under Maestro's taps, and a permanently-animating region is a
-            standing invitation to that class of problem — for decoration we do
-            not need. The grey bars plus the aria-label below carry the
-            "loading" meaning on their own, and a static skeleton is also the
-            better default for prefers-reduced-motion. */}
+            The columns sit ABOVE the card checklist, so every pixel added here
+            pushes the checklist down — and the headless viewport is only 625px
+            tall. Measured on the failing run: "Fetch from Marketplaces" landed
+            at y=620..652, i.e. 5px of a 32px control on screen (15.6% visible
+            against a required 50%). scrollUntilVisible gave up, the tap ran on
+            a clipped element, and CdpWebDriver.scrollToPoint failed with
+            "null cannot be cast to non-null type kotlin.Int" — a CDP error
+            that reads like a driver bug and is really a layout bug.
+
+            This is the same trap as NEO-47 (raised empty-state height pushed
+            "Add custom" to y≈605) and NEO-155 (five header lines pushed the
+            cascade below the fold). Height above a fold-sensitive control is
+            never free here.
+
+            Reflow-on-load was hypothetical; fold-clipping is measured. One row
+            keeps the column from collapsing to nothing without spending the
+            budget the checklist needs.
+
+            Also deliberately NOT animated: `animate-pulse` would run an
+            infinite CSS animation on a screen a coordinate-tap driver works
+            on, which is the movement NEO-85 was spent eliminating. The bar
+            plus the aria-label carry the meaning, and static is the better
+            prefers-reduced-motion default. */}
         <div
           className="space-y-2"
           role="status"
           aria-label={`Loading ${title.toLowerCase()}`}
         >
-          {[0, 1, 2, 3, 4].map((i) => (
-            <div
-              key={i}
-              className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700"
-            />
-          ))}
+          <div className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700" />
         </div>
       </div>
     );

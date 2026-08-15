@@ -102,12 +102,19 @@ describe("EntitySelector — heading survives an in-flight read (NEO-167)", () =
     // Announced to assistive tech, since the visible text no longer says so.
     const skeleton = getByRole("status", { name: /loading variant types/i });
     expect(skeleton).toBeTruthy();
-    expect(skeleton.children.length).toBeGreaterThan(0);
 
-    // The skeleton must not animate. An infinite CSS animation on this admin
-    // screen is a standing risk to Maestro's coordinate taps (cf. NEO-85), and
-    // it buys nothing the aria-label does not already convey. Pinned so a
-    // future "add a nice shimmer" reintroduces it deliberately, not casually.
+    // EXACTLY ONE placeholder row, and this count is load-bearing rather than
+    // cosmetic. The first version reserved five (~282px) to "match" the loaded
+    // column; because the columns sit above the card checklist in a 625px
+    // headless viewport, that pushed "Fetch from Marketplaces" to y=620 — 15.6%
+    // visible against a required 50% — and broke the seed flow deterministically
+    // with a CDP error that looked like a driver bug. Same trap as NEO-47 and
+    // NEO-155. Growing this back is a silent E2E break, so it is pinned.
+    expect(skeleton.children.length).toBe(1);
+
+    // Must not animate: an infinite CSS animation on a screen a coordinate-tap
+    // driver works on is the movement NEO-85 was spent eliminating, and it buys
+    // nothing the aria-label does not already convey.
     expect(container.querySelectorAll(".animate-pulse").length).toBe(0);
   });
 
