@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { useConvex } from "convex/react";
 import posthog from "posthog-js";
 import NeonButton from "../modules/NeonButton";
+import { useConvexReconnect } from "../modules/convexReconnect";
 import EntityColumn, { type EntityColumnProps } from "./EntityColumn";
 
 /**
@@ -68,16 +70,78 @@ export const MAX_RESUBSCRIBE_ATTEMPTS = 2;
 
 type BackstopAction = "resubscribe" | "gaveup" | "retry";
 
+/**
+ * NEO-84 — snapshot of the websocket's health at the moment we give up.
+ *
+ * This is the evidence that decides whether a stall is ours or Convex's:
+ * `ws=down` means the socket died and the client never noticed (our problem
+ * to escalate); `ws=up` with a flat `conns` and an `oldest` matching the stall
+ * duration means the socket is live and the backend simply never delivered
+ * (an upstream problem, with a signature worth reporting).
+ *
+ * Read imperatively rather than through `useConvexConnectionState()` on
+ * purpose. That hook subscribes every column to every connection-state
+ * change, re-rendering the whole SetSelector on each one — exactly the
+ * gratuitous churn NEO-85 removed, and it reflows the columns out from under
+ * Maestro's coordinate taps. A one-shot read at give-up time costs nothing.
+ */
+type ConnectionSnapshot = {
+  connected: boolean;
+  connectionCount: number;
+  connectionRetries: number;
+  inflight: number;
+  oldestInflightSecs: number | null;
+  /** Compact one-liner, rendered on screen and sent to PostHog. */
+  text: string;
+};
+
+function readConnection(
+  convex: ReturnType<typeof useConvex> | null,
+): ConnectionSnapshot | null {
+  try {
+    const s = convex?.connectionState();
+    if (!s) return null;
+    const oldestInflightSecs = s.timeOfOldestInflightRequest
+      ? Math.round(
+          (Date.now() - s.timeOfOldestInflightRequest.getTime()) / 1000,
+        )
+      : null;
+    const inflight = s.inflightMutations + s.inflightActions;
+    return {
+      connected: s.isWebSocketConnected,
+      connectionCount: s.connectionCount,
+      connectionRetries: s.connectionRetries,
+      inflight,
+      oldestInflightSecs,
+      text:
+        `ws=${s.isWebSocketConnected ? "up" : "down"}` +
+        ` · conns=${s.connectionCount}` +
+        ` · retries=${s.connectionRetries}` +
+        ` · inflight=${inflight}` +
+        ` · oldest=${oldestInflightSecs === null ? "none" : `${oldestInflightSecs}s`}`,
+    };
+  } catch {
+    // Diagnostics must never break the recovery path.
+    return null;
+  }
+}
+
 function emitBackstop(
   action: BackstopAction,
   level: string | undefined,
   attempt: number,
+  connection?: ConnectionSnapshot | null,
 ): void {
   try {
     posthog.capture("selector_options_stall_backstop", {
       action,
       level,
       attempt,
+      ws_connected: connection?.connected,
+      ws_connection_count: connection?.connectionCount,
+      ws_connection_retries: connection?.connectionRetries,
+      ws_inflight: connection?.inflight,
+      ws_oldest_inflight_secs: connection?.oldestInflightSecs,
     });
   } catch {
     // Diagnostics must never break the recovery path.
@@ -97,6 +161,10 @@ export default function ResilientEntityColumn(
   const [attempt, setAttempt] = useState(0);
   const [loading, setLoading] = useState(false);
   const [gaveUp, setGaveUp] = useState(false);
+  const [connection, setConnection] = useState<ConnectionSnapshot | null>(null);
+
+  const convex = useConvex();
+  const reconnectConvex = useConvexReconnect();
 
   // Only arm while the column is actually on screen and stuck on the read gate.
   const watching = isVisible && loading && !gaveUp;
@@ -108,29 +176,58 @@ export default function ResilientEntityColumn(
         emitBackstop("resubscribe", level, attempt + 1);
         setAttempt(attempt + 1); // remount → fresh Convex subscription
       } else {
-        emitBackstop("gaveup", level, attempt);
+        // Every cheap recovery has now failed: the initial subscription and
+        // MAX_RESUBSCRIBE_ATTEMPTS fresh query ids all stalled. That rules out
+        // a per-subscription race and points at the socket itself (NEO-84), so
+        // escalate one level — ask for a whole new Convex client, and with it a
+        // new websocket. Convex will not do this on its own: its reconnect path
+        // is gated on `socket.state === "disconnected"`, which a half-open
+        // socket never reaches.
+        //
+        // The banner still renders at the same moment it always did, so the
+        // give-up timing is unchanged (~18s). If the new socket delivers, the
+        // existing self-heal below clears the banner with no user action; if it
+        // doesn't, Retry is still the escape hatch. Snapshot the connection
+        // BEFORE reconnecting — afterwards it describes the new socket, not the
+        // wedged one we are trying to explain.
+        const snapshot = readConnection(convex);
+        emitBackstop("gaveup", level, attempt, snapshot);
+        setConnection(snapshot);
         setGaveUp(true);
+        reconnectConvex();
       }
     }, SELECTOR_OPTIONS_STALL_BACKSTOP_MS);
     // Re-armed per attempt: after a remount `attempt` changes, EntityColumn
     // re-reports `loading`, and this effect starts a fresh timer for the new
     // subscription. Recovery flips `loading`/`watching` false → cleanup clears.
     return () => clearTimeout(timer);
-  }, [watching, attempt, level]);
+  }, [watching, attempt, level, convex, reconnectConvex]);
 
   // Self-heal: the give-up state is presentational only, so a value that lands
   // late (see the mounted-not-replaced note below) clears it with no user
   // action. `loading` flips false the moment EntityColumn's read resolves.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- self-heal: the give-up state is presentational and clears when a late value lands
-    if (gaveUp && !loading) setGaveUp(false);
+    if (gaveUp && !loading) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- self-heal: the give-up state is presentational and clears when a late value lands
+      setGaveUp(false);
+      // The snapshot described the socket that was wedged; once a value lands
+      // it is stale, and leaving it on screen would misdescribe a working
+      // connection.
+      setConnection(null);
+    }
   }, [gaveUp, loading]);
 
   const handleRetry = () => {
-    emitBackstop("retry", level, attempt + 1);
+    emitBackstop("retry", level, attempt + 1, connection);
     setGaveUp(false);
+    setConnection(null);
     setLoading(false); // re-reported by the fresh EntityColumn mount
     setAttempt((a) => a + 1); // new key → fresh subscription
+    // A manual Retry lands only after the automatic escalation already failed,
+    // so remounting alone is unlikely to be enough — ask for a new socket too.
+    // The provider's cooldown and cap decide whether this actually does
+    // anything, which is why it is safe to call unconditionally here.
+    reconnectConvex();
   };
 
   // "Sync Sports" → "Sports", "Sync Variant Types" → "Variant Types", etc.
@@ -186,6 +283,26 @@ export default function ResilientEntityColumn(
             Couldn&apos;t load {label.toLowerCase()}. The connection may have
             stalled.
           </div>
+          {/*
+            NEO-84 — the socket snapshot is rendered, not just captured,
+            because PostHog is switched off under E2E (PostHogProvider.tsx
+            returns early on VITE_CLERK_TESTING_ENABLED, per NEO-13) and
+            Maestro records no console output or failure hierarchy. On screen
+            is the only channel that survives into a CI failure screenshot —
+            the same conclusion NEO-85's tap forensics reached.
+
+            It is deliberately shown to real users too: this banner only
+            appears on an already-broken admin screen, and "send me the
+            screenshot" is then a complete bug report.
+          */}
+          {connection ? (
+            <p
+              className="mb-3 font-mono text-[11px] leading-tight text-red-700 dark:text-red-300 break-words"
+              data-testid="stall-connection-state"
+            >
+              {connection.text}
+            </p>
+          ) : null}
           <NeonButton
             onClick={handleRetry}
             aria-label={`Retry loading ${label}`}
