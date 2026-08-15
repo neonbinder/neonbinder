@@ -161,9 +161,21 @@ class TestPrecroppedStage:
         assert result.returned_bytes_differ is False
         assert result.classification.players == ["Ichiro"]
 
-    def test_missing_precropped_uses_image_candidate(
+    def test_missing_precropped_does_not_short_circuit_the_cascade(
         self, stub_orient, stub_classify, disable_server_strategies
     ):
+        """A raw upload is never treated as an implicit crop candidate.
+
+        It used to be, and nothing could reject it: measured against itself
+        the area fraction is exactly 1.0, and the text gate's threshold is
+        0.8x a baseline counted on those same bytes. 184 of the 227 corpus
+        images won at stage 1 that way and came back uncropped — every 3:4
+        phone photo among them.
+
+        With every strategy stubbed out there is nothing left to win, so
+        reaching `passthrough` is what proves the cascade actually ran
+        instead of stopping at stage 1.
+        """
         stub_orient()
         stub_classify(_classify())
         disable_server_strategies()
@@ -172,9 +184,30 @@ class TestPrecroppedStage:
 
         result = crop(image_bytes=image, precropped_bytes=None)
 
-        assert result.source == "precropped"
+        assert result.source == "passthrough"
         assert result.image_bytes == image
         assert result.returned_bytes_differ is False
+
+    def test_a_server_strategy_can_win_on_an_image_only_upload(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """The point of the change: image-only requests reach the croppers.
+
+        A 3:4 phone frame is only 5.4% off card aspect, so it cleared the old
+        stage-1 gate and the cropper's output was never even computed.
+        """
+        cropped = _card_jpeg(size=(500, 700))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(trim_dark=cropped)
+
+        phone_frame = _card_jpeg(size=(768, 1020))  # 0.753 — inside ASPECT_TOLERANCE
+
+        result = crop(image_bytes=phone_frame, precropped_bytes=None)
+
+        assert result.source == "pil_trim_dark"
+        assert result.image_bytes == cropped
+        assert result.returned_bytes_differ is True
 
     def test_precropped_fails_validator_falls_through(
         self, stub_orient, stub_classify, disable_server_strategies
