@@ -35,15 +35,15 @@
  * Usage: node scripts/verify-test-completeness.mjs [resultsFile]
  */
 
-import { globSync } from "node:fs";
-import { readFileSync } from "node:fs";
+import { globSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { ALL_TEST_INCLUDE, EXCLUDED_DIRS } from "../vitest.include.mjs";
+import { EXCLUDED_DIRS, TEST_FILE_GLOB } from "../vitest.include.mjs";
 import {
   extractRanFiles,
   findMissing,
+  findRunLevelProblems,
   isExcluded,
 } from "./test-completeness.mjs";
 
@@ -58,10 +58,15 @@ function fail(message, detail = []) {
   for (const line of detail) console.error(`    ${line}`);
   console.error(
     "\nThis is NEO-164: the suite can drop files and still print “passed”.\n" +
-      "If these files were dropped by a crashed worker, re-run — but do not\n" +
-      "dismiss it as flake without checking, and never merge on a run that\n" +
-      "printed this. If a file is listed every time, its directory is probably\n" +
-      "not covered by the globs in vitest.include.mjs.\n",
+      "\n" +
+      "  • Listed once, varying between runs → a vitest worker fork died and\n" +
+      "    took the file with it. Re-run. Do NOT write it off as flake without\n" +
+      "    looking, and never merge on a run that printed this.\n" +
+      "  • Listed EVERY run → the file is not collected at all. Its extension\n" +
+      "    and directory are not paired by any glob in vitest.include.mjs\n" +
+      "    (.test.ts under convex/ and lib/, .test.tsx under components/, src/\n" +
+      "    and app/, .test.mjs under scripts/). Add the pairing there. This is\n" +
+      "    the silent-forever case from NEO-128 and NEO-141.\n",
   );
   process.exit(1);
 }
@@ -95,20 +100,52 @@ const ranFiles = new Set(
   extractRanFiles(report).map((f) => path.resolve(WEB_ROOT, f)),
 );
 
+/**
+ * Every test-shaped file under apps/web, found INDEPENDENTLY of the globs
+ * vitest collects from — see TEST_FILE_GLOB for why that independence is the
+ * whole point.
+ *
+ * Top-level directories are enumerated and filtered before globbing rather
+ * than globbing `**` from the root, so `node_modules` (~800 packages) is never
+ * walked at all instead of being walked and then discarded.
+ */
+function discoverTestFiles(root) {
+  const roots = readdirSync(root, { withFileTypes: true })
+    .filter(
+      (e) =>
+        e.isDirectory() &&
+        !e.name.startsWith(".") &&
+        !EXCLUDED_DIRS.includes(e.name),
+    )
+    .map((e) => e.name);
+
+  const patterns = [
+    TEST_FILE_GLOB, // a test file sitting at the apps/web root
+    ...roots.map((dir) => `${dir}/**/${TEST_FILE_GLOB}`),
+  ];
+
+  return patterns
+    .flatMap((pattern) => globSync(pattern, { cwd: root }))
+    .filter((f) => !isExcluded(f, EXCLUDED_DIRS));
+}
+
 const expectedFiles = new Set(
-  ALL_TEST_INCLUDE.flatMap((pattern) => globSync(pattern, { cwd: WEB_ROOT }))
-    .filter((f) => !isExcluded(f, EXCLUDED_DIRS))
-    .map((f) => path.resolve(WEB_ROOT, f)),
+  discoverTestFiles(WEB_ROOT).map((f) => path.resolve(WEB_ROOT, f)),
 );
 
 if (expectedFiles.size === 0) {
-  // Globs matching nothing means the patterns or the cwd are wrong. Passing a
-  // vacuous check is precisely the silence this script exists to prevent.
+  // Discovery matching nothing means the pattern or the cwd is wrong. Passing
+  // a vacuous check is precisely the silence this script exists to prevent.
   fail(
-    "The include globs matched ZERO test files. The patterns in " +
-      "vitest.include.mjs, or this script's working directory, are wrong.",
-    ALL_TEST_INCLUDE,
+    "Discovery found ZERO test files. TEST_FILE_GLOB in vitest.include.mjs, " +
+      "or this script's working directory, is wrong.",
+    [TEST_FILE_GLOB, `cwd: ${WEB_ROOT}`],
   );
+}
+
+const runProblems = findRunLevelProblems(report);
+if (runProblems.length > 0) {
+  fail("The run itself reported a problem:", runProblems);
 }
 
 const missing = findMissing(expectedFiles, ranFiles)
@@ -117,8 +154,8 @@ const missing = findMissing(expectedFiles, ranFiles)
 
 if (missing.length > 0) {
   fail(
-    `${missing.length} test file(s) matched the include globs but reported no ` +
-      `result. ${ranFiles.size} of ${expectedFiles.size} ran:`,
+    `${missing.length} test file(s) exist but reported no result. ` +
+      `${ranFiles.size} of ${expectedFiles.size} ran:`,
     missing,
   );
 }

@@ -57,3 +57,29 @@ export const ALL_TEST_INCLUDE = [...CONVEX_LIB_INCLUDE, ...COMPONENTS_INCLUDE];
  * must not depend on which one it gets.
  */
 export const EXCLUDED_DIRS = ["node_modules", "dist", "build"];
+
+/**
+ * DISCOVERY glob — deliberately broader than the COLLECTION globs above, and
+ * it must stay that way.
+ *
+ * The verifier's job is to notice a test file that did not run. If it derived
+ * "should have run" from the same patterns vitest collects from, the check
+ * would be tautological for the most common miss: a file vitest does not
+ * collect is also not expected, so it is never reported, and the run prints a
+ * green completeness tick that cannot possibly detect it. That is worse than
+ * having no check, because the tick is what a reviewer trusts instead of
+ * comparing counts by hand.
+ *
+ * The realistic miss is not a whole new directory — it is an extension/root
+ * pairing, because collection pairs them narrowly: `.test.ts` only under
+ * convex/ and lib/, `.test.tsx` only under components/, src/ and app/,
+ * `.test.mjs` only under scripts/. So `lib/print/sheet-layout.test.tsx` (a
+ * happy-dom test for a lib helper) or `components/SetSelector/helpers.test.ts`
+ * (a non-JSX unit test beside its component) are collected by nothing today.
+ *
+ * Discovery therefore matches ANY test-shaped filename under ANY source root,
+ * and the verifier fails on anything it finds that reported no result. Two
+ * independently-derived sets, which is the only way the comparison means
+ * something. Verified to produce zero false positives on the current tree.
+ */
+export const TEST_FILE_GLOB = "*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}";

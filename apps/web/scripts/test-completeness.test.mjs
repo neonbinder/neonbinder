@@ -15,7 +15,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   extractRanFiles,
+  fileDidRun,
   findMissing,
+  findRunLevelProblems,
   isExcluded,
 } from "./test-completeness.mjs";
 
@@ -74,13 +76,88 @@ describe("findMissing", () => {
   });
 });
 
+describe("fileDidRun", () => {
+  const passed = { status: "passed" };
+
+  it("accepts a file whose assertions reached a verdict", () => {
+    expect(fileDidRun({ assertionResults: [passed] })).toBe(true);
+    expect(
+      fileDidRun({ assertionResults: [passed, { status: "failed" }] }),
+    ).toBe(true);
+  });
+
+  it("accepts deliberately skipped tests", () => {
+    // `.skip` is a coverage decision someone made on purpose — not the silent
+    // drop this gate is hunting. Failing on it would make the gate noisy
+    // enough to get switched off.
+    expect(fileDidRun({ assertionResults: [{ status: "skipped" }] })).toBe(true);
+  });
+
+  it("rejects an entry that reported no assertions at all", () => {
+    // The dangerous shape: vitest emits one entry per file task it registered,
+    // marked `passed` unless something explicitly failed. A module collected
+    // but never executed — its worker died first — looks exactly like this.
+    expect(fileDidRun({ assertionResults: [] })).toBe(false);
+    expect(fileDidRun({})).toBe(false);
+    expect(fileDidRun(null)).toBe(false);
+    expect(fileDidRun({ assertionResults: "nope" })).toBe(false);
+  });
+
+  it("rejects a file with any test left pending", () => {
+    expect(
+      fileDidRun({ assertionResults: [passed, { status: "pending" }] }),
+    ).toBe(false);
+  });
+});
+
+describe("findRunLevelProblems", () => {
+  const clean = { success: true, numPendingTests: 0 };
+
+  it("passes a sound run", () => {
+    expect(findRunLevelProblems(clean)).toEqual([]);
+  });
+
+  it("flags success:false and pending tests", () => {
+    expect(findRunLevelProblems({ ...clean, success: false })).toHaveLength(1);
+    expect(findRunLevelProblems({ ...clean, numPendingTests: 3 })).toHaveLength(
+      1,
+    );
+  });
+
+  it("flags a report missing success entirely", () => {
+    // Absent is not the same as true. A truncated or foreign report must not
+    // coast through on a missing field.
+    expect(findRunLevelProblems({})).not.toEqual([]);
+    expect(findRunLevelProblems(null)).not.toEqual([]);
+  });
+});
+
 describe("extractRanFiles", () => {
+  const ran = { assertionResults: [{ status: "passed" }] };
+
   it("pulls file names out of vitest's JSON report", () => {
     expect(
       extractRanFiles({
-        testResults: [{ name: "/w/a.test.ts" }, { name: "/w/b.test.ts" }],
+        testResults: [
+          { name: "/w/a.test.ts", ...ran },
+          { name: "/w/b.test.ts", ...ran },
+        ],
       }),
     ).toEqual(["/w/a.test.ts", "/w/b.test.ts"]);
+  });
+
+  it("omits a file that appears in the report but never executed", () => {
+    // Regression guard for the exact hole a review found: keying on the
+    // filename alone let an entry with empty assertionResults count as "ran",
+    // so a worker that died after collection produced a green tick.
+    expect(
+      extractRanFiles({
+        testResults: [
+          { name: "/w/a.test.ts", ...ran },
+          { name: "/w/dropped.test.ts", assertionResults: [] },
+        ],
+      }),
+    ).toEqual(["/w/a.test.ts"]);
   });
 
   it("treats a malformed or empty report as nothing having run", () => {

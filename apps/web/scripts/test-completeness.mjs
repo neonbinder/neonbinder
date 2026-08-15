@@ -39,13 +39,59 @@ export function findMissing(expectedFiles, ranFiles) {
 }
 
 /**
- * Extract the test-file paths vitest reported, from its JSON reporter output.
+ * Did this file's entry in the report actually execute its tests?
+ *
+ * Presence of the entry is NOT enough. Vitest's JSON reporter emits one entry
+ * per file task registered in run state, and marks it `passed` unless a test
+ * explicitly failed — so a module that was collected but whose worker died
+ * before running it still appears, with an empty `assertionResults` or with
+ * assertions left `pending`. Counting that as "ran" reinstates exactly the
+ * silent-skip bug this gate exists to catch.
+ *
+ * `skipped` is fine: that is a deliberate `.skip`, which is a coverage
+ * decision someone made on purpose. `pending` is not: that is a test that
+ * never reached a verdict.
+ */
+export function fileDidRun(result) {
+  const assertions = result?.assertionResults;
+  if (!Array.isArray(assertions) || assertions.length === 0) return false;
+  return !assertions.some((a) => a?.status === "pending");
+}
+
+/**
+ * Extract the paths of test files that genuinely executed.
  *
  * Tolerates a missing/!Array `testResults` by returning an empty list, which
- * the caller turns into "everything is missing" — the safe direction. An entry
- * with no `name` is dropped rather than counted, for the same reason.
+ * the caller turns into "everything is missing" — the safe direction. Entries
+ * without a usable name, or that did not really run, are dropped for the same
+ * reason: every ambiguous case must push toward failing loudly.
  */
 export function extractRanFiles(report) {
   const results = Array.isArray(report?.testResults) ? report.testResults : [];
-  return results.map((r) => r?.name).filter((n) => typeof n === "string" && n);
+  return results
+    .filter((r) => fileDidRun(r))
+    .map((r) => r?.name)
+    .filter((n) => typeof n === "string" && n);
+}
+
+/**
+ * Whole-run red flags that are independent of any single file.
+ *
+ * Returns a list of human-readable problems, empty when the run looks sound.
+ * These are cheap belt-and-braces: the `&&` in `test:unit` already means a
+ * non-zero vitest exit skips this script entirely, so reaching here with
+ * `success: false` or pending tests would itself be surprising — which is
+ * precisely why it is worth saying out loud rather than assuming.
+ */
+export function findRunLevelProblems(report) {
+  const problems = [];
+  if (report?.success !== true) {
+    problems.push(`vitest reported success=${JSON.stringify(report?.success)}`);
+  }
+  if (typeof report?.numPendingTests === "number" && report.numPendingTests > 0) {
+    problems.push(
+      `${report.numPendingTests} test(s) never reached a verdict (pending)`,
+    );
+  }
+  return problems;
 }
