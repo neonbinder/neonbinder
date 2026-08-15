@@ -100,10 +100,15 @@ describe("EntitySelector — heading survives an in-flight read (NEO-167)", () =
 
     expect(container.querySelector('[aria-busy="true"]')).toBeTruthy();
     // Announced to assistive tech, since the visible text no longer says so.
-    expect(getByRole("status", { name: /loading variant types/i })).toBeTruthy();
-    expect(container.querySelectorAll(".animate-pulse").length).toBeGreaterThan(
-      0,
-    );
+    const skeleton = getByRole("status", { name: /loading variant types/i });
+    expect(skeleton).toBeTruthy();
+    expect(skeleton.children.length).toBeGreaterThan(0);
+
+    // The skeleton must not animate. An infinite CSS animation on this admin
+    // screen is a standing risk to Maestro's coordinate taps (cf. NEO-85), and
+    // it buys nothing the aria-label does not already convey. Pinned so a
+    // future "add a nice shimmer" reintroduces it deliberately, not casually.
+    expect(container.querySelectorAll(".animate-pulse").length).toBe(0);
   });
 
   it("keeps the same heading once the data lands", () => {

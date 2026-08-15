@@ -126,7 +126,17 @@ function EntitySelector({
         </div>
         {/* Height-matched to the loaded rows (p-3 + border ≈ 50px, space-y-2)
             so the column doesn't resize when data lands and shove its siblings
-            out from under Maestro's coordinate taps. */}
+            out from under Maestro's coordinate taps.
+
+            DELIBERATELY NOT ANIMATED. `animate-pulse` here would run an
+            infinite CSS animation on an admin screen that a coordinate-tap
+            driver works on, for as long as any column is loading. This repo
+            has already spent NEO-85 chasing movement that shifted elements out
+            from under Maestro's taps, and a permanently-animating region is a
+            standing invitation to that class of problem — for decoration we do
+            not need. The grey bars plus the aria-label below carry the
+            "loading" meaning on their own, and a static skeleton is also the
+            better default for prefers-reduced-motion. */}
         <div
           className="space-y-2"
           role="status"
@@ -135,7 +145,7 @@ function EntitySelector({
           {[0, 1, 2, 3, 4].map((i) => (
             <div
               key={i}
-              className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 animate-pulse"
+              className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700"
             />
           ))}
         </div>
