@@ -92,7 +92,56 @@ function EntitySelector({
     });
   }, [items, getDisplayName]);
 
-  if (!items) return <div>Loading {title.toLowerCase()}...</div>;
+  // NEO-167 — keep the heading on screen while the read is in flight.
+  //
+  // This used to be `return <div>Loading {title}...</div>`, which removed the
+  // column's identity text from the DOM for as long as `getSelectorOptions`
+  // took. Maestro matches a selector as a FULL-STRING regex, so
+  // `visible: "Variant Types"` cannot match "Loading variant types…" — every
+  // flow asserting on a column heading failed outright on a slow read while
+  // the app was behaving correctly (CI run 31839119469). Dropping the card
+  // also collapsed the column's height and reflowed its siblings, the same
+  // movement NEO-85 worked to remove.
+  //
+  // SCOPE IS LOAD-BEARING. The heading is absent in TWO situations and only
+  // the second is the defect:
+  //   1. Column not open — `EntityColumn.tsx:376` returns null on `!isVisible`,
+  //      so this component never renders. Flows rely on that: they use heading
+  //      visibility to detect that a selection opened the NEXT column
+  //      (`when: notVisible: "Manufacturers"` guards against a second tap,
+  //      which would re-toggle and deselect the row). That still works,
+  //      because this branch is only reachable once the column is mounted.
+  //   2. Column open, read in flight — here.
+  // Do not "simplify" this by lifting the heading above the `isVisible` gate;
+  // that would make every guard in (1) permanently false and silently stop the
+  // drill utils from progressing.
+  if (!items) {
+    return (
+      <div
+        className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+        aria-busy="true"
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold">{title}</h2>
+        </div>
+        {/* Height-matched to the loaded rows (p-3 + border ≈ 50px, space-y-2)
+            so the column doesn't resize when data lands and shove its siblings
+            out from under Maestro's coordinate taps. */}
+        <div
+          className="space-y-2"
+          role="status"
+          aria-label={`Loading ${title.toLowerCase()}`}
+        >
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div
+              key={i}
+              className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 animate-pulse"
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   // Apply search filter
   const filteredItems = searchFilter
