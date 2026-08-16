@@ -63,11 +63,18 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from io import BytesIO
+
+from PIL import Image
 
 from app.classify import ClassifyResult, classify_card
 from app.cropper import deskew, haiku_bbox, pil_trim, sam
 from app.cropper._utils import rotate_image_bytes
-from app.cropper.validator import is_plausible_crop
+from app.cropper.validator import (
+    CARD_ASPECT_LANDSCAPE,
+    CARD_ASPECT_PORTRAIT,
+    is_plausible_crop,
+)
 from app.orient import OrientationResult, detect_orientation
 
 logger = logging.getLogger(__name__)
@@ -107,6 +114,47 @@ _STRATEGIES: list[tuple[str, object, str]] = [
 # Public, ordered tuple of strategy names. Both the cascade and the
 # /crop endpoint walk this — single source of truth for ordering.
 STRATEGY_NAMES: tuple[str, ...] = tuple(name for name, _module, _attr in _STRATEGIES)
+
+# The cheap, purely geometric strategies. These are SCORED against each other
+# rather than raced, because no one of them is right on every card — which is
+# the whole premise of having a cascade.
+#
+# First-acceptable-wins made that premise unreachable. `deskew` runs first, so
+# any output of its that merely passed the gates won outright and the trims
+# were never even computed. Measured on 2026-08-12-0012, deskew returned a
+# 4.9%-off crop and pil_trim_dark's 2.0% crop never got a chance; on -0014,
+# 2.5% displaced 0.2%. Neither is a gate failure — both crops are perfectly
+# valid cards — the gates simply have nowhere to say "the next one is better".
+#
+# Scoring costs one extra Vision call per candidate gated, which is why the
+# expensive classify is deferred to the winner alone (`_classify_winner`) and
+# why SAM and Haiku stay out of this tier.
+SCORED_STRATEGY_NAMES: tuple[str, ...] = ("deskew", "pil_trim_dark", "pil_trim_light")
+
+# Aspect error leads the scoring, but only DECISIVELY: candidates within this
+# band of the best score are treated as equally card-shaped, and the OUTERMOST
+# (largest) one wins.
+#
+# Ranking on aspect error alone is not safe, because a crop that eats into the
+# card can be better shaped than the correct one. Measured on 2026-08-11-0003,
+# a tight scan where the right answer is "keep the frame": pil_trim_dark
+# returns 103% of source at 1.5% off card aspect, while pil_trim_light returns
+# 68% at 0.5%. Pure aspect ranking takes the 68% crop and eats a third of the
+# card. Ten of sixty archive scans showed that same inversion.
+#
+# The band resolves it — 1.5pp covers the 1.0pp gap there, so both qualify and
+# the larger wins — while still letting a decisively better shape through: on
+# 2026-08-12-0012 pil_trim_dark's 2.0% beats deskew's 4.9% by well over the
+# band, so it wins outright. Same policy, and same 1.5pp, as deskew's own
+# ASPECT_SIGNIFICANCE_BAND, for the same reason.
+CASCADE_ASPECT_SIGNIFICANCE_BAND = 0.015
+
+# Expensive last resorts: ~2-3s of CPU inference for SAM, an Anthropic call for
+# haiku_bbox. Raced in order and only reached when nothing cheap qualified, so
+# scoring them would mean paying for both to compare them.
+FALLBACK_STRATEGY_NAMES: tuple[str, ...] = tuple(
+    name for name in STRATEGY_NAMES if name not in SCORED_STRATEGY_NAMES
+)
 
 
 class UnknownStrategyError(ValueError):
@@ -232,18 +280,18 @@ class CropRejected:
     reason: str
 
 
-def _try_stage(
+def _passes_gates(
     *,
     source: str,
     candidate_bytes: bytes,
     source_area_bytes: bytes,
     text_threshold: int,
-    returned_bytes_differ: bool,
-) -> CropResult | None:
-    """Apply the uniform two-gate check to a candidate crop.
+) -> OrientationResult | None:
+    """The two gates, without the expensive classify step.
 
-    Returns a winning CropResult if all gates pass, None otherwise.
-    Caller can treat None as "advance to the next strategy."
+    Split out from `_try_stage` so several candidates can be gated and
+    compared before paying for a single Anthropic classify — see
+    `_best_of` and the scoring loop in `crop()`.
     """
     check = is_plausible_crop(candidate_bytes, source_area_bytes=source_area_bytes)
     if not check.ok:
@@ -259,16 +307,90 @@ def _try_stage(
             text_threshold,
         )
         return None
+    return orient
 
+
+def _classify_winner(
+    *,
+    source: str,
+    candidate_bytes: bytes,
+    orient: OrientationResult,
+    returned_bytes_differ: bool,
+) -> CropResult:
+    """Rotate and classify the crop that won. Runs exactly once per request."""
     rotated = rotate_image_bytes(candidate_bytes, orient.rotation_degrees)
     classification = classify_card(rotated)
-
     return CropResult(
         image_bytes=candidate_bytes,
         source=source,
         returned_bytes_differ=returned_bytes_differ,
         orientation=orient,
         classification=classification,
+    )
+
+
+def crop_aspect_error(image_bytes: bytes) -> float:
+    """Relative error of a crop's own aspect against the nearer card aspect.
+
+    The comparison score for `_best_of`. It is the right one because it
+    measures the thing the cascade is trying to produce — a rectangle the
+    shape of a trading card — and it is already what every cropper is
+    tuned against. Unreadable bytes score infinitely badly so they lose.
+    """
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            width, height = img.size
+    except Exception:  # noqa: BLE001
+        return float("inf")
+    if height <= 0:
+        return float("inf")
+    ratio = width / height
+    return min(
+        abs(ratio - CARD_ASPECT_PORTRAIT) / CARD_ASPECT_PORTRAIT,
+        abs(ratio - CARD_ASPECT_LANDSCAPE) / CARD_ASPECT_LANDSCAPE,
+    )
+
+
+def crop_area_fraction(image_bytes: bytes) -> float:
+    """A crop's pixel area as a fraction of its own decoded size.
+
+    Used only to compare candidates against each other, so the absolute
+    value does not matter — a bigger crop of the same source keeps more of
+    the card. Unreadable bytes score 0 so they lose.
+    """
+    try:
+        with Image.open(BytesIO(image_bytes)) as img:
+            return float(img.width * img.height)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _try_stage(
+    *,
+    source: str,
+    candidate_bytes: bytes,
+    source_area_bytes: bytes,
+    text_threshold: int,
+    returned_bytes_differ: bool,
+) -> CropResult | None:
+    """Apply the uniform two-gate check to a candidate crop.
+
+    Returns a winning CropResult if all gates pass, None otherwise.
+    Caller can treat None as "advance to the next strategy."
+    """
+    orient = _passes_gates(
+        source=source,
+        candidate_bytes=candidate_bytes,
+        source_area_bytes=source_area_bytes,
+        text_threshold=text_threshold,
+    )
+    if orient is None:
+        return None
+    return _classify_winner(
+        source=source,
+        candidate_bytes=candidate_bytes,
+        orient=orient,
+        returned_bytes_differ=returned_bytes_differ,
     )
 
 
@@ -393,8 +515,54 @@ def crop(
         if result is not None:
             return result
 
-    # ── Stages 2..N — server-side croppers through the same uniform gate.
-    for source in STRATEGY_NAMES:
+    # ── Stage 2 — the cheap croppers, gated then SCORED against each other.
+    # Every one of them clears the same gates; the best-shaped crop wins
+    # rather than the first one to qualify. See SCORED_STRATEGY_NAMES.
+    scored: list[tuple[float, str, bytes, OrientationResult, float]] = []
+    for source in SCORED_STRATEGY_NAMES:
+        produced = run_strategy(source, image_bytes)
+        if produced is None:
+            continue
+        orient = _passes_gates(
+            source=source,
+            candidate_bytes=produced,
+            source_area_bytes=image_bytes,
+            text_threshold=text_threshold,
+        )
+        if orient is None:
+            continue
+        error = crop_aspect_error(produced)
+        area = crop_area_fraction(produced)
+        logger.info("cascade: %s qualifies, aspect_err=%.3f area_frac=%.3f", source, error, area)
+        scored.append((error, source, produced, orient, area))
+
+    if scored:
+        lowest_error = min(entry[0] for entry in scored)
+        contenders = [
+            entry for entry in scored if entry[0] <= lowest_error + CASCADE_ASPECT_SIGNIFICANCE_BAND
+        ]
+        # Largest wins among contenders; ties keep SCORED_STRATEGY_NAMES order
+        # so a dead heat resolves deterministically rather than by list luck.
+        best_error, best_source, best_bytes, best_orient, _best_area = max(
+            contenders,
+            key=lambda entry: (entry[4], -SCORED_STRATEGY_NAMES.index(entry[1])),
+        )
+        logger.info(
+            "cascade: %s wins (aspect_err=%.3f) from %d qualifying, %d within band",
+            best_source,
+            best_error,
+            len(scored),
+            len(contenders),
+        )
+        return _classify_winner(
+            source=best_source,
+            candidate_bytes=best_bytes,
+            orient=best_orient,
+            returned_bytes_differ=True,
+        )
+
+    # ── Stage 3 — expensive last resorts, raced in order.
+    for source in FALLBACK_STRATEGY_NAMES:
         produced = run_strategy(source, image_bytes)
         if produced is None:
             continue

@@ -235,6 +235,52 @@ MAX_OPPOSITE_SIDE_RATIO = 1.25
 # the slab (0.55) would leave only a 1.2pp margin against a confirmed
 # clipper at 51.6% — fitting noise, not measuring a boundary.
 
+# ── Line-based detection ───────────────────────────────────────────────────
+#
+# A second, independent way to find the card, used because contour tracing
+# fails outright on low-contrast edges — see `_line_quad`.
+
+# HoughLinesP accumulator threshold. 80 at ≤1000px detection width keeps
+# card edges and design rules while dropping texture noise.
+LINE_HOUGH_THRESHOLD = 80
+
+# A segment must span this fraction of the image's SHORTER side to count.
+# 0.25 keeps a card edge that Canny broke into several pieces while
+# discarding text strokes and logo detail.
+LINE_MIN_LENGTH_FRACTION = 0.25
+
+# Collinear fragments closer than this are joined into one segment. A card
+# edge crossing a similar-toned background patch drops out for a few pixels;
+# 20 at 1000px bridges that without merging two different edges.
+LINE_MAX_GAP_PX = 20
+
+# How far off a direction a segment may lie and still be treated as part of
+# that edge family. A card is rigid, so its two edge pairs are genuinely
+# parallel; this only absorbs quantization and lens distortion.
+LINE_ANGLE_TOLERANCE_DEG = 8.0
+
+# Minimum tilt before the line-based quad may override a frame-sized contour
+# winner.
+#
+# The frame check exists because on an already-tight scan the card outline IS
+# the image border and there is nothing to correct. Letting the line quad
+# override it unconditionally undoes that: measured over the corpus, six tight
+# scans dropped from a healthy 103% (keep the frame) to 87-92%, one to 44%,
+# with aspect error getting WORSE — the border-shaving failure mode, back again
+# by another route.
+#
+# Rotation is what tells the two apart, and it is not a proxy — it is the
+# definition. A card that is not tilted has nothing to deskew, whatever its
+# area. Measured line-quad rotation: every regression 0.00-1.00 degrees, both
+# genuine wins 2.00-3.00 (a tilted Prizm back, and a crooked scan from the
+# user's own batch). 1.5 sits between them.
+#
+# The cost is one corpus image (2026-08-12-0013, tilted 1.00 degrees) which
+# goes back to falling through to SAM. Erring toward declining is the right
+# side: declining leaves a good pil_trim crop in place, while a wrong warp
+# shaves the card and nothing downstream can undo it.
+LINE_FALLBACK_MIN_ROTATION_DEG = 1.5
+
 # Sampling geometry for the edge-support test, in detection-space pixels.
 # 64 samples resolves a patchy edge without making the test expensive
 # (~2ms/quad); the perpendicular search absorbs the corner quantization
@@ -430,6 +476,145 @@ def _card_aspect_error(width: float, height: float) -> float:
         abs(ratio - CARD_ASPECT_PORTRAIT) / CARD_ASPECT_PORTRAIT,
         abs(ratio - CARD_ASPECT_LANDSCAPE) / CARD_ASPECT_LANDSCAPE,
     )
+
+
+def _dominant_direction(angles: np.ndarray, lengths: np.ndarray) -> float | None:
+    """Length-weighted modal angle, in degrees on [0, 180)."""
+    if angles.size == 0:
+        return None
+    histogram = np.zeros(180, dtype=np.float64)
+    np.add.at(histogram, angles.astype(np.intp) % 180, lengths)
+    # Smooth by ±1° so a card edge split across two bins still wins.
+    smoothed = histogram + np.roll(histogram, 1) + np.roll(histogram, -1)
+    if smoothed.max() <= 0:
+        return None
+    return float(np.argmax(smoothed))
+
+
+def _outermost_lines(
+    segments: np.ndarray, lengths: np.ndarray, direction_deg: float
+) -> tuple[float, float] | None:
+    """The two extreme offsets of segments running along `direction_deg`.
+
+    Offset is the signed perpendicular distance of a segment's midpoint from
+    the origin along the direction's normal, so the min and max pick out the
+    OUTERMOST pair — the card's two opposing edges. Interior lines (stat
+    table rules, name bands, design elements) all sit between them, which is
+    what makes taking the extremes the right move rather than the strongest.
+    """
+    if segments.shape[0] < 2:
+        return None
+    theta = np.radians(direction_deg)
+    normal = np.array([-np.sin(theta), np.cos(theta)], dtype=np.float64)
+    midpoints = np.column_stack(
+        ((segments[:, 0] + segments[:, 2]) / 2.0, (segments[:, 1] + segments[:, 3]) / 2.0)
+    )
+    offsets = midpoints @ normal
+    if float(offsets.max() - offsets.min()) < MIN_WARPED_SIDE_PX:
+        return None
+    return float(offsets.min()), float(offsets.max())
+
+
+def _line_quad(gray: np.ndarray) -> np.ndarray | None:
+    """Find the card as four lines rather than one closed contour.
+
+    Contour tracing needs the card's outline to close. On a low-contrast
+    edge — a dark Chrome border against a dark scanner bed — it never does:
+    measured on a tilted 2021 Prizm back, the only frame-scale quad
+    `approxPolyDP` produced was the axis-aligned image border, with every
+    other candidate an interior fragment 133-148% off card aspect. The card
+    was simply not among the candidates, so no amount of ranking could pick
+    it.
+
+    Line segments survive that. The same image yields two dominant
+    directions 90° apart, both offset ~2° from the axes — which is exactly
+    the tilt — because a broken edge still leaves collinear fragments.
+    This is the same insight `CIDetectorTypeRectangle` is built on, which is
+    why the Swift original is robust here and the contour port is not.
+
+    Returns a quad in DETECTION space, or None. The result is a CANDIDATE:
+    it competes in the normal ranking and still has to clear
+    `_quad_is_trustworthy`, so a bad line fit is caught by the same gate as
+    a bad contour fit.
+    """
+    import cv2
+
+    blurred = cv2.GaussianBlur(gray, BLUR_KERNEL, 0)
+    edges = cv2.Canny(blurred, CANNY_LOW, CANNY_HIGH)
+
+    shorter_side = min(gray.shape)
+    found = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi / 360,
+        threshold=LINE_HOUGH_THRESHOLD,
+        minLineLength=int(LINE_MIN_LENGTH_FRACTION * shorter_side),
+        maxLineGap=LINE_MAX_GAP_PX,
+    )
+    if found is None or len(found) < 4:
+        return None
+
+    segments = found[:, 0, :].astype(np.float64)
+    deltas = segments[:, 2:4] - segments[:, 0:2]
+    lengths = np.hypot(deltas[:, 0], deltas[:, 1])
+    angles = (np.degrees(np.arctan2(deltas[:, 1], deltas[:, 0])) + 180.0) % 180.0
+
+    primary = _dominant_direction(angles, lengths)
+    if primary is None:
+        return None
+
+    # The card's other pair of edges is perpendicular. Search a window around
+    # primary+90 rather than taking the global second mode, which on a
+    # text-heavy back is another set of horizontal rules.
+    perpendicular = (primary + 90.0) % 180.0
+    offset_from_perp = np.abs((angles - perpendicular + 90.0) % 180.0 - 90.0)
+    offset_from_primary = np.abs((angles - primary + 90.0) % 180.0 - 90.0)
+
+    along_primary = offset_from_primary <= LINE_ANGLE_TOLERANCE_DEG
+    along_perpendicular = offset_from_perp <= LINE_ANGLE_TOLERANCE_DEG
+    if along_primary.sum() < 2 or along_perpendicular.sum() < 2:
+        return None
+
+    secondary = _dominant_direction(angles[along_perpendicular], lengths[along_perpendicular])
+    if secondary is None:
+        return None
+
+    first = _outermost_lines(segments[along_primary], lengths[along_primary], primary)
+    second = _outermost_lines(
+        segments[along_perpendicular], lengths[along_perpendicular], secondary
+    )
+    if first is None or second is None:
+        return None
+
+    def corner(offset_a: float, direction_a: float, offset_b: float, direction_b: float):
+        theta_a, theta_b = np.radians(direction_a), np.radians(direction_b)
+        normal_a = np.array([-np.sin(theta_a), np.cos(theta_a)])
+        normal_b = np.array([-np.sin(theta_b), np.cos(theta_b)])
+        matrix = np.array([normal_a, normal_b])
+        if abs(float(np.linalg.det(matrix))) < 1e-9:
+            return None
+        return np.linalg.solve(matrix, np.array([offset_a, offset_b]))
+
+    corners = []
+    for offset_a in first:
+        for offset_b in second:
+            point = corner(offset_a, primary, offset_b, secondary)
+            if point is None:
+                return None
+            corners.append(point)
+    return _order_corners(np.array(corners, dtype=np.float32))
+
+
+def _quad_rotation_deg(quad: np.ndarray) -> float:
+    """How far the quad is rotated away from axis-aligned, in [0, 45] degrees.
+
+    Measured off the top edge and folded into a quarter turn, so a card lying
+    on its side reads as 0 rather than 90 — orientation is orient's job, not
+    deskew's. What this answers is only "is there any tilt to correct?".
+    """
+    top = quad[1] - quad[0]
+    angle = abs(float(np.degrees(np.arctan2(float(top[1]), float(top[0])))))
+    return float(min(angle, abs(angle - 90.0), abs(angle - 180.0)))
 
 
 def _opposite_side_ratio(quad: np.ndarray) -> float:
@@ -657,7 +842,60 @@ def _find_card_quad(bgr: np.ndarray) -> np.ndarray | None:
                 # The scale is divided back out once, on the way out.
                 candidates.append((aspect_error, area_fraction, quad))
 
+    # Contours find nothing when the card's outline never closes. Offer the
+    # line-based reading as one more candidate on identical terms — same
+    # aspect filter, same ranking, same integrity gate — so it can only win
+    # where it is genuinely the most card-shaped thing in the frame.
+    line_candidate: tuple[float, float, np.ndarray] | None = None
+    line_quad = _line_quad(gray)
+    if line_quad is not None:
+        line_width, line_height = _quad_side_lengths(line_quad)
+        line_area = abs(float(cv2.contourArea(line_quad))) / frame_area if frame_area else 0.0
+        line_error = _card_aspect_error(line_width, line_height)
+        if (
+            MIN_QUAD_AREA_FRACTION <= line_area < FRAME_AREA_FRACTION
+            and line_width >= MIN_WARPED_SIDE_PX
+            and line_height >= MIN_WARPED_SIDE_PX
+            and line_error <= DETECT_ASPECT_TOLERANCE
+        ):
+            logger.info(
+                "deskew: line-based quad aspect_err=%.3f area_frac=%.3f",
+                line_error,
+                line_area,
+            )
+            line_candidate = (line_error, line_area, line_quad)
+            candidates.append(line_candidate)
+
     best = _select_best_candidate(candidates)
+
+    # A scan cropped to card aspect has an image border that is itself
+    # card-shaped, so the border wins on aspect (0.2% on the Prizm back) and
+    # is then frame-rejected — taking the detection down with it even though
+    # a good sub-frame quad was sitting in the list.
+    #
+    # Falling back to the next-best CONTOUR would undo the reason the frame
+    # check exists: on an already-tight scan the runner-up is the card's own
+    # photo window or stats panel, and picking it shaves the card. The line
+    # quad carries a guarantee those do not — it is built from the OUTERMOST
+    # line in each direction, so an interior rule cannot form it. That is
+    # what makes it safe to fall back to and them not.
+    if best is None and line_candidate is not None:
+        rotation = _quad_rotation_deg(line_candidate[2])
+        if rotation >= LINE_FALLBACK_MIN_ROTATION_DEG:
+            logger.info(
+                "deskew: contour winner was the image frame, but the line-based quad is "
+                "tilted %.2f° — deskewing it",
+                rotation,
+            )
+            best = line_candidate
+        else:
+            logger.info(
+                "deskew: line-based quad is only %.2f° off axis (min %.2f°) — nothing to "
+                "deskew, declining",
+                rotation,
+                LINE_FALLBACK_MIN_ROTATION_DEG,
+            )
+
     if best is None:
         return None
 

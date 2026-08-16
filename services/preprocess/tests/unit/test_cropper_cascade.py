@@ -129,12 +129,14 @@ def disable_server_strategies(monkeypatch):
 
     def _install(**overrides) -> None:
         defaults = {
+            "deskew_crop": None,
             "trim_dark": None,
             "trim_light": None,
             "sam_crop": None,
             "haiku_bbox_crop": None,
         }
         defaults.update(overrides)
+        monkeypatch.setattr("app.cropper.deskew.deskew_crop", lambda _b: defaults["deskew_crop"])
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: defaults["trim_dark"])
         monkeypatch.setattr("app.cropper.pil_trim.trim_light", lambda _b: defaults["trim_light"])
         monkeypatch.setattr("app.cropper.sam.sam_crop", lambda _b: defaults["sam_crop"])
@@ -249,6 +251,85 @@ class TestPrecroppedStage:
         result = crop(image_bytes=image, precropped_bytes=precropped)
 
         assert result.source == "pil_trim_dark"
+
+
+class TestCheapStrategiesAreScoredNotRaced:
+    """No single cropper is right on every card — that is why there is a cascade.
+
+    First-acceptable-wins made that unreachable: `deskew` runs first, so any
+    output of its that merely cleared the gates won outright and the trims
+    were never computed. Measured on 2026-08-12-0012, deskew's 4.9%-off crop
+    displaced pil_trim_dark's 2.0%; on -0014, 2.5% displaced 0.2%. Neither is
+    a gate failure — both are valid cards — the gates simply have nowhere to
+    say "the next one is better".
+    """
+
+    def test_the_best_shaped_crop_wins_not_the_first_to_qualify(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        # deskew qualifies but is 12.5% off card aspect; the trim is exact.
+        # Under first-acceptable-wins deskew took this outright.
+        off_aspect = _card_jpeg(size=(500, 625))
+        exact = _card_jpeg(size=(500, 700))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(deskew_crop=off_aspect, trim_dark=exact)
+
+        result = crop(image_bytes=_card_jpeg(size=(1200, 1600)), precropped_bytes=None)
+
+        assert result.source == "pil_trim_dark"
+        assert result.image_bytes == exact
+
+    def test_deskew_still_wins_when_it_is_the_best_shaped(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """Scoring must not simply demote deskew — it has to earn the win."""
+        exact = _card_jpeg(size=(500, 700))
+        off_aspect = _card_jpeg(size=(500, 625))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(deskew_crop=exact, trim_dark=off_aspect)
+
+        result = crop(image_bytes=_card_jpeg(size=(1200, 1600)), precropped_bytes=None)
+
+        assert result.source == "deskew"
+        assert result.image_bytes == exact
+
+    def test_a_candidate_that_fails_the_gates_is_not_scored(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """Scoring ranks qualifying crops; it does not resurrect rejected ones.
+
+        The tiny deskew output is the better SHAPE but fails the validator's
+        min-side check, so it must not win on score.
+        """
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(deskew_crop=_tiny_jpeg(), trim_dark=_card_jpeg(size=(500, 700)))
+
+        result = crop(image_bytes=_card_jpeg(size=(1200, 1600)), precropped_bytes=None)
+
+        assert result.source == "pil_trim_dark"
+
+    def test_expensive_stages_are_not_reached_when_a_cheap_one_qualifies(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """SAM and Haiku cost seconds and an API call — they stay last-resort."""
+        calls: list[str] = []
+
+        def _sam(_image_bytes):
+            calls.append("sam")
+            return _card_jpeg(size=(500, 700))
+
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(trim_dark=_card_jpeg(size=(500, 700)))
+        cropper.sam.sam_crop = _sam
+
+        result = crop(image_bytes=_card_jpeg(size=(1200, 1600)), precropped_bytes=None)
+
+        assert result.source == "pil_trim_dark"
+        assert calls == []
 
 
 class TestPilTrimStages:
