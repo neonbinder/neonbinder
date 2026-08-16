@@ -68,7 +68,7 @@ from io import BytesIO
 from PIL import Image
 
 from app.classify import ClassifyResult, classify_card
-from app.cropper import deskew, haiku_bbox, pil_trim, sam
+from app.cropper import deskew, haiku_bbox, pil_trim, sam, tiebreak
 from app.cropper._utils import rotate_image_bytes
 from app.cropper.validator import (
     CARD_ASPECT_LANDSCAPE,
@@ -547,6 +547,22 @@ def crop(
             contenders,
             key=lambda entry: (entry[4], -SCORED_STRATEGY_NAMES.index(entry[1])),
         )
+
+        # The band has declared these equally card-shaped, so geometry has
+        # nothing left to say. Where they ALSO differ materially in what they
+        # kept, a vision model can answer the question the proxies cannot —
+        # "is the whole card here and nothing else". Strictly advisory: it
+        # cannot overrule a decisive aspect win, it only reorders within the
+        # band, and any failure keeps the geometric pick. Off by default;
+        # see app/cropper/tiebreak.py.
+        if len(contenders) > 1 and tiebreak.is_enabled():
+            pairs = [(entry[1], entry[2]) for entry in contenders]
+            if tiebreak.differ_materially(pairs):
+                chosen = tiebreak.pick_best(pairs)
+                if chosen is not None and chosen != best_source:
+                    picked = next(entry for entry in contenders if entry[1] == chosen)
+                    logger.info("cascade: tiebreak moved the winner %s -> %s", best_source, chosen)
+                    best_error, best_source, best_bytes, best_orient, _best_area = picked
         logger.info(
             "cascade: %s wins (aspect_err=%.3f) from %d qualifying, %d within band",
             best_source,
