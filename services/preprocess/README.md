@@ -108,7 +108,7 @@ Strategies, in canonical order (this is `STRATEGY_NAMES` — the same order
 
 | Index | Name | What it does |
 |:-:|---|---|
-| 0 | `tiered` | Benchmarked classical OpenCV + BiRefNet tiered pipeline (NEO-161). Declines when the input already looks like the card. |
+| 0 | `tiered` | Benchmarked classical OpenCV + BiRefNet tiered pipeline (NEO-161). Returns the input untouched when it already IS the card (identity guard). |
 | 1 | `pil_trim_dark` | PIL blur + threshold + trim, card lighter than background. |
 | 2 | `pil_trim_light` | Same, card darker than background. |
 | 3 | `sam` | SAM ViT-B semantic segmentation. |

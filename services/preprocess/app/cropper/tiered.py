@@ -30,11 +30,14 @@ Service adaptations (the pipeline itself is untouched):
   - Input is image bytes, not a path; output is JPEG bytes of ONE crop — the
     highest-scoring component that passes the QC gate.
   - The benchmark's "identity" outcome (a card-aspect input frame is probably
-    already cropped; re-cropping would eat the card) maps to **declining**:
-    `tiered_crop` returns None and the cascade treats the input as already
-    cropped (passthrough / later stages). Classical evidence alone never
-    settles identity — its frame-sized detections are echo artifacts — so
-    BiRefNet gets the deciding vote, exactly as in the benchmark.
+    already cropped; re-cropping would eat the card) maps to **returning the
+    input bytes untouched**: a card-aspect frame always clears the cascade's
+    validator gates, so identity ends the cascade with the input as the
+    result — the benchmark's passthrough. Declining instead would hand a
+    pre-cropped card to pil_trim, which can shave its printed border.
+    Classical evidence alone never settles identity — its frame-sized
+    detections are echo artifacts — so BiRefNet gets the deciding vote,
+    exactly as in the benchmark.
   - Components that only earn a "review" verdict (no QC-gate pass) also
     decline, letting the cascade's other strategies and uniform validator
     gates take over.
@@ -556,8 +559,14 @@ def _run_classical(work: np.ndarray, bg: np.ndarray) -> list[dict[str, Any]]:
     return best
 
 
-def _run_tiered(full: np.ndarray, work: np.ndarray, scale: float) -> bytes | None:
-    """The tiered pipeline on decoded images. Returns JPEG bytes or None."""
+def _run_tiered(
+    image_bytes: bytes, full: np.ndarray, work: np.ndarray, scale: float
+) -> bytes | None:
+    """The tiered pipeline on decoded images.
+
+    Returns JPEG bytes of the best crop, the untouched `image_bytes` when the
+    identity guard fires (the input already IS the card), or None to decline.
+    """
     lab_work = cv2.cvtColor(work, cv2.COLOR_BGR2LAB).astype(np.float32)
     bg = border_bg_lab(lab_work)
     pad = max(2.0, PAD_FRAC * max(full.shape[:2]))
@@ -573,14 +582,14 @@ def _run_tiered(full: np.ndarray, work: np.ndarray, scale: float) -> bytes | Non
             comps = analyze(birefnet_mask(work), work, bg)
             tier = "birefnet"
             if should_identity(comps, work, lab_work, bg)[0]:
-                logger.info("tiered: identity (card-aspect frame), declining")
-                return None
+                logger.info("tiered: identity (card-aspect frame), returning input untouched")
+                return image_bytes
     if tier == "classical" and not any(passes(c) for c in comps):
         comps = analyze(birefnet_mask(work), work, bg)
         tier = "birefnet"
         if near_card_frame and should_identity(comps, work, lab_work, bg)[0]:
-            logger.info("tiered: identity after birefnet fallback, declining")
-            return None
+            logger.info("tiered: identity after birefnet fallback, returning input untouched")
+            return image_bytes
     elif tier == "classical" and comps:
         # Verify: a color-blind method can lock onto an inner boundary when
         # the card border matches the background (dark-on-dark). If the
@@ -624,10 +633,12 @@ def tiered_crop(image_bytes: bytes) -> bytes | None:
     """Tiered-crop an image.
 
     Returns JPEG bytes of the single best QC-gate-passing card crop, taken
-    from the full-resolution original, or None when the strategy declines:
-    unreadable input, the identity guard (input already looks like the
-    card), or nothing passed the QC gate. The cascade applies its own
-    validator + text gates on top of any bytes returned here.
+    from the full-resolution original. When the identity guard fires (the
+    input already looks like the card) it returns `image_bytes` untouched —
+    a card-aspect frame always clears the cascade's gates, so that ends the
+    cascade with the input as the result. Returns None to decline:
+    unreadable input, or nothing passed the QC gate. The cascade applies
+    its own validator + text gates on top of any bytes returned here.
     """
     try:
         full, work, scale = _load(image_bytes)
@@ -636,7 +647,7 @@ def tiered_crop(image_bytes: bytes) -> bytes | None:
         return None
 
     try:
-        return _run_tiered(full, work, scale)
+        return _run_tiered(image_bytes, full, work, scale)
     except Exception:
         logger.exception("tiered_crop: pipeline failed")
         return None

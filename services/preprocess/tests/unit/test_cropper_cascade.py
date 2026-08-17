@@ -275,7 +275,7 @@ class TestTieredStage:
     def test_tiered_declining_falls_through_to_pil_trim(
         self, stub_orient, stub_classify, disable_server_strategies
     ):
-        """Identity/decline (None) hands the image to the next strategy."""
+        """A decline (None) hands the image to the next strategy."""
         trim_out = _card_jpeg(size=(500, 700))
         stub_orient()
         stub_classify(_classify())
@@ -287,6 +287,24 @@ class TestTieredStage:
 
         assert result.source == "pil_trim_dark"
         assert result.image_bytes == trim_out
+
+    def test_tiered_identity_echo_ends_the_cascade_with_the_input(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """Identity returns the input bytes untouched — that must WIN the
+        cascade (never reach pil_trim, which could shave a pre-cropped
+        card's border) and must not be marked as server-modified bytes."""
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(1200, 1600))
+        trim_out = _card_jpeg(size=(500, 700))
+        disable_server_strategies(tiered_crop=image, trim_dark=trim_out)
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert result.source == "tiered"
+        assert result.image_bytes == image
+        assert result.returned_bytes_differ is False
 
 
 class TestPilTrimStages:

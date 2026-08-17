@@ -389,20 +389,29 @@ class TestIdentityGuard:
             cv2.rectangle(img, (300, y + 30), (500, y + 40), (40, 40, 40), -1)
         return img
 
-    def test_full_bleed_card_declines_with_birefnet_casting_the_deciding_vote(self, stub_birefnet):
+    def test_full_bleed_card_returns_input_with_birefnet_casting_the_deciding_vote(
+        self, stub_birefnet
+    ):
         # Classical finds only text specks (weak). BiRefNet then sees the
-        # whole frame as the object — the input IS the card → identity.
+        # whole frame as the object — the input IS the card → identity, and
+        # identity returns the input bytes untouched (never re-encoded), so
+        # the cascade ends with the input rather than letting pil_trim shave
+        # the card's own border.
         calls = stub_birefnet(lambda work: np.full(work.shape[:2], 255, np.uint8))
+        src = _jpeg(self._card_aspect_scene())
 
-        result = tiered_crop(_jpeg(self._card_aspect_scene()))
+        result = tiered_crop(src)
 
-        assert result is None
+        assert result == src
         assert len(calls) == 1, "identity must not be settled by classical evidence alone"
 
-    def test_full_bleed_card_declines_when_birefnet_finds_nothing_either(self, stub_birefnet):
+    def test_full_bleed_card_returns_input_when_birefnet_finds_nothing_either(
+        self, stub_birefnet
+    ):
         calls = stub_birefnet()  # zeros — no object at all
-        result = tiered_crop(_jpeg(self._card_aspect_scene()))
-        assert result is None
+        src = _jpeg(self._card_aspect_scene())
+        result = tiered_crop(src)
+        assert result == src
         assert len(calls) == 1
 
     def test_strong_inner_card_in_a_card_aspect_frame_is_still_cropped(self, stub_birefnet):
@@ -420,17 +429,19 @@ class TestIdentityGuard:
         assert 350 <= w <= 375
         assert 495 <= h <= 520
 
-    def test_card_aspect_frame_with_weak_off_aspect_content_declines(self, stub_birefnet):
+    def test_card_aspect_frame_with_weak_off_aspect_content_returns_input(self, stub_birefnet):
         # Inner rect at aspect 0.68: classical evidence is strong enough to
         # veto identity but the QC gate rejects it (no snap, not slab), so
-        # the BiRefNet fallback runs; it finds nothing → decline.
+        # the BiRefNet fallback runs; it finds nothing → identity wins on the
+        # card-aspect frame and the input comes back untouched.
         calls = stub_birefnet()
         img = _canvas(size=(715, 1001))
         _draw_card(img, (160, 200, 560, 788))  # 400x588 → aspect 0.68
+        src = _jpeg(img)
 
-        result = tiered_crop(_jpeg(img))
+        result = tiered_crop(src)
 
-        assert result is None
+        assert result == src
         assert len(calls) == 1
 
     def test_should_identity_reasons(self):

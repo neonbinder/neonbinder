@@ -382,7 +382,10 @@ def crop(
             candidate_bytes=produced,
             source_area_bytes=image_bytes,
             text_threshold=text_threshold,
-            returned_bytes_differ=True,
+            # A strategy may return the input untouched (tiered's identity
+            # guard: the upload already IS the card) — the client has those
+            # exact bytes, so don't echo them back.
+            returned_bytes_differ=produced != image_bytes,
         )
         if result is not None:
             return result
