@@ -131,6 +131,22 @@ def _get_session() -> Any:
     return _session
 
 
+def warm_up() -> None:
+    """Load the session and run one tiny inference at container startup.
+
+    The first real request must pay neither the ~930MB model load (plus
+    pooch's full-file hash pass) nor ORT's first-run allocations — cold,
+    those pushed a /process call past the smoke test's 120s timeout.
+    Called from the service startup hook, gated on REQUIRE_BAKED_WEIGHTS;
+    unit tests never reach it.
+    """
+    import rembg
+
+    session = _get_session()
+    dummy = np.zeros((64, 64, 3), np.uint8)
+    rembg.remove(dummy, session=session)
+
+
 # ── Input ───────────────────────────────────────────────────────────────────
 
 

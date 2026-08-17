@@ -26,7 +26,10 @@ from PIL import Image, ImageDraw
 
 TARGET_URL_ENV = "SMOKE_TARGET_URL"
 INTERNAL_KEY_ENV = "SMOKE_INTERNAL_KEY"
-REQUEST_TIMEOUT = 120.0  # Cold start on preprocess can be slow — SAM weights + torch init.
+# Startup pre-warms BiRefNet, but tiered still runs real ONNX inference per
+# request — 15-60s on 4 vCPU is normal for /process. 240s catches hangs
+# while tolerating an honest slow pass (Cloud Run's own cap is 300s).
+REQUEST_TIMEOUT = 240.0
 
 
 def _require_env(name: str) -> str:

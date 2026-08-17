@@ -17,7 +17,7 @@ from PIL import Image
 
 from app import cropper
 from app.classify import ClassifyError, ClassifyResult
-from app.main import MAX_IMAGE_BYTES, app
+from app.main import MAX_IMAGE_BYTES, _verify_baked_weights, app
 from app.orient import OrientationResult
 
 client = TestClient(app)
@@ -557,6 +557,38 @@ def _noisy_jpeg(size: tuple[int, int]) -> bytes:
     buf = io.BytesIO()
     im.save(buf, format="JPEG")
     return buf.getvalue()
+
+
+class TestStartupWeightsGate:
+    """REQUIRE_BAKED_WEIGHTS=1 (set in the Dockerfile) makes startup fail
+    loudly when the baked weights are missing and pre-warm the BiRefNet
+    session when they're present. Unit runs never set the flag."""
+
+    def test_startup_raises_when_weights_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        monkeypatch.setenv("U2NET_HOME", str(tmp_path))  # exists, but empty
+        with pytest.raises(RuntimeError, match="no .onnx weights"):
+            _verify_baked_weights()
+
+    def test_startup_warms_the_session_when_weights_present(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        (tmp_path / "model.onnx").write_bytes(b"stub")
+        monkeypatch.setenv("U2NET_HOME", str(tmp_path))
+        called: list[bool] = []
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+
+        _verify_baked_weights()
+
+        assert called == [True]
+
+    def test_startup_is_a_noop_without_the_flag(self, monkeypatch):
+        monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
+        called: list[bool] = []
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+
+        _verify_baked_weights()
+
+        assert called == []
 
 
 class TestTieredIdentityContract:

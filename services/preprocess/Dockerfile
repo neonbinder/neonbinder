@@ -15,12 +15,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HUB_DISABLE_PROGRESS_BARS=1 \
     U2NET_HOME=/opt/u2net-cache \
     REMBG_MODEL=${REMBG_MODEL} \
-    REQUIRE_BAKED_WEIGHTS=1 \
-    OMP_NUM_THREADS=1
+    REQUIRE_BAKED_WEIGHTS=1
 # REQUIRE_BAKED_WEIGHTS: startup fails loudly if the baked weights are gone,
 # instead of rembg silently re-downloading ~930MB into Cloud Run's in-memory
-# filesystem. OMP_NUM_THREADS=1: ORT would otherwise claim all 4 vCPU per
-# inference under concurrency 3 (torch already does set_num_threads(1)).
+# filesystem. ORT threading is left at its default (all 4 vCPU per
+# inference): capping it to 1 thread pushed a single BiRefNet pass past the
+# smoke timeout, and under concurrency 3 the per-request latency converges
+# to the same ~3x either way — oversubscription only costs scheduler
+# overhead, while the cap costs 4x on every lightly-loaded request.
 
 WORKDIR /app
 

@@ -15,6 +15,7 @@ import glob
 import hmac
 import logging
 import os
+import time
 from io import BytesIO
 from typing import Annotated
 
@@ -60,6 +61,14 @@ def _verify_baked_weights() -> None:
         raise RuntimeError(
             f"REQUIRE_BAKED_WEIGHTS=1 but no .onnx weights under U2NET_HOME={u2net_home!r}"
         )
+    # Warm the BiRefNet session now, while Cloud Run still allocates full
+    # startup CPU and no request is waiting on it. Cold, the load + first
+    # inference exceeded the smoke test's timeout.
+    from app.cropper import tiered
+
+    started = time.monotonic()
+    tiered.warm_up()
+    logger.info("BiRefNet session warmed in %.1fs", time.monotonic() - started)
 
 
 class CropStrategyOutput(BaseModel):
