@@ -4,10 +4,13 @@ FROM python:3.12-slim
 # "birefnet-general" (full, ~930MB) vs "birefnet-general-lite" (~224MB).
 # Runtime reads the same name from the REMBG_MODEL env var (set below), so
 # the baked weights and the loaded model always agree.
-# NOTE the container needs 8Gi (neonbinder_ioc PR #65) with EITHER variant:
-# startup warm-up OOMed a 4Gi limit at 4601MiB (full) and 4836MiB (lite) —
-# inference activations, not the weights file, dominate the footprint.
-ARG REMBG_MODEL=birefnet-general
+# Measured on Cloud Run (startup warm-up, OOM-kill points): full hit 4601MiB
+# at a 4Gi limit and 8326MiB at 8Gi — its true inference peak exceeds 8GB.
+# Lite hit 4836MiB at 4Gi; at the current 8Gi limit it has real headroom.
+# Inference activations dominate, not the weights file. Full requires a
+# 16Gi + concurrency-1 service shape; lite's crop quality is verified
+# against the human-approved benchmark corpus by the preview replay.
+ARG REMBG_MODEL=birefnet-general-lite
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
