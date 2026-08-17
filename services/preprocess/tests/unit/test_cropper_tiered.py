@@ -581,7 +581,7 @@ class TestBirefnetMask:
         created: list[str] = []
         sentinel = object()
 
-        def _fake_new_session(model_name):
+        def _fake_new_session(model_name, **_kwargs):
             created.append(model_name)
             return sentinel
 
@@ -603,7 +603,9 @@ class TestBirefnetMask:
 
     def test_get_session_defaults_to_birefnet_general(self, monkeypatch):
         created: list[str] = []
-        monkeypatch.setattr("rembg.new_session", lambda name: created.append(name) or object())
+        monkeypatch.setattr(
+            "rembg.new_session", lambda name, **_kw: created.append(name) or object()
+        )
         monkeypatch.delenv("REMBG_MODEL", raising=False)
 
         _get_session()

@@ -117,6 +117,7 @@ def _get_session() -> Any:
     if _session is None:
         with _session_lock:
             if _session is None:
+                import onnxruntime as ort
                 from rembg import new_session
 
                 model = os.environ.get("REMBG_MODEL", DEFAULT_REMBG_MODEL)
@@ -125,8 +126,17 @@ def _get_session() -> Any:
                         f"REMBG_MODEL {model!r} is not allowed; "
                         f"choose one of {sorted(ALLOWED_REMBG_MODELS)}"
                     )
-                logger.info("loading BiRefNet session %s", model)
-                _session = new_session(model)
+                # ORT's CPU memory arena retains every inference's peak
+                # allocation for the process lifetime — measured ~8GB
+                # resident after ONE warmed BiRefNet pass, which OOM-killed
+                # an 8Gi Cloud Run container on its first real request.
+                # Without the arena, activations are freed after each run;
+                # steady state drops to weights + overhead at a small
+                # per-request allocation cost.
+                sess_opts = ort.SessionOptions()
+                sess_opts.enable_cpu_mem_arena = False
+                logger.info("loading BiRefNet session %s (cpu_mem_arena off)", model)
+                _session = new_session(model, sess_opts=sess_opts)
                 logger.info("BiRefNet session ready")
     return _session
 
