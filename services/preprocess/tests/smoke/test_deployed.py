@@ -26,7 +26,10 @@ from PIL import Image, ImageDraw
 
 TARGET_URL_ENV = "SMOKE_TARGET_URL"
 INTERNAL_KEY_ENV = "SMOKE_INTERNAL_KEY"
-REQUEST_TIMEOUT = 120.0  # Cold start on preprocess can be slow — SAM weights + torch init.
+# Startup pre-warms BiRefNet, but tiered still runs real ONNX inference per
+# request — 15-60s on 4 vCPU is normal for /process. 240s catches hangs
+# while tolerating an honest slow pass (Cloud Run's own cap is 300s).
+REQUEST_TIMEOUT = 240.0
 
 
 def _require_env(name: str) -> str:
@@ -139,10 +142,15 @@ class TestProcessHappyPath:
         assert isinstance(body["text_count"], int) and body["text_count"] >= 0
         # Synthetic test image is card-shaped (600x900) and noisy → passes the
         # precropped validator. cropped_image_b64 should be null in that case.
+        # Keep in sync with cropper.STRATEGY_NAMES (not imported here — the
+        # smoke job runs without the service's heavyweight deps installed).
         assert body["cropped_source"] in {
             "precropped",
+            "tiered",
             "pil_trim_dark",
             "pil_trim_light",
+            "sam",
+            "haiku_bbox",
             "passthrough",
         }, f"unexpected cropped_source {body['cropped_source']!r}"
         if body["cropped_source"] == "precropped":

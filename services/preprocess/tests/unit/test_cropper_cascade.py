@@ -129,12 +129,14 @@ def disable_server_strategies(monkeypatch):
 
     def _install(**overrides) -> None:
         defaults = {
+            "tiered_crop": None,
             "trim_dark": None,
             "trim_light": None,
             "sam_crop": None,
             "haiku_bbox_crop": None,
         }
         defaults.update(overrides)
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: defaults["tiered_crop"])
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: defaults["trim_dark"])
         monkeypatch.setattr("app.cropper.pil_trim.trim_light", lambda _b: defaults["trim_light"])
         monkeypatch.setattr("app.cropper.sam.sam_crop", lambda _b: defaults["sam_crop"])
@@ -161,9 +163,21 @@ class TestPrecroppedStage:
         assert result.returned_bytes_differ is False
         assert result.classification.players == ["Ichiro"]
 
-    def test_missing_precropped_uses_image_candidate(
+    def test_missing_precropped_does_not_short_circuit_the_cascade(
         self, stub_orient, stub_classify, disable_server_strategies
     ):
+        """A raw upload is never treated as an implicit crop candidate.
+
+        It used to be, and nothing could reject it: measured against itself
+        the area fraction is exactly 1.0, and the text gate's threshold is
+        0.8x a baseline counted on those same bytes. 184 of the 227 corpus
+        images won at stage 1 that way and came back uncropped — every 3:4
+        phone photo among them.
+
+        With every strategy stubbed out there is nothing left to win, so
+        reaching `passthrough` is what proves the cascade actually ran
+        instead of stopping at stage 1.
+        """
         stub_orient()
         stub_classify(_classify())
         disable_server_strategies()
@@ -172,9 +186,30 @@ class TestPrecroppedStage:
 
         result = crop(image_bytes=image, precropped_bytes=None)
 
-        assert result.source == "precropped"
+        assert result.source == "passthrough"
         assert result.image_bytes == image
         assert result.returned_bytes_differ is False
+
+    def test_a_server_strategy_can_win_on_an_image_only_upload(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """The point of the change: image-only requests reach the croppers.
+
+        A 3:4 phone frame is only 5.4% off card aspect, so it cleared the old
+        stage-1 gate and the cropper's output was never even computed.
+        """
+        cropped = _card_jpeg(size=(500, 700))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(trim_dark=cropped)
+
+        phone_frame = _card_jpeg(size=(768, 1020))  # 0.753 — inside ASPECT_TOLERANCE
+
+        result = crop(image_bytes=phone_frame, precropped_bytes=None)
+
+        assert result.source == "pil_trim_dark"
+        assert result.image_bytes == cropped
+        assert result.returned_bytes_differ is True
 
     def test_precropped_fails_validator_falls_through(
         self, stub_orient, stub_classify, disable_server_strategies
@@ -216,6 +251,60 @@ class TestPrecroppedStage:
         result = crop(image_bytes=image, precropped_bytes=precropped)
 
         assert result.source == "pil_trim_dark"
+
+
+class TestTieredStage:
+    def test_tiered_wins_ahead_of_pil_trim(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """tiered is first in the cascade — its crop wins before pil_trim runs."""
+        tiered_out = _card_jpeg(size=(500, 700))
+        trim_out = _card_jpeg(size=(510, 714))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(tiered_crop=tiered_out, trim_dark=trim_out)
+
+        image = _card_jpeg(size=(1200, 1600))
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert result.source == "tiered"
+        assert result.image_bytes == tiered_out
+        assert result.returned_bytes_differ is True
+
+    def test_tiered_declining_falls_through_to_pil_trim(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """A decline (None) hands the image to the next strategy."""
+        trim_out = _card_jpeg(size=(500, 700))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(tiered_crop=None, trim_dark=trim_out)
+
+        image = _card_jpeg(size=(1200, 1600))
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert result.source == "pil_trim_dark"
+        assert result.image_bytes == trim_out
+
+    def test_tiered_identity_echo_ends_the_cascade_with_the_input(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """Identity returns the input bytes untouched — that must WIN the
+        cascade (never reach pil_trim, which could shave a pre-cropped
+        card's border) and must not be marked as server-modified bytes."""
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(1200, 1600))
+        trim_out = _card_jpeg(size=(500, 700))
+        disable_server_strategies(tiered_crop=image, trim_dark=trim_out)
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert result.source == "tiered"
+        assert result.image_bytes == image
+        assert result.returned_bytes_differ is False
 
 
 class TestPilTrimStages:
@@ -293,6 +382,7 @@ class TestSamStage:
 
     def test_sam_raises_falls_through_to_haiku_bbox(self, stub_orient, stub_classify, monkeypatch):
         good = _card_jpeg(size=(500, 700))
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_light", lambda _b: None)
 
@@ -333,6 +423,7 @@ class TestHaikuBboxStage:
     def test_haiku_bbox_raises_falls_through_to_passthrough(
         self, stub_orient, stub_classify, monkeypatch
     ):
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_light", lambda _b: None)
         monkeypatch.setattr("app.cropper.sam.sam_crop", lambda _b: None)
