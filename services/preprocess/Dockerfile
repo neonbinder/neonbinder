@@ -1,10 +1,14 @@
 FROM python:3.12-slim
 
 # BiRefNet model for the tiered crop strategy (via rembg). ONE-LINE FLIP:
-# set to "birefnet-general-lite" for a smaller/faster image. Runtime reads
-# the same name from the REMBG_MODEL env var (set below), so the baked
-# weights and the loaded model always agree.
-ARG REMBG_MODEL=birefnet-general
+# "birefnet-general" (full, ~930MB) vs "birefnet-general-lite" (~224MB).
+# Runtime reads the same name from the REMBG_MODEL env var (set below), so
+# the baked weights and the loaded model always agree.
+# Currently LITE: the full model's ONNX session OOMs the 4Gi Cloud Run
+# limit at startup (4601MiB used). Flip back to full once the 8Gi bump
+# (neonbinder_ioc PR #65) is applied — the 29-sample corpus replay against
+# the preview measures whether lite matches the human-verified crops.
+ARG REMBG_MODEL=birefnet-general-lite
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
