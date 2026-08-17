@@ -44,10 +44,10 @@ tags:
 # R7 — the guest checklist is returned to empty at the end.
 # ============================================================================
 
-# Step 1 — open the app, signed in, on the Set Selector.
+# Step 1 — open the app, signed in, on the Set Builder.
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # ============================================================

@@ -27,6 +27,7 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { normalizeTeamName } from "./teams";
+import { resolveDefaultLeagueId } from "./leagues";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -170,6 +171,8 @@ export const backfillTeamToOnCardIds = internalMutation({
           name: teamString.trim(),
           nameNormalized: normalized,
           sportId,
+          // NEO-156: every team-creation path attaches a league.
+          leagueId: await resolveDefaultLeagueId(ctx, sportId),
           lastUpdated: Date.now(),
         });
         teamsCreated += 1;
@@ -288,6 +291,8 @@ export const applyBscTeamResolution = internalMutation({
         name: teamName,
         nameNormalized: normalized,
         sportId,
+        // NEO-156: every team-creation path attaches a league.
+        leagueId: await resolveDefaultLeagueId(ctx, sportId),
         lastUpdated: Date.now(),
       });
       teamCreated = true;

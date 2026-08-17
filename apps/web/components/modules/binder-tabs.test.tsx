@@ -54,7 +54,7 @@ describe("BinderTabs", () => {
   });
 
   it("keeps the staircase when the list is filtered", () => {
-    // A non-admin loses Set Builder from the MIDDLE of the list. The offsets
+    // A non-admin loses Admin from the MIDDLE of the list. The offsets
     // must follow the rendered position, not the position in NAV_ITEMS, or the
     // staircase gains a gap where the hidden tab used to be.
     role = undefined;

@@ -97,7 +97,7 @@ tags:
 # complete before calling the util (its own openLink /set-selector only works
 # within an already-authenticated session).
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # ============================================================

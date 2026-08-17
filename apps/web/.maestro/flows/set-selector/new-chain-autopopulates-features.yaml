@@ -184,7 +184,7 @@ tags:
 # Cold sign-in / app load only (Clerk auth + rate-limit backoff on the Nth
 # concurrent sign-in). Every other wait below uses Maestro's 7s default (R5).
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # Step 2 — drill a freshly-created, fully-custom chain: per-worker custom sport

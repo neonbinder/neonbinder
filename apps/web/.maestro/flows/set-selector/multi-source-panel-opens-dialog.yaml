@@ -29,12 +29,12 @@ tags:
 # ============================================================
 
 - launchApp
-# Wait for sign-in redirect to complete and the Set Selector page to load.
+# Wait for sign-in redirect to complete and the Set Builder page to load.
 # Without this guard, execution proceeds before the Clerk session is
 # established, and util-drill's openLink: /set-selector is intercepted by
 # Clerk and bounced back to the sign-in page.
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # ============================================================

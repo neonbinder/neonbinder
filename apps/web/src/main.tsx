@@ -14,6 +14,7 @@ import * as Sentry from "@sentry/react";
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
 import BinderLayout from "@/src/layouts/binder-layout";
 import AdminLayout from "@/src/layouts/AdminLayout";
+import AdminSectionLayout from "@/src/layouts/admin-section-layout";
 
 // Pages
 import Home from "@/app/page";
@@ -37,13 +38,16 @@ import ProfilePublic from "@/app/profile/public/page";
 import ProfileCredentials from "@/app/profile/credentials/page";
 import ProfileShipping from "@/app/profile/shipping/page";
 import ProfilePrizes from "@/app/profile/prizes/page";
-import SetSelector from "@/app/set-selector/page";
+import AdminHub from "@/app/admin/page";
+import AdminSetBuilder from "@/app/admin/set-builder/page";
+import AdminTeams from "@/app/admin/teams/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
 import PrintHub from "@/app/print/page";
 import PrintPlaceholders from "@/app/print/placeholders/page";
 import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
+import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
 import Inventory from "@/app/inventory/page";
 
@@ -111,6 +115,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route path="shipping" element={<PrintShipping />} />
                 <Route path="qr" element={<PrintQrCode />} />
                 <Route path="placeholders" element={<PrintPlaceholders />} />
+                <Route path="spine-label" element={<PrintSpineLabel />} />
               </Route>
               {/* The old top-level routes. They are linked from outside the app
                   and sit in people's bookmarks, so they stay forever as
@@ -124,9 +129,24 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 element={<Navigate to="/print/qr" replace />}
               />
               <Route path="/design/primitives" element={<DesignPrimitives />} />
-              {/* Admin-only routes — redirected to /dashboard for non-admins */}
+              {/* Admin-only routes — redirected to /dashboard for non-admins.
+                  AdminLayout is the AUTHORIZATION gate; AdminSectionLayout
+                  inside it is the visual shell with the sub-tabs (NEO-155). */}
               <Route element={<AdminLayout />}>
-                <Route path="/set-selector" element={<SetSelector />} />
+                <Route path="/admin" element={<AdminSectionLayout />}>
+                  <Route index element={<AdminHub />} />
+                  <Route path="set-builder" element={<AdminSetBuilder />} />
+                  <Route path="teams" element={<AdminTeams />} />
+                </Route>
+                {/* The old top-level route. Kept forever rather than 404ing:
+                    it is bookmarked, and ~48 Maestro flows navigate here by
+                    URL (/testing/sign-in?redirect=/set-selector) instead of
+                    tapping the nav tab — this redirect is what keeps them
+                    green across the rename. */}
+                <Route
+                  path="/set-selector"
+                  element={<Navigate to="/admin/set-builder" replace />}
+                />
               </Route>
             </Route>
           </Route>

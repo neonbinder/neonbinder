@@ -44,8 +44,8 @@ tags:
 # SportLots must NOT appear — asserting only the BSC name is insufficient
 # because the both-missing banner also contains "BuySportsCards"
 - assertNotVisible: "SportLots"
-# The Set Selector UI itself must not be visible
-- assertNotVisible: "Set Selector"
+# The Set Builder UI itself must not be visible
+- assertNotVisible: ".*Build set parameters using marketplace APIs.*"
 
 # Step 4: the CTA link leads to /profile
 - scrollUntilVisible:

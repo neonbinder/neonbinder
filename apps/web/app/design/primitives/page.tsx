@@ -26,12 +26,33 @@ import {
   InlineCode,
   ScrollListItem,
   Poster,
+  Autocomplete,
 } from "../../../components/primitives";
+
+/**
+ * NEO-147: static rows for the Autocomplete demo. The primitive is data-
+ * agnostic on purpose — its Convex-backed binding lives in
+ * `components/PlayerAutocomplete.tsx` — so this page can exercise it without a
+ * backend round-trip.
+ */
+const DEMO_PLAYERS = [
+  { id: "1", name: "Ken Griffey Jr.", sport: "Baseball" },
+  { id: "2", name: "Ken Caminiti", sport: "Baseball" },
+  { id: "3", name: "Kenny Lofton", sport: "Baseball" },
+  { id: "4", name: "Juan Soto", sport: "Baseball" },
+  { id: "5", name: "Reggie White", sport: "Football" },
+];
 
 export default function PrimitivesPage() {
   const [switchChecked, setSwitchChecked] = useState(false);
   const [radioValue, setRadioValue] = useState("option1");
   const [checkboxChecked, setCheckboxChecked] = useState(false);
+  const [autocompleteQuery, setAutocompleteQuery] = useState("");
+  const [autocompletePicked, setAutocompletePicked] = useState<string | null>(null);
+
+  const autocompleteMatches = DEMO_PLAYERS.filter((p) =>
+    p.name.toLowerCase().includes(autocompleteQuery.trim().toLowerCase()),
+  );
 
   return (
     <div className="min-h-screen bg-white">
@@ -209,6 +230,44 @@ export default function PrimitivesPage() {
                 variant="withButton"
                 buttonText="Send message"
               />
+            </div>
+          </section>
+
+          {/* Autocomplete Section */}
+          <section>
+            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+              Autocomplete
+            </h2>
+            <p className="-mt-4 mb-6 text-slate-600 max-w-2xl">
+              ARIA 1.2 combobox. Fully keyboard operable: ↑/↓ move the
+              highlight, Home/End jump to the ends, Enter confirms, Escape
+              closes. Escape is only swallowed while the list is open, so a
+              host dialog&rsquo;s own Escape-to-cancel still works.
+            </p>
+            {/* Dark surface — see the Input section note. */}
+            <div className="rounded-lg bg-slate-950 p-8">
+              <div className="max-w-md">
+                <Autocomplete
+                  query={autocompleteQuery}
+                  onQueryChange={setAutocompleteQuery}
+                  items={autocompleteMatches}
+                  getKey={(p) => p.id}
+                  getLabel={(p) => p.name}
+                  getDescription={(p) => p.sport}
+                  onSelect={(p) => {
+                    setAutocompleteQuery(p.name);
+                    setAutocompletePicked(p.name);
+                  }}
+                  label="Player name"
+                  placeholder="Try typing “Ken”…"
+                  emptyMessage="No players found"
+                />
+                <p className="mt-3 text-sm text-slate-400">
+                  {autocompletePicked
+                    ? `Selected: ${autocompletePicked}`
+                    : "Nothing selected yet."}
+                </p>
+              </div>
             </div>
           </section>
 

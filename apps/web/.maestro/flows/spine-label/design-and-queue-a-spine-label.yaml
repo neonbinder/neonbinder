@@ -1,0 +1,162 @@
+# R1 — Single feature: a signed-in collector can design a binder spine label on
+# /print/spine-label (name, typeface, ring size), press "Add to sheet" to queue
+# it, and remove it again — with the designer clearing itself for the next label.
+#
+# SELF-CONTAINED (R3/R4): the spine designer holds everything in page state —
+# nothing is saved to Convex, nothing is read from another flow's leftovers — so
+# this flow needs no seeded data at all beyond a signed-in session. The entry URL
+# IS the Clerk handshake (R4); there is no in-body login or credential step. It
+# is also NOT admin-only: /print/spine-label sits under the ordinary Print Shop
+# layout, so the plain worker account reaches it.
+#
+# WHY NO PLAYER IS PICKED: the "Player" box searches the `players` table, whose
+# contents depend on whichever set-selector flows have run on this deployment.
+# A flow that depended on a particular player existing would be green or red by
+# accident. The free-text "Name on the label" field is the deliberate,
+# always-available path (the page's own comment: "Edit freely — the label prints
+# exactly this"), and it is what makes this flow deterministic on an empty
+# players table. Player-driven colour resolution is therefore NOT covered here —
+# see the report accompanying this flow.
+#
+# R2 — this cannot go green without the feature working:
+#   * the "N labels per sheet at N" wide" line is COMPOSED from the ring size, so
+#     it only reads "2 labels per sheet at 3" wide" if the 3" preset tap landed;
+#   * the Remove button's accessible name is COMPOSED from the queued label's
+#     name + ring size + typeface, so it only exists as
+#     "Remove Ken Griffey Jr., 3 inch spine in Graduate, from the sheet" if all
+#     three choices reached the queued label;
+#   * the closing preview empty-state can only render when the sheet is empty AND
+#     the designer's name field is blank — a designer that failed to clear would
+#     keep a draft label in the preview and that assertion would fail.
+# No `when:` branches, no optional sub-flows — every step is a hard assert.
+#
+# R7/R7a — writes nothing. No Convex mutation is involved anywhere on this page,
+# so there is no set, card or shared row to collide with another worker on.
+#
+# HARD CONSTRAINT — we never tap "Print". It calls window.print(), whose native
+# dialog blocks every further browser event and wedges the run (the same trap
+# already documented on labels/print-label.yaml). The queued-sheet list IS the
+# assertable half of the feature.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/print/spine-label&worker=${WORKER_INDEX || "0"}
+name: Spine Labels — design a label and queue it on the sheet
+tags:
+  - smoke
+  - spine-label
+---
+# Step 1: land on the Spine Labels tool inside the Print Shop.
+- launchApp
+- extendedWaitUntil:
+    visible: "Spine Labels"
+    timeout: 45000
+
+# Step 2: type the name the label will carry.
+#
+# The field's visible label is "Name on the label". It is a wrapping <label>
+# (the shared Input primitive deliberately emits no id, so there is no
+# aria-label to target either), which means tapping the visible label text
+# focuses the input underneath it and the typing lands there — the same
+# visible-label technique labels/print-label.yaml uses.
+- scrollUntilVisible:
+    element:
+      text: "Name on the label"
+    centerElement: true
+- tapOn: "Name on the label"
+- inputText: "Ken Griffey Jr."
+
+# Step 3: the contrast readout.
+#
+# It only renders once BOTH colour fields hold a valid hex, which the page's
+# defaults satisfy on arrival, so this is the "colours are usable" gate rather
+# than something we have to set up. The text is composed — "Contrast 17.5:1 —
+# easy to read on a shelf." — so the ratio itself varies; matching the label
+# word is what proves the readout resolved rather than sitting on the amber
+# "Enter two hex colors…" fallback (which does NOT contain "Contrast" followed
+# by a ratio... it contains "contrast" as the last word, hence the ":" anchor).
+- scrollUntilVisible:
+    element:
+      text: ".*Contrast .*:1.*"
+    centerElement: true
+
+# Step 4: choose the typeface. Eleven buttons, each labelled with its own font
+# name and set in that face; "Graduate" is the collegiate slab.
+- scrollUntilVisible:
+    element:
+      text: "Graduate"
+    centerElement: true
+- tapOn: "Graduate"
+
+# The one-line character note under the picker follows the SELECTED font, so it
+# changing to Graduate's note is immediate proof the tap registered — a
+# different element from the one just scrolled to, so this is not a redundant
+# re-assert (R6).
+- assertVisible: "Collegiate slab. Varsity."
+
+# Step 5: choose the binder's ring size. The presets are labelled with plain
+# ASCII inch marks ('3"'); the prose below them uses the typographic double
+# prime (3"), so these two never collide as selectors.
+- scrollUntilVisible:
+    element:
+      text: '3"'
+    centerElement: true
+- tapOn: '3"'
+
+# The "labels per sheet" line is computed from the chosen width — two 3" spines
+# fit across an 8" printable sheet. This string exists nowhere until the preset
+# is applied, so it is the assertion that the ring-size tap actually took.
+# ('.' stands in for the typographic prime so the file stays ASCII-safe.)
+- assertVisible: ".*2 labels per sheet at 3. wide.*"
+
+# Step 6: queue the label.
+- scrollUntilVisible:
+    element:
+      text: "Add to sheet"
+    centerElement: true
+- tapOn: "Add to sheet"
+
+# Step 7: the label is on the sheet.
+#
+# The Remove button's accessible name is composed from the queued label's own
+# name, ring size and typeface — "Remove Ken Griffey Jr., 3 inch spine in
+# Graduate, from the sheet" — so finding it proves all three design choices
+# travelled onto the queued label, not merely that SOMETHING got added. We
+# scroll to it because we tap it in Step 8, and centring it also brings the
+# Sheet heading (one row above) into view for the count assertion.
+#
+# direction: UP is load-bearing. "Add to sheet" is the last control in the
+# left-hand designer column, so pressing it leaves us at the BOTTOM of the
+# page — and the sheet we just added to is the top of the RIGHT-hand column,
+# i.e. above us. scrollUntilVisible defaults to DOWN, which walks away from the
+# target forever, and an off-screen element is pruned from the hierarchy before
+# any selector runs, so it reads as "no visible element found" rather than as a
+# scrolling problem.
+- scrollUntilVisible:
+    element:
+      id: "Remove Ken Griffey Jr., 3 inch spine in Graduate, from the sheet"
+    direction: UP
+    centerElement: true
+
+# The Sheet heading counts what will PRINT. One 3" label at the default 10.5"
+# height is one page. (Parens escaped — a Maestro text matcher is a fully
+# anchored REGEX as well as a literal, so bare "(" would read as a group.)
+- assertVisible: ".*Sheet \\(1 label, 1 page\\).*"
+
+# Step 8: remove it again. (Also the reason this flow leaves no residue.)
+- tapOn:
+    id: "Remove Ken Griffey Jr., 3 inch spine in Graduate, from the sheet"
+- assertVisible: ".*Sheet \\(0 labels, 0 pages\\).*"
+
+# Step 9: the designer cleared itself when the label was added.
+#
+# This is the honest way to assert it. "Ken Griffey Jr." cannot simply be
+# asserted absent right after the Add — the queued row and its Remove button
+# both legitimately contain it. But the preview renders the queued labels PLUS
+# the one currently being designed, and only falls back to this empty-state
+# sentence when BOTH are empty. So with the sheet now empty, this sentence can
+# only appear if the name field really was cleared by the Add. A designer that
+# kept "Ken Griffey Jr." would still be drafting a label, the preview sheet
+# would render instead, and this step would fail.
+- scrollUntilVisible:
+    element:
+      text: "Pick a player, or type a name, to see the label."
+    centerElement: true

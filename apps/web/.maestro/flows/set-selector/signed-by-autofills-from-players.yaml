@@ -125,7 +125,7 @@ tags:
 # sign-in). Every UI wait below uses Maestro's 7s default (R5); the only longer
 # wait is the live SL round-trip inside util-drill-to-base-variant.
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # ============================================================

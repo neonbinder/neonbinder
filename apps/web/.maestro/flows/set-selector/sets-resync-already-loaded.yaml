@@ -22,7 +22,7 @@ tags:
 
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # /profile/credentials detour (load-bearing): navigate away so util-drill's openLink

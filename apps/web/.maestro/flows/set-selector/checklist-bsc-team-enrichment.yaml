@@ -59,7 +59,7 @@ tags:
 # ── LAUNCH + SIGN IN ────────────────────────────────────────────────────────
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000   # cold sign-in / app load; UI-only waits below use the 7s default
 
 # ── DRILL TO THE PRE-SYNCED BASE CHECKLIST (R9) ─────────────────────────────

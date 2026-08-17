@@ -40,8 +40,8 @@ tags:
 # BuySportsCards must NOT appear — asserting only the SL name is insufficient
 # because the both-missing banner also contains "SportLots"
 - assertNotVisible: "BuySportsCards"
-# The Set Selector UI itself must not be visible
-- assertNotVisible: "Set Selector"
+# The Set Builder UI itself must not be visible
+- assertNotVisible: ".*Build set parameters using marketplace APIs.*"
 
 # Step 4: the CTA link leads to /profile
 - scrollUntilVisible:

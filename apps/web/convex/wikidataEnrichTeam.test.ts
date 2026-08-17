@@ -148,6 +148,21 @@ async function insertTeam(
 const getTeam = (t: ReturnType<typeof convexTest>, id: Id<"teams">) =>
   t.run(async (ctx) => ctx.db.get(id));
 
+/**
+ * NEO-156: enrichment reports a league NAME but stores a league ROW, so these
+ * cases resolve the reference to assert on. A name-shaped assertion would have
+ * kept passing against the free-text field this replaced.
+ */
+const getLeagueName = async (
+  t: ReturnType<typeof convexTest>,
+  id: Id<"teams">,
+) =>
+  t.run(async (ctx) => {
+    const team = await ctx.db.get(id);
+    if (!team?.leagueId) return undefined;
+    return (await ctx.db.get(team.leagueId))?.name;
+  });
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -157,7 +172,7 @@ afterEach(() => {
 // ===========================================================================
 
 describe("enrichTeam", () => {
-  test("ESPN matches AND Wikidata matches: city/league/colors from ESPN, yearsActive/wikidataId from Wikidata, espnId persisted", async () => {
+  test("ESPN matches AND Wikidata matches: city/league from ESPN, yearsActive/wikidataId from Wikidata, espnId persisted, colors from the bundled dataset", async () => {
     const t = convexTest(schema, modules);
     const teamId = await insertTeam(t, "Washington Nationals");
 
@@ -186,9 +201,13 @@ describe("enrichTeam", () => {
 
     const team = await getTeam(t, teamId);
     // ESPN wins for city/league even though Wikidata also resolved them.
-    expect(team!.league).toBe("Major League Baseball");
+    expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
     expect(team!.city).toBe("Washington");
-    expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#ba122b" });
+    // NEO-156: colors do NOT come from ESPN for a team the bundled dataset
+    // carries. `enrichTeam` runs the color resolver last, and a dedicated color
+    // source outranks ESPN — the same precedence teamcolorcodes.com already
+    // had. Washington Nationals is one of the dataset's 30 MLB rows.
+    expect(team!.colors).toEqual({ primary: "#ab0003", secondary: "#11225b" });
     // Wikidata is the only source for yearsActive/wikidataId.
     expect(team!.yearsActive?.from).toBe(1969);
     expect(team!.yearsActive?.to).toBeUndefined();
@@ -196,7 +215,7 @@ describe("enrichTeam", () => {
     expect(team!.externalIds?.espnId).toBe("20");
   });
 
-  test("ESPN matches, Wikidata has no QID at all: persists ESPN's city/league/colors/espnId, no wikidataId, no yearsActive", async () => {
+  test("ESPN matches, Wikidata has no QID at all: persists ESPN's city/league/espnId, no wikidataId, no yearsActive", async () => {
     const t = convexTest(schema, modules);
     const teamId = await insertTeam(t, "Washington Nationals");
 
@@ -219,9 +238,13 @@ describe("enrichTeam", () => {
     await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
 
     const team = await getTeam(t, teamId);
-    expect(team!.league).toBe("Major League Baseball");
+    expect(await getLeagueName(t, teamId)).toBe("Major League Baseball");
     expect(team!.city).toBe("Washington");
-    expect(team!.colors).toEqual({ primary: "#0d2340", secondary: "#ba122b" });
+    // NEO-156: colors do NOT come from ESPN for a team the bundled dataset
+    // carries. `enrichTeam` runs the color resolver last, and a dedicated color
+    // source outranks ESPN — the same precedence teamcolorcodes.com already
+    // had. Washington Nationals is one of the dataset's 30 MLB rows.
+    expect(team!.colors).toEqual({ primary: "#ab0003", secondary: "#11225b" });
     expect(team!.externalIds?.espnId).toBe("20");
     expect(team!.externalIds?.wikidataId).toBeUndefined();
     expect(team!.yearsActive).toBeUndefined();
@@ -250,7 +273,7 @@ describe("enrichTeam", () => {
     await t.action(internal.adapters.wikidata.enrichTeam, { teamId });
 
     const team = await getTeam(t, teamId);
-    expect(team!.league).toBe("National League");
+    expect(await getLeagueName(t, teamId)).toBe("National League");
     expect(team!.city).toBe("Montreal");
     expect(team!.yearsActive).toEqual({ from: 1969, to: 2004 });
     expect(team!.externalIds?.wikidataId).toBe("Q1130155");

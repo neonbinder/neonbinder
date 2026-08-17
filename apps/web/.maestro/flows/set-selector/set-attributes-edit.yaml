@@ -59,7 +59,7 @@ tags:
 # flow deterministically at parallelism>1 (3rd rapid sign-in per account →
 # rate-limit backoff). 45s covers the full backoff; matches team-picker's gate.
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 - runFlow:
     file: util-drill-to-custom.yaml

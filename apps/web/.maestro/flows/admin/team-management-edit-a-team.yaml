@@ -1,0 +1,102 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/teams&worker=${WORKER_INDEX || "0"}
+name: "Team Management — select a team and edit it"
+tags:
+  - regression
+  - admin
+---
+# R1 — Single feature: the master-detail half of Team Management. Selecting a
+# team from the list opens an edit panel for it, and a field saved there
+# persists. The sibling flow team-management-filter covers the master side
+# (filtering, empty state); this one covers the detail side.
+#
+# SELF-CONTAINED (R3/R4) but DEPENDS ON THE FIXTURE. "New York Yankees" is
+# seeded by setup.yaml's "Seed Test Teams" (convex/teams.ts#seedTestTeams),
+# which after NEO-147 also gives it deterministic colours. That is the whole
+# reason this flow can exist: the teams table is global and empty after a
+# reset, so before the fixture carried colours there was no team any flow could
+# name and assert on. Do not swap in a real synced team — those come from
+# marketplace data and vary.
+#
+# R2 — this cannot go green without the feature working. It types a city into
+# the detail panel, saves, and asserts the value survives a reload. A panel
+# that rendered but did not persist, or persisted to the wrong row, fails.
+#
+# The city is per-worker so eight runners editing the same shared Yankees row
+# cannot read each other's writes (R7a — the queue shares one deployment).
+
+- launchApp
+
+# Wait for the COUNTER, not the heading. "Team Management" is the page title and
+# renders while the list is still loading — the filter input does not exist yet
+# at that point, so typing there goes nowhere. The counter only renders once the
+# query has resolved, which is also when the autofocus lands (NEO-156).
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 45000
+- inputText: "Yankees"
+
+# The list narrows to the fixture. Composed with the count so this cannot pass
+# against an unfiltered list that merely happens to contain the Yankees.
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 15000
+- tapOn: "New York Yankees"
+
+# ── THE DETAIL PANEL ────────────────────────────────────────────────────────
+# Its heading is the team's name, and Save/Discover only exist inside it, so
+# together they prove the panel opened for the row that was tapped rather than
+# rendering the "Select a team" placeholder.
+# Scrolled to first: the panel's buttons sit below its five fields, and on the
+# 1024x629 headless viewport that is past the fold. `visible` is false for an
+# element that exists off-screen.
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+    timeout: 15000
+- assertVisible: "Save"
+- assertVisible: "Discover"
+
+# The seeded colours arrive in the panel's own fields. This is the assertion
+# the fixture exists for — #132448 is Yankees navy from seedTestTeams, and it
+# reaches here only if the row was read and mapped into the form correctly.
+- assertVisible: "#132448"
+
+# NEVER tap "Discover". It performs a live outbound fetch of teamcolorcodes.com's
+# sitemap (~1.5MB) from CI, against a third party with no contract.
+
+# ── EDIT AND SAVE ───────────────────────────────────────────────────────────
+# City is chosen deliberately: it is free text, is not part of the seeded
+# fixture, and nothing else derives from it — so writing it cannot disturb
+# another flow reading colours or the league off this same shared row.
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+    timeout: 10000
+- tapOn: "City"
+- eraseText
+- inputText: 'Bronx${WORKER_INDEX || "0"}'
+- tapOn: "Save"
+
+# The mutation confirms by name, so this proves the save targeted THIS team.
+- extendedWaitUntil:
+    visible: ".*Saved New York Yankees.*"
+    timeout: 15000
+
+# ── IT PERSISTED ────────────────────────────────────────────────────────────
+# A reload is what separates "the form still holds what I typed" from "the
+# database holds it". Re-select and read the field back.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- inputText: "Yankees"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 15000
+- tapOn: "New York Yankees"
+- extendedWaitUntil:
+    visible: 'Bronx${WORKER_INDEX || "0"}'
+    timeout: 15000
