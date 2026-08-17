@@ -14,7 +14,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRANSFORMERS_CACHE=/opt/hf-cache \
     HF_HUB_DISABLE_PROGRESS_BARS=1 \
     U2NET_HOME=/opt/u2net-cache \
-    REMBG_MODEL=${REMBG_MODEL}
+    REMBG_MODEL=${REMBG_MODEL} \
+    REQUIRE_BAKED_WEIGHTS=1 \
+    OMP_NUM_THREADS=1
+# REQUIRE_BAKED_WEIGHTS: startup fails loudly if the baked weights are gone,
+# instead of rembg silently re-downloading ~930MB into Cloud Run's in-memory
+# filesystem. OMP_NUM_THREADS=1: ORT would otherwise claim all 4 vCPU per
+# inference under concurrency 3 (torch already does set_num_threads(1)).
 
 WORKDIR /app
 
@@ -38,19 +44,29 @@ SamProcessor.from_pretrained('facebook/sam-vit-base'); \
 SamModel.from_pretrained('facebook/sam-vit-base'); \
 print('SAM model cached to', '$HF_HOME')"
 
-# Pre-download the BiRefNet weights (tiered crop's fallback) the same way —
-# rembg downloads into U2NET_HOME when the session is first created, so
-# creating one here bakes the weights and the first request never touches
-# the network. ~930MB for the full model; see the ARG above for the lite flip.
+# Pre-download the BiRefNet weights the same way — rembg downloads into
+# U2NET_HOME when the session is first created, so creating one here bakes
+# the weights and the first request never touches the network. NOTE: this is
+# NOT a rarely-hit fallback — tiered runs BiRefNet on virtually every image
+# (as fallback when classical fails, as verification when it passes).
+# ~930MB for the full model; see the ARG above for the lite flip.
+# The model name is read from the environment inside python — never shell-
+# interpolated into the source (a crafted --build-arg would otherwise be
+# build-time code injection).
 RUN python -c "\
+import os; \
 from rembg import new_session; \
-new_session('$REMBG_MODEL'); \
-print('BiRefNet model', '$REMBG_MODEL', 'cached to', '$U2NET_HOME')"
+new_session(os.environ['REMBG_MODEL']); \
+print('BiRefNet model', os.environ['REMBG_MODEL'], 'cached to', os.environ['U2NET_HOME'])"
 
 COPY app ./app
 
+# appuser owns only /app. The model caches stay root-owned and read-only:
+# if the weights ever go missing/corrupt, a runtime re-download must FAIL
+# (see REQUIRE_BAKED_WEIGHTS above), not silently succeed.
 RUN useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app /opt/hf-cache /opt/u2net-cache
+    && chown -R appuser:appuser /app \
+    && chmod -R a+rX-w /opt/hf-cache /opt/u2net-cache
 USER appuser
 
 EXPOSE 8080

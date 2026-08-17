@@ -11,13 +11,16 @@ Slice 2b: SAM added to the cascade; text-count + classify-error gates
 from __future__ import annotations
 
 import base64
+import glob
 import hmac
 import logging
 import os
+from io import BytesIO
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
+from PIL import Image
 from pydantic import BaseModel
 
 from app import cropper
@@ -30,7 +33,33 @@ app = FastAPI(title="neonbinder-preprocess", version="0.3.0")
 
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
+# Decoded-pixel ceiling, enforced pre-decode in _read_upload. The byte cap
+# alone doesn't bound memory — a ~1MB flat-colour JPEG can decode to >500MB.
+# Largest legitimate input today is a 6144x8160 phone photo (50.1MP); 60MP
+# leaves headroom while keeping worst-case decode ~700MB within the
+# 4Gi / concurrency-3 budget. Pillow's own bomb check only hard-fails at
+# ~179MP and its warning is suppressed process-wide by sam.py.
+MAX_IMAGE_PIXELS = 60_000_000
 ALLOWED_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
+@app.on_event("startup")
+def _verify_baked_weights() -> None:
+    """Fail loudly at boot if the baked model weights are missing.
+
+    Only enforced when REQUIRE_BAKED_WEIGHTS=1 (set in the Dockerfile). A
+    missing cache would otherwise trigger rembg's silent runtime re-download:
+    a ~930MB write into Cloud Run's in-memory filesystem plus an
+    unauthenticated outbound fetch — a slow success where we want a loud
+    failure. Unit tests don't set the var and are unaffected.
+    """
+    if os.environ.get("REQUIRE_BAKED_WEIGHTS") != "1":
+        return
+    u2net_home = os.environ.get("U2NET_HOME", "")
+    if not u2net_home or not glob.glob(os.path.join(u2net_home, "*.onnx")):
+        raise RuntimeError(
+            f"REQUIRE_BAKED_WEIGHTS=1 but no .onnx weights under U2NET_HOME={u2net_home!r}"
+        )
 
 
 class CropStrategyOutput(BaseModel):
@@ -76,10 +105,12 @@ class ProcessResponse(BaseModel):
     the model actually saw.
 
     `cropped_source` tells the client which stage of the crop cascade
-    won. When it is `"precropped"` the client's upload was used as-is and
-    `cropped_image_b64` will be null (the client already has the bytes
-    on disk). For every other source, the server produced new bytes and
-    returns them base64-encoded in `cropped_image_b64`.
+    won. `cropped_image_b64` is null whenever the winning bytes are ones
+    the client already has: the `"precropped"` win, `"passthrough"`, and
+    `"tiered"`'s identity result (the upload already IS the card, returned
+    untouched). For any source where the server produced new bytes, they
+    come back base64-encoded in `cropped_image_b64` — so key off the null
+    check, not off which source won.
     """
 
     players: list[str]
@@ -128,6 +159,19 @@ async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"{field} exceeds max size of {MAX_IMAGE_BYTES} bytes",
+        )
+    # Header-only open (no pixel decode) to bound decoded size up front.
+    # Unreadable bytes pass through — the pipeline's existing error paths
+    # own that case; this check only guards the decode-bomb lever.
+    try:
+        with Image.open(BytesIO(data)) as im:
+            width, height = im.size
+    except Exception:  # noqa: BLE001
+        return data
+    if width * height > MAX_IMAGE_PIXELS:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"{field} is {width}x{height}; max decoded size is {MAX_IMAGE_PIXELS} pixels",
         )
     return data
 

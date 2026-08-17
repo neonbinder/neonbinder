@@ -139,10 +139,15 @@ class TestProcessHappyPath:
         assert isinstance(body["text_count"], int) and body["text_count"] >= 0
         # Synthetic test image is card-shaped (600x900) and noisy → passes the
         # precropped validator. cropped_image_b64 should be null in that case.
+        # Keep in sync with cropper.STRATEGY_NAMES (not imported here — the
+        # smoke job runs without the service's heavyweight deps installed).
         assert body["cropped_source"] in {
             "precropped",
+            "tiered",
             "pil_trim_dark",
             "pil_trim_light",
+            "sam",
+            "haiku_bbox",
             "passthrough",
         }, f"unexpected cropped_source {body['cropped_source']!r}"
         if body["cropped_source"] == "precropped":

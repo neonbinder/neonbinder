@@ -405,9 +405,7 @@ class TestIdentityGuard:
         assert result == src
         assert len(calls) == 1, "identity must not be settled by classical evidence alone"
 
-    def test_full_bleed_card_returns_input_when_birefnet_finds_nothing_either(
-        self, stub_birefnet
-    ):
+    def test_full_bleed_card_returns_input_when_birefnet_finds_nothing_either(self, stub_birefnet):
         calls = stub_birefnet()  # zeros — no object at all
         src = _jpeg(self._card_aspect_scene())
         result = tiered_crop(src)
@@ -593,6 +591,15 @@ class TestBirefnetMask:
         assert _get_session() is sentinel
         assert _get_session() is sentinel
         assert created == ["birefnet-general-lite"]
+
+    def test_get_session_rejects_models_outside_the_allowlist(self, monkeypatch):
+        """rembg ships session classes that POST the image to third-party
+        APIs (e.g. "withoutbg") — an env typo must fail loudly, never
+        select one. The allowlist check runs before any session import."""
+        monkeypatch.setenv("REMBG_MODEL", "withoutbg")
+
+        with pytest.raises(ValueError, match="not allowed"):
+            _get_session()
 
     def test_get_session_defaults_to_birefnet_general(self, monkeypatch):
         created: list[str] = []

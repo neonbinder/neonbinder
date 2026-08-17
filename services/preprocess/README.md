@@ -17,10 +17,14 @@ The resulting design:
 
 - **One Cloud Run service**, scale-to-zero, 4 CPU / 4Gi / concurrency 3 /
   max-instances 3.
-- **Crop** — the benchmarked tiered pipeline first (classical OpenCV with a
-  BiRefNet fallback, NEO-161), then the older cascade (PIL trim → SAM → Haiku
-  bbox). Both model weights (BiRefNet via rembg, SAM) are baked into the image
-  at build time so there is no runtime download.
+- **Crop** — the benchmarked tiered pipeline first (classical OpenCV +
+  BiRefNet, NEO-161), then the older cascade (PIL trim → SAM → Haiku bbox).
+  BiRefNet is NOT a rarely-hit fallback: tiered runs it on virtually every
+  image — as the fallback when classical fails its QC gate, and as a
+  verification pass when classical succeeds — so size capacity and latency
+  expectations around ~5-10s/image of ONNX inference per request. Both model
+  weights (BiRefNet via rembg, SAM) are baked into the image at build time so
+  there is no runtime download.
 - **Orient** — Cloud Vision `DOCUMENT_TEXT_DETECTION` rather than a bundled
   EasyOCR model, keeping ~300MB out of the container.
 - **Classify** — Anthropic Claude Haiku, key from Secret Manager, never baked

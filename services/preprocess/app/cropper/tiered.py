@@ -13,7 +13,11 @@ Mask sources share one geometry stage:
   birefnet   — rembg/BiRefNet alpha matte on a border-padded input (padding
                makes a frame-filling card an "object on background" again)
   tiered     — classical first; when classical can't produce a QC-gate pass,
-               or can't settle the pre-cropped identity question, BiRefNet runs
+               or can't settle the pre-cropped identity question, BiRefNet
+               runs as the fallback. A classical gate-pass is additionally
+               VERIFIED against BiRefNet (dark-on-dark border shaves are
+               invisible to aspect gates), so BiRefNet inference is on the
+               hot path for virtually every image — capacity-plan for it
 
 Geometry: components → merge close fragments → hull → minAreaRect
   rectangular (hull/rect ≥ RECT_MIN) → 4-line-fit corners → one
@@ -54,6 +58,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 from io import BytesIO
 from typing import Any
 
@@ -90,24 +95,39 @@ OUTPUT_JPEG_QUALITY = 92
 # ── BiRefNet session (lazy, cached, injectable for tests) ───────────────────
 
 _session: Any = None
+_session_lock = threading.Lock()
+
+# Only the BiRefNet family may be selected. rembg also ships session classes
+# that POST the image to third-party APIs (e.g. "withoutbg") — an env-var
+# typo must never be able to route user card photos off-box.
+ALLOWED_REMBG_MODELS = frozenset({"birefnet-general", "birefnet-general-lite"})
 
 
 def _get_session() -> Any:
     """Create (once) and return the rembg/BiRefNet session.
 
     Model name is read from `REMBG_MODEL` at first use so tests and deploys
-    can steer it without re-importing. The session is cached for the
-    container's lifetime; in Cloud Run the weights are baked into the image
-    (`U2NET_HOME`), so this never downloads at runtime.
+    can steer it without re-importing; it must be in ALLOWED_REMBG_MODELS.
+    The session is cached for the container's lifetime behind a lock — three
+    concurrent cold requests must not each construct a ~930MB ONNX session.
+    In Cloud Run the weights are baked into the image (`U2NET_HOME`), so
+    this never downloads at runtime.
     """
     global _session
     if _session is None:
-        from rembg import new_session
+        with _session_lock:
+            if _session is None:
+                from rembg import new_session
 
-        model = os.environ.get("REMBG_MODEL", DEFAULT_REMBG_MODEL)
-        logger.info("loading BiRefNet session %s", model)
-        _session = new_session(model)
-        logger.info("BiRefNet session ready")
+                model = os.environ.get("REMBG_MODEL", DEFAULT_REMBG_MODEL)
+                if model not in ALLOWED_REMBG_MODELS:
+                    raise ValueError(
+                        f"REMBG_MODEL {model!r} is not allowed; "
+                        f"choose one of {sorted(ALLOWED_REMBG_MODELS)}"
+                    )
+                logger.info("loading BiRefNet session %s", model)
+                _session = new_session(model)
+                logger.info("BiRefNet session ready")
     return _session
 
 

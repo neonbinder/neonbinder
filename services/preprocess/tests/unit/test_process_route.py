@@ -9,6 +9,7 @@ wiring (rotated bytes are what classify sees).
 from __future__ import annotations
 
 import io
+import random
 
 import pytest
 from fastapi.testclient import TestClient
@@ -142,6 +143,21 @@ class TestRequestValidation:
             files={"image": ("card.jpg", oversized, "image/jpeg")},
         )
         assert response.status_code == 413
+
+    def test_image_over_pixel_cap_returns_413(self, monkeypatch):
+        """The decoded-pixel ceiling rejects decode bombs the byte cap can't
+        see. Enforced from the image header, before any pixel decode — the
+        cap is lowered here so a small test image can trip it."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        monkeypatch.setattr("app.main.MAX_IMAGE_PIXELS", 1_000_000)
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(size=(1200, 1600)), "image/jpeg")},
+        )
+        assert response.status_code == 413
+        assert "1200x1600" in response.json()["detail"]
 
     def test_missing_file_field_returns_400_missing_image(self):
         """With image+precropped both optional, an empty request is a
@@ -531,3 +547,37 @@ class TestCropOnlyMode:
         )
         assert response.status_code == 400
         assert "empty precropped" in response.json()["detail"]
+
+
+def _noisy_jpeg(size: tuple[int, int]) -> bytes:
+    """Card-shaped noise: clears the validator's grayscale-stddev gate,
+    which a flat-colour _jpeg() cannot."""
+    rng = random.Random(161)
+    im = Image.frombytes("RGB", size, rng.randbytes(size[0] * size[1] * 3))
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+class TestTieredIdentityContract:
+    def test_tiered_identity_echo_returns_null_b64(self, monkeypatch):
+        """When tiered returns the upload untouched (identity guard), the
+        cascade must report source="tiered" with cropped_image_b64 null —
+        the client already has those exact bytes. Consumers key off the
+        null check, not off which source won."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        # Override the autouse decline: echo the input, as identity does.
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda b: b)
+
+        image = _noisy_jpeg(size=(600, 900))
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", image, "image/jpeg")},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cropped_source"] == "tiered"
+        assert body["cropped_image_b64"] is None

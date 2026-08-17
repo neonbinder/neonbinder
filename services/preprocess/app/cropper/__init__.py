@@ -186,7 +186,8 @@ class CropResult:
     `returned_bytes_differ` is True when the server produced new bytes the
     client doesn't already have — i.e. the response should include
     `cropped_image_b64`. False for precropped (client uploaded those exact
-    bytes) and passthrough (client uploaded the raw image).
+    bytes), passthrough (client uploaded the raw image), and any strategy
+    that returns the input untouched (tiered's identity guard).
     """
 
     image_bytes: bytes
