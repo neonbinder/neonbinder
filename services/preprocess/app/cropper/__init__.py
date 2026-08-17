@@ -305,9 +305,9 @@ def crop(
         No fallback path — handler translates CropRejected to 422.
 
     When `precropped_bytes` is provided alongside `image_bytes`, that's tried
-    first via `_try_stage`. When only `image_bytes` is present, it's used as
-    the stage-1 candidate (slice-1 backward compat for callers who already
-    cropped client-side).
+    first via `_try_stage`. When only `image_bytes` is present the cascade
+    runs — the raw upload is NOT treated as an implicit crop candidate, since
+    nothing about it could ever fail the gates (see the stage-1 comment).
 
     The baseline orient on `image_bytes` is computed up front — one extra
     Vision call relative to the old precropped-short-circuit path — so the
@@ -332,19 +332,42 @@ def crop(
         text_threshold,
     )
 
-    # ── Stage 1 — precropped (or raw image as candidate) through the uniform gate.
-    # The client uploaded these exact bytes either way, so returned_bytes_differ
-    # stays False regardless of which branch wins.
-    stage1_candidate = precropped_bytes if precropped_bytes is not None else image_bytes
-    result = _try_stage(
-        source="precropped",
-        candidate_bytes=stage1_candidate,
-        source_area_bytes=image_bytes,
-        text_threshold=text_threshold,
-        returned_bytes_differ=False,
-    )
-    if result is not None:
-        return result
+    # ── Stage 1 — the client's own crop, and ONLY when it actually sent one.
+    #
+    # This used to fall back to `image_bytes` as the stage-1 candidate when no
+    # `precropped` was supplied, which made the entire cascade unreachable for
+    # the common case. Neither gate can reject a raw upload measured against
+    # itself:
+    #
+    #   - `is_plausible_crop(image, source_area_bytes=image)` computes an area
+    #     fraction of exactly 1.0 against MIN_AREA_FRACTION, and checks aspect
+    #     against validator.ASPECT_TOLERANCE (±15%) — which a 3:4 phone photo
+    #     clears at 5.4% off card aspect.
+    #   - the text gate's threshold is 0.8x a baseline counted on those same
+    #     bytes, so the candidate is compared against itself and always passes.
+    #
+    # Measured over the 227-image corpus, 184 uploads won at stage 1 and were
+    # returned untouched — every 3:4 phone photo among them. That is the single
+    # most common shape a user uploads, so in practice the croppers never ran.
+    #
+    # The deeper error was conflating two different questions. ASPECT_TOLERANCE
+    # answers "is this a plausible crop?", and it was being used to answer "did
+    # the user already crop this?" — which cannot be read off an aspect ratio at
+    # all, since framing varies per user and per shot.
+    #
+    # A client that has genuinely already cropped says so by sending
+    # `precropped`. Everyone else gets the cascade. `returned_bytes_differ`
+    # stays False because the client uploaded these exact bytes.
+    if precropped_bytes is not None:
+        result = _try_stage(
+            source="precropped",
+            candidate_bytes=precropped_bytes,
+            source_area_bytes=image_bytes,
+            text_threshold=text_threshold,
+            returned_bytes_differ=False,
+        )
+        if result is not None:
+            return result
 
     # ── Stages 2..N — server-side croppers through the same uniform gate.
     for source in STRATEGY_NAMES:
