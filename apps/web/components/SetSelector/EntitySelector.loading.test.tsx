@@ -58,7 +58,13 @@ vi.mock("convex/react", () => ({
 import EntitySelector from "./EntitySelector";
 import EntityColumn from "./EntityColumn";
 
-type Item = { _id: string; value: string };
+// Mirror the component's own contract rather than inventing a narrower one:
+// `getDisplayName` is typed `(item: SelectorItem) => string`, and SelectorItem
+// is `{ _id: string; [key: string]: unknown }`. Declaring a stricter local
+// `Item` made the prop unassignable — tsc caught it, CI did not, because tsc
+// is not a gate here.
+import type { SelectorItem } from "./EntitySelector";
+
 
 function renderSelector() {
   return render(
@@ -66,11 +72,11 @@ function renderSelector() {
       title="Variant Types"
       query={"getSelectorOptions" as never}
       queryArgs={{ level: "variantType" } as never}
-      selectedId={undefined}
+      selectedId={null}
       onSelect={vi.fn()}
       expanded={true}
       setExpanded={vi.fn()}
-      getDisplayName={(i: Item) => i.value}
+      getDisplayName={(i: SelectorItem) => String(i.value)}
       selectedColor="bg-blue-500"
     />,
   );
@@ -142,11 +148,11 @@ describe("EntitySelector — heading survives an in-flight read (NEO-167)", () =
           title="Variant Types"
           query={"getSelectorOptions" as never}
           queryArgs={{ level: "variantType" } as never}
-          selectedId={undefined}
+          selectedId={null}
           onSelect={vi.fn()}
           expanded={true}
           setExpanded={vi.fn()}
-          getDisplayName={(i: Item) => i.value}
+          getDisplayName={(i: SelectorItem) => String(i.value)}
           selectedColor="bg-blue-500"
         />}
         renderForm={() => <div>form</div>}

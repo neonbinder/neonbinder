@@ -17,7 +17,7 @@
     "build:design-system": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json && mkdir -p .design-sync/.cache && printf 'import \"../../app/globals.css\";\\n' > .design-sync/.cache/css-entry.ts && vite build --config vite.lib.css.config.ts",
     "preview": "vite preview",
     "lint": "eslint .",
-    "test:unit": "vitest run",
+    "test:unit": "vitest run --reporter=default --reporter=json --outputFile=.vitest-results.json && node scripts/verify-test-completeness.mjs",
     "test:unit:watch": "vitest",
     "link-deps": "./link-deps.sh",
     "builder": "npx builder.io@latest launch --app --serverUrl http://localhost:3000",
