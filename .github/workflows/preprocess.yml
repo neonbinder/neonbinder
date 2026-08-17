@@ -193,6 +193,13 @@ jobs:
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
+          # BiRefNet (NEO-161) OOMs at the terraform-managed 4Gi — memory is
+          # per-revision, so this raises ONLY the preview revision; dev's
+          # serving revision keeps 4Gi. Remove once neonbinder_ioc#65 lands
+          # (terraform will report template drift until then). Note the
+          # service template ratchets: a later main-line dev deploy would
+          # inherit 8Gi from the template regardless.
+          flags: --memory=8Gi
 
       - id: capture
         name: Capture preview URL
