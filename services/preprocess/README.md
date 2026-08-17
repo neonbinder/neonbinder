@@ -17,8 +17,10 @@ The resulting design:
 
 - **One Cloud Run service**, scale-to-zero, 4 CPU / 4Gi / concurrency 3 /
   max-instances 3.
-- **Crop** — a cascade of cheap strategies first, then SAM, whose weights are
-  baked into the image at build time so there is no runtime download.
+- **Crop** — the benchmarked tiered pipeline first (classical OpenCV with a
+  BiRefNet fallback, NEO-161), then the older cascade (PIL trim → SAM → Haiku
+  bbox). Both model weights (BiRefNet via rembg, SAM) are baked into the image
+  at build time so there is no runtime download.
 - **Orient** — Cloud Vision `DOCUMENT_TEXT_DETECTION` rather than a bundled
   EasyOCR model, keeping ~300MB out of the container.
 - **Classify** — Anthropic Claude Haiku, key from Secret Manager, never baked
@@ -52,7 +54,7 @@ modes — the mode only affects which work the server performs.
 
 | Mode | `image` | `precropped` | What runs | When to use |
 |---|:-:|:-:|---|---|
-| **image-only** | yes | — | Full crop cascade (PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
+| **image-only** | yes | — | Full crop cascade (tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
 | **image + precropped** | yes | yes | Tries the crop first; if rejected, falls back to the full cascade on the original. | Callers that can guess a crop but want a server-side safety net. |
 | **crop-only** | — | yes | Validates the crop; on pass, runs orient + classify on it. On reject, returns 422 so the caller retries with the original. | Bandwidth-constrained callers whose client-side crops are usually good. Skips the 22 MB-per-image upload entirely when the crop passes. |
 
@@ -106,10 +108,11 @@ Strategies, in canonical order (this is `STRATEGY_NAMES` — the same order
 
 | Index | Name | What it does |
 |:-:|---|---|
-| 0 | `pil_trim_dark` | PIL blur + threshold + trim, card lighter than background. |
-| 1 | `pil_trim_light` | Same, card darker than background. |
-| 2 | `sam` | SAM ViT-B semantic segmentation. |
-| 3 | `haiku_bbox` | Anthropic Haiku bounding-box crop. |
+| 0 | `tiered` | Benchmarked classical OpenCV + BiRefNet tiered pipeline (NEO-161). Declines when the input already looks like the card. |
+| 1 | `pil_trim_dark` | PIL blur + threshold + trim, card lighter than background. |
+| 2 | `pil_trim_light` | Same, card darker than background. |
+| 3 | `sam` | SAM ViT-B semantic segmentation. |
+| 4 | `haiku_bbox` | Anthropic Haiku bounding-box crop. |
 
 Response shape — always a list, one entry per strategy that ran (length 1
 when `strategy` was supplied, 4 when it was omitted):
@@ -160,14 +163,14 @@ Loop pattern:
 HTTP/1.1 400 Bad Request
 {
   "error_code": "UNKNOWN_STRATEGY",
-  "detail": "strategy index 4 out of range; valid indices: 0..3",
-  "valid": ["pil_trim_dark", "pil_trim_light", "sam", "haiku_bbox"]
+  "detail": "strategy index 5 out of range; valid indices: 0..4",
+  "valid": ["tiered", "pil_trim_dark", "pil_trim_light", "sam", "haiku_bbox"]
 }
 ```
 
 The `valid` array is the authoritative strategy list — agents that want to
 know the count up-front can probe with an obviously-out-of-range index
-(e.g. `strategy=999`) before iterating, rather than hard-coding 4.
+(e.g. `strategy=999`) before iterating, rather than hard-coding the count.
 
 ##### Example — curl
 

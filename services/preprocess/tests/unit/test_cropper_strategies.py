@@ -22,7 +22,9 @@ from app.cropper import (
 
 class TestStrategyNames:
     def test_matches_internal_strategies_list(self):
-        assert STRATEGY_NAMES == ("pil_trim_dark", "pil_trim_light", "sam", "haiku_bbox")
+        # `tiered` is deliberately FIRST: the benchmarked classical+BiRefNet
+        # pipeline gets the image before the older strategies (NEO-161).
+        assert STRATEGY_NAMES == ("tiered", "pil_trim_dark", "pil_trim_light", "sam", "haiku_bbox")
 
     def test_is_a_tuple(self):
         # Tuple, not list — STRATEGY_NAMES is meant to be the canonical, immutable order.

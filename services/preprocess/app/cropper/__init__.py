@@ -27,7 +27,8 @@ empty-players / null-card_number response as "preprocess couldn't
 identify this card" and route to a manual path upstream.
 
 Source labels (order of preference):
-    precropped      : client-supplied crop, or the raw upload as fallback
+    precropped      : client-supplied crop (only when the client sent one)
+    tiered          : classical OpenCV + BiRefNet tiered pipeline (NEO-161)
     pil_trim_dark   : PIL blur + threshold + trim (card lighter than bg)
     pil_trim_light  : PIL blur + threshold + trim (card darker than bg)
     sam             : SAM ViT-B semantic segmentation
@@ -42,7 +43,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.classify import ClassifyResult, classify_card
-from app.cropper import haiku_bbox, pil_trim, sam
+from app.cropper import haiku_bbox, pil_trim, sam, tiered
 from app.cropper._utils import rotate_image_bytes
 from app.cropper.validator import is_plausible_crop
 from app.orient import OrientationResult, detect_orientation
@@ -74,6 +75,7 @@ CropStrategy = Callable[[bytes], bytes | None]
 # because the candidate bytes come from a kwarg, not from applying a
 # function to `image_bytes`. Gate application is identical.
 _STRATEGIES: list[tuple[str, object, str]] = [
+    ("tiered", tiered, "tiered_crop"),
     ("pil_trim_dark", pil_trim, "trim_dark"),
     ("pil_trim_light", pil_trim, "trim_light"),
     ("sam", sam, "sam_crop"),

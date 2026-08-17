@@ -129,12 +129,14 @@ def disable_server_strategies(monkeypatch):
 
     def _install(**overrides) -> None:
         defaults = {
+            "tiered_crop": None,
             "trim_dark": None,
             "trim_light": None,
             "sam_crop": None,
             "haiku_bbox_crop": None,
         }
         defaults.update(overrides)
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: defaults["tiered_crop"])
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: defaults["trim_dark"])
         monkeypatch.setattr("app.cropper.pil_trim.trim_light", lambda _b: defaults["trim_light"])
         monkeypatch.setattr("app.cropper.sam.sam_crop", lambda _b: defaults["sam_crop"])
@@ -251,6 +253,42 @@ class TestPrecroppedStage:
         assert result.source == "pil_trim_dark"
 
 
+class TestTieredStage:
+    def test_tiered_wins_ahead_of_pil_trim(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """tiered is first in the cascade — its crop wins before pil_trim runs."""
+        tiered_out = _card_jpeg(size=(500, 700))
+        trim_out = _card_jpeg(size=(510, 714))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(tiered_crop=tiered_out, trim_dark=trim_out)
+
+        image = _card_jpeg(size=(1200, 1600))
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert result.source == "tiered"
+        assert result.image_bytes == tiered_out
+        assert result.returned_bytes_differ is True
+
+    def test_tiered_declining_falls_through_to_pil_trim(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """Identity/decline (None) hands the image to the next strategy."""
+        trim_out = _card_jpeg(size=(500, 700))
+        stub_orient()
+        stub_classify(_classify())
+        disable_server_strategies(tiered_crop=None, trim_dark=trim_out)
+
+        image = _card_jpeg(size=(1200, 1600))
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert result.source == "pil_trim_dark"
+        assert result.image_bytes == trim_out
+
+
 class TestPilTrimStages:
     def test_pil_trim_dark_wins_when_it_produces_good_output(
         self, stub_orient, stub_classify, disable_server_strategies
@@ -326,6 +364,7 @@ class TestSamStage:
 
     def test_sam_raises_falls_through_to_haiku_bbox(self, stub_orient, stub_classify, monkeypatch):
         good = _card_jpeg(size=(500, 700))
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_light", lambda _b: None)
 
@@ -366,6 +405,7 @@ class TestHaikuBboxStage:
     def test_haiku_bbox_raises_falls_through_to_passthrough(
         self, stub_orient, stub_classify, monkeypatch
     ):
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: None)
         monkeypatch.setattr("app.cropper.pil_trim.trim_light", lambda _b: None)
         monkeypatch.setattr("app.cropper.sam.sam_crop", lambda _b: None)

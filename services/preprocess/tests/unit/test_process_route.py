@@ -27,6 +27,18 @@ def _set_internal_key(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-key")
 
 
+@pytest.fixture(autouse=True)
+def _decline_tiered(monkeypatch):
+    """These tests exercise the real cascade on tiny synthetic uploads.
+
+    The tiered strategy's BiRefNet fallback would need a real rembg session
+    (model download — forbidden in unit tests), so it declines here and the
+    pre-existing pil_trim/sam/haiku behavior under test is unchanged.
+    Tiered's own behavior is covered in test_cropper_tiered.py.
+    """
+    monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: None)
+
+
 def _jpeg(size: tuple[int, int] = (8, 8), color: str = "white") -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", size, color=color).save(buf, format="JPEG")

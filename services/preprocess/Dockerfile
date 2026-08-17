@@ -1,12 +1,20 @@
 FROM python:3.12-slim
 
+# BiRefNet model for the tiered crop strategy (via rembg). ONE-LINE FLIP:
+# set to "birefnet-general-lite" for a smaller/faster image. Runtime reads
+# the same name from the REMBG_MODEL env var (set below), so the baked
+# weights and the loaded model always agree.
+ARG REMBG_MODEL=birefnet-general
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PORT=8080 \
     HF_HOME=/opt/hf-cache \
     TRANSFORMERS_CACHE=/opt/hf-cache \
-    HF_HUB_DISABLE_PROGRESS_BARS=1
+    HF_HUB_DISABLE_PROGRESS_BARS=1 \
+    U2NET_HOME=/opt/u2net-cache \
+    REMBG_MODEL=${REMBG_MODEL}
 
 WORKDIR /app
 
@@ -30,10 +38,19 @@ SamProcessor.from_pretrained('facebook/sam-vit-base'); \
 SamModel.from_pretrained('facebook/sam-vit-base'); \
 print('SAM model cached to', '$HF_HOME')"
 
+# Pre-download the BiRefNet weights (tiered crop's fallback) the same way —
+# rembg downloads into U2NET_HOME when the session is first created, so
+# creating one here bakes the weights and the first request never touches
+# the network. ~930MB for the full model; see the ARG above for the lite flip.
+RUN python -c "\
+from rembg import new_session; \
+new_session('$REMBG_MODEL'); \
+print('BiRefNet model', '$REMBG_MODEL', 'cached to', '$U2NET_HOME')"
+
 COPY app ./app
 
 RUN useradd --create-home --shell /bin/bash appuser \
-    && chown -R appuser:appuser /app /opt/hf-cache
+    && chown -R appuser:appuser /app /opt/hf-cache /opt/u2net-cache
 USER appuser
 
 EXPOSE 8080
