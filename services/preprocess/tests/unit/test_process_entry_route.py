@@ -17,6 +17,7 @@ Storage is the shared in-memory fake from `_fake_gcs` driven through the real
 from __future__ import annotations
 
 import io
+import math
 import random
 import re
 
@@ -28,6 +29,7 @@ from app import cropper
 from app.classify import ClassifyResult
 from app.dhash import compute_dhash
 from app.exif import EXIF_ORIENTATION_TAG, apply_exif_orientation, read_exif_orientation
+from app.imaging import MAX_IMAGE_PIXELS
 from app.jobs import zipsafe
 from app.jobs.gcs import ObjectStore
 from app.main import app
@@ -341,6 +343,34 @@ class TestExifUpright:
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", truncated, "image/jpeg")
 
         assert _post_entry(entry_index=0).status_code == 502
+
+
+class TestRasterCeiling:
+    """Streaming intake POSTs directly into extracted/ via a signed policy
+    that bounds bytes and content-type but never pixels — so /process-entry
+    must enforce the same decoded-raster ceiling /extract does. Terminal 413
+    on purpose: the same bytes can never succeed, so the workpool must not
+    retry it into the 502 bucket five times."""
+
+    def test_over_ceiling_entry_is_a_terminal_413(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        # Just above the ceiling but below 2x, so the header is still
+        # readable and check_raster_size (not Pillow's hard refusal) is what
+        # fires. Flat colour keeps the encoded bytes tiny — the whole point
+        # of the finding is that byte ceilings don't bound this.
+        edge = math.isqrt(int(MAX_IMAGE_PIXELS * 1.2)) + 1
+        out = io.BytesIO()
+        Image.new("RGB", (edge, edge), (255, 255, 255)).save(out, format="PNG", compress_level=1)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.png", out.getvalue(), "image/png")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 413
+        body = response.json()
+        assert body["error_code"] == "ENTRY_TOO_MANY_PIXELS"
+        # Nothing was written: the guard fired before dhash/crop/output.
+        assert not any(name.startswith(OUTPUT_PREFIX) for name in fake_gcs.names(BUCKET))
 
 
 class TestWriteOnceOutput:

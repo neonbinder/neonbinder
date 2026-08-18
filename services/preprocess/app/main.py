@@ -821,6 +821,23 @@ def process_entry(
             detail="placeholder storage unavailable",
         ) from None
 
+    # Pixels, not bytes — the same guard /extract runs before ITS first
+    # full-size decode. The zip path can never deliver an unchecked image
+    # here (extract already enforced the ceiling), but streaming intake
+    # POSTs directly into extracted/ via a signed policy, and a POST policy
+    # can bound bytes and content-type — never pixels. Without this, a
+    # ~100KB flat JPEG decoding to hundreds of MB would hit the EXIF
+    # transpose / dhash / crop cascade at full size. Terminal 413 on
+    # purpose: re-sending the same bytes can never succeed, so it must not
+    # land in the retryable-502 bucket and be paid five times.
+    try:
+        check_raster_size(entry_bytes)
+    except RasterTooLargeError as exc:
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={"error_code": "ENTRY_TOO_MANY_PIXELS", "detail": str(exc)},
+        )
+
     # EXIF-upright the entry unconditionally, BEFORE the dhash. Zip-extracted
     # objects are already upright (/extract transposed and re-encoded them,
     # stripping the orientation tag — a no-op here), but direct-upload

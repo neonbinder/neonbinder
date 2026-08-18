@@ -414,12 +414,14 @@ export const runPairing = internalAction({
       }
       for (let i = 0; i < becomingPaired.length; i += PAIR_CHUNK_SIZE) {
         await ctx.runMutation(internal.placeholderPairing.syncImagePairStatus, {
+          jobId: args.jobId,
           pairStatus: "paired",
           imageIds: becomingPaired.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
       for (let i = 0; i < becomingUnmatched.length; i += PAIR_CHUNK_SIZE) {
         await ctx.runMutation(internal.placeholderPairing.syncImagePairStatus, {
+          jobId: args.jobId,
           pairStatus: "unmatched",
           imageIds: becomingUnmatched.slice(i, i + PAIR_CHUNK_SIZE),
         });
@@ -692,13 +694,16 @@ export const applyPairDiff = internalMutation({
  * documents both fields as provisional until the job is terminal.
  *
  * The caller has already filtered out rows whose stored verdict matches, so
- * every id here is a genuine change; this mutation does not re-check, because
- * doing so would be a second read of a row the action already read. By document
- * ID, and a row that is gone is skipped rather than reported — same reasoning as
- * `applyPairDiff`.
+ * every id here is a genuine change; the VERDICT is not re-checked, because
+ * that would be a second read of a row the action already read. The `jobId`
+ * IS re-checked — the same defence-in-depth `applyPairDiff` keeps: a bug in
+ * the diff arithmetic must not be able to stamp a different (possibly another
+ * user's) job's images. By document ID, and a row that is gone is skipped
+ * rather than reported.
  */
 export const syncImagePairStatus = internalMutation({
   args: {
+    jobId: v.string(),
     pairStatus: v.union(v.literal("paired"), v.literal("unmatched")),
     imageIds: v.array(v.id("placeholderImages")),
   },
@@ -708,6 +713,7 @@ export const syncImagePairStatus = internalMutation({
     for (const imageId of args.imageIds) {
       const image = await ctx.db.get(imageId);
       if (!image) continue;
+      if (image.jobId !== args.jobId) continue;
       await ctx.db.patch(image._id, { pairStatus: args.pairStatus });
       marked += 1;
     }

@@ -144,6 +144,19 @@ export const INCREMENTAL_PAIRING_STATUSES = new Set(["collecting", "processing"]
 export const PLACEHOLDER_STREAM_IDLE_MS = 30 * 60 * 1000;
 
 /**
+ * Delay between an image completion and the incremental pairing run it
+ * schedules. The `pairingScheduled` latch bounds how many runs are QUEUED
+ * (one); this bounds their RATE. Each run recomputes the full pairBatch over
+ * every done row, so with a zero delay a 1000-image session pays an O(N²)
+ * read bill — one full recompute per completion. Five seconds collapses a
+ * burst of completions into one run while adding at most five seconds to
+ * when a pair first appears, against a ~40s/image processing time nobody
+ * perceives it next to. The FINAL run is never delayed — the terminal
+ * verdict should land the moment the last image does.
+ */
+export const PAIRING_DEBOUNCE_MS = 5 * 1000;
+
+/**
  * How many batches one user may have in flight at once.
  *
  * Two, not one, so a user can start the next sheet while the previous one is
@@ -974,7 +987,9 @@ export async function recordImageOutcomeImpl(
       final: true,
     });
   } else if (shouldScheduleIncrementalPairing) {
-    await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+    // Delayed on purpose — see PAIRING_DEBOUNCE_MS. Completions landing inside
+    // the window find `pairingScheduled` already set and ride this run.
+    await ctx.scheduler.runAfter(PAIRING_DEBOUNCE_MS, internal.placeholderPairing.runPairing, {
       jobId: context.jobId,
       userId: job.userId,
       final: false,

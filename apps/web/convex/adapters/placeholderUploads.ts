@@ -10,6 +10,7 @@ import type { Id } from "../_generated/dataModel";
 import {
   CLERK_USER_ID_RE,
   MAX_PLACEHOLDER_IMAGE_BYTES,
+  PLACEHOLDER_MAX_ENTRY_INDEX,
   PLACEHOLDER_OUTPUT_EXTENSIONS,
   isPlaceholderOutputExtension,
   placeholderExtractedImageObject,
@@ -381,6 +382,18 @@ export const createPlaceholderImageDownloadUrl = action({
     }
     if (!CLERK_USER_ID_RE.test(userId)) {
       throw new Error("Unexpected user id shape");
+    }
+    // Bounds before anything else: this value is interpolated into a GCS key
+    // below, so it gets the same ge=0/le=MAX bound the service's own request
+    // model enforces — the row lookup should be the second thing standing
+    // between a caller and a key segment, not the only one. Same error shape
+    // as a missing row on purpose.
+    if (
+      !Number.isInteger(args.entryIndex) ||
+      args.entryIndex < 0 ||
+      args.entryIndex > PLACEHOLDER_MAX_ENTRY_INDEX
+    ) {
+      throw new Error("Image not found");
     }
 
     const bucketName = process.env.GCS_PLACEHOLDER_BUCKET;

@@ -274,6 +274,18 @@ export const allocateStreamEntry = internalMutation({
  * same `onComplete`, same context shape — so a stream image is indistinguishable
  * from a zip image from the pool onward. Anything else would mean two completion
  * paths to keep in step.
+ *
+ * **Deliberate trust decision (2026-08-17 security audit, F2): confirm does NOT
+ * verify the bytes exist in GCS.** `totalImages` therefore counts CLAIMED
+ * uploads, not verified ones. A client that confirms without uploading buys one
+ * doomed worker attempt per phantom entry: `/process-entry` 404s, ENTRY_NOT_FOUND
+ * is terminal (no retries), and the image fails without failing the batch. The
+ * cost of a full phantom job is ~1001 single-attempt 404s against the caller's
+ * own batch — nuisance-priced, bounded by the entry cap and the 2-active-jobs
+ * cap, and only reachable by an authenticated account. Verifying here would
+ * require making this an action (a HEAD per confirm) and moving the enqueue out
+ * of the transaction, which costs every honest confirm to tax the dishonest
+ * one. Revisit if PostHog shows ENTRY_NOT_FOUND failures at any real rate.
  */
 export const confirmPlaceholderImageUpload = mutation({
   args: { jobId: v.string(), entryIndex: v.number() },
@@ -284,6 +296,18 @@ export const confirmPlaceholderImageUpload = mutation({
   }),
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
+    // Bounds first, before any row lookup: the index is client input that ends
+    // up interpolated into a GCS key on the service side, so it gets the same
+    // ge=0/le=MAX bound the service's own request model enforces. Same error
+    // shape as an unallocated index — a caller learns nothing from the
+    // difference.
+    if (
+      !Number.isInteger(args.entryIndex) ||
+      args.entryIndex < 0 ||
+      args.entryIndex > PLACEHOLDER_MAX_ENTRY_INDEX
+    ) {
+      throw new Error("Image not found");
+    }
     const job = await requireCollectingStreamJob(ctx, args.jobId, userId);
 
     const image = await ctx.db
