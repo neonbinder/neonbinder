@@ -37,6 +37,7 @@ import ProfilePublic from "@/app/profile/public/page";
 import ProfileCredentials from "@/app/profile/credentials/page";
 import ProfileShipping from "@/app/profile/shipping/page";
 import ProfilePrizes from "@/app/profile/prizes/page";
+import ProfileApiKeys from "@/app/profile/api-keys/page";
 import SetSelector from "@/app/set-selector/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
@@ -103,6 +104,9 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route path="credentials" element={<ProfileCredentials />} />
                 <Route path="shipping" element={<ProfileShipping />} />
                 <Route path="prizes" element={<ProfilePrizes />} />
+                {/* NEO-172 — self-service Clerk API keys. Protected by the
+                    same ProtectedLayout gate as the rest of /profile. */}
+                <Route path="api-keys" element={<ProfileApiKeys />} />
               </Route>
               {/* Print Shop (NEO-145) — the print tools under one section.
                   Bare /print lists them; each tool is its own sub-route. */}
