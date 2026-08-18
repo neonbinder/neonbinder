@@ -209,9 +209,19 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder-dev/neonbinder-preprocess:${{ github.sha }}
           project_id: neonbinder-dev
+          # env_vars is REPLACE-semantics — every plain var terraform sets on
+          # the service must be repeated here or the deploy drops it (see
+          # preprocess.yml's deploy-preview for the same note).
+          # GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the dev
+          # placeholder-uploads bucket — must match
+          # apps/web/convex/adapters/placeholderUploads.ts's Convex-side env
+          # var of the same name, and terraform's
+          # google_storage_bucket.placeholder_uploads naming
+          # (neonbinder-placeholder-uploads-${var.gcp_project_id}).
           env_vars: |
             ENVIRONMENT=dev
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
+            GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder-dev
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
 
@@ -259,6 +269,32 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      # NEO-170 Phase D: mint an IAM identity token alongside the pre-existing
+      # x-internal-key header. Terraform lands a run.invoker binding for this
+      # deployer SA before this deploys, but the allUsers invoker binding is
+      # removed LATER (terraform T2) — until then the service is still
+      # public, so both auth mechanisms travel together and either one alone
+      # gets the request through. Cloud Run validates the ID token's audience
+      # against the BASE service URL even when the request targets a tagged
+      # revision host (same pattern as browser-deploy.yml's login probe).
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
       - name: Fetch internal API key (dev)
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
@@ -273,6 +309,7 @@ jobs:
       - name: Run smoke tests against dev tagged URL
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
 
   dev-promote:
@@ -358,9 +395,15 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder/neonbinder-preprocess:${{ github.sha }}
           project_id: neonbinder
+          # env_vars is REPLACE-semantics — see the same note on deploy-dev
+          # above. GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the prod
+          # placeholder-uploads bucket, matching
+          # apps/web/convex/adapters/placeholderUploads.ts and terraform's
+          # google_storage_bucket.placeholder_uploads naming.
           env_vars: |
             ENVIRONMENT=prod
             GOOGLE_CLOUD_PROJECT=neonbinder
+            GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
 
@@ -408,6 +451,27 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      # NEO-170 Phase D: see dev-smoke's copy of this comment for the
+      # transition rationale (both auth mechanisms travel together while the
+      # allUsers invoker binding is still present).
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
       - name: Fetch internal API key (prod)
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
@@ -422,6 +486,7 @@ jobs:
       - name: Run smoke tests against prod tagged URL
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
 
   prod-promote:
