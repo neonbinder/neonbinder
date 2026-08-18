@@ -2,7 +2,7 @@
 
 This is the service's first use of GCS — input has only ever arrived as a
 multipart upload — so the whole surface is here, deliberately small: stat,
-stream, download, create, list. Five verbs, no delete and no overwrite.
+stream, download, create. Four verbs, no delete, no overwrite, no list.
 
 **Write-once is a property, not an accident.** The preprocess runtime SA holds
 `objectViewer` + `objectCreator` on the placeholder bucket and nothing else, so
@@ -11,8 +11,9 @@ limitation to work around, `create()` leans into it: every write carries
 `if_generation_match=0`, which makes GCS itself reject a write to an existing
 key with a 412. That turns "we happen not to have delete" into "a write to an
 occupied key fails loudly, whatever IAM role we are running as", and it is what
-makes a duplicate job submission detectable (see `app.jobs.state.JobStatusLog`)
-rather than silently interleaved with a run already in flight.
+lets the stateless batch routes in `app.main` treat a re-run's writes as
+idempotent first-write-wins successes rather than silent overwrites. (Job
+state itself lives in Convex — NEO-170 — not under this bucket.)
 
 The client is injectable so tests can drive a fake; in production it defaults
 to a lazily-constructed `storage.Client()`, which picks up ADC from the Cloud
@@ -83,6 +84,10 @@ class ObjectStore:
 
     @property
     def client(self) -> storage.Client:
+        # Lazy init is NOT thread-safe. It stays safe only because every
+        # request calls stat() on the request thread before any upload-pool
+        # thread touches the store — preserve that ordering (or add a lock)
+        # if the call sequence is ever reordered.
         if self._client is None:
             self._client = storage.Client()
         return self._client
@@ -139,11 +144,3 @@ class ObjectStore:
             blob.upload_from_string(data, content_type=content_type, if_generation_match=0)
         except gcs_exceptions.PreconditionFailed as exc:
             raise ObjectAlreadyExistsError(f"object already exists: {ref.uri}") from exc
-
-    def list_names(self, bucket: str, prefix: str) -> list[str]:
-        """Every object key under `prefix`, in the order GCS returns them.
-
-        GCS lists lexicographically, which is why status objects are
-        zero-padded — see `app.jobs.layout.STATUS_SEQUENCE_DIGITS`.
-        """
-        return [blob.name for blob in self.client.list_blobs(bucket, prefix=prefix)]

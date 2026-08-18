@@ -26,6 +26,7 @@ from PIL import Image
 from app import cropper
 from app.classify import ClassifyResult
 from app.dhash import compute_dhash
+from app.jobs import zipsafe
 from app.jobs.gcs import ObjectStore
 from app.main import app
 from app.orient import OrientationResult
@@ -140,6 +141,19 @@ class TestRequestValidation:
     def test_negative_entry_index_is_a_validation_error(self, fake_gcs):
         # ge=0 on the model: Pydantic refuses it before the handler runs.
         assert _post_entry(entry_index=-1).status_code == 422
+
+    def test_entry_index_over_the_zip_ceiling_is_a_validation_error(self, fake_gcs):
+        # le=MAX_ZIP_ENTRIES on the model: /extract can never have produced
+        # an ordinal past the archive ceiling, so an absurd index is refused
+        # by Pydantic (422) rather than derived into an over-long GCS key
+        # that surfaces as a 502.
+        assert _post_entry(entry_index=zipsafe.MAX_ZIP_ENTRIES + 1).status_code == 422
+        assert _post_entry(entry_index=10**9).status_code == 422
+
+    def test_entry_index_at_the_ceiling_reaches_the_handler(self, fake_gcs):
+        # The boundary itself passes validation and gets the handler's own
+        # answer (404 — no such extracted object), not a 422.
+        assert _post_entry(entry_index=zipsafe.MAX_ZIP_ENTRIES).status_code == 404
 
     def test_unconfigured_bucket_returns_503_with_retry_after(self, fake_gcs, monkeypatch):
         monkeypatch.delenv("GCS_PLACEHOLDER_BUCKET", raising=False)

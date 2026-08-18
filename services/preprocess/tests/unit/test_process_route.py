@@ -146,11 +146,12 @@ class TestRequestValidation:
 
     def test_image_over_pixel_cap_returns_413(self, monkeypatch):
         """The decoded-pixel ceiling rejects decode bombs the byte cap can't
-        see. Enforced from the image header, before any pixel decode — the
-        cap is lowered here so a small test image can trip it."""
+        see. Enforced via imaging.check_raster_size from the image header,
+        before any pixel decode — the cap is lowered here so a small test
+        image can trip it."""
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
-        monkeypatch.setattr("app.main.MAX_IMAGE_PIXELS", 1_000_000)
+        monkeypatch.setattr("app.imaging.MAX_IMAGE_PIXELS", 1_000_000)
         response = client.post(
             "/process",
             headers={"x-internal-key": "test-key"},
@@ -158,6 +159,42 @@ class TestRequestValidation:
         )
         assert response.status_code == 413
         assert "1200x1600" in response.json()["detail"]
+
+    def test_image_between_service_cap_and_pillow_hard_limit_returns_413(self, monkeypatch):
+        """53MP sits in the band the old hand-rolled 60MP check silently
+        accepted: over imaging.MAX_IMAGE_PIXELS (50MP), under Pillow's own
+        raise threshold (100MP). One ceiling now — the upload is a 413."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        payload = io.BytesIO()
+        Image.new("RGB", (7300, 7300), color="white").save(payload, format="JPEG")
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", payload.getvalue(), "image/jpeg")},
+        )
+        assert response.status_code == 413
+        assert "7300x7300" in response.json()["detail"]
+
+    def test_bomb_past_pillow_hard_limit_returns_413_not_502(self, monkeypatch):
+        """Above 2x the process-wide ceiling Pillow refuses to even size the
+        header (DecompressionBombError). The old code swallowed that and
+        passed the bomb into the cascade as a 502; check_raster_size re-raises
+        it as RasterTooLargeError, so the caller sees the same 413."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        payload = io.BytesIO()
+        # 10500^2 = 110.25MP > 2 * 50MP. Flat colour keeps the file tiny.
+        Image.new("RGB", (10500, 10500), color="white").save(
+            payload, format="PNG", compress_level=1
+        )
+        assert len(payload.getvalue()) < MAX_IMAGE_BYTES  # clears the byte cap
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.png", payload.getvalue(), "image/png")},
+        )
+        assert response.status_code == 413
 
     def test_missing_file_field_returns_400_missing_image(self):
         """With image+precropped both optional, an empty request is a

@@ -44,9 +44,10 @@ against the bytes actually produced by the decompressor:
 
 Entry names are validated (`_name_rejection`) against absolute paths, `..`
 segments, Windows separators and drive letters, control and display-altering
-characters (see `_FORBIDDEN_NAME_CHARS`), and length. Names survive into
-`output/manifest.json` and get rendered by whatever reads it, so the check has
-to cover more than what a filesystem would care about. But validation is the
+characters (see `_FORBIDDEN_NAME_CHARS`), and length. Names survive into the
+`/extract` response rows, from there into Convex's per-entry job state, and
+finally into the review UI that renders them, so the check has to cover more
+than what a filesystem would care about. But validation is the
 *second* line here: nothing in this service ever writes
 to a filesystem, and output object keys are derived from an entry's zip ordinal
 rather than its name (`app.jobs.layout.output_image_object`), so a member
@@ -129,8 +130,9 @@ MAX_COMPRESSION_RATIO = 100
 # and means nothing — and no bomb that matters is under a megabyte expanded.
 RATIO_CHECK_MIN_BYTES = 1024 * 1024
 
-# Longest entry name we will even consider. GCS keys stop at 1024 bytes and we
-# store the name in the manifest, not in a key; 255 is the POSIX filename limit
+# Longest entry name we will even consider. The name never becomes an object
+# key (keys are derived from the zip ordinal — app.jobs.layout) but it does
+# travel to Convex rows and the review UI; 255 is the POSIX filename limit
 # and anything longer came from a generator, not a camera.
 MAX_ENTRY_NAME_BYTES = 255
 
@@ -183,16 +185,17 @@ EXTENSION_BY_CONTENT_TYPE = {
 }
 
 # Archive members every macOS and Windows zip carries and no user ever meant to
-# upload. Dropped silently rather than reported as failures — a manifest listing
-# 200 successes and 200 `__MACOSX` rejections is noise, not diagnostics.
+# upload. Dropped silently rather than reported as failures — an entry report
+# listing 200 successes and 200 `__MACOSX` rejections is noise, not diagnostics.
 IGNORED_NAME_PREFIXES = ("__MACOSX/",)
 IGNORED_BASENAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
 IGNORED_BASENAME_PREFIXES = ("._",)
 
 # Characters that must never appear in an entry name, beyond the ASCII control
-# range. Entry names are carried verbatim into `output/manifest.json` and
-# rendered by whatever reads it, so the risk is not this service's filesystem
-# (it has none) but what a name does to a downstream consumer:
+# range. Entry names are carried verbatim in the `/extract` response, stored in
+# Convex's per-entry rows and rendered by the review UI, so the risk is not
+# this service's filesystem (it has none) but what a name does to a downstream
+# consumer:
 #
 # - U+007F DELETE and U+0085 NEXT LINE are control characters that the ASCII
 #   `< " "` test misses; U+0085 is treated as a line break by a great many

@@ -14,15 +14,19 @@ for real. No network, no credentials.
 
 from __future__ import annotations
 
+import threading
+import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from app import main as app_main
 from app.exif import EXIF_ORIENTATION_TAG, read_exif_orientation
-from app.jobs.gcs import ObjectStore
+from app.jobs.gcs import ObjectRef, ObjectStore
 from app.main import app
 from tests.unit._fake_gcs import FakeStorageClient
 
@@ -269,3 +273,137 @@ class TestExtraction:
         assert body["rejected_count"] == 1
         assert body["entries"][0]["reason"] == "entry_undecodable"
         assert body["entries"][1]["accepted"] is True
+
+
+# ── F2: upload backpressure ──────────────────────────────────────────────
+
+
+class _PendingBytesTracker:
+    """Bytes retained by submitted-but-incomplete upload futures, over time."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.pending_bytes = 0
+        self.max_pending_bytes = 0
+        self.submitted = 0
+
+    def on_submit(self, nbytes: int) -> None:
+        with self.lock:
+            self.submitted += 1
+            self.pending_bytes += nbytes
+            self.max_pending_bytes = max(self.max_pending_bytes, self.pending_bytes)
+
+    def on_done(self, nbytes: int) -> None:
+        with self.lock:
+            self.pending_bytes -= nbytes
+
+
+def _tracking_pool_class(tracker: _PendingBytesTracker) -> type[ThreadPoolExecutor]:
+    """A ThreadPoolExecutor that measures the byte-retention the budget bounds."""
+
+    class _TrackingPool(ThreadPoolExecutor):
+        def submit(self, fn, *args, **kwargs):
+            # _upload_extracted(store, ref, data, content_type)
+            nbytes = len(args[2])
+            tracker.on_submit(nbytes)
+            future = super().submit(fn, *args, **kwargs)
+            future.add_done_callback(lambda _f: tracker.on_done(nbytes))
+            return future
+
+    return _TrackingPool
+
+
+class _GatedStore(ObjectStore):
+    """The real ObjectStore over the fake client, with create() held at a gate."""
+
+    def __init__(self, client: FakeStorageClient, release: threading.Event) -> None:
+        super().__init__(client=client)
+        self._release = release
+
+    def create(self, ref, data, *, content_type):
+        assert self._release.wait(timeout=10), "test gate was never released"
+        super().create(ref, data, content_type=content_type)
+
+
+class TestUploadBackpressure:
+    """The /extract producer must never buffer the archive while uploads lag.
+
+    Every submitted-but-incomplete future retains its entry's decompressed
+    bytes; unbounded, a slow-storage day re-materializes up to the 2GiB
+    archive-expansion ceiling in RAM. These tests drive `_extract_entries`
+    directly with a store whose create() blocks, and measure the retained
+    bytes through a tracking executor.
+    """
+
+    ENTRY_COUNT = 6
+
+    def _seed_uniform_archive(self, fake_gcs) -> int:
+        """Six identical upright JPEG members; returns one member's byte size."""
+        entry_bytes = _jpeg((200, 200))
+        members = [(f"card{i}.jpg", entry_bytes) for i in range(self.ENTRY_COUNT)]
+        fake_gcs.seed(BUCKET, INPUT_KEY, _zip_bytes(members))
+        return len(entry_bytes)
+
+    def test_pending_upload_bytes_never_exceed_the_budget(self, fake_gcs, monkeypatch):
+        size = self._seed_uniform_archive(fake_gcs)
+        # Budget admits exactly two entries in flight; a third must wait.
+        budget = 2 * size + size // 2
+        monkeypatch.setattr("app.main.EXTRACT_PENDING_BYTES_BUDGET", budget)
+
+        tracker = _PendingBytesTracker()
+        monkeypatch.setattr("app.main.ThreadPoolExecutor", _tracking_pool_class(tracker))
+        release = threading.Event()
+        store = _GatedStore(fake_gcs, release)
+        input_ref = ObjectRef(bucket=BUCKET, name=INPUT_KEY)
+        input_size = len(fake_gcs.read(BUCKET, INPUT_KEY))
+
+        result: dict = {}
+
+        def _run() -> None:
+            result["entries"] = app_main._extract_entries(
+                store, input_ref, input_size, user_id=USER, job_id=JOB
+            )
+
+        producer = threading.Thread(target=_run)
+        producer.start()
+        try:
+            # With every upload gated, the producer fills the budget and then
+            # parks in wait(FIRST_COMPLETED). It must NOT keep queueing the
+            # remaining entries' bytes the way the unbounded submit loop did.
+            deadline = time.monotonic() + 5
+            while tracker.submitted < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert tracker.submitted == 2
+            time.sleep(0.25)  # grace: an unbounded producer races past 2 here
+            assert tracker.submitted == 2
+            assert tracker.max_pending_bytes <= budget
+        finally:
+            release.set()
+            producer.join(timeout=15)
+        assert not producer.is_alive()
+
+        # Once the gate opened, the whole archive still went through — the
+        # budget throttles, it never drops.
+        assert tracker.submitted == self.ENTRY_COUNT
+        assert tracker.max_pending_bytes <= budget
+        assert [entry.accepted for entry in result["entries"]] == [True] * self.ENTRY_COUNT
+        names = fake_gcs.names(BUCKET)
+        for i in range(self.ENTRY_COUNT):
+            assert f"{EXTRACTED_PREFIX}{i:04d}.jpg" in names
+
+    def test_upload_failure_harvested_under_backpressure_is_surfaced(self, fake_gcs, monkeypatch):
+        # A failed upload whose future is harvested by the budget loop must
+        # propagate exactly like the final drain (the route maps it to 502).
+        size = self._seed_uniform_archive(fake_gcs)
+        monkeypatch.setattr("app.main.EXTRACT_PENDING_BYTES_BUDGET", size)
+
+        class _FailingStore(ObjectStore):
+            def create(self, ref, data, *, content_type):
+                raise RuntimeError("gcs is having a day")
+
+        input_ref = ObjectRef(bucket=BUCKET, name=INPUT_KEY)
+        input_size = len(fake_gcs.read(BUCKET, INPUT_KEY))
+        with pytest.raises(RuntimeError, match="having a day"):
+            app_main._extract_entries(
+                _FailingStore(client=fake_gcs), input_ref, input_size, user_id=USER, job_id=JOB
+            )

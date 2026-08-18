@@ -21,13 +21,11 @@ import hmac
 import logging
 import os
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
-from io import BytesIO
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
-from PIL import Image
 from pydantic import BaseModel, Field
 
 from app import cropper
@@ -47,13 +45,6 @@ app = FastAPI(title="neonbinder-preprocess", version="0.3.0")
 
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
-# Decoded-pixel ceiling, enforced pre-decode in _read_upload. The byte cap
-# alone doesn't bound memory — a ~1MB flat-colour JPEG can decode to >500MB.
-# Largest legitimate input today is a 6144x8160 phone photo (50.1MP); 60MP
-# leaves headroom while keeping worst-case decode ~700MB within the
-# 4Gi / concurrency-3 budget. Pillow's own bomb check only hard-fails at
-# ~179MP and its warning is suppressed process-wide by sam.py.
-MAX_IMAGE_PIXELS = 60_000_000
 ALLOWED_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 
 # Concurrency for the GCS uploads inside /extract. The zip itself is read and
@@ -63,6 +54,25 @@ ALLOWED_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 # enough that a 4Gi / concurrency-3 instance never holds more than a few
 # entries' bytes in flight per request.
 EXTRACT_UPLOAD_WORKERS = 8
+
+# Byte budget for the upload futures /extract may hold in flight at once.
+#
+# The executor's work queue is unbounded and every submitted-but-incomplete
+# future retains its entry's decompressed bytes, so without a bound a producer
+# that outruns GCS (a crafted low-compression archive, or an ordinary one on a
+# slow storage day) re-materializes up to MAX_TOTAL_UNCOMPRESSED_BYTES (2 GiB)
+# of image data in RAM on a 4 GiB instance — exactly the OOM class the
+# streaming zip read exists to prevent. The bound has to be a BYTE budget, not
+# a future count: entry sizes span three orders of magnitude (a tens-of-KB
+# thumbnail up to the 32 MiB per-entry cap), so any count small enough to be
+# safe for the largest entries would needlessly serialize the small ones.
+# When the budget (or the companion count cap below) is hit, the producer
+# blocks on FIRST_COMPLETED until a pending upload finishes.
+EXTRACT_PENDING_BYTES_BUDGET = 256 * 1024 * 1024
+
+# Companion count cap: keeps a run of tiny entries from queueing hundreds of
+# futures while staying comfortably under the byte budget.
+EXTRACT_PENDING_MAX_FUTURES = 32
 
 # Retry-After sent with the batch routes' NOT_CONFIGURED 503. A missing bucket
 # env var is a deploy in progress, not a permanent condition — mirror the
@@ -205,19 +215,21 @@ async def _read_upload(upload: UploadFile, *, field: str) -> bytes:
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"{field} exceeds max size of {MAX_IMAGE_BYTES} bytes",
         )
-    # Header-only open (no pixel decode) to bound decoded size up front.
-    # Unreadable bytes pass through — the pipeline's existing error paths
-    # own that case; this check only guards the decode-bomb lever.
+    # Pixels, not bytes: the byte cap alone doesn't bound memory — a ~1MB
+    # flat-colour JPEG can decode to >500MB. `check_raster_size` reads the
+    # lazy header (no pixel decode) and raises ONE exception type for
+    # everything over the ceiling — including headers Pillow refuses to even
+    # size (its DecompressionBombError is re-raised as RasterTooLargeError
+    # inside app.imaging), so a bomb can never fall through to the cascade
+    # and surface as a 502. Unreadable bytes pass through — the pipeline's
+    # existing error paths own that case.
     try:
-        with Image.open(BytesIO(data)) as im:
-            width, height = im.size
-    except Exception:  # noqa: BLE001
-        return data
-    if width * height > MAX_IMAGE_PIXELS:
+        check_raster_size(data)
+    except RasterTooLargeError as exc:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail=f"{field} is {width}x{height}; max decoded size is {MAX_IMAGE_PIXELS} pixels",
-        )
+            detail=f"{field}: {exc}",
+        ) from None
     return data
 
 
@@ -465,7 +477,15 @@ class ProcessEntryRequest(BaseModel):
 
     job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
     user_id: str = Field(description="The Clerk subject id that owns the job.")
-    entry_index: int = Field(ge=0, description="The entry's zip ordinal, from /extract.")
+    # `le` mirrors the archive ceiling: /extract can never have produced an
+    # ordinal past MAX_ZIP_ENTRIES, so an absurd index is a 422 validation
+    # error here rather than an over-long GCS key turning into a 502 (the
+    # zero-padded name layout assumes the same ceiling — app.jobs.layout).
+    entry_index: int = Field(
+        ge=0,
+        le=zipsafe.MAX_ZIP_ENTRIES,
+        description="The entry's zip ordinal, from /extract.",
+    )
 
 
 class ProcessEntryResponse(BaseModel):
@@ -595,32 +615,55 @@ def _extract_entries(
     """Stream the archive through zipsafe's guards and upload accepted entries.
 
     The zip is read sequentially (one seekable stream); only the GCS uploads
-    are overlapped, on a small pool. Raises `ZipRejectedError` for
-    archive-level violations — uploads already submitted are drained first
-    (they are write-once and idempotent, so a partial extract that later gets
-    rejected leaves nothing a re-run can't cope with).
+    are overlapped, on a small pool, and the producer is throttled so the bytes
+    retained by not-yet-finished uploads never exceed
+    `EXTRACT_PENDING_BYTES_BUDGET` (see the constant for the OOM class this
+    prevents). Raises `ZipRejectedError` for archive-level violations —
+    uploads already submitted are drained first (they are write-once and
+    idempotent, so a partial extract that later gets rejected leaves nothing a
+    re-run can't cope with).
     """
     entries: list[ExtractEntry] = []
-    futures: list[Future[None]] = []
+    # Uploads submitted but not yet observed complete, and the bytes each one
+    # still retains. This is the producer's ledger for the byte budget.
+    pending: dict[Future[None], int] = {}
+
+    def _harvest(done: set[Future[None]]) -> None:
+        # Propagate upload failures exactly like the final drain does:
+        # `.result()` re-raises, and the pool context on the way out still
+        # waits for whatever else was in flight.
+        for future in done:
+            pending.pop(future)
+            future.result()
+
     with store.open_stream(input_ref) as stream:
         with ThreadPoolExecutor(max_workers=EXTRACT_UPLOAD_WORKERS) as pool:
             for member in zipsafe.iter_zip_members(stream, object_size=object_size):
                 entry, upload = _prepare_member(member, user_id=user_id, job_id=job_id)
                 entries.append(entry)
-                if upload is not None:
-                    key, data, content_type = upload
-                    futures.append(
-                        pool.submit(
-                            _upload_extracted,
-                            store,
-                            ObjectRef(bucket=input_ref.bucket, name=key),
-                            data,
-                            content_type,
-                        )
-                    )
-    # The pool context has drained; surface the first upload failure, if any.
-    for future in futures:
-        future.result()
+                if upload is None:
+                    continue
+                key, data, content_type = upload
+                # Backpressure: block until this entry's bytes fit the budget
+                # (and the future count is sane). A single entry larger than
+                # the whole budget still goes through — alone.
+                while pending and (
+                    sum(pending.values()) + len(data) > EXTRACT_PENDING_BYTES_BUDGET
+                    or len(pending) >= EXTRACT_PENDING_MAX_FUTURES
+                ):
+                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    _harvest(done)
+                future = pool.submit(
+                    _upload_extracted,
+                    store,
+                    ObjectRef(bucket=input_ref.bucket, name=key),
+                    data,
+                    content_type,
+                )
+                pending[future] = len(data)
+    # The pool context has drained; surface the first remaining upload
+    # failure, if any.
+    _harvest(set(pending))
     return entries
 
 

@@ -1,10 +1,10 @@
 """In-memory stand-in for `google.cloud.storage.Client`.
 
-Shared by every test that needs storage: the `app.jobs.gcs` wrapper tests, the
-status-log tests and the runner tests all drive the *real* `ObjectStore`
-against this fake rather than mocking `ObjectStore` itself, so the wrapper's
-own behaviour (the `if_generation_match=0` precondition especially) is
-exercised everywhere it is relied on.
+Shared by every test that needs storage: the `/extract` and `/process-entry`
+route tests drive the *real* `ObjectStore` against this fake rather than
+mocking `ObjectStore` itself, so the wrapper's own behaviour (the
+`if_generation_match=0` precondition especially) is exercised everywhere it is
+relied on.
 
 Models only what `app.jobs.gcs` touches, and models the one property the
 security design leans on faithfully: a write to an occupied key raises
@@ -79,13 +79,6 @@ class FakeStorageClient:
 
     def bucket(self, name: str) -> FakeBucket:
         return FakeBucket(self, name)
-
-    def list_blobs(self, bucket: str, prefix: str = "") -> list[FakeBlob]:
-        holder = FakeBucket(self, bucket)
-        # GCS lists lexicographically; the status log depends on that ordering.
-        return [
-            FakeBlob(holder, name) for name in sorted(holder.objects) if name.startswith(prefix)
-        ]
 
     # ── test conveniences ──────────────────────────────────────────────
     def seed(self, bucket: str, name: str, data: bytes, content_type: str = "application/zip"):
