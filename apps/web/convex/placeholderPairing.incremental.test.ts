@@ -45,6 +45,7 @@ import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordImageOutcomeImpl } from "./placeholderPipeline";
+import { mergedRowIdentity } from "./placeholderPairing";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -359,10 +360,20 @@ describe("pairs stream in as images complete", () => {
     expect(visible[0].cardNumber).toBe("24");
   });
 
-  test("an adjacency pair carries no identity, because none was ever resolved", async () => {
-    // Pins the saving rather than the omission: if these fields ever start
-    // arriving on an adjacency pair, the free pre-pass has quietly started
-    // paying for classifies.
+  test("an adjacency pair is labelled from its rows, without the resolver ever being called", async () => {
+    // This test used to assert the OPPOSITE — that an adjacency pair carried no
+    // identity at all — and it was right about the algorithm while being wrong
+    // about what we should store. The pre-pass genuinely never asks the resolver
+    // (`adjacencyCard` sets `identityResolved: false`), because in the original
+    // asking cost a Haiku call. Here the identity is already sitting on the row,
+    // so declining to read it just left the review UI unable to name a card it
+    // could perfectly well name. `mergedRowIdentity` backfills it at the wrapper
+    // level; see the comment there for why that does not touch the port.
+    //
+    // The property the old assertion was really protecting — "the free pre-pass
+    // has not quietly started paying" — is now pinned directly by
+    // `resolverCalls`, which is a far more honest guard than the absence of a
+    // label.
     const JOB = "job-adjacency-identity";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 3 });
@@ -376,10 +387,315 @@ describe("pairs stream in as images complete", () => {
 
     const pairs = await getPairs(t, JOB);
     expect(pairs).toHaveLength(1);
+
+    // HOW the match was made is reported exactly as the algorithm found it —
+    // untouched by the backfill, because side evidence really is all that was
+    // consulted.
     expect(pairs[0].mechanism).toBe("adjacency");
     expect(pairs[0].confidence).toBe("side-only");
-    expect(pairs[0].player).toBeUndefined();
+    expect(pairs[0].score).toBe(0);
+
+    // WHAT the card is now comes from the rows.
+    expect(pairs[0].player).toBe("Ken Griffey Jr.");
+    expect(pairs[0].team).toBe("Seattle Mariners");
+    expect(pairs[0].cardNumber).toBe("24");
+
+    // And it cost nothing — zero resolver calls, which is the entire point of
+    // the pre-pass and what the release E2E asserts.
+    expect((await getJob(t, JOB))?.resolverCalls ?? 0).toBe(0);
+  });
+
+  test("the merge prefers the FRONT's player and team, and the BACK's card number", async () => {
+    // The conflict case, and the one that decides whether the merge is the same
+    // asymmetry the rest of the design uses. Adjacency pairs on side evidence
+    // alone and never compares identity, so two neighbours with confidently
+    // opposite sides pair even when their rows disagree about who is on the
+    // card — which is exactly how this situation arises in a real scan.
+    const JOB = "job-identity-conflict";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 3 });
+    const front = await seedImage(t, JOB, 0, "processing");
+    const back = await seedImage(t, JOB, 1, "processing");
+    await seedImage(t, JOB, 2, "processing");
+
+    await complete(t, JOB, front, {
+      entryIndex: 0,
+      textCount: 1, // confidently a front
+      players: ["Ken Griffey Jr."],
+      team: "Seattle Mariners",
+      // A front's card number is a misread — a jersey number, a copyright year,
+      // a subset code — and must never win.
+      cardNumber: "99",
+    });
+    await complete(t, JOB, back, {
+      entryIndex: 1,
+      textCount: 40, // confidently a back
+      players: ["Barry Bonds"],
+      team: "San Francisco Giants",
+      cardNumber: "24",
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(1);
+    // Front wins the name and the team: fronts print them large, in a display
+    // face, against a clean background.
+    expect(pairs[0].player).toBe("Ken Griffey Jr.");
+    expect(pairs[0].team).toBe("Seattle Mariners");
+    // Back wins the card number outright — and the front's "99" appears
+    // nowhere, because there is deliberately no fall back to it.
+    expect(pairs[0].cardNumber).toBe("24");
+  });
+
+  test("a front's card number is discarded when the back has none", async () => {
+    // The invariant the back-only rule exists for. Card numbers are printed on
+    // BACKS; what a model reads as one on a front is a jersey number, a
+    // copyright year or a subset code. So a pair whose back carries no number
+    // must carry none — falling back to the front's would re-import exactly the
+    // value `poolCardFromIdentity` and `makeMatchResult` both throw away.
+    const JOB = "job-front-number-only";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 3 });
+    const front = await seedImage(t, JOB, 0, "processing");
+    const back = await seedImage(t, JOB, 1, "processing");
+    await seedImage(t, JOB, 2, "processing");
+
+    await complete(t, JOB, front, {
+      entryIndex: 0,
+      textCount: 1,
+      players: ["Ken Griffey Jr."],
+      team: "Seattle Mariners",
+      cardNumber: "99", // a jersey number misread off the photo
+    });
+    await complete(t, JOB, back, {
+      entryIndex: 1,
+      textCount: 40,
+      players: ["Ken Griffey Jr."],
+      team: "Seattle Mariners",
+      // no cardNumber
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].player).toBe("Ken Griffey Jr.");
+    // Not "99". No number is better than the wrong number.
     expect(pairs[0].cardNumber).toBeUndefined();
+  });
+
+  test("mergedRowIdentity fills gaps and never overrides the algorithm", async () => {
+    // Tested directly because the precedence is almost unobservable end-to-end:
+    // for a pool match the algorithm's merge and the naive row merge agree by
+    // construction (`poolCardFromIdentity` builds its cards from these same
+    // fields), so an implementation that wrongly preferred the rows would pass
+    // every pipeline test. The ordering still matters — the ported algorithm is
+    // the authority on identity whenever it has an opinion — so it is pinned
+    // here where a disagreement can actually be constructed.
+    const rows = {
+      front: { players: ["Row Front"], team: "Row Front Team", cardNumber: "11" },
+      back: { players: ["Row Back"], team: "Row Back Team", cardNumber: "22" },
+    };
+
+    // The algorithm answered: its answer stands, untouched.
+    expect(
+      mergedRowIdentity(
+        { player: "Algo Player", team: "Algo Team", cardNumber: "99" },
+        rows.front,
+        rows.back,
+      ),
+    ).toEqual({ player: "Algo Player", team: "Algo Team", cardNumber: "99" });
+
+    // The algorithm answered nothing (an adjacency pair): the rows fill in,
+    // front-preferred for player/team, back-only for the card number.
+    expect(
+      mergedRowIdentity({ player: null, team: null, cardNumber: null }, rows.front, rows.back),
+    ).toEqual({ player: "Row Front", team: "Row Front Team", cardNumber: "22" });
+
+    // Field by field, not all-or-nothing.
+    expect(
+      mergedRowIdentity(
+        { player: "Algo Player", team: null, cardNumber: null },
+        rows.front,
+        rows.back,
+      ),
+    ).toEqual({ player: "Algo Player", team: "Row Front Team", cardNumber: "22" });
+
+    // Nothing anywhere stays nothing — no invented values.
+    expect(mergedRowIdentity({}, {}, {})).toEqual({
+      player: undefined,
+      team: undefined,
+      cardNumber: undefined,
+    });
+  });
+
+  test("a pool pair keeps the resolver's own answer rather than the rows'", async () => {
+    // The backfill fills a GAP; it does not override. A pool match already
+    // carries a resolved identity, and that answer — merged by the ported
+    // algorithm — must survive untouched.
+    const JOB = "job-pool-identity";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 3 });
+    const ids = [
+      await seedImage(t, JOB, 0, "processing"),
+      await seedImage(t, JOB, 1, "processing"),
+      await seedImage(t, JOB, 2, "processing"),
+    ];
+
+    await complete(t, JOB, ids[0], POOL_FRONT(0, "Ken Griffey Jr.", "Seattle Mariners"));
+    await complete(t, JOB, ids[1], POOL_BACK(1, "Ken Griffey Jr.", "Seattle Mariners", "24"));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].mechanism).toBe("pool");
+    expect(pairs[0].player).toBe("Ken Griffey Jr.");
+    expect(pairs[0].cardNumber).toBe("24");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolverCalls
+// ---------------------------------------------------------------------------
+
+describe("resolverCalls", () => {
+  test("stays 0 across a whole well-ordered batch — the release-E2E assertion", async () => {
+    // The property the metric exists for: a scan in front/back order is paired
+    // entirely by the free pre-pass, and the identity resolver is never
+    // consulted for a single image, on any run.
+    const JOB = "job-resolver-zero";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 4 });
+    const ids: Id<"placeholderImages">[] = [];
+    for (let i = 0; i < 4; i++) ids.push(await seedImage(t, JOB, i, "processing"));
+
+    for (const [i, spec] of [ADJ_FRONT(0), ADJ_BACK(1), ADJ_FRONT(2), ADJ_BACK(3)].entries()) {
+      await complete(t, JOB, ids[i], spec);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    }
+
+    const job = await getJob(t, JOB);
+    expect(job?.status).toBe("succeeded");
+    expect(await getPairs(t, JOB)).toHaveLength(2);
+    // Never written at all on the healthy path — absent reads as 0, and not
+    // writing keeps every subscriber from being woken to hear nothing changed.
+    expect(job?.resolverCalls).toBeUndefined();
+  });
+
+  test("provisional runs record nothing — only the completed batch counts", async () => {
+    // The reason the metric is not cumulative. Every intermediate run over an
+    // odd-length prefix has a trailing image with no partner YET, which goes to
+    // the pool and costs a call. Summing those would report a non-zero total for
+    // a perfectly ordered scan and make "assert 0" meaningless.
+    const JOB = "job-resolver-provisional";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 4 });
+    const ids: Id<"placeholderImages">[] = [];
+    for (let i = 0; i < 4; i++) ids.push(await seedImage(t, JOB, i, "processing"));
+
+    // One image done: the run pairs nothing and resolves the lone row.
+    await complete(t, JOB, ids[0], ADJ_FRONT(0));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await getJob(t, JOB))?.status).toBe("processing");
+    // Nothing recorded — that call was an artifact of an incomplete batch.
+    expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
+
+    for (const [i, spec] of [ADJ_BACK(1), ADJ_FRONT(2), ADJ_BACK(3)].entries()) {
+      await complete(t, JOB, ids[i + 1], spec);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    }
+
+    // The final run saw all four rows, paired them all, and needed the resolver
+    // for none of them.
+    expect((await getJob(t, JOB))?.status).toBe("succeeded");
+    expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
+  });
+
+  test("the final run's count replaces a stale one rather than adding to it", async () => {
+    const JOB = "job-resolver-replace";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    await seedImage(t, JOB, 0, "done", doneRowFields(ADJ_FRONT(0)));
+    await seedImage(t, JOB, 1, "done", doneRowFields(ADJ_BACK(1)));
+    await t.run(async (ctx) => {
+      const jobs = await ctx.db.query("placeholderJobs").collect();
+      const row = jobs.find((j) => j.jobId === JOB)!;
+      await ctx.db.patch(row._id, { resolverCalls: 9 });
+    });
+
+    await t.action(internal.placeholderPairing.runPairing, {
+      jobId: JOB,
+      userId: USER_A.subject,
+      final: true,
+    });
+
+    // This batch pairs by adjacency, so the honest answer is 0 — stored as
+    // absent, which is how a stale 9 is cleared rather than added to.
+    expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
+  });
+
+  test("a batch that genuinely needed the pool records what the final run cost", async () => {
+    const JOB = "job-resolver-paid";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    // Ambiguous text counts keep the free pre-pass out, so both rows reach the
+    // scoring pool and each costs a resolver call.
+    await seedImage(
+      t,
+      JOB,
+      0,
+      "done",
+      doneRowFields(POOL_FRONT(0, "Ken Griffey Jr.", "Seattle Mariners")),
+    );
+    await seedImage(
+      t,
+      JOB,
+      1,
+      "done",
+      doneRowFields(POOL_BACK(1, "Ken Griffey Jr.", "Seattle Mariners", "24")),
+    );
+
+    await t.action(internal.placeholderPairing.runPairing, {
+      jobId: JOB,
+      userId: USER_A.subject,
+      final: true,
+    });
+
+    expect((await getJob(t, JOB))?.resolverCalls).toBe(2);
+    // And it is visible to the owner, which is what the E2E reads.
+    const job = await t
+      .withIdentity(USER_A)
+      .query(api.placeholderPipeline.getPlaceholderJob, { jobId: JOB });
+    expect(job?.resolverCalls).toBe(2);
+  });
+
+  test("is reset when a failed batch is restarted", async () => {
+    // The previous attempt's pairs are swept on restart, so its resolver spend
+    // describes work that no longer exists.
+    const JOB = "job-resolver-reset";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "failed", totalImages: 1 });
+    await t.run(async (ctx) => {
+      const jobs = await ctx.db.query("placeholderJobs").collect();
+      const row = jobs.find((j) => j.jobId === JOB)!;
+      await ctx.db.patch(row._id, { resolverCalls: 7 });
+    });
+
+    await t
+      .withIdentity(USER_A)
+      .mutation(api.placeholderPipeline.startPlaceholderBatch, { jobId: JOB });
+
+    expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
+  });
+
+  test("getPlaceholderJob defaults it to 0 for a job that never paired", async () => {
+    const JOB = "job-resolver-default";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pending" });
+
+    const job = await t
+      .withIdentity(USER_A)
+      .query(api.placeholderPipeline.getPlaceholderJob, { jobId: JOB });
+    expect(job?.resolverCalls).toBe(0);
   });
 });
 

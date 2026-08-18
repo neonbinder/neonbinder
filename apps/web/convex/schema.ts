@@ -774,6 +774,31 @@ export default defineSchema({
     // still reaches a terminal state instead of holding one of the user's two
     // active-job slots forever.
     lastActivityAt: v.optional(v.number()),
+    // How many times pairing fell back to the identity resolver — as measured by
+    // the FINAL pairing run, over the complete batch.
+    //
+    // The number that matters is ZERO. The adjacency pre-pass exists so a batch
+    // scanned in order — front, back, front, back — is paired entirely from the
+    // free side evidence, without consulting identity for a single image. So
+    // this is a regression signal rather than a spend figure: a well-ordered
+    // batch reads 0, and anything above it means images reached the scoring
+    // pool. The release E2E asserts 0 for exactly that reason.
+    //
+    // ONLY the final run records it, and that is load-bearing rather than an
+    // optimisation. Incremental pairing recomputes the whole batch after every
+    // completion, and a run over a partial batch that ends on an odd prefix
+    // ALWAYS has one trailing image with no partner yet — which goes to the pool
+    // and costs a resolver call. Summing across runs would therefore report
+    // roughly one per odd-length intermediate pass even for a perfectly ordered
+    // scan, so the total would track how the completions happened to interleave
+    // rather than anything about the batch, and "assert 0" would be unusable.
+    // The final run sees every row, so its count is the honest answer for the
+    // batch as a whole — and an image that genuinely needs the pool still needs
+    // it there.
+    //
+    // Absent means 0, and nothing writes it on the healthy path. Reset with the
+    // other counters on restart.
+    resolverCalls: v.optional(v.number()),
     // Debounce latch for incremental pairing. Set when a completion schedules a
     // pairing run, cleared by that run before it reads any rows — so a
     // completion landing mid-run re-schedules and the result converges, while a

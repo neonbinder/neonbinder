@@ -7,6 +7,7 @@ import {
   PrinterIcon,
   UserIcon,
   SquaresPlusIcon,
+  SignalIcon,
 } from "@heroicons/react/24/outline";
 import { useIsAdmin } from "@/src/hooks/useIsAdmin";
 
@@ -45,6 +46,19 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Set Builder",
     path: "/set-selector",
     icon: SquaresPlusIcon,
+    glowClass: "binder-tab-glow-orange",
+    activeColor: "text-neon-orange",
+    requiresAdmin: true,
+  },
+  {
+    // NEO-170 — the operator view of the placeholder pipeline. Admin-only, and
+    // it sits next to Set Builder because the two are the same kind of screen:
+    // platform operations, which no collector ever sees. Top-level rather than
+    // a sub-page of an /admin section because this branch has no such section —
+    // see the note at the top of app/pipeline-runs/page.tsx.
+    label: "Pipeline Runs",
+    path: "/pipeline-runs",
+    icon: SignalIcon,
     glowClass: "binder-tab-glow-orange",
     activeColor: "text-neon-orange",
     requiresAdmin: true,

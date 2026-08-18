@@ -148,6 +148,67 @@ function pairKey(frontIndex: number, backIndex: number): string {
   return `${frontIndex}:${backIndex}`;
 }
 
+/** Just the identity fields of a done image row, as the backfill reads them. */
+type PairingRowIdentity = {
+  players?: string[];
+  team?: string;
+  cardNumber?: string;
+};
+
+/**
+ * The pair's descriptive identity: the algorithm's answer, falling back to the
+ * two rows' own identity where the algorithm left a gap.
+ *
+ * **This is a deliberate, wrapper-level deviation from the ported algorithm, and
+ * it lives here rather than in convex/lib/pairing on purpose.** The port stays
+ * verbatim — it is an audited translation of code that has been right in
+ * production for years, and the value of that is precisely that it has not been
+ * "improved" in translation.
+ *
+ * What it deviates from: an adjacency-matched pair comes back with
+ * `player/team/cardNumber` all null. That is not a bug in the port, it is the
+ * whole point of the pre-pass — `adjacencyCard` builds its cards with
+ * `identityResolved: false` and never calls the resolver, because in the
+ * original the resolver was a Haiku call and avoiding it was the entire saving.
+ * Null there honestly means "never asked", not "asked and found nothing".
+ *
+ * Why we can do better HERE: in this pipeline the identity is not behind a model
+ * call at all. `/process-entry` already extracted it and it is sitting on the
+ * placeholderImages row we just read. So the pre-pass's reason for not knowing
+ * does not apply to us — we are not paying to look, we are declining to read a
+ * field we already have. A live run showed the cost of that: pairs whose two
+ * rows carried a full, matching identity were stored with `player: null`,
+ * leaving the review UI unable to label a card it could perfectly well name.
+ *
+ * The merge follows the same asymmetry as `makeMatchResult` (and the cardlister
+ * priors before it), for the same reasons:
+ *   - **player and team prefer the FRONT.** Fronts print them large, in a
+ *     display face, against a clean background — the most reliable read.
+ *   - **cardNumber comes from the BACK only, with no fall back to the front.**
+ *     Card numbers are printed on backs; what a model reads as one on a front is
+ *     a jersey number, a copyright year or a subset code. Two other places
+ *     deliberately discard a front's card number (`poolCardFromIdentity` drops
+ *     it, `makeMatchResult` reads only the back's), so falling back to it here
+ *     would re-import exactly the value the rest of the design throws away.
+ *
+ * Only the DESCRIPTIVE fields are touched. `confidence`, `mechanism` and `score`
+ * are left exactly as the algorithm reported them — see the call site.
+ */
+export function mergedRowIdentity(
+  match: { player?: unknown; team?: unknown; cardNumber?: unknown },
+  front: PairingRowIdentity,
+  back: PairingRowIdentity,
+): { player?: string; team?: string; cardNumber?: string } {
+  return {
+    player:
+      optionalString(match.player) ??
+      optionalString(front.players?.[0]) ??
+      optionalString(back.players?.[0]),
+    team: optionalString(match.team) ?? optionalString(front.team) ?? optionalString(back.team),
+    cardNumber: optionalString(match.cardNumber) ?? optionalString(back.cardNumber),
+  };
+}
+
 /**
  * Pair up a batch and — on the final run only — set its terminal status.
  *
@@ -294,9 +355,16 @@ export const runPairing = internalAction({
             backImageId: back._id,
             frontIndex: front.entryIndex,
             backIndex: back.entryIndex,
-            player: optionalString(match.player),
-            team: optionalString(match.team),
-            cardNumber: optionalString(match.cardNumber),
+            // Identity, with a WRAPPER-LEVEL backfill — see `mergedRowIdentity`.
+            // The algorithm's answer always wins; the rows only fill a gap it
+            // left, which in practice means adjacency pairs.
+            ...mergedRowIdentity(match, front, back),
+            // Deliberately NOT backfilled. These three describe HOW the match
+            // was made, and an adjacency pair genuinely was made from side
+            // evidence alone with a score of 0 — "side-only" is the honest
+            // account of the evidence even when the two rows happen to agree on
+            // a player. Enriching them would turn a description of the method
+            // into a claim about confidence that nothing actually checked.
             confidence: asConfidence(match.confidence),
             mechanism: asMechanism(match.mechanism),
             score: typeof match.score === "number" ? match.score : 0,
@@ -449,6 +517,15 @@ export const runPairing = internalAction({
       // observes the last of them will redo all of it before deciding anything.
       if (!final) return null;
 
+      // Below this line the batch IS complete, so this run's numbers describe
+      // the whole of it. That is what makes the resolver count meaningful — a
+      // provisional run over a partial batch always leaves a trailing image
+      // unpaired and would report a call the finished batch never needed.
+      await ctx.runMutation(internal.placeholderPairing.recordResolverCalls, {
+        jobId: args.jobId,
+        calls: resolverCalls,
+      });
+
       // Terminal decision. `failedImages * 2 > totalImages` rather than a
       // division so the comparison is exact on odd totals (5 images, 3 failures
       // is a failed batch; 5 and 2 is not).
@@ -564,6 +641,36 @@ export const listPairsForDiff = internalQuery({
       mechanism: p.mechanism,
       score: p.score,
     }));
+  },
+});
+
+/**
+ * Record the FINAL run's resolver-call count on the job.
+ *
+ * Sets rather than accumulates, and only the final run calls it — see the
+ * `resolverCalls` comment in schema.ts for why summing across incremental runs
+ * would measure completion interleaving instead of the batch.
+ *
+ * Zero is stored as ABSENT, so "no value" is the single representation of "did
+ * not pay" and a stale count from an earlier final pass cannot survive a later
+ * one that came back clean. The write is skipped when the row already agrees:
+ * the job row is subscribed to through `getPlaceholderJob`, and on the healthy
+ * path (0, absent, unchanged) that means no write and no woken clients at all.
+ *
+ * Its own mutation rather than folded into `applyPairDiff`, because that one
+ * runs zero times on a pass where no pair moved — and a pass that resolved
+ * identities without changing any pair is exactly a case worth recording.
+ */
+export const recordResolverCalls = internalMutation({
+  args: { jobId: v.string(), calls: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const job = await findJob(ctx, args.jobId);
+    if (!job) return null;
+    const next = args.calls > 0 ? args.calls : undefined;
+    if (job.resolverCalls === next) return null;
+    await ctx.db.patch(job._id, { resolverCalls: next });
+    return null;
   },
 });
 

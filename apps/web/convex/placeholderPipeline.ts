@@ -57,7 +57,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult, WorkId } from "@convex-dev/workpool";
-import { getCurrentUserId } from "./auth";
+import { getCurrentUserId, requireAdmin } from "./auth";
 import { preprocessPool } from "./placeholderPool";
 
 /**
@@ -304,6 +304,14 @@ export const startPlaceholderBatch = mutation({
       processedImages: 0,
       failedImages: 0,
       rejectedEntries: 0,
+      // Reset with the counters, for the same reason: the previous attempt's
+      // pairs are being swept, so its resolver spend describes work that no
+      // longer exists. Carrying it forward would make a restarted batch look
+      // like it had paid for identity resolution it is about to redo from
+      // scratch — and reading 0 on a healthy batch is this number's entire job.
+      // Cleared rather than set to 0 so "absent" stays the single
+      // representation of zero; every reader defaults it.
+      resolverCalls: undefined,
       // Clear any previous run's terminal fields so the UI never shows a stale
       // error next to a live progress bar.
       errorCode: undefined,
@@ -402,58 +410,100 @@ export const sweepJobPairs = internalMutation({
  * skips them and there is nothing in the pool to cancel — but leaving them
  * would leave the job advertising images that will never arrive.
  */
+/**
+ * The one shape both cancel entry points answer with.
+ *
+ * Declared ABOVE its first use, not below. A validator is a `const` evaluated
+ * when the module loads and `mutation({...})` is called, so a reference from an
+ * earlier line is a temporal-dead-zone ReferenceError at import time — which
+ * takes down every function in the module, not just the one that reached for it.
+ */
+const CANCEL_RESULT_VALIDATOR = v.object({
+  canceled: v.boolean(),
+  canceledCount: v.number(),
+  reason: v.optional(v.string()),
+});
+
 export const cancelPlaceholderBatch = mutation({
   args: { jobId: v.string() },
-  returns: v.object({
-    canceled: v.boolean(),
-    canceledCount: v.number(),
-    reason: v.optional(v.string()),
-  }),
+  returns: CANCEL_RESULT_VALIDATOR,
   handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     const job = await findOwnedJob(ctx, args.jobId, userId);
     if (!job) throw new Error("Job not found");
-
-    if (job.status === "succeeded" || job.status === "failed") {
-      return { canceled: false, canceledCount: 0, reason: `job is already ${job.status}` };
-    }
-
-    const images = await ctx.db
-      .query("placeholderImages")
-      .withIndex("by_job_and_index", (q) => q.eq("jobId", args.jobId))
-      .collect();
-
-    let canceledCount = 0;
-    for (const image of images) {
-      if (!image.workId) continue;
-      if (image.status === "done" || image.status === "failed") continue;
-      // `WorkId` is a phantom-branded string; the stored column is a plain
-      // string because the brand exists only in TypeScript.
-      await preprocessPool.cancel(ctx, image.workId as WorkId);
-      canceledCount += 1;
-    }
-
-    await ctx.db.patch(job._id, {
-      status: "failed",
-      errorCode: "CANCELED",
-      errorDetail: "canceled by user",
-      finishedAt: Date.now(),
-    });
-
-    // Unconditional rather than gated on `mode === "stream"`, for the same
-    // reason `startPlaceholderBatch` schedules `sweepJobPairs` unconditionally:
-    // on a zip job it is one mutation that finds nothing, and a gate is one more
-    // thing that can be wrong. Scheduled rather than inline because a job whose
-    // uploads were abandoned can hold up to PLACEHOLDER_MAX_ENTRY_INDEX of these
-    // rows, and bulk deletes do not belong in the mutation a user is waiting on.
-    await ctx.scheduler.runAfter(0, internal.placeholderStream.sweepAwaitingUploads, {
-      jobId: args.jobId,
-      from: 0,
-    });
-
-    return { canceled: true, canceledCount };
+    return cancelJobImpl(ctx, job, "user");
   },
 });
+
+/**
+ * Everything cancelling a batch actually DOES, with no opinion about who is
+ * allowed to do it.
+ *
+ * The authorization and the effect are deliberately separated: `cancelPlaceholderBatch`
+ * proves ownership, `adminCancelPlaceholderBatch` proves the admin role, and both
+ * then call this. There is exactly one implementation of what cancel MEANS —
+ * which work is cancelled, what the terminal state is, what gets swept behind it
+ * — so the admin path cannot drift into a second, subtly different cancel. That
+ * is not a tidiness argument: the failure mode of two implementations here is an
+ * admin "cancelling" a job in a way that leaves work running or leaves the job
+ * non-terminal, which is precisely the wedge cancel exists to resolve.
+ *
+ * Takes the resolved job DOC rather than a jobId, so it cannot be called without
+ * the caller having already looked the job up — and therefore cannot be called
+ * without having had the chance to authorize.
+ *
+ * `canceledBy` affects only the human-readable `errorDetail`. The user-facing
+ * distinction is real and worth keeping — a user who is told "canceled by user"
+ * about something an administrator did would go looking for a click they never
+ * made — but it changes nothing about the semantics, and `errorCode` stays
+ * `CANCELED` for both so anything grouping or alerting on the code sees one
+ * event type.
+ */
+async function cancelJobImpl(
+  ctx: MutationCtx,
+  job: Doc<"placeholderJobs">,
+  canceledBy: "user" | "admin",
+): Promise<{ canceled: boolean; canceledCount: number; reason?: string }> {
+  if (job.status === "succeeded" || job.status === "failed") {
+    return { canceled: false, canceledCount: 0, reason: `job is already ${job.status}` };
+  }
+
+  const images = await ctx.db
+    .query("placeholderImages")
+    .withIndex("by_job_and_index", (q) => q.eq("jobId", job.jobId))
+    .collect();
+
+  let canceledCount = 0;
+  for (const image of images) {
+    if (!image.workId) continue;
+    if (image.status === "done" || image.status === "failed") continue;
+    // `WorkId` is a phantom-branded string; the stored column is a plain
+    // string because the brand exists only in TypeScript.
+    await preprocessPool.cancel(ctx, image.workId as WorkId);
+    canceledCount += 1;
+  }
+
+  await ctx.db.patch(job._id, {
+    status: "failed",
+    errorCode: "CANCELED",
+    errorDetail:
+      canceledBy === "admin" ? "canceled by an administrator" : "canceled by user",
+    finishedAt: Date.now(),
+  });
+
+  // Unconditional rather than gated on `mode === "stream"`, for the same
+  // reason `startPlaceholderBatch` schedules `sweepJobPairs` unconditionally:
+  // on a zip job it is one mutation that finds nothing, and a gate is one more
+  // thing that can be wrong. Scheduled rather than inline because a job whose
+  // uploads were abandoned can hold up to PLACEHOLDER_MAX_ENTRY_INDEX of these
+  // rows, and bulk deletes do not belong in the mutation a user is waiting on.
+  await ctx.scheduler.runAfter(0, internal.placeholderStream.sweepAwaitingUploads, {
+    jobId: job.jobId,
+    from: 0,
+  });
+
+  return { canceled: true, canceledCount };
+}
 
 // ---------------------------------------------------------------------------
 // Internal: batch registration and fan-out
@@ -1309,6 +1359,12 @@ export const getPlaceholderJob = query({
       failedImages: v.number(),
       rejectedEntries: v.number(),
       pairCount: v.number(),
+      // Cumulative identity-resolver calls across every pairing run — see the
+      // schema comment. 0 is the healthy value: the adjacency pre-pass should
+      // pair a well-ordered scan without consulting identity once. Surfaced so
+      // the release E2E can assert it and catch a regression that silently
+      // starts paying per image.
+      resolverCalls: v.number(),
       errorCode: v.optional(v.string()),
       errorDetail: v.optional(v.string()),
     }),
@@ -1336,6 +1392,7 @@ export const getPlaceholderJob = query({
       failedImages: job.failedImages ?? 0,
       rejectedEntries: job.rejectedEntries ?? 0,
       pairCount: pairs.length,
+      resolverCalls: job.resolverCalls ?? 0,
       errorCode: job.errorCode,
       errorDetail: job.errorDetail,
       // NOTE: `objectPath` is deliberately NOT returned. It is server-only
@@ -1477,5 +1534,166 @@ export const listPlaceholderPairs = query({
       score: p.score,
       createdAt: p._creationTime,
     }));
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Admin surface
+// ---------------------------------------------------------------------------
+//
+// Everything above this line is scoped to the caller's own jobs, and the
+// ownership check is the security boundary. The two functions below are the
+// deliberate exception: an operator has to be able to see that a user's batch is
+// wedged and stop it, and neither is possible from inside a per-user view.
+//
+// The boundary does not disappear, it MOVES — from "is this your job?" to "are
+// you an admin?" (`requireAdmin`, which reads the `role` claim on the Convex JWT
+// template). Two things follow, and both are deliberate:
+//
+//   - Cross-user data in the response is the POINT here. `adminListPlaceholderJobs`
+//     returns other people's `userId`s and `jobId`s, because an operator who
+//     cannot tell whose batch is stuck cannot act on it. That is a different
+//     decision from the one the per-user queries make, taken knowingly, for a
+//     surface only admins can reach.
+//   - The no-objectPath rule does NOT move. It is not an ownership rule — it
+//     exists because both service accounts hold bucket-wide read on the
+//     placeholder bucket, so a path in ANY response is a step toward turning that
+//     grant into a read oracle. Nothing path-shaped appears below.
+//
+// Placed at the end of the file so these can share `JOB_STATUS_VALIDATOR` with
+// the public queries: it is a `const`, so a reference from above it would be a
+// temporal dead zone error at module load rather than a compile error.
+
+/**
+ * How many jobs one admin page returns.
+ *
+ * Deliberately a flat cap with no pagination in v1. This is an operator's
+ * triage list — "what is running, what is stuck, right now" — and the answer to
+ * a question about the present is always near the top of a newest-first list. A
+ * hundred rows is far more than the platform produces in a day, and taking a
+ * fixed slice off the default `by_creation_time` index means no new index and no
+ * unbounded scan. If this ever needs history rather than triage, the fix is a
+ * cursor, not a bigger number.
+ */
+const ADMIN_JOB_PAGE_SIZE = 100;
+
+/**
+ * Every user's most recent placeholder jobs, newest first — the operator view.
+ *
+ * `.order("desc")` on the default creation-time index, then `.take(N)`. No new
+ * index is needed for that and none was added: an index exists to make a
+ * FILTERED read cheap, and this read has no filter — it is the last N rows of
+ * the table, which the default index already answers directly.
+ *
+ * **`pairCount` is deliberately absent**, unlike `getPlaceholderJob`. Computing
+ * it means a `placeholderPairs` query per job, so including it would turn one
+ * indexed read into 1 + 100 of them on every poll of an admin page that is
+ * expected to sit open and refresh. It also answers a question triage does not
+ * ask: an operator deciding whether to abort a run needs its status and its
+ * progress counters, not how many cards it has paired so far. An admin who wants
+ * that detail for one job can open that job.
+ *
+ * `mode` is defaulted here rather than returned raw — absent means "zip", per the
+ * schema's reader rule — so the UI never has to encode that rule a second time.
+ */
+export const adminListPlaceholderJobs = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      jobId: v.string(),
+      // Another user's id, on purpose. See the section comment.
+      userId: v.string(),
+      mode: v.union(v.literal("zip"), v.literal("stream")),
+      status: JOB_STATUS_VALIDATOR,
+      totalImages: v.number(),
+      processedImages: v.number(),
+      failedImages: v.number(),
+      rejectedEntries: v.number(),
+      // Same regression signal the per-user query exposes, defaulted the same
+      // way — an operator scanning the triage list should be able to spot a
+      // batch that fell through to the resolver without opening it.
+      resolverCalls: v.number(),
+      createdAt: v.number(),
+      startedAt: v.optional(v.number()),
+      finishedAt: v.optional(v.number()),
+      lastActivityAt: v.optional(v.number()),
+      errorCode: v.optional(v.string()),
+      // NOTE: no `objectPath`, and no `errorDetail`. The first is the standing
+      // rule (see the section comment). The second is a judgement: `errorDetail`
+      // can carry an upstream phrase about one user's upload, and a triage list
+      // needs the low-cardinality `errorCode` it groups on, not free text about
+      // someone else's data.
+    }),
+  ),
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+
+    const jobs = await ctx.db
+      .query("placeholderJobs")
+      .order("desc")
+      .take(ADMIN_JOB_PAGE_SIZE);
+
+    return jobs.map((job) => ({
+      jobId: job.jobId,
+      userId: job.userId,
+      mode: job.mode ?? ("zip" as const),
+      status: job.status,
+      totalImages: job.totalImages ?? 0,
+      processedImages: job.processedImages ?? 0,
+      failedImages: job.failedImages ?? 0,
+      rejectedEntries: job.rejectedEntries ?? 0,
+      resolverCalls: job.resolverCalls ?? 0,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      lastActivityAt: job.lastActivityAt,
+      errorCode: job.errorCode,
+    }));
+  },
+});
+
+/**
+ * Abort any user's batch, as an operator.
+ *
+ * The same cancel as the user's own — literally, via `cancelJobImpl`. Only the
+ * authorization differs: `requireAdmin` in place of the ownership check, and the
+ * job is resolved with `findJob` (no owner filter) rather than `findOwnedJob`.
+ * Everything after that point is shared code, so an admin abort and a user
+ * cancel cannot diverge in what they leave behind.
+ *
+ * The audit line is written BEFORE the cancel runs, not after, and that ordering
+ * is the point of having one: a trace that only appears on success is not an
+ * audit trail, it is a success log. If the cancel throws — an OCC conflict, a
+ * pool error — the record that an administrator reached into another user's job
+ * still exists. It names the admin, the target user and the job, and nothing
+ * else; there is no free text and no upload detail in it.
+ *
+ * Returns the same `{canceled, canceledCount, reason?}` shape as the user path,
+ * including the soft `{canceled: false}` for an already-terminal job — an
+ * operator clicking Abort on a run that finished a second ago is ordinary UI
+ * behaviour, not an error.
+ */
+export const adminCancelPlaceholderBatch = mutation({
+  args: { jobId: v.string() },
+  returns: CANCEL_RESULT_VALIDATOR,
+  handler: async (ctx, args) => {
+    const adminUserId = await requireAdmin(ctx);
+
+    const job = await findJob(ctx, args.jobId);
+    // A plain throw, unlike the user path's deliberately-ambiguous "Job not
+    // found": there is no existence oracle to protect against here, because the
+    // caller is already authorized to enumerate every job in the table.
+    if (!job) throw new Error("Job not found");
+
+    console.log(
+      JSON.stringify({
+        msg: "admin_cancel",
+        jobId: job.jobId,
+        targetUserId: job.userId,
+        adminUserId,
+      }),
+    );
+
+    return cancelJobImpl(ctx, job, "admin");
   },
 });
