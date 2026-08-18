@@ -12,7 +12,7 @@
  *    caller's own Clerk userId and a freshly generated jobId
  *  - the policy is generated with a content-length-range condition capping
  *    the upload, an exact Content-Type field, and a write-once
- *    `x-goog-if-generation-match: 0` field
+ *    policy fields (and that the illegal generation-match field stays out)
  *  - GCS_PLACEHOLDER_BUCKET names the bucket, not a hardcoded literal
  *    (unlike the known-broken `gcs.ts` prizes bucket)
  *  - a `placeholderJobs` ownership row is written with the authenticated
@@ -246,8 +246,12 @@ describe("createPlaceholderUploadUrl", () => {
 
     expect(call.config.fields).toMatchObject({
       "Content-Type": "application/zip",
-      "x-goog-if-generation-match": "0",
     });
+    // NOT a legal POST-policy field — GCS 400s the entire policy with
+    // InvalidPolicyDocument if it appears (found by the first live upload,
+    // 2026-08-18). Write-once on this leg is IAM's job (no objects.delete on
+    // the signing SA); this assertion keeps the field from coming back.
+    expect(call.config.fields).not.toHaveProperty("x-goog-if-generation-match");
     expect(call.config.conditions).toEqual([["content-length-range", 0, result.maxUploadBytes]]);
     expect(result.maxUploadBytes).toBeGreaterThan(0);
 
@@ -266,7 +270,7 @@ describe("createPlaceholderUploadUrl", () => {
     expect(result.uploadUrl).toBe("https://storage.googleapis.com/neonbinder-placeholder-uploads-test/");
     expect(result.fields.key).toBe(result.objectPath);
     expect(result.fields["Content-Type"]).toBe("application/zip");
-    expect(result.fields["x-goog-if-generation-match"]).toBe("0");
+    expect(result.fields).not.toHaveProperty("x-goog-if-generation-match");
   });
 });
 
@@ -320,11 +324,12 @@ describe("createPlaceholderImageUploadUrl", () => {
     );
     expect(result.fields.key).toBe(policyCalls[0].file);
 
-    // The three server-side bounds, all mirrored from the preprocess service.
+    // The server-side bounds, mirrored from the preprocess service — and the
+    // same illegal-field guard as the zip policy above.
     expect(policyCalls[0].config.fields).toMatchObject({
       "Content-Type": "image/jpeg",
-      "x-goog-if-generation-match": "0",
     });
+    expect(policyCalls[0].config.fields).not.toHaveProperty("x-goog-if-generation-match");
     expect(policyCalls[0].config.conditions).toEqual([
       ["content-length-range", 0, 32 * 1024 * 1024],
     ]);

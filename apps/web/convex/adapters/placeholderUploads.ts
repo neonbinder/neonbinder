@@ -77,18 +77,18 @@ const DOWNLOAD_URL_TTL_MS = 15 * 60 * 1000;
  * - `content-length-range` caps the upload at MAX_UPLOAD_BYTES server-side —
  *   GCS itself rejects an oversized POST, this isn't a client-side-only
  *   check.
- * - `x-goog-if-generation-match: 0` makes the write genuinely write-once:
- *   GCS rejects the POST with 412 if an object already exists at that exact
- *   path. Without this, replaying a captured (leaked, logged, or merely
- *   retried) policy would silently overwrite the original upload — the only
- *   thing currently standing in the way of that is `objectCreator` lacking
- *   `storage.objects.delete`, which is an IAM-role accident, not a
- *   deliberate control, and the natural "fix" for a legitimate retry that
- *   needs to rewrite a path (e.g. a preprocess retry) would otherwise be to
- *   grant `objectAdmin`, silently reopening the hole for every other path
- *   too. The generation-match condition makes write-once an explicit
- *   property of the upload itself, independent of which IAM role is
- *   attached to which service account.
+ * - Write-once is enforced by IAM, not by the policy. GCS's POST-object
+ *   policy vocabulary does NOT accept `x-goog-if-generation-match` — a
+ *   policy carrying it fails every upload with 400 InvalidPolicyDocument
+ *   ("Invalid exact match name"), which is how the first live upload found
+ *   this out on 2026-08-18. What actually prevents a replayed (leaked,
+ *   logged, or retried) policy from overwriting the original: overwriting
+ *   an existing object requires `storage.objects.delete`, and the signing
+ *   SA holds `objectCreator`/`objectViewer` only — deliberately, per the
+ *   bucket IAM in neonbinder_ioc. If that role is ever widened toward
+ *   `objectAdmin`, this leg loses write-once with no error anywhere; the
+ *   service's own writes keep their explicit generation-match preconditions
+ *   (valid as HEADERS on the JSON/XML APIs, just not as POST policy fields).
  *
  * Two deliberate departures from this file's neighbor, `gcs.ts`:
  *
@@ -152,7 +152,6 @@ export const createPlaceholderUploadUrl = action({
       conditions: [["content-length-range", 0, MAX_UPLOAD_BYTES]],
       fields: {
         "Content-Type": UPLOAD_CONTENT_TYPE,
-        "x-goog-if-generation-match": "0",
       },
     });
 
@@ -213,14 +212,13 @@ export const createPlaceholderUploadUrl = action({
  * - the exact `Content-Type` field binds the upload to one of the three types
  *   the service accepts. GCS compares it byte-for-byte, which is why the
  *   allowlist lookup is exact rather than parameter-tolerant.
- * - `x-goog-if-generation-match: 0` makes the write genuinely write-once — the
- *   POST fails with a 412 if anything already exists at that key. It is
- *   expressible in a V4 POST policy (it is a signed form field, not a header we
- *   would need the client to set), so streaming uploads get the same property
- *   the zip upload has: replaying a captured policy cannot overwrite the
- *   original. The cost is that a genuinely failed upload cannot be retried at
- *   the same index — the client asks for a new URL, which allocates a new index,
- *   and the abandoned row is deleted when the session closes.
+ * - Write-once comes from IAM, same as the zip path (see the note on
+ *   `createPlaceholderUploadUrl`): `x-goog-if-generation-match` is NOT a legal
+ *   POST-policy field — GCS 400s the whole policy — and overwrite already
+ *   requires `storage.objects.delete`, which the signing SA lacks. A genuinely
+ *   failed upload is still not retried at the same index: the client asks for a
+ *   new URL, which allocates a new index, and the abandoned row is deleted when
+ *   the session closes.
  *
  * `objectPath` is deliberately NOT returned, unlike the zip action's response.
  * The client does not need it: `fields.key` already carries the key it must
@@ -320,7 +318,6 @@ export const createPlaceholderImageUploadUrl = action({
       conditions: [["content-length-range", 0, MAX_PLACEHOLDER_IMAGE_BYTES]],
       fields: {
         "Content-Type": args.contentType,
-        "x-goog-if-generation-match": "0",
       },
     });
 
