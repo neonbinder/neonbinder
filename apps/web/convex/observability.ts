@@ -52,7 +52,14 @@ import { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getCurrentUserId } from "./auth";
 
-export type AdapterPlatform = "bsc" | "sportlots" | "aggregator";
+// "preprocess" (NEO-170) is not a marketplace — it is our own Cloud Run image
+// pipeline. It shares this event because the question the dashboard asks is the
+// same one ("which outbound dependency is slow / failing, and how often"), and
+// because `classifyAdapterError` already buckets the status codes it returns —
+// notably 429 → "rate_limited", which for preprocess means the workpool's
+// parallelism has drifted above the service's instance ceiling. See
+// convex/preprocessCapacity.ts.
+export type AdapterPlatform = "bsc" | "sportlots" | "aggregator" | "preprocess";
 
 export type AdapterCallProperties = {
   requestId: string;

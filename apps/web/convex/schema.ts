@@ -673,17 +673,136 @@ export default defineSchema({
   // directly, bypassing the ownership check entirely — it doesn't matter
   // how well the check is written if the path never goes through it.
   //
-  // Kept intentionally minimal: NEO-151 owns the full job lifecycle
-  // (progress counts, per-image status, failure states) and will extend
-  // this table with new fields as needed. What must NOT change when it
-  // does: `jobId` stays the only client-supplied handle.
+  // NEO-170 extended this table with the batch lifecycle the original comment
+  // reserved for NEO-151 (progress counts, per-image status, failure states),
+  // and added the two tables below it. The hard rule above did NOT relax when
+  // it did — it now covers three tables instead of one:
+  //
+  //   NO FUNCTION ANYWHERE MAY ACCEPT `objectPath` AS AN ARGUMENT.
+  //
+  // Every function in the pipeline (convex/placeholderPipeline.ts,
+  // placeholderBatch.ts, placeholderPairing.ts) takes `jobId` as its only
+  // client-supplied handle, looks up THIS row, checks
+  // `row.userId === identity.subject`, and passes `jobId` + `userId` to the
+  // preprocess service — which re-derives the object path on its own side.
+  // `placeholderImages` and `placeholderPairs` carry `userId` too so an
+  // ownership check never has to hop through a join it might forget to make.
   placeholderJobs: defineTable({
     jobId: v.string(), // server-generated (crypto.randomUUID()) in createPlaceholderUploadUrl
     userId: v.string(), // Clerk user ID as string — ownership check is row.userId === identity.subject
     objectPath: v.string(), // placeholders/{userId}/{jobId}/input.zip — re-derived server-side, never client input
     createdAt: v.number(),
-    status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("failed")),
+    // Lifecycle (NEO-170). "pending" → "uploaded" are pre-batch (the signed
+    // policy was minted / the client finished its upload). The batch then runs
+    // "extracting" → "processing" → "pairing" → "succeeded", or lands on
+    // "failed" from any of them. "failed" is deliberately re-entrant: starting
+    // a batch from "failed" clears this job's images and pairs and starts over,
+    // which is the difference between a retryable upload and a dead one.
+    status: v.union(
+      v.literal("pending"),
+      v.literal("uploaded"),
+      v.literal("extracting"),
+      v.literal("processing"),
+      v.literal("pairing"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+    ),
+    // Progress counters (NEO-170). All optional so pre-NEO-170 rows — and the
+    // row `insertPlaceholderJob` writes at mint time — stay valid without a
+    // migration. `processedImages + failedImages === totalImages` is the
+    // batch-complete condition; see recordImageOutcomeImpl.
+    totalImages: v.optional(v.number()), // accepted entries the extract step found
+    processedImages: v.optional(v.number()),
+    failedImages: v.optional(v.number()),
+    rejectedEntries: v.optional(v.number()), // zip members extract declined (not images, too big, etc.)
+    startedAt: v.optional(v.number()), // when the batch was started, not when the job was created
+    finishedAt: v.optional(v.number()),
+    // Terminal failure detail. `errorCode` is the low-cardinality tag to group
+    // and alert on (e.g. "ZIP_REJECTED", "TOO_MANY_IMAGE_FAILURES");
+    // `errorDetail` is free text for a human reading one specific job.
+    errorCode: v.optional(v.string()),
+    errorDetail: v.optional(v.string()),
   })
     .index("by_job", ["jobId"])
     .index("by_user", ["userId"]),
+
+  // One row per image the extract step accepted out of a placeholder upload
+  // (NEO-170). This is the unit of work the preprocess workpool operates on:
+  // one row ⇄ one `/process-entry` call ⇄ one work item.
+  //
+  // `index` is the entry index WITHIN the zip, assigned by the preprocess
+  // service's extract step, and it is the only handle passed back to
+  // `/process-entry`. It is not a path and cannot be pointed at another user's
+  // upload — see the placeholderJobs comment above.
+  //
+  // `workId` is the workpool's opaque handle, stored so cancelPlaceholderBatch
+  // can cancel in-flight work. It is `v.string()` rather than a branded type
+  // because the brand (`WorkId`) is a TypeScript-only phantom; the value on the
+  // wire is a string.
+  placeholderImages: defineTable({
+    jobId: v.string(),
+    userId: v.string(), // denormalized from placeholderJobs so ownership needs no join
+    index: v.number(), // entry index within the zip, assigned by extract
+    originalName: v.string(), // the zip member's filename — used by adjacency pairing
+    status: v.union(
+      v.literal("queued"),
+      v.literal("processing"),
+      v.literal("done"),
+      v.literal("failed"),
+    ),
+    workId: v.optional(v.string()), // workpool handle, set once the row is enqueued
+    // Identity + orientation, populated from the /process-entry response.
+    // `players` is the canonical list (many for leaders/combo cards); `player`
+    // is the first entry, kept for back-compat with the single-player callers.
+    players: v.optional(v.array(v.string())),
+    player: v.optional(v.string()),
+    team: v.optional(v.string()),
+    cardNumber: v.optional(v.string()),
+    side: v.optional(v.string()), // "front" | "back" as classified; string, not a union, because the service owns the vocabulary
+    rotationDegrees: v.optional(v.number()), // CCW rotation applied before classification
+    orientConfidence: v.optional(v.number()),
+    textCount: v.optional(v.number()), // Vision word count — the free signal the adjacency pre-pass runs on
+    croppedSource: v.optional(v.string()), // which stage of the crop cascade won
+    dhash: v.optional(v.string()), // 16-char lowercase hex perceptual hash, consumed by pairing
+    errorCode: v.optional(v.string()),
+    errorDetail: v.optional(v.string()),
+    // Set by the pairing pass, not by processing. Absent means pairing has not
+    // run for this row yet — distinct from "unmatched", which means it ran and
+    // found nothing.
+    pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
+  })
+    .index("by_job", ["jobId"])
+    // Ordered iteration within a job. Pairing's adjacency pre-pass depends on
+    // zip order, so "read this job's images in index order" is a hot path, not
+    // a convenience.
+    .index("by_job_index", ["jobId", "index"]),
+
+  // Front/back pairs produced by the pairing pass (NEO-170), one row per
+  // matched pair. Unmatched images are NOT recorded here — they are marked
+  // `pairStatus: "unmatched"` on placeholderImages instead, so "every image is
+  // accounted for" is a property of one table rather than a set difference.
+  //
+  // `confidence` and `mechanism` are kept separate on purpose: `mechanism`
+  // says HOW the pair was found (the free zip-adjacency pre-pass, or the paid
+  // identity-resolver pool pass) and `confidence` says how strong the evidence
+  // was. They vary independently — an adjacency match can be side-only, and a
+  // pool match can be exact — and the pair of them is what tells us whether
+  // the adjacency pre-pass is earning its keep.
+  placeholderPairs: defineTable({
+    jobId: v.string(),
+    userId: v.string(), // denormalized from placeholderJobs so ownership needs no join
+    frontIndex: v.number(), // placeholderImages.index of the front
+    backIndex: v.number(), // placeholderImages.index of the back
+    player: v.optional(v.string()),
+    team: v.optional(v.string()),
+    cardNumber: v.optional(v.string()),
+    confidence: v.union(
+      v.literal("exact"),
+      v.literal("fuzzy"),
+      v.literal("side-only"),
+    ),
+    mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
+    score: v.number(),
+    createdAt: v.number(),
+  }).index("by_job", ["jobId"]),
 });
