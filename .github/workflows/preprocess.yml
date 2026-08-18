@@ -268,6 +268,14 @@ jobs:
           id_token_audience: ${{ steps.base-url.outputs.base_url }}
           id_token_include_email: true
 
+      # The auth action masks the token internally, but that guarantee belongs
+      # to the action's implementation — assert it ourselves so an action bump
+      # cannot silently start echoing the token into logs.
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
       - name: Fetch internal API key (dev)
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
