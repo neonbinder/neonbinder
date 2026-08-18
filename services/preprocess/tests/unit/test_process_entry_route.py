@@ -6,8 +6,9 @@ Vision/Anthropic stubbed exactly as test_process_route does, the dHash
 contract (16 lowercase hex chars, computed on the extracted ORIGINAL and
 never on the crop), rotation being baked into the stored output, the
 write-once output semantics (412 → 200 with output_written=false, first
-write stands), extension probing for non-JPEG extracted objects, and the
-502 translation of upstream failures.
+write stands), extension probing for non-JPEG extracted objects, the
+502 translation of upstream failures, and the unconditional EXIF upright
+for streaming-intake (direct-to-GCS) entries that /extract never touched.
 
 Storage is the shared in-memory fake from `_fake_gcs` driven through the real
 `ObjectStore`. No network, no credentials.
@@ -26,6 +27,7 @@ from PIL import Image
 from app import cropper
 from app.classify import ClassifyResult
 from app.dhash import compute_dhash
+from app.exif import EXIF_ORIENTATION_TAG, apply_exif_orientation, read_exif_orientation
 from app.jobs import zipsafe
 from app.jobs.gcs import ObjectStore
 from app.main import app
@@ -78,6 +80,24 @@ def _png(size: tuple[int, int] = (8, 8)) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", size, color="white").save(buf, format="PNG")
     return buf.getvalue()
+
+
+def _oriented_jpeg(orientation: int, size: tuple[int, int] = (40, 20)) -> bytes:
+    """A deterministic noise JPEG carrying an explicit EXIF orientation tag.
+
+    Noise (not a flat color) so the dhash actually changes when the pixels are
+    transposed — the guard asserts in TestExifUpright depend on that. Small
+    enough (< MIN_SIDE_PX per side) that every crop candidate is rejected and
+    the cascade deterministically lands on passthrough.
+    """
+    rng = random.Random(1234)
+    raw = bytes(rng.randint(0, 255) for _ in range(size[0] * size[1] * 3))
+    img = Image.frombytes("RGB", size, raw)
+    out = io.BytesIO()
+    exif = img.getexif()
+    exif[EXIF_ORIENTATION_TAG] = orientation
+    img.save(out, format="JPEG", quality=95, exif=exif)
+    return out.getvalue()
 
 
 def _card_bytes(size: tuple[int, int] = (500, 700)) -> bytes:
@@ -251,6 +271,76 @@ class TestHappyPath:
         response = _post_entry(entry_index=7)
         assert response.status_code == 200, response.text
         assert f"{OUTPUT_PREFIX}0007.png" in fake_gcs.names(BUCKET)
+
+
+class TestExifUpright:
+    """Streaming-intake entries (direct signed-URL uploads to extracted/) skip
+    /extract, so they arrive still carrying their EXIF orientation tag.
+    /process-entry must upright them itself — unconditionally, and before the
+    dhash — so both ingestion paths honour the same contract: the hash
+    describes the EXIF-uprighted ORIGINAL, never the stored sideways pixels
+    and never the crop."""
+
+    def test_tagged_entry_is_hashed_and_processed_upright(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        entry = _oriented_jpeg(6)  # orientation 6: viewers rotate 90° CW to display
+        upright, orientation = apply_exif_orientation(entry)
+        # Fixture sanity: the tag survived the encode, and uprighting the
+        # pixels genuinely moves the hash — otherwise this test proves nothing.
+        assert orientation == 6
+        assert compute_dhash(entry) != compute_dhash(upright)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", entry, "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["dhash"] == f"{compute_dhash(upright):016x}"
+        assert body["dhash"] != f"{compute_dhash(entry):016x}"
+        # The cascade saw the upright pixels too: passthrough + rotation 0
+        # stores them as-is, with width/height swapped by the 90° turn and the
+        # now-misleading orientation tag stripped (no double rotation later).
+        assert body["cropped_source"] == "passthrough"
+        stored = fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg")
+        assert stored == upright
+        with Image.open(io.BytesIO(stored)) as img:
+            assert img.size == (20, 40)
+        assert read_exif_orientation(stored) == 1
+
+    def test_as_stored_tag_is_a_byte_identical_no_op(self, fake_gcs, monkeypatch):
+        # Orientation 1 ("as stored") must not trigger a decode/re-encode —
+        # same guarantee the untagged happy-path tests already pin down: the
+        # hash and the stored output are the entry's exact bytes.
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        entry = _oriented_jpeg(1)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", entry, "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        assert response.json()["dhash"] == f"{compute_dhash(entry):016x}"
+        assert fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg") == entry
+
+    def test_truncated_tagged_entry_returns_502(self, fake_gcs, monkeypatch):
+        # Valid JPEG magic and an intact EXIF header carrying a rotating
+        # orientation, but the scan data cut off: reading the tag succeeds,
+        # the transpose decode fails — the route's undecodable-image 502
+        # (same fixture recipe as test_extract_route's undecodable member).
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        rng = random.Random(7)
+        raw = bytes(rng.randint(0, 255) for _ in range(200 * 200 * 3))
+        img = Image.frombytes("RGB", (200, 200), raw)
+        out = io.BytesIO()
+        exif = img.getexif()
+        exif[EXIF_ORIENTATION_TAG] = 6
+        img.save(out, format="JPEG", quality=95, exif=exif)
+        truncated = out.getvalue()[: int(len(out.getvalue()) * 0.6)]
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", truncated, "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 502
 
 
 class TestWriteOnceOutput:

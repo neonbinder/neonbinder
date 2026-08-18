@@ -821,6 +821,21 @@ def process_entry(
             detail="placeholder storage unavailable",
         ) from None
 
+    # EXIF-upright the entry unconditionally, BEFORE the dhash. Zip-extracted
+    # objects are already upright (/extract transposed and re-encoded them,
+    # stripping the orientation tag — a no-op here), but direct-upload
+    # (streaming) objects land in extracted/ as raw originals that may still
+    # carry the tag. Running this always, ahead of compute_dhash, is what
+    # keeps the hash contract identical for both ingestion paths.
+    try:
+        entry_bytes, _orientation = apply_exif_orientation(entry_bytes)
+    except Exception:
+        logger.exception("process_entry: EXIF upright failed on the extracted image")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="extracted image undecodable",
+        ) from None
+
     # dHash the EXIF-uprighted ORIGINAL before any cropping — the hash must
     # describe the scan, never the crop, so re-scans of the same card match
     # regardless of how each pass got cropped.
