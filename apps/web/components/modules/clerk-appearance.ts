@@ -43,7 +43,10 @@ export const clerkNeonAppearance = {
     colorMuted: "#0f172a", // slate-900
     colorInput: "#0f172a", // slate-900
     colorInputForeground: "#ededed",
-    colorBorder: "#1e293b", // slate-800
+    // slate-500, NOT slate-800: #1e293b computes to ~1.3:1 against both the
+    // page and input backgrounds — far under the 3:1 non-text minimum
+    // (WCAG 1.4.11) for the input outlines and dividers Clerk draws with it.
+    colorBorder: "#64748b",
     colorDanger: "#FF2E9A", // neon-pink
     colorSuccess: "#00D558", // neon-green
     colorWarning: "#FFE600", // neon-yellow
@@ -53,6 +56,10 @@ export const clerkNeonAppearance = {
     colorInputBackground: "#0f172a",
     colorInputText: "#ededed",
     colorAlphaShade: "#ededed",
+    // clerk-js 5 name for colorPrimaryForeground's role. Without it, a v5
+    // clerk-js falls back to its stock (light) CTA text, which on our
+    // neon-green primary computes to ~2:1 (WCAG 1.4.3 failure).
+    colorTextOnPrimaryBackground: "#0a0a0a",
     // Shared by both
     fontFamily: "Lexend, sans-serif",
     borderRadius: "0.5rem",

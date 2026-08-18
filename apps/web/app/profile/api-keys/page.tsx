@@ -71,7 +71,11 @@ export default function ApiKeysPanel() {
       >
         <APIKeys
           appearance={clerkNeonAppearance}
-          fallback={<p className="text-sm text-slate-400">Loading API keys…</p>}
+          fallback={
+            <p role="status" className="text-sm text-slate-400">
+              Loading API keys…
+            </p>
+          }
         />
       </Sentry.ErrorBoundary>
     </section>
