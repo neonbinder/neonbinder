@@ -20,9 +20,13 @@ import { recordImageOutcomeImpl } from "./placeholderPipeline";
 /**
  * The queue in front of the preprocess Cloud Run service.
  *
- * `maxParallelism` is pinned to the service's Cloud Run instance ceiling — see
- * convex/preprocessCapacity.ts for why the two numbers must be equal and what
- * breaks (quietly) in each direction when they are not.
+ * `maxParallelism` is pinned to the service's Cloud Run instance ceiling FOR
+ * THIS ENVIRONMENT — 20 on prod, 3 on dev and preview. It is resolved from the
+ * deployment's `PREPROCESS_MAX_PARALLELISM` variable at module load and read
+ * here when the pool is constructed, so a deployment picks up its own capacity
+ * without a code change. See convex/preprocessCapacity.ts for why this stopped
+ * being a compiled-in constant, why the two numbers must be equal WITHIN an
+ * environment, and what breaks (quietly) in each direction when they are not.
  *
  * `retryActionsByDefault: true` is safe here specifically because the enqueued
  * action is idempotent: `/process-entry` re-derives its input from the job id
