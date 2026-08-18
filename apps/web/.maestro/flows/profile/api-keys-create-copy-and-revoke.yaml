@@ -1,0 +1,192 @@
+# R1 — Single feature: a signed-in person can reach Profile Settings -> API Keys,
+# mint an API key for a tool, see the secret exactly once, and revoke that key
+# again — all without leaving the page. (NEO-172.)
+#
+# R2 — This cannot go green without the feature. Clerk's key manager only paints
+# its "Add new key" control when API keys are ENABLED on the Clerk instance; with
+# the feature off, clerk-js throws (cannot_render_api_keys_disabled), the page's
+# error boundary renders "API keys are unavailable right now..." instead, and the
+# gate below fails. Every step after that gate is an unconditional assert — there
+# is no `when:` branch anywhere in this flow that could let it finish without
+# creating and revoking a real key.
+#
+# R3 — No other flow touches /profile/api-keys. Navigation is the shared
+# sign-in-redirect entry plus one nav tap; there is no set-builder drilling here,
+# so no drill util applies.
+#
+# R4 — Enters through the standard /testing/sign-in redirect (the Clerk
+# handshake) and never logs in again in the body. It needs no marketplace
+# credentials, so it does not lean on the Phase-0 credential seeding either.
+#
+# R7 — SELF-CONTAINED AND NON-DESTRUCTIVE. The key it revokes is the key it just
+# created, named with ${ATTEMPT_ID} (the runner's per-worker, per-attempt id), so
+# two runners can never name the same key and a retry can never collide with its
+# own first attempt. The revoke is additionally guarded: Clerk's confirmation
+# dialog quotes the key name in its title, and we assert OUR name is in that
+# title BEFORE typing the confirmation word — so even if the row menu were ever
+# opened on the wrong row, this flow stops instead of revoking someone else's
+# key. API keys live on the Clerk user, not in Convex, so nothing here needs
+# /testing/reset and nothing here writes to any set (R7a is not in play).
+#
+# R8 — DELIBERATELY NO `centerElement` BELOW, and this is the rule's own
+# page-bottom exception rather than an oversight. Measured on the 1024x629
+# headless viewport: the page's own heading, blurb and warnings occupy the top
+# 565px, so Clerk's key manager is the LAST thing on the page and lives in the
+# remaining 64px until you scroll. The page can only scroll by (content - 629),
+# which is never enough to lift the card's lower half into Maestro's centring
+# band (+/-125px around y=314), so `centerElement: true` would swipe to the
+# bottom and then time out having never settled. Plain `scrollUntilVisible`
+# instead demands the element be 100% visible (Maestro's default
+# visibilityPercentage), which is exactly the "fully in view before you tap"
+# guarantee R8 is asking for. Nothing overlays the bottom of the viewport — there
+# is no app footer — so a fully-visible element low on the screen is tappable.
+#
+# WHY WE ENTER ON A DIFFERENT SECTION: the API Keys tab is new in NEO-172 and
+# reaching the page through it is part of what this flow proves. Landing on
+# /profile/shipping also removes an ambiguity — "API Keys" is the page's <h2> as
+# well as its nav tab, so tapping it from a section where the heading does not
+# exist yet targets the tab and nothing else. We gate only on the shell's own
+# "Profile Settings" heading, so a slow Shipping panel can never redden this.
+#
+# NOTE FOR WHOEVER READS A FAILURE SCREENSHOT: between "Create key" and
+# "Copy & Close" Clerk displays the key's secret in a read-only box, so a
+# screenshot captured in that window contains a live credential — and CI
+# failure screenshots are public artifacts. Three things bound that: the key
+# belongs to a dedicated test account on the dev Clerk instance, this flow
+# revokes it seconds later, and it is deliberately created with a ONE DAY
+# expiration instead of Clerk's "Never" default, so a key that escapes because
+# a run died mid-window stops working on its own within 24h. Revoke it by hand
+# anyway if you spot one — the expiry is a backstop, not the cleanup.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/profile/shipping&worker=${WORKER_INDEX || "0"}
+name: API Keys — create a key, copy the secret once, then revoke it
+tags:
+  - smoke
+  - api-keys
+---
+# Step 1: land signed in on Profile Settings.
+- launchApp
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# Step 2: the account settings nav now offers a fifth section. Tap it.
+# On /profile/shipping this is the only "API Keys" on screen (the page's own
+# heading only exists once we get there), so the tap is unambiguous.
+- tapOn: "API Keys"
+
+# Step 3: the page explains what a key is and — crucially — warns that the
+# secret appears exactly once. That warning is what makes the copy-now dialog
+# further down comprehensible, so it is part of the feature, not decoration.
+# Both sit above the fold on arrival, before anything below scrolls the page.
+- assertVisible: ".*An API key lets a script, spreadsheet or tool talk to Neon Binder as you.*"
+- assertVisible: ".*The secret is shown once, when you create the key.*"
+
+# Step 4: THE GATE. Clerk's key manager is live and offering the create action.
+# If API keys are switched off for this Clerk instance the page shows
+# "API keys are unavailable right now..." instead, and the flow stops here
+# rather than quietly passing.
+- scrollUntilVisible:
+    element:
+      text: "Add new key"
+- tapOn: "Add new key"
+
+# Step 5: name the key after this worker + attempt, so no two runners (and no
+# retry) ever ask for the same name. The empty name box shows its own prompt,
+# which is both how we know the create form opened and what we aim the tap at.
+- scrollUntilVisible:
+    element:
+      text: "Enter your secret key name"
+- assertVisible: "Add new API key"
+- tapOn:
+    text: "Enter your secret key name"
+- inputText: "e2e-${ATTEMPT_ID}"
+# The box now reads back the name we typed. Worth checking on its own: this
+# field is redrawn on every keystroke, and a dropped one would mint a key under
+# a truncated name that the rest of the flow could never find.
+- assertVisible: "e2e-${ATTEMPT_ID}"
+# Give the key a one-day life instead of Clerk's "Never" default, so the secret
+# this flow puts on screen cannot outlive the run by more than a day (see the
+# screenshot note at the top). Expiration is a custom dropdown, not a native
+# <select>, so it is driven by plain taps: the closed control shows its own
+# "Select date" prompt, and the list that opens holds Never / 1 Day / 7 Days /
+# ... — "1 Day" is the second entry, so it is inside the list's own small
+# scrolling window without needing an inner scroll Maestro could not drive.
+- tapOn:
+    text: "Select date"
+- tapOn:
+    text: "1 Day"
+# The form now tells the user when this key dies. This assertion is load-bearing,
+# not decoration: without it a tap that missed the list would silently fall back
+# to a key that never expires, and the flow would still go green.
+- assertVisible: ".*Expiring.*"
+- scrollUntilVisible:
+    element:
+      text: "Create key"
+- tapOn: "Create key"
+
+# Step 6: the one and only showing of the secret. The dialog names the key we
+# asked for, and says out loud that this is the last time it can be seen.
+# It is a fixed, vertically-centred overlay, so it is tapped where it is rather
+# than scrolled to.
+- assertVisible: ".*Copy your.*e2e-${ATTEMPT_ID}.*API Key now.*"
+# Matched without the apostrophe: Clerk writes this one with an ASCII ' but uses
+# a curly U+2019 in neighbouring strings, and the glyph is not what we care about.
+- assertVisible: ".*allow you to view it again later.*"
+- tapOn: "Copy & Close"
+
+# Step 7: find the new key in the list. We search for it by name rather than
+# hunting down the table: the test account can carry keys left behind by an
+# earlier failed run, and filtering keeps ours the only row on screen — which is
+# what makes the row menu in step 8 unambiguous, and what makes the empty list in
+# step 10 mean "our key is gone" rather than "the table happens to be short".
+- scrollUntilVisible:
+    element:
+      text: "Search keys"
+- tapOn:
+    text: "Search keys"
+- inputText: "e2e-${ATTEMPT_ID}"
+# The key is listed under the Name column. Anchoring below the column heading
+# matters: the search box now holds the same words, and without the anchor this
+# would match what we just typed instead of the row we are claiming exists.
+- scrollUntilVisible:
+    element:
+      text: "e2e-${ATTEMPT_ID}"
+      below:
+        text: "Name"
+# And the row carries the one-day life we chose, which is how we know the
+# expiration reached the key that was actually created rather than just the
+# form. Left loose on the dates — Clerk formats them for the reader's locale.
+- assertVisible: ".*Created.*Expires.*"
+
+# Step 8: open that row's actions menu and choose Revoke. Anchoring the menu
+# button to our key's name picks the menu belonging to OUR row: Maestro orders
+# the candidates a relational anchor leaves by distance to that anchor, so the
+# nearest "Open menu" is the one in the same row — true even in the instant
+# before the search filter has settled. The menu itself opens upward when the
+# row is low on the page, so it does not need scrolling to.
+- tapOn:
+    id: "Open menu"
+    rightOf:
+      text: "e2e-${ATTEMPT_ID}"
+- tapOn: "Revoke key"
+
+# Step 9: the confirmation dialog names the key being destroyed. Asserting our
+# own name here BEFORE confirming is the safety catch described at the top —
+# nothing is revoked unless this is our key.
+- assertVisible: ".*Revoke.*e2e-${ATTEMPT_ID}.*secret key.*"
+# Revoking is deliberately not a single click: the empty confirmation box prompts
+# for the word Revoke, and the button stays dead until it is typed in exactly.
+# "Revoke" on its own is that box — the menu item and the button both read
+# "Revoke key", and the dialog's own title is longer.
+- tapOn:
+    text: "Revoke"
+- inputText: "Revoke"
+- tapOn: "Revoke key"
+
+# Step 10: the key is gone. The list is still filtered to the name we created,
+# so an empty result here is the assertion that our key no longer exists — no
+# row counting, and nothing said about any other key on the account.
+- scrollUntilVisible:
+    element:
+      text: "No API keys found"
