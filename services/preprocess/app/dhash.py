@@ -6,10 +6,13 @@ Two scans of the same physical card side produce near-identical hashes despite
 minor crop, rotation and lighting differences, while genuinely different images
 (a front against its own back) differ by a large Hamming distance.
 
-The pool uses this for exactly one decision: when two images of the same card
-both arrive labelled the same side, was that a deliberate re-scan (same image,
-evict the stale entry) or a mis-classification (different image, flip the side
-so the two pair instead of one clobbering the other)?
+Under NEO-170 this serves `/process-entry`: the route hashes each extracted,
+EXIF-uprighted original — before any cropping, matching cardlister's "hash the
+original scan, never the crop" rule — and reports it as metadata. The
+front/back pairing that consumes these hashes lives in Convex TypeScript (it
+uses them for exactly one decision: when two images of the same card both
+arrive labelled the same side, was that a deliberate re-scan or a
+mis-classification?); this module only produces the value.
 
 Cost is trivial — one decode down to a 72-byte thumbnail — so this carries none
 of the memory profile of the SAM/torch path in `app.cropper`. Pillow is already
@@ -50,11 +53,11 @@ def compute_dhash(image_bytes: bytes) -> int:
 
     Takes bytes rather than the source's file path: every other entry point in
     this service (`app.cropper`, `app.classify`, `app.orient`) is bytes-in, and
-    the zip job under NEO-149 holds members in memory rather than on disk.
+    `/process-entry` (NEO-170) holds the extracted image in memory rather than
+    on disk.
 
-    Raises whatever Pillow raises on an undecodable payload; callers that want
-    graceful degradation wrap this in their `ImageHasher` callback, which is
-    allowed to return None.
+    Raises whatever Pillow raises on an undecodable payload; the caller owns
+    translating that into its own failure reporting.
     """
     with Image.open(BytesIO(image_bytes)) as img:
         thumbnail = img.convert("L").resize(
