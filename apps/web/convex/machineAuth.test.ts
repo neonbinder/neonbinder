@@ -33,10 +33,12 @@
  *    modes against each other rather than each against a literal, so a future
  *    "helpful" error message fails the comparison instead of quietly adding a
  *    way to classify keys.
- *  - **No secret in the logs.** Asserted over everything the handler printed,
- *    for the api key, the deployment secret, the minted JWT, the sign-in ticket
- *    AND the dev-browser token — five values, one assertion, run once per
- *    distinct logging call site.
+ *  - **No secret in the logs.** Asserted over everything the handler printed, on
+ *    every console channel, for the api key, the deployment secret, the minted
+ *    JWT, the sign-in ticket and the dev-browser token — and for PREFIXES of
+ *    each, because a redactor that keeps a few characters "for correlation"
+ *    passes a whole-string check while still leaking usable material. One
+ *    assertion, run once per distinct logging call site.
  *  - **`POST /sessions` is never called.** It is testing-only on production
  *    instances, so its absence is a release-blocking property rather than a
  *    style preference. The stub throws if anything reaches it, so a regression
@@ -54,8 +56,13 @@ const modules = (import.meta as unknown as {
 
 const SECRET_KEY = "sk_test_deployment_secret_do_not_log";
 const FAPI_URL = "https://clerk.neonbinder.test";
-const MACHINE_KEY = "ak_3beecc9c60adb5f9b850e91a8ee1e992_secret_value";
+// The api key's PUBLIC id and its SECRET are deliberately unrelated strings.
+// An earlier fixture made the secret `${KEY_ID}_secret_value`, which was both
+// unrealistic and quietly fatal to the partial-secret assertions below: every
+// prefix of the secret was also a prefix of the id we legitimately log, so
+// "no fragment of the secret reaches the output" could not have failed.
 const KEY_ID = "ak_3beecc9c60adb5f9b850e91a8ee1e992";
+const MACHINE_KEY = "ak_live_5d41402abc4b2a76b9719d911017c592";
 const SUBJECT = "user_2xhFjEI5X2qWRvtV13BzSj8H6Dk";
 const OTHER_SUBJECT = "user_9zzZZZI5X2qWRvtV13BzSj8H6Dk";
 const OWN_SESSION = "sess_2ownedbythecaller00000000000";
@@ -67,6 +74,30 @@ const DEV_BROWSER_TOKEN = "dvb_dev_browser_token_secret_do_not_log";
 
 const SIGN_IN_URL = `${FAPI_URL}/v1/client/sign_ins?_is_native=1`;
 const SIGN_IN_URL_WITH_DB = `${SIGN_IN_URL}&__clerk_db_jwt=${DEV_BROWSER_TOKEN}`;
+
+/**
+ * Every value that must never reach a log, whole OR in part.
+ *
+ * The partial fragments are the point. "Never log the secret" is easy to satisfy
+ * accidentally — a truncating logger, a redactor that keeps a prefix "for
+ * correlation", a `slice(0, 8)` added to make a log line readable — all of those
+ * pass a whole-string check and still put attacker-usable material on disk. The
+ * repo rule is never-even-partially, so the test checks prefixes too, and the
+ * JWT is checked by its header and signature segments rather than as one blob.
+ */
+const SECRET_FRAGMENTS: ReadonlyArray<readonly [string, string]> = [
+  ["machine key", MACHINE_KEY],
+  ["machine key prefix", MACHINE_KEY.slice(0, 12)],
+  ["deployment secret", SECRET_KEY],
+  ["deployment secret prefix", SECRET_KEY.slice(0, 12)],
+  ["jwt", JWT],
+  ["jwt header segment", JWT.split(".")[0]],
+  ["jwt signature segment", JWT.split(".")[2]],
+  ["sign-in ticket", TICKET],
+  ["sign-in ticket prefix", TICKET.slice(0, 8)],
+  ["dev-browser token", DEV_BROWSER_TOKEN],
+  ["dev-browser token prefix", DEV_BROWSER_TOKEN.slice(0, 8)],
+];
 
 /** One intercepted upstream request. */
 type ClerkCall = {
@@ -231,14 +262,17 @@ function captureLogs() {
   const collect = (...args: unknown[]) => {
     lines.push(args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" "));
   };
-  const log = vi.spyOn(console, "log").mockImplementation(collect);
-  const warn = vi.spyOn(console, "warn").mockImplementation(collect);
+  // EVERY console channel, not just the two this file happens to use today. The
+  // assertion these feed is "no code path reaches a console with a secret", and
+  // a spy that watches two of five channels cannot make that claim — a
+  // `console.error(err)` added while debugging would sail straight past it,
+  // which is exactly the change most likely to print a raw upstream error.
+  const spies = (["log", "warn", "error", "info", "debug"] as const).map((channel) =>
+    vi.spyOn(console, channel).mockImplementation(collect),
+  );
   return {
     lines,
-    restore: () => {
-      log.mockRestore();
-      warn.mockRestore();
-    },
+    restore: () => spies.forEach((spy) => spy.mockRestore()),
   };
 }
 
@@ -605,15 +639,26 @@ describe("session ownership", () => {
 // ---------------------------------------------------------------------------
 
 describe("credential rejections are indistinguishable", () => {
-  /** Run one rejection scenario and return its status + exact body. */
+  /**
+   * Run one rejection scenario and return everything a caller can observe.
+   *
+   * Headers included, not just status and body. A response that differed only by
+   * a header — a `x-clerk-status`, a varying `cache-control`, a length that
+   * tracked the upstream message — would be exactly as good an oracle as a
+   * different body, and would sail past a status+body comparison.
+   */
   async function reject(config: ClerkConfig, body: unknown) {
     const t = convexTest(schema, modules);
     stubClerk(config);
     const res = await exchange(t, { body });
-    return { status: res.status, text: await res.text() };
+    return {
+      status: res.status,
+      text: await res.text(),
+      headers: [...res.headers.entries()].sort(),
+    };
   }
 
-  test("a revoked key, an unknown key, an org key and a missing key all answer identically", async () => {
+  test("every credential rejection is byte-identical, headers included", async () => {
     const revoked = await reject(
       { verify: { status: 200, body: validApiKey({ revoked: true }) } },
       { key: MACHINE_KEY },
@@ -635,15 +680,42 @@ describe("credential rejections are indistinguishable", () => {
       { key: MACHINE_KEY },
     );
     const missing = await reject({}, {});
+    // An over-length key is refused before it is ever sent upstream, and it must
+    // be just another indistinguishable rejection rather than a new class.
+    const overLong = await reject({}, { key: "a".repeat(513) });
 
     // Compared against EACH OTHER, not against a literal: a future "helpful"
     // message fails this comparison instead of quietly becoming a way to
     // classify keys.
-    for (const outcome of [unknown, expired, orgScoped, machineScoped, missing]) {
+    for (const outcome of [unknown, expired, orgScoped, machineScoped, missing, overLong]) {
       expect(outcome).toEqual(revoked);
     }
     expect(revoked.status).toBe(401);
     expect(revoked.text).toBe('{"error":"invalid machine key"}');
+  });
+
+  test("a rate-limited verify is grouped with the upstream failures, NOT the rejections", async () => {
+    // The load-bearing one. Clerk rate-limits `/api_keys/verify` per INSTANCE,
+    // so a 429 is shared-resource contention — and contention an attacker can
+    // induce by spraying junk keys. If it answered 401, anyone able to exhaust
+    // the instance's verify budget could make every legitimate client believe
+    // its key had been revoked and discard it, turning a transient denial of
+    // service into a persistent one carried out by the victims.
+    const rateLimited = await reject({ verify: { status: 429, body: {} } }, { key: MACHINE_KEY });
+    const timedOut = await reject({ verify: { status: 408, body: {} } }, { key: MACHINE_KEY });
+    const serverError = await reject({ verify: { status: 500, body: {} } }, { key: MACHINE_KEY });
+    const unreachable = await reject({ verify: "throw" }, { key: MACHINE_KEY });
+    const rejected = await reject({ verify: { status: 401, body: {} } }, { key: MACHINE_KEY });
+
+    // Indistinguishable from the other upstream failures…
+    for (const outcome of [timedOut, serverError, unreachable]) {
+      expect(outcome).toEqual(rateLimited);
+    }
+    expect(rateLimited.status).toBe(502);
+    expect(rateLimited.text).toBe('{"error":"auth upstream unavailable"}');
+    // …and emphatically NOT the same answer a bad key gets.
+    expect(rateLimited).not.toEqual(rejected);
+    expect(rejected.status).toBe(401);
   });
 
   test("a 400 from verify is a 401 too, and never leaks Clerk's body", async () => {
@@ -687,6 +759,113 @@ describe("fails closed and upstream", () => {
     },
   );
 
+  test.each([
+    ["an explicit http:// origin", "http://clerk.neonbinder.test"],
+    ["a value that is not a URL", "   "],
+    ["a scheme with no host", "https://"],
+    ["a non-http scheme", "ftp://clerk.neonbinder.test"],
+  ])("answers 503 for %s, without calling Clerk", async (_label, configured) => {
+    // http:// is REFUSED rather than upgraded. The sign-in ticket is a bearer
+    // credential that signs its holder in as the subject and it travels in this
+    // request body; cleartext is never an acceptable transport for it, and
+    // silently rewriting the scheme would teach an operator that their next
+    // genuine mistake would also be quietly fixed.
+    //
+    // The other three used to pass the truthiness check and then throw an
+    // unhandled TypeError inside `new URL()` at request time — a fourth response
+    // shape from an endpoint whose whole contract is three constant bodies, and
+    // one whose message could echo the configured origin.
+    process.env.CLERK_FRONTEND_API_URL = configured;
+    const t = convexTest(schema, modules);
+    const calls = stubClerk({});
+
+    const res = await exchange(t, { body: { key: MACHINE_KEY } });
+
+    expect(res.status).toBe(503);
+    await expect(res.text()).resolves.toBe('{"error":"machine auth is not configured"}');
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a misconfigured origin is never echoed back or logged", async () => {
+    process.env.CLERK_FRONTEND_API_URL = "http://sneaky-internal-host.corp";
+    const t = convexTest(schema, modules);
+    const logs = captureLogs();
+    let body: string;
+    try {
+      stubClerk({});
+      const res = await exchange(t, { body: { key: MACHINE_KEY } });
+      body = await res.text();
+    } finally {
+      logs.restore();
+    }
+
+    expect(body).not.toContain("sneaky-internal-host");
+    expect(logs.lines.join("\n")).not.toContain("sneaky-internal-host");
+    // The stage still distinguishes "unset" from "unusable" for an operator.
+    expect(exchangeLines(logs.lines)[0]).toEqual({
+      msg: "machine_token_exchange_failed",
+      stage: "unconfigured_fapi_invalid",
+    });
+  });
+
+  test("an over-length key is refused BEFORE it is forwarded upstream", async () => {
+    // The amplification bound. Everything up to the verify call is
+    // unauthenticated, and the presented key used to be copied verbatim into a
+    // request body sent to api.clerk.com carrying CLERK_SECRET_KEY — so an
+    // anonymous caller could size our authenticated outbound traffic.
+    const t = convexTest(schema, modules);
+    const calls = stubClerk({});
+
+    const res = await exchange(t, { body: { key: "a".repeat(513) } });
+
+    expect(res.status).toBe(401);
+    await expect(res.text()).resolves.toBe('{"error":"invalid machine key"}');
+    // Nothing left the deployment at all.
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a key exactly at the limit is still forwarded", async () => {
+    // Guards the bound against being off by one in the strict direction, which
+    // would reject legitimate keys if Clerk's secret format ever grew.
+    const t = convexTest(schema, modules);
+    const calls = stubClerk({ verify: { status: 401, body: {} } });
+
+    const res = await exchange(t, { body: { key: "a".repeat(512) } });
+
+    expect(res.status).toBe(401);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain("/api_keys/verify");
+  });
+
+  test("an over-length sessionId is ignored like any other malformed id", async () => {
+    // Not a credential failure, so it falls through to creating a session — and
+    // it never reaches an upstream URL, which is the amplification half.
+    const t = convexTest(schema, modules);
+    const calls = stubClerk({});
+    const huge = `sess_${"a".repeat(500)}`;
+
+    const res = await exchange(t, { body: { key: MACHINE_KEY, sessionId: huge } });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ token: JWT, sessionId: CREATED_SESSION });
+    expect(calls.some((c) => c.method === "GET")).toBe(false);
+    expect(calls.every((c) => !c.url.includes("aaaaaaaaaa"))).toBe(true);
+  });
+
+  test("a sessionId at the length limit is still honoured", async () => {
+    const t = convexTest(schema, modules);
+    const atLimit = `sess_${"a".repeat(120)}`;
+    const calls = stubClerk({
+      getSession: { status: 200, body: session(atLimit, SUBJECT, "active") },
+    });
+
+    const res = await exchange(t, { body: { key: MACHINE_KEY, sessionId: atLimit } });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ token: JWT, sessionId: atLimit });
+    expect(calls.some((c) => c.method === "GET")).toBe(true);
+  });
+
   test("a Clerk 500 on verify is 502, not 401", async () => {
     // A 401 here would tell a client with a perfectly good key to throw it away.
     const t = convexTest(schema, modules);
@@ -715,6 +894,12 @@ describe("fails closed and upstream", () => {
   });
 
   test.each([
+    // Verify-stage transients. These are the only 502s where the key has NOT
+    // been verified, and they are here rather than with the 401s because a
+    // rate-limited or timed-out verify says nothing about the credential — see
+    // VERIFY_TRANSIENT_STATUSES.
+    ["a rate-limited verify (429)", { verify: { status: 429, body: {} } }],
+    ["a timed-out verify (408)", { verify: { status: 408, body: {} } }],
     ["a refused sign-in token", { signInToken: { status: 403, body: {} } }],
     [
       "a sign-in token with no token field",
@@ -728,7 +913,7 @@ describe("fails closed and upstream", () => {
     ["a failed mint", { mint: { status: 404, body: {} } }],
     ["a mint with no jwt", { mint: { status: 200, body: { object: "token" } } }],
   ] as Array<[string, ClerkConfig]>)(
-    "%s is 502 — the key was already verified, so it is never a 401",
+    "%s answers 502 rather than 401",
     async (_label, config) => {
       const t = convexTest(schema, modules);
       stubClerk(config);
@@ -834,6 +1019,7 @@ describe("logging never carries anything secret", () => {
     ["bad subject", { verify: { status: 200, body: validApiKey({ subject: "org_2xhF" }) } }],
     ["unparseable verify", { verify: { status: 200, raw: "<html>" } }],
     ["upstream 500", { verify: { status: 500, body: {} } }],
+    ["rate-limited verify", { verify: { status: 429, body: {} } }],
     ["network failure", { verify: "throw" as const }],
     ["session lookup 500", { getSession: { status: 500, body: {} } }],
     ["refused sign-in token", { signInToken: { status: 403, body: {} } }],
@@ -858,7 +1044,7 @@ describe("logging never carries anything secret", () => {
     ],
     ["failed mint", { mint: { status: 500, body: {} } }],
   ] as Array<[string, ClerkConfig]>)(
-    "no output contains any of the five secrets — %s path",
+    "no output contains any secret, whole or partial — %s path",
     async (_label, config) => {
       const t = convexTest(schema, modules);
       const logs = captureLogs();
@@ -869,22 +1055,26 @@ describe("logging never carries anything secret", () => {
         logs.restore();
       }
 
-      // Asserted over EVERYTHING printed, not a hand-picked line: the point is
-      // that no code path anywhere reaches a console with these values. The
-      // ticket and the dev-browser token are bearer credentials exactly like the
-      // api key and the JWT — a ticket signs its holder in as the subject, and
-      // the dev-browser token rides in a query string, which is the classic way
-      // a secret ends up in a log via a URL.
+      // Asserted over EVERYTHING printed, on every console channel, not a
+      // hand-picked line: the point is that no code path anywhere reaches a
+      // console with these values. The ticket and the dev-browser token are
+      // bearer credentials exactly like the api key and the JWT — a ticket signs
+      // its holder in as the subject, and the dev-browser token rides in a query
+      // string, which is the classic way a secret reaches a log via a URL.
+      //
+      // Fragments as well as whole values: a redactor that keeps a prefix "for
+      // correlation" is the realistic regression, and it passes a whole-string
+      // check while still leaking usable material.
       const all = logs.lines.join("\n");
-      expect(all).not.toContain(MACHINE_KEY);
-      expect(all).not.toContain(SECRET_KEY);
-      expect(all).not.toContain(JWT);
-      expect(all).not.toContain(TICKET);
-      expect(all).not.toContain(DEV_BROWSER_TOKEN);
-      // The public id is a deliberate exception — it is what Clerk's dashboard
-      // shows, and it is the only handle an operator can act on. It must never
-      // be confused with the secret, which happens to share its prefix.
-      expect(MACHINE_KEY.startsWith(KEY_ID)).toBe(true);
+      for (const [label, fragment] of SECRET_FRAGMENTS) {
+        expect(all, `leaked ${label}`).not.toContain(fragment);
+      }
+      // Non-vacuity: the public key id is the ONE `ak_…` value that may be
+      // logged, and it must share no prefix with the secret — otherwise every
+      // assertion above would be unfalsifiable on the success path, which is
+      // precisely the trap the previous fixture fell into.
+      expect(KEY_ID).not.toContain(MACHINE_KEY.slice(0, 12));
+      expect(MACHINE_KEY).not.toContain(KEY_ID);
     },
   );
 

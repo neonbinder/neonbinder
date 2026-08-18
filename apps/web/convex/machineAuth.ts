@@ -137,10 +137,61 @@ const MACHINE_SUBJECT_RE = /^user_[A-Za-z0-9]+$/;
  * an unchecked value would let a caller aim the GET at a different Clerk
  * resource entirely. Structurally unrepresentable beats rejected-if-noticed.
  *
+ * **Length-bounded**, not just character-bounded. A real Clerk session id is
+ * around 30 characters; 120 is generous headroom for a format change. Without an
+ * upper bound the character class alone would happily accept a megabyte of `A`s
+ * and put it in an outbound URL — see MAX_PRESENTED_KEY_CHARS for why an
+ * unauthenticated caller must not be able to size our upstream traffic.
+ *
  * A malformed id is not a credential failure, so it is ignored and the exchange
- * falls through to creating a session, exactly as a missing one does.
+ * falls through to creating a session, exactly as a missing one does. That
+ * covers the over-length case too: no distinct answer, no new signal.
  */
-const SESSION_ID_RE = /^sess_[A-Za-z0-9]+$/;
+const SESSION_ID_RE = /^sess_[A-Za-z0-9]{1,120}$/;
+
+/**
+ * Longest presented key we will forward to Clerk.
+ *
+ * This is an **outbound amplification** bound, not a validation nicety, and the
+ * distinction matters because the obvious reading ("Clerk will reject a silly
+ * key anyway") misses the problem. Everything in this handler up to the verify
+ * call is UNAUTHENTICATED: anyone who can reach the route can put an arbitrary
+ * number of bytes in `key`, and those bytes were previously copied verbatim into
+ * a request body that we send to `api.clerk.com` **carrying CLERK_SECRET_KEY**.
+ * So an anonymous caller could make our deployment emit large authenticated
+ * requests on their behalf — spending our egress, our Clerk rate limit, and our
+ * reputation with an upstream that sees a credential of ours attached.
+ *
+ * 512 characters is far past any real `ak_…` secret and still small enough that
+ * the amplification factor is negligible. An over-length key gets the SAME
+ * constant 401 as every other bad credential — it is one more indistinguishable
+ * rejection, not a new error class to probe with.
+ */
+const MAX_PRESENTED_KEY_CHARS = 512;
+
+/**
+ * Verify-stage statuses that mean "ask again later", not "your key is bad".
+ *
+ * 5xx is the obvious case and is handled alongside these. The two here are the
+ * non-obvious ones, and 429 is the one that matters:
+ *
+ *  - **429 Too Many Requests.** Clerk rate-limits `/api_keys/verify` at the
+ *    INSTANCE level, so the budget is shared by every client of this deployment.
+ *    That makes a 429 a statement about contention, not about the credential —
+ *    and, critically, contention an ATTACKER CAN INDUCE by spraying junk keys.
+ *    Treating it as 401 would mean anyone able to exhaust the instance's verify
+ *    budget could make every legitimate client see "invalid machine key" and
+ *    dutifully throw away a perfectly good credential. That turns a transient
+ *    denial of service into a persistent one that the victims complete
+ *    themselves. 502 says "try again", which is the truth.
+ *  - **408 Request Timeout.** Clerk never received a complete request, so it has
+ *    not formed an opinion about the key at all.
+ *
+ * Both are therefore upstream conditions the client should retry, and neither
+ * says anything about the key that could serve as an oracle — every caller sees
+ * the same 502 under the same contention regardless of what they presented.
+ */
+const VERIFY_TRANSIENT_STATUSES = new Set([408, 429]);
 
 /**
  * Per-call upstream timeout.
@@ -371,10 +422,52 @@ function envelopeField(
  * normalised rather than trusted verbatim because a trailing slash would
  * produce `//v1/client/sign_ins`, which some proxies answer differently, and a
  * missing scheme would make `fetch` reject the URL outright.
+ *
+ * Returns null for anything unusable, and the caller answers 503. Three things
+ * count as unusable, and each was previously a different kind of wrong:
+ *
+ *  - **Explicit `http://`.** Refused outright rather than upgraded. The sign-in
+ *    ticket is a bearer credential that signs its holder in as the subject, and
+ *    it travels in this request body; cleartext is never an acceptable transport
+ *    for it. Silently rewriting the scheme would be worse than refusing —
+ *    the operator would believe they had configured http and get https, so the
+ *    next value they set with a real mistake in it would also be "fixed".
+ *  - **A value that is not a URL at all** — whitespace, a bare `https://` with
+ *    no host, a stray quote from a copy-paste. This used to pass the caller's
+ *    truthiness check and then throw an unhandled `TypeError` inside `new URL()`
+ *    at request time, which is a FOURTH response shape (a platform 500) from an
+ *    endpoint whose whole error contract is three constant bodies — and one that
+ *    can echo the configured origin in its message.
+ *  - A URL whose host is empty.
+ *
+ * `URL.origin` is what comes back, so the result is scheme + host + port and
+ * nothing else: any path, query or fragment someone appended is dropped rather
+ * than concatenated into `{origin}/v1/client/sign_ins`.
  */
-function frontendApiOrigin(raw: string): string {
-  const trimmed = raw.trim().replace(/\/+$/, "");
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+function frontendApiOrigin(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  // A scheme-less value is assumed https (the common way this is configured);
+  // an explicit http:// is preserved here so the check below can REFUSE it
+  // rather than quietly upgrading it.
+  //
+  // No trailing-slash strip: `URL.origin` drops the path for us, and doing it by
+  // hand FIRST was a real bug — it turned a bare `"https://"` into `"https:"`,
+  // which then failed the scheme test, got prefixed to `"https://https:"`, and
+  // parsed as the perfectly valid host `https`. A misconfiguration became a
+  // confident request to the wrong origin.
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:") return null;
+  if (parsed.hostname.length === 0) return null;
+  return parsed.origin;
 }
 
 /**
@@ -395,11 +488,17 @@ async function fapiPost(
   path: string,
   opts: { form?: Record<string, string>; query?: Record<string, string> } = {},
 ): Promise<Response> {
-  const url = new URL(`${origin}${path}`);
-  for (const [name, value] of Object.entries(opts.query ?? {})) {
-    url.searchParams.set(name, value);
-  }
   try {
+    // Inside the try, not above it. `origin` has already been validated by
+    // `frontendApiOrigin`, so this cannot realistically throw — but "cannot
+    // realistically throw" is exactly the reasoning that produced the unhandled
+    // TypeError this moved to fix. Constructing it here means ANY failure to
+    // build the request becomes the same 502 as a failure to send it, and the
+    // endpoint keeps its three-constant-bodies contract no matter what.
+    const url = new URL(`${origin}${path}`);
+    for (const [name, value] of Object.entries(opts.query ?? {})) {
+      url.searchParams.set(name, value);
+    }
     return await fetch(url.toString(), {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -638,10 +737,24 @@ export const exchangeMachineToken = httpAction(async (_ctx, request) => {
     logFailure("unconfigured_fapi");
     return notConfigured();
   }
+  // Parsed and validated ONCE, up front, rather than at the point of use. Same
+  // argument as the presence check above — a deployment configured with an
+  // unusable value should say so on every request, not on the first one that
+  // happens to need a new session. The stage is distinct from `unconfigured_fapi`
+  // so an operator can tell "you did not set it" from "what you set is not an
+  // https origin"; the value itself is never logged.
+  const fapiOrigin = frontendApiOrigin(frontendApiUrl);
+  if (!fapiOrigin) {
+    logFailure("unconfigured_fapi_invalid");
+    return notConfigured();
+  }
 
   const { key, sessionId } = await readCredentials(request);
-  if (!key) {
-    logFailure("missing_key");
+  // Length checked HERE, before the key is put in an outbound request body that
+  // carries our secret key — see MAX_PRESENTED_KEY_CHARS. Same constant 401 as a
+  // missing or bad key, so this adds a bound without adding a signal.
+  if (!key || key.length > MAX_PRESENTED_KEY_CHARS) {
+    logFailure(key ? "key_too_long" : "missing_key");
     return unauthorized();
   }
 
@@ -657,15 +770,18 @@ export const exchangeMachineToken = httpAction(async (_ctx, request) => {
     return upstreamUnavailable();
   }
 
-  if (verifyResponse.status >= 500) {
-    // Clerk is broken, not the key. A 401 here would tell a client with a good
-    // key to throw it away.
+  if (
+    verifyResponse.status >= 500 ||
+    VERIFY_TRANSIENT_STATUSES.has(verifyResponse.status)
+  ) {
+    // Clerk is broken or busy, not the key. A 401 here would tell a client with
+    // a good key to throw it away.
     logFailure("verify", verifyResponse.status);
     return upstreamUnavailable();
   }
   if (verifyResponse.status !== 200) {
-    // Every 4xx collapses to one answer: unknown key, malformed key, revoked
-    // key — all indistinguishable from outside.
+    // Every REMAINING 4xx collapses to one answer: unknown key, malformed key,
+    // revoked key — all indistinguishable from outside.
     logFailure("verify", verifyResponse.status);
     return unauthorized();
   }
@@ -758,7 +874,10 @@ export const exchangeMachineToken = httpAction(async (_ctx, request) => {
   if (!resolvedSessionId) {
     const createdSessionId = await createSessionViaSignInToken(
       secretKey,
-      frontendApiOrigin(frontendApiUrl),
+      // Already parsed and validated at the top of the handler — not re-derived
+      // here, so there is exactly one place that decides what a usable Frontend
+      // API origin is.
+      fapiOrigin,
       subject,
       keyId,
     );
