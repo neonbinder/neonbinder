@@ -18,7 +18,7 @@
  *    whole app into a real DOM root. So the route table is read as source.
  */
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -111,6 +111,37 @@ describe("ApiKeysPanel", () => {
     expect(document.title).toBe("API Keys | Neon Binder");
     view.unmount();
     expect(document.title).toBe("Neon Binder");
+  });
+
+  it("names any unlabeled form Clerk mounts, including late ones", async () => {
+    // Two reasons this exists (see the effect's comment in page.tsx): Clerk's
+    // forms have no accessible name, and its create form contains
+    // <input name="name">, which makes form.name an ELEMENT and breaks
+    // Maestro's web hierarchy (mobile-dev-inc/Maestro#3213). The aria-label
+    // fixes the first and dodges the second.
+    render(<ApiKeysPanel />);
+    const slot = screen.getByTestId("clerk-api-keys").parentElement!;
+
+    // A form present at mount time…
+    const early = document.createElement("form");
+    early.innerHTML = '<input name="name" />';
+    slot.appendChild(early);
+    // …and one mounted later, the way clerk-js actually does it.
+    await waitFor(() => expect(early.getAttribute("aria-label")).toBe("API key form"));
+
+    const late = document.createElement("form");
+    late.innerHTML = '<input name="name" />';
+    slot.appendChild(late);
+    await waitFor(() => expect(late.getAttribute("aria-label")).toBe("API key form"));
+
+    // A form that already has an accessible name is left alone.
+    const labeled = document.createElement("form");
+    labeled.setAttribute("aria-label", "Search keys");
+    slot.appendChild(labeled);
+    const bystander = document.createElement("form");
+    slot.appendChild(bystander);
+    await waitFor(() => expect(bystander.getAttribute("aria-label")).toBe("API key form"));
+    expect(labeled.getAttribute("aria-label")).toBe("Search keys");
   });
 
   it("is reachable — src/main.tsx routes /profile/api-keys to this page", () => {

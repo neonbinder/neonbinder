@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { APIKeys } from "@clerk/clerk-react";
 import * as Sentry from "@sentry/react";
 import { ErrorAlert } from "@/components/primitives/ErrorAlert";
@@ -37,6 +38,39 @@ import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 export default function ApiKeysPanel() {
   useDocumentTitle("API Keys | Neon Binder");
 
+  // Give every form Clerk mounts an accessible name. Two reasons, both real:
+  //
+  // 1. Accessibility: clerk-js renders its create/search forms with no
+  //    accessible name, so assistive tech announces an anonymous form.
+  // 2. Clerk's create form contains <input name="name">, and per the HTML
+  //    spec that makes `form.name` evaluate to the INPUT ELEMENT (named
+  //    controls override the form's IDL attributes). Maestro's web driver
+  //    reads `node.name` unguarded when building its hierarchy, so that
+  //    element makes the whole page's hierarchy unserializable and every
+  //    E2E command fails: "Could not retrieve hierarchy through
+  //    maestro.getContentDescription()". An aria-label short-circuits the
+  //    driver's lookup chain before `node.name` is read. Upstream issue:
+  //    https://github.com/mobile-dev-inc/Maestro/issues/3213 (fix PR'd);
+  //    the a11y half stands on its own even after the driver is fixed.
+  //
+  // MutationObserver because the forms are Clerk's DOM, mounted and remounted
+  // on its schedule — there is no prop or appearance hook that sets an
+  // attribute on them.
+  const clerkSlotRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const slot = clerkSlotRef.current;
+    if (!slot) return;
+    const nameClerkForms = () => {
+      for (const form of slot.querySelectorAll("form:not([aria-label]):not([id])")) {
+        form.setAttribute("aria-label", "API key form");
+      }
+    };
+    nameClerkForms();
+    const observer = new MutationObserver(nameClerkForms);
+    observer.observe(slot, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <section aria-labelledby="api-keys-heading" className="space-y-6">
       <header className="space-y-3">
@@ -64,20 +98,22 @@ export default function ApiKeysPanel() {
         </ul>
       </header>
 
-      <Sentry.ErrorBoundary
-        fallback={
-          <ErrorAlert error="API keys are unavailable right now. Refresh the page, and if this keeps happening the feature may not be enabled for this account yet." />
-        }
-      >
-        <APIKeys
-          appearance={clerkNeonAppearance}
+      <div ref={clerkSlotRef}>
+        <Sentry.ErrorBoundary
           fallback={
-            <p role="status" className="text-sm text-slate-400">
-              Loading API keys…
-            </p>
+            <ErrorAlert error="API keys are unavailable right now. Refresh the page, and if this keeps happening the feature may not be enabled for this account yet." />
           }
-        />
-      </Sentry.ErrorBoundary>
+        >
+          <APIKeys
+            appearance={clerkNeonAppearance}
+            fallback={
+              <p role="status" className="text-sm text-slate-400">
+                Loading API keys…
+              </p>
+            }
+          />
+        </Sentry.ErrorBoundary>
+      </div>
     </section>
   );
 }
