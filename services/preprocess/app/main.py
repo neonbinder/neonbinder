@@ -6,6 +6,11 @@ Slice 2b: SAM added to the cascade; text-count + classify-error gates
           applied uniformly across every crop strategy via the wrapper
           in `app.cropper`. Main.py is now a thin layer: auth + upload
           validation → cropper.crop() → response packaging.
+NEO-170:  `/extract` + `/process-entry` — stateless batch routes behind the
+          Convex workpool. Convex owns ALL orchestration and job state; these
+          routes read and write GCS at keys derived from `{user_id, job_id,
+          index}` (`app.jobs.layout`) and return metadata only. Same thin-layer
+          rule: this file does auth, request shape and error-code mapping.
 """
 
 from __future__ import annotations
@@ -16,17 +21,25 @@ import hmac
 import logging
 import os
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from io import BytesIO
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import cropper
 from app.classify import ClassifyError
 from app.cropper import STRATEGY_NAMES, CropRejected, UnknownStrategyError
+from app.cropper._utils import rotate_image_bytes
+from app.dhash import compute_dhash
+from app.exif import apply_exif_orientation
+from app.imaging import RasterTooLargeError, check_raster_size
+from app.jobs import layout, zipsafe
+from app.jobs.gcs import ObjectAlreadyExistsError, ObjectRef, ObjectStore
+from app.jobs.layout import InvalidJobIdentifierError
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +55,29 @@ MAX_IMAGE_BYTES = 32 * 1024 * 1024
 # ~179MP and its warning is suppressed process-wide by sam.py.
 MAX_IMAGE_PIXELS = 60_000_000
 ALLOWED_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+# Concurrency for the GCS uploads inside /extract. The zip itself is read and
+# EXIF-normalised sequentially (one seekable stream, CPU-bound transposes), but
+# each derived object's upload is an independent round trip — overlapping them
+# keeps a large archive well inside Cloud Run's 300s request cap. 8 is small
+# enough that a 4Gi / concurrency-3 instance never holds more than a few
+# entries' bytes in flight per request.
+EXTRACT_UPLOAD_WORKERS = 8
+
+# Retry-After sent with the batch routes' NOT_CONFIGURED 503. A missing bucket
+# env var is a deploy in progress, not a permanent condition — mirror the
+# NEO-149 branch's treatment of missing job config.
+NOT_CONFIGURED_RETRY_AFTER_SECONDS = 30
+
+# Extensions /process-entry probes for an extracted object, most common first.
+# Exactly the set /extract can write — the values of
+# `zipsafe.EXTENSION_BY_CONTENT_TYPE`.
+_EXTRACTED_EXTENSIONS = ("jpg", "png", "webp")
+
+# Storage client for the batch routes. Construction is credential-free (the
+# real google client is built lazily on first use — see app.jobs.gcs), so this
+# is safe at import; tests monkeypatch this attribute with a fake-backed store.
+_object_store = ObjectStore()
 
 
 @app.on_event("startup")
@@ -361,3 +397,474 @@ async def crop_alternatives(
     )
 
     return CropResponse(crops=crops)
+
+
+# ── NEO-170 batch routes ─────────────────────────────────────────────────
+#
+# Convex's workpool drives these. Neither route holds any state: /extract
+# turns `input.zip` into one EXIF-uprighted original per accepted entry at
+# `extracted/{index:04d}.{ext}`, /process-entry turns one of those into a
+# cropped, rotated `output/images/{index:04d}.{ext}` plus metadata. Every
+# object key is derived in `app.jobs.layout` from `{user_id, job_id, index}`
+# — no request or response ever carries a path (see the layout module
+# docstring for why that rule is load-bearing).
+
+
+class ExtractRequest(BaseModel):
+    """Body for POST /extract.
+
+    **There is no object-path field, and there must never be one.** Both
+    `neonbinder-convex` and the preprocess runtime SA hold bucket-wide
+    `objectViewer` on the placeholder bucket, so a caller-supplied path would
+    make this endpoint a cross-user read oracle. The service takes the two
+    identifiers and derives every key itself (`app.jobs.layout`); the caller's
+    authority to use them was established by Convex, which owns the
+    `placeholderJobs` ownership row and re-derives the same path from it.
+    """
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+
+
+class ExtractEntry(BaseModel):
+    """One archive member's outcome, in zip order.
+
+    `index` is the member's ordinal among non-ignored zip members and
+    preserves zip order — downstream pairing in Convex reads it as scan
+    order, so it is load-bearing, not cosmetic. Callers only ever hold
+    `{job_id, user_id, index}`; there is deliberately no object key or path
+    here (the service derives keys — see `ExtractRequest`).
+
+    Accepted entries carry the sniffed `content_type` and `size_bytes` of the
+    bytes actually stored (post EXIF normalisation); rejected ones carry a
+    stable machine `reason` instead and never fail the archive.
+    """
+
+    index: int
+    name: str
+    accepted: bool
+    content_type: str | None
+    size_bytes: int | None
+    reason: str | None
+
+
+class ExtractResponse(BaseModel):
+    """Response body for POST /extract.
+
+    `entries` has one row per non-ignored zip member, in zip order.
+    `accepted_count + rejected_count == len(entries)`.
+    """
+
+    entries: list[ExtractEntry]
+    accepted_count: int
+    rejected_count: int
+
+
+class ProcessEntryRequest(BaseModel):
+    """Body for POST /process-entry. Same no-path rule as `ExtractRequest`."""
+
+    job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
+    user_id: str = Field(description="The Clerk subject id that owns the job.")
+    entry_index: int = Field(ge=0, description="The entry's zip ordinal, from /extract.")
+
+
+class ProcessEntryResponse(BaseModel):
+    """Response body for POST /process-entry. Metadata only — never image bytes.
+
+    The processed image lives at its derived output key; Convex re-derives
+    that key from `{user_id, job_id, entry_index}` when it needs the object.
+
+    `dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted
+    ORIGINAL — computed before any cropping, matching cardlister's "hash the
+    original scan, never the crop" rule — serialized as 16 lowercase hex
+    characters because a 64-bit integer does not survive JSON's float64.
+
+    `output_written` is False when the output object already existed (a
+    retried entry): the write is once-only (`if_generation_match=0`) and
+    first-write-wins on retry is the documented, accepted behaviour.
+    """
+
+    players: list[str]
+    player: str | None
+    team: str | None
+    card_number: str | None
+    side: str
+    rotation_degrees: int
+    orient_confidence: float
+    text_count: int
+    cropped_source: str
+    dhash: str
+    output_written: bool
+
+
+def _invalid_identifier_response(exc: InvalidJobIdentifierError) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        content={"error_code": "INVALID_IDENTIFIER", "detail": str(exc)},
+    )
+
+
+def _not_configured_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "error_code": "EXTRACT_NOT_CONFIGURED",
+            "detail": f"{layout.BUCKET_ENV} is not set",
+        },
+        headers={"Retry-After": str(NOT_CONFIGURED_RETRY_AFTER_SECONDS)},
+    )
+
+
+def _prepare_member(
+    member: zipsafe.ZipMember, *, user_id: str, job_id: str
+) -> tuple[ExtractEntry, tuple[str, bytes, str] | None]:
+    """Turn one zip member into its response row and, if accepted, its upload.
+
+    Returns `(entry, upload)` where `upload` is `(object_key, data,
+    content_type)` for accepted members and None for rejected ones. Rejections
+    here are per-entry by design — a bad image must not cost the user the rest
+    of the archive.
+    """
+
+    def _rejected(reason: str) -> tuple[ExtractEntry, None]:
+        return (
+            ExtractEntry(
+                index=member.index,
+                name=member.name,
+                accepted=False,
+                content_type=None,
+                size_bytes=None,
+                reason=reason,
+            ),
+            None,
+        )
+
+    if not member.accepted:
+        return _rejected(member.reason or "no_data")
+    assert member.data is not None  # accepted implies data; narrows the type
+
+    try:
+        # Pixels, not bytes: a 506 KB PNG can decode to 484 MB, clearing every
+        # byte ceiling in zipsafe. Checked from the lazy header before the
+        # EXIF transpose becomes the first full-size decode — see app.imaging.
+        check_raster_size(member.data)
+        upright, _orientation = apply_exif_orientation(member.data)
+    except RasterTooLargeError:
+        return _rejected("image_too_many_pixels")
+    except Exception:  # noqa: BLE001 - one undecodable member must not 502 the batch
+        logger.warning("extract: entry %d undecodable during EXIF normalisation", member.index)
+        return _rejected("entry_undecodable")
+
+    # Re-sniff rather than reusing the member's type: EXIF normalisation can
+    # re-encode into a different format (see app.exif), and the stored object
+    # must describe the bytes actually written.
+    content_type = zipsafe.sniff_image_type(upright)
+    if content_type is None:  # pragma: no cover - EXIF output is always a known format
+        return _rejected("unsupported_output_type")
+
+    key = layout.extracted_image_object(
+        user_id, job_id, member.index, zipsafe.EXTENSION_BY_CONTENT_TYPE[content_type]
+    )
+    entry = ExtractEntry(
+        index=member.index,
+        name=member.name,
+        accepted=True,
+        content_type=content_type,
+        size_bytes=len(upright),
+        reason=None,
+    )
+    return entry, (key, upright, content_type)
+
+
+def _upload_extracted(store: ObjectStore, ref: ObjectRef, data: bytes, content_type: str) -> None:
+    """Write-once upload of one extracted image.
+
+    `ObjectAlreadyExistsError` (GCS 412) is idempotent success: the only way
+    the key is occupied is a re-run of a timed-out extract, which derived the
+    same key from the same ordinal. First write wins.
+    """
+    try:
+        store.create(ref, data, content_type=content_type)
+    except ObjectAlreadyExistsError:
+        logger.info("extract: %s already exists, treating as idempotent success", ref.name)
+
+
+def _extract_entries(
+    store: ObjectStore, input_ref: ObjectRef, object_size: int, *, user_id: str, job_id: str
+) -> list[ExtractEntry]:
+    """Stream the archive through zipsafe's guards and upload accepted entries.
+
+    The zip is read sequentially (one seekable stream); only the GCS uploads
+    are overlapped, on a small pool. Raises `ZipRejectedError` for
+    archive-level violations — uploads already submitted are drained first
+    (they are write-once and idempotent, so a partial extract that later gets
+    rejected leaves nothing a re-run can't cope with).
+    """
+    entries: list[ExtractEntry] = []
+    futures: list[Future[None]] = []
+    with store.open_stream(input_ref) as stream:
+        with ThreadPoolExecutor(max_workers=EXTRACT_UPLOAD_WORKERS) as pool:
+            for member in zipsafe.iter_zip_members(stream, object_size=object_size):
+                entry, upload = _prepare_member(member, user_id=user_id, job_id=job_id)
+                entries.append(entry)
+                if upload is not None:
+                    key, data, content_type = upload
+                    futures.append(
+                        pool.submit(
+                            _upload_extracted,
+                            store,
+                            ObjectRef(bucket=input_ref.bucket, name=key),
+                            data,
+                            content_type,
+                        )
+                    )
+    # The pool context has drained; surface the first upload failure, if any.
+    for future in futures:
+        future.result()
+    return entries
+
+
+@app.post("/extract", response_model=ExtractResponse)
+def extract(
+    request: ExtractRequest,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> ExtractResponse | JSONResponse:
+    """Unpack a job's `input.zip` into per-entry EXIF-uprighted originals.
+
+    Stateless and idempotent: re-running a timed-out extract re-derives the
+    same keys and treats each occupied key (GCS 412) as success. Archive-level
+    rejections (`ZIP_REJECTED`, 422) are terminal — they describe an archive
+    nobody assembled by accident, so the caller must not retry. Per-entry
+    problems never fail the archive; they come back as `accepted=false` rows.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `INPUT_NOT_FOUND` (404),
+    `INPUT_TOO_LARGE` (413), `ZIP_REJECTED` (422, terminal),
+    `EXTRACT_NOT_CONFIGURED` (503, retryable); unexpected storage failures
+    surface as 502.
+    """
+    _verify_internal_key(x_internal_key)
+
+    try:
+        layout.validate_identifiers(request.user_id, request.job_id)
+    except InvalidJobIdentifierError as exc:
+        return _invalid_identifier_response(exc)
+
+    bucket = os.environ.get(layout.BUCKET_ENV)
+    if not bucket:
+        return _not_configured_response()
+
+    input_ref = ObjectRef(bucket=bucket, name=layout.input_object(request.user_id, request.job_id))
+    try:
+        input_stat = _object_store.stat(input_ref)
+    except Exception:
+        logger.exception("extract: input stat failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    if input_stat is None:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"error_code": "INPUT_NOT_FOUND", "detail": "no input.zip for this job"},
+        )
+    if input_stat.size > zipsafe.MAX_INPUT_OBJECT_BYTES:
+        # The signed POST policy caps uploads at this same number; an object
+        # over it means the contract was bypassed, not a big batch.
+        return JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={
+                "error_code": "INPUT_TOO_LARGE",
+                "detail": (
+                    f"input.zip is {input_stat.size} bytes, over the "
+                    f"{zipsafe.MAX_INPUT_OBJECT_BYTES} byte ceiling"
+                ),
+            },
+        )
+
+    try:
+        entries = _extract_entries(
+            _object_store,
+            input_ref,
+            input_stat.size,
+            user_id=request.user_id,
+            job_id=request.job_id,
+        )
+    except zipsafe.ZipRejectedError as exc:
+        # Terminal, not retryable: the archive itself is hostile or unusable,
+        # and the same bytes will be rejected the same way every time.
+        logger.info("extract: archive rejected (%s)", exc.reason)
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"error_code": "ZIP_REJECTED", "reason": exc.reason, "retryable": False},
+        )
+    except Exception:
+        logger.exception("extract: pipeline failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="extract storage failure",
+        ) from None
+
+    accepted_count = sum(1 for entry in entries if entry.accepted)
+    logger.info(
+        "extract: entries=%d accepted=%d rejected=%d",
+        len(entries),
+        accepted_count,
+        len(entries) - accepted_count,
+    )
+    return ExtractResponse(
+        entries=entries,
+        accepted_count=accepted_count,
+        rejected_count=len(entries) - accepted_count,
+    )
+
+
+@app.post("/process-entry", response_model=ProcessEntryResponse)
+def process_entry(
+    request: ProcessEntryRequest,
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> ProcessEntryResponse | JSONResponse:
+    """Run the full crop cascade on one extracted entry and store the result.
+
+    The same orient → crop → rotate → classify pipeline as POST /process
+    (image-only mode, no precropped), applied to the object /extract wrote for
+    this ordinal, plus a dHash of the uprighted original computed BEFORE any
+    cropping. The rotated winning crop is written once to its derived output
+    key; on retry the first write wins and `output_written` comes back False.
+
+    Failure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,
+    terminal — /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`
+    (503, retryable); Vision/Anthropic and unexpected storage failures surface
+    as 502, exactly like /process.
+    """
+    _verify_internal_key(x_internal_key)
+
+    try:
+        layout.validate_identifiers(request.user_id, request.job_id)
+    except InvalidJobIdentifierError as exc:
+        return _invalid_identifier_response(exc)
+
+    bucket = os.environ.get(layout.BUCKET_ENV)
+    if not bucket:
+        return _not_configured_response()
+
+    try:
+        entry_ref: ObjectRef | None = None
+        for extension in _EXTRACTED_EXTENSIONS:
+            candidate = ObjectRef(
+                bucket=bucket,
+                name=layout.extracted_image_object(
+                    request.user_id, request.job_id, request.entry_index, extension
+                ),
+            )
+            if _object_store.stat(candidate) is not None:
+                entry_ref = candidate
+                break
+        if entry_ref is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={
+                    "error_code": "ENTRY_NOT_FOUND",
+                    "detail": "no extracted image at this index",
+                },
+            )
+        entry_bytes = _object_store.download(
+            entry_ref, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
+        )
+    except Exception:
+        logger.exception("process_entry: extracted image read failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    # dHash the EXIF-uprighted ORIGINAL before any cropping — the hash must
+    # describe the scan, never the crop, so re-scans of the same card match
+    # regardless of how each pass got cropped.
+    try:
+        dhash_value = compute_dhash(entry_bytes)
+    except Exception:
+        logger.exception("process_entry: dhash failed on the extracted image")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="extracted image undecodable",
+        ) from None
+
+    # Same cascade, same upstream-failure translation as POST /process.
+    try:
+        result = cropper.crop(image_bytes=entry_bytes, precropped_bytes=None)
+    except ClassifyError:
+        logger.exception("process_entry: classify failed to parse after retry")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="classify response unparseable",
+        ) from None
+    except Exception:
+        logger.exception("process_entry: cascade failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="preprocess pipeline upstream failure",
+        ) from None
+
+    if isinstance(result, CropRejected):  # pragma: no cover - image_bytes was provided
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="cascade returned no result",
+        )
+
+    # Write the winning crop already rotated (the /process contract leaves
+    # rotation to the client; here the stored object IS the client-facing
+    # artifact, so the rotation is baked in and reported as metadata).
+    rotated = rotate_image_bytes(result.image_bytes, result.orientation.rotation_degrees)
+    output_content_type = zipsafe.sniff_image_type(rotated)
+    if output_content_type is None:  # pragma: no cover - rotation preserves format
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="processed image has no recognisable type",
+        )
+
+    output_ref = ObjectRef(
+        bucket=bucket,
+        name=layout.output_image_object(
+            request.user_id,
+            request.job_id,
+            request.entry_index,
+            zipsafe.EXTENSION_BY_CONTENT_TYPE[output_content_type],
+        ),
+    )
+    output_written = True
+    try:
+        _object_store.create(output_ref, rotated, content_type=output_content_type)
+    except ObjectAlreadyExistsError:
+        # A retried entry: the first attempt's object stands (write-once,
+        # first-write-wins — documented as acceptable for identical inputs).
+        logger.info("process_entry: output already exists for index %d", request.entry_index)
+        output_written = False
+    except Exception:
+        logger.exception("process_entry: output write failed")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="placeholder storage unavailable",
+        ) from None
+
+    logger.info(
+        "process_entry: index=%d source=%s rotation=%d written=%s",
+        request.entry_index,
+        result.source,
+        result.orientation.rotation_degrees,
+        output_written,
+    )
+    return ProcessEntryResponse(
+        players=list(result.classification.players),
+        player=result.classification.player,
+        team=result.classification.team,
+        card_number=result.classification.card_number,
+        side=result.classification.side,
+        rotation_degrees=result.orientation.rotation_degrees,
+        orient_confidence=result.orientation.confidence,
+        text_count=result.orientation.text_count,
+        cropped_source=result.source,
+        # 16 lowercase hex chars: a 64-bit int does not survive JSON float64.
+        dhash=f"{dhash_value:016x}",
+        output_written=output_written,
+    )

@@ -3,6 +3,12 @@ uvicorn[standard]==0.52.1
 python-multipart==0.0.32
 pydantic==2.13.4
 google-cloud-vision==3.15.0
+# GCS access for the NEO-170 batch routes (/extract, /process-entry): reads the
+# input archive as a seekable stream (so a 500MB zip never lands in memory
+# whole) and write-once-creates the derived extracted/output images. Shares
+# google-auth/google-api-core with the Vision client above, so it adds only the
+# storage surface itself.
+google-cloud-storage==3.13.1
 anthropic==0.120.2
 Pillow==12.3.0
 # SAM crop fallback (slice 2b). CPU-only torch keeps the image size sane;
