@@ -43,6 +43,32 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Build the `errorDetail` a job carries into "failed" — WITHOUT the upstream
+ * response body.
+ *
+ * `errorDetail` is returned by `getPlaceholderJob`, a public query, so
+ * whatever goes in here is rendered in the owner's browser. The adapter's
+ * thrown message deliberately carries up to 400 characters of the raw response
+ * so the failure is debuggable from a log line, and that body is not ours: for
+ * a shed request or a mid-deploy 503 it is Cloud Run's own HTML error page,
+ * and for a service exception it can be a framework traceback. None of that is
+ * information a user can act on, and all of it is internal infrastructure
+ * detail that a public query has no business emitting.
+ *
+ * So the detail the JOB stores is reduced to two things a user can act on: a
+ * fixed phrase saying which stage gave up, plus the HTTP status if there was
+ * one. The machine-readable half is `errorCode`, which is what alerts group
+ * on. The full message still reaches `console.warn` — the operator channel,
+ * where it belongs.
+ */
+const HTTP_STATUS_RE = /\bHTTP (\d{3})\b/;
+
+function safeErrorDetail(phrase: string, message: string): string {
+  const status = HTTP_STATUS_RE.exec(message)?.[1];
+  return status ? `${phrase} (HTTP ${status})` : phrase;
+}
+
+/**
  * Unzip the uploaded batch and register the entries it produced.
  *
  * Every exit path is terminal for this action: it either hands the entries to
@@ -67,10 +93,11 @@ export const runExtract = internalAction({
           // 400 / 404 / 413 / 422 — the upload itself is the problem and will
           // be the same problem next time. Fail the job now rather than
           // spending the retry ladder proving it.
+          console.warn(`[runExtract] job=${args.jobId} rejected: ${message}`);
           await ctx.runMutation(internal.placeholderPipeline.markJobFailed, {
             jobId: args.jobId,
             errorCode: parsePreprocessErrorCode(message) ?? "EXTRACT_REJECTED",
-            errorDetail: message.slice(0, 1000),
+            errorDetail: safeErrorDetail("the upload could not be extracted", message),
           });
           return null;
         }
@@ -85,10 +112,16 @@ export const runExtract = internalAction({
     }
 
     if (!entries) {
+      console.warn(
+        `[runExtract] job=${args.jobId} gave up after ${EXTRACT_MAX_ATTEMPTS} attempts: ${lastError}`,
+      );
       await ctx.runMutation(internal.placeholderPipeline.markJobFailed, {
         jobId: args.jobId,
         errorCode: "EXTRACT_UNAVAILABLE",
-        errorDetail: lastError.slice(0, 1000),
+        errorDetail: safeErrorDetail(
+          `extraction did not respond after ${EXTRACT_MAX_ATTEMPTS} attempts`,
+          lastError,
+        ),
       });
       return null;
     }

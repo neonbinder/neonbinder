@@ -184,7 +184,7 @@ export type ProcessEntryResponse = {
  * invoker-only. Sending both means neither side has to deploy in lockstep with
  * the other.
  *
- * TODO(NEO-170 follow-up): delete the `x-internal-key` half — and the
+ * TODO(NEO-171): delete the `x-internal-key` half — and the
  * NEONBINDER_PREPROCESS_INTERNAL_KEY env var with it — once the IAM flip has
  * shipped and the service stops requiring the header. Until then a missing key
  * is left to the service to reject (503 EXTRACT_NOT_CONFIGURED / 401) rather

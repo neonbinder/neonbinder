@@ -19,6 +19,7 @@
 import { internalAction, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { pairBatch } from "./lib/pairing/pairBatch";
 import type { CardSide, Confidence, Mechanism } from "./lib/pairing/types";
 
@@ -69,13 +70,6 @@ function asCardSide(value: unknown): CardSide | null {
   return value === "front" || value === "back" ? value : null;
 }
 
-/** Keys are the image's zip index rendered as a string; this reads it back. */
-function indexFromKey(key: unknown): number | null {
-  if (typeof key !== "string") return null;
-  const n = Number(key);
-  return Number.isInteger(n) ? n : null;
-}
-
 /**
  * Pair up a finished batch and set its terminal status.
  *
@@ -84,146 +78,177 @@ function indexFromKey(key: unknown): number | null {
  * the answer is not simply "did every image succeed". A print sheet with one
  * unreadable scan is a good batch; one where most images failed is not,
  * regardless of whether the failures were individually retryable.
+ *
+ * The whole body is wrapped in a try/catch that ends in `markJobFailed`,
+ * because this action is the LAST link in the chain: "pairing" is not a
+ * terminal status, nothing is scheduled behind this action, and Convex does
+ * not retry a scheduled action that throws. Any escape — a pairing bug on a
+ * pathological batch, an OCC conflict on a chunk mutation, a validator
+ * rejection — would leave the job stuck in "pairing" with no writer left
+ * alive to move it, which reads to the user as a spinner that never stops.
+ * Failing the job is worse than succeeding and better than hanging: "failed"
+ * is startable, so the user has a way forward, and a restart keeps every image
+ * that already processed.
  */
 export const runPairing = internalAction({
   args: { jobId: v.string(), userId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const job = await ctx.runQuery(internal.placeholderPipeline.getJobInternal, {
-      jobId: args.jobId,
-    });
-    if (!job) return null;
+    try {
+      const job = await ctx.runQuery(internal.placeholderPipeline.getJobInternal, {
+        jobId: args.jobId,
+      });
+      if (!job) return null;
 
-    const rows = await ctx.runQuery(
-      internal.placeholderPipeline.listDoneImagesForPairing,
-      { jobId: args.jobId },
-    );
+      const rows = await ctx.runQuery(
+        internal.placeholderPipeline.listDoneImagesForPairing,
+        { jobId: args.jobId },
+      );
 
-    // Key by zip index. It is stable, unique within the batch, and — unlike the
-    // original filename — cannot collide, which matters because the pool uses
-    // the key as a dictionary key.
-    const byKey = new Map(rows.map((r) => [String(r.index), r] as const));
+      // Key by zip index. It is stable, unique within the batch, and — unlike
+      // the original filename — cannot collide, which matters because the pool
+      // uses the key as a dictionary key. The VALUE carries `_id`, which is
+      // what the write-back is keyed on; see the note on
+      // `listDoneImagesForPairing`.
+      const byKey = new Map(rows.map((r) => [String(r.entryIndex), r] as const));
 
-    if (rows.length > 0) {
-      const result = pairBatch(
-        rows.map((r) => ({
-          key: String(r.index),
-          textCount: r.textCount ?? 0,
-          originalFilename: r.originalName,
-          side: asCardSide(r.side),
-        })),
-        {
-          // Already-resolved identity, straight off the row — see the module
-          // comment. Returning null for a key we do not have lets pairing
-          // degrade to the text-count side heuristic instead of throwing.
-          resolveIdentity: (key: string) => {
-            const row = byKey.get(key);
-            if (!row) return null;
-            return {
-              // `players` is the canonical list; `player` is the first entry.
-              // Both are supplied because CardIdentity is an interface and
-              // cannot derive one from the other — poolCardFromIdentity falls
-              // back to players[0] when player is null.
-              players: row.players ?? [],
-              player: row.player ?? null,
-              team: row.team ?? null,
-              cardNumber: row.cardNumber ?? null,
-              side: asCardSide(row.side),
-            };
+      if (rows.length > 0) {
+        const result = pairBatch(
+          rows.map((r) => ({
+            key: String(r.entryIndex),
+            textCount: r.textCount ?? 0,
+            originalFilename: r.originalName,
+            side: asCardSide(r.side),
+          })),
+          {
+            // Already-resolved identity, straight off the row — see the module
+            // comment. Returning null for a key we do not have lets pairing
+            // degrade to the text-count side heuristic instead of throwing.
+            resolveIdentity: (key: string) => {
+              const row = byKey.get(key);
+              if (!row) return null;
+              return {
+                // `players` is the canonical list. `player` is derived from it
+                // here rather than read from a column, because the row has no
+                // such column — the service computes its `player` field as
+                // `players[0]` and a stored copy could only go stale.
+                // CardIdentity is an interface and cannot derive one from the
+                // other, so both are supplied.
+                players: row.players ?? [],
+                player: row.players?.[0] ?? null,
+                team: row.team ?? null,
+                cardNumber: row.cardNumber ?? null,
+                side: asCardSide(row.side),
+              };
+            },
+            // The perceptual hash `/process-entry` already computed. Null when
+            // the service could not produce one (or produced a malformed one —
+            // see `asDhash` in placeholderPipeline.ts); pairing treats that as
+            // "cannot compare these two images" rather than "they differ".
+            hashImage: (key: string) => byKey.get(key)?.dhash ?? null,
+            useAdjacency: true,
           },
-          // The perceptual hash `/process-entry` already computed. Null when
-          // the service could not produce one (or produced a malformed one —
-          // see `asDhash` in placeholderPipeline.ts); pairing treats that as
-          // "cannot compare these two images" rather than "they differ".
-          hashImage: (key: string) => byKey.get(key)?.dhash ?? null,
-          useAdjacency: true,
-        },
-      );
+        );
 
-      const pairs: Array<{
-        frontIndex: number;
-        backIndex: number;
-        player?: string;
-        team?: string;
-        cardNumber?: string;
-        confidence: Confidence;
-        mechanism: Mechanism;
-        score: number;
-      }> = [];
-      const pairedIndexes = new Set<number>();
-      for (const match of result.matches) {
-        const frontIndex = indexFromKey(match.front?.key);
-        const backIndex = indexFromKey(match.back?.key);
-        // A match whose keys don't resolve is unusable — dropping it leaves
-        // both images "unmatched", which is accurate, rather than writing a
-        // pair row pointing at images that don't exist.
-        if (frontIndex === null || backIndex === null) continue;
-        pairedIndexes.add(frontIndex);
-        pairedIndexes.add(backIndex);
-        pairs.push({
-          frontIndex,
-          backIndex,
-          player: optionalString(match.player),
-          team: optionalString(match.team),
-          cardNumber: optionalString(match.cardNumber),
-          confidence: asConfidence(match.confidence),
-          mechanism: asMechanism(match.mechanism),
-          score: typeof match.score === "number" ? match.score : 0,
-        });
+        const pairs: Array<{
+          frontImageId: Id<"placeholderImages">;
+          backImageId: Id<"placeholderImages">;
+          frontIndex: number;
+          backIndex: number;
+          player?: string;
+          team?: string;
+          cardNumber?: string;
+          confidence: Confidence;
+          mechanism: Mechanism;
+          score: number;
+        }> = [];
+        const pairedIds = new Set<string>();
+        for (const match of result.matches) {
+          const front =
+            typeof match.front?.key === "string" ? byKey.get(match.front.key) : undefined;
+          const back =
+            typeof match.back?.key === "string" ? byKey.get(match.back.key) : undefined;
+          // A match whose keys don't resolve back to rows we read is unusable —
+          // dropping it leaves both images "unmatched", which is accurate,
+          // rather than writing a pair row pointing at images that don't exist.
+          if (!front || !back) continue;
+          pairedIds.add(front._id);
+          pairedIds.add(back._id);
+          pairs.push({
+            frontImageId: front._id,
+            backImageId: back._id,
+            frontIndex: front.entryIndex,
+            backIndex: back.entryIndex,
+            player: optionalString(match.player),
+            team: optionalString(match.team),
+            cardNumber: optionalString(match.cardNumber),
+            confidence: asConfidence(match.confidence),
+            mechanism: asMechanism(match.mechanism),
+            score: typeof match.score === "number" ? match.score : 0,
+          });
+        }
+
+        for (let i = 0; i < pairs.length; i += PAIR_CHUNK_SIZE) {
+          await ctx.runMutation(internal.placeholderPairing.storePairs, {
+            jobId: args.jobId,
+            userId: args.userId,
+            pairs: pairs.slice(i, i + PAIR_CHUNK_SIZE),
+          });
+        }
+
+        // Derived from what was actually STORED, not from `result.unmatched`:
+        // a match dropped above must end up marked unmatched, and reading the
+        // paired set back is the only way that stays true.
+        const unmatchedIds = rows
+          .map((r) => r._id)
+          .filter((id) => !pairedIds.has(id));
+        for (let i = 0; i < unmatchedIds.length; i += PAIR_CHUNK_SIZE) {
+          await ctx.runMutation(internal.placeholderPairing.markUnmatchedImages, {
+            imageIds: unmatchedIds.slice(i, i + PAIR_CHUNK_SIZE),
+          });
+        }
+
+        console.log(
+          JSON.stringify({
+            msg: "placeholder_pairing_done",
+            jobId: args.jobId,
+            images: rows.length,
+            pairs: pairs.length,
+            unmatched: unmatchedIds.length,
+            resolverCalls: result.resolverCalls,
+          }),
+        );
       }
 
-      for (let i = 0; i < pairs.length; i += PAIR_CHUNK_SIZE) {
-        await ctx.runMutation(internal.placeholderPairing.storePairs, {
+      // Terminal decision. `failedImages * 2 > totalImages` rather than a
+      // division so the comparison is exact on odd totals (5 images, 3 failures
+      // is a failed batch; 5 and 2 is not).
+      const noUsableImages = job.totalImages === 0;
+      if (noUsableImages || job.failedImages * 2 > job.totalImages) {
+        await ctx.runMutation(internal.placeholderPipeline.markJobFailed, {
           jobId: args.jobId,
-          userId: args.userId,
-          pairs: pairs.slice(i, i + PAIR_CHUNK_SIZE),
+          errorCode: "TOO_MANY_IMAGE_FAILURES",
+          errorDetail: noUsableImages
+            ? "no images were accepted from the upload"
+            : `${job.failedImages} of ${job.totalImages} images failed to process`,
         });
+        return null;
       }
 
-      // Derived from what was actually STORED, not from `result.unmatched`:
-      // a match dropped above must end up marked unmatched, and reading the
-      // paired set back is the only way that stays true.
-      const unmatchedIndexes = rows
-        .map((r) => r.index)
-        .filter((index) => !pairedIndexes.has(index));
-      for (let i = 0; i < unmatchedIndexes.length; i += PAIR_CHUNK_SIZE) {
-        await ctx.runMutation(internal.placeholderPairing.markUnmatchedImages, {
-          jobId: args.jobId,
-          indexes: unmatchedIndexes.slice(i, i + PAIR_CHUNK_SIZE),
-        });
-      }
-
-      console.log(
-        JSON.stringify({
-          msg: "placeholder_pairing_done",
-          jobId: args.jobId,
-          images: rows.length,
-          pairs: pairs.length,
-          unmatched: unmatchedIndexes.length,
-          resolverCalls: result.resolverCalls,
-        }),
-      );
-    }
-
-    // Terminal decision. `failedImages * 2 > totalImages` rather than a
-    // division so the comparison is exact on odd totals (5 images, 3 failures
-    // is a failed batch; 5 and 2 is not).
-    const noUsableImages = job.totalImages === 0;
-    if (noUsableImages || job.failedImages * 2 > job.totalImages) {
+      await ctx.runMutation(internal.placeholderPipeline.markJobSucceeded, {
+        jobId: args.jobId,
+      });
+      return null;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[runPairing] job=${args.jobId} failed: ${message}`);
       await ctx.runMutation(internal.placeholderPipeline.markJobFailed, {
         jobId: args.jobId,
-        errorCode: "TOO_MANY_IMAGE_FAILURES",
-        errorDetail: noUsableImages
-          ? "no images were accepted from the upload"
-          : `${job.failedImages} of ${job.totalImages} images failed to process`,
+        errorCode: "PAIRING_FAILED",
+        errorDetail: message.slice(0, 1000),
       });
       return null;
     }
-
-    await ctx.runMutation(internal.placeholderPipeline.markJobSucceeded, {
-      jobId: args.jobId,
-    });
-    return null;
   },
 });
 
@@ -233,6 +258,22 @@ export const runPairing = internalAction({
  * Chunked because a large sheet produces hundreds of pairs and each one is two
  * writes (the pair row plus a patch on each side's image row); one transaction
  * per batch would be needlessly large and correspondingly conflict-prone.
+ *
+ * The image patch is keyed on the document ID rather than re-resolved from
+ * (jobId, entryIndex). Two reasons, both about the gap between pairing's read
+ * and its writes — an action can sit for minutes between them:
+ *
+ *  - Correctness. If the job was canceled and restarted in that gap, the row
+ *    that (jobId, entryIndex) now names is a DIFFERENT attempt's row, and
+ *    stamping this run's verdict on it would be a lie. A `ctx.db.get` on the
+ *    id either returns the row pairing actually read or returns nothing, and
+ *    nothing is the honest answer — so a missing row is skipped, not an error.
+ *  - Cost. It is a direct read instead of an index lookup per side per pair.
+ *
+ * The pair row itself still STORES `frontIndex`/`backIndex`, not ids: the zip
+ * entry index is what identifies an image to the user and to the preprocess
+ * service, and a stored document id would be a second, redundant identity that
+ * a restart would silently invalidate.
  */
 export const storePairs = internalMutation({
   args: {
@@ -240,6 +281,8 @@ export const storePairs = internalMutation({
     userId: v.string(),
     pairs: v.array(
       v.object({
+        frontImageId: v.id("placeholderImages"),
+        backImageId: v.id("placeholderImages"),
         frontIndex: v.number(),
         backIndex: v.number(),
         player: v.optional(v.string()),
@@ -257,7 +300,6 @@ export const storePairs = internalMutation({
   },
   returns: v.number(),
   handler: async (ctx, args) => {
-    const now = Date.now();
     for (const pair of args.pairs) {
       await ctx.db.insert("placeholderPairs", {
         jobId: args.jobId,
@@ -270,13 +312,9 @@ export const storePairs = internalMutation({
         confidence: pair.confidence,
         mechanism: pair.mechanism,
         score: pair.score,
-        createdAt: now,
       });
-      for (const index of [pair.frontIndex, pair.backIndex]) {
-        const image = await ctx.db
-          .query("placeholderImages")
-          .withIndex("by_job_index", (q) => q.eq("jobId", args.jobId).eq("index", index))
-          .unique();
+      for (const imageId of [pair.frontImageId, pair.backImageId]) {
+        const image = await ctx.db.get(imageId);
         if (image) await ctx.db.patch(image._id, { pairStatus: "paired" });
       }
     }
@@ -288,17 +326,17 @@ export const storePairs = internalMutation({
  * Mark a chunk of images as having been through pairing without finding a
  * partner. Distinct from leaving `pairStatus` unset, which means pairing has
  * not run for that row at all.
+ *
+ * By document ID, and a row that is gone is skipped rather than reported —
+ * same reasoning as `storePairs`.
  */
 export const markUnmatchedImages = internalMutation({
-  args: { jobId: v.string(), indexes: v.array(v.number()) },
+  args: { imageIds: v.array(v.id("placeholderImages")) },
   returns: v.number(),
   handler: async (ctx, args) => {
     let marked = 0;
-    for (const index of args.indexes) {
-      const image = await ctx.db
-        .query("placeholderImages")
-        .withIndex("by_job_index", (q) => q.eq("jobId", args.jobId).eq("index", index))
-        .unique();
+    for (const imageId of args.imageIds) {
+      const image = await ctx.db.get(imageId);
       if (!image) continue;
       await ctx.db.patch(image._id, { pairStatus: "unmatched" });
       marked += 1;

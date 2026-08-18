@@ -14,11 +14,19 @@
  *   pending/uploaded ──startPlaceholderBatch──▶ extracting
  *          ▲                                        │ runExtract
  *          │                                        ▼
- *       (reset)                              processing ──(all images done)──▶ pairing
+ *       (restart)                            processing ──(all images done)──▶ pairing
  *          │                                        │                              │
  *        failed ◀──────────markJobFailed────────────┴──────────────────────────────┤
- *                                                                                  ▼
- *                                                                             succeeded
+ *          ▲                                                                       ▼
+ *          └────cancelPlaceholderBatch────                                     succeeded
+ *
+ * "failed" is the hub, not a dead end. It is the only non-initial status a
+ * batch may be started from, cancel forces a wedged job into it, and a restart
+ * re-registers the zip's entries OVER the existing image rows rather than
+ * deleting them — every image already "done" is kept, so recovery never
+ * re-pays for work that already succeeded. That is one design, not three
+ * features: making cancel terminal is only affordable because restart is
+ * cheap, and restart is only correct because the upload is write-once.
  *
  * SECURITY: `jobId` is the only client-supplied handle in this entire module.
  * No function takes `objectPath`, and none ever will — see the placeholderJobs
@@ -37,18 +45,58 @@ import { getCurrentUserId } from "./auth";
 import { preprocessPool } from "./placeholderPool";
 
 /**
- * How many images are enqueued per `enqueueImageChunk` invocation.
+ * How many images are handled per chunked mutation — registration, enqueuing,
+ * and the stale-row sweep all use it.
  *
- * Enqueuing is a write per image (the workpool row) plus a patch per image
- * (storing the workId), so a 500-image zip in a single mutation would be a
- * very large transaction with a correspondingly large chance of an OCC
- * conflict retry. Chunking keeps each transaction small and bounded; the pool
- * caps concurrency anyway, so enqueuing faster would buy nothing.
+ * ====================================================================
+ * SIZED AGAINST `MAX_ZIP_ENTRIES` IN THE PREPROCESS REPO
+ * (services/preprocess/app/jobs/zipsafe.py, currently 1000).
+ * ====================================================================
+ * That constant is the only thing bounding how many entries `/extract` can
+ * hand back, and therefore the only thing bounding how much work the
+ * registration path is asked to do in one go. It lives in another repository
+ * on another release cadence, exactly like `preprocess_max_instances` does for
+ * convex/preprocessCapacity.ts — and like that number, nothing mechanical
+ * catches the drift.
+ *
+ * What breaks if it grows: registration, enqueuing and sweeping are each a
+ * write per image, so an unchunked pass over 10× the entries would build a
+ * transaction 10× the size, with a correspondingly larger chance of an OCC
+ * conflict retry and a real chance of hitting Convex's per-transaction limits.
+ * Chunking is what makes this path indifferent to that number — raising
+ * MAX_ZIP_ENTRIES costs more chunks, not a bigger transaction. The chunk size
+ * itself needs no change; the pool caps concurrency anyway, so enqueuing
+ * faster would buy nothing.
  */
 const ENQUEUE_CHUNK_SIZE = 50;
 
 /** Statuses a batch may be started from. See `startPlaceholderBatch`. */
 const STARTABLE_STATUSES = new Set(["pending", "uploaded", "failed"]);
+
+/**
+ * Statuses that mean "this batch is still consuming capacity".
+ *
+ * Used only by the per-user cap in `startPlaceholderBatch`. Deliberately NOT
+ * derived from `STARTABLE_STATUSES` by negation: "pending" is neither active
+ * nor terminal (nothing is running for it), and counting it would make a user
+ * with two un-started uploads unable to start either.
+ */
+const ACTIVE_STATUSES = new Set(["extracting", "processing", "pairing"]);
+
+/**
+ * How many batches one user may have in flight at once.
+ *
+ * Two, not one, so a user can start the next sheet while the previous one is
+ * still pairing — and not more, because a batch is the unit of paid work.
+ * Each one is up to MAX_ZIP_ENTRIES `/process-entry` calls, every one of which
+ * is a Vision round-trip and a model inference we pay for, and `/extract` runs
+ * OUTSIDE the workpool (one request per job, see placeholderBatch.ts) so it is
+ * the pool's parallelism cap that concurrent jobs bypass. The cap is therefore
+ * doing two jobs at once: bounding concurrent extract load against a
+ * three-instance service, and bounding how fast a single account can replay
+ * paid API spend by hammering Start.
+ */
+const MAX_ACTIVE_JOBS_PER_USER = 2;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -109,7 +157,18 @@ async function findJob(
  *
  * `{started: false, reason}` rather than a throw for a wrong-status job: a
  * second click on Start while a batch is already running is ordinary UI
- * behavior, not an error worth surfacing as a red toast.
+ * behavior, not an error worth surfacing as a red toast. The same shape
+ * carries the per-user active-batch refusal, which is likewise a "not now",
+ * not a fault.
+ *
+ * This mutation writes ONE row and schedules two things. It deliberately does
+ * no bulk cleanup of its own: an earlier version deleted the previous
+ * attempt's images inline, which on a full 1000-entry zip is ~1000 reads plus
+ * ~1000 deletes inside the mutation the user is waiting on — straight through
+ * the 7-second budget for the one interaction that must feel instant. Both
+ * halves of the cleanup moved out: pairs are swept by a chunked internal
+ * mutation, and images are not deleted at all (see registerExtractedImages,
+ * which upserts over them and keeps the ones that already succeeded).
  */
 export const startPlaceholderBatch = mutation({
   args: { jobId: v.string() },
@@ -126,30 +185,30 @@ export const startPlaceholderBatch = mutation({
       return { started: false, reason: `job is already ${job.status}` };
     }
 
-    // Restarting a failed job is a genuine restart, not a resume: the previous
-    // attempt's images and pairs are deleted so counters cannot double-count
-    // and pairing cannot see a mix of two runs. Only "failed" needs this —
-    // "pending" and "uploaded" precede any image ever being inserted.
-    if (job.status === "failed") {
-      const staleImages = await ctx.db
-        .query("placeholderImages")
-        .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
-        .collect();
-      for (const image of staleImages) {
-        await ctx.db.delete(image._id);
-      }
-      const stalePairs = await ctx.db
-        .query("placeholderPairs")
-        .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
-        .collect();
-      for (const pair of stalePairs) {
-        await ctx.db.delete(pair._id);
-      }
+    // Per-user concurrency cap. Read through `by_user` — this is the caller's
+    // own jobs only, never a scan of everyone's. (If placeholder job history
+    // per user ever grows large enough for this read to matter, the fix is a
+    // ["userId","status"] index, not a looser cap.)
+    const ownJobs = await ctx.db
+      .query("placeholderJobs")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const activeCount = ownJobs.filter((j) => ACTIVE_STATUSES.has(j.status)).length;
+    if (activeCount >= MAX_ACTIVE_JOBS_PER_USER) {
+      return {
+        started: false,
+        reason: `you already have ${activeCount} active batches (limit ${MAX_ACTIVE_JOBS_PER_USER}) — wait for one to finish`,
+      };
     }
 
     await ctx.db.patch(job._id, {
       status: "extracting",
       startedAt: Date.now(),
+      // Zeroed rather than preserved: what the previous attempt counted is not
+      // yet known to be true of this one. registerExtractedImages recomputes
+      // all four from the rows once it knows what the zip contains — including
+      // `processedImages`, which comes back as the number of already-done rows
+      // it kept.
       totalImages: 0,
       processedImages: 0,
       failedImages: 0,
@@ -169,23 +228,82 @@ export const startPlaceholderBatch = mutation({
       userId: job.userId,
     });
 
+    // Drop the previous attempt's pairs. Safe to run concurrently with (or
+    // behind) extract: pairing is the only writer of that table and it does
+    // not run until every image has completed, which is minutes away at the
+    // earliest. Unconditional rather than gated on `status === "failed"`
+    // because on a first run it is a single mutation that finds nothing.
+    await ctx.scheduler.runAfter(0, internal.placeholderPipeline.sweepJobPairs, {
+      jobId: args.jobId,
+    });
+
     return { started: true };
   },
 });
 
 /**
- * Cancel an in-flight batch.
+ * Delete a chunk of this job's pairs, then self-schedule until none are left.
  *
- * Cancels the pool work items and stops there. It deliberately does NOT patch
- * the job to a terminal status: a canceled work item still runs the pool's
- * onComplete hook (with `kind: "canceled"`), so the per-image rows and the
- * counters still converge on `processed + failed === total`, and the batch
- * reaches its terminal status through the same code path as any other ending.
- * Short-circuiting the status here would leave the counters permanently
- * mid-flight and the completion transition permanently un-fired.
+ * The pair rows of a previous attempt have to go: pairing rewrites them from
+ * scratch, and a leftover row would leave `pairCount` reporting two runs'
+ * worth of pairs. Chunked and scheduled rather than inline for the reason
+ * given on `startPlaceholderBatch` — bulk deletes do not belong in the
+ * mutation a user is waiting on.
+ */
+export const sweepJobPairs = internalMutation({
+  args: { jobId: v.string() },
+  returns: v.object({ deleted: v.number(), done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const pairs = await ctx.db
+      .query("placeholderPairs")
+      .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
+      .take(ENQUEUE_CHUNK_SIZE);
+
+    for (const pair of pairs) {
+      await ctx.db.delete(pair._id);
+    }
+
+    const done = pairs.length < ENQUEUE_CHUNK_SIZE;
+    if (!done) {
+      await ctx.scheduler.runAfter(0, internal.placeholderPipeline.sweepJobPairs, {
+        jobId: args.jobId,
+      });
+    }
+    return { deleted: pairs.length, done };
+  },
+});
+
+/**
+ * Cancel an in-flight batch, and force it terminal.
  *
- * Work already running is allowed to finish — the pool cancels pending work
- * and stops retrying running work rather than killing an in-flight request.
+ * Two separate things happen here, and the second one is the important one:
+ *
+ *  1. Every outstanding work item is canceled in the pool. Work already
+ *     running is allowed to finish — the pool cancels pending work and stops
+ *     retrying running work rather than killing an in-flight request.
+ *  2. The job is patched to "failed" with `errorCode: "CANCELED"`.
+ *
+ * Step 2 used to be deliberately omitted, on the reasoning that a canceled
+ * work item still runs onComplete (`kind: "canceled"`), so the counters would
+ * converge on `processed + failed === total` and the batch would reach a
+ * terminal status by the normal route. That reasoning holds only while the
+ * chain is intact. If any link is lost — a scheduled function that never ran,
+ * a work item whose completion never fired, an image row that vanished — the
+ * counters never reach the total, the transition never fires, and the job sits
+ * in "processing" forever with no way out: it is not terminal, so it is not
+ * startable either. Cancel was the natural recovery lever and it did not
+ * recover anything.
+ *
+ * Forcing the terminal state makes cancel that lever. "failed" is a startable
+ * status, so the user's next action is Start, and a restart is now cheap
+ * rather than a full re-run: registerExtractedImages keeps every image that
+ * already reached "done" (see there), so recovery re-pays for nothing that
+ * already succeeded.
+ *
+ * Late completions from the canceled work stay harmless. They arrive at
+ * `recordImageOutcomeImpl`, which ignores rows already terminal, no-ops on
+ * rows that are gone, and only fires the pairing transition when the job is
+ * still "processing" — which it no longer is.
  */
 export const cancelPlaceholderBatch = mutation({
   args: { jobId: v.string() },
@@ -205,7 +323,7 @@ export const cancelPlaceholderBatch = mutation({
 
     const images = await ctx.db
       .query("placeholderImages")
-      .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
+      .withIndex("by_job_and_index", (q) => q.eq("jobId", args.jobId))
       .collect();
 
     let canceledCount = 0;
@@ -218,6 +336,13 @@ export const cancelPlaceholderBatch = mutation({
       canceledCount += 1;
     }
 
+    await ctx.db.patch(job._id, {
+      status: "failed",
+      errorCode: "CANCELED",
+      errorDetail: "canceled by user",
+      finishedAt: Date.now(),
+    });
+
     return { canceled: true, canceledCount };
   },
 });
@@ -227,7 +352,36 @@ export const cancelPlaceholderBatch = mutation({
 // ---------------------------------------------------------------------------
 
 /**
- * Record what the extract step found and move the job into "processing".
+ * Record what the extract step found, reconciling it against whatever rows a
+ * previous attempt left behind, and move the job into "processing".
+ *
+ * This is an UPSERT, not an insert, and that is the whole point. A restart
+ * used to delete the previous attempt's images and start from nothing, which
+ * meant every image that had already been cropped, oriented, classified and
+ * hashed was processed again — a second Vision round-trip and a second model
+ * inference per image, paid for, to re-derive a result we already had. The
+ * zip is write-once (a job id maps to exactly one uploaded object, forever),
+ * so an entry that succeeded once will produce the same answer if run again;
+ * there is nothing to gain by re-running it and real money to lose.
+ *
+ * Per accepted entry, keyed on (jobId, entryIndex):
+ *
+ *   - no row            → insert, "queued"
+ *   - row is "done"     → KEEP it, clearing only `pairStatus` (pairing re-runs
+ *                         from scratch and re-decides that field)
+ *   - row is anything
+ *     else              → reset to "queued", dropping the previous attempt's
+ *                         workId, identity fields and error fields, so nothing
+ *                         from a half-finished run survives into this one
+ *
+ * `enqueueImageChunk` then only enqueues "queued" rows, so the kept rows cost
+ * nothing further — that skip is load-bearing here, not just re-entrancy
+ * insurance.
+ *
+ * Chunked and self-scheduling for the reason given on ENQUEUE_CHUNK_SIZE. The
+ * `entries` array is re-passed to each chunk rather than re-fetched: extract
+ * is a network call that cannot be re-made from a mutation, and the list is
+ * bounded by MAX_ZIP_ENTRIES.
  *
  * `entries` carries every zip member the service looked at, accepted or not,
  * so the rejected count is derived here rather than trusted as a separate
@@ -239,6 +393,8 @@ export const registerExtractedImages = internalMutation({
   args: {
     jobId: v.string(),
     userId: v.string(),
+    // `index` here is the wire field name from `/extract`; it lands in the
+    // `entryIndex` column.
     entries: v.array(
       v.object({
         index: v.number(),
@@ -246,8 +402,23 @@ export const registerExtractedImages = internalMutation({
         accepted: v.boolean(),
       }),
     ),
+    /** Chunk cursor into the deduped accepted list. Absent means "start". */
+    from: v.optional(v.number()),
+    /** Running count of already-"done" rows kept, carried across chunks. */
+    keptDone: v.optional(v.number()),
   },
-  returns: v.object({ totalImages: v.number(), rejectedEntries: v.number() }),
+  returns: v.object({
+    totalImages: v.number(),
+    rejectedEntries: v.number(),
+    /**
+     * Already-"done" rows this registration kept, cumulative across chunks.
+     * On a first run it is always 0; on a restart it is the number of images
+     * that will NOT be re-processed, which is the whole point of the upsert
+     * and the number to look at when asking whether a restart was cheap.
+     */
+    keptDone: v.number(),
+    done: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     const job = await findJob(ctx, args.jobId);
     if (!job) throw new Error("Job not found");
@@ -258,31 +429,185 @@ export const registerExtractedImages = internalMutation({
       throw new Error("Job ownership mismatch");
     }
 
-    const accepted = args.entries.filter((e) => e.accepted);
-    const rejectedEntries = args.entries.length - accepted.length;
+    // Dedupe on entry index, first occurrence wins. (jobId, entryIndex) is the
+    // key this table is read by, and `unique()` on that index throws if two
+    // rows share it — so a duplicated index in the response would not produce
+    // a duplicate row, it would poison every later read of the job. Two
+    // entries claiming the same index is a service-side bug either way; the
+    // job survives it rather than being taken down by it.
+    const acceptedByIndex = new Map<number, { index: number; name: string }>();
+    for (const entry of args.entries) {
+      if (!entry.accepted) continue;
+      if (acceptedByIndex.has(entry.index)) continue;
+      acceptedByIndex.set(entry.index, { index: entry.index, name: entry.name });
+    }
+    const accepted = [...acceptedByIndex.values()];
+    // Counted from the flag, not as "everything that isn't accepted": a
+    // duplicate index is dropped above but is not something extract rejected,
+    // and reporting it as a rejection would misattribute a bug of ours to the
+    // user's zip.
+    const rejectedEntries = args.entries.filter((e) => !e.accepted).length;
 
-    for (const entry of accepted) {
-      await ctx.db.insert("placeholderImages", {
-        jobId: args.jobId,
-        userId: job.userId,
-        index: entry.index,
-        originalName: entry.name,
-        status: "queued",
-      });
+    const from = args.from ?? 0;
+    let keptDone = args.keptDone ?? 0;
+
+    // The batch is only allowed to advance while it is still the batch that
+    // was started. Extract is a network call that can be in flight for
+    // minutes, and `cancelPlaceholderBatch` now makes the job terminal
+    // immediately — so without this check, a cancel during extraction would be
+    // silently undone: the job would flip back to "processing" and enqueue a
+    // full zip's worth of paid work the user had already stopped. Same guard
+    // covers a restart landing mid-registration; the newer chain owns the job.
+    if (job.status !== "extracting") {
+      return {
+        totalImages: accepted.length,
+        rejectedEntries,
+        keptDone,
+        done: true,
+      };
     }
 
+    for (const entry of accepted.slice(from, from + ENQUEUE_CHUNK_SIZE)) {
+      const existing = await ctx.db
+        .query("placeholderImages")
+        .withIndex("by_job_and_index", (q) =>
+          q.eq("jobId", args.jobId).eq("entryIndex", entry.index),
+        )
+        .unique();
+
+      if (!existing) {
+        await ctx.db.insert("placeholderImages", {
+          jobId: args.jobId,
+          userId: job.userId,
+          entryIndex: entry.index,
+          originalName: entry.name,
+          status: "queued",
+        });
+      } else if (existing.status === "done") {
+        keptDone += 1;
+        if (existing.pairStatus !== undefined) {
+          await ctx.db.patch(existing._id, { pairStatus: undefined });
+        }
+      } else {
+        await ctx.db.patch(existing._id, {
+          status: "queued",
+          originalName: entry.name,
+          workId: undefined,
+          players: undefined,
+          team: undefined,
+          cardNumber: undefined,
+          side: undefined,
+          rotationDegrees: undefined,
+          orientConfidence: undefined,
+          textCount: undefined,
+          croppedSource: undefined,
+          dhash: undefined,
+          errorCode: undefined,
+          errorDetail: undefined,
+          pairStatus: undefined,
+        });
+      }
+    }
+
+    const nextFrom = from + ENQUEUE_CHUNK_SIZE;
+    if (nextFrom < accepted.length) {
+      await ctx.scheduler.runAfter(0, internal.placeholderPipeline.registerExtractedImages, {
+        jobId: args.jobId,
+        userId: args.userId,
+        entries: args.entries,
+        from: nextFrom,
+        keptDone,
+      });
+      return { totalImages: accepted.length, rejectedEntries, keptDone, done: false };
+    }
+
+    // Last chunk. Every counter is set from what the rows now say rather than
+    // being incremented from wherever the previous attempt left them:
+    // `processedImages` starts at the number of done rows we kept, which is
+    // what makes `processed + failed === total` still the batch-complete
+    // condition after a partial restart.
     await ctx.db.patch(job._id, {
       status: "processing",
       totalImages: accepted.length,
-      processedImages: 0,
+      processedImages: keptDone,
       failedImages: 0,
       rejectedEntries,
     });
 
-    if (accepted.length === 0) {
-      // Nothing to enqueue means no onComplete will ever fire, so the
-      // "last one done" transition can never run. Hand the job straight to
-      // pairing, which owns the "zero usable images" terminal decision.
+    await ctx.scheduler.runAfter(0, internal.placeholderPipeline.pruneUnregisteredImages, {
+      jobId: args.jobId,
+      acceptedIndexes: accepted.map((e) => e.index),
+      from: 0,
+    });
+
+    return { totalImages: accepted.length, rejectedEntries, keptDone, done: true };
+  },
+});
+
+/**
+ * Delete this job's image rows whose entry index is not in the accepted set,
+ * then hand the batch on to enqueuing (or straight to pairing).
+ *
+ * A row like that should not be able to exist: the upload is write-once, so a
+ * second extract of the same job sees the same zip and produces the same entry
+ * indexes. This is a guard on that invariant rather than a routine cleanup —
+ * if the assumption were ever wrong, the orphan would be enqueued (it is
+ * "queued" from the previous attempt), complete, and increment
+ * `processedImages` past `totalImages`, at which point the equality that ends
+ * the batch is stepped over and the job never finishes. Cheap guard, expensive
+ * failure.
+ *
+ * It also owns the hand-off, which is why it runs BEFORE enqueuing rather than
+ * alongside it: deleting a row the pool is already working on is exactly the
+ * race the guard exists to prevent.
+ */
+export const pruneUnregisteredImages = internalMutation({
+  args: {
+    jobId: v.string(),
+    acceptedIndexes: v.array(v.number()),
+    from: v.number(),
+  },
+  returns: v.object({ deleted: v.number(), done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const acceptedIndexes = new Set(args.acceptedIndexes);
+    const rows = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", args.jobId).gte("entryIndex", args.from),
+      )
+      .take(ENQUEUE_CHUNK_SIZE);
+
+    let deleted = 0;
+    for (const row of rows) {
+      if (acceptedIndexes.has(row.entryIndex)) continue;
+      await ctx.db.delete(row._id);
+      deleted += 1;
+    }
+
+    if (rows.length === ENQUEUE_CHUNK_SIZE) {
+      await ctx.scheduler.runAfter(0, internal.placeholderPipeline.pruneUnregisteredImages, {
+        jobId: args.jobId,
+        acceptedIndexes: args.acceptedIndexes,
+        from: rows[rows.length - 1].entryIndex + 1,
+      });
+      return { deleted, done: false };
+    }
+
+    const job = await findJob(ctx, args.jobId);
+    // Same reasoning as the guard in registerExtractedImages: only hand the
+    // batch onward if it is still the running batch. A cancel between
+    // registration and this sweep must not be undone by scheduling the next
+    // stage on top of it.
+    if (!job || job.status !== "processing") return { deleted, done: true };
+
+    const totalImages = job.totalImages ?? 0;
+    const settled = (job.processedImages ?? 0) + (job.failedImages ?? 0);
+    if (totalImages === 0 || settled >= totalImages) {
+      // Two ways to get here, one mechanism: nothing will be enqueued, so no
+      // onComplete will ever fire, so the "last one done" transition can never
+      // run and the job would spin forever. Either the upload produced no
+      // usable images at all, or a restart kept every image already done. Hand
+      // it straight to pairing, which owns both terminal decisions.
       await ctx.db.patch(job._id, { status: "pairing" });
       await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
         jobId: args.jobId,
@@ -295,7 +620,7 @@ export const registerExtractedImages = internalMutation({
       });
     }
 
-    return { totalImages: accepted.length, rejectedEntries };
+    return { deleted, done: true };
   },
 });
 
@@ -303,7 +628,7 @@ export const registerExtractedImages = internalMutation({
  * Enqueue up to ENQUEUE_CHUNK_SIZE queued images onto the pool, then
  * self-schedule for the next chunk.
  *
- * Reads through `by_job_index` starting at `from`, so the walk is an index
+ * Reads through `by_job_and_index` starting at `from`, so the walk is an index
  * range scan rather than a full-table filter and each chunk resumes exactly
  * where the last one stopped.
  */
@@ -311,22 +636,35 @@ export const enqueueImageChunk = internalMutation({
   args: { jobId: v.string(), from: v.number() },
   returns: v.object({ enqueued: v.number(), done: v.boolean() }),
   handler: async (ctx, args) => {
+    // Re-checked on EVERY chunk, not just the first. Enqueuing a 1000-image
+    // zip is twenty of these mutations, and a cancel landing in the middle
+    // must stop the remaining nineteen — each one is fifty more paid
+    // `/process-entry` calls. Cancel can only cancel work that exists; this is
+    // what stops more of it from being created behind its back.
+    const job = await findJob(ctx, args.jobId);
+    if (!job || job.status !== "processing") return { enqueued: 0, done: true };
+
     const rows = await ctx.db
       .query("placeholderImages")
-      .withIndex("by_job_index", (q) => q.eq("jobId", args.jobId).gte("index", args.from))
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", args.jobId).gte("entryIndex", args.from),
+      )
       .take(ENQUEUE_CHUNK_SIZE);
 
     let enqueued = 0;
     for (const row of rows) {
-      // Anything not "queued" was already enqueued by an earlier chunk (or by
-      // a retried invocation of this one). Skipping keeps this mutation safe
-      // to re-run, which matters because Convex may retry it on an OCC
-      // conflict.
+      // Anything not "queued" is skipped, and that covers two different cases
+      // that must both hold: a row already enqueued by an earlier chunk (or a
+      // retried invocation of this one — Convex may re-run this mutation on an
+      // OCC conflict), and a row a restart deliberately kept in "done". The
+      // second is how registerExtractedImages avoids re-paying for work that
+      // already succeeded, so this condition must stay a status check and
+      // never become "enqueue everything in range".
       if (row.status !== "queued") continue;
       const workId = await preprocessPool.enqueueAction(
         ctx,
         internal.placeholderBatch.processEntryWorker,
-        { jobId: args.jobId, userId: row.userId, entryIndex: row.index },
+        { jobId: args.jobId, userId: row.userId, entryIndex: row.entryIndex },
         {
           onComplete: internal.placeholderPool.onImageComplete,
           context: { jobId: args.jobId, imageId: row._id },
@@ -341,7 +679,7 @@ export const enqueueImageChunk = internalMutation({
       const last = rows[rows.length - 1];
       await ctx.scheduler.runAfter(0, internal.placeholderPipeline.enqueueImageChunk, {
         jobId: args.jobId,
-        from: last.index + 1,
+        from: last.entryIndex + 1,
       });
     }
 
@@ -353,9 +691,29 @@ export const enqueueImageChunk = internalMutation({
 // Internal: per-image completion
 // ---------------------------------------------------------------------------
 
-/** Narrow an unknown to a non-empty string, or undefined. */
+/**
+ * Size caps on everything the classifier hands back.
+ *
+ * These fields are a language model's reading of an image the USER uploaded,
+ * which makes their content attacker-influenced even though the model is ours:
+ * a card scan can be made to carry any text at all, and the classifier will
+ * dutifully transcribe it. Nothing downstream needs a player name longer than
+ * a couple of hundred characters or more than a handful of names on one card,
+ * so the ceiling costs nothing real — and without one, a single oversized
+ * value pushes the row past Convex's 1MB document limit, the patch inside the
+ * onComplete mutation throws, and the image is left non-terminal forever with
+ * the job's counters one short of their total. That is the same failure mode
+ * `asDhash` and the `errorDetail` slice exist to prevent: a bad value must
+ * cost its own field, never the batch.
+ */
+const MAX_FIELD_CHARS = 200;
+const MAX_PLAYERS = 8;
+
+/** Narrow an unknown to a non-empty string, capped at MAX_FIELD_CHARS. */
 function asString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  return typeof value === "string" && value.length > 0
+    ? value.slice(0, MAX_FIELD_CHARS)
+    : undefined;
 }
 
 /** Narrow an unknown to a finite number, or undefined. */
@@ -363,11 +721,19 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-/** Narrow an unknown to an array of strings, or undefined. */
+/**
+ * Narrow an unknown to an array of strings, or undefined — capped at
+ * MAX_PLAYERS entries of MAX_FIELD_CHARS each.
+ *
+ * A mixed array (any non-string element) is rejected outright rather than
+ * filtered: dropping elements would silently renumber the list, and
+ * `players[0]` is the headline name every caller reads.
+ */
 function asStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const strings = value.filter((v): v is string => typeof v === "string");
-  return strings.length === value.length ? strings : undefined;
+  if (strings.length !== value.length) return undefined;
+  return strings.slice(0, MAX_PLAYERS).map((s) => s.slice(0, MAX_FIELD_CHARS));
 }
 
 /**
@@ -395,8 +761,10 @@ function imageFieldsFromResult(returnValue: unknown): Partial<Doc<"placeholderIm
   if (!returnValue || typeof returnValue !== "object") return {};
   const body = returnValue as Record<string, unknown>;
   return {
+    // `body.player` is deliberately not stored: the service derives it as
+    // `players[0]`, so a column for it could only ever be a copy that goes
+    // stale. Readers take `players[0]` themselves.
     players: asStringArray(body.players),
-    player: asString(body.player),
     team: asString(body.team),
     cardNumber: asString(body.card_number),
     side: asString(body.side),
@@ -536,8 +904,10 @@ export const markJobFailed = internalMutation({
 
 /**
  * Put a job into its terminal success state. The counterpart to
- * `markJobFailed`; both are the only two writers of `finishedAt`, so "the job
- * is over" and "finishedAt is set" can never disagree.
+ * `markJobFailed`; together with `cancelPlaceholderBatch` — which makes the
+ * same terminal transition from a user-facing mutation, and so cannot call
+ * `markJobFailed` — they are the only writers of `finishedAt`, so "the job is
+ * over" and "finishedAt is set" can never disagree.
  */
 export const markJobSucceeded = internalMutation({
   args: { jobId: v.string() },
@@ -594,17 +964,24 @@ export const getJobInternal = internalQuery({
  *
  * Order is not cosmetic: pairing's adjacency pre-pass is built on the
  * assumption that a scanned sheet's front and back land next to each other in
- * the zip, so reading through `by_job_index` is part of the algorithm's input,
- * not a display preference.
+ * the zip, so reading through `by_job_and_index` is part of the algorithm's
+ * input, not a display preference.
+ *
+ * `_id` is returned alongside `entryIndex` so the pairing pass can write its
+ * results back BY ID. Pairing runs in an action, so an unbounded stretch of
+ * wall-clock time separates this read from those writes; re-finding the row by
+ * (jobId, entryIndex) at write time would re-resolve a key that may by then
+ * point at a row a restart has replaced. The id either still names the row
+ * pairing actually read, or names nothing at all.
  */
 export const listDoneImagesForPairing = internalQuery({
   args: { jobId: v.string() },
   returns: v.array(
     v.object({
-      index: v.number(),
+      _id: v.id("placeholderImages"),
+      entryIndex: v.number(),
       originalName: v.string(),
       players: v.optional(v.array(v.string())),
-      player: v.optional(v.string()),
       team: v.optional(v.string()),
       cardNumber: v.optional(v.string()),
       side: v.optional(v.string()),
@@ -615,15 +992,15 @@ export const listDoneImagesForPairing = internalQuery({
   handler: async (ctx, args) => {
     const rows = await ctx.db
       .query("placeholderImages")
-      .withIndex("by_job_index", (q) => q.eq("jobId", args.jobId))
+      .withIndex("by_job_and_index", (q) => q.eq("jobId", args.jobId))
       .collect();
     return rows
       .filter((r) => r.status === "done")
       .map((r) => ({
-        index: r.index,
+        _id: r._id,
+        entryIndex: r.entryIndex,
         originalName: r.originalName,
         players: r.players,
-        player: r.player,
         team: r.team,
         cardNumber: r.cardNumber,
         side: r.side,
@@ -643,6 +1020,34 @@ export const listDoneImagesForPairing = internalQuery({
 // probe whether a given job id exists. The empty answer is also the right one
 // for a reactive UI — a job that vanished and a job that was never yours both
 // render as "nothing here".
+//
+// Return validators follow one rule, and the split is deliberate:
+//
+//   OURS  (job status, image status, pairStatus, confidence, mechanism) →
+//         mirror the schema's literal union exactly. These vocabularies are
+//         defined in this repo and written only by code in this repo, so a
+//         value outside the union is a bug we want surfaced at the boundary,
+//         and every writer is a function whose failure is visible to the
+//         caller that triggered it.
+//
+//   THEIRS (side, croppedSource, errorCode) → stay `v.string()`. The
+//         vocabulary belongs to the preprocess service's classifier, and the
+//         value is written inside the pool's onComplete mutation. A validator
+//         rejection there does not surface anywhere useful: it strands the
+//         image row in a non-terminal status, the job's counters never reach
+//         their total, and the batch hangs — a whole batch lost because the
+//         service added a fourth crop source. Our own literals have no such
+//         writer, which is exactly why they can afford to be strict.
+
+const JOB_STATUS_VALIDATOR = v.union(
+  v.literal("pending"),
+  v.literal("uploaded"),
+  v.literal("extracting"),
+  v.literal("processing"),
+  v.literal("pairing"),
+  v.literal("succeeded"),
+  v.literal("failed"),
+);
 
 export const getPlaceholderJob = query({
   args: { jobId: v.string() },
@@ -650,7 +1055,7 @@ export const getPlaceholderJob = query({
     v.null(),
     v.object({
       jobId: v.string(),
-      status: v.string(),
+      status: JOB_STATUS_VALIDATOR,
       createdAt: v.number(),
       startedAt: v.optional(v.number()),
       finishedAt: v.optional(v.number()),
@@ -697,11 +1102,15 @@ export const listPlaceholderImages = query({
   args: { jobId: v.string() },
   returns: v.array(
     v.object({
-      index: v.number(),
+      entryIndex: v.number(),
       originalName: v.string(),
-      status: v.string(),
+      status: v.union(
+        v.literal("queued"),
+        v.literal("processing"),
+        v.literal("done"),
+        v.literal("failed"),
+      ),
       players: v.optional(v.array(v.string())),
-      player: v.optional(v.string()),
       team: v.optional(v.string()),
       cardNumber: v.optional(v.string()),
       side: v.optional(v.string()),
@@ -710,7 +1119,9 @@ export const listPlaceholderImages = query({
       textCount: v.optional(v.number()),
       croppedSource: v.optional(v.string()),
       dhash: v.optional(v.string()),
-      pairStatus: v.optional(v.string()),
+      pairStatus: v.optional(
+        v.union(v.literal("paired"), v.literal("unmatched")),
+      ),
       errorCode: v.optional(v.string()),
       errorDetail: v.optional(v.string()),
     }),
@@ -722,15 +1133,14 @@ export const listPlaceholderImages = query({
 
     const rows = await ctx.db
       .query("placeholderImages")
-      .withIndex("by_job_index", (q) => q.eq("jobId", args.jobId))
+      .withIndex("by_job_and_index", (q) => q.eq("jobId", args.jobId))
       .collect();
 
     return rows.map((r) => ({
-      index: r.index,
+      entryIndex: r.entryIndex,
       originalName: r.originalName,
       status: r.status,
       players: r.players,
-      player: r.player,
       team: r.team,
       cardNumber: r.cardNumber,
       side: r.side,
@@ -757,9 +1167,17 @@ export const listPlaceholderPairs = query({
       player: v.optional(v.string()),
       team: v.optional(v.string()),
       cardNumber: v.optional(v.string()),
-      confidence: v.string(),
-      mechanism: v.string(),
+      confidence: v.union(
+        v.literal("exact"),
+        v.literal("fuzzy"),
+        v.literal("side-only"),
+      ),
+      mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
       score: v.number(),
+      // The system field, not a column of our own — pair rows are written once
+      // and never patched, so `_creationTime` is the creation time by
+      // construction. Renamed on the way out so the client shape stays
+      // camelCase and does not look like it is reading an internal field.
       createdAt: v.number(),
     }),
   ),
@@ -782,7 +1200,7 @@ export const listPlaceholderPairs = query({
       confidence: p.confidence,
       mechanism: p.mechanism,
       score: p.score,
-      createdAt: p.createdAt,
+      createdAt: p._creationTime,
     }));
   },
 });

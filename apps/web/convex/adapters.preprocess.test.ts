@@ -325,6 +325,22 @@ describe("parsePreprocessErrorCode", () => {
     expect(parsePreprocessErrorCode((err as Error).message)).toBe("ZIP_REJECTED");
   });
 
+  test("the thrown message carries the upstream body — which is why the job must not", async () => {
+    // This is deliberate and it is the reason placeholderBatch.ts derives its
+    // own `errorDetail` instead of storing the message: a log line wants the
+    // body, and `errorDetail` is served to the browser by a public query. Both
+    // halves are pinned, here and in convex/placeholderPipeline.test.ts, so
+    // neither can drift into the other's job.
+    stubFetch(
+      async () =>
+        new Response("<html><body>internal-host-9f2c.run.internal</body></html>", {
+          status: 503,
+        }),
+    );
+    const err = await captureThrow(() => callExtract(stubCtx(), { jobId: "j", userId: "u" }));
+    expect((err as Error).message).toContain("run.internal");
+  });
+
   test("a human-readable detail string is never mistaken for a code", async () => {
     // INVALID_IDENTIFIER bodies carry `detail: str(exc)` — prose, not a code.
     // Without the SCREAMING_SNAKE guard that prose would leak into the message

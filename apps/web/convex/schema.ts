@@ -660,9 +660,13 @@ export default defineSchema({
   // identity.subject`, and re-derive `objectPath` FROM THE ROW — never
   // from a client-supplied argument.
   //
-  // ============================================================
+  // =====================================================================
   // NO FUNCTION ANYWHERE MAY ACCEPT `objectPath` AS AN ARGUMENT.
-  // ============================================================
+  // Scope: ALL THREE placeholder tables (placeholderJobs,
+  // placeholderImages, placeholderPairs) and every function that touches
+  // them — convex/placeholderPipeline.ts, placeholderBatch.ts,
+  // placeholderPairing.ts, adapters/preprocess.ts.
+  // =====================================================================
   // Both `neonbinder-convex` and the preprocess runtime SA hold
   // bucket-wide `roles/storage.objectViewer` on the placeholder-uploads
   // bucket (see neonbinder_ioc/main.tf) — they can read ANY user's
@@ -675,29 +679,39 @@ export default defineSchema({
   //
   // NEO-170 extended this table with the batch lifecycle the original comment
   // reserved for NEO-151 (progress counts, per-image status, failure states),
-  // and added the two tables below it. The hard rule above did NOT relax when
-  // it did — it now covers three tables instead of one:
-  //
-  //   NO FUNCTION ANYWHERE MAY ACCEPT `objectPath` AS AN ARGUMENT.
-  //
-  // Every function in the pipeline (convex/placeholderPipeline.ts,
-  // placeholderBatch.ts, placeholderPairing.ts) takes `jobId` as its only
-  // client-supplied handle, looks up THIS row, checks
-  // `row.userId === identity.subject`, and passes `jobId` + `userId` to the
-  // preprocess service — which re-derives the object path on its own side.
-  // `placeholderImages` and `placeholderPairs` carry `userId` too so an
-  // ownership check never has to hop through a join it might forget to make.
+  // and added the two tables below it. The rule above did NOT relax when it
+  // did; it widened, which is why its scope line names three tables. In
+  // practice every function takes `jobId` as its only client-supplied handle,
+  // looks up THIS row, checks `row.userId === identity.subject`, and passes
+  // `jobId` + `userId` to the preprocess service — which re-derives the object
+  // path on its own side. `placeholderImages` and `placeholderPairs` carry
+  // `userId` too so an ownership check never has to hop through a join it
+  // might forget to make.
   placeholderJobs: defineTable({
     jobId: v.string(), // server-generated (crypto.randomUUID()) in createPlaceholderUploadUrl
     userId: v.string(), // Clerk user ID as string — ownership check is row.userId === identity.subject
     objectPath: v.string(), // placeholders/{userId}/{jobId}/input.zip — re-derived server-side, never client input
     createdAt: v.number(),
-    // Lifecycle (NEO-170). "pending" → "uploaded" are pre-batch (the signed
-    // policy was minted / the client finished its upload). The batch then runs
-    // "extracting" → "processing" → "pairing" → "succeeded", or lands on
-    // "failed" from any of them. "failed" is deliberately re-entrant: starting
-    // a batch from "failed" clears this job's images and pairs and starts over,
-    // which is the difference between a retryable upload and a dead one.
+    // Lifecycle (NEO-170). "pending" is what `insertPlaceholderJob` writes at
+    // mint time. "uploaded" is RESERVED — nothing writes it yet, because
+    // confirming that the client actually finished its PUT is a NEO-152
+    // concern; it is in the union so that adding the confirm step later is not
+    // a schema migration. Until then a batch is startable straight from
+    // "pending", and starting one before the upload has landed fails with
+    // INPUT_NOT_FOUND from `/extract` — a clean terminal failure on a job the
+    // user can simply start again, which is why startable-from-pending is
+    // safe rather than merely convenient.
+    //
+    // The batch then runs "extracting" → "processing" → "pairing" →
+    // "succeeded", or lands on "failed" from any of them. "failed" is
+    // deliberately re-entrant: starting a batch from "failed" re-registers the
+    // zip's entries over the existing image rows, KEEPING the ones that already
+    // reached "done" (see registerExtractedImages) and sweeping the previous
+    // attempt's pairs. That is what makes a restart cheap — it never re-pays
+    // Vision/Anthropic for an image that already succeeded — and it is the
+    // difference between a retryable upload and a dead one.
+    // `cancelPlaceholderBatch` forces this same "failed" state, so a job wedged
+    // mid-flight has a recovery lever: cancel, then start again.
     status: v.union(
       v.literal("pending"),
       v.literal("uploaded"),
@@ -730,10 +744,13 @@ export default defineSchema({
   // (NEO-170). This is the unit of work the preprocess workpool operates on:
   // one row ⇄ one `/process-entry` call ⇄ one work item.
   //
-  // `index` is the entry index WITHIN the zip, assigned by the preprocess
+  // `entryIndex` is the entry index WITHIN the zip, assigned by the preprocess
   // service's extract step, and it is the only handle passed back to
   // `/process-entry`. It is not a path and cannot be pointed at another user's
-  // upload — see the placeholderJobs comment above.
+  // upload — see the placeholderJobs comment above. (`index` would have been
+  // the obvious name; it is spelled `entryIndex` because "index" next to
+  // `.index(...)` in this file reads as the database concept, and because
+  // `entry_index` is what crosses the wire to the service.)
   //
   // `workId` is the workpool's opaque handle, stored so cancelPlaceholderBatch
   // can cancel in-flight work. It is `v.string()` rather than a branded type
@@ -742,7 +759,7 @@ export default defineSchema({
   placeholderImages: defineTable({
     jobId: v.string(),
     userId: v.string(), // denormalized from placeholderJobs so ownership needs no join
-    index: v.number(), // entry index within the zip, assigned by extract
+    entryIndex: v.number(), // entry index within the zip, assigned by extract
     originalName: v.string(), // the zip member's filename — used by adjacency pairing
     status: v.union(
       v.literal("queued"),
@@ -752,10 +769,12 @@ export default defineSchema({
     ),
     workId: v.optional(v.string()), // workpool handle, set once the row is enqueued
     // Identity + orientation, populated from the /process-entry response.
-    // `players` is the canonical list (many for leaders/combo cards); `player`
-    // is the first entry, kept for back-compat with the single-player callers.
+    // `players` is the canonical list (many for leaders/combo cards). There is
+    // deliberately no `player` column: the service derives its `player` field
+    // as `players[0]`, so a stored copy could never legitimately differ from
+    // `players[0]` and could only ever go stale. Callers that want the single
+    // headline name read `players[0]` themselves.
     players: v.optional(v.array(v.string())),
-    player: v.optional(v.string()),
     team: v.optional(v.string()),
     cardNumber: v.optional(v.string()),
     side: v.optional(v.string()), // "front" | "back" as classified; string, not a union, because the service owns the vocabulary
@@ -771,11 +790,14 @@ export default defineSchema({
     // found nothing.
     pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
   })
-    .index("by_job", ["jobId"])
-    // Ordered iteration within a job. Pairing's adjacency pre-pass depends on
-    // zip order, so "read this job's images in index order" is a hot path, not
-    // a convenience.
-    .index("by_job_index", ["jobId", "index"]),
+    // The ONLY index this table needs. It answers both "every image of this
+    // job" (prefix `jobId` alone) and "this job's images in zip order", so a
+    // separate `by_job` on `["jobId"]` would be a strict prefix of this one —
+    // a second copy of the same index, paid for on every write, that Convex
+    // would never choose over this one for anything. Ordered iteration is a
+    // hot path rather than a convenience: pairing's adjacency pre-pass assumes
+    // a sheet's front and back are neighbours in the zip.
+    .index("by_job_and_index", ["jobId", "entryIndex"]),
 
   // Front/back pairs produced by the pairing pass (NEO-170), one row per
   // matched pair. Unmatched images are NOT recorded here — they are marked
@@ -790,9 +812,15 @@ export default defineSchema({
   // the adjacency pre-pass is earning its keep.
   placeholderPairs: defineTable({
     jobId: v.string(),
-    userId: v.string(), // denormalized from placeholderJobs so ownership needs no join
-    frontIndex: v.number(), // placeholderImages.index of the front
-    backIndex: v.number(), // placeholderImages.index of the back
+    // Denormalized from placeholderJobs. Defense in depth for a future
+    // per-user sweep (delete/export everything belonging to one user without
+    // joining through the jobs table) — it is NOT what ownership checks read
+    // today: every read path here resolves the job row from `jobId` and
+    // compares THAT row's `userId`, because the job row is the record the
+    // whole path-confinement design is anchored on.
+    userId: v.string(),
+    frontIndex: v.number(), // placeholderImages.entryIndex of the front
+    backIndex: v.number(), // placeholderImages.entryIndex of the back
     player: v.optional(v.string()),
     team: v.optional(v.string()),
     cardNumber: v.optional(v.string()),
@@ -803,6 +831,8 @@ export default defineSchema({
     ),
     mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
     score: v.number(),
-    createdAt: v.number(),
+    // No `createdAt`: these rows are written once, never patched, so the
+    // system's own `_creationTime` is the same number by construction and a
+    // hand-maintained copy could only ever drift from it.
   }).index("by_job", ["jobId"]),
 });
