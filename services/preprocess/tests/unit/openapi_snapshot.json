@@ -242,6 +242,7 @@
         "properties": {
           "entry_index": {
             "description": "The entry's zip ordinal, from /extract.",
+            "maximum": 1000.0,
             "minimum": 0.0,
             "title": "Entry Index",
             "type": "integer"
