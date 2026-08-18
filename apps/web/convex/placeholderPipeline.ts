@@ -20,6 +20,22 @@
  *          ▲                                                                       ▼
  *          └────cancelPlaceholderBatch────                                     succeeded
  *
+ * There is a second way in, added later in NEO-170 and living in
+ * convex/placeholderStream.ts: a "stream" job starts in "collecting" and takes
+ * one image at a time from a scanner, joining the diagram at "processing" (work
+ * still draining) or "pairing" (nothing left) when the user closes it. Only the
+ * ENTRY differs — everything from `recordImageOutcomeImpl` onward is shared, and
+ * `mode` is read in exactly one place in this file (`startPlaceholderBatch`
+ * refuses a stream job, because there is no archive to extract).
+ *
+ * Pairing no longer waits for the end. `recordImageOutcomeImpl` schedules a
+ * debounced pairing run after image completions in both modes, so pairs stream
+ * into `placeholderPairs` as soon as both halves of a card are processed; those
+ * runs are provisional and make no terminal decision. The terminal pass is
+ * unchanged and still runs exactly once, from the last-one-done transition
+ * below (zip, and stream-after-close) or from `closePlaceholderStream` when
+ * there was nothing left to drain.
+ *
  * "failed" is the hub, not a dead end. It is the only non-initial status a
  * batch may be started from, cancel forces a wedged job into it, and a restart
  * re-registers the zip's entries OVER the existing image rows rather than
@@ -68,7 +84,7 @@ import { preprocessPool } from "./placeholderPool";
  * itself needs no change; the pool caps concurrency anyway, so enqueuing
  * faster would buy nothing.
  */
-const ENQUEUE_CHUNK_SIZE = 50;
+export const ENQUEUE_CHUNK_SIZE = 50;
 
 /** Statuses a batch may be started from. See `startPlaceholderBatch`. */
 const STARTABLE_STATUSES = new Set(["pending", "uploaded", "failed"]);
@@ -76,12 +92,56 @@ const STARTABLE_STATUSES = new Set(["pending", "uploaded", "failed"]);
 /**
  * Statuses that mean "this batch is still consuming capacity".
  *
- * Used only by the per-user cap in `startPlaceholderBatch`. Deliberately NOT
- * derived from `STARTABLE_STATUSES` by negation: "pending" is neither active
- * nor terminal (nothing is running for it), and counting it would make a user
- * with two un-started uploads unable to start either.
+ * Used by the per-user cap in `startPlaceholderBatch` AND in
+ * `startPlaceholderStream` — one set, so the cap counts both modes' jobs and a
+ * user cannot get four in flight by alternating between them.
+ *
+ * Deliberately NOT derived from `STARTABLE_STATUSES` by negation: "pending" is
+ * neither active nor terminal (nothing is running for it), and counting it would
+ * make a user with two un-started uploads unable to start either.
+ *
+ * "collecting" IS active even though nothing is running for it at that instant.
+ * A collecting job is a live scanner session that can enqueue paid work at any
+ * moment, and it holds its slot until it is closed or the idle sweep closes it —
+ * which is exactly the property that makes the sweep necessary rather than
+ * merely tidy.
  */
-const ACTIVE_STATUSES = new Set(["extracting", "processing", "pairing"]);
+export const ACTIVE_STATUSES = new Set([
+  "collecting",
+  "extracting",
+  "processing",
+  "pairing",
+]);
+
+/**
+ * Statuses in which a completed image is allowed to trigger an incremental
+ * pairing run.
+ *
+ * Both modes, and only the two states where more images may still be coming:
+ * "processing" (a zip fanned out, or a closed stream still draining) and
+ * "collecting" (a stream still open). Anything else is either not yet producing
+ * images or already terminal, and re-pairing there would fight with the run
+ * that owns the terminal decision.
+ */
+export const INCREMENTAL_PAIRING_STATUSES = new Set(["collecting", "processing"]);
+
+/**
+ * How long a "collecting" stream job may go untouched before the idle sweep
+ * closes it (crons.ts, every 10 minutes).
+ *
+ * Thirty minutes is sized against what the timeout is FOR: a scanner session
+ * the user walked away from. Long enough that a genuine pause — feeding the
+ * next stack of cards into the sheet feeder, answering the door — never closes
+ * a batch out from under someone, short enough that an abandoned session frees
+ * its active-job slot within the hour rather than blocking the user's next
+ * upload until they notice and cancel it by hand.
+ *
+ * Activity is generous on purpose: an upload-URL allocation, a confirm, and an
+ * image completion all count. The last one matters most — a large image can
+ * take minutes to process, and a user who queued five of them and is waiting is
+ * not idle just because they have stopped typing.
+ */
+export const PLACEHOLDER_STREAM_IDLE_MS = 30 * 60 * 1000;
 
 /**
  * How many batches one user may have in flight at once.
@@ -96,7 +156,7 @@ const ACTIVE_STATUSES = new Set(["extracting", "processing", "pairing"]);
  * three-instance service, and bounding how fast a single account can replay
  * paid API spend by hammering Start.
  */
-const MAX_ACTIVE_JOBS_PER_USER = 2;
+export const MAX_ACTIVE_JOBS_PER_USER = 2;
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -110,7 +170,7 @@ const MAX_ACTIVE_JOBS_PER_USER = 2;
  * other users' job ids. Callers that must fail loudly convert the null into a
  * single, identical error.
  */
-async function findOwnedJob(
+export async function findOwnedJob(
   ctx: QueryCtx,
   jobId: string,
   userId: string,
@@ -124,14 +184,14 @@ async function findOwnedJob(
 }
 
 /** The signed-in Clerk subject, or a thrown error. */
-async function requireUserId(ctx: QueryCtx): Promise<string> {
+export async function requireUserId(ctx: QueryCtx): Promise<string> {
   const userId = await getCurrentUserId(ctx);
   if (!userId) throw new Error("Not authenticated");
   return userId;
 }
 
 /** Load a job by id without an ownership check — internal callers only. */
-async function findJob(
+export async function findJob(
   ctx: QueryCtx,
   jobId: string,
 ): Promise<Doc<"placeholderJobs"> | null> {
@@ -180,6 +240,24 @@ export const startPlaceholderBatch = mutation({
     const userId = await requireUserId(ctx);
     const job = await findOwnedJob(ctx, args.jobId, userId);
     if (!job) throw new Error("Job not found");
+
+    // Checked BEFORE the status guard, and that ordering is the whole point.
+    // A collecting stream job is already refused by the guard below (its status
+    // is not startable), so the only case this catches is a stream job that has
+    // reached "failed" — which IS a startable status, and is reachable by
+    // cancelling one. Starting it would schedule `/extract` against
+    // `placeholders/{user}/{job}/input.zip`, an object that does not exist and
+    // never will, and the batch would fail again with a 404 INPUT_NOT_FOUND that
+    // reads as an infrastructure problem rather than "Start does not apply
+    // here". Restart-from-failed stays a zip-only affordance: recovering a
+    // stream job means starting a new scanner session, because the images were
+    // never archived anywhere we could replay them from.
+    if (job.mode === "stream") {
+      return {
+        started: false,
+        reason: "this is a scanner batch — start a new scan instead of restarting it",
+      };
+    }
 
     if (!STARTABLE_STATUSES.has(job.status)) {
       return { started: false, reason: `job is already ${job.status}` };
@@ -304,6 +382,12 @@ export const sweepJobPairs = internalMutation({
  * `recordImageOutcomeImpl`, which ignores rows already terminal, no-ops on
  * rows that are gone, and only fires the pairing transition when the job is
  * still "processing" — which it no longer is.
+ *
+ * Cancelling a "collecting" stream job works through this same function, with
+ * one addition: its `awaiting_upload` rows are swept behind the cancel. Those
+ * rows have no `workId` (nothing was ever enqueued for them), so the loop below
+ * skips them and there is nothing in the pool to cancel — but leaving them
+ * would leave the job advertising images that will never arrive.
  */
 export const cancelPlaceholderBatch = mutation({
   args: { jobId: v.string() },
@@ -341,6 +425,17 @@ export const cancelPlaceholderBatch = mutation({
       errorCode: "CANCELED",
       errorDetail: "canceled by user",
       finishedAt: Date.now(),
+    });
+
+    // Unconditional rather than gated on `mode === "stream"`, for the same
+    // reason `startPlaceholderBatch` schedules `sweepJobPairs` unconditionally:
+    // on a zip job it is one mutation that finds nothing, and a gate is one more
+    // thing that can be wrong. Scheduled rather than inline because a job whose
+    // uploads were abandoned can hold up to PLACEHOLDER_MAX_ENTRY_INDEX of these
+    // rows, and bulk deletes do not belong in the mutation a user is waiting on.
+    await ctx.scheduler.runAfter(0, internal.placeholderStream.sweepAwaitingUploads, {
+      jobId: args.jobId,
+      from: 0,
     });
 
     return { canceled: true, canceledCount };
@@ -706,7 +801,7 @@ export const enqueueImageChunk = internalMutation({
  * `asDhash` and the `errorDetail` slice exist to prevent: a bad value must
  * cost its own field, never the batch.
  */
-const MAX_FIELD_CHARS = 200;
+export const MAX_FIELD_CHARS = 200;
 const MAX_PLAYERS = 8;
 
 /** Narrow an unknown to a non-empty string, capped at MAX_FIELD_CHARS. */
@@ -828,21 +923,61 @@ export async function recordImageOutcomeImpl(
 
   const processedImages = (job.processedImages ?? 0) + (succeeded ? 1 : 0);
   const failedImages = (job.failedImages ?? 0) + (succeeded ? 0 : 1);
-  await ctx.db.patch(job._id, { processedImages, failedImages });
 
   const totalImages = job.totalImages ?? 0;
   // Exactly one invocation observes equality — Convex mutations are
   // serializable, so the increment and the comparison are in one transaction
   // and two completions cannot both read the same pre-increment counters.
-  if (
+  //
+  // Unchanged in substance by the streaming work, and unchanged on purpose. A
+  // collecting job never satisfies it (its status is "collecting", not
+  // "processing"), which is exactly right: while the scanner is still feeding
+  // the job, `processed + failed === total` means "caught up", not "finished".
+  // `closePlaceholderStream` is what puts a stream job into "processing", and
+  // from that instant this is the same last-one-done trigger zip mode uses.
+  const isBatchComplete =
     job.status === "processing" &&
     totalImages > 0 &&
-    processedImages + failedImages === totalImages
-  ) {
+    processedImages + failedImages === totalImages;
+
+  // Incremental pairing: re-pair after a completion so pairs reach the client's
+  // `listPlaceholderPairs` subscription as soon as both halves of a card are
+  // processed, rather than all at once at the end. Skipped when this completion
+  // is the last one — the terminal run below recomputes everything anyway, and
+  // scheduling both would race two writers onto the same rows for no gain.
+  //
+  // `pairingScheduled` is the debounce: at most one run is queued per job at a
+  // time, so a batch running three-wide costs a handful of pairing passes rather
+  // than one per image. The run clears the latch BEFORE it reads any rows, so a
+  // completion landing mid-run always schedules a successor and the last run
+  // always sees the last row.
+  const shouldScheduleIncrementalPairing =
+    !isBatchComplete &&
+    INCREMENTAL_PAIRING_STATUSES.has(job.status) &&
+    !job.pairingScheduled;
+
+  await ctx.db.patch(job._id, {
+    processedImages,
+    failedImages,
+    // An image finishing is the user's batch making progress, so it counts as
+    // activity — otherwise a job whose images each take minutes could be closed
+    // by the idle sweep while it was working perfectly well.
+    ...(job.status === "collecting" ? { lastActivityAt: Date.now() } : {}),
+    ...(shouldScheduleIncrementalPairing ? { pairingScheduled: true } : {}),
+  });
+
+  if (isBatchComplete) {
     await ctx.db.patch(job._id, { status: "pairing" });
     await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
       jobId: context.jobId,
       userId: job.userId,
+      final: true,
+    });
+  } else if (shouldScheduleIncrementalPairing) {
+    await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+      jobId: context.jobId,
+      userId: job.userId,
+      final: false,
     });
   }
 
@@ -938,6 +1073,11 @@ export const getJobInternal = internalQuery({
       jobId: v.string(),
       userId: v.string(),
       status: v.string(),
+      // Absent means "zip" — see the schema comment. Carried here only so the
+      // terminal failure detail can say "no images were uploaded" to a scanner
+      // user instead of "no images were accepted from the upload", which is zip
+      // vocabulary for something they never did.
+      mode: v.optional(v.string()),
       totalImages: v.number(),
       processedImages: v.number(),
       failedImages: v.number(),
@@ -951,6 +1091,7 @@ export const getJobInternal = internalQuery({
       jobId: job.jobId,
       userId: job.userId,
       status: job.status,
+      mode: job.mode,
       totalImages: job.totalImages ?? 0,
       processedImages: job.processedImages ?? 0,
       failedImages: job.failedImages ?? 0,
@@ -973,6 +1114,12 @@ export const getJobInternal = internalQuery({
  * (jobId, entryIndex) at write time would re-resolve a key that may by then
  * point at a row a restart has replaced. The id either still names the row
  * pairing actually read, or names nothing at all.
+ *
+ * `pairStatus` comes back too, and is not display data here: incremental pairing
+ * re-runs many times per batch, and it patches a row only when the verdict it
+ * just computed DIFFERS from what the row already says. Without the current
+ * value that comparison is impossible and every run would rewrite every row —
+ * which is a reactive re-render of the whole grid per completed image.
  */
 export const listDoneImagesForPairing = internalQuery({
   args: { jobId: v.string() },
@@ -987,6 +1134,7 @@ export const listDoneImagesForPairing = internalQuery({
       side: v.optional(v.string()),
       textCount: v.optional(v.number()),
       dhash: v.optional(v.string()),
+      pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1006,7 +1154,79 @@ export const listDoneImagesForPairing = internalQuery({
         side: r.side,
         textCount: r.textCount,
         dhash: r.dhash,
+        pairStatus: r.pairStatus,
       }));
+  },
+});
+
+/**
+ * Resolve one image for a download-URL mint, or answer null.
+ *
+ * ONE null for every reason it could fail — no such job, someone else's job, no
+ * such entry, an entry whose output does not exist yet — so the action above it
+ * emits a single indistinguishable error. The first two must be
+ * indistinguishable for the reason `findOwnedJob` gives (otherwise this is an
+ * existence oracle for other users' job ids). The last two are collapsed in
+ * with them because they are the same statement to the caller: there is no
+ * image here to hand you. A client that wants to know WHY is already
+ * subscribed to `listPlaceholderImages`, which reports every image's status
+ * reactively and is the right place to learn that one is still processing.
+ *
+ * Takes `entryIndex`, never a path — see the `placeholderJobs` table comment in
+ * schema.ts. The caller derives the object key from the userId on the verified
+ * token, the job it just proved ownership of, and this index.
+ */
+export const getImageForDownload = internalQuery({
+  args: { jobId: v.string(), userId: v.string(), entryIndex: v.number() },
+  returns: v.union(
+    v.null(),
+    v.object({
+      imageId: v.id("placeholderImages"),
+      /** Absent until the first mint for this image probes for it. */
+      outputExtension: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const job = await findOwnedJob(ctx, args.jobId, args.userId);
+    if (!job) return null;
+
+    const image = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) =>
+        q.eq("jobId", args.jobId).eq("entryIndex", args.entryIndex),
+      )
+      .unique();
+    if (!image) return null;
+    // "done" is the only status under which `/process-entry` wrote an output
+    // object. Minting a URL for anything else hands the caller a link to a 404
+    // that looks like an infrastructure fault rather than "not ready yet".
+    if (image.status !== "done") return null;
+
+    return { imageId: image._id, outputExtension: image.outputExtension };
+  },
+});
+
+/**
+ * Memoise the extension a download mint discovered for an image's output.
+ *
+ * Pure cache maintenance — see the `outputExtension` comment in schema.ts. The
+ * write is skipped when the column already agrees, so repeated mints for the
+ * same image do not wake every `listPlaceholderImages` subscriber, and a row
+ * that vanished (a restart swept it while the action was signing) is a no-op
+ * rather than an error.
+ */
+export const recordOutputExtension = internalMutation({
+  args: {
+    imageId: v.id("placeholderImages"),
+    extension: v.union(v.literal("jpg"), v.literal("png"), v.literal("webp")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const image = await ctx.db.get(args.imageId);
+    if (!image) return null;
+    if (image.outputExtension === args.extension) return null;
+    await ctx.db.patch(image._id, { outputExtension: args.extension });
+    return null;
   },
 });
 
@@ -1042,6 +1262,7 @@ export const listDoneImagesForPairing = internalQuery({
 const JOB_STATUS_VALIDATOR = v.union(
   v.literal("pending"),
   v.literal("uploaded"),
+  v.literal("collecting"),
   v.literal("extracting"),
   v.literal("processing"),
   v.literal("pairing"),
@@ -1056,9 +1277,18 @@ export const getPlaceholderJob = query({
     v.object({
       jobId: v.string(),
       status: JOB_STATUS_VALIDATOR,
+      // Absent means "zip" — the field was added with streaming intake and
+      // pre-existing rows never carried it. A client rendering the two flows
+      // differently must read it as `mode ?? "zip"`, not as a boolean.
+      mode: v.optional(v.union(v.literal("zip"), v.literal("stream"))),
       createdAt: v.number(),
       startedAt: v.optional(v.number()),
       finishedAt: v.optional(v.number()),
+      // Only ever set on a stream job. Returned so the UI can show how long a
+      // collecting session has left before the idle sweep closes it
+      // (lastActivityAt + PLACEHOLDER_STREAM_IDLE_MS), which is the difference
+      // between a batch that "vanished" and one the user was warned about.
+      lastActivityAt: v.optional(v.number()),
       totalImages: v.number(),
       processedImages: v.number(),
       failedImages: v.number(),
@@ -1081,9 +1311,11 @@ export const getPlaceholderJob = query({
     return {
       jobId: job.jobId,
       status: job.status,
+      mode: job.mode,
       createdAt: job.createdAt,
       startedAt: job.startedAt,
       finishedAt: job.finishedAt,
+      lastActivityAt: job.lastActivityAt,
       totalImages: job.totalImages ?? 0,
       processedImages: job.processedImages ?? 0,
       failedImages: job.failedImages ?? 0,
@@ -1105,6 +1337,11 @@ export const listPlaceholderImages = query({
       entryIndex: v.number(),
       originalName: v.string(),
       status: v.union(
+        // Stream mode only: an upload URL was handed out for this entry and the
+        // browser has not confirmed the bytes landed. Not counted in
+        // `totalImages`, so a client showing progress must not treat this row as
+        // part of the denominator.
+        v.literal("awaiting_upload"),
         v.literal("queued"),
         v.literal("processing"),
         v.literal("done"),
@@ -1158,6 +1395,24 @@ export const listPlaceholderImages = query({
   },
 });
 
+/**
+ * The front/back pairs found for a job so far.
+ *
+ * **These pairs are PROVISIONAL until the job's status is terminal**
+ * ("succeeded" or "failed"). Pairing re-runs after image completions rather than
+ * only at the end, so this query starts returning rows while the batch is still
+ * "collecting" or "processing" — and a later image can legitimately change what
+ * an earlier run decided. A card matched by the pool's identity scoring can be
+ * re-matched to a better candidate that arrived afterwards, which shows up here
+ * as a pair disappearing and a different one taking its place, and an image
+ * currently reported `pairStatus: "unmatched"` may still find its partner.
+ *
+ * Each run recomputes the whole batch from the images done at that moment and
+ * writes the difference, so the sequence converges: the state after the terminal
+ * run is exactly what a single end-of-batch run would have produced. A UI is
+ * therefore free to render these rows live — it just must not present them as
+ * final, or persist anything downstream from them, before `finishedAt` is set.
+ */
 export const listPlaceholderPairs = query({
   args: { jobId: v.string() },
   returns: v.array(
@@ -1174,10 +1429,15 @@ export const listPlaceholderPairs = query({
       ),
       mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
       score: v.number(),
-      // The system field, not a column of our own — pair rows are written once
-      // and never patched, so `_creationTime` is the creation time by
-      // construction. Renamed on the way out so the client shape stays
-      // camelCase and does not look like it is reading an internal field.
+      // The system field, not a column of our own. Renamed on the way out so
+      // the client shape stays camelCase and does not look like it is reading an
+      // internal field.
+      //
+      // This is when the pair was FIRST found, not when it was last revised:
+      // incremental pairing patches a surviving row in place rather than
+      // replacing it, precisely so a pair that has not changed does not churn.
+      // A row that flickers here is a genuinely different pair, not the same one
+      // re-created.
       createdAt: v.number(),
     }),
   ),

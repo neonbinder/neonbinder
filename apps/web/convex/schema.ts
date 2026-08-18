@@ -688,10 +688,23 @@ export default defineSchema({
   // `userId` too so an ownership check never has to hop through a join it
   // might forget to make.
   placeholderJobs: defineTable({
-    jobId: v.string(), // server-generated (crypto.randomUUID()) in createPlaceholderUploadUrl
+    jobId: v.string(), // server-generated (crypto.randomUUID()) in createPlaceholderUploadUrl / startPlaceholderStream
     userId: v.string(), // Clerk user ID as string — ownership check is row.userId === identity.subject
-    objectPath: v.string(), // placeholders/{userId}/{jobId}/input.zip — re-derived server-side, never client input
+    // Where this job's bytes live. In "zip" mode that is the single uploaded
+    // archive, placeholders/{userId}/{jobId}/input.zip. In "stream" mode there
+    // is no archive — the browser POSTs one image at a time straight into
+    // extracted/ — so the row records the job PREFIX,
+    // placeholders/{userId}/{jobId}/, which is what both modes actually have in
+    // common. Either way it is re-derived server-side and is never client input.
+    objectPath: v.string(),
     createdAt: v.number(),
+    // How images get into this job (NEO-170 streaming intake). Optional, and
+    // ABSENT MEANS "zip" — every row written before streaming existed is a zip
+    // job, so backfilling the field would be a migration that changes nothing.
+    // Readers must treat `undefined` and `"zip"` as the same thing; the one
+    // place that must not is `startPlaceholderBatch`, which refuses `"stream"`
+    // explicitly (there is no archive for it to extract).
+    mode: v.optional(v.union(v.literal("zip"), v.literal("stream"))),
     // Lifecycle (NEO-170). "pending" is what `insertPlaceholderJob` writes at
     // mint time. "uploaded" is RESERVED — nothing writes it yet, because
     // confirming that the client actually finished its PUT is a NEO-152
@@ -712,9 +725,19 @@ export default defineSchema({
     // difference between a retryable upload and a dead one.
     // `cancelPlaceholderBatch` forces this same "failed" state, so a job wedged
     // mid-flight has a recovery lever: cancel, then start again.
+    //
+    // "collecting" is the stream-mode entry state and has no zip-mode
+    // counterpart: the job is open, the scanner is still feeding it images, and
+    // each confirmed image is enqueued as it arrives. It leaves that state ONLY
+    // through `closePlaceholderStream` (explicitly, or via the idle-timeout
+    // cron), landing in "processing" when work is still draining or going
+    // straight to "pairing" when it is not. It is deliberately NOT startable:
+    // there is no archive to extract, and Start on a stream job is a category
+    // error rather than a retry.
     status: v.union(
       v.literal("pending"),
       v.literal("uploaded"),
+      v.literal("collecting"),
       v.literal("extracting"),
       v.literal("processing"),
       v.literal("pairing"),
@@ -736,9 +759,39 @@ export default defineSchema({
     // `errorDetail` is free text for a human reading one specific job.
     errorCode: v.optional(v.string()),
     errorDetail: v.optional(v.string()),
+    // ---- stream mode only (NEO-170) ----
+    // Next entry index `createPlaceholderImageUploadUrl` will hand out. The
+    // transactional allocation counter: read, bounds-checked against
+    // PLACEHOLDER_MAX_ENTRY_INDEX, and incremented inside one mutation, which
+    // is what makes two concurrent upload-URL requests get 3 and 4 rather than
+    // both getting 3 and writing over each other's object. Zip mode never sets
+    // it — there the indexes come from `/extract`.
+    nextEntryIndex: v.optional(v.number()),
+    // Last time this job saw the user do anything: an upload-URL allocation, a
+    // confirm, or an image completing. The idle sweep (crons.ts, every 10
+    // minutes) closes any "collecting" job whose last activity is older than
+    // PLACEHOLDER_STREAM_IDLE_MS, so a scanner session abandoned mid-batch
+    // still reaches a terminal state instead of holding one of the user's two
+    // active-job slots forever.
+    lastActivityAt: v.optional(v.number()),
+    // Debounce latch for incremental pairing. Set when a completion schedules a
+    // pairing run, cleared by that run before it reads any rows — so a
+    // completion landing mid-run re-schedules and the result converges, while a
+    // burst of completions between runs costs one run rather than one each.
+    // Not a lock: it bounds how many runs are QUEUED, and the pairing writes are
+    // an idempotent diff precisely because it does not bound how many overlap.
+    pairingScheduled: v.optional(v.boolean()),
   })
     .index("by_job", ["jobId"])
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    // Feeds the idle-stream sweep, and nothing else. The equality on `status`
+    // keeps the scan inside the "collecting" jobs of the whole deployment
+    // (there are never many — a job stops collecting within minutes), and the
+    // range on `lastActivityAt` narrows it to the idle ones, so the cron reads
+    // the rows it is about to close and no others. Without it the sweep would
+    // be a full scan of every placeholder job ever created, ten minutes apart,
+    // forever.
+    .index("by_status_and_activity", ["status", "lastActivityAt"]),
 
   // One row per image the extract step accepted out of a placeholder upload
   // (NEO-170). This is the unit of work the preprocess workpool operates on:
@@ -759,9 +812,17 @@ export default defineSchema({
   placeholderImages: defineTable({
     jobId: v.string(),
     userId: v.string(), // denormalized from placeholderJobs so ownership needs no join
-    entryIndex: v.number(), // entry index within the zip, assigned by extract
+    entryIndex: v.number(), // entry index within the zip (assigned by extract) or the stream (allocated by placeholderJobs.nextEntryIndex)
     originalName: v.string(), // the zip member's filename — used by adjacency pairing
+    // "awaiting_upload" is the stream-mode entry state: the row and its object
+    // key exist and a signed POST policy has been handed out, but the browser
+    // has not yet told us the bytes landed. Such a row is NOT counted in
+    // `totalImages` and is NEVER enqueued — `confirmPlaceholderImageUpload` is
+    // what moves it to "queued" and does both. Closing or canceling the job
+    // deletes whatever is still in this state, which is what keeps an allocation
+    // whose upload was abandoned from wedging the batch-complete condition.
     status: v.union(
+      v.literal("awaiting_upload"),
       v.literal("queued"),
       v.literal("processing"),
       v.literal("done"),
@@ -783,6 +844,21 @@ export default defineSchema({
     textCount: v.optional(v.number()), // Vision word count — the free signal the adjacency pre-pass runs on
     croppedSource: v.optional(v.string()), // which stage of the crop cascade won
     dhash: v.optional(v.string()), // 16-char lowercase hex perceptual hash, consumed by pairing
+    // File extension of the PROCESSED output object ("jpg" | "png" | "webp"),
+    // memoised the first time a download URL is minted for this image.
+    //
+    // Not a copy of anything: the service does not report which extension it
+    // wrote (`ProcessEntryResponse` has no such field, and the output's format
+    // is whatever the CROPPED image sniffed as, not necessarily the input's), so
+    // `createPlaceholderImageDownloadUrl` finds the object by trying the known
+    // extensions in the service's own order and records the answer here. Absent
+    // means "not looked up yet", never "no output" — the row's `status` is what
+    // says whether an output exists.
+    //
+    // A cache, so it must stay derivable: deleting it costs one extra probe, not
+    // correctness. If the service ever starts reporting the output type, this is
+    // the column to populate at completion time instead.
+    outputExtension: v.optional(v.string()),
     errorCode: v.optional(v.string()),
     errorDetail: v.optional(v.string()),
     // Set by the pairing pass, not by processing. Absent means pairing has not
@@ -831,8 +907,16 @@ export default defineSchema({
     ),
     mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
     score: v.number(),
-    // No `createdAt`: these rows are written once, never patched, so the
-    // system's own `_creationTime` is the same number by construction and a
-    // hand-maintained copy could only ever drift from it.
+    // No `createdAt` column: `_creationTime` already records when the pair was
+    // first found, and a hand-maintained copy could only ever drift from it.
+    //
+    // These rows ARE patched now — incremental pairing (NEO-170) re-runs after
+    // image completions and revises a pair whose merged identity, confidence,
+    // mechanism or score changed once a later image arrived, rather than
+    // deleting and re-inserting it. That is deliberate and load-bearing: the
+    // client subscribes to this table, and a delete+insert of an unchanged-
+    // looking pair is a visible flicker. The identity of a pair row is
+    // (jobId, frontIndex, backIndex); everything else on it is revisable until
+    // the job reaches a terminal status.
   }).index("by_job", ["jobId"]),
 });
