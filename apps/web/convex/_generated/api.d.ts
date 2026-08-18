@@ -17,6 +17,7 @@ import type * as adapters_index from "../adapters/index.js";
 import type * as adapters_mycardpost from "../adapters/mycardpost.js";
 import type * as adapters_myslabs from "../adapters/myslabs.js";
 import type * as adapters_placeholderUploads from "../adapters/placeholderUploads.js";
+import type * as adapters_preprocess from "../adapters/preprocess.js";
 import type * as adapters_sportlots from "../adapters/sportlots.js";
 import type * as adapters_testBscSetParameters from "../adapters/testBscSetParameters.js";
 import type * as adapters_types from "../adapters/types.js";
@@ -32,12 +33,23 @@ import type * as features_deriveCardFeatures from "../features/deriveCardFeature
 import type * as features_expectedFeatures from "../features/expectedFeatures.js";
 import type * as features_generateListing from "../features/generateListing.js";
 import type * as http from "../http.js";
+import type * as lib_cloudRunAuth from "../lib/cloudRunAuth.js";
+import type * as lib_pairing_dhash from "../lib/pairing/dhash.js";
+import type * as lib_pairing_names from "../lib/pairing/names.js";
+import type * as lib_pairing_pairBatch from "../lib/pairing/pairBatch.js";
+import type * as lib_pairing_pool from "../lib/pairing/pool.js";
+import type * as lib_pairing_types from "../lib/pairing/types.js";
 import type * as myFunctions from "../myFunctions.js";
 import type * as observability from "../observability.js";
+import type * as placeholderBatch from "../placeholderBatch.js";
 import type * as placeholderJobs from "../placeholderJobs.js";
+import type * as placeholderPairing from "../placeholderPairing.js";
+import type * as placeholderPipeline from "../placeholderPipeline.js";
+import type * as placeholderPool from "../placeholderPool.js";
 import type * as platformSlots from "../platformSlots.js";
 import type * as players from "../players.js";
 import type * as posthog from "../posthog.js";
+import type * as preprocessCapacity from "../preprocessCapacity.js";
 import type * as publicProfile from "../publicProfile.js";
 import type * as resolveRedirect from "../resolveRedirect.js";
 import type * as selectorOptions from "../selectorOptions.js";
@@ -65,6 +77,7 @@ declare const fullApi: ApiFromModules<{
   "adapters/mycardpost": typeof adapters_mycardpost;
   "adapters/myslabs": typeof adapters_myslabs;
   "adapters/placeholderUploads": typeof adapters_placeholderUploads;
+  "adapters/preprocess": typeof adapters_preprocess;
   "adapters/sportlots": typeof adapters_sportlots;
   "adapters/testBscSetParameters": typeof adapters_testBscSetParameters;
   "adapters/types": typeof adapters_types;
@@ -80,12 +93,23 @@ declare const fullApi: ApiFromModules<{
   "features/expectedFeatures": typeof features_expectedFeatures;
   "features/generateListing": typeof features_generateListing;
   http: typeof http;
+  "lib/cloudRunAuth": typeof lib_cloudRunAuth;
+  "lib/pairing/dhash": typeof lib_pairing_dhash;
+  "lib/pairing/names": typeof lib_pairing_names;
+  "lib/pairing/pairBatch": typeof lib_pairing_pairBatch;
+  "lib/pairing/pool": typeof lib_pairing_pool;
+  "lib/pairing/types": typeof lib_pairing_types;
   myFunctions: typeof myFunctions;
   observability: typeof observability;
+  placeholderBatch: typeof placeholderBatch;
   placeholderJobs: typeof placeholderJobs;
+  placeholderPairing: typeof placeholderPairing;
+  placeholderPipeline: typeof placeholderPipeline;
+  placeholderPool: typeof placeholderPool;
   platformSlots: typeof platformSlots;
   players: typeof players;
   posthog: typeof posthog;
+  preprocessCapacity: typeof preprocessCapacity;
   publicProfile: typeof publicProfile;
   resolveRedirect: typeof resolveRedirect;
   selectorOptions: typeof selectorOptions;
@@ -124,4 +148,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  preprocessPool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"preprocessPool">;
+};
