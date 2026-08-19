@@ -40,20 +40,25 @@
 # apps/web/scripts/generate-placeholder-fixtures.py (read its header). Two
 # things matter to this flow:
 #
-#   * Each FRONT carries exactly one word. Side is decided from `textCount`
-#     (the free Vision word count), and pairBatch only pairs neighbours without
-#     a model call when the counts are unambiguous: <=2 is confidently a front,
-#     >=7 confidently a back, 3-6 pays for a classify. A realistic "name +
-#     team" front is 4-5 words and would land in that ambiguous band, making
-#     this gate probabilistic and billable. Measured on the live pipeline:
-#     front textCount=1, back textCount=56.
-#   * The manifest is in strict front/back alternation, which is the order the
-#     adjacency pre-pass walks.
+#   * Each FRONT carries exactly one word and each BACK is dense with text, so
+#     every image classifies to the right SIDE unambiguously — from the model's
+#     own read, with `textCount` (the free Vision word count: front 1, back 56,
+#     measured live) as the clean fallback. Correct sides are what let identity
+#     pairing match each front to its own back.
+#   * Each BACK prints a distinct card number (#17 / #42 / #83) large and
+#     high-contrast, so the number OCRs reliably — those numbers are how Step 5
+#     tells the three pairs apart.
+#   * The manifest is in strict front/back alternation. That order now feeds
+#     only the GUARDED adjacency FALLBACK (contradiction-checked), which these
+#     fixtures never reach: identity places all six, so nothing is left over for
+#     it to pair.
 #
-# Together those are what make "resolver calls: 0" true, and asserting it is
-# the regression trap: if a future change pushes fixtures into the ambiguous
-# band, this gate starts paying a model call per image and goes red here rather
-# than silently costing money on every run.
+# Pairing is IDENTITY-FIRST (placeholderPairing.ts runs pairBatch with
+# useAdjacency:false, after the rework that stopped a Gray front pairing with a
+# Hosmer back purely for being adjacent). Identity resolution is now a dictionary
+# lookup over the row the classifier already wrote, not a model call — so it is
+# neither billable nor something to avoid: every one of the 6 done images is
+# resolved, which is why "resolver calls: 6" is the healthy count Step 4 asserts.
 #
 # R5 — ONE long wait, and it is the sanctioned external-compute case: BiRefNet
 # inference on Cloud Run plus a Vision round-trip per image, throttled to three
@@ -112,30 +117,45 @@ tags:
     visible: ".*6 of 6 images processed, 0 failed, 3 pairs.*"
     timeout: 400000
 
-# Step 4: the pairing did NOT pay for the identity resolver. See the fixture
-# note above — this is the cost/determinism regression trap.
-- assertVisible: "resolver calls: 0"
+# Step 4: identity matching ran over the whole batch. Under identity-first
+# pairing every done image is resolved once (a cheap dictionary lookup, not a
+# model call), so 6 done images = 6 resolver calls. Only the FINAL pairing run
+# records the count, over all six rows at once, so it is a stable 6 rather than
+# an artefact of how the completions happened to interleave (schema.ts's
+# resolverCalls comment spells this out). Combined with Step 3's "3 pairs", this
+# asserts identity matching both RAN and produced the pairs — the cards were
+# matched by who is on them, not by the fragile scan-adjacency that used to
+# mispair different players.
+- assertVisible: "resolver calls: 6"
 
-# Step 5: the three pairs, each identified by its card number, each paired by
-# scan order.
+# Step 5: the three pairs, each identified by its card number, each matched by
+# identity (rendered "by image pool").
 #
-# WHAT THE PAGE ACTUALLY RENDERS (measured live 2026-08-18):
-#   "Grebble · #17 · front/back only · by scan order"
-#   "Marcus · #42 · front/back only · by scan order"
-#   "Teodor · #83 · front/back only · by scan order"
-# — one <p> per pair, the parts joined with " · ". So each line is one text node
-# Maestro can match whole.
+# WHAT THE PAGE RENDERS. Each pair is one <p>, the parts joined with " · ":
+#   "<name> · #17 · <confidence> · by image pool"
+# — so the line is one text node Maestro can match whole. (Under the old
+# adjacency-first algorithm this line read "front/back only · by scan order";
+# the identity-first rework changed the mechanism to "pool".)
 #
-# WHY MATCH ON THE CARD NUMBER, NOT THE NAME. The leading name is read off the
-# card by the vision model and is the least stable thing on the line — it came
-# back as the given name ("Grebble"), not the surname on the front, and a model
-# can word it differently run to run. The card number is a large, high-contrast
-# "#17" on the back (the fixtures are drawn that way), which OCRs reliably, and
-# #17 / #42 / #83 are the invented numbers that tie each line to one specific
-# card — so three number matches prove three DISTINCT correct pairs. "by scan
-# order" is the deterministic label for an adjacency-mechanism pair, so pairing
-# it with the number proves each pair came out of the zero-resolver free path
-# (the same property Step 4 asserts in aggregate).
+# WHY MATCH ON THE CARD NUMBER + "by image pool", AND NOT THE CONFIDENCE OR NAME.
+# Two parts of that line are model-dependent and must NOT be pinned: the leading
+# name (read off the card — it came back as the given name "Grebble", not the
+# front's surname, and a model can word it differently run to run) and the
+# confidence word ("exact match" / "fuzzy match" / "front/back only", depending
+# on how cleanly the model read the same name on both sides). Two parts are
+# stable and are what we assert:
+#   * the card number — large, high-contrast "#17" on the back, OCRs reliably;
+#     #17 / #42 / #83 are the invented numbers that tie each line to one specific
+#     card, so three number matches prove three DISTINCT correct pairs.
+#   * "by image pool" — the deterministic label for a POOL (identity) match
+#     (MECHANISM_LABELS.pool). It does double duty: it disambiguates the pair
+#     line from the Images-section line that also shows "#17" (an image summary
+#     never carries a mechanism), AND it proves the pair came out of identity
+#     pairing rather than the demoted guarded-adjacency fallback (which would
+#     render "by scan order"). For these clean, name-matching fixtures identity
+#     places all six, so "by image pool" is the correct expectation — a
+#     "by scan order" here would mean identity pairing regressed, which is
+#     exactly what this gate should catch.
 #
 # NO centerElement ON THESE SCROLLS. They are assertions, not taps, so R8 (which
 # is about taps landing on a fully-visible target) does not apply. Worse,
@@ -153,13 +173,13 @@ tags:
       text: "Matched pairs"
 - scrollUntilVisible:
     element:
-      text: ".*#17.*by scan order.*"
+      text: ".*#17.*by image pool.*"
 - scrollUntilVisible:
     element:
-      text: ".*#42.*by scan order.*"
+      text: ".*#42.*by image pool.*"
 - scrollUntilVisible:
     element:
-      text: ".*#83.*by scan order.*"
+      text: ".*#83.*by image pool.*"
 
 # Step 6: every image ended up in a pair. The page only renders this heading
 # when something was left over, so its absence is the claim — and it is made
