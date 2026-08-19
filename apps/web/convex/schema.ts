@@ -938,7 +938,15 @@ export default defineSchema({
       v.literal("fuzzy"),
       v.literal("side-only"),
     ),
-    mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
+    // How the pair was made. "adjacency" / "pool" are the automatic mechanisms.
+    // "manual" (NEO-152) is a pair a USER forced — for a card whose identity the
+    // model misread or could not read — and it is STICKY: the automatic pairing
+    // pass excludes manually-paired images from its input and never touches
+    // manual pair rows in its diff. That stickiness is the whole reason a manual
+    // pair needs its own mechanism value rather than being an ordinary pair the
+    // next auto-run would recompute away. See `runPairing` and
+    // `manuallyPairPlaceholderImages`.
+    mechanism: v.union(v.literal("adjacency"), v.literal("pool"), v.literal("manual")),
     score: v.number(),
     // No `createdAt` column: `_creationTime` already records when the pair was
     // first found, and a hand-maintained copy could only ever drift from it.

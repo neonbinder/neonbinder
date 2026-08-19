@@ -45,14 +45,45 @@
  * produced, no matter how many provisional runs preceded it.
  */
 
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import {
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+} from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import { pairBatch } from "./lib/pairing/pairBatch";
 import { playerNamesMatch, teamNamesMatch } from "./lib/pairing/names";
 import type { CardSide, Confidence, Mechanism, PoolCard } from "./lib/pairing/types";
-import { findJob, INCREMENTAL_PAIRING_STATUSES } from "./placeholderPipeline";
+import {
+  INCREMENTAL_PAIRING_STATUSES,
+  MAX_FIELD_CHARS,
+  MAX_PLAYERS,
+  findJob,
+  findOwnedJob,
+  requireUserId,
+} from "./placeholderPipeline";
+
+/**
+ * Statuses on which a `force` re-pair (a manual correction) is allowed to run.
+ *
+ * A superset of the incremental statuses: it adds "pairing" (a run already in
+ * flight — the debounce/convergence handles the overlap) and the terminal
+ * "succeeded"/"failed" (the correction phase, where the user is fixing a
+ * finished batch). It deliberately EXCLUDES pending/uploaded/extracting — a job
+ * with no meaningful done rows, or one mid-restart, where a re-pair would fight
+ * the restart's sweep.
+ */
+const REPAIR_ALLOWED_STATUSES = new Set([
+  "collecting",
+  "processing",
+  "pairing",
+  "succeeded",
+  "failed",
+]);
 
 /** Rows written per applyPairDiff / syncImagePairStatus invocation. */
 const PAIR_CHUNK_SIZE = 50;
@@ -333,6 +364,17 @@ export const runPairing = internalAction({
      * round rather than the safer-looking `final: v.boolean()`.
      */
     final: v.optional(v.boolean()),
+    /**
+     * A DELIBERATE re-pair request (NEO-152) — the manual-correction mutations
+     * schedule `{final: false, force: true}` so a user's identity edit re-pairs
+     * even a job that has already SUCCEEDED. Without it the incremental guard
+     * below would skip the run (a succeeded job is not an incremental status),
+     * and the whole point of "fix the front's name → it auto-pairs" would only
+     * work mid-batch. `force` bypasses that guard on already-processed statuses
+     * WITHOUT making the terminal decision, so a re-pair can never un-succeed a
+     * good batch (only a `final` run touches the terminal status).
+     */
+    force: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -361,19 +403,61 @@ export const runPairing = internalAction({
       // guard, and must not grow one: it is the only thing that can move a job
       // out of "pairing", so refusing to act on an unexpected status is exactly
       // how a batch gets stuck.
-      if (!final && !INCREMENTAL_PAIRING_STATUSES.has(job.status)) return null;
+      //
+      // A `force` re-pair (a manual correction) additionally runs on a job that
+      // has finished pairing or reached a terminal status — but NOT on one that
+      // is still pre-processing or mid-restart (pending/uploaded/extracting),
+      // where there are no meaningful done rows and a diff would fight the
+      // restart. It never runs the terminal decision (it is not `final`), so it
+      // cannot un-succeed a batch.
+      const canRun =
+        final ||
+        INCREMENTAL_PAIRING_STATUSES.has(job.status) ||
+        (args.force && REPAIR_ALLOWED_STATUSES.has(job.status));
+      if (!canRun) return null;
 
       const rows = await ctx.runQuery(
         internal.placeholderPipeline.listDoneImagesForPairing,
         { jobId: args.jobId },
       );
 
+      // Read the stored pairs UP FRONT (before pairing), because they carry the
+      // manual pairs, and manual pairing changes what the automatic pass even
+      // operates on. `stored` here is the authoritative source of "what is
+      // manual" — there is no separate flag on the image row to drift from it.
+      const stored = await ctx.runQuery(internal.placeholderPairing.listPairsForDiff, {
+        jobId: args.jobId,
+      });
+
+      // ---- Manual pairs are STICKY (NEO-152) ----------------------------
+      //
+      // Three properties, all enforced here, together:
+      //   (b) never re-pair a manually-paired image → its index is removed from
+      //       the pairBatch input (`autoRows`), so the automatic matcher never
+      //       even sees it;
+      //   (a) never delete or overwrite a manual pair row → the diff below
+      //       compares only against `autoStored` (the non-manual pairs), so a
+      //       manual row is never a "removed" candidate and never patched;
+      //   (c) still re-pair everything else freely → every non-manual image and
+      //       pair flows through exactly as before.
+      // The image's partner in a manual pair is likewise excluded, which is what
+      // frees the OTHER images (a manually-taken front's identity twin is now
+      // available to pair with its real partner).
+      const manualIndexes = new Set<number>();
+      for (const pair of stored) {
+        if (pair.mechanism !== "manual") continue;
+        manualIndexes.add(pair.frontIndex);
+        manualIndexes.add(pair.backIndex);
+      }
+      const autoRows = rows.filter((r) => !manualIndexes.has(r.entryIndex));
+      const autoStored = stored.filter((p) => p.mechanism !== "manual");
+
       // Key by zip index. It is stable, unique within the batch, and — unlike
       // the original filename — cannot collide, which matters because the pool
       // uses the key as a dictionary key. The VALUE carries `_id`, which is
       // what the write-back is keyed on; see the note on
-      // `listDoneImagesForPairing`.
-      const byKey = new Map(rows.map((r) => [String(r.entryIndex), r] as const));
+      // `listDoneImagesForPairing`. Manually-paired rows are excluded.
+      const byKey = new Map(autoRows.map((r) => [String(r.entryIndex), r] as const));
 
       // The desired state, recomputed from scratch every run. `pairBatch` is a
       // pure function of the done rows in entry-index order, so two runs over
@@ -383,9 +467,9 @@ export const runPairing = internalAction({
       const pairedIds = new Set<string>();
       let resolverCalls = 0;
 
-      if (rows.length > 0) {
+      if (autoRows.length > 0) {
         const result = pairBatch(
-          rows.map((r) => ({
+          autoRows.map((r) => ({
             key: String(r.entryIndex),
             textCount: r.textCount ?? 0,
             originalFilename: r.originalName,
@@ -506,16 +590,20 @@ export const runPairing = internalAction({
         }
       }
 
-      // ---- Diff the desired state against what is stored ----------------
+      // ---- Diff the desired state against the AUTOMATIC stored pairs -----
       //
-      // Runs on every pass, including the first (where `stored` is empty and the
-      // diff degenerates to the insert-everything behaviour this used to have)
-      // and including a pass over zero done rows (where every stored pair is
-      // stale and goes). One code path, no special cases.
-      const stored = await ctx.runQuery(internal.placeholderPairing.listPairsForDiff, {
-        jobId: args.jobId,
-      });
-      const storedByKey = new Map(stored.map((p) => [pairKey(p.frontIndex, p.backIndex), p]));
+      // Against `autoStored`, NOT `stored`: manual pairs are excluded so the diff
+      // can neither delete nor overwrite them. This is the load-bearing half of
+      // "manual pairs survive an automatic re-run" — a manual row is never in
+      // `desired` (its images were excluded from pairBatch) and never in the
+      // set the delete/patch computation walks, so nothing here can touch it.
+      //
+      // Otherwise unchanged: runs on every pass, including the first (empty
+      // `autoStored` → insert everything) and a pass over zero auto rows (every
+      // auto pair is stale and goes). One code path, no special cases.
+      const storedByKey = new Map(
+        autoStored.map((p) => [pairKey(p.frontIndex, p.backIndex), p]),
+      );
 
       const inserts: DesiredPair[] = [];
       const patches: PairPatch[] = [];
@@ -550,7 +638,10 @@ export const runPairing = internalAction({
           });
         }
       }
-      const deleteIds = stored
+      // From `autoStored`, so a manual pair is NEVER a delete candidate — the
+      // single point that makes manual pairs survive the diff. (Mutation-tested:
+      // switching this to `stored` deletes manual pairs on the next auto-run.)
+      const deleteIds = autoStored
         .filter((p) => !desiredKeys.has(pairKey(p.frontIndex, p.backIndex)))
         .map((p) => p._id);
 
@@ -609,7 +700,10 @@ export const runPairing = internalAction({
       // so an unchanged batch costs zero mutations, not one per chunk.
       const becomingPaired: Array<Id<"placeholderImages">> = [];
       const becomingUnmatched: Array<Id<"placeholderImages">> = [];
-      for (const row of rows) {
+      // Over `autoRows`, not `rows`: a manually-paired image is excluded, so its
+      // "paired" status set by `manuallyPairPlaceholderImages` is left untouched
+      // rather than being reset to "unmatched" (it is not in `pairedIds`).
+      for (const row of autoRows) {
         const want = pairedIds.has(row._id) ? "paired" : "unmatched";
         if (row.pairStatus === want) continue;
         (want === "paired" ? becomingPaired : becomingUnmatched).push(row._id);
@@ -635,9 +729,11 @@ export const runPairing = internalAction({
             msg: "placeholder_pairing_done",
             jobId: args.jobId,
             final,
-            images: rows.length,
+            force: args.force ?? false,
+            images: autoRows.length,
+            manual: stored.length - autoStored.length,
             pairs: desired.length,
-            unmatched: rows.length - pairedIds.size,
+            unmatched: autoRows.length - pairedIds.size,
             inserted: inserts.length,
             revised: patches.length,
             removed: deleteIds.length,
@@ -755,7 +851,13 @@ export const listPairsForDiff = internalQuery({
         v.literal("fuzzy"),
         v.literal("side-only"),
       ),
-      mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
+      // Includes "manual": this feeds `runPairing`, which reads the mechanism to
+      // tell manual (sticky) pairs from automatic ones.
+      mechanism: v.union(
+        v.literal("adjacency"),
+        v.literal("pool"),
+        v.literal("manual"),
+      ),
       score: v.number(),
     }),
   ),
@@ -959,5 +1061,272 @@ export const syncImagePairStatus = internalMutation({
       marked += 1;
     }
     return marked;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Public: manual correction surface (NEO-152)
+// ---------------------------------------------------------------------------
+//
+// The model sometimes misreads (or cannot read) a card's identity, and before
+// this the result was unfixable — unlike the old client-side CardPool a user
+// could nudge by hand. These three mutations are that nudge, and they compose:
+//
+//   - `updatePlaceholderImageIdentity` fixes a misread. Because pairing is
+//     identity-first, correcting the front's name is usually the WHOLE fix: the
+//     re-pair it schedules auto-matches the corrected front to its real back.
+//   - `manuallyPairPlaceholderImages` forces a pair when there is no readable
+//     identity to fix. Manual pairs are STICKY — the automatic pass excludes
+//     their images and never rewrites their rows (see `runPairing`).
+//   - `unpairPlaceholderImages` breaks a pair (manual or automatic) so a wrong
+//     one can be corrected.
+//
+// All three: public, `requireUserId` + `findOwnedJob` ownership, `jobId` +
+// `entryIndex` the only client handles (no object path — the standing rule).
+
+/** Load one image of a job by its entry index, or null. */
+async function imageByIndex(
+  ctx: MutationCtx,
+  jobId: string,
+  entryIndex: number,
+): Promise<Doc<"placeholderImages"> | null> {
+  return ctx.db
+    .query("placeholderImages")
+    .withIndex("by_job_and_index", (q) =>
+      q.eq("jobId", jobId).eq("entryIndex", entryIndex),
+    )
+    .unique();
+}
+
+/**
+ * Whether a `force` re-pair should be scheduled for this job status, and the
+ * flags to use.
+ *
+ * Both start paths and every automatic transition converge on `runPairing`; the
+ * manual mutations reuse it too. A correction on an already-SUCCEEDED job has to
+ * re-pair, which needs `force` (the incremental guard would otherwise skip it) —
+ * see the `force` arg on `runPairing`.
+ */
+async function scheduleRepair(
+  ctx: MutationCtx,
+  jobId: string,
+  userId: string,
+  opts: { force: boolean },
+): Promise<void> {
+  await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+    jobId,
+    userId,
+    final: false,
+    force: opts.force,
+  });
+}
+
+/**
+ * Correct a misread identity on one processed image, then re-pair.
+ *
+ * Only the fields the caller PROVIDES are touched (an absent arg leaves the
+ * column alone); a provided empty string / empty array CLEARS the column, which
+ * is how a spuriously-read team or player is removed. Same caps as ingestion:
+ * players capped to MAX_PLAYERS entries, every string sliced to MAX_FIELD_CHARS.
+ * `side` is constrained to front/back by the arg validator.
+ *
+ * Requires the image be `done` — identity only exists on a processed row, and
+ * editing a still-processing row would be clobbered when `/process-entry`
+ * completes. Then schedules a `force` re-pair so a corrected identity can
+ * immediately produce or revise a match (the common Acuña case: fix the front's
+ * name → identity-first auto-pairs it to its back on the next run). The force is
+ * what makes this work on a batch that has already succeeded.
+ *
+ * NOTE on a manually-paired image: this still edits its row, but the re-pair
+ * excludes it (it is manual), so its manual pair row's snapshot label is not
+ * refreshed. To relabel a manual pair, unpair and re-pair. Editing the identity
+ * of a manually-paired image is a contradiction in the first place (you paired
+ * it BECAUSE the identity was unreadable), so this edge is left simple.
+ */
+export const updatePlaceholderImageIdentity = mutation({
+  args: {
+    jobId: v.string(),
+    entryIndex: v.number(),
+    players: v.optional(v.array(v.string())),
+    team: v.optional(v.string()),
+    cardNumber: v.optional(v.string()),
+    side: v.optional(v.union(v.literal("front"), v.literal("back"))),
+  },
+  returns: v.object({
+    entryIndex: v.number(),
+    players: v.optional(v.array(v.string())),
+    team: v.optional(v.string()),
+    cardNumber: v.optional(v.string()),
+    side: v.optional(v.string()),
+    status: v.string(),
+    pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
+  }),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const job = await findOwnedJob(ctx, args.jobId, userId);
+    if (!job) throw new Error("Job not found");
+
+    const image = await imageByIndex(ctx, args.jobId, args.entryIndex);
+    if (!image) throw new Error("Image not found");
+    if (image.status !== "done") {
+      throw new Error("image is not processed yet");
+    }
+
+    const patch: Partial<Doc<"placeholderImages">> = {};
+    if (args.players !== undefined) {
+      const capped = args.players
+        .slice(0, MAX_PLAYERS)
+        .map((p) => p.slice(0, MAX_FIELD_CHARS));
+      patch.players = capped.length > 0 ? capped : undefined;
+    }
+    if (args.team !== undefined) {
+      patch.team = args.team.length > 0 ? args.team.slice(0, MAX_FIELD_CHARS) : undefined;
+    }
+    if (args.cardNumber !== undefined) {
+      patch.cardNumber =
+        args.cardNumber.length > 0 ? args.cardNumber.slice(0, MAX_FIELD_CHARS) : undefined;
+    }
+    if (args.side !== undefined) {
+      patch.side = args.side;
+    }
+    await ctx.db.patch(image._id, patch);
+
+    // A corrected identity should re-pair even a finished batch — hence force.
+    await scheduleRepair(ctx, args.jobId, job.userId, { force: true });
+
+    const updated = await ctx.db.get(image._id);
+    return {
+      entryIndex: args.entryIndex,
+      players: updated?.players,
+      team: updated?.team,
+      cardNumber: updated?.cardNumber,
+      side: updated?.side,
+      status: updated?.status ?? image.status,
+      pairStatus: updated?.pairStatus,
+    };
+  },
+});
+
+/**
+ * Force a pair between two processed images, regardless of identity.
+ *
+ * For the case an identity edit cannot fix: a front whose name is genuinely
+ * unreadable, which the automatic pass will never confidently match. The caller
+ * designates which image is the front and which the back; the merged label
+ * follows the same asymmetry as everywhere else (front-preferred player/team,
+ * back-only card number), confidence "side-only", score 0.
+ *
+ * The pair is written with mechanism "manual", which is what makes it STICKY:
+ * `runPairing` excludes both images from its input and never touches the manual
+ * row in its diff, so the next automatic re-run cannot pull the pair apart. Both
+ * images are set `pairStatus: "paired"`.
+ *
+ * Guards: both images must exist and be `done`; refuses if EITHER is already
+ * paired (the caller unpairs first — a pairing decision is never silently
+ * overwritten). No re-pair is scheduled: nothing changed for any OTHER image
+ * (both of these were unpaired and are now excluded), so there is nothing for
+ * the automatic pass to reconsider.
+ */
+export const manuallyPairPlaceholderImages = mutation({
+  args: { jobId: v.string(), frontIndex: v.number(), backIndex: v.number() },
+  returns: v.object({
+    paired: v.boolean(),
+    frontIndex: v.number(),
+    backIndex: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const job = await findOwnedJob(ctx, args.jobId, userId);
+    if (!job) throw new Error("Job not found");
+    if (args.frontIndex === args.backIndex) {
+      throw new Error("cannot pair an image with itself");
+    }
+
+    const front = await imageByIndex(ctx, args.jobId, args.frontIndex);
+    const back = await imageByIndex(ctx, args.jobId, args.backIndex);
+    if (!front || !back) throw new Error("Image not found");
+    if (front.status !== "done" || back.status !== "done") {
+      throw new Error("both images must be processed before pairing");
+    }
+    if (front.pairStatus === "paired" || back.pairStatus === "paired") {
+      throw new Error("image is already paired — unpair it first");
+    }
+
+    const identity = mergedRowIdentity(
+      { player: null, team: null, cardNumber: null },
+      { players: front.players, team: front.team, cardNumber: front.cardNumber },
+      { players: back.players, team: back.team, cardNumber: back.cardNumber },
+    );
+    await ctx.db.insert("placeholderPairs", {
+      jobId: args.jobId,
+      userId: job.userId,
+      frontIndex: args.frontIndex,
+      backIndex: args.backIndex,
+      player: identity.player,
+      team: identity.team,
+      cardNumber: identity.cardNumber,
+      confidence: "side-only",
+      mechanism: "manual",
+      score: 0,
+    });
+    await ctx.db.patch(front._id, { pairStatus: "paired" });
+    await ctx.db.patch(back._id, { pairStatus: "paired" });
+
+    return { paired: true, frontIndex: args.frontIndex, backIndex: args.backIndex };
+  },
+});
+
+/**
+ * Break a pair — manual or automatic — so a wrong pairing can be corrected.
+ *
+ * Deletes the pair row and resets both images to `pairStatus: "unmatched"`. For
+ * a MANUAL pair, deleting the row removes the manual mark itself (the row's
+ * mechanism WAS the mark), so both images become eligible for automatic pairing
+ * again. For an AUTO pair, they are simply free again.
+ *
+ * Then schedules a re-pair — but WITHOUT `force`. That asymmetry with the
+ * identity edit is deliberate and load-bearing:
+ *
+ *   - On an ACTIVE job (collecting/processing) the re-pair runs and the freed
+ *     images re-enter automatic pairing, exactly as the spec asks.
+ *   - On a TERMINAL job (the correction phase) the no-force re-pair is skipped
+ *     by the incremental guard, so the images STAY unmatched. This is what keeps
+ *     the manual-pair-after-unpair workflow race-free: without it, the scheduled
+ *     re-run could re-create the very pair the user just broke (an identity match
+ *     or an adjacency neighbour) before they can force the correct pairing, and
+ *     `manuallyPairPlaceholderImages` would then refuse ("already paired"). The
+ *     user's next deliberate action — a manual pair, or an identity edit (which
+ *     DOES force) — drives the outcome instead.
+ */
+export const unpairPlaceholderImages = mutation({
+  args: { jobId: v.string(), frontIndex: v.number(), backIndex: v.number() },
+  returns: v.object({ unpaired: v.boolean(), wasManual: v.boolean() }),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const job = await findOwnedJob(ctx, args.jobId, userId);
+    if (!job) throw new Error("Job not found");
+
+    const pairs = await ctx.db
+      .query("placeholderPairs")
+      .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
+      .collect();
+    const pair = pairs.find(
+      (p) => p.frontIndex === args.frontIndex && p.backIndex === args.backIndex,
+    );
+    if (!pair) throw new Error("Pair not found");
+
+    const wasManual = pair.mechanism === "manual";
+    await ctx.db.delete(pair._id);
+
+    const front = await imageByIndex(ctx, args.jobId, args.frontIndex);
+    const back = await imageByIndex(ctx, args.jobId, args.backIndex);
+    if (front) await ctx.db.patch(front._id, { pairStatus: "unmatched" });
+    if (back) await ctx.db.patch(back._id, { pairStatus: "unmatched" });
+
+    // No force: re-enters auto on an active job, stays put on a terminal one —
+    // see the doc comment for why that keeps the correction workflow race-free.
+    await scheduleRepair(ctx, args.jobId, job.userId, { force: false });
+
+    return { unpaired: true, wasManual };
   },
 });

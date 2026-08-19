@@ -998,7 +998,7 @@ export const enqueueImageChunk = internalMutation({
  * cost its own field, never the batch.
  */
 export const MAX_FIELD_CHARS = 200;
-const MAX_PLAYERS = 8;
+export const MAX_PLAYERS = 8;
 
 /** Narrow an unknown to a non-empty string, capped at MAX_FIELD_CHARS. */
 function asString(value: unknown): string | undefined {
@@ -1635,7 +1635,13 @@ export const listPlaceholderPairs = query({
         v.literal("fuzzy"),
         v.literal("side-only"),
       ),
-      mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
+      // "manual" is a user-forced pair (NEO-152). The CLI/UI reads this to badge
+      // a pair as manually set and to know it is sticky.
+      mechanism: v.union(
+        v.literal("adjacency"),
+        v.literal("pool"),
+        v.literal("manual"),
+      ),
       score: v.number(),
       // The system field, not a column of our own. Renamed on the way out so
       // the client shape stays camelCase and does not look like it is reading an
