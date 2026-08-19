@@ -45,13 +45,27 @@ export type UploadOutcome =
       reason: string;
     };
 
+/** How a run was started, recorded on the job so admins can tell scans from web
+ * uploads. The cardlister CLI passes "scanner"; the web app passes "web". */
+export type UploadSource = "scanner" | "web";
+
+export interface UploadOptions {
+  /**
+   * Labels the run's origin. Omitted, the start call carries no `source` — which
+   * keeps this hook working against a `startPlaceholderStream` whose validator
+   * has not yet grown the optional `source` arg (a concurrent backend change).
+   * Only a caller that passes a source takes on that dependency.
+   */
+  source?: UploadSource;
+}
+
 export interface PlaceholderUpload {
   /** One row per selected file, in selection order. */
   progress: FileProgress[];
   uploading: boolean;
   /** Clears progress from a previous run. */
   reset: () => void;
-  upload: (files: File[]) => Promise<UploadOutcome>;
+  upload: (files: File[], options?: UploadOptions) => Promise<UploadOutcome>;
 }
 
 export function usePlaceholderUpload(): PlaceholderUpload {
@@ -69,7 +83,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
   const reset = useCallback(() => setProgress([]), []);
 
   const upload = useCallback(
-    async (files: File[]): Promise<UploadOutcome> => {
+    async (files: File[], options?: UploadOptions): Promise<UploadOutcome> => {
       if (files.length === 0) {
         return { ok: false, reason: "no files to upload" };
       }
@@ -84,7 +98,19 @@ export function usePlaceholderUpload(): PlaceholderUpload {
       );
 
       try {
-        const session = await startStream();
+        // Only include `source` when a caller asks for it, so a no-source upload
+        // sends `{}` and stays compatible with the current validator. `{source}`
+        // is assignable to the empty-args type, so no cast is needed; the
+        // runtime dependency is on the backend accepting the optional field.
+        const startArgs = options?.source ? { source: options.source } : {};
+        // Cast to the current (empty) args type: `startPlaceholderStream`'s
+        // validator has not grown the optional `source` field yet, so the
+        // generated type is `EmptyObject`. `{source}` is dropped by that
+        // validator until the backend change lands, at which point the field is
+        // read — no code change here.
+        const session = await startStream(
+          startArgs as Parameters<typeof startStream>[0],
+        );
         if (!session.started || !session.jobId) {
           return { ok: false, reason: session.reason ?? "try again" };
         }

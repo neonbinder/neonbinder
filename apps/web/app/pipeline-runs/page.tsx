@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAction, useMutation, useQuery } from "convex/react";
+import { makeFunctionReference, type FunctionReturnType } from "convex/server";
 import NeonButton from "@/components/modules/NeonButton";
 import { api } from "@/convex/_generated/api";
 import {
@@ -9,6 +9,18 @@ import {
 } from "@/lib/time/relative-time";
 import { ConfirmDialog } from "@/components/modules/confirm-dialog";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
+import {
+  DEFAULT_SORT,
+  SORT_OPTIONS,
+  STATUS_FILTER_OPTIONS,
+  filterRuns,
+  progressText,
+  sortRuns,
+  sourceLabel,
+  type RunSource,
+  type SortKey,
+  type StatusFilter,
+} from "./run-view";
 
 /**
  * /pipeline-runs — every user's placeholder pipeline runs, with an abort lever
@@ -91,6 +103,34 @@ const MODE_LABELS: Record<PipelineRun["mode"], string> = {
   stream: "Scanner stream",
 };
 
+/**
+ * How a run was started, read tolerantly.
+ *
+ * `source` is being added to `adminListPlaceholderJobs`'s validator in a
+ * concurrent backend change, so the generated return type does not carry it yet.
+ * The cast lets the page render the field the moment the backend ships it,
+ * without a follow-up edit here; until then every row reads `undefined` and
+ * shows an em dash, which is exactly the "absent" rendering.
+ */
+function sourceOf(run: PipelineRun): RunSource | undefined {
+  return (run as PipelineRun & { source?: RunSource }).source;
+}
+
+/**
+ * A typed reference to the owner-label resolver, by string.
+ *
+ * `adminUsers.adminResolveOwnerLabels` exists in convex/ but the generated
+ * `api` types do not carry it yet (codegen is a concurrent backend step, and
+ * this worktree never runs it). `makeFunctionReference` names the function
+ * directly with the signature it will have — so this typechecks now and calls
+ * the real action at runtime, rather than reaching through an `any`.
+ */
+const resolveOwnerLabelsRef = makeFunctionReference<
+  "action",
+  { userIds: string[] },
+  Record<string, string>
+>("adminUsers:adminResolveOwnerLabels");
+
 /** How often the relative timestamps re-derive. */
 const TICK_MS = 30_000;
 
@@ -121,14 +161,6 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-/** Progress as one sentence — see the composed-string note in the page docs. */
-function progressText(run: PipelineRun): string {
-  if (run.totalImages === 0) return "No images yet";
-  const done = run.processedImages + run.failedImages;
-  const base = `${done} of ${run.totalImages} images`;
-  return run.failedImages > 0 ? `${base}, ${run.failedImages} failed` : base;
-}
-
 type Notice = { tone: "success" | "info" | "error"; text: string };
 
 const NOTICE_CLASSES: Record<Notice["tone"], string> = {
@@ -144,11 +176,62 @@ export default function PipelineRunsPage() {
   const abortRun = useMutation(
     api.placeholderPipeline.adminCancelPlaceholderBatch,
   );
+  const resolveOwnerLabels = useAction(resolveOwnerLabelsRef);
 
   const [pendingAbort, setPendingAbort] = useState<PipelineRun | null>(null);
   const [aborting, setAborting] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [sortKey, setSortKey] = useState<SortKey>(DEFAULT_SORT);
   const now = useNow(TICK_MS);
+
+  // Owner id → human label (email/username/name), filled by one admin action
+  // call per NEW distinct id. The label is a nicety; the id is always the
+  // fallback, so a row never renders blank.
+  const [ownerLabels, setOwnerLabels] = useState<Record<string, string>>({});
+  // Ids already sent to the resolver, so the reactive query's polling does not
+  // re-request the same set every tick. A ref, not state — changing it must not
+  // itself trigger a render, or that is the render loop.
+  const requestedOwnerIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!runs) return;
+    const unseen = Array.from(new Set(runs.map((run) => run.userId))).filter(
+      (id) => !requestedOwnerIds.current.has(id),
+    );
+    if (unseen.length === 0) return;
+    // Mark BEFORE awaiting so a poll landing mid-flight does not re-request the
+    // same ids. Only re-resolution of a genuinely new id ever calls out.
+    unseen.forEach((id) => requestedOwnerIds.current.add(id));
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const labels = await resolveOwnerLabels({ userIds: unseen });
+        if (!cancelled) {
+          setOwnerLabels((previous) => ({ ...previous, ...labels }));
+        }
+      } catch {
+        // The action degrades to ids on its own, but a thrown call (network,
+        // auth) resolved nothing — drop these ids from "requested" so a later
+        // poll can retry rather than leaving them permanently on the raw id.
+        unseen.forEach((id) => requestedOwnerIds.current.delete(id));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `resolveOwnerLabels` is intentionally NOT a dependency: useAction returns
+    // a fresh identity each render, and depending on it re-runs this effect in a
+    // loop (the documented Convex useAction-in-effect trap). The work is keyed
+    // on `runs`, and the ref guard makes a redundant run a no-op.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs]);
+
+  const visibleRuns = useMemo(
+    () => (runs ? sortRuns(filterRuns(runs, statusFilter), sortKey) : []),
+    [runs, statusFilter, sortKey],
+  );
 
   const handleConfirmAbort = useCallback(async () => {
     if (!pendingAbort) return;
@@ -205,8 +288,8 @@ export default function PipelineRunsPage() {
       <div>
         <h1 className="text-3xl font-bold mb-2">Pipeline Runs</h1>
         <p className="text-slate-400 max-w-2xl">
-          Every user&apos;s placeholder pipeline runs, newest first. Abort a run
-          that is wedged — the owner can start it again from their upload.
+          Every user&apos;s placeholder pipeline runs. Abort a run that is
+          wedged — the owner can start it again from their upload.
         </p>
       </div>
 
@@ -239,16 +322,99 @@ export default function PipelineRunsPage() {
       )}
 
       {runs !== undefined && runs.length > 0 && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          {/* Status filter as a chip GROUP, not a second <select>: the headless
+              E2E driver can only reach the first <select> on a page, so the sort
+              control below takes that slot and the filter is buttons — each
+              addressable by its visible label. Fixed option set (STATUS_FILTER
+              _OPTIONS) so the chips do not change shape as runs come and go. */}
+          <div
+            role="group"
+            aria-label="Filter by status"
+            className="flex flex-wrap gap-2"
+          >
+            {STATUS_FILTER_OPTIONS.map((option) => {
+              const active = statusFilter === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => setStatusFilter(option.value)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue ${
+                    active
+                      ? "bg-neon-green/20 text-neon-green font-semibold"
+                      : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                  }`}
+                >
+                  {/* A non-colour cue for the active chip: the green tint and
+                      the grey inactive tint are only ~1.1:1 apart in luminance,
+                      so under grayscale/colour-blindness the selected chip is
+                      otherwise indistinguishable (a11y audit, WCAG 1.4.1). The
+                      check is hidden from AT — aria-pressed already carries the
+                      state name. */}
+                  {active && <span aria-hidden="true">✓ </span>}
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label htmlFor="run-sort" className="text-sm text-slate-400">
+              Sort by
+            </label>
+            <select
+              id="run-sort"
+              value={sortKey}
+              onChange={(event) => setSortKey(event.target.value as SortKey)}
+              className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-sm text-slate-200 focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
+            >
+              {SORT_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+
+      {/* The filter/sort act on the loaded page only — adminListPlaceholderJobs
+          returns the most recent runs (capped at 100), so a filtered view can be
+          incomplete for a status with older runs off the end of the list. Said
+          plainly here rather than left as a trap. */}
+      {runs !== undefined && runs.length > 0 && (
+        <p className="text-xs text-slate-500">
+          Showing the {runs.length} most recent runs (up to 100). Filters and
+          sorting apply to these, not the full history.
+        </p>
+      )}
+
+      {/* A polite live region, always mounted, so selecting a filter that
+          matches nothing is ANNOUNCED rather than leaving a screen-reader user
+          to discover the emptied list by navigating into it (WCAG 4.1.3). Mirrors
+          the notice-banner pattern above. */}
+      <div role="status" aria-live="polite" aria-atomic="true">
+        {runs !== undefined && runs.length > 0 && visibleRuns.length === 0 && (
+          <p className="text-sm text-slate-400">
+            No runs match this filter. Choose “All” to see every loaded run.
+          </p>
+        )}
+      </div>
+
+      {runs !== undefined && visibleRuns.length > 0 && (
         // A list of rows rather than a <table>: at the 1024px-wide headless
-        // viewport, minus the tab rail, eight columns — one of them a Clerk user
+        // viewport, minus the tab rail, the columns — one of them a Clerk user
         // id — do not fit, and a table that scrolls sideways puts the Abort
         // button somewhere the E2E driver cannot reach (it cannot scroll
-        // horizontally). Same data, same order, no horizontal overflow.
+        // horizontally). Same data, no horizontal overflow.
         <ul className="space-y-3">
-          {runs.map((run) => {
+          {visibleRuns.map((run) => {
             const isTerminal = TERMINAL_STATUSES.includes(run.status);
             const status = STATUS_META[run.status];
             const short = shortJobId(run.jobId);
+            const ownerLabel = ownerLabels[run.userId] ?? run.userId;
             return (
               <li
                 key={run.jobId}
@@ -292,13 +458,41 @@ export default function PipelineRunsPage() {
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-sm">
                   <div className="flex gap-2">
                     <dt className="text-slate-400">Owner</dt>
-                    <dd className="font-mono text-slate-200 break-all">
-                      {run.userId}
+                    {/* The resolved human label, with the raw Clerk id kept on
+                        `title` for support. Falls back to the id itself until
+                        (or if) resolution returns, so it is never blank.
+
+                        When a name resolved, the id is folded into the
+                        accessible name too — a `title` tooltip is mouse-only, so
+                        a keyboard/AT user correlating a run with a log line
+                        would otherwise never reach the id (the `<time>` cells
+                        below do the same, for the same reason). When the label
+                        IS the id, there is nothing extra to announce. */}
+                    <dd
+                      className="text-slate-200 break-all"
+                      title={run.userId}
+                      aria-label={
+                        ownerLabel === run.userId
+                          ? undefined
+                          : `${ownerLabel} (id ${run.userId})`
+                      }
+                    >
+                      {ownerLabel}
                     </dd>
                   </div>
                   <div className="flex gap-2">
                     <dt className="text-slate-400">Mode</dt>
                     <dd className="text-slate-200">{MODE_LABELS[run.mode]}</dd>
+                  </div>
+                  <div className="flex gap-2">
+                    <dt className="text-slate-400">Source</dt>
+                    <dd>
+                      {/* Text label, never colour alone. Neutral chip so it
+                          reads as metadata, not a status. */}
+                      <span className="rounded-full bg-slate-800 px-2 py-0.5 text-xs font-medium text-slate-300">
+                        {sourceLabel(sourceOf(run))}
+                      </span>
+                    </dd>
                   </div>
                   <div className="flex gap-2">
                     <dt className="text-slate-400">Progress</dt>

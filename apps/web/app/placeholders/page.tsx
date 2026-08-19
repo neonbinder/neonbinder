@@ -230,7 +230,9 @@ export default function PlaceholderScansPage() {
     setNotice(null);
 
     try {
-      const outcome = await upload(files);
+      // Label the run web-originated (NEO-170); the cardlister CLI passes
+      // "scanner" on its own start path.
+      const outcome = await upload(files, { source: "web" });
       if (!outcome.ok) {
         setNotice({
           tone: "error",

@@ -180,6 +180,8 @@ describe("TestingSeedPlaceholderUploadPage", () => {
     // first or the flow dies at its first assert after two runs.
     expect(mocks.calls).toEqual(["reset", "upload"]);
     expect(mocks.reset).toHaveBeenCalledTimes(1);
+    // This IS the web upload path (picker bypassed), so it labels the run web.
+    expect(mocks.upload.mock.calls[0][1]).toEqual({ source: "web" });
   });
 
   // NOTE: the "Reset N previous sessions." status is deliberately NOT asserted

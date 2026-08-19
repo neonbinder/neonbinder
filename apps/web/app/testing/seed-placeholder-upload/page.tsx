@@ -140,7 +140,9 @@ function TestingSeedPlaceholderUploadContent() {
         const files = await loadFixtureFiles();
 
         setStatus(`Uploading ${files.length} fixtures...`);
-        const outcome = await upload(files);
+        // Web-originated, same as the product page — this IS the web upload path
+        // with the picker bypassed, so it must label runs the same way.
+        const outcome = await upload(files, { source: "web" });
         if (!outcome.ok) {
           setStatus(`Error: could not start a session — ${outcome.reason}`);
           return;

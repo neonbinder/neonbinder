@@ -38,11 +38,15 @@ type Run = {
   createdAt: number;
   lastActivityAt?: number;
   errorCode?: string;
+  source?: "scanner" | "web";
 };
 
 const mocks = vi.hoisted(() => ({
   runs: undefined as unknown[] | undefined,
   abort: vi.fn(),
+  // The owner-label resolver. Stable across renders so a test can assert it was
+  // called ONCE for the distinct id set.
+  resolveOwner: vi.fn(),
 }));
 
 // Plain string tokens for the generated api, so `useMutation` can be told apart
@@ -61,7 +65,10 @@ vi.mock("@/convex/_generated/api", () => ({
 vi.mock("convex/react", () => ({
   useQuery: () => mocks.runs,
   useMutation: () => mocks.abort,
-  useAction: () => vi.fn(),
+  // The page resolves the owner action through `makeFunctionReference`, so
+  // `useAction` receives a FunctionReference object rather than a token; there
+  // is only one action on the page, so the mock can ignore it.
+  useAction: () => mocks.resolveOwner,
 }));
 
 import PipelineRunsPage from "./page";
@@ -94,6 +101,8 @@ describe("PipelineRunsPage", () => {
   beforeEach(() => {
     mocks.runs = undefined;
     mocks.abort = vi.fn().mockResolvedValue({ canceled: true, canceledCount: 7 });
+    // Default: resolver returns no labels, so owners fall back to their ids.
+    mocks.resolveOwner = vi.fn().mockResolvedValue({});
   });
 
   it("says it is loading before the subscription resolves", () => {
@@ -125,23 +134,175 @@ describe("PipelineRunsPage", () => {
     render(<PipelineRunsPage />);
 
     const first = within(rowFor("3f2a1b8c"));
+    // Owner falls back to the raw id until label resolution returns (the mocked
+    // action returns nothing here), so the id is what shows.
     expect(first.getByText("user_2abcDEF")).not.toBeNull();
     expect(first.getByText("Zip upload")).not.toBeNull();
     expect(first.getByText("Processing")).not.toBeNull();
     // One composed sentence, not three numbers: the E2E driver asserts the
     // string it can see, and progress read as separate cells cannot be matched.
-    expect(first.getByText("12 of 40 images, 2 failed")).not.toBeNull();
+    // 40 total, 10 processed + 2 failed = 12 done, 28 still queued.
+    expect(
+      first.getByText("12 of 40 images · 28 in queue · 2 failed"),
+    ).not.toBeNull();
 
     const second = within(rowFor("aaaabbbb"));
     expect(second.getByText("Scanner stream")).not.toBeNull();
     expect(second.getByText("Succeeded")).not.toBeNull();
-    expect(second.getByText("12 of 12 images")).not.toBeNull();
+    // Nothing failed and nothing left — the queue count still reads, as 0.
+    expect(second.getByText("12 of 12 images · 0 in queue")).not.toBeNull();
   });
 
   it("surfaces the error code on a failed run", () => {
     mocks.runs = [run({ status: "failed", errorCode: "CANCELED" })];
     render(<PipelineRunsPage />);
     expect(within(rowFor("3f2a1b8c")).getByText("CANCELED")).not.toBeNull();
+  });
+
+  it("labels the source as scanner, web, or an em dash when absent", () => {
+    mocks.runs = [
+      run({ jobId: "1111aaaa-0000-0000-0000-000000000000", source: "scanner" }),
+      run({ jobId: "2222bbbb-0000-0000-0000-000000000000", source: "web" }),
+      run({ jobId: "3333cccc-0000-0000-0000-000000000000" }),
+    ];
+    render(<PipelineRunsPage />);
+    expect(within(rowFor("1111aaaa")).getByText("Scanner")).not.toBeNull();
+    expect(within(rowFor("2222bbbb")).getByText("Web app")).not.toBeNull();
+    // Absent → em dash, never a guess. The word carries it, not colour.
+    expect(within(rowFor("3333cccc")).getByText("—")).not.toBeNull();
+  });
+
+  describe("owner labels", () => {
+    it("resolves the distinct owner set exactly once and renders the labels", async () => {
+      mocks.resolveOwner = vi.fn().mockResolvedValue({
+        user_2abcDEF: "ken@example.com",
+        user_9zzz: "griffey",
+      });
+      mocks.runs = [
+        run({ jobId: "1111aaaa-0000-0000-0000-000000000000", userId: "user_2abcDEF" }),
+        run({ jobId: "2222bbbb-0000-0000-0000-000000000000", userId: "user_9zzz" }),
+        // A THIRD row owned by the first user — the resolver must still be
+        // handed each id once, not once per row.
+        run({ jobId: "3333cccc-0000-0000-0000-000000000000", userId: "user_2abcDEF" }),
+      ];
+      render(<PipelineRunsPage />);
+
+      await waitFor(() =>
+        expect(within(rowFor("1111aaaa")).getByText("ken@example.com")).not.toBeNull(),
+      );
+      expect(within(rowFor("2222bbbb")).getByText("griffey")).not.toBeNull();
+      // The reused owner id resolves from the same single call.
+      expect(within(rowFor("3333cccc")).getByText("ken@example.com")).not.toBeNull();
+
+      expect(mocks.resolveOwner).toHaveBeenCalledTimes(1);
+      const arg = mocks.resolveOwner.mock.calls[0][0] as { userIds: string[] };
+      expect([...arg.userIds].sort()).toEqual(["user_2abcDEF", "user_9zzz"]);
+
+      // The raw id is folded into the accessible name once a label resolves —
+      // a `title` tooltip is mouse-only, and support needs the id from the
+      // keyboard too (WCAG-equitable access).
+      expect(
+        within(rowFor("1111aaaa")).getByText("ken@example.com").getAttribute("aria-label"),
+      ).toBe("ken@example.com (id user_2abcDEF)");
+    });
+
+    it("shows the raw id until (and if) resolution returns nothing", async () => {
+      // The default resolver returns {}. The owner must render as its id, never
+      // blank, and the id stays available for support.
+      mocks.runs = [run({ userId: "user_2abcDEF" })];
+      render(<PipelineRunsPage />);
+      const owner = within(rowFor("3f2a1b8c")).getByText("user_2abcDEF");
+      expect(owner).not.toBeNull();
+      expect(owner.getAttribute("title")).toBe("user_2abcDEF");
+    });
+  });
+
+  describe("filter and sort", () => {
+    const A = "1111aaaa-0000-0000-0000-000000000000";
+    const B = "2222bbbb-0000-0000-0000-000000000000";
+    const C = "3333cccc-0000-0000-0000-000000000000";
+
+    function threeRuns() {
+      mocks.runs = [
+        run({ jobId: A, status: "collecting", createdAt: 100, lastActivityAt: 100, errorCode: undefined }),
+        run({ jobId: B, status: "failed", createdAt: 300, lastActivityAt: 300, errorCode: "CANCELED" }),
+        run({ jobId: C, status: "processing", createdAt: 200, lastActivityAt: 500, errorCode: undefined }),
+      ];
+    }
+
+    /** The rendered rows' short ids, top to bottom. */
+    function renderedOrder(): string[] {
+      return screen
+        .getAllByRole("heading", { level: 2 })
+        .map((h) => (h.textContent ?? "").replace("Run ", ""));
+    }
+
+    it("defaults to last-activity descending", () => {
+      threeRuns();
+      render(<PipelineRunsPage />);
+      // C (500) > B (300) > A (100).
+      expect(renderedOrder()).toEqual(["3333cccc", "2222bbbb", "1111aaaa"]);
+      expect(
+        (screen.getByLabelText("Sort by") as HTMLSelectElement).value,
+      ).toBe("lastActivity");
+    });
+
+    it("re-sorts by created when chosen", () => {
+      threeRuns();
+      render(<PipelineRunsPage />);
+      fireEvent.change(screen.getByLabelText("Sort by"), {
+        target: { value: "created" },
+      });
+      // B (300) > C (200) > A (100).
+      expect(renderedOrder()).toEqual(["2222bbbb", "3333cccc", "1111aaaa"]);
+    });
+
+    it("re-sorts by error, grouping coded runs first and nulls last", () => {
+      threeRuns();
+      render(<PipelineRunsPage />);
+      fireEvent.change(screen.getByLabelText("Sort by"), {
+        target: { value: "error" },
+      });
+      // B has CANCELED; A and C have none → they follow, newest-created first.
+      expect(renderedOrder()).toEqual(["2222bbbb", "3333cccc", "1111aaaa"]);
+    });
+
+    it("narrows to a single status when a filter chip is pressed", () => {
+      threeRuns();
+      render(<PipelineRunsPage />);
+      const chip = screen.getByRole("button", { name: "Collecting" });
+      fireEvent.click(chip);
+      expect(renderedOrder()).toEqual(["1111aaaa"]);
+      expect(chip.getAttribute("aria-pressed")).toBe("true");
+      // The active chip carries a non-colour cue (WCAG 1.4.1): the green and
+      // grey tints are ~1.1:1 apart in luminance, so the checkmark is what
+      // distinguishes "selected" without colour. It stays out of the accessible
+      // name — `getByRole({name: "Collecting"})` above still resolves it.
+      expect(chip.textContent).toContain("✓");
+      expect(
+        screen.getByRole("button", { name: "All" }).textContent,
+      ).not.toContain("✓");
+    });
+
+    it("announces an empty filtered view through a live region", () => {
+      threeRuns();
+      render(<PipelineRunsPage />);
+      // No run is pairing.
+      fireEvent.click(screen.getByRole("button", { name: "Pairing" }));
+      expect(screen.queryAllByRole("heading", { level: 2 })).toHaveLength(0);
+      const message = screen.getByText(/No runs match this filter/);
+      // Selecting a zero-match filter must be announced, not left for the user
+      // to discover by navigating into an emptied list (WCAG 4.1.3).
+      expect(message.closest("[role='status'][aria-live='polite']")).not.toBeNull();
+    });
+
+    it("says the view is limited to the loaded page", () => {
+      threeRuns();
+      render(<PipelineRunsPage />);
+      expect(
+        screen.getByText(/Filters and sorting apply to these, not the full history/),
+      ).not.toBeNull();
+    });
   });
 
   it.each([

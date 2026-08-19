@@ -154,8 +154,9 @@ describe("PlaceholderScansPage", () => {
       expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
     );
     // One session for the whole selection — a session per file would give every
-    // card its own job and pair nothing.
+    // card its own job and pair nothing. Started as a web-originated run.
     expect(mocks.fns[REFS.start]).toHaveBeenCalledTimes(1);
+    expect(mocks.fns[REFS.start]).toHaveBeenCalledWith({ source: "web" });
     expect(mocks.fns[REFS.uploadUrl]).toHaveBeenCalledTimes(2);
     // Confirms are addressed to the session that was just opened.
     expect(mocks.fns[REFS.confirm]).toHaveBeenCalledWith({
