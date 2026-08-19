@@ -177,6 +177,13 @@ export const startPlaceholderStream = mutation({
       lastActivityAt: now,
     });
 
+    // Warm the preprocess service in the background so the model loads WHILE the
+    // scanner collects images, not when the first one is confirmed. Fire-and-
+    // forget: scheduled, never awaited, and `warmupPreprocess` cannot fail — a
+    // cold start simply happens the old way if it does nothing. This is also
+    // what warms the service for the E2E gate, whose seed page opens a stream.
+    await ctx.scheduler.runAfter(0, internal.placeholderBatch.warmupPreprocess, {});
+
     return { started: true, jobId };
   },
 });

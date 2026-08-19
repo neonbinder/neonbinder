@@ -3,6 +3,7 @@ import { useConvexAuth, useMutation } from "convex/react";
 import { useNavigate, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
+import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
 
 /**
  * Test-only entry into the real scan-upload path (NEO-170).
@@ -93,6 +94,9 @@ async function loadFixtureFiles(): Promise<File[]> {
 function TestingSeedPlaceholderUploadContent() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const { upload, progress } = usePlaceholderUpload();
+  // Same mount warm-up as the product page — this IS the web upload path with
+  // the picker bypassed, so the model should start loading here too.
+  useWarmPreprocess();
   const resetSessions = useMutation(
     api.placeholderPipeline.seedCancelMyActivePlaceholderJobs,
   );

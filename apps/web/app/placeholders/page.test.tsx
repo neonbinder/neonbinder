@@ -33,6 +33,14 @@ const REFS = {
 const mocks = vi.hoisted(() => ({
   queries: {} as Record<string, unknown>,
   fns: {} as Record<string, ReturnType<typeof vi.fn>>,
+  warm: vi.fn(),
+}));
+
+// The mount warm-up has its own unit test (src/hooks/useWarmPreprocess.test.tsx);
+// here it is a spy so this test can assert the page MOUNTS it without pulling in
+// its opaque action reference.
+vi.mock("@/src/hooks/useWarmPreprocess", () => ({
+  useWarmPreprocess: () => mocks.warm(),
 }));
 
 vi.mock("@/convex/_generated/api", () => ({
@@ -100,6 +108,7 @@ function selectFiles(names: string[]) {
 describe("PlaceholderScansPage", () => {
   beforeEach(() => {
     mocks.queries = {};
+    mocks.warm = vi.fn();
     mocks.fns = {
       [REFS.start]: vi.fn().mockResolvedValue({ started: true, jobId: "job-1234abcd" }),
       [REFS.confirm]: vi
@@ -124,6 +133,13 @@ describe("PlaceholderScansPage", () => {
       "fetch",
       vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response),
     );
+  });
+
+  it("warms the card processor on mount", () => {
+    renderPage();
+    // Kicked the moment the page loads, so the model is warming while the user
+    // is still choosing files — not only from the first upload.
+    expect(mocks.warm).toHaveBeenCalled();
   });
 
   it("explains what the page is for and starts with nothing selected", () => {
@@ -270,6 +286,73 @@ describe("PlaceholderScansPage", () => {
     // A done image nothing paired is listed rather than dropped — an unmatched
     // scan is the thing a user most needs to see.
     expect(screen.getByText(/#2 stray\.jpg/)).not.toBeNull();
+  });
+
+  describe("warming-up indicator", () => {
+    const collectingJob = {
+      jobId: "job-1234abcd",
+      status: "collecting",
+      createdAt: Date.now(),
+      totalImages: 2,
+      processedImages: 0,
+      failedImages: 0,
+      rejectedEntries: 0,
+      pairCount: 0,
+    };
+
+    function openWithImages(images: Array<{ entryIndex: number; status: string }>) {
+      mocks.queries = {
+        [REFS.job]: collectingJob,
+        [REFS.images]: images.map((i) => ({ originalName: `f${i.entryIndex}.jpg`, ...i })),
+      };
+      return renderPage("/placeholders?jobId=job-1234abcd");
+    }
+
+    const WARMING = /Warming up the card processor/;
+
+    it("shows while confirmed images sit queued and nothing has started", () => {
+      openWithImages([
+        { entryIndex: 0, status: "queued" },
+        { entryIndex: 1, status: "queued" },
+      ]);
+      const note = screen.getByText(WARMING);
+      expect(note).not.toBeNull();
+      // Announced, and not error-toned — a cold start is expected, not a fault.
+      const region = note.closest("[role='status'][aria-live='polite']");
+      expect(region).not.toBeNull();
+    });
+
+    it("clears the moment an image reaches processing", () => {
+      openWithImages([
+        { entryIndex: 0, status: "processing" },
+        { entryIndex: 1, status: "queued" },
+      ]);
+      expect(screen.queryByText(WARMING)).toBeNull();
+    });
+
+    it("never shows when a job goes straight to processing", () => {
+      openWithImages([
+        { entryIndex: 0, status: "processing" },
+        { entryIndex: 1, status: "processing" },
+      ]);
+      expect(screen.queryByText(WARMING)).toBeNull();
+    });
+
+    it("does not show before anything is confirmed (only awaiting_upload)", () => {
+      // The grace: it needs a CONFIRMED (queued) image, so it cannot flash while
+      // uploads are still in flight.
+      openWithImages([{ entryIndex: 0, status: "awaiting_upload" }]);
+      expect(screen.queryByText(WARMING)).toBeNull();
+    });
+
+    it("treats a failed image as 'started' and hides", () => {
+      // A failed image means a work item actually ran — the model is warm.
+      openWithImages([
+        { entryIndex: 0, status: "failed" },
+        { entryIndex: 1, status: "queued" },
+      ]);
+      expect(screen.queryByText(WARMING)).toBeNull();
+    });
   });
 
   it("closes the session only after the confirm dialog", async () => {

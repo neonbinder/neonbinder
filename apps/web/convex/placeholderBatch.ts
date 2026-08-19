@@ -17,8 +17,10 @@ import { isNonRetryableError } from "@convex-dev/workpool";
 import {
   callExtract,
   callProcessEntry,
+  callWarmup,
   parsePreprocessErrorCode,
 } from "./adapters/preprocess";
+import { PREPROCESS_MAX_PARALLELISM } from "./preprocessCapacity";
 
 /**
  * Extract is retried inline rather than through the workpool.
@@ -181,5 +183,43 @@ export const processEntryWorker = internalAction({
       userId: args.userId,
       entryIndex: args.entryIndex,
     });
+  },
+});
+
+/**
+ * Warm every preprocess instance, in the background, at the start of a batch.
+ *
+ * Scheduled fire-and-forget from `startPlaceholderStream` and
+ * `startPlaceholderBatch` (via `ctx.scheduler.runAfter(0, ...)`), so the start
+ * mutation returns inside the 7-second UI budget and the model loads WHILE the
+ * user uploads or scans — instead of the first real image paying a multi-minute
+ * cold start.
+ *
+ * Fires PREPROCESS_MAX_PARALLELISM warm-ups CONCURRENTLY, and that count is
+ * load-bearing: the service runs `container_concurrency = 1`, so one warm-up
+ * lands on one instance and warms exactly that instance. Firing N at once is
+ * what spreads them across all N instances Cloud Run will run — a single
+ * warm-up would leave the other N-1 cold, and the batch's own fan-out (also
+ * capped at N) would then cold-start them one real image at a time, which is
+ * the very cost this exists to avoid.
+ *
+ * `callWarmup` never throws, so this action cannot fail; `Promise.all` over
+ * non-throwing calls is safe. It returns null regardless — nothing awaits its
+ * outcome, and a batch whose warm-up did nothing is simply a batch that
+ * cold-starts the old way.
+ */
+export const warmupPreprocess = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const requested = PREPROCESS_MAX_PARALLELISM;
+    const results = await Promise.all(
+      Array.from({ length: requested }, () => callWarmup(ctx)),
+    );
+    const warmed = results.filter((r) => r.warmed).length;
+    console.log(
+      JSON.stringify({ msg: "preprocess_warmup", requested, warmed }),
+    );
+    return null;
   },
 });

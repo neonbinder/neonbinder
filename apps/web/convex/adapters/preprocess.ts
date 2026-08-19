@@ -335,3 +335,84 @@ export async function callProcessEntry(
     "preprocessProcessEntry",
   );
 }
+
+/**
+ * How long a warm-up call waits before giving up.
+ *
+ * Shorter than PREPROCESS_FETCH_TIMEOUT_MS (4 min) and deliberately so: a
+ * warm-up that has not returned in a minute has already done its ONE useful
+ * thing — it landed on an instance and told Cloud Run to keep that instance
+ * alive with the model loading — and waiting longer for the `{status:"warm"}`
+ * body buys nothing, because the instance keeps warming after we hang up. The
+ * real images that follow are what actually need the warm model, and they get
+ * the full 4-minute budget.
+ */
+const WARMUP_FETCH_TIMEOUT_MS = 60_000;
+
+/**
+ * Best-effort warm-up of the preprocess service — force the BiRefNet model
+ * resident on ONE instance so the first real `/process-entry` does not pay the
+ * multi-minute cold start.
+ *
+ * **This function NEVER throws.** It is fired from a fire-and-forget scheduled
+ * action at the very start of a batch, long before any image needs processing,
+ * and nothing downstream depends on it succeeding: a warm-up that fails, times
+ * out, or hits a service that has not deployed `/warmup` yet simply means the
+ * cold start happens later, exactly as it does today. So every failure path
+ * records telemetry, logs, and returns `{ warmed: false }` rather than
+ * propagating — a warm-up must never be able to fail a start or a batch.
+ *
+ * Only the 2xx/non-2xx distinction is read; the response BODY is advisory (the
+ * service returns `{status:"warm"}`, but we do not depend on its shape). Same
+ * auth headers as every other preprocess call, so it rides the same
+ * x-internal-key / OIDC transition. `container_concurrency = 1` means one
+ * warm-up warms exactly one instance — see `warmupPreprocess`, which fires
+ * PREPROCESS_MAX_PARALLELISM of these at once to warm the whole pool.
+ */
+export async function callWarmup(ctx: ActionCtx): Promise<{ warmed: boolean }> {
+  const started = Date.now();
+  const requestId = newRequestId();
+  let statusCode: number | undefined;
+
+  // Even telemetry must not throw into the caller — the whole contract of this
+  // function is that it cannot fail a start.
+  const record = async (success: boolean, errorText?: string) => {
+    await recordAdapterCall(ctx, {
+      requestId,
+      operation: "preprocessWarmup",
+      platform: "preprocess",
+      duration_ms: Date.now() - started,
+      success,
+      status_code: statusCode,
+      stage: "preprocess_call",
+      error_class: classifyAdapterError(errorText),
+    }).catch(() => {});
+  };
+
+  try {
+    const response = await fetch(`${preprocessUrl()}/warmup`, {
+      method: "POST",
+      headers: await preprocessHeaders(),
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(WARMUP_FETCH_TIMEOUT_MS),
+    });
+    statusCode = response.status;
+    // Drain the body so the socket can be reused; its contents are ignored.
+    await response.text().catch(() => "");
+
+    if (!response.ok) {
+      await record(false, `preprocess warmup HTTP ${response.status}`);
+      console.warn(`[callWarmup] non-2xx (non-fatal): HTTP ${response.status}`);
+      return { warmed: false };
+    }
+    await record(true);
+    return { warmed: true };
+  } catch (err) {
+    // Network failure, timeout (AbortSignal), or DNS — all non-fatal. A cold
+    // start simply happens later.
+    const message = err instanceof Error ? err.message : String(err);
+    await record(false, `preprocess warmup failed: ${message}`);
+    console.warn(`[callWarmup] failed (non-fatal): ${message}`);
+    return { warmed: false };
+  }
+}

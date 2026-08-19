@@ -51,7 +51,7 @@
  * checks `row.userId === identity.subject` before doing anything else.
  */
 
-import { mutation, internalMutation, query, internalQuery } from "./_generated/server";
+import { action, mutation, internalMutation, query, internalQuery } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -223,6 +223,52 @@ export async function findJob(
 }
 
 // ---------------------------------------------------------------------------
+// Public: warm-on-intent
+// ---------------------------------------------------------------------------
+
+/**
+ * Warm the preprocess service NOW, at the first sign the user is heading toward
+ * an upload — before a job even exists.
+ *
+ * The on-start warm-ups (in `startPlaceholderBatch` / `startPlaceholderStream`)
+ * fire when a batch begins; this one fires earlier still. A web upload page
+ * calls it on mount, and the scanner CLI calls it at `yarn start` — both
+ * minutes before the first image, so the multi-GB BiRefNet model loads while the
+ * user is picking a set or selecting files, and the first real `/process-entry`
+ * finds it already resident.
+ *
+ * Fire-and-forget by construction: it SCHEDULES the shared `warmupPreprocess`
+ * fan-out and returns immediately, so the caller is never held for the (up to a
+ * minute, cold) warm-up round trips. It cannot fail a page mount — the only
+ * throw is the auth check, which is correct (an unauthenticated caller has no
+ * business spending our Cloud Run capacity), and `warmupPreprocess` itself
+ * swallows every warm-up failure.
+ *
+ * No dedup and no cost concern when already warm: a warm instance answers
+ * `/warmup` immediately, so N callers hitting it in the same minute is cheap and
+ * harmless. The on-start warm-ups stay as a backstop for clients that never call
+ * this (a raw API consumer, an older CLI).
+ *
+ * `requireUserId` (any signed-in user), NOT `requireAdmin`: warming is a benign
+ * self-serve nicety, and gating it behind admin would defeat the point.
+ */
+export const warmPreprocess = action({
+  args: {},
+  returns: v.object({ warming: v.boolean() }),
+  handler: async (ctx): Promise<{ warming: boolean }> => {
+    // `getCurrentUserId` (not `requireUserId`, which is typed for QueryCtx) —
+    // same effect: an unauthenticated caller is refused.
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    // Schedule the SAME internal fan-out the start paths use, and return. The
+    // warm-up round trips happen in the background; nothing here waits on them.
+    await ctx.scheduler.runAfter(0, internal.placeholderBatch.warmupPreprocess, {});
+    return { warming: true };
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Public: start / cancel
 // ---------------------------------------------------------------------------
 
@@ -349,6 +395,12 @@ export const startPlaceholderBatch = mutation({
     await ctx.scheduler.runAfter(0, internal.placeholderPipeline.sweepJobPairs, {
       jobId: args.jobId,
     });
+
+    // Warm the preprocess service in the background so the model loads WHILE the
+    // zip is extracting, ahead of the per-image fan-out. Fire-and-forget:
+    // scheduled, never awaited, and `warmupPreprocess` cannot fail — a cold
+    // start simply happens the old way if it does nothing.
+    await ctx.scheduler.runAfter(0, internal.placeholderBatch.warmupPreprocess, {});
 
     return { started: true };
   },

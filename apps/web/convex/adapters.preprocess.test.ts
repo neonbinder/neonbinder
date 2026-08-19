@@ -26,6 +26,7 @@ import type { ActionCtx } from "./_generated/server";
 import {
   callExtract,
   callProcessEntry,
+  callWarmup,
   parsePreprocessErrorCode,
   preprocessUrl,
 } from "./adapters/preprocess";
@@ -351,5 +352,88 @@ describe("parsePreprocessErrorCode", () => {
     const err = await captureThrow(() => callExtract(stubCtx(), { jobId: "j", userId: "u" }));
     expect(parsePreprocessErrorCode((err as Error).message)).toBeUndefined();
     expect((err as Error).message).toContain("HTTP 400");
+  });
+});
+
+describe("callWarmup — best-effort, never throws", () => {
+  test("posts to /warmup with the auth headers and returns warmed on 2xx", async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    stubFetch(async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ status: "warm" }), { status: 200 });
+    });
+
+    const result = await callWarmup(stubCtx());
+
+    expect(result).toEqual({ warmed: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://localhost:9998/warmup");
+    expect(calls[0].init?.method).toBe("POST");
+
+    // Telemetry recorded, tagged as a warmup, marked successful.
+    const warmupEvents = captured.filter(
+      (e) => (e.properties as { operation?: string }).operation === "preprocessWarmup",
+    );
+    expect(warmupEvents).toHaveLength(1);
+    expect((warmupEvents[0].properties as { success?: boolean }).success).toBe(true);
+  });
+
+  test("sends the internal-key header when configured", async () => {
+    process.env.NEONBINDER_PREPROCESS_INTERNAL_KEY = "secret-key";
+    const calls: Array<{ init?: RequestInit }> = [];
+    stubFetch(async (_url, init) => {
+      calls.push({ init });
+      return new Response("{}", { status: 200 });
+    });
+
+    await callWarmup(stubCtx());
+
+    const headers = calls[0].init?.headers as Record<string, string>;
+    expect(headers["x-internal-key"]).toBe("secret-key");
+  });
+
+  test("swallows a throwing fetch — logs, does not propagate", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubFetch(async () => {
+      throw new TypeError("network is down");
+    });
+
+    // The whole contract: no throw reaches the caller.
+    await expect(callWarmup(stubCtx())).resolves.toEqual({ warmed: false });
+    expect(warn).toHaveBeenCalled();
+
+    // A failed warmup is still telemetered, marked unsuccessful.
+    const warmupEvents = captured.filter(
+      (e) => (e.properties as { operation?: string }).operation === "preprocessWarmup",
+    );
+    expect(warmupEvents).toHaveLength(1);
+    expect((warmupEvents[0].properties as { success?: boolean }).success).toBe(false);
+    warn.mockRestore();
+  });
+
+  test("swallows a non-2xx response — returns not-warmed without throwing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubFetch(async () => new Response("service starting", { status: 503 }));
+
+    await expect(callWarmup(stubCtx())).resolves.toEqual({ warmed: false });
+    warn.mockRestore();
+
+    const warmupEvents = captured.filter(
+      (e) => (e.properties as { operation?: string }).operation === "preprocessWarmup",
+    );
+    expect((warmupEvents[0].properties as { success?: boolean }).success).toBe(false);
+  });
+
+  test("swallows a telemetry failure too — recordAdapterCall throwing cannot fail warmup", async () => {
+    // The belt-and-suspenders `.catch(() => {})` on the record call: even if the
+    // observability path throws, a warmup must not.
+    stubFetch(async () => new Response("{}", { status: 200 }));
+    const ctx = {
+      runAction: async () => {
+        throw new Error("posthog down");
+      },
+    } as unknown as ActionCtx;
+
+    await expect(callWarmup(ctx)).resolves.toEqual({ warmed: true });
   });
 });

@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   calls: [] as string[],
   reset: vi.fn(),
   upload: vi.fn(),
+  warm: vi.fn(),
 }));
 
 // The page reaches the reset through `useMutation`. It is the only mutation this
@@ -40,6 +41,14 @@ vi.mock("@/src/hooks/usePlaceholderUpload", () => ({
     uploading: false,
     reset: vi.fn(),
   }),
+}));
+
+// The mount warm-up (its own semantics are covered in
+// src/hooks/useWarmPreprocess.test.tsx). Spied here so this page's use of it is
+// asserted, and so its real `useAction` call is not needed in this test's Convex
+// mock.
+vi.mock("@/src/hooks/useWarmPreprocess", () => ({
+  useWarmPreprocess: () => mocks.warm(),
 }));
 
 import TestingSeedPlaceholderUploadPage from "./page";
@@ -92,7 +101,15 @@ describe("TestingSeedPlaceholderUploadPage", () => {
       mocks.calls.push("upload");
       return { ok: true, jobId: "job-abcd1234", uploaded: 2, failed: 0, total: 2 };
     });
+    mocks.warm = vi.fn();
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+  });
+
+  it("warms the card processor on mount", () => {
+    renderPage();
+    // Same mount warm-up as the product page — this is the web upload path with
+    // the picker bypassed.
+    expect(mocks.warm).toHaveBeenCalled();
   });
 
   it("uploads the manifest's files, in the manifest's order", async () => {

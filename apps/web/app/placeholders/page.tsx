@@ -7,6 +7,7 @@ import { ConfirmDialog } from "@/components/modules/confirm-dialog";
 import { api } from "@/convex/_generated/api";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
+import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
 
 /**
  * /placeholders — scan in, cropped pairs out (NEO-170).
@@ -190,6 +191,9 @@ function resolverCallsOf(job: PlaceholderJob): number {
 
 export default function PlaceholderScansPage() {
   useDocumentTitle("Placeholder Scans | Neon Binder");
+  // Warm the model on mount, so it is loading while the user picks files rather
+  // than only from the first upload. Best-effort; see the hook.
+  useWarmPreprocess();
 
   const closeStream = useMutation(api.placeholderStream.closePlaceholderStream);
   const cancelBatch = useMutation(
@@ -325,6 +329,31 @@ export default function PlaceholderScansPage() {
     (image) => image.pairStatus !== "paired",
   );
 
+  // "Warming up" is derived from observable state, no backend flag: a confirmed
+  // image is sitting in `queued` and NOTHING has been picked up yet (nothing
+  // `processing`, `done`, or `failed`). The moment the processor engages any
+  // image the condition clears on its own.
+  //
+  // Two behaviours fall out of this for free, which is the whole point:
+  //   - Cold service: images sit `queued` for a bit → this shows → clears when
+  //     the first one flips to `processing`.
+  //   - Pre-warmed service: images go `queued`→`processing` almost at once, so
+  //     there is no sustained window where something is queued and nothing has
+  //     started — the indicator never meaningfully appears. No `was_cold` flag.
+  // `failed` counts as "started" alongside processing/done: a failed image means
+  // a work item actually RAN, so the model is warm and this must not linger.
+  // The grace against flicker is inherent — it requires a CONFIRMED (`queued`)
+  // image, so it cannot flash before anything has been confirmed.
+  const images_ = images ?? [];
+  const warmingUp =
+    images_.some((image) => image.status === "queued") &&
+    !images_.some(
+      (image) =>
+        image.status === "processing" ||
+        image.status === "done" ||
+        image.status === "failed",
+    );
+
   return (
     <div className="space-y-8">
       <div>
@@ -430,6 +459,24 @@ export default function PlaceholderScansPage() {
                 ? "Session not found."
                 : jobSummary(job)}
           </p>
+          {/* A distinct info-styled note by the status line — not error-toned,
+              since a cold start is expected, not a fault. role=status + polite
+              so it is announced; the sentence carries the meaning, so it is not
+              colour-only (the pulsing dot is decoration, hidden from AT). */}
+          {warmingUp && (
+            <p
+              role="status"
+              aria-live="polite"
+              className="flex items-center gap-2 rounded-md border border-neon-blue/40 bg-neon-blue/10 p-3 text-sm text-neon-blue"
+            >
+              <span
+                aria-hidden="true"
+                className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-neon-blue"
+              />
+              Warming up the card processor — this can take a minute on the first
+              scan.
+            </p>
+          )}
           {job && (
             <p className="text-sm text-slate-400">
               resolver calls: {resolverCallsOf(job)}
