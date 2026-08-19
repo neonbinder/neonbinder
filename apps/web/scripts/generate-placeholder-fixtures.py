@@ -17,33 +17,39 @@ and real player/team names carry trademarks. Every name, team and statistic
 below is invented, so the fixtures are ours to publish.
 
 --------------------------------------------------------------------------
-WHY THE FRONTS CARRY EXACTLY ONE WORD  (the load-bearing constraint)
+WHY BOTH SIDES PRINT THE SAME FULL PLAYER NAME  (the load-bearing constraint)
 --------------------------------------------------------------------------
-The pipeline decides front-vs-back from `textCount` — the Google Vision
-word-annotation count that `services/preprocess/app/orient.py` already
-produces as a free by-product of the orientation vote. `pairBatch.ts` then
-runs an adjacency pre-pass: consecutive images in upload order whose side
-evidence *confidently* disagrees are paired immediately, and the (expensive,
-non-deterministic) identity resolver is never called for them.
+Pairing is IDENTITY-FIRST (`placeholderPairing.ts` calls `pairBatch` with
+`useAdjacency: false` — NEO-170's precedence rework). Every image goes through
+the identity pool, so the resolver runs once per done image (the flow asserts
+`resolver calls: 6` for the 6 scans), and a front pairs to a back ONLY when the
+two share an extractable identity: `lib/pairing/pool.ts` scores a candidate on
+player name (`names.ts` — a surname-only fuzzy rung, "BUEHLER" front ↔ "Walker
+Buehler" back) or team, and a FRONT's card number is discarded, so it never
+contributes. A pool match renders "… · by image pool", which is what the flow's
+Step 5 asserts. Anything the pool cannot place drops to the guarded adjacency
+fallback and renders "… · by scan order" — a regression signal on these clean,
+name-matching fixtures.
 
-"Confidently" is narrow — from pairBatch.ts:
+So each card must carry a player name the model reads the SAME way on both
+sides. The earlier revision printed only the surname on the front (and named
+only the *given* name in the back's blurb): the model extracted nothing usable
+from a lone-surname front and read the given name off the back, the two never
+matched, and every pair fell to "by scan order". The fix is here, in the
+fixtures: each FRONT and each BACK prints the SAME full name ("Given Surname"),
+so both extractions agree and the pool matches → "by image pool".
 
-    TEXT_COUNT_BACK_THRESHOLD   = 5
-    ADJACENCY_CONFIDENCE_MARGIN = 2
-    => confidently FRONT: textCount <= 2
-    => confidently BACK:  textCount >= 7
-    => 3..6 is ambiguous and pays for a model call per image
+Side detection still rides on `textCount` — the Google Vision word-annotation
+count `services/preprocess/app/orient.py` produces for free — plus the
+service's own front/back classifier. A front carries just the two-word name
+over a photo block (textCount ~2); a back carries ~40 words (a dense blurb),
+far above the >=5 "confidently a back" floor. The old "exactly one word /
+textCount<=2 / zero resolver calls" rule is gone: it existed only to feed an
+adjacency PRE-pass that no longer runs.
 
-So a realistic-looking front carrying "Ken Griffey Jr." + "Mariners" — four or
-five words — lands in the ambiguous band and makes the gate probabilistic and
-billable. Each front here therefore carries ONE word: the surname. No team, no
-number, no badge. Backs carry ~40 words, which is nowhere near the >=7 floor.
-
-That is what keeps the gate deterministic and its pairing-resolver spend at
-zero, which the flow asserts as `resolver calls: 0`.
-
-Measured on the live preview pipeline before these fixtures were committed:
-front textCount=1, back textCount=56. Both bands cleared with huge margin.
+Each BACK also prints a distinct card number (#17 / #42 / #83) large and
+high-contrast, so it OCRs reliably — those numbers are how Step 5 tells the
+three finished pairs apart.
 
 --------------------------------------------------------------------------
 WHY THE CARD IS INSET ON A NOISY BACKGROUND
@@ -110,11 +116,13 @@ PLAYERS = [
 
 # ~40 words. Deliberately dense: stat line, career blurb, copyright line — the
 # same shape of text a real card back carries, which is why the word count lands
-# far above the >=7 "confidently a back" floor.
+# far above the >=5 "confidently a back" floor. It LEADS with the full name so
+# the back's identity extraction agrees with the front's (both "Given Surname"),
+# which is what lets the identity pool pair them — see the header.
 BACK_BLURB = (
-    "{given} joined the {team} in his rookie season and posted a .311 average "
-    "with 24 home runs and 88 runs batted in across 142 games. He led the "
-    "league in doubles twice and was named to three consecutive all-star "
+    "{given} {surname} joined the {team} in his rookie season and posted a .311 "
+    "average with 24 home runs and 88 runs batted in across 142 games. He led "
+    "the league in doubles twice and was named to three consecutive all-star "
     "selections. Bats right, throws right."
 )
 BACK_FOOTER = "(c) Neon Binder test fixture - not a real trading card"
@@ -162,12 +170,14 @@ def compose(card: Image.Image, seed: int) -> Image.Image:
 
 
 def draw_front(player: dict, seed: int) -> Image.Image:
-    """Photo block + ONE word. Nothing else — see the header."""
+    """Photo block + the full player name. The front now carries the WHOLE name
+    ("Given Surname"), not a lone surname, so the identity pool can match it to
+    its back — see the header."""
     card = new_card(player["card_fill"], seed)
     draw = ImageDraw.Draw(card)
 
-    # A "photo" region. Purely geometric: any text in here would break the
-    # one-word rule the adjacency pre-pass depends on.
+    # A "photo" region. Purely geometric: the only text on the front is the
+    # nameplate below, so the word count stays low and the side reads "front".
     draw.rectangle([44, 44, CARD_W - 44, 700], fill=player["photo_fill"])
     draw.rectangle([44, 44, CARD_W - 44, 700], outline=(38, 38, 38), width=4)
     # A suggestion of a subject, so the frame is not a flat rectangle.
@@ -180,8 +190,9 @@ def draw_front(player: dict, seed: int) -> Image.Image:
                          round(player["photo_fill"][1] * 1.15) % 256,
                          round(player["photo_fill"][2] * 1.15) % 256))
 
-    font = load_font(96)
-    text = player["surname"]
+    # font sized so the widest name ("Teodor Mossbaum") clears the card margins.
+    font = load_font(58)
+    text = f"{player['given']} {player['surname']}"
     left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
     draw.text(
         ((CARD_W - (right - left)) / 2 - left, 800 - top),
@@ -193,19 +204,26 @@ def draw_front(player: dict, seed: int) -> Image.Image:
 
 
 def draw_back(player: dict, seed: int) -> Image.Image:
-    """Surname + number + a dense paragraph — ~40 words."""
+    """Full name + number + a dense paragraph — ~40 words. The name heading
+    matches the front's ("Given Surname") so both sides resolve the same
+    identity and the pool pairs them — see the header."""
     card = new_card(player["card_fill"], seed)
     draw = ImageDraw.Draw(card)
 
-    name_font = load_font(58)
+    # 52, not 58: the full name is longer than the old lone surname and must
+    # still clear the right margin.
+    name_font = load_font(52)
     num_font = load_font(46)
     body_font = load_font(30)
 
-    draw.text((52, 56), player["surname"], font=name_font, fill=(24, 24, 24))
+    full_name = f"{player['given']} {player['surname']}"
+    draw.text((52, 56), full_name, font=name_font, fill=(24, 24, 24))
     draw.text((52, 130), f"#{player['number']}", font=num_font, fill=(24, 24, 24))
     draw.line([52, 196, CARD_W - 52, 196], fill=(60, 60, 60), width=3)
 
-    blurb = BACK_BLURB.format(given=player["given"], team=player["team"])
+    blurb = BACK_BLURB.format(
+        given=player["given"], surname=player["surname"], team=player["team"]
+    )
     y = 232
     for line in textwrap.wrap(blurb, width=34):
         draw.text((52, y), line, font=body_font, fill=(30, 30, 30))
@@ -220,8 +238,9 @@ def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     manifest: list[dict] = []
 
-    # Upload order is STRICT front/back alternation — that is precisely what
-    # planAdjacency() walks, so any other order forfeits the zero-resolver path.
+    # Upload order is front/back alternation — realistic scan order, and the
+    # order the guarded adjacency FALLBACK would read if identity ever failed to
+    # place a card. Identity-first pairing does not depend on it.
     for index, player in enumerate(PLAYERS):
         for side in ("front", "back"):
             position = index * 2 + (0 if side == "front" else 1)
@@ -237,7 +256,7 @@ def main() -> None:
             manifest.append({
                 "file": filename,
                 "side": side,
-                "player": player["surname"],
+                "player": f"{player['given']} {player['surname']}",
                 "cardNumber": player["number"] if side == "back" else None,
                 "bytes": path.stat().st_size,
             })
@@ -249,11 +268,11 @@ def main() -> None:
                 "description": (
                     "Synthetic card scans for the placeholder-pipeline E2E gate. "
                     "Generated by apps/web/scripts/generate-placeholder-fixtures.py. "
-                    "Both lists are in UPLOAD ORDER — strict front/back "
-                    "alternation, which is what the pairing adjacency pre-pass "
-                    "expects. `files` is the contract the seed page reads; "
-                    "`images` is the same order with the metadata a human (or a "
-                    "flow author picking assertions) needs."
+                    "Both lists are in UPLOAD ORDER — front/back alternation. "
+                    "Each front and back print the SAME full player name so the "
+                    "identity pool pairs them ('by image pool'). `files` is the "
+                    "contract the seed page reads; `images` is the same order with "
+                    "the metadata a human (or a flow author picking assertions) needs."
                 ),
                 "pairCount": len(PLAYERS),
                 "files": [entry["file"] for entry in manifest],
