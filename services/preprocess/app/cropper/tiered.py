@@ -157,6 +157,16 @@ def warm_up() -> None:
     rembg.remove(dummy, session=session)
 
 
+def is_session_loaded() -> bool:
+    """Cheap, side-effect-free check: is the BiRefNet session already resident?
+
+    True once `_get_session()` (via a crop or `warm_up()`) has constructed and
+    cached the session for this process. Lets a repeat warm-up short-circuit —
+    no reload, no inference — instead of paying even a tiny dummy pass again.
+    """
+    return _session is not None
+
+
 # ── Input ───────────────────────────────────────────────────────────────────
 
 

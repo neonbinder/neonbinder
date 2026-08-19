@@ -483,6 +483,25 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "WarmupResponse": {
+        "description": "Response body for POST /warmup.\n\n`status` is always \"warm\" on success \u2014 the model is resident when the\nresponse is sent. `was_cold` distinguishes the two ways that came to be:\nTrue when THIS call triggered the model load (the instance was genuinely\ncold), False when the session was already resident and the call was the\nidempotent fast path. Callers show a \"warming up\u2026\" message only on\nwas_cold=True; a pre-warmed instance stays silent.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "was_cold": {
+            "title": "Was Cold",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "was_cold"
+        ],
+        "title": "WarmupResponse",
+        "type": "object"
       }
     }
   },
@@ -739,6 +758,53 @@
           }
         },
         "summary": "Process Entry"
+      }
+    },
+    "/warmup": {
+      "post": {
+        "description": "Force the BiRefNet crop model resident on this instance, then report warm.\n\nA scale-to-zero container pays the ~930MB BiRefNet load plus ORT's first-run\nallocations on its first inference; cold, that latency lands on the first real\n/process-entry call (minutes of effective wait). Convex calls this at\nsession-start to pre-spin the model so the real calls hit a warm instance.\n\nSynchronous \"load then return\": the load runs the SAME path a real crop uses\n(`tiered.warm_up` \u2192 `_get_session` + one tiny in-memory 64x64 inference), needs\nno GCS object or real image, does NO GCS / Vision / Anthropic I/O, and writes\nnothing \u2014 pure model residency. Cloud Run holds the request while a cold\ninstance loads, so a 200 tells the caller the instance is actually ready.\n\nIdempotent and cheap when already warm: `is_session_loaded()` short-circuits so\na repeat call returns immediately with no reload and no inference, and reports\n`was_cold=False` so the caller knows the instance was already ready.\n\nConcurrency: the service runs container_concurrency=1, so one /warmup warms the\nONE instance that happens to handle it. Warming all N instances of a scaled-out\nrevision needs N concurrent /warmup calls (Convex fans out N = capacity); this\nendpoint only ever warms its own instance.",
+        "operationId": "warmup_warmup_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarmupResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Warmup"
       }
     }
   }

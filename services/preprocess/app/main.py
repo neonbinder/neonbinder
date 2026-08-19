@@ -238,6 +238,59 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+class WarmupResponse(BaseModel):
+    """Response body for POST /warmup.
+
+    `status` is always "warm" on success — the model is resident when the
+    response is sent. `was_cold` distinguishes the two ways that came to be:
+    True when THIS call triggered the model load (the instance was genuinely
+    cold), False when the session was already resident and the call was the
+    idempotent fast path. Callers show a "warming up…" message only on
+    was_cold=True; a pre-warmed instance stays silent.
+    """
+
+    status: str
+    was_cold: bool
+
+
+@app.post("/warmup", response_model=WarmupResponse)
+def warmup(
+    x_internal_key: Annotated[str | None, Header()] = None,
+) -> WarmupResponse:
+    """Force the BiRefNet crop model resident on this instance, then report warm.
+
+    A scale-to-zero container pays the ~930MB BiRefNet load plus ORT's first-run
+    allocations on its first inference; cold, that latency lands on the first real
+    /process-entry call (minutes of effective wait). Convex calls this at
+    session-start to pre-spin the model so the real calls hit a warm instance.
+
+    Synchronous "load then return": the load runs the SAME path a real crop uses
+    (`tiered.warm_up` → `_get_session` + one tiny in-memory 64x64 inference), needs
+    no GCS object or real image, does NO GCS / Vision / Anthropic I/O, and writes
+    nothing — pure model residency. Cloud Run holds the request while a cold
+    instance loads, so a 200 tells the caller the instance is actually ready.
+
+    Idempotent and cheap when already warm: `is_session_loaded()` short-circuits so
+    a repeat call returns immediately with no reload and no inference, and reports
+    `was_cold=False` so the caller knows the instance was already ready.
+
+    Concurrency: the service runs container_concurrency=1, so one /warmup warms the
+    ONE instance that happens to handle it. Warming all N instances of a scaled-out
+    revision needs N concurrent /warmup calls (Convex fans out N = capacity); this
+    endpoint only ever warms its own instance.
+    """
+    _verify_internal_key(x_internal_key)
+
+    # Same inline import as the startup warm hook: reach the tiered module's
+    # session helpers by name without widening main.py's top-level imports.
+    from app.cropper import tiered
+
+    was_cold = not tiered.is_session_loaded()
+    if was_cold:
+        tiered.warm_up()
+    return WarmupResponse(status="warm", was_cold=was_cold)
+
+
 @app.post("/process", response_model=ProcessResponse)
 async def process(
     image: Annotated[UploadFile | None, File()] = None,
