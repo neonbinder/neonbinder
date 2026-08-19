@@ -351,6 +351,13 @@ export const startPlaceholderBatch = mutation({
     await ctx.db.patch(job._id, {
       status: "extracting",
       startedAt: Date.now(),
+      // Seed the progress heartbeat the moment the job goes active. `startedAt`
+      // records when extraction began and never moves; `lastActivityAt` is the
+      // "last progress" clock the wedged-batch watchdog reads, and settle bumps
+      // it on every image completion after this. Setting it here means a job
+      // that dies IN extraction (runExtract lost) still has a defined, initially
+      // fresh timestamp that goes stale on schedule rather than an absent one.
+      lastActivityAt: Date.now(),
       // Store the client hint when given; a restart from a page that passes it
       // updates it, and one that does not leaves whatever was there. Only ever
       // set from the argument, never inferred.
@@ -823,6 +830,11 @@ export const registerExtractedImages = internalMutation({
       processedImages: keptDone,
       failedImages: 0,
       rejectedEntries,
+      // Refresh the heartbeat as the batch enters processing, so the window
+      // before the first image completes (enqueue + first `/process-entry`) is
+      // measured from here rather than from when extraction started. Settle
+      // bumps it on every completion after that. See placeholderWatchdog.ts.
+      lastActivityAt: Date.now(),
     });
 
     await ctx.scheduler.runAfter(0, internal.placeholderPipeline.pruneUnregisteredImages, {
@@ -1211,20 +1223,23 @@ async function settleImageOutcome(
   await ctx.db.patch(job._id, {
     processedImages,
     failedImages,
-    // An image finishing is the user's batch making progress, so it counts as
-    // activity — otherwise a job whose images each take minutes could be closed
-    // by the idle sweep while it was working perfectly well.
-    ...(job.status === "collecting" ? { lastActivityAt: Date.now() } : {}),
+    // An image finishing is the user's batch making progress, so `lastActivityAt`
+    // is bumped on EVERY completion, not only for collecting jobs. Two consumers
+    // rely on this being a live progress heartbeat:
+    //   - the idle sweep (crons.ts), so a collecting job whose images each take
+    //     minutes is not closed while it is working perfectly well; and
+    //   - the wedged-batch watchdog (convex/placeholderWatchdog.ts), whose whole
+    //     staleness test is "no image has completed in a while". A processing zip
+    //     job never sets `lastActivityAt` anywhere else, so without this bump the
+    //     watchdog could only measure staleness from `startedAt` and would flag a
+    //     large but perfectly healthy batch that is simply still running. See the
+    //     threshold derivation in placeholderWatchdog.ts.
+    lastActivityAt: Date.now(),
     ...(shouldScheduleIncrementalPairing ? { pairingScheduled: true } : {}),
   });
 
   if (isBatchComplete) {
-    await ctx.db.patch(job._id, { status: "pairing" });
-    await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
-      jobId: context.jobId,
-      userId: job.userId,
-      final: true,
-    });
+    await driveBatchToPairing(ctx, job);
   } else if (shouldScheduleIncrementalPairing) {
     // Delayed on purpose — see PAIRING_DEBOUNCE_MS. Completions landing inside
     // the window find `pairingScheduled` already set and ride this run.
@@ -1281,15 +1296,53 @@ export const markJobFailed = internalMutation({
   handler: async (ctx, args) => {
     const job = await findJob(ctx, args.jobId);
     if (!job) return null;
-    await ctx.db.patch(job._id, {
-      status: "failed",
-      errorCode: args.errorCode,
-      errorDetail: args.errorDetail,
-      finishedAt: Date.now(),
-    });
+    await markJobFailedImpl(ctx, job, args.errorCode, args.errorDetail);
     return null;
   },
 });
+
+/**
+ * The terminal-failure patch itself, as a plain function so a caller that
+ * already holds the job row — and cannot `runMutation` into `markJobFailed`
+ * because it is itself a mutation — makes the SAME transition rather than a
+ * hand-rolled copy of it. The wedged-batch watchdog is that caller
+ * (convex/placeholderWatchdog.ts). Sets `finishedAt` alongside the status for
+ * the invariant `markJobSucceeded` documents: "the job is over" and
+ * "finishedAt is set" can never disagree.
+ */
+export async function markJobFailedImpl(
+  ctx: MutationCtx,
+  job: Doc<"placeholderJobs">,
+  errorCode: string,
+  errorDetail?: string,
+): Promise<void> {
+  await ctx.db.patch(job._id, {
+    status: "failed",
+    errorCode,
+    errorDetail,
+    finishedAt: Date.now(),
+  });
+}
+
+/**
+ * Move a batch whose images are all terminal into pairing and schedule the
+ * final pairing run — the one terminal hand-off `settleImageOutcome` makes when
+ * it observes the last completion. Extracted so the watchdog's
+ * recompute-and-complete remediation drives the EXACT same transition rather
+ * than a second copy that could drift from it. `final: true` is explicit even
+ * though it is the default, so the intent survives a change to that default.
+ */
+export async function driveBatchToPairing(
+  ctx: MutationCtx,
+  job: Doc<"placeholderJobs">,
+): Promise<void> {
+  await ctx.db.patch(job._id, { status: "pairing" });
+  await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
+    jobId: job.jobId,
+    userId: job.userId,
+    final: true,
+  });
+}
 
 /**
  * Put a job into its terminal success state. The counterpart to

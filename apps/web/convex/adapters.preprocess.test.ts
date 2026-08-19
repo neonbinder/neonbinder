@@ -296,6 +296,41 @@ describe("telemetry", () => {
     expect(captured[0].properties.status_code).toBeUndefined();
     expect(captured[0].properties.error_class).toBe("network");
   });
+
+  test("process-entry telemetry carries jobId + entryIndex so a slow call joins to its image (NEO-170)", async () => {
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+    await callProcessEntry(stubCtx(), {
+      jobId: "job-abc",
+      userId: "u",
+      entryIndex: 7,
+    });
+
+    expect(captured).toHaveLength(1);
+    // Correlation for the PostHog join — the exact placeholderImages row.
+    expect(captured[0].properties.jobId).toBe("job-abc");
+    expect(captured[0].properties.entryIndex).toBe(7);
+    // Still no path or PII crossing into telemetry.
+    expect(JSON.stringify(captured[0].properties)).not.toContain("placeholders/");
+  });
+
+  test("extract telemetry carries the jobId but no entryIndex — it is a per-batch call", async () => {
+    stubFetch(async () => new Response(JSON.stringify(EXTRACT_OK), { status: 200 }));
+    await callExtract(stubCtx(), { jobId: "job-xyz", userId: "u" });
+
+    expect(captured[0].properties.jobId).toBe("job-xyz");
+    expect(captured[0].properties.entryIndex).toBeUndefined();
+  });
+
+  test("warmup telemetry omits both correlation fields — it belongs to no batch", async () => {
+    stubFetch(async () => new Response("{}", { status: 200 }));
+    await callWarmup(stubCtx());
+
+    const warmup = captured.find(
+      (e) => (e.properties as { operation?: string }).operation === "preprocessWarmup",
+    );
+    expect(warmup?.properties.jobId).toBeUndefined();
+    expect(warmup?.properties.entryIndex).toBeUndefined();
+  });
 });
 
 describe("parsePreprocessErrorCode", () => {

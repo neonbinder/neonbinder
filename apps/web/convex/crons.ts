@@ -39,4 +39,27 @@ crons.interval(
   {},
 );
 
+/**
+ * Detect and self-heal placeholder batches whose progress has stranded.
+ *
+ * The safety net behind the per-job settle lock (f9eb1da): that lock closes the
+ * known counter-race, and this catches any future or unknown drift, a lost
+ * scheduled function, or a completion that never landed — the failure that would
+ * otherwise leave a batch hung at "5 of 6 processed" forever, unnoticed. See
+ * `sweepWedgedBatches` for the integrity check and the alertable PostHog event.
+ *
+ * `interval`, and fifteen minutes: the detection threshold is thirty (a stalled
+ * batch must miss it before this acts), so a tighter cadence would only re-scan
+ * the same not-yet-stale jobs. Fifteen bounds the heal latency to about
+ * threshold + interval while keeping this to 96 runs a day — and, like the idle
+ * sweep above, the common run reads a few empty index ranges and stops, because
+ * a healthy deployment has no stale active jobs to inspect.
+ */
+crons.interval(
+  "heal wedged placeholder batches",
+  { minutes: 15 },
+  internal.placeholderWatchdog.sweepWedgedBatches,
+  {},
+);
+
 export default crons;

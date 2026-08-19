@@ -213,6 +213,12 @@ async function preprocessPost<T>(
   path: string,
   body: Record<string, unknown>,
   operation: string,
+  // Correlation for the telemetry event only — never sent to the service (the
+  // service re-derives everything from `body`). `jobId`/`entryIndex` let a
+  // preprocess `adapter_sync_call` in PostHog be joined to the exact
+  // `placeholderImages` row it processed. Both are opaque/positional, never a
+  // path or PII; see the AdapterCall comment in observability.ts.
+  correlation?: { jobId?: string; entryIndex?: number },
 ): Promise<T> {
   const started = Date.now();
   const requestId = newRequestId();
@@ -232,6 +238,10 @@ async function preprocessPost<T>(
       // "BSC is slow".
       stage: "preprocess_call",
       error_class: classifyAdapterError(errorText),
+      // Undefined for callers that pass no correlation (warmup) — the property
+      // is simply absent on those events rather than null.
+      jobId: correlation?.jobId,
+      entryIndex: correlation?.entryIndex,
     });
   };
 
@@ -316,6 +326,9 @@ export async function callExtract(
     "/extract",
     { job_id: args.jobId, user_id: args.userId },
     "preprocessExtract",
+    // Extract is a per-job call — no entryIndex, so a slow extract still joins
+    // to its batch in the telemetry.
+    { jobId: args.jobId },
   );
 }
 
@@ -333,6 +346,7 @@ export async function callProcessEntry(
     "/process-entry",
     { job_id: args.jobId, user_id: args.userId, entry_index: args.entryIndex },
     "preprocessProcessEntry",
+    { jobId: args.jobId, entryIndex: args.entryIndex },
   );
 }
 
