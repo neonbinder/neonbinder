@@ -63,6 +63,14 @@ MIN_CASCADE_TEXT_RATIO = 0.8
 # cards) still pass.
 MIN_ABSOLUTE_TEXT_COUNT = 1
 
+# Crop-quality modes (NEO-173). "fast" runs the classical-only identity
+# short-circuit before the cascade (skips BiRefNet on the pre-cropped
+# majority); "strong" is the original tiered-first cascade. "fast" is the
+# default because it never yields a worse crop — it only declines to escalate.
+CROP_QUALITY_FAST = "fast"
+CROP_QUALITY_STRONG = "strong"
+CROP_QUALITIES: frozenset[str] = frozenset({CROP_QUALITY_FAST, CROP_QUALITY_STRONG})
+
 # Type for a crop strategy: takes raw image bytes, returns cropped bytes or None.
 CropStrategy = Callable[[bytes], bytes | None]
 
@@ -296,6 +304,7 @@ def crop(
     *,
     image_bytes: bytes | None,
     precropped_bytes: bytes | None,
+    crop_quality: str = CROP_QUALITY_FAST,
 ) -> CropResult | CropRejected:
     """Run the crop cascade and return the winning result.
 
@@ -312,10 +321,24 @@ def crop(
     runs — the raw upload is NOT treated as an implicit crop candidate, since
     nothing about it could ever fail the gates (see the stage-1 comment).
 
+    `crop_quality` (NEO-173) tunes the image cascade, and ONLY it — precropped
+    and crop-only modes are unaffected:
+      - ``"fast"`` (default): before the strategy loop, `tiered.fast_tiered_crop`
+        runs a classical-only pass. When the image is an unambiguous pre-cropped
+        card-aspect frame it returns the input untouched (identity) WITHOUT a
+        BiRefNet inference — the ~80% majority's ~35s skip. On any other verdict
+        it declines and the cascade escalates to the full tiered/BiRefNet path
+        below, so a `"fast"` crop is never worse than a `"strong"` one — the
+        winning identity bytes are byte-identical to what `"strong"` produces.
+      - ``"strong"``: the classical fast-path is skipped and the cascade runs
+        tiered-first (BiRefNet) exactly as before.
+
     The baseline orient on `image_bytes` is computed up front — one extra
     Vision call relative to the old precropped-short-circuit path — so the
     text-count gate applies uniformly to every stage, including precropped.
     """
+    if crop_quality not in CROP_QUALITIES:
+        raise ValueError(f"unknown crop_quality {crop_quality!r}; valid: {sorted(CROP_QUALITIES)}")
     # ── Crop-only mode ─────────────────────────────────────────────────
     # Caller opted into the "don't upload the original" fast path. No
     # fallback cascade is available; reject with a specific reason if
@@ -371,6 +394,28 @@ def crop(
         )
         if result is not None:
             return result
+
+    # ── Fast path (NEO-173) — classical-only identity short-circuit ─────
+    # In "fast" mode, try to settle the ~80% pre-cropped-scanner majority
+    # WITHOUT a ~35s BiRefNet pass. `fast_tiered_crop` returns the input
+    # untouched only for an unambiguous card-aspect identity frame, else None
+    # (escalate). A returned identity flows through the SAME `_try_stage`
+    # gates as any tiered result, labelled `source="tiered"` — indistinguishable
+    # from the "strong" identity outcome, just cheaper. Anything it declines
+    # (every crop, every ambiguous or deskew-needing frame) falls straight
+    # through to the full tiered/BiRefNet cascade below.
+    if crop_quality == CROP_QUALITY_FAST:
+        fast_bytes = tiered.fast_tiered_crop(image_bytes)
+        if fast_bytes is not None:
+            result = _try_stage(
+                source="tiered",
+                candidate_bytes=fast_bytes,
+                source_area_bytes=image_bytes,
+                text_threshold=text_threshold,
+                returned_bytes_differ=fast_bytes != image_bytes,
+            )
+            if result is not None:
+                return result
 
     # ── Stages 2..N — server-side croppers through the same uniform gate.
     for source in STRATEGY_NAMES:

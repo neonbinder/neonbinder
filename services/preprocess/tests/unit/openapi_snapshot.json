@@ -28,6 +28,11 @@
       },
       "Body_process_process_post": {
         "properties": {
+          "crop_quality": {
+            "default": "fast",
+            "title": "Crop Quality",
+            "type": "string"
+          },
           "image": {
             "anyOf": [
               {
@@ -240,6 +245,16 @@
       "ProcessEntryRequest": {
         "description": "Body for POST /process-entry. Same no-path rule as `ExtractRequest`.",
         "properties": {
+          "crop_quality": {
+            "default": "fast",
+            "description": "Crop cascade quality: 'fast' (classical identity skip) or 'strong'.",
+            "enum": [
+              "fast",
+              "strong"
+            ],
+            "title": "Crop Quality",
+            "type": "string"
+          },
           "entry_index": {
             "description": "The entry's zip ordinal, from /extract.",
             "maximum": 1000.0,
@@ -649,7 +664,7 @@
     },
     "/process": {
       "post": {
-        "description": "Preprocess an image for card identification.\n\nThree request modes:\n  - **image-only** (unchanged default): `image` attached, no `precropped`.\n    Runs the full crop cascade on the original.\n  - **image + precropped** (unchanged opt-in): both attached. The\n    precropped is tried as the cascade's stage-1 candidate; if it's\n    rejected, the server falls back to its own crop strategies on the\n    original. Saves SAM/Haiku cost when the client crop is good; costs\n    full upload bandwidth regardless.\n  - **crop-only** (new): only `precropped` attached. Server validates the\n    crop and runs orient+classify on it if it passes. If validation\n    fails, returns `422 {\"error_code\":\"CROP_VALIDATION_FAILED\", ...,\n    \"retry_with_original\": true}` so the caller can retry with the\n    original. No silent server-side fallback \u2014 saving upload bandwidth\n    is the whole point.",
+        "description": "Preprocess an image for card identification.\n\nThree request modes:\n  - **image-only** (unchanged default): `image` attached, no `precropped`.\n    Runs the full crop cascade on the original.\n  - **image + precropped** (unchanged opt-in): both attached. The\n    precropped is tried as the cascade's stage-1 candidate; if it's\n    rejected, the server falls back to its own crop strategies on the\n    original. Saves SAM/Haiku cost when the client crop is good; costs\n    full upload bandwidth regardless.\n  - **crop-only** (new): only `precropped` attached. Server validates the\n    crop and runs orient+classify on it if it passes. If validation\n    fails, returns `422 {\"error_code\":\"CROP_VALIDATION_FAILED\", ...,\n    \"retry_with_original\": true}` so the caller can retry with the\n    original. No silent server-side fallback \u2014 saving upload bandwidth\n    is the whole point.\n\n`crop_quality` (form field, NEO-173) tunes the image cascade: `\"fast\"`\n(default) runs a classical-only identity short-circuit that skips the\n~35s BiRefNet pass on the pre-cropped-scanner majority, escalating every\nother image to the full pipeline; `\"strong\"` forces the tiered/BiRefNet\ncascade. It has no effect in crop-only mode.",
         "operationId": "process_process_post",
         "parameters": [
           {

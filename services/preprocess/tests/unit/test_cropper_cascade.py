@@ -177,6 +177,10 @@ class TestPrecroppedStage:
         With every strategy stubbed out there is nothing left to win, so
         reaching `passthrough` is what proves the cascade actually ran
         instead of stopping at stage 1.
+
+        Pinned to "strong" so the NEO-173 fast pre-check (which reads a
+        card-aspect noise frame as an identity short-circuit) does not stand
+        in for the loop this test is about; the fast path has its own tests.
         """
         stub_orient()
         stub_classify(_classify())
@@ -184,7 +188,7 @@ class TestPrecroppedStage:
 
         image = _card_jpeg(size=(500, 700))
 
-        result = crop(image_bytes=image, precropped_bytes=None)
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="strong")
 
         assert result.source == "passthrough"
         assert result.image_bytes == image
@@ -591,3 +595,107 @@ class TestCropResultShape:
         assert result.orientation.rotation_degrees == 90
         assert result.classification.players == ["Jeter"]
         assert result.classification.card_number == "2"
+
+
+class TestCropQuality:
+    """The NEO-173 fast/strong flag steers the image cascade only.
+
+    "fast" runs `tiered.fast_tiered_crop` before the strategy loop; an identity
+    result short-circuits WITHOUT the BiRefNet-bearing `tiered_crop`, and any
+    other verdict escalates to the unchanged tiered-first loop. "strong" skips
+    the fast pre-check entirely.
+    """
+
+    def test_fast_identity_short_circuits_before_the_birefnet_tiered_stage(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(500, 700))
+        # Fast path accepts identity (returns the input untouched)…
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+
+        # …so the BiRefNet-bearing tiered_crop must never be reached.
+        def _boom(_b):
+            raise AssertionError("tiered_crop ran despite a fast identity accept")
+
+        disable_server_strategies()
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", _boom)
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="fast")
+
+        assert result.source == "tiered"
+        assert result.returned_bytes_differ is False
+        assert result.image_bytes == image
+
+    def test_fast_escalates_to_the_full_tiered_stage_when_it_declines(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(1200, 1600))
+        crop_bytes = _card_jpeg(size=(500, 700))
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        disable_server_strategies(tiered_crop=crop_bytes)
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="fast")
+
+        assert result.source == "tiered"
+        assert result.image_bytes == crop_bytes
+        assert result.returned_bytes_differ is True
+
+    def test_strong_mode_never_runs_the_fast_path(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(500, 700))
+
+        def _boom(_b):
+            raise AssertionError("fast_tiered_crop ran in strong mode")
+
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _boom)
+        disable_server_strategies(tiered_crop=image)  # strong tiered returns identity input
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="strong")
+
+        assert result.source == "tiered"
+        assert result.returned_bytes_differ is False
+
+    def test_crop_quality_defaults_to_fast(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(1200, 1600))
+        calls: list[bytes] = []
+        monkeypatch.setattr(
+            "app.cropper.tiered.fast_tiered_crop", lambda b: calls.append(b) or None
+        )
+        disable_server_strategies(tiered_crop=_card_jpeg(size=(500, 700)))
+
+        crop(image_bytes=image, precropped_bytes=None)  # no crop_quality → default
+
+        assert calls == [image]  # the fast path ran, so the default is "fast"
+
+    def test_unknown_crop_quality_raises(self):
+        with pytest.raises(ValueError, match="crop_quality"):
+            crop(image_bytes=_card_jpeg(), precropped_bytes=None, crop_quality="ultra")
+
+    def test_precropped_win_never_invokes_the_fast_path(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+
+        def _boom(_b):
+            raise AssertionError("fast path ran though the precropped stage should win")
+
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _boom)
+        disable_server_strategies()
+        image = _card_jpeg(size=(1200, 1600))
+        precropped = _card_jpeg(size=(500, 700))
+
+        result = crop(image_bytes=image, precropped_bytes=precropped, crop_quality="fast")
+
+        assert result.source == "precropped"

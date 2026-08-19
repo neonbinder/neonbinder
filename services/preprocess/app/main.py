@@ -22,7 +22,7 @@ import logging
 import os
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
@@ -30,7 +30,13 @@ from pydantic import BaseModel, Field
 
 from app import cropper
 from app.classify import ClassifyError
-from app.cropper import STRATEGY_NAMES, CropRejected, UnknownStrategyError
+from app.cropper import (
+    CROP_QUALITIES,
+    CROP_QUALITY_FAST,
+    STRATEGY_NAMES,
+    CropRejected,
+    UnknownStrategyError,
+)
 from app.cropper._utils import rotate_image_bytes
 from app.dhash import compute_dhash
 from app.exif import apply_exif_orientation
@@ -295,6 +301,7 @@ def warmup(
 async def process(
     image: Annotated[UploadFile | None, File()] = None,
     precropped: Annotated[UploadFile | None, File()] = None,
+    crop_quality: Annotated[str, Form()] = CROP_QUALITY_FAST,
     x_internal_key: Annotated[str | None, Header()] = None,
 ) -> ProcessResponse | JSONResponse:
     """Preprocess an image for card identification.
@@ -313,8 +320,23 @@ async def process(
         "retry_with_original": true}` so the caller can retry with the
         original. No silent server-side fallback — saving upload bandwidth
         is the whole point.
+
+    `crop_quality` (form field, NEO-173) tunes the image cascade: `"fast"`
+    (default) runs a classical-only identity short-circuit that skips the
+    ~35s BiRefNet pass on the pre-cropped-scanner majority, escalating every
+    other image to the full pipeline; `"strong"` forces the tiered/BiRefNet
+    cascade. It has no effect in crop-only mode.
     """
     _verify_internal_key(x_internal_key)
+
+    if crop_quality not in CROP_QUALITIES:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "error_code": "INVALID_CROP_QUALITY",
+                "detail": f"crop_quality must be one of {sorted(CROP_QUALITIES)}",
+            },
+        )
 
     image_bytes: bytes | None = None
     precropped_bytes: bytes | None = None
@@ -340,7 +362,11 @@ async def process(
     # failures (Vision / Anthropic) surface as exceptions we translate to
     # 502 here.
     try:
-        result = cropper.crop(image_bytes=image_bytes, precropped_bytes=precropped_bytes)
+        result = cropper.crop(
+            image_bytes=image_bytes,
+            precropped_bytes=precropped_bytes,
+            crop_quality=crop_quality,
+        )
     except ClassifyError:
         logger.exception("classify failed to parse after retry")
         raise HTTPException(
@@ -538,6 +564,14 @@ class ProcessEntryRequest(BaseModel):
         ge=0,
         le=zipsafe.MAX_ZIP_ENTRIES,
         description="The entry's zip ordinal, from /extract.",
+    )
+    # NEO-173: same "fast" default as /process. "fast" skips the ~35s BiRefNet
+    # pass on the pre-cropped-scanner majority (classical identity short-circuit)
+    # and escalates every other image to the full pipeline; "strong" forces the
+    # tiered/BiRefNet cascade. Convex sets this per placeholder job.
+    crop_quality: Literal["fast", "strong"] = Field(
+        default=CROP_QUALITY_FAST,
+        description="Crop cascade quality: 'fast' (classical identity skip) or 'strong'.",
     )
 
 
@@ -920,7 +954,11 @@ def process_entry(
 
     # Same cascade, same upstream-failure translation as POST /process.
     try:
-        result = cropper.crop(image_bytes=entry_bytes, precropped_bytes=None)
+        result = cropper.crop(
+            image_bytes=entry_bytes,
+            precropped_bytes=None,
+            crop_quality=request.crop_quality,
+        )
     except ClassifyError:
         logger.exception("process_entry: classify failed to parse after retry")
         raise HTTPException(

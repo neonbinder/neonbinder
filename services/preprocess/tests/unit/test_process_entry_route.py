@@ -432,3 +432,51 @@ class TestUpstreamFailures:
         _stub_classify(monkeypatch)
         fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", b"garbage", "image/jpeg")
         assert _post_entry(entry_index=0).status_code == 502
+
+
+class TestCropQuality:
+    """The NEO-173 `crop_quality` body field (fast|strong, default fast)."""
+
+    def test_invalid_crop_quality_is_a_422(self, fake_gcs):
+        response = client.post(
+            "/process-entry",
+            headers={"x-internal-key": "test-key"},
+            json={"job_id": JOB, "user_id": USER, "entry_index": 0, "crop_quality": "ultra"},
+        )
+        assert response.status_code == 422
+
+    def _capture(self, monkeypatch) -> list[str]:
+        captured: list[str] = []
+        real = cropper.crop
+
+        def _cap(*, image_bytes, precropped_bytes, crop_quality):
+            captured.append(crop_quality)
+            return real(
+                image_bytes=image_bytes,
+                precropped_bytes=precropped_bytes,
+                crop_quality=crop_quality,
+            )
+
+        monkeypatch.setattr(cropper, "crop", _cap)
+        return captured
+
+    def test_crop_quality_defaults_to_fast(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        captured = self._capture(monkeypatch)
+        assert _post_entry(entry_index=0).status_code == 200
+        assert captured == ["fast"]
+
+    def test_explicit_strong_threads_to_the_cascade(self, fake_gcs, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+        captured = self._capture(monkeypatch)
+        response = client.post(
+            "/process-entry",
+            headers={"x-internal-key": "test-key"},
+            json={"job_id": JOB, "user_id": USER, "entry_index": 0, "crop_quality": "strong"},
+        )
+        assert response.status_code == 200
+        assert captured == ["strong"]

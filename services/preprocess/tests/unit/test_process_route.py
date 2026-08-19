@@ -650,3 +650,51 @@ class TestTieredIdentityContract:
         body = response.json()
         assert body["cropped_source"] == "tiered"
         assert body["cropped_image_b64"] is None
+
+
+class TestCropQuality:
+    """The NEO-173 `crop_quality` form field (fast|strong, default fast)."""
+
+    def test_invalid_crop_quality_returns_400(self, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+            data={"crop_quality": "ultra"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error_code"] == "INVALID_CROP_QUALITY"
+
+    def test_default_and_explicit_values_thread_to_the_cascade(self, monkeypatch):
+        captured: list[str] = []
+
+        def _fake_crop(*, image_bytes, precropped_bytes, crop_quality):
+            captured.append(crop_quality)
+            return cropper.CropResult(
+                image_bytes=image_bytes,
+                source="tiered",
+                returned_bytes_differ=False,
+                orientation=OrientationResult(rotation_degrees=0, confidence=1.0, text_count=5),
+                classification=ClassifyResult(
+                    players=[], team=None, card_number=None, side="front", raw_text="{}"
+                ),
+            )
+
+        monkeypatch.setattr(cropper, "crop", _fake_crop)
+
+        # Omitted → the "fast" default.
+        client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+        )
+        # Explicit "strong" is honoured.
+        client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+            data={"crop_quality": "strong"},
+        )
+        assert captured == ["fast", "strong"]
