@@ -233,6 +233,19 @@ describe("startPlaceholderStream", () => {
     expect(job?.startedAt).toBeGreaterThan(0);
     // The job PREFIX, not an input.zip that will never exist.
     expect(job?.objectPath).toBe(`placeholders/${USER_A.subject}/${jobId}/`);
+    // No source hint when none was passed — absent stays absent.
+    expect(job?.source).toBeUndefined();
+  });
+
+  test("stores the source hint when the client passes one", async () => {
+    // The scanner CLI passes "scanner"; it is a display hint, stored verbatim.
+    const t = convexTest(schema, modules);
+    const result = await t
+      .withIdentity(USER_A)
+      .mutation(api.placeholderStream.startPlaceholderStream, { source: "scanner" });
+    expect(result.started).toBe(true);
+
+    expect((await getJob(t, result.jobId!))?.source).toBe("scanner");
   });
 
   test("the active-batch cap counts BOTH modes", async () => {

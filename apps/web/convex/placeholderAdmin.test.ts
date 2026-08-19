@@ -317,6 +317,25 @@ describe("adminListPlaceholderJobs", () => {
       t.withIdentity(ADMIN).query(api.placeholderPipeline.adminListPlaceholderJobs, {}),
     ).resolves.toEqual([]);
   });
+
+  test("passes source through — the 'scanner CLI vs web app' column — and leaves it absent when unset", async () => {
+    // Round-trips a real start into the admin list, so the field is proven end
+    // to end rather than only from a hand-seeded row.
+    const t = convexTest(schema, modules);
+    const scanner = await t
+      .withIdentity(OTHER_USER)
+      .mutation(api.placeholderStream.startPlaceholderStream, { source: "scanner" });
+    // A zip job with no source hint — an older-style start.
+    await seedJob(t, "job-no-source", { userId: OTHER_USER.subject, status: "processing" });
+
+    const rows = await t
+      .withIdentity(ADMIN)
+      .query(api.placeholderPipeline.adminListPlaceholderJobs, {});
+
+    expect(rows.find((r) => r.jobId === scanner.jobId)?.source).toBe("scanner");
+    // Absent stays absent — no default is invented for "which client".
+    expect(rows.find((r) => r.jobId === "job-no-source")?.source).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -758,5 +777,56 @@ describe("seedCancelMyActivePlaceholderJobs", () => {
       .withIdentity(NON_ADMIN)
       .mutation(api.placeholderStream.startPlaceholderStream, {});
     expect(after.started).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// source — the display hint, through both start paths and both readers
+// ---------------------------------------------------------------------------
+
+describe("source display hint", () => {
+  test("the zip start path stores source, and getPlaceholderJob returns it", async () => {
+    // Web pages that use the zip flow pass "web". The mutation patches the row
+    // synchronously, so the stored value and the reader are both checkable here.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-zip", {
+      userId: NON_ADMIN.subject,
+      mode: "zip",
+      status: "uploaded",
+    });
+
+    const result = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.startPlaceholderBatch, {
+        jobId: "job-zip",
+        source: "web",
+      });
+    expect(result.started).toBe(true);
+
+    expect((await getJob(t, "job-zip"))?.source).toBe("web");
+
+    const visible = await t
+      .withIdentity(NON_ADMIN)
+      .query(api.placeholderPipeline.getPlaceholderJob, { jobId: "job-zip" });
+    expect(visible?.source).toBe("web");
+  });
+
+  test("the zip start path leaves source absent when none is passed", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-zip", {
+      userId: NON_ADMIN.subject,
+      mode: "zip",
+      status: "uploaded",
+    });
+
+    await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.startPlaceholderBatch, { jobId: "job-zip" });
+
+    expect((await getJob(t, "job-zip"))?.source).toBeUndefined();
+    const visible = await t
+      .withIdentity(NON_ADMIN)
+      .query(api.placeholderPipeline.getPlaceholderJob, { jobId: "job-zip" });
+    expect(visible?.source).toBeUndefined();
   });
 });

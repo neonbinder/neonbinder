@@ -50,7 +50,8 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { pairBatch } from "./lib/pairing/pairBatch";
-import type { CardSide, Confidence, Mechanism } from "./lib/pairing/types";
+import { playerNamesMatch, teamNamesMatch } from "./lib/pairing/names";
+import type { CardSide, Confidence, Mechanism, PoolCard } from "./lib/pairing/types";
 import { findJob, INCREMENTAL_PAIRING_STATUSES } from "./placeholderPipeline";
 
 /** Rows written per applyPairDiff / syncImagePairStatus invocation. */
@@ -210,6 +211,88 @@ export function mergedRowIdentity(
 }
 
 /**
+ * Do these two cards carry POSITIVE evidence that they are different cards?
+ *
+ * The guard on the scan-order fallback, and the reason the fallback can be
+ * trusted at all. Two cards contradict when both name the SAME field and the two
+ * values disagree — a known player against a different known player, or a known
+ * team against a different known team. A field that is missing on either side is
+ * not evidence of anything and never contradicts.
+ *
+ * Player and team, because the user's directive names exactly those: "name and
+ * team should have precedency over adjacency". Card number is deliberately not
+ * consulted here — a front's number is discarded upstream
+ * (`poolCardFromIdentity` keeps it only for backs), so on a front↔back pair only
+ * one side ever has one, and "one side missing" is not a contradiction anyway.
+ *
+ * This is the "NEVER override or contradict an identity signal" half of the
+ * fallback: adjacency may pair two cards whose identities are silent, but it may
+ * not pair two the identity evidence has already told us apart.
+ */
+export function identitiesContradict(a: PoolCard, b: PoolCard): boolean {
+  if (a.player && b.player && !playerNamesMatch(a.player, b.player).match) return true;
+  if (a.team && b.team && !teamNamesMatch(a.team, b.team).match) return true;
+  return false;
+}
+
+/**
+ * The scan-order fallback: pair the identity pass's LEFTOVERS by adjacency, but
+ * only where nothing contradicts.
+ *
+ * This is the demoted role adjacency now plays. The identity pool has already
+ * run over every card (see the call site — `useAdjacency: false`), so everything
+ * here is a card the identity evidence could not place: an unreadable scan, a
+ * card whose partner failed to process, a stray. For those — and ONLY for
+ * those — file order is a weak tiebreaker, exactly as the user framed it: "We
+ * could use file numbers to strengthen our decision about matching if we haven't
+ * found matches but we cannot assume it to be true."
+ *
+ * The walk is the ported `planAdjacency`'s shape — advance by two on a pair, by
+ * one on a miss so a single stray at the head does not desynchronise the rest —
+ * over the leftovers in scan (entry-index) order, with two conditions per
+ * neighbour pair:
+ *
+ *   - **opposite sides.** Both PoolCards always carry a side (the pool resolves
+ *     one from the classifier or the text-count heuristic), so this is the same
+ *     front/back-disagreement signal the original pre-pass used.
+ *   - **no contradiction** (`identitiesContradict`). This is the whole
+ *     correction: the old pre-pass paired on side disagreement ALONE, which is
+ *     how a Gray front next to a Hosmer back got matched before identity could
+ *     place them. Here two neighbours whose identities disagree are left for the
+ *     "unmatched" bucket rather than forced together.
+ *
+ * "Neighbours" means consecutive among the leftovers in scan order, not
+ * consecutive by raw entry index — a card the identity pass already claimed is
+ * gone, and the cards on either side of it are as adjacent as anything gets once
+ * it is removed. Every pair this produces is labelled the weakest honest thing
+ * (`side-only`, mechanism `adjacency`, score 0) at the call site, because file
+ * proximity is exactly that weak.
+ *
+ * Note that the pool's OWN side-only fallback already pairs an unambiguous lone
+ * identity-less opposite pair (see `CardPool.findMatch`), so those never reach
+ * here; this handles the case the pool defers on — two or more same-side
+ * leftovers where a single opposite card cannot be assigned without a tiebreak.
+ */
+export function guardedAdjacencyFallback(leftovers: PoolCard[]): Array<[PoolCard, PoolCard]> {
+  const sorted = [...leftovers].sort((a, b) => Number(a.key) - Number(b.key));
+  const pairs: Array<[PoolCard, PoolCard]> = [];
+
+  let index = 0;
+  while (index < sorted.length - 1) {
+    const first = sorted[index];
+    const second = sorted[index + 1];
+    if (first.side !== second.side && !identitiesContradict(first, second)) {
+      pairs.push([first, second]);
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+
+  return pairs;
+}
+
+/**
  * Pair up a batch and — on the final run only — set its terminal status.
  *
  * The terminal decision is made here rather than at the end of processing
@@ -334,7 +417,26 @@ export const runPairing = internalAction({
             // see `asDhash` in placeholderPipeline.ts); pairing treats that as
             // "cannot compare these two images" rather than "they differ".
             hashImage: (key: string) => byKey.get(key)?.dhash ?? null,
-            useAdjacency: true,
+            // IDENTITY FIRST. `false` turns off the ported adjacency PRE-pass, so
+            // every card goes through the identity pool and front↔back are
+            // matched by who is on the card, not by who was scanned next to whom.
+            //
+            // This inverts the cardlister precedence on purpose, and the reason
+            // is that the cardlister precedence was an answer to a cost that no
+            // longer exists. There, `resolveIdentity` was a Haiku call, so the
+            // pre-pass paired confident neighbours FIRST precisely to avoid
+            // paying for it. Here identity is already on the row (it is a
+            // dictionary lookup — see the module comment), so there is no cost to
+            // avoid and a real correctness price to pay: the pre-pass matched on
+            // side-disagreement ALONE, which paired a Sonny Gray front next to an
+            // Eric Hosmer back — opposite sides, so it grabbed them — before the
+            // pool could pair each with its own partner. Any dropped or reordered
+            // side cascaded into mispairs.
+            //
+            // Scan order is not discarded, only demoted: `guardedAdjacencyFallback`
+            // below applies it to whatever identity could not place, and only
+            // between neighbours nothing contradicts.
+            useAdjacency: false,
           },
         );
 
@@ -368,6 +470,38 @@ export const runPairing = internalAction({
             confidence: asConfidence(match.confidence),
             mechanism: asMechanism(match.mechanism),
             score: typeof match.score === "number" ? match.score : 0,
+          });
+        }
+
+        // ---- Scan-order fallback over the identity pass's leftovers --------
+        //
+        // Everything the identity pool could not place, paired by adjacency
+        // where nothing contradicts — see `guardedAdjacencyFallback`. These are
+        // the WEAKEST pairs the batch produces, and they are labelled as such:
+        // mechanism "adjacency", confidence "side-only", score 0, exactly the
+        // shape the /placeholders review page renders as "front/back only · by
+        // scan order". Identity pairs above keep their real pool confidence.
+        for (const [a, b] of guardedAdjacencyFallback(result.unmatched)) {
+          const front = byKey.get(a.side === "front" ? a.key : b.key);
+          const back = byKey.get(a.side === "front" ? b.key : a.key);
+          // A leftover key that no longer resolves to a row is dropped, same as
+          // an identity match above — leaving both images unmatched is accurate.
+          if (!front || !back) continue;
+          pairedIds.add(front._id);
+          pairedIds.add(back._id);
+          desired.push({
+            frontImageId: front._id,
+            backImageId: back._id,
+            frontIndex: front.entryIndex,
+            backIndex: back.entryIndex,
+            // No algorithm identity to keep — an adjacency fallback pair was
+            // made without consulting one — so the label comes entirely from the
+            // rows, front-preferred for player/team and back-only for the card
+            // number (the same asymmetry `mergedRowIdentity` documents).
+            ...mergedRowIdentity({ player: null, team: null, cardNumber: null }, front, back),
+            confidence: "side-only",
+            mechanism: "adjacency",
+            score: 0,
           });
         }
       }

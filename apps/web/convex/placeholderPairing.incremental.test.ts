@@ -45,7 +45,12 @@ import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordImageOutcomeImpl } from "./placeholderPipeline";
-import { mergedRowIdentity } from "./placeholderPairing";
+import {
+  guardedAdjacencyFallback,
+  identitiesContradict,
+  mergedRowIdentity,
+} from "./placeholderPairing";
+import { createPoolCard } from "./lib/pairing/types";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -245,6 +250,12 @@ function watchPairingRuns(jobId: string) {
 
 // A front/back pair the ADJACENCY pre-pass claims for free: both sides carry a
 // confident text count (<= 2 is confidently a front, >= 7 confidently a back).
+// A matching front/back that share an identity. Under the NEO-170 identity-first
+// precedence these pair through the identity POOL (mechanism "pool"), not the
+// adjacency pre-pass — the clear text counts (1 vs 40) now only decide each
+// card's side, they no longer decide the mechanism. Named ADJ_* historically;
+// kept because so many streaming/diff tests just need "a front and a back that
+// pair".
 const ADJ_FRONT = (entryIndex: number): ImageSpec => ({
   entryIndex,
   textCount: 1,
@@ -259,9 +270,9 @@ const ADJ_BACK = (entryIndex: number): ImageSpec => ({
   cardNumber: "24",
 });
 
-// Ambiguous text counts (3-6) keep the adjacency pre-pass out of it and force
-// the scoring pool, which is where identity actually gets compared. 4 reads as a
-// front, 6 as a back, and neither is confident enough for adjacency.
+// Ambiguous text counts (3-6) — deliberately in the band where the side is
+// decided by the classifier/identity rather than a confident count. Identity is
+// what pairs these; 4 reads as a front, 6 as a back.
 const POOL_FRONT = (entryIndex: number, player: string, team: string): ImageSpec => ({
   entryIndex,
   textCount: 4,
@@ -280,6 +291,13 @@ const POOL_BACK = (
   team,
   cardNumber,
 });
+
+// UNREADABLE identity: the classifier extracted no player/team/cardNumber, only
+// a side (from the text count — 1 front, 40 back). These carry nothing for the
+// identity pool to match on, so they pair ONLY through the demoted scan-order
+// adjacency fallback — which is the whole point of having fixtures for it.
+const BLANK_FRONT = (entryIndex: number): ImageSpec => ({ entryIndex, textCount: 1 });
+const BLANK_BACK = (entryIndex: number): ImageSpec => ({ entryIndex, textCount: 40 });
 
 // ---------------------------------------------------------------------------
 // Pairs stream in
@@ -312,7 +330,9 @@ describe("pairs stream in as images complete", () => {
     expect(pairs).toHaveLength(1);
     expect(pairs[0].frontIndex).toBe(0);
     expect(pairs[0].backIndex).toBe(1);
-    expect(pairs[0].mechanism).toBe("adjacency");
+    // By IDENTITY, not adjacency: the two halves share a player, so the pool
+    // matches them regardless of scan order (identity-first precedence).
+    expect(pairs[0].mechanism).toBe("pool");
 
     const images = await getImages(t, JOB);
     expect(images.map((i) => i.pairStatus)).toEqual([
@@ -360,91 +380,187 @@ describe("pairs stream in as images complete", () => {
     expect(visible[0].cardNumber).toBe("24");
   });
 
-  test("an adjacency pair is labelled from its rows, without the resolver ever being called", async () => {
-    // This test used to assert the OPPOSITE — that an adjacency pair carried no
-    // identity at all — and it was right about the algorithm while being wrong
-    // about what we should store. The pre-pass genuinely never asks the resolver
-    // (`adjacencyCard` sets `identityResolved: false`), because in the original
-    // asking cost a Haiku call. Here the identity is already sitting on the row,
-    // so declining to read it just left the review UI unable to name a card it
-    // could perfectly well name. `mergedRowIdentity` backfills it at the wrapper
-    // level; see the comment there for why that does not touch the port.
+  test("an adjacency FALLBACK pair is labelled from its rows", async () => {
+    // The scan-order fallback fires only for what identity could not place. A
+    // readable front (Sonny Gray) whose true back is absent sits between two
+    // unreadable backs. The pool cannot match the front to a blank back (there
+    // is nothing to score), and it will not apply its OWN lone-candidate
+    // side-only rule either — that rule requires BOTH cards be identity-less, and
+    // the front is not — so the decision falls to the guarded scan-order pass.
     //
-    // The property the old assertion was really protecting — "the free pre-pass
-    // has not quietly started paying" — is now pinned directly by
-    // `resolverCalls`, which is a far more honest guard than the absence of a
-    // label.
-    const JOB = "job-adjacency-identity";
+    // Such a pair carries no algorithm identity (adjacency never resolves one),
+    // so `mergedRowIdentity` labels it from the rows — which is what lets the
+    // review UI name a card the pool left unlabelled. HOW it was matched stays
+    // honest: mechanism "adjacency", confidence "side-only", score 0.
+    const JOB = "job-adjacency-fallback-label";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 3 });
-    const front = await seedImage(t, JOB, 0, "processing");
-    const back = await seedImage(t, JOB, 1, "processing");
-    await seedImage(t, JOB, 2, "processing");
+    const backA = await seedImage(t, JOB, 0, "processing");
+    const front = await seedImage(t, JOB, 1, "processing");
+    const backB = await seedImage(t, JOB, 2, "processing");
 
-    await complete(t, JOB, front, ADJ_FRONT(0));
-    await complete(t, JOB, back, ADJ_BACK(1));
+    await complete(t, JOB, backA, BLANK_BACK(0));
+    await complete(t, JOB, front, {
+      entryIndex: 1,
+      textCount: 1,
+      players: ["Sonny Gray"],
+      team: "Minnesota Twins",
+    });
+    await complete(t, JOB, backB, BLANK_BACK(2));
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const pairs = await getPairs(t, JOB);
     expect(pairs).toHaveLength(1);
+    // The front pairs with its nearest leftover back in scan order (index 0).
+    expect([pairs[0].frontIndex, pairs[0].backIndex]).toEqual([1, 0]);
 
-    // HOW the match was made is reported exactly as the algorithm found it —
-    // untouched by the backfill, because side evidence really is all that was
-    // consulted.
+    // HOW it was matched — scan order, no identity consulted between the two.
     expect(pairs[0].mechanism).toBe("adjacency");
     expect(pairs[0].confidence).toBe("side-only");
     expect(pairs[0].score).toBe(0);
 
-    // WHAT the card is now comes from the rows.
-    expect(pairs[0].player).toBe("Ken Griffey Jr.");
-    expect(pairs[0].team).toBe("Seattle Mariners");
-    expect(pairs[0].cardNumber).toBe("24");
-
-    // And it cost nothing — zero resolver calls, which is the entire point of
-    // the pre-pass and what the release E2E asserts.
-    expect((await getJob(t, JOB))?.resolverCalls ?? 0).toBe(0);
+    // WHAT the card is — backfilled from the one readable row.
+    expect(pairs[0].player).toBe("Sonny Gray");
+    expect(pairs[0].team).toBe("Minnesota Twins");
+    expect(pairs[0].cardNumber).toBeUndefined();
   });
 
-  test("the merge prefers the FRONT's player and team, and the BACK's card number", async () => {
-    // The conflict case, and the one that decides whether the merge is the same
-    // asymmetry the rest of the design uses. Adjacency pairs on side evidence
-    // alone and never compares identity, so two neighbours with confidently
-    // opposite sides pair even when their rows disagree about who is on the
-    // card — which is exactly how this situation arises in a real scan.
-    const JOB = "job-identity-conflict";
+  test("adjacent cards whose KNOWN identities disagree are left unmatched, never forced together", async () => {
+    // The core correctness case, and the exact live failure that motivated the
+    // whole precedence flip. A Sonny Gray FRONT sits next to an Eric Hosmer BACK
+    // — opposite sides, so the OLD adjacency-first pre-pass grabbed them before
+    // identity could weigh in. Neither has its true partner present in this
+    // batch. Under identity-first, the pool hard-rejects the player disagreement,
+    // and the scan-order fallback is BLOCKED by `identitiesContradict` — so both
+    // are correctly left unmatched rather than mispaired.
+    const JOB = "job-contradicting-adjacent";
     const t = convexTest(schema, modules);
-    await seedJob(t, JOB, { totalImages: 3 });
-    const front = await seedImage(t, JOB, 0, "processing");
-    const back = await seedImage(t, JOB, 1, "processing");
-    await seedImage(t, JOB, 2, "processing");
+    await seedJob(t, JOB, { totalImages: 2 });
+    const grayFront = await seedImage(t, JOB, 0, "processing");
+    const hosmerBack = await seedImage(t, JOB, 1, "processing");
 
-    await complete(t, JOB, front, {
+    await complete(t, JOB, grayFront, {
       entryIndex: 0,
-      textCount: 1, // confidently a front
-      players: ["Ken Griffey Jr."],
-      team: "Seattle Mariners",
-      // A front's card number is a misread — a jersey number, a copyright year,
-      // a subset code — and must never win.
-      cardNumber: "99",
+      textCount: 1,
+      players: ["Sonny Gray"],
+      team: "Minnesota Twins",
     });
-    await complete(t, JOB, back, {
+    await complete(t, JOB, hosmerBack, {
       entryIndex: 1,
-      textCount: 40, // confidently a back
-      players: ["Barry Bonds"],
-      team: "San Francisco Giants",
+      textCount: 40,
+      players: ["Eric Hosmer"],
+      team: "San Diego Padres",
       cardNumber: "24",
     });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
+    // No pair at all — the disagreement is decisive.
+    expect(await getPairs(t, JOB)).toHaveLength(0);
+    expect((await getImages(t, JOB)).map((i) => i.pairStatus)).toEqual([
+      "unmatched",
+      "unmatched",
+    ]);
+  });
+
+  test("team disagreement alone blocks the adjacency fallback", async () => {
+    // "name and team should have precedency over adjacency" — team is part of the
+    // guard, not just player. Two cards with no player but conflicting teams are
+    // known-different, so scan-order proximity must not pair them.
+    const JOB = "job-team-conflict";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 2 });
+    const front = await seedImage(t, JOB, 0, "processing");
+    const back = await seedImage(t, JOB, 1, "processing");
+
+    await complete(t, JOB, front, { entryIndex: 0, textCount: 1, team: "Minnesota Twins" });
+    await complete(t, JOB, back, { entryIndex: 1, textCount: 40, team: "San Diego Padres" });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(await getPairs(t, JOB)).toHaveLength(0);
+  });
+
+  test("front and back of the same card pair by identity even when NOT adjacent", async () => {
+    // Order-independence, the flip side of the fix. Gray's front is index 0 and
+    // his back is index 3, with two unrelated cards between them. Identity-first
+    // pairs them regardless of the distance — the pre-pass could only ever have
+    // paired neighbours.
+    const JOB = "job-nonadjacent-identity";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 4 });
+    const ids: Id<"placeholderImages">[] = [];
+    for (let i = 0; i < 4; i++) ids.push(await seedImage(t, JOB, i, "processing"));
+
+    await complete(t, JOB, ids[0], POOL_FRONT(0, "Sonny Gray", "Minnesota Twins"));
+    await complete(t, JOB, ids[1], POOL_FRONT(1, "Eric Hosmer", "San Diego Padres"));
+    await complete(t, JOB, ids[2], POOL_BACK(2, "Eric Hosmer", "San Diego Padres", "7"));
+    await complete(t, JOB, ids[3], POOL_BACK(3, "Sonny Gray", "Minnesota Twins", "54"));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
     const pairs = await getPairs(t, JOB);
-    expect(pairs).toHaveLength(1);
-    // Front wins the name and the team: fronts print them large, in a display
-    // face, against a clean background.
-    expect(pairs[0].player).toBe("Ken Griffey Jr.");
-    expect(pairs[0].team).toBe("Seattle Mariners");
-    // Back wins the card number outright — and the front's "99" appears
-    // nowhere, because there is deliberately no fall back to it.
-    expect(pairs[0].cardNumber).toBe("24");
+    expect(pairs).toHaveLength(2);
+    const byFront = new Map(pairs.map((p) => [p.frontIndex, p]));
+    // Gray front(0) ↔ Gray back(3), across the gap.
+    expect(byFront.get(0)?.backIndex).toBe(3);
+    expect(byFront.get(0)?.player).toBe("Sonny Gray");
+    expect(byFront.get(0)?.mechanism).toBe("pool");
+    // Hosmer front(1) ↔ Hosmer back(2).
+    expect(byFront.get(1)?.backIndex).toBe(2);
+    expect(byFront.get(1)?.player).toBe("Eric Hosmer");
+  });
+
+  test("the live mispair: a Gray front adjacent to a Hosmer back each pair with their OWN partner", async () => {
+    // The complete real-world failure. In scan order the sheet is
+    // Gray-front, Hosmer-back, Gray-back, Hosmer-front — so Gray-front(0) sits
+    // right next to Hosmer-back(1), which the old pre-pass paired on sight. Under
+    // identity-first every card finds its true partner, and the adjacent
+    // Gray/Hosmer pair is never made.
+    const JOB = "job-live-mispair";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 4 });
+    const ids: Id<"placeholderImages">[] = [];
+    for (let i = 0; i < 4; i++) ids.push(await seedImage(t, JOB, i, "processing"));
+
+    await complete(t, JOB, ids[0], POOL_FRONT(0, "Sonny Gray", "Minnesota Twins"));
+    await complete(t, JOB, ids[1], POOL_BACK(1, "Eric Hosmer", "San Diego Padres", "7"));
+    await complete(t, JOB, ids[2], POOL_BACK(2, "Sonny Gray", "Minnesota Twins", "54"));
+    await complete(t, JOB, ids[3], POOL_FRONT(3, "Eric Hosmer", "San Diego Padres"));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(2);
+    const byFront = new Map(pairs.map((p) => [p.frontIndex, p]));
+    // Gray-front(0) ↔ Gray-back(2), NOT the adjacent Hosmer-back(1).
+    expect(byFront.get(0)?.backIndex).toBe(2);
+    expect(byFront.get(0)?.player).toBe("Sonny Gray");
+    // Hosmer-front(3) ↔ Hosmer-back(1).
+    expect(byFront.get(3)?.backIndex).toBe(1);
+    expect(byFront.get(3)?.player).toBe("Eric Hosmer");
+    // Nothing paired the adjacent Gray-front(0) ↔ Hosmer-back(1).
+    expect(pairs.some((p) => p.frontIndex === 0 && p.backIndex === 1)).toBe(false);
+  });
+
+  test("scan-order-scrambled identity partners still pair correctly", async () => {
+    // Proves the result does not depend on upload order at all. The same two
+    // cards' halves arrive interleaved with a third card's, in a scrambled
+    // sequence; identity still assembles them.
+    const JOB = "job-scrambled";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 4 });
+    const ids: Id<"placeholderImages">[] = [];
+    for (let i = 0; i < 4; i++) ids.push(await seedImage(t, JOB, i, "processing"));
+
+    // Deliberately jumbled: back before front, partners far apart.
+    await complete(t, JOB, ids[0], POOL_BACK(0, "Eric Hosmer", "San Diego Padres", "7"));
+    await complete(t, JOB, ids[1], POOL_FRONT(1, "Sonny Gray", "Minnesota Twins"));
+    await complete(t, JOB, ids[2], POOL_BACK(2, "Sonny Gray", "Minnesota Twins", "54"));
+    await complete(t, JOB, ids[3], POOL_FRONT(3, "Eric Hosmer", "San Diego Padres"));
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(2);
+    const byFront = new Map(pairs.map((p) => [p.frontIndex, p]));
+    expect(byFront.get(1)?.backIndex).toBe(2); // Gray front(1) ↔ Gray back(2)
+    expect(byFront.get(3)?.backIndex).toBe(0); // Hosmer front(3) ↔ Hosmer back(0)
   });
 
   test("a front's card number is discarded when the back has none", async () => {
@@ -558,11 +674,13 @@ describe("pairs stream in as images complete", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolverCalls", () => {
-  test("stays 0 across a whole well-ordered batch — the release-E2E assertion", async () => {
-    // The property the metric exists for: a scan in front/back order is paired
-    // entirely by the free pre-pass, and the identity resolver is never
-    // consulted for a single image, on any run.
-    const JOB = "job-resolver-zero";
+  test("equals the done-image count for a well-ordered batch — every card is resolved by identity", async () => {
+    // Identity-first means the pool sees EVERY card (see `useAdjacency: false`),
+    // so the final run resolves one identity per done image. That is exactly the
+    // number the release E2E now asserts — it flipped from 0 (adjacency-first
+    // never asked) to the image count (identity-first asks about all of them),
+    // which is expected and healthy, not a regression.
+    const JOB = "job-resolver-count";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 4 });
     const ids: Id<"placeholderImages">[] = [];
@@ -575,28 +693,32 @@ describe("resolverCalls", () => {
 
     const job = await getJob(t, JOB);
     expect(job?.status).toBe("succeeded");
+    // Two pairs (Griffey pairs with Griffey by identity, twice over).
     expect(await getPairs(t, JOB)).toHaveLength(2);
-    // Never written at all on the healthy path — absent reads as 0, and not
-    // writing keeps every subscriber from being woken to hear nothing changed.
-    expect(job?.resolverCalls).toBeUndefined();
+    // Four done images → four identity resolutions in the final run.
+    expect(job?.resolverCalls).toBe(4);
+    // Exposed to the owner — this is the number the release E2E reads.
+    const visible = await t
+      .withIdentity(USER_A)
+      .query(api.placeholderPipeline.getPlaceholderJob, { jobId: JOB });
+    expect(visible?.resolverCalls).toBe(4);
   });
 
-  test("provisional runs record nothing — only the completed batch counts", async () => {
-    // The reason the metric is not cumulative. Every intermediate run over an
-    // odd-length prefix has a trailing image with no partner YET, which goes to
-    // the pool and costs a call. Summing those would report a non-zero total for
-    // a perfectly ordered scan and make "assert 0" meaningless.
+  test("provisional runs record nothing — only the completed batch's count is stored", async () => {
+    // Only the FINAL run writes the number, so it always describes the whole
+    // batch. An intermediate run over a partial batch resolves a different
+    // (smaller) count, and storing that would report a figure that tracks how
+    // completions interleaved rather than the batch itself.
     const JOB = "job-resolver-provisional";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 4 });
     const ids: Id<"placeholderImages">[] = [];
     for (let i = 0; i < 4; i++) ids.push(await seedImage(t, JOB, i, "processing"));
 
-    // One image done: the run pairs nothing and resolves the lone row.
+    // One image done: a provisional run resolves the lone row but records nothing.
     await complete(t, JOB, ids[0], ADJ_FRONT(0));
     await t.finishAllScheduledFunctions(vi.runAllTimers);
     expect((await getJob(t, JOB))?.status).toBe("processing");
-    // Nothing recorded — that call was an artifact of an incomplete batch.
     expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
 
     for (const [i, spec] of [ADJ_BACK(1), ADJ_FRONT(2), ADJ_BACK(3)].entries()) {
@@ -604,10 +726,9 @@ describe("resolverCalls", () => {
       await t.finishAllScheduledFunctions(vi.runAllTimers);
     }
 
-    // The final run saw all four rows, paired them all, and needed the resolver
-    // for none of them.
+    // The final run saw all four rows and records the batch's full count.
     expect((await getJob(t, JOB))?.status).toBe("succeeded");
-    expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
+    expect((await getJob(t, JOB))?.resolverCalls).toBe(4);
   });
 
   test("the final run's count replaces a stale one rather than adding to it", async () => {
@@ -628,44 +749,23 @@ describe("resolverCalls", () => {
       final: true,
     });
 
-    // This batch pairs by adjacency, so the honest answer is 0 — stored as
-    // absent, which is how a stale 9 is cleared rather than added to.
-    expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
+    // Two done images → 2, which REPLACES the stale 9 (a set, not an add — an
+    // add would read 11).
+    expect((await getJob(t, JOB))?.resolverCalls).toBe(2);
   });
 
-  test("a batch that genuinely needed the pool records what the final run cost", async () => {
-    const JOB = "job-resolver-paid";
+  test("a job that never paired defaults resolverCalls to 0", async () => {
+    // 0 is stored as absent — nothing writes it on a job that never reached a
+    // pairing run — and every reader defaults it back to 0.
+    const JOB = "job-resolver-zero-default";
     const t = convexTest(schema, modules);
-    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
-    // Ambiguous text counts keep the free pre-pass out, so both rows reach the
-    // scoring pool and each costs a resolver call.
-    await seedImage(
-      t,
-      JOB,
-      0,
-      "done",
-      doneRowFields(POOL_FRONT(0, "Ken Griffey Jr.", "Seattle Mariners")),
-    );
-    await seedImage(
-      t,
-      JOB,
-      1,
-      "done",
-      doneRowFields(POOL_BACK(1, "Ken Griffey Jr.", "Seattle Mariners", "24")),
-    );
+    await seedJob(t, JOB, { status: "pending" });
 
-    await t.action(internal.placeholderPairing.runPairing, {
-      jobId: JOB,
-      userId: USER_A.subject,
-      final: true,
-    });
-
-    expect((await getJob(t, JOB))?.resolverCalls).toBe(2);
-    // And it is visible to the owner, which is what the E2E reads.
+    expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
     const job = await t
       .withIdentity(USER_A)
       .query(api.placeholderPipeline.getPlaceholderJob, { jobId: JOB });
-    expect(job?.resolverCalls).toBe(2);
+    expect(job?.resolverCalls).toBe(0);
   });
 
   test("is reset when a failed batch is restarted", async () => {
@@ -687,16 +787,6 @@ describe("resolverCalls", () => {
     expect((await getJob(t, JOB))?.resolverCalls).toBeUndefined();
   });
 
-  test("getPlaceholderJob defaults it to 0 for a job that never paired", async () => {
-    const JOB = "job-resolver-default";
-    const t = convexTest(schema, modules);
-    await seedJob(t, JOB, { status: "pending" });
-
-    const job = await t
-      .withIdentity(USER_A)
-      .query(api.placeholderPipeline.getPlaceholderJob, { jobId: JOB });
-    expect(job?.resolverCalls).toBe(0);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -751,30 +841,46 @@ describe("a later arrival revises an earlier verdict", () => {
     ]);
   });
 
-  test("a pair that disappears entirely leaves no row behind", async () => {
-    // Two identity-free images pair on the side-only fallback, which requires
-    // exactly ONE opposite-side candidate. A third image makes it two, the
-    // fallback stops firing, and the pair must be withdrawn rather than left
-    // stale.
-    const JOB = "job-withdraw";
+  test("an adjacency fallback pair yields to identity when the real partner arrives, deleting the old row", async () => {
+    // The diff's DELETE branch, and the fix in miniature. A readable front and
+    // an unreadable back are paired by the scan-order fallback while the front's
+    // true back is still processing. When that true back completes, identity
+    // claims the front, the fallback pair is withdrawn, and its stored row must
+    // be DELETED — not left behind pointing at a pairing identity has overruled.
+    const JOB = "job-fallback-yields";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 3 });
-    const ids = [
-      await seedImage(t, JOB, 0, "processing"),
-      await seedImage(t, JOB, 1, "processing"),
-      await seedImage(t, JOB, 2, "processing"),
-    ];
+    const front = await seedImage(t, JOB, 0, "processing");
+    const blankBack = await seedImage(t, JOB, 1, "processing");
+    const realBack = await seedImage(t, JOB, 2, "processing");
 
-    await complete(t, JOB, ids[1], { entryIndex: 1, textCount: 4 });
-    await complete(t, JOB, ids[2], { entryIndex: 2, textCount: 6 });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-    expect(await getPairs(t, JOB)).toHaveLength(1);
-
-    await complete(t, JOB, ids[0], { entryIndex: 0, textCount: 4 });
+    // Front (Gray) + an unreadable back complete first. Identity can't place the
+    // blank back, so the fallback pairs 0-1 by scan order.
+    await complete(t, JOB, front, { entryIndex: 0, textCount: 1, players: ["Sonny Gray"], team: "Minnesota Twins" });
+    await complete(t, JOB, blankBack, BLANK_BACK(1));
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
-    expect(await getPairs(t, JOB)).toHaveLength(0);
-    expect((await getImages(t, JOB)).every((i) => i.pairStatus === "unmatched")).toBe(true);
+    const firstPass = await getPairs(t, JOB);
+    expect(firstPass).toHaveLength(1);
+    expect([firstPass[0].frontIndex, firstPass[0].backIndex]).toEqual([0, 1]);
+    expect(firstPass[0].mechanism).toBe("adjacency");
+
+    // Gray's real back lands. Identity pairs 0-2, and the adjacency 0-1 must go.
+    await complete(t, JOB, realBack, { entryIndex: 2, textCount: 40, players: ["Sonny Gray"], team: "Minnesota Twins", cardNumber: "54" });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const secondPass = await getPairs(t, JOB);
+    expect(secondPass).toHaveLength(1);
+    expect([secondPass[0].frontIndex, secondPass[0].backIndex]).toEqual([0, 2]);
+    expect(secondPass[0].mechanism).toBe("pool");
+    // The stale adjacency row is gone, not merely superseded in place.
+    expect(secondPass[0]._id).not.toBe(firstPass[0]._id);
+    // The blank back that identity could not place is now correctly unmatched.
+    expect((await getImages(t, JOB)).map((i) => i.pairStatus)).toEqual([
+      "paired",
+      "unmatched",
+      "paired",
+    ]);
   });
 });
 
@@ -1142,5 +1248,71 @@ describe("a provisional run never decides the batch's fate", () => {
     const job = await getJob(t, JOB);
     expect(job?.status).toBe("failed");
     expect(job?.errorCode).toBe("CANCELED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The precedence primitives, unit-tested directly
+// ---------------------------------------------------------------------------
+//
+// The pipeline tests above exercise these through the full flow, but the guard
+// and the walk are small pure functions whose edges (a missing field is not a
+// contradiction; the stray-recovery advance; opposite-side requirement) are
+// clearest — and cheapest to pin against a regression — in isolation.
+
+const card = (key: string, side: "front" | "back", id: Partial<{ player: string; team: string }> = {}) =>
+  createPoolCard({ key, side, player: id.player ?? null, team: id.team ?? null });
+
+describe("identitiesContradict", () => {
+  test("two known, disagreeing players contradict", () => {
+    expect(identitiesContradict(card("0", "front", { player: "Sonny Gray" }), card("1", "back", { player: "Eric Hosmer" }))).toBe(true);
+  });
+  test("two known, agreeing players do not", () => {
+    expect(identitiesContradict(card("0", "front", { player: "Sonny Gray" }), card("1", "back", { player: "Sonny Gray" }))).toBe(false);
+  });
+  test("a missing player on either side is never a contradiction", () => {
+    expect(identitiesContradict(card("0", "front", { player: "Sonny Gray" }), card("1", "back"))).toBe(false);
+    expect(identitiesContradict(card("0", "front"), card("1", "back", { player: "Eric Hosmer" }))).toBe(false);
+    expect(identitiesContradict(card("0", "front"), card("1", "back"))).toBe(false);
+  });
+  test("team disagreement contradicts even with no player", () => {
+    expect(identitiesContradict(card("0", "front", { team: "Minnesota Twins" }), card("1", "back", { team: "San Diego Padres" }))).toBe(true);
+  });
+  test("agreeing team, no player, does not contradict", () => {
+    expect(identitiesContradict(card("0", "front", { team: "Minnesota Twins" }), card("1", "back", { team: "Minnesota Twins" }))).toBe(false);
+  });
+});
+
+describe("guardedAdjacencyFallback", () => {
+  test("pairs an opposite-side neighbour when nothing contradicts", () => {
+    const pairs = guardedAdjacencyFallback([card("0", "front"), card("1", "back")]);
+    expect(pairs.map(([a, b]) => [a.key, b.key])).toEqual([["0", "1"]]);
+  });
+  test("never pairs same-side neighbours", () => {
+    expect(guardedAdjacencyFallback([card("0", "front"), card("1", "front")])).toEqual([]);
+  });
+  test("never pairs contradicting neighbours", () => {
+    expect(
+      guardedAdjacencyFallback([
+        card("0", "front", { player: "Sonny Gray" }),
+        card("1", "back", { player: "Eric Hosmer" }),
+      ]),
+    ).toEqual([]);
+  });
+  test("advances by one past a stray so the alternation behind it still pairs", () => {
+    // [front, front, back]: the first front is a stray (same side as its
+    // neighbour); the walk steps past it and pairs the second front with the
+    // back, exactly like the ported planAdjacency's recovery.
+    const pairs = guardedAdjacencyFallback([card("0", "front"), card("1", "front"), card("2", "back")]);
+    expect(pairs.map(([a, b]) => [a.key, b.key])).toEqual([["1", "2"]]);
+  });
+  test("sorts by entry index before walking, regardless of input order", () => {
+    const pairs = guardedAdjacencyFallback([card("2", "back"), card("0", "front")]);
+    expect(pairs.map(([a, b]) => [a.key, b.key])).toEqual([["0", "2"]]);
+  });
+  test("does not reuse a card across two pairs", () => {
+    // [front, back, front]: pairs 0-1, then index 2 is alone.
+    const pairs = guardedAdjacencyFallback([card("0", "front"), card("1", "back"), card("2", "front")]);
+    expect(pairs.map(([a, b]) => [a.key, b.key])).toEqual([["0", "1"]]);
   });
 });

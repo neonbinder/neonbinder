@@ -705,6 +705,14 @@ export default defineSchema({
     // place that must not is `startPlaceholderBatch`, which refuses `"stream"`
     // explicitly (there is no archive for it to extract).
     mode: v.optional(v.union(v.literal("zip"), v.literal("stream"))),
+    // Which client started this run — a DISPLAY hint for the admin page ("ran
+    // from the scanner CLI" vs "from the web app"), nothing more. Absent means
+    // unknown, which is every row that predates the field. It is NOT a security
+    // boundary and is deliberately spoofable: the client passes it, the server
+    // stores it verbatim, and no decision anywhere is gated on it — so there is
+    // nothing to gain by faking it. Kept to the two known clients as a union so
+    // the value is at least well-formed.
+    source: v.optional(v.union(v.literal("scanner"), v.literal("web"))),
     // Lifecycle (NEO-170). "pending" is what `insertPlaceholderJob` writes at
     // mint time. "uploaded" is RESERVED — nothing writes it yet, because
     // confirming that the client actually finished its PUT is a NEO-152

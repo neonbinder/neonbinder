@@ -50,6 +50,7 @@ import {
   MAX_ACTIVE_JOBS_PER_USER,
   MAX_FIELD_CHARS,
   PLACEHOLDER_STREAM_IDLE_MS,
+  SOURCE_VALIDATOR,
   findOwnedJob,
   requireUserId,
 } from "./placeholderPipeline";
@@ -114,13 +115,15 @@ async function requireCollectingStreamJob(
  * reason.
  */
 export const startPlaceholderStream = mutation({
-  args: {},
+  // `source` is an optional display hint — the scanner CLI passes "scanner". See
+  // the `source` comment in schema.ts; absent leaves it absent.
+  args: { source: v.optional(SOURCE_VALIDATOR) },
   returns: v.object({
     started: v.boolean(),
     jobId: v.optional(v.string()),
     reason: v.optional(v.string()),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const userId = await requireUserId(ctx);
     if (!CLERK_USER_ID_RE.test(userId)) {
       // Belt-and-suspenders, and the same check `createPlaceholderUploadUrl`
@@ -156,6 +159,9 @@ export const startPlaceholderStream = mutation({
       objectPath: placeholderJobPrefix(userId, jobId),
       createdAt: now,
       mode: "stream",
+      // Stored verbatim when the client sends it (the scanner CLI passes
+      // "scanner"); a display hint only. Omitted leaves it absent.
+      ...(args.source ? { source: args.source } : {}),
       status: "collecting",
       // A stream job is running from the moment it opens — there is no separate
       // Start for it, so created and started are the same instant.

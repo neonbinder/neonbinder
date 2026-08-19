@@ -171,6 +171,14 @@ export const PAIRING_DEBOUNCE_MS = 5 * 1000;
  */
 export const MAX_ACTIVE_JOBS_PER_USER = 2;
 
+/**
+ * Which client started a run — a display hint for the admin page, not a security
+ * boundary. See the `source` comment in schema.ts: the client supplies it, the
+ * server stores it verbatim, and nothing is gated on it. Shared by both start
+ * paths and both readers so the one spelling of the union lives in one place.
+ */
+export const SOURCE_VALIDATOR = v.union(v.literal("scanner"), v.literal("web"));
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -244,7 +252,9 @@ export async function findJob(
  * which upserts over them and keeps the ones that already succeeded).
  */
 export const startPlaceholderBatch = mutation({
-  args: { jobId: v.string() },
+  // `source` is an optional display hint the web pages pass as "web"; see the
+  // `source` comment in schema.ts. Absent leaves it absent.
+  args: { jobId: v.string(), source: v.optional(SOURCE_VALIDATOR) },
   returns: v.object({
     started: v.boolean(),
     reason: v.optional(v.string()),
@@ -295,6 +305,10 @@ export const startPlaceholderBatch = mutation({
     await ctx.db.patch(job._id, {
       status: "extracting",
       startedAt: Date.now(),
+      // Store the client hint when given; a restart from a page that passes it
+      // updates it, and one that does not leaves whatever was there. Only ever
+      // set from the argument, never inferred.
+      ...(args.source ? { source: args.source } : {}),
       // Zeroed rather than preserved: what the previous attempt counted is not
       // yet known to be true of this one. registerExtractedImages recomputes
       // all four from the rows once it knows what the zip contains — including
@@ -1413,6 +1427,8 @@ export const getPlaceholderJob = query({
       // pre-existing rows never carried it. A client rendering the two flows
       // differently must read it as `mode ?? "zip"`, not as a boolean.
       mode: v.optional(v.union(v.literal("zip"), v.literal("stream"))),
+      // Display hint, passed through as stored. Absent stays absent.
+      source: v.optional(SOURCE_VALIDATOR),
       createdAt: v.number(),
       startedAt: v.optional(v.number()),
       finishedAt: v.optional(v.number()),
@@ -1450,6 +1466,7 @@ export const getPlaceholderJob = query({
       jobId: job.jobId,
       status: job.status,
       mode: job.mode,
+      source: job.source,
       createdAt: job.createdAt,
       startedAt: job.startedAt,
       finishedAt: job.finishedAt,
@@ -1671,6 +1688,9 @@ export const adminListPlaceholderJobs = query({
       // Another user's id, on purpose. See the section comment.
       userId: v.string(),
       mode: v.union(v.literal("zip"), v.literal("stream")),
+      // Which client started it — the "scanner CLI vs web app" column. Absent
+      // stays absent (older rows, or a client that did not say).
+      source: v.optional(SOURCE_VALIDATOR),
       status: JOB_STATUS_VALIDATOR,
       totalImages: v.number(),
       processedImages: v.number(),
@@ -1704,6 +1724,9 @@ export const adminListPlaceholderJobs = query({
       jobId: job.jobId,
       userId: job.userId,
       mode: job.mode ?? ("zip" as const),
+      // Passed through as stored — absent stays absent (unlike `mode`, there is
+      // no sensible default for "which client", so the UI shows "unknown").
+      source: job.source,
       status: job.status,
       totalImages: job.totalImages ?? 0,
       processedImages: job.processedImages ?? 0,
