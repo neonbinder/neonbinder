@@ -20,10 +20,23 @@ import { api } from "@/convex/_generated/api";
 // can act on the FIRST row without needing to carry an id around. The short id
 // is still printed below for a flow that would rather `copyTextFrom` it.
 //
-// Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutation also fails
+// RESET FIRST, like /testing/seed-placeholder-upload: this page also leaves a
+// `collecting` job behind (that IS its output — the abort flow's fixture), so
+// it feeds the same 2-active-per-user cap on the same worker account. Left
+// unchecked, a second run — or an earlier abort flow that failed before it
+// aborted — would leave two active jobs and `seedMyTestPlaceholderStream` would
+// refuse. Cancelling the caller's active jobs first (through the real cancel
+// path, which reaches a terminal status and frees the slot) makes the seed
+// idempotent across repeated runs. Gated identically, so it is safe here and
+// nowhere a real user can reach.
+//
+// Only functional when VITE_CLERK_TESTING_ENABLED=true; the mutations also fail
 // closed on production Convex (no TESTING_RESET_SECRET there).
 function TestingSeedPlaceholderRunContent() {
   const { isAuthenticated, isLoading } = useConvexAuth();
+  const resetSessions = useMutation(
+    api.placeholderPipeline.seedCancelMyActivePlaceholderJobs,
+  );
   const seedRun = useMutation(api.testing.seedMyTestPlaceholderStream);
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -50,7 +63,14 @@ function TestingSeedPlaceholderRunContent() {
 
     (async () => {
       try {
-        setStatus("Seeding a placeholder run...");
+        // FIRST: free any active slot this worker account is still holding, so
+        // the seed below cannot hit the 2-active cap. Unconditional — see the
+        // "RESET FIRST" note above.
+        setStatus("Resetting previous sessions...");
+        const reset = await resetSessions();
+        // Held through the seed's own await so it actually paints; a bare
+        // second setStatus in the same tick would batch it away.
+        setStatus(`Reset ${reset.canceled} previous sessions.`);
         const result = await seedRun();
         setStatus(`Seeded ${result.jobId.slice(0, 8)} — redirecting...`);
         navigate(redirect);
@@ -59,7 +79,7 @@ function TestingSeedPlaceholderRunContent() {
         setStatus(`Error: ${msg}`);
       }
     })();
-  }, [isAuthenticated, isLoading, navigate, redirect, seedRun]);
+  }, [isAuthenticated, isLoading, navigate, redirect, resetSessions, seedRun]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-background">

@@ -18,11 +18,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   authed: true,
+  // One ordered log across both the reset mutation and the upload, so the
+  // reset-precedes-start guarantee can be read directly (the same shared-log
+  // technique lib/placeholders/upload-run.test.ts uses for allocation order).
+  calls: [] as string[],
+  reset: vi.fn(),
   upload: vi.fn(),
 }));
 
+// The page reaches the reset through `useMutation`. It is the only mutation this
+// page uses, so the mock can ignore the ref and hand back the reset spy.
 vi.mock("convex/react", () => ({
   useConvexAuth: () => ({ isAuthenticated: mocks.authed, isLoading: false }),
+  useMutation: () => mocks.reset,
 }));
 
 vi.mock("@/src/hooks/usePlaceholderUpload", () => ({
@@ -73,12 +81,16 @@ function renderPage(entry = "/testing/seed-placeholder-upload") {
 describe("TestingSeedPlaceholderUploadPage", () => {
   beforeEach(() => {
     mocks.authed = true;
-    mocks.upload = vi.fn().mockResolvedValue({
-      ok: true,
-      jobId: "job-abcd1234",
-      uploaded: 2,
-      failed: 0,
-      total: 2,
+    mocks.calls = [];
+    mocks.reset = vi.fn(async () => {
+      mocks.calls.push("reset");
+      return { canceled: 1, canceledWorkItems: 4 };
+    });
+    mocks.upload = vi.fn(async () => {
+      // Stands in for the whole hook — startPlaceholderStream and the per-file
+      // loop — so "upload" in the log marks the moment a slot would be consumed.
+      mocks.calls.push("upload");
+      return { ok: true, jobId: "job-abcd1234", uploaded: 2, failed: 0, total: 2 };
     });
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
   });
@@ -153,6 +165,66 @@ describe("TestingSeedPlaceholderUploadPage", () => {
       ).not.toBeNull(),
     );
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(mocks.upload).not.toHaveBeenCalled();
+    // The reset is destructive; it must not fire outside testing mode either.
+    expect(mocks.reset).not.toHaveBeenCalled();
+  });
+
+  it("resets the caller's active jobs BEFORE starting a new one", async () => {
+    stubFixtures(["a.jpg"], ["a.jpg"]);
+    renderPage();
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    // The whole point: a stream job holds a slot until it goes terminal, and
+    // startPlaceholderStream (inside `upload`) refuses at two active. Cancel
+    // first or the flow dies at its first assert after two runs.
+    expect(mocks.calls).toEqual(["reset", "upload"]);
+    expect(mocks.reset).toHaveBeenCalledTimes(1);
+  });
+
+  // NOTE: the "Reset N previous sessions." status is deliberately NOT asserted
+  // here. It is a real painted state (its `setStatus` is held across the fixture
+  // load — see the page), but with instant mocks the flow runs to the redirect
+  // before `waitFor` can sample the intermediate string, so asserting it would
+  // be racing the scheduler. The E2E flow, with real network latency, sees it;
+  // the unit test pins the reset through the call log instead.
+
+  it("still starts on a second consecutive run (idempotent)", async () => {
+    // Two runs back to back against the same account is exactly the case that
+    // was failing: the first leaves a collecting job, and without the reset the
+    // second cannot start. With it, each run resets then starts.
+    stubFixtures(["a.jpg"], ["a.jpg"]);
+
+    const first = renderPage();
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    stubFixtures(["a.jpg"], ["a.jpg"]);
+    renderPage();
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(2));
+
+    expect(mocks.reset).toHaveBeenCalledTimes(2);
+    // Each run reset before it started — never start-without-reset.
+    expect(mocks.calls).toEqual(["reset", "upload", "reset", "upload"]);
+  });
+
+  it("surfaces a reset failure as a status line instead of starting", async () => {
+    mocks.reset = vi.fn(async () => {
+      mocks.calls.push("reset");
+      throw new Error("Test placeholder cancellation is not enabled on this deployment");
+    });
+    stubFixtures(["a.jpg"], ["a.jpg"]);
+    renderPage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          /Error: Test placeholder cancellation is not enabled on this deployment/,
+        ),
+      ).not.toBeNull(),
+    );
+    // A reset that throws must stop the flow — starting anyway is the cap
+    // failure this whole change exists to prevent.
     expect(mocks.upload).not.toHaveBeenCalled();
   });
 });

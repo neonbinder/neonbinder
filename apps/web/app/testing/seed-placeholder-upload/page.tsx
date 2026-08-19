@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
-import { useConvexAuth } from "convex/react";
+import { useConvexAuth, useMutation } from "convex/react";
 import { useNavigate, useSearchParams } from "react-router";
+import { api } from "@/convex/_generated/api";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
 
 /**
@@ -20,6 +21,25 @@ import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
  * `createPlaceholderImageUploadUrl` → form-POST to GCS → confirm. Real signed
  * policies, real objects, real work items. If any of that breaks, this page goes
  * red for the same reason the product page would.
+ *
+ * ## Reset FIRST, every run — the reason this page needs a lever /placeholders
+ * must not have
+ * A stream job holds one of the caller's two active-job slots from the moment it
+ * opens until it reaches a terminal status, and `startPlaceholderStream` refuses
+ * once a caller has two active. That cap is correct product behaviour, but it
+ * makes the naive test entry point self-poisoning: run it twice and the worker
+ * account has two `collecting` jobs and the third run cannot start, failing the
+ * flow at its first assert. Closing a stream does NOT help — close lands it in
+ * `pairing`/`processing`, still active, still holding the slot (verified against
+ * `closeStreamImpl`).
+ *
+ * So this page cancels the caller's own active jobs before it starts, through
+ * the real cancel path (`seedCancelMyActivePlaceholderJobs`), which reaches a
+ * terminal status and frees the slots. Unconditional, not retry-only: a page
+ * that only reset after a cap failure would still be one leaked slot away from
+ * flaky. This affordance is appropriate HERE and only here — it is
+ * `TESTING_RESET_SECRET`-gated and destroys the caller's in-flight runs, which
+ * is exactly what a person on /placeholders must never trigger.
  *
  * ## The fixture manifest
  * `/placeholder-fixtures/manifest.json`, listing filenames **in upload order** —
@@ -73,6 +93,9 @@ async function loadFixtureFiles(): Promise<File[]> {
 function TestingSeedPlaceholderUploadContent() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const { upload, progress } = usePlaceholderUpload();
+  const resetSessions = useMutation(
+    api.placeholderPipeline.seedCancelMyActivePlaceholderJobs,
+  );
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   // Where to land afterwards. `{jobId}` in the value is substituted with the
@@ -101,7 +124,19 @@ function TestingSeedPlaceholderUploadContent() {
 
     void (async () => {
       try {
-        setStatus("Loading fixtures...");
+        // FIRST, before anything can consume a slot: free the caller's active
+        // jobs so startPlaceholderStream cannot hit the 2-active cap. See the
+        // "Reset FIRST" note above for why this is unconditional.
+        setStatus("Resetting previous sessions...");
+        const reset = await resetSessions();
+
+        // This message stays up through the (awaited) fixture load rather than
+        // being overwritten in the same tick — a `setStatus` immediately
+        // followed by another batches into one render, so "Reset N" would never
+        // paint. The manifest-missing case still surfaces as its own Error line
+        // below, so folding away a separate "Loading fixtures..." note costs no
+        // diagnosability.
+        setStatus(`Reset ${reset.canceled} previous sessions.`);
         const files = await loadFixtureFiles();
 
         setStatus(`Uploading ${files.length} fixtures...`);
@@ -121,7 +156,7 @@ function TestingSeedPlaceholderUploadContent() {
         setStatus(`Error: ${message}`);
       }
     })();
-  }, [isAuthenticated, isLoading, navigate, redirect, upload]);
+  }, [isAuthenticated, isLoading, navigate, redirect, resetSessions, upload]);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-background p-6">
