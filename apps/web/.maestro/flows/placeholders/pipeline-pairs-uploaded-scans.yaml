@@ -70,11 +70,16 @@
 # non-pipeline step is a product finding.
 #
 # R7 — Non-destructive: the flow creates its own upload session under the
-# signed-in worker's own account and touches nothing shared. It deliberately
-# does NOT tap "Close Session" or "Abort Session" — those are a different
-# feature with their own flow, and aborting here would destroy the evidence.
+# signed-in worker's own account and touches nothing shared. Closing the session
+# (Step 3b below) is NOT destructive — it is the batch's normal terminal
+# transition (collecting → pairing → succeeded), the sanctioned way to finish a
+# stream, and it only ever touches this worker's own job. It deliberately does
+# NOT tap "Abort Session", which IS destructive: abort cancels queued images and
+# marks the batch failed, which would destroy the very evidence this flow asserts.
 #
-# R8 — Not engaged: this flow contains no taps at all.
+# R8 — Engaged for the one tap: "Close Session" sits in the Session panel near
+# the top of the run view, so Step 3b scrolls it to centre before tapping. The
+# confirm button that follows is in a fixed, centred modal and needs no scroll.
 appId: com.neonbinder.web
 url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload&worker=${WORKER_INDEX || "0"}
 name: Placeholder pipeline — six scans in, three cropped pairs out
@@ -117,12 +122,52 @@ tags:
     visible: ".*6 of 6 images processed, 0 failed, 3 pairs.*"
     timeout: 400000
 
+# ── Step 3b: CLOSE the session so the FINAL pairing run records the count ──────
+# The 6/6 completion above happened while the stream was still "Collecting":
+# every image finished, and the PROVISIONAL pairing runs that fire after each
+# completion formed all three pairs — but those incremental runs deliberately do
+# NOT record `resolverCalls`. Only the FINAL run does, over the whole batch at
+# once (placeholderPairing.ts returns before recordResolverCalls unless
+# `final`), so at this instant the page still reads "resolver calls: 0".
+#
+# Closing the session is the user action that ends collection and fires that
+# final run: closePlaceholderStream sees every image already settled, moves the
+# job collecting → pairing, and schedules the final runPairing, which resolves
+# each of the 6 done images once (identity-first, useAdjacency:false — the
+# dictionary lookup, not a model call), records "resolver calls: 6", and marks
+# the batch succeeded. Without this step the final run never happens and Step 4
+# can never see 6 — which is exactly the gap that failed this flow before.
+- scrollUntilVisible:
+    element:
+      text: "Close Session"
+    centerElement: true
+- tapOn: "Close Session"
+# Closing is guarded behind an "are you sure". Its focus opens on Cancel (so a
+# reflexive Enter does the safe thing), which is why the confirm is the SECOND
+# button, "Yes, Close".
+- assertVisible: "Close this scan session?"
+- tapOn: "Yes, Close"
+# Wait for the batch to reach its terminal state — the final pairing run
+# settling. This is a Convex-internal, multi-hop scheduled chain (close mutation
+# → scheduled runPairing → recordResolverCalls → markJobSucceeded → reactive
+# push), NOT external compute: every image is already done, so there is no
+# BiRefNet/Vision round-trip here. That is why this is 15s and not Step 3's 400s
+# — a close that takes longer is a product finding (slow scheduler), never a wait
+# to inflate. The status line flips "Collecting" → "Pairing" → "Succeeded";
+# matching "Succeeded" on the same 6/0/3 arithmetic proves the final run
+# finished, and recordResolverCalls commits before markJobSucceeded, so once the
+# status is "Succeeded" the count is already 6 for Step 4 to read.
+- extendedWaitUntil:
+    visible: ".*Succeeded.*6 of 6 images processed, 0 failed, 3 pairs.*"
+    timeout: 15000
+
 # Step 4: identity matching ran over the whole batch. Under identity-first
 # pairing every done image is resolved once (a cheap dictionary lookup, not a
 # model call), so 6 done images = 6 resolver calls. Only the FINAL pairing run
-# records the count, over all six rows at once, so it is a stable 6 rather than
-# an artefact of how the completions happened to interleave (schema.ts's
-# resolverCalls comment spells this out). Combined with Step 3's "3 pairs", this
+# records the count, over all six rows at once — which is why Step 3b had to
+# close the session to fire it — so it is a stable 6 rather than an artefact of
+# how the completions happened to interleave (schema.ts's resolverCalls comment
+# spells this out). Combined with Step 3's "3 pairs", this
 # asserts identity matching both RAN and produced the pairs — the cards were
 # matched by who is on them, not by the fragile scan-adjacency that used to
 # mispair different players.
