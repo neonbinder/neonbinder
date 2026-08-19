@@ -581,3 +581,182 @@ describe("seedMyTestPlaceholderStream", () => {
     expect((await getJob(t, jobId))?.status).toBe("failed");
   });
 });
+
+// ---------------------------------------------------------------------------
+// seedCancelMyActivePlaceholderJobs — the E2E slot-freeing reset
+// ---------------------------------------------------------------------------
+
+describe("seedCancelMyActivePlaceholderJobs", () => {
+  test("fails closed when the testing flag is absent — production has none", async () => {
+    delete process.env.TESTING_RESET_SECRET;
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-1", { userId: NON_ADMIN.subject, status: "processing" });
+
+    await expect(
+      t
+        .withIdentity(NON_ADMIN)
+        .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {}),
+    ).rejects.toThrow(/not enabled on this deployment/i);
+
+    // And it did not cancel anything.
+    expect((await getJob(t, "job-1"))?.status).toBe("processing");
+  });
+
+  test("requires a signed-in caller", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {}),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("cancels EVERY active status, not just collecting", async () => {
+    // The whole reason this exists: `closePlaceholderStream` leaves a job in
+    // "pairing", which still counts against the cap, and "extracting" /
+    // "processing" do too. A reset that only cleared "collecting" would free no
+    // slot for the runs that actually pile up.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-collecting", { userId: NON_ADMIN.subject, status: "collecting" });
+    await seedJob(t, "job-extracting", { userId: NON_ADMIN.subject, status: "extracting" });
+    await seedJob(t, "job-processing", { userId: NON_ADMIN.subject, status: "processing" });
+    await seedJob(t, "job-pairing", { userId: NON_ADMIN.subject, status: "pairing" });
+    // Not active — must be left exactly as they are.
+    await seedJob(t, "job-pending", { userId: NON_ADMIN.subject, status: "pending" });
+    await seedJob(t, "job-succeeded", { userId: NON_ADMIN.subject, status: "succeeded" });
+    await seedJob(t, "job-failed", { userId: NON_ADMIN.subject, status: "failed" });
+
+    const result = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
+
+    // All four active jobs cancelled, none of the three inactive ones.
+    expect(result.canceled).toBe(4);
+
+    for (const jobId of ["job-collecting", "job-extracting", "job-processing", "job-pairing"]) {
+      const job = await getJob(t, jobId);
+      expect(job?.status).toBe("failed");
+      expect(job?.errorCode).toBe("CANCELED");
+    }
+    // The terminal ones are untouched, and "pending" — which is NOT active,
+    // because nothing is running for it — is left startable.
+    expect((await getJob(t, "job-pending"))?.status).toBe("pending");
+    expect((await getJob(t, "job-succeeded"))?.status).toBe("succeeded");
+    expect((await getJob(t, "job-failed"))?.status).toBe("failed");
+  });
+
+  test("goes through cancelJobImpl — real work cancellation, not a status patch", async () => {
+    // Not `ctx.db.patch(status)`: an active job can hold in-flight workpool
+    // items and awaiting_upload rows, and only the shared impl cancels the
+    // former and sweeps the latter. Proven by the swept rows and the summed
+    // work-item count, which a bare status change could produce neither of.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-stream", {
+      userId: NON_ADMIN.subject,
+      mode: "stream",
+      status: "collecting",
+      totalImages: 1,
+    });
+    await seedImage(t, "job-stream", 0, "awaiting_upload", NON_ADMIN.subject);
+    await seedImage(t, "job-stream", 1, "awaiting_upload", NON_ADMIN.subject);
+    await seedImage(t, "job-stream", 2, "done", NON_ADMIN.subject);
+
+    await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
+
+    // Drained so the SCHEDULED awaiting-upload sweep runs — the sweep is exactly
+    // the work a status patch would skip.
+    vi.useFakeTimers();
+    try {
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Abandoned allocations gone, the confirmed image kept — the sweep ran.
+    expect((await getImages(t, "job-stream")).map((i) => i.entryIndex)).toEqual([2]);
+  });
+
+  test("aggregates canceledWorkItems across every cancelled job", async () => {
+    // The count each `cancelJobImpl` returns is summed here. It reads 0 in this
+    // test because a NON-zero count requires `preprocessPool.cancel` to run, and
+    // convex-test cannot mount the workpool component — which is why every cancel
+    // test in this repo seeds workId-free rows (see the cancel tests in
+    // placeholderPipeline.test.ts). What is provable here is the aggregation
+    // itself: two active jobs cancel, each contributes its own count, and the
+    // field sums them rather than reporting one job's. The non-zero pool path is
+    // UAT-covered, like the literal `preprocessPool.cancel` call it depends on.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-a", { userId: NON_ADMIN.subject, status: "processing" });
+    await seedJob(t, "job-b", { userId: NON_ADMIN.subject, status: "collecting" });
+    // Rows with no workId — the cancel loop skips them, exactly as it would for
+    // any image not currently in the pool — so the count stays 0 without
+    // touching the unmountable component.
+    await seedImage(t, "job-a", 0, "processing", NON_ADMIN.subject);
+    await seedImage(t, "job-b", 0, "awaiting_upload", NON_ADMIN.subject);
+
+    const result = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
+
+    expect(result.canceled).toBe(2);
+    expect(result.canceledWorkItems).toBe(0);
+  });
+
+  test("only touches the CALLER's jobs, never another user's", async () => {
+    // Caller-scoped even with the gate open: no userId argument, and the read is
+    // through `by_user` for the verified subject.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-mine", { userId: NON_ADMIN.subject, status: "processing" });
+    await seedJob(t, "job-theirs", { userId: OTHER_USER.subject, status: "processing" });
+
+    const result = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
+
+    expect(result.canceled).toBe(1);
+    expect((await getJob(t, "job-mine"))?.status).toBe("failed");
+    // Untouched.
+    expect((await getJob(t, "job-theirs"))?.status).toBe("processing");
+  });
+
+  test("is idempotent — a second call finds nothing active", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-1", { userId: NON_ADMIN.subject, status: "collecting" });
+    await seedJob(t, "job-2", { userId: NON_ADMIN.subject, status: "processing" });
+
+    const first = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
+    expect(first.canceled).toBe(2);
+
+    const second = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
+    expect(second).toEqual({ canceled: 0, canceledWorkItems: 0 });
+  });
+
+  test("frees the caller's slots so a fresh seed can start — the end-to-end point", async () => {
+    // The scenario that motivated the reset: two active jobs is the cap, and a
+    // closed stream stays active (pairing), so a new run cannot be seeded until
+    // the slots are freed.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-1", { userId: NON_ADMIN.subject, status: "pairing" });
+    await seedJob(t, "job-2", { userId: NON_ADMIN.subject, status: "processing" });
+
+    // At the cap: seeding a stream is refused.
+    const blocked = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderStream.startPlaceholderStream, {});
+    expect(blocked.started).toBe(false);
+
+    await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderPipeline.seedCancelMyActivePlaceholderJobs, {});
+
+    // Slots freed: a fresh run starts.
+    const after = await t
+      .withIdentity(NON_ADMIN)
+      .mutation(api.placeholderStream.startPlaceholderStream, {});
+    expect(after.started).toBe(true);
+  });
+});

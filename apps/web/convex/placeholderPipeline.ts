@@ -459,6 +459,73 @@ export const cancelPlaceholderBatch = mutation({
  * `CANCELED` for both so anything grouping or alerting on the code sees one
  * event type.
  */
+/**
+ * Cancel every active batch the caller owns — a testing-only slot-freeing reset.
+ *
+ * Exists for one concrete E2E problem. The per-user cap counts all of
+ * ACTIVE_STATUSES, and `closePlaceholderStream` moves a stream job
+ * collecting → pairing, which is STILL active — so only reaching a terminal
+ * status frees a slot, and only `cancelJobImpl` does that. Back-to-back E2E runs
+ * therefore accumulate active jobs until the seed page can no longer start one.
+ * This gives an entry page a way to clear the caller's own slots before seeding
+ * a fresh run.
+ *
+ * Gated exactly like the seeders in convex/testing.ts — presence of
+ * `TESTING_RESET_SECRET`, which is set on dev and preview and unset in prod, so
+ * this throws in production and can never mass-cancel a real user's live
+ * batches. Kept HERE rather than in testing.ts specifically so it can call the
+ * module-private `cancelJobImpl` without exporting it — the whole point of that
+ * helper is that there is ONE cancel implementation, and widening its visibility
+ * to reach a test seeder would start to undo that.
+ *
+ * Caller-scoped: no `userId` argument, reads through `by_user` for the verified
+ * subject only, so it cannot reach across users even with the gate open. Each
+ * job goes through `cancelJobImpl` — the same path `cancelPlaceholderBatch`
+ * uses — so the workpool items are actually cancelled and the awaiting-upload
+ * sweep is scheduled, rather than a status being patched out from under running
+ * work.
+ *
+ * Idempotent: a second call finds nothing active (the first left every job
+ * terminal) and returns `{ canceled: 0 }`.
+ */
+export const seedCancelMyActivePlaceholderJobs = mutation({
+  args: {},
+  returns: v.object({
+    canceled: v.number(),
+    canceledWorkItems: v.number(),
+  }),
+  handler: async (ctx) => {
+    // Fail closed in production: the enabling flag is unset there.
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder cancellation is not enabled on this deployment");
+    }
+
+    const userId = await requireUserId(ctx);
+
+    const ownJobs = await ctx.db
+      .query("placeholderJobs")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    let canceled = 0;
+    let canceledWorkItems = 0;
+    for (const job of ownJobs) {
+      if (!ACTIVE_STATUSES.has(job.status)) continue;
+      // Through the shared impl, NOT a status patch: an active job may hold
+      // in-flight workpool items that have to be cancelled and awaiting_upload
+      // rows that have to be swept. `canceledBy: "user"` — this is the caller
+      // clearing their OWN runs, not an operator reaching into someone else's.
+      const result = await cancelJobImpl(ctx, job, "user");
+      if (result.canceled) {
+        canceled += 1;
+        canceledWorkItems += result.canceledCount;
+      }
+    }
+
+    return { canceled, canceledWorkItems };
+  },
+});
+
 async function cancelJobImpl(
   ctx: MutationCtx,
   job: Doc<"placeholderJobs">,
