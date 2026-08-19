@@ -1082,8 +1082,64 @@ function imageFieldsFromResult(returnValue: unknown): Partial<Doc<"placeholderIm
  * so a duplicated completion cannot double-count. The counters are what decide
  * when the batch is finished, and a batch that never reaches its total never
  * finishes — that is the failure mode worth being paranoid about.
+ *
+ * **Serialized per job, and this is load-bearing (NEO-170).** The counter update
+ * is a read-modify-write (`processedImages = job.processedImages + 1`) that is
+ * only safe if every completion runs in its OWN transaction — which is the
+ * assumption the "one invocation observes `processed + failed === total`"
+ * argument in the code below rests on. The workpool does NOT guarantee that: its
+ * `complete` handler runs the `onComplete` callbacks INLINE, and when it settles
+ * more than one work item at once (the main-loop / recovery path — see
+ * `@convex-dev/workpool` `complete.ts`, which awaits them with `Promise.all` in a
+ * single transaction) two `recordImageOutcomeImpl` calls share one transaction.
+ * Interleaving at their `await` points, both read the same pre-increment counter
+ * and both write the same `+1` value, so every increment past the first is lost —
+ * the images all reach "done" (distinct rows) but the counter falls short and the
+ * batch is stranded one-or-more below its total forever, "5 of 6 processed" with
+ * nothing ever moving. `withJobSettleLock` makes the whole settle mutually
+ * exclusive per `jobId`, so concurrent inline completions for the same job run
+ * one at a time and each reads the previous one's write. Different jobs never
+ * serialize against each other. Reproduced in placeholderCounterRace.test.ts.
  */
-export async function recordImageOutcomeImpl(
+export function recordImageOutcomeImpl(
+  ctx: MutationCtx,
+  context: { jobId: string; imageId: Id<"placeholderImages"> },
+  result: RunResult,
+): Promise<null> {
+  return withJobSettleLock(context.jobId, () =>
+    settleImageOutcome(ctx, context, result),
+  );
+}
+
+/**
+ * Run `fn` after every settle already queued for this `jobId` has finished, so
+ * two completions the workpool runs inline in ONE transaction cannot interleave
+ * their counter read-modify-write. The chain is per job (unrelated jobs run in
+ * parallel) and self-cleaning: the map entry is dropped once the tail settles,
+ * so it does not grow across a long-lived isolate. A throw in one settle is
+ * caught for the NEXT waiter's sake but re-propagated to its own caller, so an
+ * error can never wedge the queue.
+ */
+const jobSettleChains = new Map<string, Promise<unknown>>();
+
+function withJobSettleLock<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = jobSettleChains.get(jobId) ?? Promise.resolve();
+  const run = previous.then(
+    () => fn(),
+    () => fn(),
+  );
+  const tail = run.then(
+    () => {},
+    () => {},
+  );
+  jobSettleChains.set(jobId, tail);
+  void tail.finally(() => {
+    if (jobSettleChains.get(jobId) === tail) jobSettleChains.delete(jobId);
+  });
+  return run;
+}
+
+async function settleImageOutcome(
   ctx: MutationCtx,
   context: { jobId: string; imageId: Id<"placeholderImages"> },
   result: RunResult,
