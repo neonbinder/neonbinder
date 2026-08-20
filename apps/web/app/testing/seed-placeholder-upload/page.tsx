@@ -43,10 +43,17 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
  * is exactly what a person on /placeholders must never trigger.
  *
  * ## The fixture manifest
- * `/placeholder-fixtures/manifest.json`, listing filenames **in upload order** —
- * order is the pairing signal (front, back, front, back), so the manifest is the
- * fixture's most important content, not just an index of it. Both shapes are
- * accepted: a bare `["a.jpg", "b.jpg"]` array, or `{ "files": [...] }`.
+ * `/<set>/manifest.json`, listing filenames **in upload order** — order is the
+ * pairing signal (front, back, front, back), so the manifest is the fixture's
+ * most important content, not just an index of it. Both shapes are accepted: a
+ * bare `["a.jpg", "b.jpg"]` array, or `{ "files": [...] }`.
+ *
+ * `<set>` is `?fixtures=` (default `placeholder-fixtures`) — the NEO-175
+ * fast/heavy split needs two fixture sets through this one entry point: the
+ * default INSET cards, which escalate to the heavy service (the cold-start
+ * flow), and `placeholder-fixtures-fullbleed`, frame-filling cards the fast
+ * path accepts (the fast-path flow). Allowlisted so a URL param can never point
+ * the fetch at an arbitrary path.
  *
  * ## Gating
  * Client-gated on `VITE_CLERK_TESTING_ENABLED`, exactly like /testing/sign-in
@@ -56,13 +63,21 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
  * user can already do from /placeholders.
  */
 
-const MANIFEST_URL = "/placeholder-fixtures/manifest.json";
+// The fixture sets this page will serve. An allowlist, not a free path: the set
+// name is interpolated into a fetch URL, so only these two known-good public
+// directories may be selected — never an arbitrary caller-supplied path.
+const DEFAULT_FIXTURE_SET = "placeholder-fixtures";
+const ALLOWED_FIXTURE_SETS = new Set([
+  DEFAULT_FIXTURE_SET, // inset cards → escalate (heavy cold-start flow)
+  "placeholder-fixtures-fullbleed", // frame-filling cards → fast path (no escalation)
+]);
 
-async function loadFixtureFiles(): Promise<File[]> {
-  const manifestResponse = await fetch(MANIFEST_URL);
+async function loadFixtureFiles(fixtureSet: string): Promise<File[]> {
+  const manifestUrl = `/${fixtureSet}/manifest.json`;
+  const manifestResponse = await fetch(manifestUrl);
   if (!manifestResponse.ok) {
     throw new Error(
-      `No fixture manifest at ${MANIFEST_URL} (HTTP ${manifestResponse.status})`,
+      `No fixture manifest at ${manifestUrl} (HTTP ${manifestResponse.status})`,
     );
   }
 
@@ -79,7 +94,7 @@ async function loadFixtureFiles(): Promise<File[]> {
   const files: File[] = [];
   for (const name of names) {
     if (typeof name !== "string") continue;
-    const response = await fetch(`/placeholder-fixtures/${name}`);
+    const response = await fetch(`/${fixtureSet}/${name}`);
     if (!response.ok) {
       throw new Error(`Fixture ${name} is missing (HTTP ${response.status})`);
     }
@@ -106,6 +121,13 @@ function TestingSeedPlaceholderUploadContent() {
   // session that was just created, so a flow can ask for the run view directly:
   // ?redirect=/placeholders%3FjobId%3D{jobId}
   const redirect = searchParams.get("redirect") || "/placeholders?jobId={jobId}";
+  // Which fixture set to upload (NEO-175). Allowlisted; anything unrecognised
+  // (or absent) falls back to the default inset set.
+  const requestedSet = searchParams.get("fixtures");
+  const fixtureSet =
+    requestedSet && ALLOWED_FIXTURE_SETS.has(requestedSet)
+      ? requestedSet
+      : DEFAULT_FIXTURE_SET;
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -141,7 +163,7 @@ function TestingSeedPlaceholderUploadContent() {
         // below, so folding away a separate "Loading fixtures..." note costs no
         // diagnosability.
         setStatus(`Reset ${reset.canceled} previous sessions.`);
-        const files = await loadFixtureFiles();
+        const files = await loadFixtureFiles(fixtureSet);
 
         setStatus(`Uploading ${files.length} fixtures...`);
         // Web-originated, same as the product page — this IS the web upload path
@@ -162,7 +184,7 @@ function TestingSeedPlaceholderUploadContent() {
         setStatus(`Error: ${message}`);
       }
     })();
-  }, [isAuthenticated, isLoading, navigate, redirect, resetSessions, upload]);
+  }, [isAuthenticated, isLoading, navigate, redirect, resetSessions, upload, fixtureSet]);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-background p-6">

@@ -147,6 +147,43 @@ describe("TestingSeedPlaceholderUploadPage", () => {
     await waitFor(() => expect(screen.getByText("run view")).not.toBeNull());
   });
 
+  it("defaults to the inset fixture set (placeholder-fixtures)", async () => {
+    const fetchMock = stubFixtures(["a.jpg"], ["a.jpg"]);
+    renderPage();
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    // The default set (inset cards → heavy escalation) is fetched from
+    // /placeholder-fixtures/, so an entry with no ?fixtures= is unchanged.
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    expect(urls).toContain("/placeholder-fixtures/manifest.json");
+    expect(urls).toContain("/placeholder-fixtures/a.jpg");
+  });
+
+  it("uploads the full-bleed set when ?fixtures= selects it", async () => {
+    const fetchMock = stubFixtures(["fb.jpg"], ["fb.jpg"]);
+    renderPage(
+      "/testing/seed-placeholder-upload?fixtures=placeholder-fixtures-fullbleed",
+    );
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    // The frame-filling set (fast path) is served from its own directory.
+    expect(urls).toContain("/placeholder-fixtures-fullbleed/manifest.json");
+    expect(urls).toContain("/placeholder-fixtures-fullbleed/fb.jpg");
+  });
+
+  it("falls back to the default set for an unknown ?fixtures= value", async () => {
+    const fetchMock = stubFixtures(["a.jpg"], ["a.jpg"]);
+    // A value not on the allowlist must never reach the fetch as a path — it
+    // falls back to the default set instead.
+    renderPage("/testing/seed-placeholder-upload?fixtures=../../etc/passwd");
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    expect(urls).toContain("/placeholder-fixtures/manifest.json");
+    expect(urls.some((u) => u.includes("etc/passwd"))).toBe(false);
+  });
+
   it("says which fixture is missing rather than hanging", async () => {
     stubFixtures({ files: ["present.jpg", "absent.jpg"] }, ["present.jpg"]);
     renderPage();
