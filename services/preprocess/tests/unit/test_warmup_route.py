@@ -134,3 +134,28 @@ class TestWarmup:
         crop_spy.assert_not_called()
         classify_spy.assert_not_called()
         orient_spy.assert_not_called()
+
+
+class TestFastRoleWarmup:
+    """PREPROCESS_ROLE=fast (NEO-175): /warmup must not load a model.
+
+    The FAST service has no local model to make resident, so /warmup reports
+    ready (was_cold=False) without ever reaching the loader — the same "never
+    constructs a model session" invariant the FAST role guarantees everywhere.
+    """
+
+    def test_fast_role_reports_ready_without_touching_the_loader(
+        self, monkeypatch, stub_loader
+    ):
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        response = _post_warmup()
+        assert response.status_code == 200
+        assert response.json() == {"status": "warm", "was_cold": False}
+        # The loader was never touched and no session became resident.
+        assert stub_loader["new_session"] == 0
+        assert stub_loader["remove"] == 0
+        assert not tiered.is_session_loaded()
+
+    def test_fast_role_still_requires_auth(self, monkeypatch, stub_loader):
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        assert _post_warmup(key="wrong").status_code == 401

@@ -34,6 +34,7 @@ from app.cropper import (
     CROP_QUALITIES,
     CROP_QUALITY_FAST,
     STRATEGY_NAMES,
+    CropDeclined,
     CropRejected,
     UnknownStrategyError,
 )
@@ -52,6 +53,37 @@ app = FastAPI(title="neonbinder-preprocess", version="0.3.0")
 INTERNAL_API_KEY_ENV = "INTERNAL_API_KEY"
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
 ALLOWED_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+# ── Service role (NEO-175) ──────────────────────────────────────────────────
+# The SAME image runs as two Cloud Run services selected by PREPROCESS_ROLE:
+#
+#   HEAVY (default) — current behaviour, unchanged: loads BiRefNet + SAM at
+#       startup and runs the full crop cascade (classical → BiRefNet → SAM →
+#       Haiku → passthrough).
+#   FAST — classical-only. NEVER loads or calls a local model: it skips the
+#       startup model warm-up (cold-starts in seconds) and runs only the
+#       classical fast path on /process-entry, returning `needs_escalation`
+#       (see ProcessEntryResponse) whenever that path does not settle the card
+#       so Convex re-enqueues the entry to the HEAVY service.
+#
+# The default is HEAVY so an unset var preserves today's single-service
+# behaviour; terraform sets PREPROCESS_ROLE=fast on the fast service only. The
+# value is read per request/hook (not cached at import) so a redeploy — and the
+# tests — can flip it without reimporting.
+PREPROCESS_ROLE_ENV = "PREPROCESS_ROLE"
+ROLE_FAST = "fast"
+ROLE_HEAVY = "heavy"
+
+
+def _preprocess_role() -> str:
+    """Return the configured service role: ROLE_FAST or ROLE_HEAVY.
+
+    Anything other than an explicit, case-insensitive ``"fast"`` resolves to
+    HEAVY — an unset or misspelled var must never silently downgrade a service
+    that is supposed to run the full cascade into skipping the model.
+    """
+    configured = os.environ.get(PREPROCESS_ROLE_ENV, "").strip().lower()
+    return ROLE_FAST if configured == ROLE_FAST else ROLE_HEAVY
 
 # Concurrency for the GCS uploads inside /extract. The zip itself is read and
 # EXIF-normalised sequentially (one seekable stream, CPU-bound transposes), but
@@ -105,7 +137,20 @@ def _verify_baked_weights() -> None:
     a ~930MB write into Cloud Run's in-memory filesystem plus an
     unauthenticated outbound fetch — a slow success where we want a loud
     failure. Unit tests don't set the var and are unaffected.
+
+    NEO-175: only the HEAVY role loads a local model. The FAST role
+    (`PREPROCESS_ROLE=fast`) runs classical-only and must cold-start in
+    seconds, so it skips BOTH the baked-weight check and the ~191s warm-up —
+    even if REQUIRE_BAKED_WEIGHTS is still set on the shared image. This is the
+    clean seam: the model is loaded at startup only when role == HEAVY.
     """
+    if _preprocess_role() != ROLE_HEAVY:
+        logger.info(
+            "startup: %s=%s — skipping baked-weight check and model warm-up",
+            PREPROCESS_ROLE_ENV,
+            _preprocess_role(),
+        )
+        return
     if os.environ.get("REQUIRE_BAKED_WEIGHTS") != "1":
         return
     u2net_home = os.environ.get("U2NET_HOME", "")
@@ -284,8 +329,19 @@ def warmup(
     ONE instance that happens to handle it. Warming all N instances of a scaled-out
     revision needs N concurrent /warmup calls (Convex fans out N = capacity); this
     endpoint only ever warms its own instance.
+
+    NEO-175: the FAST role has no local model to make resident, so it must not
+    reach the loader at all (the whole point of the role is that it never
+    constructs a model session). It short-circuits to `was_cold=False` without
+    importing or touching the tiered session helpers.
     """
     _verify_internal_key(x_internal_key)
+
+    if _preprocess_role() != ROLE_HEAVY:
+        logger.info(
+            "warmup: %s=%s — no model to warm, reporting ready", PREPROCESS_ROLE_ENV, ROLE_FAST
+        )
+        return WarmupResponse(status="warm", was_cold=False)
 
     # Same inline import as the startup warm hook: reach the tiered module's
     # session helpers by name without widening main.py's top-level imports.
@@ -578,30 +634,62 @@ class ProcessEntryRequest(BaseModel):
 class ProcessEntryResponse(BaseModel):
     """Response body for POST /process-entry. Metadata only — never image bytes.
 
-    The processed image lives at its derived output key; Convex re-derives
-    that key from `{user_id, job_id, entry_index}` when it needs the object.
+    ── The `needs_escalation` contract (NEO-175) ───────────────────────────
+    Two mutually exclusive outcomes share this one 200 response, distinguished
+    by `needs_escalation`:
+
+      (a) `needs_escalation == false` — a COMPLETED crop result. Every
+          crop-result field below is populated (identity + dhash +
+          output_written, exactly as before this field existed) and the
+          processed image has been written to its derived output key. This is
+          the HEAVY role's only outcome, and the FAST role's outcome when the
+          classical fast path settled the card. The pre-existing fields keep
+          their pre-NEO-175 values byte-for-byte; the only additive change is
+          `needs_escalation: false`.
+
+      (b) `needs_escalation == true` — the FAST role (`PREPROCESS_ROLE=fast`)
+          DECLINED: the classical-only fast path did not settle this card and
+          the FAST service must never run the model-backed cascade. There is
+          NO crop result (every crop-result field is left at its default —
+          empty `players`, null identity/dhash, `output_written=false`) and
+          nothing was written to the output key. Convex re-enqueues this entry
+          to the HEAVY service. The body carries no crop, no image bytes, and
+          no secrets — only this flag and the machine-default placeholders.
+
+    A consumer decides purely on `needs_escalation`; it is always present. The
+    crop-result fields are documented per (a)/(b) above.
+
+    The processed image (case a) lives at its derived output key; Convex
+    re-derives that key from `{user_id, job_id, entry_index}` when it needs the
+    object.
 
     `dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted
     ORIGINAL — computed before any cropping, matching cardlister's "hash the
     original scan, never the crop" rule — serialized as 16 lowercase hex
-    characters because a 64-bit integer does not survive JSON's float64.
+    characters because a 64-bit integer does not survive JSON's float64. Null
+    only in the escalation case (b).
 
     `output_written` is False when the output object already existed (a
     retried entry): the write is once-only (`if_generation_match=0`) and
-    first-write-wins on retry is the documented, accepted behaviour.
+    first-write-wins on retry is the documented, accepted behaviour. It is
+    also False in the escalation case (b), where nothing is written at all.
     """
 
-    players: list[str]
-    player: str | None
-    team: str | None
-    card_number: str | None
-    side: str
-    rotation_degrees: int
-    orient_confidence: float
-    text_count: int
-    cropped_source: str
-    dhash: str
-    output_written: bool
+    # NEO-175 role split — see the class docstring for the full contract.
+    needs_escalation: bool = False
+    # Crop-result fields. Always populated when needs_escalation is False;
+    # left at these defaults (no crop result) when needs_escalation is True.
+    players: list[str] = Field(default_factory=list)
+    player: str | None = None
+    team: str | None = None
+    card_number: str | None = None
+    side: str | None = None
+    rotation_degrees: int | None = None
+    orient_confidence: float | None = None
+    text_count: int | None = None
+    cropped_source: str | None = None
+    dhash: str | None = None
+    output_written: bool = False
 
 
 def _invalid_identifier_response(exc: InvalidJobIdentifierError) -> JSONResponse:
@@ -952,12 +1040,19 @@ def process_entry(
             detail="extracted image undecodable",
         ) from None
 
-    # Same cascade, same upstream-failure translation as POST /process.
+    # Same cascade, same upstream-failure translation as POST /process. In the
+    # FAST role, `escalate_only` makes crop() run ONLY the classical fast path
+    # and return CropDeclined (no model touched) instead of the model-backed
+    # cascade; the HEAVY role passes no such flag and behaves exactly as before.
+    crop_kwargs: dict[str, object] = {}
+    if _preprocess_role() == ROLE_FAST:
+        crop_kwargs["escalate_only"] = True
     try:
         result = cropper.crop(
             image_bytes=entry_bytes,
             precropped_bytes=None,
             crop_quality=request.crop_quality,
+            **crop_kwargs,
         )
     except ClassifyError:
         logger.exception("process_entry: classify failed to parse after retry")
@@ -971,6 +1066,19 @@ def process_entry(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="preprocess pipeline upstream failure",
         ) from None
+
+    if isinstance(result, CropDeclined):
+        # FAST role declined (see the ProcessEntryResponse contract): the
+        # classical fast path did not settle this card and the FAST service
+        # must never run the model-backed cascade. No crop, no output write —
+        # a 200 with needs_escalation=true so Convex re-enqueues the entry to
+        # the HEAVY service. `reason` is logged, never put in the body.
+        logger.info(
+            "process_entry: index=%d fast role declined (%s) — needs_escalation",
+            request.entry_index,
+            result.reason,
+        )
+        return ProcessEntryResponse(needs_escalation=True)
 
     if isinstance(result, CropRejected):  # pragma: no cover - image_bytes was provided
         raise HTTPException(
@@ -1021,6 +1129,9 @@ def process_entry(
         output_written,
     )
     return ProcessEntryResponse(
+        # A completed crop result — the HEAVY role's only outcome, and the FAST
+        # role's when the classical fast path settled the card.
+        needs_escalation=False,
         players=list(result.classification.players),
         player=result.classification.player,
         team=result.classification.team,

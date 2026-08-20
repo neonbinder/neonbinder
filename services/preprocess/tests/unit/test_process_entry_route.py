@@ -202,6 +202,9 @@ class TestHappyPath:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body == {
+            # NEO-175: a completed crop result always reports needs_escalation
+            # False; every crop-result field keeps its pre-NEO-175 value.
+            "needs_escalation": False,
             "players": ["Jeter"],
             "player": "Jeter",
             "team": "Yankees",
@@ -480,3 +483,160 @@ class TestCropQuality:
         )
         assert response.status_code == 200
         assert captured == ["strong"]
+
+
+def _spy_model_session(monkeypatch) -> dict[str, int]:
+    """Spy on the BiRefNet/SAM model entrypoints and count every call.
+
+    The FAST role must never construct a model session, so both `_get_session`
+    (BiRefNet, via tiered) and `warm_up` are replaced with counters. The unit
+    conftest already makes a real `rembg.new_session` raise; these spies add
+    the positive assertion the NEO-175 contract asks for (assert NOT called).
+    """
+    calls = {"get_session": 0, "warm_up": 0, "sam": 0}
+
+    def _get_session(*_a, **_k):
+        calls["get_session"] += 1
+        return object()
+
+    def _warm_up(*_a, **_k):
+        calls["warm_up"] += 1
+
+    def _sam(*_a, **_k):
+        calls["sam"] += 1
+        return None
+
+    monkeypatch.setattr("app.cropper.tiered._get_session", _get_session)
+    monkeypatch.setattr("app.cropper.tiered.warm_up", _warm_up)
+    monkeypatch.setattr("app.cropper.sam.sam_crop", _sam)
+    return calls
+
+
+def _tracking_orient(monkeypatch, rotation=0, confidence=1.0, text_count=5):
+    """Install an orient stub that records the bytes of every call."""
+    result = OrientationResult(
+        rotation_degrees=rotation, confidence=confidence, text_count=text_count
+    )
+    calls: list[bytes] = []
+
+    def _fake(b):
+        calls.append(b)
+        return result
+
+    monkeypatch.setattr(cropper, "detect_orientation", _fake)
+    return calls
+
+
+def _tracking_classify(monkeypatch, player="Ichiro", team="Mariners", card_number="51"):
+    """Install a classify stub that records the bytes of every call."""
+    result = ClassifyResult(
+        players=[player] if player else [],
+        team=team,
+        card_number=card_number,
+        side="front",
+        raw_text="{}",
+    )
+    calls: list[bytes] = []
+
+    def _fake(b):
+        calls.append(b)
+        return result
+
+    monkeypatch.setattr(cropper, "classify_card", _fake)
+    return calls
+
+
+class TestFastRole:
+    """PREPROCESS_ROLE=fast (NEO-175): classical-only, model-free /process-entry.
+
+    The FAST service runs only the classical fast path and NEVER loads or calls
+    a local model. On a card the fast path settles it returns a completed crop
+    result (needs_escalation=False); on any card that would otherwise escalate
+    into the model-backed cascade it returns needs_escalation=True with no crop
+    result and writes nothing, so Convex re-enqueues the entry to the HEAVY
+    service. HEAVY (the default role) is proven unchanged by the whole rest of
+    this file, which never sets the env var.
+    """
+
+    def test_escalating_card_returns_needs_escalation_and_writes_nothing(
+        self, fake_gcs, monkeypatch
+    ):
+        # An inset-on-noise card (like the E2E fixtures) is exactly what the
+        # classical fast path declines — BiRefNet is needed to recover the
+        # inset. `fast_tiered_crop -> None` is that decline signal.
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        spy = _spy_model_session(monkeypatch)
+        orient_calls = _tracking_orient(monkeypatch)
+        classify_calls = _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["needs_escalation"] is True
+        # No crop result in the escalation body.
+        assert body["players"] == []
+        assert body["player"] is None
+        assert body["cropped_source"] is None
+        assert body["dhash"] is None
+        assert body["output_written"] is False
+        # Nothing was written to the output key — the HEAVY service will.
+        assert not any(name.startswith(OUTPUT_PREFIX) for name in fake_gcs.names(BUCKET))
+        # The model was never touched, and classify never ran (no accepted crop).
+        assert spy == {"get_session": 0, "warm_up": 0, "sam": 0}
+        assert classify_calls == []
+        # Vision baseline orient still ran once — kept, not removed.
+        assert len(orient_calls) >= 1
+
+    def test_fast_path_acceptable_card_completes_without_touching_the_model(
+        self, fake_gcs, monkeypatch
+    ):
+        # The pre-cropped-scanner majority: the classical fast path accepts the
+        # frame as identity (returns the input untouched) with no BiRefNet pass.
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        spy = _spy_model_session(monkeypatch)
+        orient_calls = _tracking_orient(monkeypatch, text_count=12)
+        classify_calls = _tracking_classify(monkeypatch, player="Jeter", team="Yankees")
+        entry = _card_bytes()
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", entry, "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["needs_escalation"] is False
+        # A real, completed identity crop — labelled "tiered", same as strong.
+        assert body["cropped_source"] == "tiered"
+        assert body["players"] == ["Jeter"]
+        assert DHASH_HEX_RE.match(body["dhash"]), body["dhash"]
+        assert body["output_written"] is True
+        assert fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg") == entry
+        # Vision + Anthropic were kept: both ran on the accepted crop.
+        assert len(orient_calls) >= 1
+        assert len(classify_calls) == 1
+        # …but no local model session was ever constructed.
+        assert spy == {"get_session": 0, "warm_up": 0, "sam": 0}
+
+    def test_default_heavy_role_runs_the_full_cascade(self, fake_gcs, monkeypatch):
+        # No PREPROCESS_ROLE set → HEAVY. escalate_only is never passed, so a
+        # card the fast path declines falls through to the real strategy loop
+        # (here pil_trim wins) and returns a completed result — the pre-NEO-175
+        # behaviour, unchanged.
+        monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        _stub_orient(monkeypatch, text_count=12)
+        _stub_classify(monkeypatch)
+        good_crop = _card_bytes()
+        monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: good_crop)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg((40, 20)), "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["needs_escalation"] is False
+        assert body["cropped_source"] == "pil_trim_dark"
+        assert body["output_written"] is True

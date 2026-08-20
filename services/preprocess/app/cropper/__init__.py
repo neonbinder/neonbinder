@@ -219,6 +219,25 @@ class CropRejected:
     reason: str
 
 
+@dataclass(frozen=True)
+class CropDeclined:
+    """FAST-role outcome (NEO-175): the classical fast path did not settle it.
+
+    Produced ONLY when `crop()` is called with `escalate_only=True` — the
+    posture of the FAST preprocess service (`PREPROCESS_ROLE=fast`), which
+    deliberately runs the classical-only fast path and NEVER loads or calls a
+    local model (BiRefNet / SAM). When the fast path neither wins nor is
+    reached (any verdict that would otherwise fall through into the
+    model-backed strategy loop), `crop()` returns this instead of running the
+    heavy cascade. The `/process-entry` handler maps it to a 200 carrying
+    `needs_escalation=true` and no crop result, telling Convex to re-enqueue
+    the entry to the HEAVY service. `reason` is a stable machine string for
+    logs/metrics — never a crop, never user data.
+    """
+
+    reason: str
+
+
 def _try_stage(
     *,
     source: str,
@@ -305,8 +324,19 @@ def crop(
     image_bytes: bytes | None,
     precropped_bytes: bytes | None,
     crop_quality: str = CROP_QUALITY_FAST,
-) -> CropResult | CropRejected:
+    escalate_only: bool = False,
+) -> CropResult | CropRejected | CropDeclined:
     """Run the crop cascade and return the winning result.
+
+    `escalate_only` (NEO-175) is the FAST preprocess role's no-fallthrough
+    switch. When set, `crop()` runs the classical fast path (`crop_quality`
+    must be ``"fast"`` for it to run at all) but, at the exact point where the
+    cascade would otherwise fall through into the model-backed strategy loop
+    (`tiered`/BiRefNet, `sam`, ...), it returns a `CropDeclined` instead. That
+    guarantees the FAST role never loads or calls a local model: it either
+    wins on the classical identity short-circuit or declines for the HEAVY
+    service to escalate. `escalate_only` is inert in the crop-only and
+    image+precropped modes — it only governs the image-only strategy loop.
 
     Three input modes:
       - image-only: `image_bytes` set, `precropped_bytes` None → full cascade.
@@ -416,6 +446,19 @@ def crop(
             )
             if result is not None:
                 return result
+
+    # ── FAST-role escalation seam (NEO-175) ─────────────────────────────
+    # The FAST preprocess service (`PREPROCESS_ROLE=fast`) sets escalate_only
+    # so it runs ONLY the classical fast path above. Everything below — the
+    # strategy loop's first stage is `tiered` (BiRefNet), followed by `sam` —
+    # loads or calls a local model, which the FAST role must never do. When
+    # the classical fast path did not settle the image, decline HERE so Convex
+    # re-enqueues the entry to the HEAVY service, rather than falling through
+    # into the model-backed cascade. Placed at the seam (not inside the loop)
+    # so a new strategy can't accidentally run in the FAST role.
+    if escalate_only:
+        logger.info("cascade: escalate_only — declining for the heavy service")
+        return CropDeclined(reason="fast_path_declined")
 
     # ── Stages 2..N — server-side croppers through the same uniform gate.
     for source in STRATEGY_NAMES:
