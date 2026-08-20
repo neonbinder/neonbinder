@@ -61,14 +61,19 @@
 # neither billable nor something to avoid: every one of the 6 done images is
 # resolved, which is why "resolver calls: 6" is the healthy count Step 4 asserts.
 #
-# R5 — ONE long wait, and it is the sanctioned external-compute case: BiRefNet
-# inference on Cloud Run plus a Vision round-trip per image, throttled to three
-# in flight (container_concurrency=1, max_instances=3, and the Convex workpool
-# is pinned to match). Six images is two full waves, so the queue behaviour is
-# exercised. Budget ~80-120s of pipeline plus cold start; 240s leaves real
-# headroom under the harness's 600s hard kill. Everything else in this flow
-# runs on Maestro's default lookup. Do not pad anything here — a slow
-# non-pipeline step is a product finding.
+# R5 — TWO bounded waits, split so the pipeline's PROCESSING time gets a tight
+# regression guard instead of hiding inside one long blanket timeout. Both are
+# the sanctioned external-compute case: BiRefNet inference on Cloud Run plus a
+# Vision round-trip per image, at the preprocess service's own concurrency.
+#   * Phase 1 (cold-start, <=200s) absorbs the one-off cost the user has agreed
+#     to tolerate — a scale-to-zero Cloud Run cold start with a ~191s model load
+#     — but ONLY because the page shows visible progress ("Warming up the card
+#     processor…") while it happens.
+#   * Phase 2 (processing, <=60s) is the SLA guard: once ANY image has processed
+#     the instance is warm, so the remaining five must finish fast. A warm
+#     6-image batch that needs >60s is a PRODUCT FINDING to raise, never a
+#     timeout to inflate. Everything else in this flow runs on Maestro's default
+#     lookup. Do not pad anything here.
 #
 # R7 — Non-destructive: the flow creates its own upload session under the
 # signed-in worker's own account and touches nothing shared. Closing the session
@@ -106,22 +111,43 @@ tags:
 # full timeout below and then failing on a much less obvious assertion.
 - assertVisible: ".*of 6 images processed.*"
 
-# Step 3: THE pipeline wait — the one sanctioned long wait (see R5 above).
-# Every number here is load-bearing: six images accounted for, none failed, and
-# exactly three pairs. A dropped image, a crashed crop or a mis-pair all
-# produce different arithmetic and fail this assert.
+# ── Step 3: THE pipeline wait, split into two bounded phases ───────────────────
+# Why split it: a scale-to-zero preprocess Cloud Run can cold-start (~191s model
+# load). The user has accepted that long FIRST-RUN wait, but ONLY because the FE
+# shows visible progress — and demands the PROCESSING time stay tightly guarded.
+# A single 400s blanket wait would go green even if warm processing silently
+# took six minutes; splitting it puts a short, load-bearing timeout around the
+# processing phase so a regression there fails fast instead of hiding.
 #
-# 400s, not the ~160s the arithmetic suggests: on a stone-cold service one
-# request can sit through the adapter's ENTIRE 240s timeout (it arrived during
-# model load) before its retry lands on a warm instance — observed live
-# 2026-08-18, where a fully cold 6-image run took ~8 minutes end to end. In CI
-# this flow runs after the preprocess smoke test has already warmed the PR
-# revision, so the fully-cold pathology is a local-run anomaly; 400s covers one
-# stuck-request cycle plus the warm waves while keeping the whole flow ≈430s,
-# inside the 600s harness cap.
+# Both phases watch the SAME status line at the top of the run view (Step 2
+# already asserted it visible without scrolling), so neither needs a scroll;
+# extendedWaitUntil never scrolls anyway. The line streams
+# "<status> — <done> of 6 images processed, <failed> failed, <pairs> pairs",
+# where <done> counts every settled (processed + failed) image.
+#
+# Phase 1 — COLD START (<=200s): wait for processing to demonstrably ENGAGE.
+# The regex matches <done> = 1..6 and NEVER "0 of 6": the only " of 6 images
+# processed" in the line is preceded by the <done> digit, which is "0" while
+# cold, so [1-6] cannot match until the first image finishes — the moment the
+# service is warm. On a warm CI revision processing can race straight to "6 of
+# 6" between status polls; 6 ∈ [1-6], so this still matches and Phase 1 falls
+# through at once. While cold the page shows "Warming up the card processor…" —
+# the visible progress the user accepted this long wait for. 200s covers the
+# ~191s model load plus headroom; if it is exceeded the cold start itself has
+# regressed, which is a finding, not a wait to grow.
+- extendedWaitUntil:
+    visible: ".*[1-6] of 6 images processed.*"
+    timeout: 200000
+
+# Phase 2 — PROCESSING (<=60s): the SLA guard. From the first image done the
+# instance is warm, so all six must reach the finished arithmetic quickly. Every
+# number is load-bearing: six accounted for, none failed, exactly three pairs. A
+# dropped image, a crashed crop or a mis-pair produces different numbers and
+# fails here. A warm batch that needs longer than 60s is a product finding — the
+# timeout does NOT get bumped to paper over it.
 - extendedWaitUntil:
     visible: ".*6 of 6 images processed, 0 failed, 3 pairs.*"
-    timeout: 400000
+    timeout: 60000
 
 # ── Step 3b: CLOSE the session so the FINAL pairing run records the count ──────
 # The 6/6 completion above happened while the stream was still "Collecting":
