@@ -8,16 +8,18 @@
  *     specific bug the deferred-materialization design in entityReviewQueue.ts
  *     fixes (a mere preview lookup could otherwise orphan a team row for a
  *     player the user ends up linking to someone else, or never creates).
- *   - `processEntityReviewQueue` — the chained pop-front/reschedule-tail
- *     queue over `entityReviewQueue` row ids, same `INTER_ENTITY_DELAY_MS`
- *     pacing as the existing `processEnrichmentQueue`.
+ *   - `runEntityReviewLookup` (NEO-99) — the single-row `wikidataPool` work item
+ *     that replaced the old chained `processEntityReviewQueue`. One call looks up
+ *     one row and patches it "ready"/"error"; the pool (not this action) handles
+ *     concurrency. Includes the NEO-99 fetch-timeout coverage: a stalled/aborted
+ *     request must resolve the row to "error", never hang it on "pending".
  *
  * Lives at the convex/ ROOT (not co-located under convex/adapters/) for the
  * same reason as convex/wikidataEnrichTeam.test.ts / convex/bscTeamEnrichmentQueue.test.ts:
  * convex-test's `import.meta.glob(...)` module registry breaks when the glob
  * is invoked from within convex/adapters/ itself — see that file's header
- * comment for the full explanation. `processEntityReviewQueue` is an
- * `internalAction` that needs the real convex-test action/scheduler harness.
+ * comment for the full explanation. `runEntityReviewLookup` is an
+ * `internalAction` that needs the real convex-test action harness.
  *
  * Fetch mocking follows convex/wikidataEnrichTeam.test.ts's convention:
  * `decodeURIComponent` + check for a predicate unique to each SPARQL call to
@@ -26,7 +28,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
@@ -228,10 +230,10 @@ describe("lookupTeamEnrichment", () => {
 });
 
 // ===========================================================================
-// processEntityReviewQueue — chained pop-front/reschedule-tail draining
+// runEntityReviewLookup — one row's lookup + patch (the wikidataPool work item)
 // ===========================================================================
 
-describe("processEntityReviewQueue", () => {
+describe("runEntityReviewLookup", () => {
   const modules = (import.meta as unknown as {
     glob: (pattern: string) => Record<string, () => Promise<unknown>>;
   }).glob("./**/*.*s");
@@ -270,7 +272,7 @@ describe("processEntityReviewQueue", () => {
         kind: opts.kind,
         name: opts.name,
         // NEO-96: these tests seed the sport row and the review row's
-        // selectorOption as the SAME row, which is fine — the queue only needs
+        // selectorOption as the SAME row, which is fine — the lookup only needs
         // a valid reference to resolve config from.
         sportId: selectorOptionId,
         status: "pending",
@@ -281,118 +283,121 @@ describe("processEntityReviewQueue", () => {
   const getRow = (t: ReturnType<typeof convexTest>, id: Id<"entityReviewQueue">) =>
     t.run(async (ctx) => ctx.db.get(id));
 
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  test("drains ids one at a time, in order, patching each row's status/enrichment as its lookup completes", async () => {
+  test("patches a matched player row to 'ready' with the resolved enrichment", async () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
-    const row1 = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Mike Trout" });
-    const row2 = await seedReviewRow(t, selectorOptionId, { kind: "team", name: "Los Angeles Angels" });
-    const row3 = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Unknown Prospect" });
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Mike Trout" });
 
-    // Deterministic call ORDER (no content-sniffing needed): the queue
-    // processes row1 (player, resolves) then row2 (team, no match on either
-    // source) then row3 (player, no match) — each lookup's own internal call
-    // count is fixed and already proven by wikidataEnrichTeam.test.ts /
-    // the lookupPlayerEnrichment tests above, so a plain call-index counter
-    // is enough here; this test's OWN job is only the queue's drain order.
-    //   0: row1 player search      -> matches Q123456
-    //   1: row1 player detail      -> empty (no career teams/HoF row)
-    //   2: row2 team ESPN lookup   -> no match
-    //   3: row2 team wikidata search -> no match -> lookupTeamEnrichment null
-    //   4: row3 player search      -> no match
-    const responses = [
-      () => jsonResponse(makePlayerSearchBody("Q123456")),
-      () => jsonResponse(makePlayerDetailBody({})),
-      () => jsonResponse({ sports: [] }),
-      () => jsonResponse(makePlayerSearchBody(null)),
-      () => jsonResponse(makePlayerSearchBody(null)),
-    ];
-    let callIndex = 0;
-    vi.stubGlobal(
-      "fetch",
-      (async () => {
-        const respond = responses[callIndex];
-        callIndex++;
-        if (!respond) throw new Error(`unexpected extra fetch call #${callIndex}`);
-        return respond();
-      }) as unknown as typeof fetch,
-    );
+    vi.stubGlobal("fetch", makePlayerFetchStub({ qid: "Q123456", detail: {} }));
 
-    await t.action(internal.adapters.wikidata.processEntityReviewQueue, {
-      ids: [row1, row2, row3],
-    });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
 
-    const r1 = await getRow(t, row1);
-    const r2 = await getRow(t, row2);
-    const r3 = await getRow(t, row3);
-    // row1: Wikidata match -> ready. row2: team, no ESPN/Wikidata match ->
-    // error. row3: no Wikidata match -> error. All three left "pending"
-    // status behind — proving the queue actually visited every id.
-    expect(r1!.status).toBe("ready");
-    expect(r1!.enrichment?.wikidataId).toBe("Q123456");
-    expect(r2!.status).toBe("error");
-    expect(r3!.status).toBe("error");
+    const r = await getRow(t, row);
+    expect(r!.status).toBe("ready");
+    expect(r!.enrichment?.wikidataId).toBe("Q123456");
   });
 
-  test("an empty id list is a no-op (resolves without scheduling anything)", async () => {
-    const t = convexTest(schema, modules);
-    await expect(
-      t.action(internal.adapters.wikidata.processEntityReviewQueue, { ids: [] }),
-    ).resolves.toBeNull();
-  });
-
-  test("a row that's been deleted mid-queue is skipped without throwing, and the tail still processes", async () => {
+  test("patches a no-match row to 'error' (never leaves it 'pending')", async () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
-    const deletedRow = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Deleted Player" });
-    const survivingRow = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Surviving Player" });
-    await t.run(async (ctx) => ctx.db.delete(deletedRow));
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Unknown Prospect" });
 
     vi.stubGlobal(
       "fetch",
       (async () => jsonResponse(makePlayerSearchBody(null))) as unknown as typeof fetch,
     );
 
-    await t.action(internal.adapters.wikidata.processEntityReviewQueue, {
-      ids: [deletedRow, survivingRow],
-    });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
 
-    const surviving = await getRow(t, survivingRow);
-    expect(surviving!.status).toBe("error"); // no Wikidata match, but processed
+    const r = await getRow(t, row);
+    expect(r!.status).toBe("error");
   });
 
-  test("a lookup that throws is caught — the row is marked 'error' and the tail still processes", async () => {
+  test("a deleted row is a no-op — resolves null, patches nothing", async () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
-    const row1 = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Throws During Lookup" });
-    const row2 = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Fine Player" });
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Deleted Player" });
+    await t.run(async (ctx) => ctx.db.delete(row));
 
-    let callCount = 0;
+    // fetch must never be reached for a row that no longer exists.
+    let fetchCalled = false;
     vi.stubGlobal(
       "fetch",
-      (async (url: string | URL) => {
-        callCount++;
-        if (callCount === 1) throw new Error("network down");
+      (async () => {
+        fetchCalled = true;
+        throw new Error("fetch must not be called for a deleted row");
+      }) as unknown as typeof fetch,
+    );
+
+    await expect(
+      t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row }),
+    ).resolves.toBeNull();
+    expect(fetchCalled).toBe(false);
+  });
+
+  test("a lookup that throws is caught — the row is marked 'error'", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Throws During Lookup" });
+
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        throw new Error("network down");
+      }) as unknown as typeof fetch,
+    );
+
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
+
+    const r = await getRow(t, row);
+    expect(r!.status).toBe("error");
+  });
+
+  // ── NEO-99 fetch timeout ────────────────────────────────────────────────
+  // The second half of the "Looking up…" hang: without a fetch timeout a
+  // throttled Wikidata request could stall forever, so its `await` never
+  // returned and the row was never patched out of "pending". `runSparql` now
+  // passes `AbortSignal.timeout(...)`, and any rejection (a fired timeout
+  // included) maps to null → the row resolves to "error" instead of hanging.
+
+  test("every SPARQL fetch is given an AbortSignal (the timeout is wired)", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Signal Check" });
+
+    let sawSignal = false;
+    vi.stubGlobal(
+      "fetch",
+      (async (_url: string | URL, init?: { signal?: unknown }) => {
+        // An AbortSignal is what lets a stalled request be aborted; assert one
+        // is passed on the request that could otherwise hang.
+        if (init?.signal instanceof AbortSignal) sawSignal = true;
         return jsonResponse(makePlayerSearchBody(null));
       }) as unknown as typeof fetch,
     );
 
-    await t.action(internal.adapters.wikidata.processEntityReviewQueue, {
-      ids: [row1, row2],
-    });
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
+    expect(sawSignal).toBe(true);
+  });
 
-    const r1 = await getRow(t, row1);
-    const r2 = await getRow(t, row2);
-    expect(r1!.status).toBe("error");
-    expect(r2!.status).toBe("error"); // reached despite row1's throw
+  test("an aborted/timed-out request resolves the row to 'error' rather than hanging it", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Times Out" });
+
+    // Simulate what AbortSignal.timeout does when it fires: fetch rejects with a
+    // TimeoutError. runSparql maps it to null exactly like any other failure.
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      }) as unknown as typeof fetch,
+    );
+
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
+
+    const r = await getRow(t, row);
+    // The bug was: this stayed "pending" forever. Now it resolves.
+    expect(r!.status).toBe("error");
   });
 });

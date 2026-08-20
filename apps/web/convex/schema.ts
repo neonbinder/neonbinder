@@ -477,12 +477,12 @@ export default defineSchema({
 
   // NEO-92: per-fetch review queue backing the step-through "new players &
   // teams" wizard (replaces the old single-screen checkbox dialog). One row
-  // per unknown name surfaced by fetchCardChecklist. A background chained
-  // action (processEntityReviewQueue in adapters/wikidata.ts) works through
-  // "pending" rows one at a time, patching status/enrichment as each
-  // Wikidata lookup completes — the wizard subscribes reactively and
-  // presents rows in COMPLETION order (whichever finishes first), not
-  // original fetch order. `decision` is patched by the user's own action in
+  // per unknown name surfaced by fetchCardChecklist. NEO-99: the Wikidata pool
+  // (convex/wikidataPool.ts) drains "pending" rows 5 at a time via the
+  // runEntityReviewLookup work item, patching status/enrichment as each lookup
+  // completes — the wizard subscribes reactively and presents rows in
+  // COMPLETION order (whichever finishes first), not original fetch order.
+  // `decision` is patched by the user's own action in
   // the wizard (recordDecision) — durable across a page refresh, unlike
   // keeping it only in React state. There is deliberately no "skip" decision
   // variant: every name must resolve to create-or-link.
@@ -563,7 +563,16 @@ export default defineSchema({
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])
-    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"]),
+    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
+    // NEO-99: lets the stale-pending sweep (crons.ts → sweepStalePendingRows)
+    // read only rows in a given status, oldest-first (every Convex index is
+    // ordered by its fields then `_creationTime` ascending). The sweep queries
+    // `status = "pending"` and ages the ones older than the cutoff to "error",
+    // so a lookup whose work item died mid-flight can never orphan a row on
+    // "Looking up…" forever. Cheap in steady state: pending rows resolve within
+    // seconds under the Wikidata pool, so the common run reads the oldest few,
+    // finds none stale, and stops.
+    .index("by_status", ["status"]),
 
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({

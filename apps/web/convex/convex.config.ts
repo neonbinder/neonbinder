@@ -23,6 +23,16 @@ import workpool from "@convex-dev/workpool/convex.config";
  * convex/placeholderPool.ts for the pool instance and
  * convex/placeholderPipeline.ts for the state machine it drives.
  *
+ * `wikidataPool` (NEO-99) is the queue in front of query.wikidata.org's SPARQL
+ * endpoint. Wikidata documents a hard limit of 5 parallel queries per client IP,
+ * and Convex Cloud sends every deployment's outbound requests from one IP — so
+ * the entity-review wizard's per-batch pacing was not enough: several review
+ * batches (plus the E2E runners) draining concurrently blew past 5 parallel,
+ * Wikidata throttled the IP, a lookup stalled, and the wizard hung on
+ * "Looking up…" forever. Pinning this pool to `maxParallelism: 5` makes every
+ * SPARQL caller in the deployment share ONE 5-wide lane regardless of how many
+ * batches are running. See convex/wikidataPool.ts for the instance.
+ *
  * NOTE: adding another pool means adding another `app.use(workpool, {...})`
  * here with a distinct `name`. Constructing a second `Workpool` class instance
  * against the SAME component does not give you a second pool — the component
@@ -30,5 +40,6 @@ import workpool from "@convex-dev/workpool/convex.config";
  */
 const app = defineApp();
 app.use(workpool, { name: "preprocessPool" });
+app.use(workpool, { name: "wikidataPool" });
 
 export default app;

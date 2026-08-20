@@ -62,4 +62,22 @@ crons.interval(
   {},
 );
 
+/**
+ * Age review rows stranded on `pending` to `error` (NEO-99).
+ *
+ * The last-resort net behind the Wikidata pool's `onComplete` backstop and the
+ * `runSparql` fetch timeout: if a lookup work item is lost so completely that
+ * its completion callback never fires, this is what stops the entity-review
+ * wizard hanging on "Looking up…" forever. Like the two sweeps above it is an
+ * `interval` (a timeout, not a time-of-day job), fifteen minutes against a
+ * thirty-minute staleness threshold, and the common run reads the oldest few
+ * pending rows, finds none stale, and stops — see `sweepStalePendingRows`.
+ */
+crons.interval(
+  "age stale entity-review lookups",
+  { minutes: 15 },
+  internal.entityReviewQueue.sweepStalePendingRows,
+  {},
+);
+
 export default crons;
