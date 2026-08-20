@@ -282,7 +282,7 @@
         "type": "object"
       },
       "ProcessEntryResponse": {
-        "description": "Response body for POST /process-entry. Metadata only \u2014 never image bytes.\n\nThe processed image lives at its derived output key; Convex re-derives\nthat key from `{user_id, job_id, entry_index}` when it needs the object.\n\n`dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted\nORIGINAL \u2014 computed before any cropping, matching cardlister's \"hash the\noriginal scan, never the crop\" rule \u2014 serialized as 16 lowercase hex\ncharacters because a 64-bit integer does not survive JSON's float64.\n\n`output_written` is False when the output object already existed (a\nretried entry): the write is once-only (`if_generation_match=0`) and\nfirst-write-wins on retry is the documented, accepted behaviour.",
+        "description": "Response body for POST /process-entry. Metadata only \u2014 never image bytes.\n\n\u2500\u2500 The `needs_escalation` contract (NEO-175) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTwo mutually exclusive outcomes share this one 200 response, distinguished\nby `needs_escalation`:\n\n  (a) `needs_escalation == false` \u2014 a COMPLETED crop result. Every\n      crop-result field below is populated (identity + dhash +\n      output_written, exactly as before this field existed) and the\n      processed image has been written to its derived output key. This is\n      the HEAVY role's only outcome, and the FAST role's outcome when the\n      classical fast path settled the card. The pre-existing fields keep\n      their pre-NEO-175 values byte-for-byte; the only additive change is\n      `needs_escalation: false`.\n\n  (b) `needs_escalation == true` \u2014 the FAST role (`PREPROCESS_ROLE=fast`)\n      DECLINED: the classical-only fast path did not settle this card and\n      the FAST service must never run the model-backed cascade. There is\n      NO crop result (every crop-result field is left at its default \u2014\n      empty `players`, null identity/dhash, `output_written=false`) and\n      nothing was written to the output key. Convex re-enqueues this entry\n      to the HEAVY service. The body carries no crop, no image bytes, and\n      no secrets \u2014 only this flag and the machine-default placeholders.\n\nA consumer decides purely on `needs_escalation`; it is always present. The\ncrop-result fields are documented per (a)/(b) above.\n\nThe processed image (case a) lives at its derived output key; Convex\nre-derives that key from `{user_id, job_id, entry_index}` when it needs the\nobject.\n\n`dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted\nORIGINAL \u2014 computed before any cropping, matching cardlister's \"hash the\noriginal scan, never the crop\" rule \u2014 serialized as 16 lowercase hex\ncharacters because a 64-bit integer does not survive JSON's float64. Null\nonly in the escalation case (b).\n\n`output_written` is False when the output object already existed (a\nretried entry): the write is once-only (`if_generation_match=0`) and\nfirst-write-wins on retry is the documented, accepted behaviour. It is\nalso False in the escalation case (b), where nothing is written at all.",
         "properties": {
           "card_number": {
             "anyOf": [
@@ -296,18 +296,45 @@
             "title": "Card Number"
           },
           "cropped_source": {
-            "title": "Cropped Source",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cropped Source"
           },
           "dhash": {
-            "title": "Dhash",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dhash"
+          },
+          "needs_escalation": {
+            "default": false,
+            "title": "Needs Escalation",
+            "type": "boolean"
           },
           "orient_confidence": {
-            "title": "Orient Confidence",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orient Confidence"
           },
           "output_written": {
+            "default": false,
             "title": "Output Written",
             "type": "boolean"
           },
@@ -330,12 +357,26 @@
             "type": "array"
           },
           "rotation_degrees": {
-            "title": "Rotation Degrees",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rotation Degrees"
           },
           "side": {
-            "title": "Side",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Side"
           },
           "team": {
             "anyOf": [
@@ -349,23 +390,17 @@
             "title": "Team"
           },
           "text_count": {
-            "title": "Text Count",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Count"
           }
         },
-        "required": [
-          "players",
-          "player",
-          "team",
-          "card_number",
-          "side",
-          "rotation_degrees",
-          "orient_confidence",
-          "text_count",
-          "cropped_source",
-          "dhash",
-          "output_written"
-        ],
         "title": "ProcessEntryResponse",
         "type": "object"
       },
@@ -777,7 +812,7 @@
     },
     "/warmup": {
       "post": {
-        "description": "Force the BiRefNet crop model resident on this instance, then report warm.\n\nA scale-to-zero container pays the ~930MB BiRefNet load plus ORT's first-run\nallocations on its first inference; cold, that latency lands on the first real\n/process-entry call (minutes of effective wait). Convex calls this at\nsession-start to pre-spin the model so the real calls hit a warm instance.\n\nSynchronous \"load then return\": the load runs the SAME path a real crop uses\n(`tiered.warm_up` \u2192 `_get_session` + one tiny in-memory 64x64 inference), needs\nno GCS object or real image, does NO GCS / Vision / Anthropic I/O, and writes\nnothing \u2014 pure model residency. Cloud Run holds the request while a cold\ninstance loads, so a 200 tells the caller the instance is actually ready.\n\nIdempotent and cheap when already warm: `is_session_loaded()` short-circuits so\na repeat call returns immediately with no reload and no inference, and reports\n`was_cold=False` so the caller knows the instance was already ready.\n\nConcurrency: the service runs container_concurrency=1, so one /warmup warms the\nONE instance that happens to handle it. Warming all N instances of a scaled-out\nrevision needs N concurrent /warmup calls (Convex fans out N = capacity); this\nendpoint only ever warms its own instance.",
+        "description": "Force the BiRefNet crop model resident on this instance, then report warm.\n\nA scale-to-zero container pays the ~930MB BiRefNet load plus ORT's first-run\nallocations on its first inference; cold, that latency lands on the first real\n/process-entry call (minutes of effective wait). Convex calls this at\nsession-start to pre-spin the model so the real calls hit a warm instance.\n\nSynchronous \"load then return\": the load runs the SAME path a real crop uses\n(`tiered.warm_up` \u2192 `_get_session` + one tiny in-memory 64x64 inference), needs\nno GCS object or real image, does NO GCS / Vision / Anthropic I/O, and writes\nnothing \u2014 pure model residency. Cloud Run holds the request while a cold\ninstance loads, so a 200 tells the caller the instance is actually ready.\n\nIdempotent and cheap when already warm: `is_session_loaded()` short-circuits so\na repeat call returns immediately with no reload and no inference, and reports\n`was_cold=False` so the caller knows the instance was already ready.\n\nConcurrency: the service runs container_concurrency=1, so one /warmup warms the\nONE instance that happens to handle it. Warming all N instances of a scaled-out\nrevision needs N concurrent /warmup calls (Convex fans out N = capacity); this\nendpoint only ever warms its own instance.\n\nNEO-175: the FAST role has no local model to make resident, so it must not\nreach the loader at all (the whole point of the role is that it never\nconstructs a model session). It short-circuits to `was_cold=False` without\nimporting or touching the tiered session helpers.",
         "operationId": "warmup_warmup_post",
         "parameters": [
           {
