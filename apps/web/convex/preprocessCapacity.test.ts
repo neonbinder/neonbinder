@@ -23,7 +23,9 @@
 import { describe, expect, test, vi } from "vitest";
 import {
   DEFAULT_PREPROCESS_MAX_PARALLELISM,
+  HEAVY_MAX_PARALLELISM,
   PREPROCESS_MAX_PARALLELISM,
+  resolveHeavyPreprocessMaxParallelism,
   resolvePreprocessMaxParallelism,
 } from "./preprocessCapacity";
 
@@ -35,6 +37,19 @@ function resolveWithWarnings(raw: string | undefined) {
   });
   try {
     return { value: resolvePreprocessMaxParallelism(raw), warnings };
+  } finally {
+    warn.mockRestore();
+  }
+}
+
+/** The same, for the heavy resolver. */
+function resolveHeavyWithWarnings(raw: string | undefined) {
+  const warnings: string[] = [];
+  const warn = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+    if (typeof args[0] === "string") warnings.push(args[0]);
+  });
+  try {
+    return { value: resolveHeavyPreprocessMaxParallelism(raw), warnings };
   } finally {
     warn.mockRestore();
   }
@@ -111,12 +126,55 @@ describe("resolvePreprocessMaxParallelism", () => {
   });
 });
 
-describe("the resolved deployment value", () => {
-  test("is a usable parallelism, resolved once at module load", () => {
-    // The test environment sets nothing, so this is the fallback path — which is
-    // also what every dev and preview deployment sees.
+describe("resolveHeavyPreprocessMaxParallelism", () => {
+  test("shares the fast resolver's validation — accepts a valid value, falls back otherwise", () => {
+    expect(resolveHeavyWithWarnings("2").value).toBe(2);
+    expect(resolveHeavyWithWarnings(undefined).value).toBe(
+      DEFAULT_PREPROCESS_MAX_PARALLELISM,
+    );
+    // Out of range falls back, does not clamp — same policy as fast.
+    expect(resolveHeavyWithWarnings("999").value).toBe(
+      DEFAULT_PREPROCESS_MAX_PARALLELISM,
+    );
+  });
+
+  test("an invalid value warns with the HEAVY message, not the fast one", async () => {
+    // Fast and heavy read different env vars, so the diagnostic must name which
+    // pool was misconfigured — otherwise a debugger is sent to the wrong
+    // terraform variable.
+    const { warnings } = resolveHeavyWithWarnings("200");
+    const msgs = warnings
+      .map((w) => {
+        try {
+          return (JSON.parse(w) as { msg?: unknown }).msg;
+        } catch {
+          return undefined;
+        }
+      })
+      .filter((m): m is string => typeof m === "string");
+    // Exactly the heavy message — and NOT the fast one (whose string is a
+    // substring of the heavy one, so a substring check would falsely match).
+    expect(msgs).toContain("heavy_preprocess_max_parallelism_invalid");
+    expect(msgs).not.toContain("preprocess_max_parallelism_invalid");
+    const line = warnings
+      .map((w) => JSON.parse(w) as Record<string, unknown>)
+      .find((l) => l.msg === "heavy_preprocess_max_parallelism_invalid");
+    expect(line?.configured).toBe("200");
+  });
+
+  test("an unset heavy var is silent — that is dev/preview's intended config", () => {
+    const { warnings } = resolveHeavyWithWarnings(undefined);
+    expect(warnings).toHaveLength(0);
+  });
+});
+
+describe("the resolved deployment values", () => {
+  test("both are a usable parallelism, resolved once at module load", () => {
+    // The test environment sets neither var, so both take the fallback path —
+    // which is also what every dev and preview deployment sees.
     expect(PREPROCESS_MAX_PARALLELISM).toBe(DEFAULT_PREPROCESS_MAX_PARALLELISM);
-    expect(Number.isInteger(PREPROCESS_MAX_PARALLELISM)).toBe(true);
-    expect(PREPROCESS_MAX_PARALLELISM).toBeGreaterThanOrEqual(1);
+    expect(HEAVY_MAX_PARALLELISM).toBe(DEFAULT_PREPROCESS_MAX_PARALLELISM);
+    expect(Number.isInteger(HEAVY_MAX_PARALLELISM)).toBe(true);
+    expect(HEAVY_MAX_PARALLELISM).toBeGreaterThanOrEqual(1);
   });
 });

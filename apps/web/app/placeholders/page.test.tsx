@@ -288,70 +288,71 @@ describe("PlaceholderScansPage", () => {
     expect(screen.getByText(/#2 stray\.jpg/)).not.toBeNull();
   });
 
-  describe("warming-up indicator", () => {
-    const collectingJob = {
+  describe("cold-start (heavy warm-up) indicator", () => {
+    // NEO-175: the notice is now driven by the backend-derived `heavyWarming`
+    // flag on the job, NOT by client-side image-state guessing. It is scoped to
+    // escalations — the fast path is never gated, so fast cards streaming in
+    // never trigger it. `deriveHeavyWarming` (unit-tested in convex/) is what
+    // decides the flag; here we assert the page renders off it.
+    const baseJob = {
       jobId: "job-1234abcd",
-      status: "collecting",
+      status: "processing",
       createdAt: Date.now(),
       totalImages: 2,
-      processedImages: 0,
+      processedImages: 1,
       failedImages: 0,
       rejectedEntries: 0,
       pairCount: 0,
     };
 
-    function openWithImages(images: Array<{ entryIndex: number; status: string }>) {
+    function openWithJob(
+      jobOverrides: Record<string, unknown>,
+      images: Array<{ entryIndex: number; status: string; escalated?: boolean }> = [],
+    ) {
       mocks.queries = {
-        [REFS.job]: collectingJob,
+        [REFS.job]: { ...baseJob, ...jobOverrides },
         [REFS.images]: images.map((i) => ({ originalName: `f${i.entryIndex}.jpg`, ...i })),
       };
       return renderPage("/placeholders?jobId=job-1234abcd");
     }
 
-    const WARMING = /Warming up the card processor/;
+    const WARMING = /Warming up the full card processor/;
 
-    it("shows while confirmed images sit queued and nothing has started", () => {
-      openWithImages([
-        { entryIndex: 0, status: "queued" },
-        { entryIndex: 1, status: "queued" },
-      ]);
+    it("shows while an escalation is waiting on the cold heavy service", () => {
+      openWithJob({ heavyWarming: true });
       const note = screen.getByText(WARMING);
       expect(note).not.toBeNull();
-      // Announced, and not error-toned — a cold start is expected, not a fault.
+      // Announced, and not error-toned — a heavy warm-up is expected, not a fault.
       const region = note.closest("[role='status'][aria-live='polite']");
       expect(region).not.toBeNull();
     });
 
-    it("clears the moment an image reaches processing", () => {
-      openWithImages([
-        { entryIndex: 0, status: "processing" },
-        { entryIndex: 1, status: "queued" },
-      ]);
+    it("clears once the heavy service has produced a result (heavyWarming false)", () => {
+      openWithJob({ heavyWarming: false });
       expect(screen.queryByText(WARMING)).toBeNull();
     });
 
-    it("never shows when a job goes straight to processing", () => {
-      openWithImages([
-        { entryIndex: 0, status: "processing" },
+    it("never shows for a batch with no escalations (flag absent)", () => {
+      openWithJob({});
+      expect(screen.queryByText(WARMING)).toBeNull();
+    });
+
+    it("is scoped to escalations — fast cards streaming in do not trigger it", () => {
+      // Images actively moving through the fast path, but heavyWarming false: the
+      // fast path is never gated, so no warm-up notice appears for them.
+      openWithJob({ heavyWarming: false }, [
+        { entryIndex: 0, status: "queued" },
         { entryIndex: 1, status: "processing" },
       ]);
       expect(screen.queryByText(WARMING)).toBeNull();
     });
 
-    it("does not show before anything is confirmed (only awaiting_upload)", () => {
-      // The grace: it needs a CONFIRMED (queued) image, so it cannot flash while
-      // uploads are still in flight.
-      openWithImages([{ entryIndex: 0, status: "awaiting_upload" }]);
-      expect(screen.queryByText(WARMING)).toBeNull();
-    });
-
-    it("treats a failed image as 'started' and hides", () => {
-      // A failed image means a work item actually ran — the model is warm.
-      openWithImages([
-        { entryIndex: 0, status: "failed" },
-        { entryIndex: 1, status: "queued" },
+    it("badges an escalated, still-processing image as deeper processing", () => {
+      openWithJob({ heavyWarming: true }, [
+        { entryIndex: 0, status: "done" },
+        { entryIndex: 1, status: "processing", escalated: true },
       ]);
-      expect(screen.queryByText(WARMING)).toBeNull();
+      expect(screen.getByText(/Escalating — deeper processing/)).not.toBeNull();
     });
   });
 

@@ -1,25 +1,37 @@
 "use node";
 
 /**
- * Convex → preprocess Cloud Run adapter (NEO-170).
+ * Convex → preprocess Cloud Run adapter (NEO-170; fast/heavy split NEO-175).
  *
- * Two routes, both JSON, both taking `job_id` + `user_id` and NEVER an object
- * path — see the `placeholderJobs` table comment in schema.ts for why that is a
- * hard rule rather than a style preference. The preprocess service re-derives
+ * Two SERVICES now, selected per call, both stateless and both speaking the
+ * same routes. Every route is JSON, takes `job_id` + `user_id` and NEVER an
+ * object path — see the `placeholderJobs` table comment in schema.ts for why
+ * that is a hard rule rather than a style preference. Each service re-derives
  * the GCS path from the job id on its own side.
  *
- *   POST /extract        → unzip the upload, list the entries it accepted
- *   POST /process-entry  → crop + orient + classify + hash ONE entry
+ *   POST /extract        → unzip the upload, list the entries it accepted (FAST)
+ *   POST /process-entry  → crop + orient + classify + hash ONE entry (FAST first,
+ *                          HEAVY on escalation)
+ *   POST /warmup         → force an instance resident (FAST on start, HEAVY on
+ *                          the first escalation)
  *
- * The service is stateless: every scrap of orchestration state (which entries
+ * FAST is the classical-only service every image hits first; it cold-starts in
+ * seconds and returns `needs_escalation: true` (no crop) for a card its fast
+ * path cannot settle. HEAVY runs the full BiRefNet cascade, cold-loads ~191s,
+ * and is where those escalations go. `/extract` is a per-job unzip that needs no
+ * model, so it goes to FAST — routing it to HEAVY would cold-start the 191s
+ * service just to unzip, on every batch, and defeat the whole split.
+ *
+ * The services are stateless: every scrap of orchestration state (which entries
  * exist, which are done, what to retry, what the batch's progress is) lives in
- * Convex. That is what lets the pool cancel, retry and resume without the
- * service needing a job table.
+ * Convex. That is what lets the pools cancel, retry and resume without a service
+ * needing a job table.
  */
 
 import { ActionCtx } from "../_generated/server";
 import { NonRetryableError } from "@convex-dev/workpool";
 import { buildAuthHeaders } from "../lib/cloudRunAuth";
+import { preprocessAudienceFor } from "../preprocessAudience";
 import {
   classifyAdapterError,
   newRequestId,
@@ -27,7 +39,14 @@ import {
 } from "../observability";
 
 /**
- * Base URL of the preprocess service.
+ * Which preprocess service a call is aimed at: its base URL and the env-var name
+ * that URL came from (only used to point a misconfiguration error at the right
+ * variable — see `getIdTokenClient`).
+ */
+type PreprocessService = { url: string; envVarName: string };
+
+/**
+ * Base URL of the HEAVY preprocess service (the full BiRefNet cascade).
  *
  * Local default is port 8081, NOT 8080 — 8080 is the browser service's local
  * port (see credentials.ts `browserUrl()`), and both run at once during
@@ -35,9 +54,36 @@ import {
  * `/extract` to the browser service, which answers 404 and looks like a
  * terminal INPUT_NOT_FOUND.
  */
-export function preprocessUrl(): string {
+export function preprocessHeavyUrl(): string {
   return process.env.NEONBINDER_PREPROCESS_URL || "http://localhost:8081";
 }
+
+/**
+ * Base URL of the FAST preprocess service (classical-only).
+ *
+ * **Falls back to the heavy URL when `NEONBINDER_PREPROCESS_FAST_URL` is unset.**
+ * That fallback is the graceful-degradation story for the window BEFORE NEO-175
+ * Phase 3 terraform deploys a separate fast service: with only one service
+ * running (in its default `heavy` role, see Phase 1), fast == heavy == that one
+ * service, which always crops and never returns `needs_escalation: true` — so no
+ * escalation ever fires and the pipeline behaves exactly as it did pre-split.
+ * Once Phase 3 sets this variable, the two diverge and escalations start
+ * flowing. Local dev likewise runs a single service on 8081 unless a dev sets
+ * the variable to run two.
+ */
+export function preprocessFastUrl(): string {
+  return process.env.NEONBINDER_PREPROCESS_FAST_URL || preprocessHeavyUrl();
+}
+
+const FAST_SERVICE = (): PreprocessService => ({
+  url: preprocessFastUrl(),
+  envVarName: "NEONBINDER_PREPROCESS_FAST_URL",
+});
+
+const HEAVY_SERVICE = (): PreprocessService => ({
+  url: preprocessHeavyUrl(),
+  envVarName: "NEONBINDER_PREPROCESS_URL",
+});
 
 /**
  * 4 minutes. A single `/process-entry` is a full BiRefNet inference plus a
@@ -173,6 +219,20 @@ export type ProcessEntryResponse = {
   /** 16-char lowercase hex. Perceptual hash used by the pairing pass. */
   dhash: string | null;
   output_written: boolean;
+  /**
+   * NEO-175 Phase 1 contract. Always present, default `false`.
+   *
+   *   false → a completed crop result (all the fields above carry their values).
+   *   true  → the FAST role declined this card: the classical fast path could
+   *           not settle it, so there is NO crop result and nothing was written,
+   *           and the response is a 200 whose only meaningful field is this one.
+   *           Convex re-enqueues the entry to the HEAVY service, which runs the
+   *           full cascade and returns a completed result. The heavy service
+   *           always crops, so its responses always carry `false`.
+   *
+   * No crop, image bytes, or secrets ever ride an escalation response.
+   */
+  needs_escalation: boolean;
 };
 
 /**
@@ -191,8 +251,17 @@ export type ProcessEntryResponse = {
  * than pre-empted here, because in loopback dev the service may legitimately
  * run without one.
  */
-async function preprocessHeaders(): Promise<Record<string, string>> {
-  const headers = await buildAuthHeaders(preprocessUrl(), "NEONBINDER_PREPROCESS_URL");
+async function preprocessHeaders(service: PreprocessService): Promise<Record<string, string>> {
+  // Normalize the audience through the base-host allowlist BEFORE minting the
+  // token (SECURITY control #3, NEO-175): a tagged preview host must be REACHED
+  // at the tagged URL but AUTHORIZED against the base service URL, or Cloud Run
+  // IAM 403s the token once invoker-only is enforced. `preprocessAudienceFor`
+  // rewrites only OUR recognized preprocess hosts and returns anything else
+  // verbatim (fail closed). Both services' URLs go through it.
+  const headers = await buildAuthHeaders(
+    preprocessAudienceFor(service.url),
+    service.envVarName,
+  );
   const internalKey = process.env.NEONBINDER_PREPROCESS_INTERNAL_KEY;
   if (internalKey) {
     headers["x-internal-key"] = internalKey;
@@ -210,6 +279,7 @@ async function preprocessHeaders(): Promise<Record<string, string>> {
  */
 async function preprocessPost<T>(
   ctx: ActionCtx,
+  service: PreprocessService,
   path: string,
   body: Record<string, unknown>,
   operation: string,
@@ -247,9 +317,9 @@ async function preprocessPost<T>(
 
   let response: Response;
   try {
-    response = await fetch(`${preprocessUrl()}${path}`, {
+    response = await fetch(`${service.url}${path}`, {
       method: "POST",
-      headers: await preprocessHeaders(),
+      headers: await preprocessHeaders(service),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(PREPROCESS_FETCH_TIMEOUT_MS),
     });
@@ -323,6 +393,9 @@ export async function callExtract(
 ): Promise<ExtractResponse> {
   return preprocessPost<ExtractResponse>(
     ctx,
+    // FAST: unzip needs no model, and routing it to HEAVY would cold-start the
+    // 191s service on every batch just to open an archive.
+    FAST_SERVICE(),
     "/extract",
     { job_id: args.jobId, user_id: args.userId },
     "preprocessExtract",
@@ -333,19 +406,45 @@ export async function callExtract(
 }
 
 /**
- * Crop, orient, classify and hash a single entry from an already-extracted
- * upload. One call per image; the workpool is what keeps the fan-out inside
- * the service's capacity.
+ * Crop, orient, classify and hash a single entry against the FAST service — the
+ * first stop for every image. One call per image; the fast workpool is what
+ * keeps the fan-out inside the fast service's capacity. A `needs_escalation:
+ * true` response means the classical path declined and Convex must re-enqueue
+ * the entry to `callProcessEntryHeavy`.
  */
-export async function callProcessEntry(
+export async function callProcessEntryFast(
   ctx: ActionCtx,
   args: { jobId: string; userId: string; entryIndex: number },
 ): Promise<ProcessEntryResponse> {
   return preprocessPost<ProcessEntryResponse>(
     ctx,
+    FAST_SERVICE(),
     "/process-entry",
     { job_id: args.jobId, user_id: args.userId, entry_index: args.entryIndex },
-    "preprocessProcessEntry",
+    // Distinct operation names so the telemetry dashboard can separate fast load
+    // from heavy load — the two services scale independently and "which one is
+    // saturated" is the whole question.
+    "preprocessProcessEntryFast",
+    { jobId: args.jobId, entryIndex: args.entryIndex },
+  );
+}
+
+/**
+ * The same call against the HEAVY service — the full BiRefNet cascade an
+ * escalated entry is routed to. Its response always carries `needs_escalation:
+ * false`, and the heavy workpool bounds the fan-out to the heavy service's own,
+ * smaller instance ceiling.
+ */
+export async function callProcessEntryHeavy(
+  ctx: ActionCtx,
+  args: { jobId: string; userId: string; entryIndex: number },
+): Promise<ProcessEntryResponse> {
+  return preprocessPost<ProcessEntryResponse>(
+    ctx,
+    HEAVY_SERVICE(),
+    "/process-entry",
+    { job_id: args.jobId, user_id: args.userId, entry_index: args.entryIndex },
+    "preprocessProcessEntryHeavy",
     { jobId: args.jobId, entryIndex: args.entryIndex },
   );
 }
@@ -380,10 +479,18 @@ const WARMUP_FETCH_TIMEOUT_MS = 60_000;
  * service returns `{status:"warm"}`, but we do not depend on its shape). Same
  * auth headers as every other preprocess call, so it rides the same
  * x-internal-key / OIDC transition. `container_concurrency = 1` means one
- * warm-up warms exactly one instance — see `warmupPreprocess`, which fires
- * PREPROCESS_MAX_PARALLELISM of these at once to warm the whole pool.
+ * warm-up warms exactly one instance.
+ *
+ * Takes the target service so the same swallow-everything body serves both the
+ * FAST fan-out (`warmupPreprocess`, N-wide on start) and the HEAVY warm-gate
+ * (`warmupHeavyPreprocess`, one on the first escalation). `operation` names
+ * which, so the telemetry can tell a fast warm-up from a heavy one.
  */
-export async function callWarmup(ctx: ActionCtx): Promise<{ warmed: boolean }> {
+async function callWarmupFor(
+  ctx: ActionCtx,
+  service: PreprocessService,
+  operation: string,
+): Promise<{ warmed: boolean }> {
   const started = Date.now();
   const requestId = newRequestId();
   let statusCode: number | undefined;
@@ -393,7 +500,7 @@ export async function callWarmup(ctx: ActionCtx): Promise<{ warmed: boolean }> {
   const record = async (success: boolean, errorText?: string) => {
     await recordAdapterCall(ctx, {
       requestId,
-      operation: "preprocessWarmup",
+      operation,
       platform: "preprocess",
       duration_ms: Date.now() - started,
       success,
@@ -404,9 +511,9 @@ export async function callWarmup(ctx: ActionCtx): Promise<{ warmed: boolean }> {
   };
 
   try {
-    const response = await fetch(`${preprocessUrl()}/warmup`, {
+    const response = await fetch(`${service.url}/warmup`, {
       method: "POST",
-      headers: await preprocessHeaders(),
+      headers: await preprocessHeaders(service),
       body: JSON.stringify({}),
       signal: AbortSignal.timeout(WARMUP_FETCH_TIMEOUT_MS),
     });
@@ -416,7 +523,7 @@ export async function callWarmup(ctx: ActionCtx): Promise<{ warmed: boolean }> {
 
     if (!response.ok) {
       await record(false, `preprocess warmup HTTP ${response.status}`);
-      console.warn(`[callWarmup] non-2xx (non-fatal): HTTP ${response.status}`);
+      console.warn(`[${operation}] non-2xx (non-fatal): HTTP ${response.status}`);
       return { warmed: false };
     }
     await record(true);
@@ -426,7 +533,23 @@ export async function callWarmup(ctx: ActionCtx): Promise<{ warmed: boolean }> {
     // start simply happens later.
     const message = err instanceof Error ? err.message : String(err);
     await record(false, `preprocess warmup failed: ${message}`);
-    console.warn(`[callWarmup] failed (non-fatal): ${message}`);
+    console.warn(`[${operation}] failed (non-fatal): ${message}`);
     return { warmed: false };
   }
+}
+
+/** Warm one FAST instance. Fired PREPROCESS_MAX_PARALLELISM-wide on start. */
+export function callWarmupFast(ctx: ActionCtx): Promise<{ warmed: boolean }> {
+  return callWarmupFor(ctx, FAST_SERVICE(), "preprocessWarmupFast");
+}
+
+/**
+ * Warm one HEAVY instance. Fired exactly ONCE, on the first escalation of a
+ * batch (the warm-gate) — deliberately not N-wide like the fast fan-out, because
+ * heavy instances are the 191s cold-loaders and escalations are a minority of
+ * images; the heavy pool queues the rest behind this one warming instance rather
+ * than stampeding N cold heavy instances.
+ */
+export function callWarmupHeavy(ctx: ActionCtx): Promise<{ warmed: boolean }> {
+  return callWarmupFor(ctx, HEAVY_SERVICE(), "preprocessWarmupHeavy");
 }

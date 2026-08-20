@@ -9,7 +9,7 @@
  *
  * **The workpool is mocked here, and only here.** convex-test cannot register
  * the workpool's nested batch-worker component, so a real
- * `preprocessPool.enqueueAction` throws — which is why the zip tests carefully
+ * `fastPreprocessPool.enqueueAction` throws — which is why the zip tests carefully
  * avoid every path that reaches it. That avoidance is not affordable for
  * `confirmPlaceholderImageUpload`: enqueuing IS what confirming does, and the
  * property most worth pinning (a double confirm must not enqueue twice or count
@@ -48,7 +48,7 @@ vi.mock("./placeholderPool", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./placeholderPool")>();
   return {
     ...actual,
-    preprocessPool: {
+    fastPreprocessPool: {
       enqueueAction: async (
         _ctx: unknown,
         _fn: unknown,

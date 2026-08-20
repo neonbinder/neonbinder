@@ -43,7 +43,7 @@ import type { MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
-import { preprocessPool } from "./placeholderPool";
+import { fastPreprocessPool } from "./placeholderPool";
 import {
   ACTIVE_STATUSES,
   ENQUEUE_CHUNK_SIZE,
@@ -346,7 +346,7 @@ export const confirmPlaceholderImageUpload = mutation({
     await ctx.db.patch(image._id, { status: "queued" });
     await ctx.db.patch(job._id, { totalImages, lastActivityAt: now });
 
-    const workId = await preprocessPool.enqueueAction(
+    const workId = await fastPreprocessPool.enqueueAction(
       ctx,
       internal.placeholderBatch.processEntryWorker,
       { jobId: args.jobId, userId: image.userId, entryIndex: image.entryIndex },

@@ -16,8 +16,10 @@ import { internal } from "./_generated/api";
 import { isNonRetryableError } from "@convex-dev/workpool";
 import {
   callExtract,
-  callProcessEntry,
-  callWarmup,
+  callProcessEntryFast,
+  callProcessEntryHeavy,
+  callWarmupFast,
+  callWarmupHeavy,
   parsePreprocessErrorCode,
 } from "./adapters/preprocess";
 import { PREPROCESS_MAX_PARALLELISM } from "./preprocessCapacity";
@@ -148,27 +150,31 @@ export const runExtract = internalAction({
 });
 
 /**
- * Process one image. This is the function the workpool enqueues, once per
- * accepted entry.
+ * Process one image against the FAST service. This is the function the FAST
+ * workpool enqueues, once per accepted entry — the first stop for every image.
  *
  * Deliberately has no error handling and no state writes:
  *
  *  - It RETURNS the response body, which the pool delivers to
- *    `onImageComplete` as `result.returnValue`. Recording it here instead
- *    would double-write with the completion hook and lose the retry semantics.
+ *    `onImageComplete` as `result.returnValue`. That body carries the
+ *    `needs_escalation` flag the settle reads to decide whether to route the
+ *    image to the heavy pool; recording anything here would double-write with
+ *    the completion hook and lose the retry semantics.
  *  - It lets throws propagate. `NonRetryableError` (400/404 from the adapter)
  *    stops the pool retrying immediately; anything else (429, 5xx, network,
  *    timeout) burns one attempt of the configured ladder. Catching and
  *    returning a `{success:false}` object would read to the pool as success
- *    and silently disable retries for the entire batch.
+ *    and silently disable retries for the entire batch. A `needs_escalation:
+ *    true` body is a genuine 200 success (the fast path ran and declined), so
+ *    it flows to onComplete unretried, which is correct.
  *
  * `returns: v.any()` rather than a precise object validator, on purpose: the
- * response shape is owned by the preprocess service, which is being built on
- * the same branch. A strict `v.object` rejects unknown fields, so the first
- * additive field added on the service side would fail every work item in the
- * pool rather than being ignored. The value is narrowed field-by-field where
- * it is actually consumed (`imageFieldsFromResult` in placeholderPipeline.ts),
- * which is the place that can drop a bad field without failing the batch.
+ * response shape is owned by the preprocess service. A strict `v.object`
+ * rejects unknown fields, so the first additive field on the service side would
+ * fail every work item in the pool rather than being ignored. The value is
+ * narrowed field-by-field where it is actually consumed (`imageFieldsFromResult`
+ * and the escalation read in placeholderPipeline.ts), which is the place that
+ * can drop a bad field without failing the batch.
  */
 export const processEntryWorker = internalAction({
   args: {
@@ -178,7 +184,7 @@ export const processEntryWorker = internalAction({
   },
   returns: v.any(),
   handler: async (ctx, args) => {
-    return callProcessEntry(ctx, {
+    return callProcessEntryFast(ctx, {
       jobId: args.jobId,
       userId: args.userId,
       entryIndex: args.entryIndex,
@@ -187,26 +193,51 @@ export const processEntryWorker = internalAction({
 });
 
 /**
- * Warm every preprocess instance, in the background, at the start of a batch.
+ * Process one ESCALATED image against the HEAVY service. Enqueued by the HEAVY
+ * workpool (`enqueueHeavyImage` in placeholderHeavyPool.ts) after the fast path
+ * declined the image. Same no-error-handling / no-state-writes contract as the
+ * fast worker; its result always carries `needs_escalation: false`, and the
+ * shared settle terminates the row on it.
+ */
+export const processHeavyEntryWorker = internalAction({
+  args: {
+    jobId: v.string(),
+    userId: v.string(),
+    entryIndex: v.number(),
+  },
+  returns: v.any(),
+  handler: async (ctx, args) => {
+    return callProcessEntryHeavy(ctx, {
+      jobId: args.jobId,
+      userId: args.userId,
+      entryIndex: args.entryIndex,
+    });
+  },
+});
+
+/**
+ * Warm every FAST preprocess instance, in the background, at the start of a
+ * batch.
  *
  * Scheduled fire-and-forget from `startPlaceholderStream` and
  * `startPlaceholderBatch` (via `ctx.scheduler.runAfter(0, ...)`), so the start
- * mutation returns inside the 7-second UI budget and the model loads WHILE the
- * user uploads or scans — instead of the first real image paying a multi-minute
- * cold start.
+ * mutation returns inside the 7-second UI budget and instances are up WHILE the
+ * user uploads or scans. The fast service cold-starts in seconds, so this is a
+ * smaller win than it once was, but it is free and keeps the first fast image
+ * off even that short cold start.
  *
  * Fires PREPROCESS_MAX_PARALLELISM warm-ups CONCURRENTLY, and that count is
  * load-bearing: the service runs `container_concurrency = 1`, so one warm-up
  * lands on one instance and warms exactly that instance. Firing N at once is
- * what spreads them across all N instances Cloud Run will run — a single
- * warm-up would leave the other N-1 cold, and the batch's own fan-out (also
- * capped at N) would then cold-start them one real image at a time, which is
- * the very cost this exists to avoid.
+ * what spreads them across all N fast instances Cloud Run will run.
  *
- * `callWarmup` never throws, so this action cannot fail; `Promise.all` over
- * non-throwing calls is safe. It returns null regardless — nothing awaits its
- * outcome, and a batch whose warm-up did nothing is simply a batch that
- * cold-starts the old way.
+ * Warms the FAST service ONLY. The HEAVY service is deliberately NOT warmed on
+ * start — it is the 191s cold-loader, and pre-warming it on every batch (most of
+ * which never escalate) would burn heavy capacity for nothing. It is warmed on
+ * demand by `warmupHeavyPreprocess`, the warm-gate, on the first escalation.
+ *
+ * `callWarmupFast` never throws, so this action cannot fail; `Promise.all` over
+ * non-throwing calls is safe.
  */
 export const warmupPreprocess = internalAction({
   args: {},
@@ -214,11 +245,40 @@ export const warmupPreprocess = internalAction({
   handler: async (ctx) => {
     const requested = PREPROCESS_MAX_PARALLELISM;
     const results = await Promise.all(
-      Array.from({ length: requested }, () => callWarmup(ctx)),
+      Array.from({ length: requested }, () => callWarmupFast(ctx)),
     );
     const warmed = results.filter((r) => r.warmed).length;
     console.log(
       JSON.stringify({ msg: "preprocess_warmup", requested, warmed }),
+    );
+    return null;
+  },
+});
+
+/**
+ * The HEAVY warm-gate: warm ONE heavy instance, fired the first time a batch
+ * escalates an image (scheduled fire-and-forget from `settleImageOutcome`).
+ *
+ * A single warm-up, NOT the fast fan-out's N-wide burst, and that asymmetry is
+ * the whole point (requirement #4): the heavy service cold-loads ~191s, and
+ * escalations are a minority of images, so pre-warming all N heavy instances for
+ * what may be one escalation would stampede N cold heavy instances. Warming one
+ * and letting the heavy pool's `maxParallelism` queue the escalations behind
+ * that warming instance is what keeps the heavy footprint proportional to the
+ * escalation load. The fast path is never gated on this — fast cards stream in
+ * regardless.
+ *
+ * `callWarmupHeavy` never throws, so this action cannot fail. It runs entirely
+ * in the background; the escalations it precedes get the pool's full 4-minute
+ * per-request budget, which clears a heavy cold start.
+ */
+export const warmupHeavyPreprocess = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const result = await callWarmupHeavy(ctx);
+    console.log(
+      JSON.stringify({ msg: "preprocess_heavy_warmup", warmed: result.warmed }),
     );
     return null;
   },

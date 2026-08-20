@@ -158,6 +158,12 @@ function imageSummary(image: PlaceholderImage): string {
   if (image.status === "failed") {
     return image.errorCode ? `Failed (${image.errorCode})` : "Failed";
   }
+  // An escalated image still processing is on the heavy service — surface that
+  // it is taking the deeper path rather than showing a bare "Processing" that
+  // looks stuck while the heavy model warms.
+  if (image.status === "processing" && image.escalated) {
+    return "Escalating — deeper processing…";
+  }
   if (image.status !== "done") return statusLabel(image.status);
   const parts = [
     image.side ? `${image.side} side` : null,
@@ -329,30 +335,16 @@ export default function PlaceholderScansPage() {
     (image) => image.pairStatus !== "paired",
   );
 
-  // "Warming up" is derived from observable state, no backend flag: a confirmed
-  // image is sitting in `queued` and NOTHING has been picked up yet (nothing
-  // `processing`, `done`, or `failed`). The moment the processor engages any
-  // image the condition clears on its own.
-  //
-  // Two behaviours fall out of this for free, which is the whole point:
-  //   - Cold service: images sit `queued` for a bit → this shows → clears when
-  //     the first one flips to `processing`.
-  //   - Pre-warmed service: images go `queued`→`processing` almost at once, so
-  //     there is no sustained window where something is queued and nothing has
-  //     started — the indicator never meaningfully appears. No `was_cold` flag.
-  // `failed` counts as "started" alongside processing/done: a failed image means
-  // a work item actually RAN, so the model is warm and this must not linger.
-  // The grace against flicker is inherent — it requires a CONFIRMED (`queued`)
-  // image, so it cannot flash before anything has been confirmed.
-  const images_ = images ?? [];
-  const warmingUp =
-    images_.some((image) => image.status === "queued") &&
-    !images_.some(
-      (image) =>
-        image.status === "processing" ||
-        image.status === "done" ||
-        image.status === "failed",
-    );
+  // The cold-start notice is now the split-aware `heavyWarming` flag the backend
+  // derives (NEO-175, `deriveHeavyWarming`), which replaces the old single-
+  // service "queued but nothing started" heuristic. The fast service cold-starts
+  // in seconds and every card streams through it independently, so it no longer
+  // warrants a prominent notice; the multi-minute wait is the HEAVY service's
+  // ~191s warm-up, and this flag is true only while an escalated image is
+  // actually waiting on it. Scoped to escalations by construction — a batch that
+  // never escalates never shows it, and it clears the instant the first
+  // escalated image resolves (proof the heavy service is warm).
+  const warmingUp = job?.heavyWarming ?? false;
 
   return (
     <div className="space-y-8">
@@ -460,9 +452,11 @@ export default function PlaceholderScansPage() {
                 : jobSummary(job)}
           </p>
           {/* A distinct info-styled note by the status line — not error-toned,
-              since a cold start is expected, not a fault. role=status + polite
-              so it is announced; the sentence carries the meaning, so it is not
-              colour-only (the pulsing dot is decoration, hidden from AT). */}
+              since a heavy-service warm-up is expected, not a fault. role=status
+              + polite so it is announced; the sentence carries the meaning, so it
+              is not colour-only (the pulsing dot is decoration, hidden from AT).
+              Scoped to escalations (job.heavyWarming): fast-cropped cards keep
+              streaming into the lists below while this shows. */}
           {warmingUp && (
             <p
               role="status"
@@ -473,8 +467,9 @@ export default function PlaceholderScansPage() {
                 aria-hidden="true"
                 className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-neon-blue"
               />
-              Warming up the card processor — this can take a minute on the first
-              scan.
+              Warming up the full card processor — some scans need deeper
+              analysis, which can take a couple of minutes the first time. The
+              rest keep coming in below.
             </p>
           )}
           {job && (

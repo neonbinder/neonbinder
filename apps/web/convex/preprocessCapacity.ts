@@ -95,7 +95,7 @@ const MAX_ACCEPTED_PARALLELISM = 50;
  * `process.env` is read once at module load, which is right for the runtime and
  * useless for a test.
  */
-export function resolvePreprocessMaxParallelism(raw: string | undefined): number {
+function resolveMaxParallelism(raw: string | undefined, invalidMsg: string): number {
   if (raw === undefined || raw.trim() === "") {
     return DEFAULT_PREPROCESS_MAX_PARALLELISM;
   }
@@ -112,7 +112,10 @@ export function resolvePreprocessMaxParallelism(raw: string | undefined): number
   if (!usable) {
     console.warn(
       JSON.stringify({
-        msg: "preprocess_max_parallelism_invalid",
+        // Names which pool was misconfigured — fast and heavy read different
+        // env vars, so a shared message would send whoever is debugging to the
+        // wrong terraform variable.
+        msg: invalidMsg,
         // A capacity number, not a secret — and without it in the line an
         // operator cannot tell a typo from an unset variable.
         configured: trimmed,
@@ -126,8 +129,29 @@ export function resolvePreprocessMaxParallelism(raw: string | undefined): number
   return parsed;
 }
 
+export function resolvePreprocessMaxParallelism(raw: string | undefined): number {
+  return resolveMaxParallelism(raw, "preprocess_max_parallelism_invalid");
+}
+
 /**
- * The resolved value this deployment runs with.
+ * The heavy pool's parallelism, resolved the same way and for the same reasons
+ * as the fast pool's — but from `HEAVY_PREPROCESS_MAX_PARALLELISM`, pinned to the
+ * HEAVY preprocess service's `heavy_preprocess_max_instances` (NEO-175 Phase 3
+ * terraform). The heavy service is the ~191s BiRefNet cold-loader that only
+ * escalations reach, so its ceiling is set independently of the fast service's:
+ * a deployment can run many fast instances (every image hits fast) and only a
+ * few heavy ones (a minority escalate). Same invariant as the fast one —
+ * `HEAVY_PREPROCESS_MAX_PARALLELISM` on the Convex deployment MUST equal the
+ * same environment's `heavy_preprocess_max_instances` — and the same failure
+ * modes in each direction (above → 429 shedding + wasted retries; below → idle
+ * instances). Unset falls back to 3, which is dev/preview's intended value.
+ */
+export function resolveHeavyPreprocessMaxParallelism(raw: string | undefined): number {
+  return resolveMaxParallelism(raw, "heavy_preprocess_max_parallelism_invalid");
+}
+
+/**
+ * The resolved values this deployment runs with.
  *
  * Read once, at module load. Convex sets a deployment's environment before any
  * function runs and it cannot change under a live isolate, so re-reading per
@@ -135,4 +159,8 @@ export function resolvePreprocessMaxParallelism(raw: string | undefined): number
  */
 export const PREPROCESS_MAX_PARALLELISM = resolvePreprocessMaxParallelism(
   process.env.PREPROCESS_MAX_PARALLELISM,
+);
+
+export const HEAVY_MAX_PARALLELISM = resolveHeavyPreprocessMaxParallelism(
+  process.env.HEAVY_PREPROCESS_MAX_PARALLELISM,
 );

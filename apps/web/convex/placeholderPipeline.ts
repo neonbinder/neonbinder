@@ -58,7 +58,8 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult, WorkId } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
-import { preprocessPool } from "./placeholderPool";
+import { fastPreprocessPool } from "./placeholderPool";
+import { heavyPreprocessPool } from "./placeholderHeavyPool";
 
 /**
  * How many images are handled per chunked mutation — registration, enqueuing,
@@ -371,6 +372,10 @@ export const startPlaceholderBatch = mutation({
       processedImages: 0,
       failedImages: 0,
       rejectedEntries: 0,
+      // The previous attempt's heavy warm-gate says nothing about this one — a
+      // restart that escalates should fire its own warm-up. Cleared so the
+      // first escalation of the new run is detected as first.
+      heavyWarmStartedAt: undefined,
       // Reset with the counters, for the same reason: the previous attempt's
       // pairs are being swept, so its resolver spend describes work that no
       // longer exists. Carrying it forward would make a restarted batch look
@@ -617,9 +622,13 @@ async function cancelJobImpl(
   for (const image of images) {
     if (!image.workId) continue;
     if (image.status === "done" || image.status === "failed") continue;
-    // `WorkId` is a phantom-branded string; the stored column is a plain
-    // string because the brand exists only in TypeScript.
-    await preprocessPool.cancel(ctx, image.workId as WorkId);
+    // An escalated row's `workId` is a HEAVY-pool handle; every other in-flight
+    // row's is a FAST-pool handle. Cancelling on the wrong pool would silently
+    // no-op and leave real work running, so the tier decides which pool.
+    // `WorkId` is a phantom-branded string; the stored column is a plain string
+    // because the brand exists only in TypeScript.
+    const pool = image.escalated ? heavyPreprocessPool : fastPreprocessPool;
+    await pool.cancel(ctx, image.workId as WorkId);
     canceledCount += 1;
   }
 
@@ -800,6 +809,10 @@ export const registerExtractedImages = internalMutation({
           textCount: undefined,
           croppedSource: undefined,
           dhash: undefined,
+          // A row that escalated on a previous attempt re-enters this run as a
+          // plain fast-tier candidate; the restart re-runs the fast path, which
+          // may or may not decline it again.
+          escalated: undefined,
           errorCode: undefined,
           errorDetail: undefined,
           pairStatus: undefined,
@@ -964,7 +977,10 @@ export const enqueueImageChunk = internalMutation({
       // already succeeded, so this condition must stay a status check and
       // never become "enqueue everything in range".
       if (row.status !== "queued") continue;
-      const workId = await preprocessPool.enqueueAction(
+      // Every image starts on the FAST pool. Escalation to the heavy pool
+      // happens later, from the settle, only for the images the fast path
+      // declines.
+      const workId = await fastPreprocessPool.enqueueAction(
         ctx,
         internal.placeholderBatch.processEntryWorker,
         { jobId: args.jobId, userId: row.userId, entryIndex: row.entryIndex },
@@ -1080,15 +1096,42 @@ function imageFieldsFromResult(returnValue: unknown): Partial<Doc<"placeholderIm
 }
 
 /**
- * Apply one work item's final outcome: patch the image row, advance the job's
- * counters, and — on the invocation that observes the last outstanding image —
- * hand the batch to pairing.
+ * The escalation signal off a `/process-entry` result (NEO-175 Phase 1
+ * contract). STRICTLY `true` only — anything else (absent, false, a non-boolean
+ * the wire never sends) reads as "not an escalation", which is the safe default:
+ * the worst outcome of mis-reading a genuine escalation as a completion is a row
+ * that settles with an empty crop, whereas mis-reading a completion as an
+ * escalation would send a perfectly-cropped card through the 191s heavy service
+ * for nothing.
+ *
+ * Exported for the escalation-routing unit tests, which drive the fast-completion
+ * seam directly.
+ */
+export function readNeedsEscalation(returnValue: unknown): boolean {
+  if (!returnValue || typeof returnValue !== "object") return false;
+  return (returnValue as Record<string, unknown>).needs_escalation === true;
+}
+
+/**
+ * Apply one work item's outcome. Three cases (NEO-175):
+ *
+ *  - a FAST completion that declined (`needs_escalation: true`) → route the row
+ *    to the heavy pool and leave the counters untouched (it is not settled yet);
+ *  - any other completion (fast crop, heavy crop, failure, cancel) → patch the
+ *    image row, advance the job's counters, and — on the invocation that
+ *    observes the last outstanding image — hand the batch to pairing.
+ *
+ * Both pools' onComplete hooks call this one function, so a job's fast and heavy
+ * completions share the per-job settle lock below, and the escalation decision
+ * lives in exactly one place.
  *
  * Exported as a plain function (a `function` declaration, so the circular
- * import with placeholderPool.ts resolves through hoisting) because this is
- * the seam the unit tests drive. convex-test cannot mount the workpool
- * component, so the tests call this directly via `t.run` instead of going
- * through `onImageComplete`.
+ * imports with placeholderPool.ts / placeholderHeavyPool.ts resolve through
+ * hoisting) because this is the seam the unit tests drive. convex-test cannot
+ * mount either workpool component, so the tests call this directly via `t.run`
+ * instead of going through the onComplete hooks — and the escalation branch
+ * SCHEDULES the heavy enqueue rather than calling the heavy pool inline, so the
+ * seam stays reachable without the component.
  *
  * Idempotent by construction: an image already in a terminal state is ignored,
  * so a duplicated completion cannot double-count. The counters are what decide
@@ -1168,6 +1211,45 @@ async function settleImageOutcome(
   if (!job) return null;
 
   const succeeded = result.kind === "success";
+
+  // Escalation (NEO-175). A FAST completion whose body says the classical path
+  // declined this card is NOT a settled image — it is a routing decision. Send
+  // it to the heavy pool instead of terminating it, and do NOT touch the
+  // counters (it settles when the heavy result lands, exactly once). The
+  // `!image.escalated` guard makes this fire only on the FIRST (fast)
+  // completion: a heavy completion carries `needs_escalation: false` and the row
+  // is already `escalated`, so it falls through to the terminal path below —
+  // and even a buggy heavy response claiming escalation cannot loop, because the
+  // guard refuses to escalate an already-escalated row.
+  if (succeeded && !image.escalated && readNeedsEscalation(result.returnValue)) {
+    const firstEscalation = job.heavyWarmStartedAt === undefined;
+    const now = Date.now();
+    // Mark the row heavy-processing and drop the fast workId: from here its
+    // handle (once `enqueueHeavyImage` assigns one) is a heavy-pool handle, and
+    // cancel keys the pool off `escalated`.
+    await ctx.db.patch(image._id, { escalated: true, workId: undefined });
+    await ctx.db.patch(job._id, {
+      // An escalation is the batch making progress, so refresh the heartbeat the
+      // wedged-batch watchdog reads — a batch whose only outstanding work is a
+      // heavy escalation is healthy, not stalled.
+      lastActivityAt: now,
+      // Record the warm-gate on the FIRST escalation only. The per-job settle
+      // lock serializes escalations that settle in one batched transaction, so
+      // two of them cannot both read this undefined and both schedule a warm-up.
+      ...(firstEscalation ? { heavyWarmStartedAt: now } : {}),
+    });
+    // Place the heavy work in a separate scheduled mutation so this settle path
+    // (which the unit tests drive directly) never touches the heavy component.
+    await ctx.scheduler.runAfter(0, internal.placeholderHeavyPool.enqueueHeavyImage, {
+      imageId: image._id,
+    });
+    if (firstEscalation) {
+      // The warm-gate: one heavy `/warmup`, fired once per batch, ahead of the
+      // heavy pool draining the escalations behind the warming instance.
+      await ctx.scheduler.runAfter(0, internal.placeholderBatch.warmupHeavyPreprocess, {});
+    }
+    return null;
+  }
 
   if (succeeded) {
     await ctx.db.patch(image._id, {
@@ -1577,6 +1659,40 @@ const JOB_STATUS_VALIDATOR = v.union(
   v.literal("failed"),
 );
 
+/**
+ * The cold-start NOTIFICATION state (NEO-175) — the split-aware successor to the
+ * page's old single-service "warming up" derivation. True exactly while at least
+ * one escalated image is WAITING on the heavy service AND the heavy service has
+ * not yet produced a single result for this batch.
+ *
+ * Two clauses, and both matter:
+ *  - "an escalated row is still processing" scopes the notice to escalations. A
+ *    batch with no escalations, or whose escalations have all resolved, is never
+ *    warming. Fast-cropped cards streaming in are irrelevant to it.
+ *  - "no escalated row has resolved yet" is the warm-confirmation heuristic,
+ *    mirroring the old fast derivation: the first escalated image reaching
+ *    done/failed PROVES the heavy service is warm, so the notice clears the
+ *    moment results begin flowing — no `was_cold` flag to track. If the heavy
+ *    service was already warm (a prior batch left an instance up), escalations
+ *    resolve within seconds and this never sustains a visible window, which is
+ *    the intended "pre-warmed → no notice" behaviour.
+ *
+ * A pure function of the image rows so it can be unit-tested directly and reused
+ * by `getPlaceholderJob` without duplicating the logic in the client.
+ */
+export function deriveHeavyWarming(
+  images: ReadonlyArray<{ status: string; escalated?: boolean }>,
+): boolean {
+  const escalatedPending = images.some(
+    (i) => i.escalated === true && i.status === "processing",
+  );
+  if (!escalatedPending) return false;
+  const escalatedResolved = images.some(
+    (i) => i.escalated === true && (i.status === "done" || i.status === "failed"),
+  );
+  return !escalatedResolved;
+}
+
 export const getPlaceholderJob = query({
   args: { jobId: v.string() },
   returns: v.union(
@@ -1609,6 +1725,11 @@ export const getPlaceholderJob = query({
       // the release E2E can assert it and catch a regression that silently
       // starts paying per image.
       resolverCalls: v.number(),
+      // The cold-start NOTIFICATION flag (NEO-175). True while an escalated
+      // image is waiting on a heavy service that has not yet produced a result
+      // for this batch; the FE renders the "warming up the full card processor"
+      // notice off exactly this. See `deriveHeavyWarming`.
+      heavyWarming: v.boolean(),
       errorCode: v.optional(v.string()),
       errorDetail: v.optional(v.string()),
     }),
@@ -1621,6 +1742,13 @@ export const getPlaceholderJob = query({
     const pairs = await ctx.db
       .query("placeholderPairs")
       .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
+      .collect();
+
+    // The image rows feed only the cold-start flag; the same indexed read
+    // `listPlaceholderImages` makes, over a batch bounded by MAX_ZIP_ENTRIES.
+    const images = await ctx.db
+      .query("placeholderImages")
+      .withIndex("by_job_and_index", (q) => q.eq("jobId", args.jobId))
       .collect();
 
     return {
@@ -1638,6 +1766,7 @@ export const getPlaceholderJob = query({
       rejectedEntries: job.rejectedEntries ?? 0,
       pairCount: pairs.length,
       resolverCalls: job.resolverCalls ?? 0,
+      heavyWarming: deriveHeavyWarming(images),
       errorCode: job.errorCode,
       errorDetail: job.errorDetail,
       // NOTE: `objectPath` is deliberately NOT returned. It is server-only
@@ -1673,6 +1802,11 @@ export const listPlaceholderImages = query({
       textCount: v.optional(v.number()),
       croppedSource: v.optional(v.string()),
       dhash: v.optional(v.string()),
+      // True once the fast path declined this image and it was routed to the
+      // heavy service (NEO-175). The client badges an `escalated` row that is
+      // still `processing` as "escalating", and derives the batch-level cold-
+      // start notice from these across the whole list.
+      escalated: v.optional(v.boolean()),
       pairStatus: v.optional(
         v.union(v.literal("paired"), v.literal("unmatched")),
       ),
@@ -1703,6 +1837,7 @@ export const listPlaceholderImages = query({
       textCount: r.textCount,
       croppedSource: r.croppedSource,
       dhash: r.dhash,
+      escalated: r.escalated,
       pairStatus: r.pairStatus,
       errorCode: r.errorCode,
       errorDetail: r.errorDetail,

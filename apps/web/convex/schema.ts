@@ -823,6 +823,15 @@ export default defineSchema({
     // Not a lock: it bounds how many runs are QUEUED, and the pairing writes are
     // an idempotent diff precisely because it does not bound how many overlap.
     pairingScheduled: v.optional(v.boolean()),
+    // When the HEAVY preprocess service's warm-gate first fired for this batch
+    // (NEO-175). Set by `settleImageOutcome` the first time a fast completion
+    // escalates an image, alongside scheduling a single heavy `/warmup`. Its ONLY
+    // job is to make that warm-up fire exactly once per batch — every later
+    // escalation reads it set and skips the warm-up (a warm instance answers
+    // immediately, so a stray extra would be harmless, but there is no reason to
+    // send one). Absent means this batch has never needed the heavy service.
+    // Reset with the other counters on restart.
+    heavyWarmStartedAt: v.optional(v.number()),
   })
     .index("by_job", ["jobId"])
     .index("by_user", ["userId"])
@@ -886,6 +895,17 @@ export default defineSchema({
     textCount: v.optional(v.number()), // Vision word count — the free signal the adjacency pre-pass runs on
     croppedSource: v.optional(v.string()), // which stage of the crop cascade won
     dhash: v.optional(v.string()), // 16-char lowercase hex perceptual hash, consumed by pairing
+    // Set true when the FAST preprocess service declined this image
+    // (`needs_escalation: true`) and it was re-routed to the HEAVY service
+    // (NEO-175). While `escalated === true && status === "processing"` the image
+    // is heavy-processing: its `workId` (if any) is a HEAVY-pool handle, so
+    // cancel must target the heavy pool for it, and the batch-level cold-start
+    // notice scopes to exactly these rows. Absent/false = fast tier (the common
+    // case). It stays set after the heavy result lands (a done/failed escalated
+    // row keeps the flag), which is what lets the notice clear once the heavy
+    // service has produced its first result. Reset with the other per-image
+    // fields when a restart re-queues a non-done row.
+    escalated: v.optional(v.boolean()),
     // File extension of the PROCESSED output object ("jpg" | "png" | "webp"),
     // memoised the first time a download URL is minted for this image.
     //

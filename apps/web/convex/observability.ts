@@ -97,7 +97,8 @@ export type AdapterCallProperties = {
   // so a slow or failing `/process-entry` in PostHog joins back to the exact
   // `placeholderImages` row — and, through the watchdog's wedged-batch event
   // (convex/placeholderWatchdog.ts), to a batch that later stranded. Only the
-  // preprocess call sites set these (`callProcessEntry` / `callExtract`); every
+  // preprocess call sites set these (`callProcessEntryFast` /
+  // `callProcessEntryHeavy` / `callExtract`); every
   // other caller omits them. Both are opaque ids / positional integers — a
   // `jobId` is an unguessable UUID and an `entryIndex` is a position in the zip,
   // never a path and never PII. See the `objectPath` rule in schema.ts.
