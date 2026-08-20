@@ -336,7 +336,7 @@ jobs:
           set -euo pipefail
           PREVIEW_BROWSER_URL="https://pr-${PR}---${HOST}"
           echo "browser_url=$PREVIEW_BROWSER_URL" >> "$GITHUB_OUTPUT"
-          for attempt in $(seq 1 60); do  # ~10 min ceiling
+          for attempt in $(seq 1 180); do  # ~30 min ceiling (slow preprocess build)
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_BROWSER_URL}/health" || echo 000)
             if [ "$code" != "404" ] && [ "$code" != "000" ]; then
               echo "pr-${PR} browser preview is live (HTTP ${code}): $PREVIEW_BROWSER_URL"
@@ -404,7 +404,11 @@ jobs:
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 45, not 20 like wire-browser-url: the preprocess preview image is multi-GB
+    # (torch + baked SAM) and rebuilds with NO layer cache (~20-25 min), and the
+    # fast per-PR revision deploys only AFTER deploy-preview — so this parallel
+    # job must be able to wait ~25-30 min for both pr-<N> revisions to come up.
+    timeout-minutes: 45
     # Job-scoped perms: id-token (WIF), deployments (resolve Vercel preview),
     # contents (checkout). Does NOT need checks/PR-write.
     permissions:
@@ -529,13 +533,13 @@ jobs:
           set -euo pipefail
           PREVIEW_URL="https://pr-${PR}---${HOST}"
           echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
-          for attempt in $(seq 1 60); do  # ~10 min ceiling
+          for attempt in $(seq 1 180); do  # ~30 min ceiling (slow preprocess build)
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_URL}/health" || echo 000)
             if [ "$code" != "404" ] && [ "$code" != "000" ]; then
               echo "pr-${PR} heavy preprocess preview is live (HTTP ${code}): $PREVIEW_URL"
               exit 0
             fi
-            echo "attempt $attempt/60: $PREVIEW_URL → HTTP ${code} — retry in 10s"
+            echo "attempt $attempt/180: $PREVIEW_URL → HTTP ${code} — retry in 10s"
             sleep 10
           done
           echo "::error::pr-${PR} heavy preprocess preview never came up — preprocess.yml deploy-preview may have failed."; exit 1
@@ -550,13 +554,13 @@ jobs:
           set -euo pipefail
           PREVIEW_URL="https://pr-${PR}---${HOST}"
           echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
-          for attempt in $(seq 1 60); do  # ~10 min ceiling
+          for attempt in $(seq 1 180); do  # ~30 min ceiling (slow preprocess build)
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_URL}/health" || echo 000)
             if [ "$code" != "404" ] && [ "$code" != "000" ]; then
               echo "pr-${PR} fast preprocess preview is live (HTTP ${code}): $PREVIEW_URL"
               exit 0
             fi
-            echo "attempt $attempt/60: $PREVIEW_URL → HTTP ${code} — retry in 10s"
+            echo "attempt $attempt/180: $PREVIEW_URL → HTTP ${code} — retry in 10s"
             sleep 10
           done
           echo "::error::pr-${PR} fast preprocess preview never came up — preprocess.yml deploy-preview-fast may have failed."; exit 1
