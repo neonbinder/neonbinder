@@ -340,6 +340,15 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # This job never checks out the repo (gcloud-only steps), so the
+    # workflow-level `defaults.run.working-directory: services/preprocess`
+    # would point `run:` steps at a path that doesn't exist on the runner —
+    # bash fails to even start (observed: job red at ~13s on the guard step,
+    # before gcloud ever ran). Same override deploy-dev-fast already carries
+    # in preprocess-deploy.yml; ported here too.
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     outputs:
       exists: ${{ steps.guard.outputs.exists }}
       preview_url: ${{ steps.capture.outputs.preview_url }}
@@ -408,6 +417,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # No checkout here either — same reasoning as deploy-preview-fast above.
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     outputs:
       smoke_passed: ${{ steps.ping.outputs.passed }}
     steps:

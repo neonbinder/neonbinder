@@ -370,22 +370,256 @@ jobs:
           fi
           echo "✅ Wired — E2E will run against the PR's own browser preview."
 
+  # Sibling of wire-browser-url above: points the Convex preview's
+  # NEONBINDER_PREPROCESS_URL (heavy) and NEONBINDER_PREPROCESS_FAST_URL (fast,
+  # NEO-175) at the PR's own pr-<N> preprocess preview(s), deployed in parallel
+  # by preprocess.yml. Same mechanism, same reason it lives here rather than in
+  # e2e.yml or the Vercel build — see the block comment at the top of this file.
+  #
+  # Gated like wire-browser-url: only on a PR that touched services/preprocess,
+  # and never on a dependency-manifest-only PR (NEO-104 — E2E is the only
+  # consumer of this wiring, and deps-only PRs already skip E2E below).
+  #
+  # Heavy (`neonbinder-preprocess`) predates the fast split and always exists.
+  # Fast (`neonbinder-preprocess-fast`, NEO-175) is newer and may not exist yet
+  # in every environment, so its host resolution is describe-guarded the same
+  # way preprocess.yml's own deploy-preview-fast job guards its deploy — a PR
+  # opened before terraform provisions it still wires heavy and gets a green,
+  # not-a-failure skip for fast (adapters/preprocess.ts falls back to the heavy
+  # URL whenever NEONBINDER_PREPROCESS_FAST_URL is unset, so leaving it unset
+  # here is the correct no-op, not a gap).
+  #
+  # Uses the preprocess deployer SA (GCP_WIF_PROVIDER_PREPROCESS_DEV /
+  # GCP_SA_PREPROCESS_DEPLOYER_DEV), NOT the browser deployer wire-browser-url
+  # uses above — same least-privilege split preprocess.yml itself follows
+  # (neonbinder-preprocess-deployer is a dedicated SA, separate from
+  # neonbinder-browser-deployer). Its WIF binding is repo-scoped (not
+  # job_workflow_ref-pinned — see main.tf's github_actions_wif_preprocess), so
+  # any monorepo workflow, including this one, may assume it.
+  wire-preprocess-url:
+    name: Wire NEONBINDER_PREPROCESS_URL → pr-<N> preprocess preview(s)
+    needs: changes
+    if: |
+      github.event_name == 'pull_request'
+      && needs.changes.outputs.preprocess == 'true'
+      && needs.changes.outputs.deps_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Job-scoped perms: id-token (WIF), deployments (resolve Vercel preview),
+    # contents (checkout). Does NOT need checks/PR-write.
+    permissions:
+      contents: read
+      deployments: read
+      id-token: write
+    env:
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # Resolve the heavy preprocess service's BASE host from Cloud Run
+      # (authoritative; no hardcoded subdomain). Always exists — no guard
+      # needed. convex/preprocessAudience.ts (NEO-175) validates the OIDC
+      # token against this base host even for the tagged URL.
+      - name: Resolve heavy preprocess base host
+        id: host-heavy
+        run: |
+          set -euo pipefail
+          base=$(gcloud run services describe neonbinder-preprocess \
+            --region=us-central1 --project=neonbinder-dev \
+            --format='value(status.url)')
+          host="${base#https://}"
+          if [ -z "$host" ]; then echo "::error::could not resolve heavy preprocess base host"; exit 1; fi
+          echo "host=$host" >> "$GITHUB_OUTPUT"
+          echo "Heavy preprocess base host: $host"
+
+      # Fast may not exist yet — describe-guarded the same way
+      # preprocess.yml's deploy-preview-fast guards its own deploy, so this
+      # step never fails outright on a 404, it just records exists=false.
+      - name: Resolve fast preprocess base host (if it exists)
+        id: host-fast
+        run: |
+          set -euo pipefail
+          if base=$(gcloud run services describe neonbinder-preprocess-fast \
+              --region=us-central1 --project=neonbinder-dev \
+              --format='value(status.url)' 2>/dev/null); then
+            host="${base#https://}"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "host=$host" >> "$GITHUB_OUTPUT"
+            echo "Fast preprocess base host: $host"
+          else
+            echo "::notice::neonbinder-preprocess-fast not found in neonbinder-dev (terraform hasn't created it yet) — wiring heavy only."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Resolve this PR's Vercel preview (proves the Convex preview exists).
+      # Exact copy of wire-browser-url's equivalent step.
+      - name: Resolve Vercel preview URL
+        id: vercel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for attempt in $(seq 1 60); do
+            deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=100" \
+              --jq '[.[] | select(.creator.login == "vercel[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty')
+            if [ -n "$deployment_id" ]; then
+              url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+                --jq '[.[] | select(.state == "success")] | .[0] | (.environment_url // .target_url // empty)')
+              if [ -n "$url" ]; then
+                echo "Vercel preview URL: $url"
+                echo "url=$url" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              failed=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+                --jq '[.[] | select(.state == "failure" or .state == "error")] | length')
+              if [ "${failed:-0}" -gt 0 ]; then
+                echo "::error::Vercel deployment ${deployment_id} reported failure/error — cannot wire preprocess URL."; exit 1
+              fi
+            fi
+            echo "attempt $attempt/60: Vercel deployment not ready for $SHA — retry in 5s"
+            sleep 5
+          done
+          echo "::error::Timed out (5 min) waiting for a successful Vercel deployment on $SHA."; exit 1
+
+      # Extract the Convex deployment NAME (slug) from the preview's
+      # x-convex-url meta. Exact copy of wire-browser-url's equivalent step.
+      - name: Resolve Convex preview deployment name
+        id: convex
+        env:
+          PREVIEW_URL: ${{ steps.vercel.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            html=$(curl -sS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$PREVIEW_URL/" || true)
+            cloud=$(printf '%s' "$html" | grep -oE 'name="x-convex-url" content="[^"]*"' | grep -oE 'https://[a-z0-9-]+\.convex\.cloud' | head -1 || true)
+            if [ -n "$cloud" ]; then
+              name="${cloud#https://}"; name="${name%.convex.cloud}"
+              echo "Convex deployment: $name"
+              echo "name=$name" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt $attempt/60: preview not serving x-convex-url yet — retry in 5s"
+            sleep 5
+          done
+          echo "::error::Could not resolve Convex deployment name from preview index.html."; exit 1
+
+      # Wait for the PR's pr-<N> heavy preprocess revision to be live before
+      # pointing Convex at it. preprocess.yml deploys it in parallel. IAM-only
+      # (no allUsers — NEO-175 removed the legacy allUsers grant), so an
+      # UNauthenticated probe returns 403 once the revision exists (404 = tag
+      # not present yet, 000 = unreachable). Same technique as
+      # wire-browser-url's wait step.
+      - name: Wait for pr-<N> heavy preprocess preview to be live
+        id: heavy
+        env:
+          HOST: ${{ steps.host-heavy.outputs.host }}
+        run: |
+          set -euo pipefail
+          PREVIEW_URL="https://pr-${PR}---${HOST}"
+          echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 60); do  # ~10 min ceiling
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_URL}/health" || echo 000)
+            if [ "$code" != "404" ] && [ "$code" != "000" ]; then
+              echo "pr-${PR} heavy preprocess preview is live (HTTP ${code}): $PREVIEW_URL"
+              exit 0
+            fi
+            echo "attempt $attempt/60: $PREVIEW_URL → HTTP ${code} — retry in 10s"
+            sleep 10
+          done
+          echo "::error::pr-${PR} heavy preprocess preview never came up — preprocess.yml deploy-preview may have failed."; exit 1
+
+      # Same wait, fast service — only when it exists.
+      - name: Wait for pr-<N> fast preprocess preview to be live
+        id: fast
+        if: steps.host-fast.outputs.exists == 'true'
+        env:
+          HOST: ${{ steps.host-fast.outputs.host }}
+        run: |
+          set -euo pipefail
+          PREVIEW_URL="https://pr-${PR}---${HOST}"
+          echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 60); do  # ~10 min ceiling
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_URL}/health" || echo 000)
+            if [ "$code" != "404" ] && [ "$code" != "000" ]; then
+              echo "pr-${PR} fast preprocess preview is live (HTTP ${code}): $PREVIEW_URL"
+              exit 0
+            fi
+            echo "attempt $attempt/60: $PREVIEW_URL → HTTP ${code} — retry in 10s"
+            sleep 10
+          done
+          echo "::error::pr-${PR} fast preprocess preview never came up — preprocess.yml deploy-preview-fast may have failed."; exit 1
+
+      # Point the Convex preview at the pr-<N> preprocess preview(s). Same
+      # deploy-key mechanism + read-back verification as wire-browser-url.
+      # NEONBINDER_PREPROCESS_FAST_URL is only set when the fast service
+      # exists — left unset otherwise so adapters/preprocess.ts's built-in
+      # fallback-to-heavy takes over, rather than pointing it at heavy
+      # ourselves and duplicating that fallback logic here.
+      - name: Set NEONBINDER_PREPROCESS_URL (+ _FAST_URL) on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ steps.convex.outputs.name }}
+          HEAVY_URL: ${{ steps.heavy.outputs.url }}
+          FAST_EXISTS: ${{ steps.host-fast.outputs.exists }}
+          FAST_URL: ${{ steps.fast.outputs.url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+
+          npx --yes convex@1.39.1 env set NEONBINDER_PREPROCESS_URL "$HEAVY_URL" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_PREPROCESS_URL --deployment "$CONVEX_NAME")
+          echo "Convex preview NEONBINDER_PREPROCESS_URL = $got"
+          if [ "$got" != "$HEAVY_URL" ]; then
+            echo "::error::read-back mismatch: expected $HEAVY_URL, got '$got'"; exit 1
+          fi
+
+          if [ "$FAST_EXISTS" = "true" ]; then
+            npx --yes convex@1.39.1 env set NEONBINDER_PREPROCESS_FAST_URL "$FAST_URL" --deployment "$CONVEX_NAME"
+            got_fast=$(npx --yes convex@1.39.1 env get NEONBINDER_PREPROCESS_FAST_URL --deployment "$CONVEX_NAME")
+            echo "Convex preview NEONBINDER_PREPROCESS_FAST_URL = $got_fast"
+            if [ "$got_fast" != "$FAST_URL" ]; then
+              echo "::error::read-back mismatch: expected $FAST_URL, got '$got_fast'"; exit 1
+            fi
+          else
+            echo "NEONBINDER_PREPROCESS_FAST_URL left unset — fast service doesn't exist yet; adapters/preprocess.ts falls back to the heavy URL."
+          fi
+
+          echo "✅ Wired — E2E will run against the PR's own preprocess preview(s)."
+
   # Invoke the (reusable) E2E suite. Runs AFTER wiring so the Convex preview is
-  # already pointed at the PR's browser (when services/browser changed). For
-  # web-only PRs wire-browser-url is SKIPPED and E2E still runs (dev default).
-  # If wiring FAILS, E2E is skipped (no false green against dev) and the red
-  # wire-browser-url job surfaces the problem.
+  # already pointed at the PR's browser and preprocess previews (when those
+  # areas changed). For PRs that touch neither, both wiring jobs are SKIPPED
+  # and E2E still runs (dev defaults). If either wiring job FAILS, E2E is
+  # skipped (no false green against dev) and the red wiring job surfaces the
+  # problem.
   #
   # Also skipped for dependency-manifest-only PRs (NEO-87). That skip is the ONE
   # case ci-gate treats as acceptable — every other skip still fails the gate.
   e2e:
     name: E2E
-    needs: [changes, wire-browser-url]
+    needs: [changes, wire-browser-url, wire-preprocess-url]
     if: |
       always()
       && needs.changes.result == 'success'
       && needs.changes.outputs.deps_only != 'true'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
+      && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
     uses: ./.github/workflows/e2e.yml
     secrets: inherit
 
@@ -523,7 +757,7 @@ jobs:
   # touched nothing but dependency manifests. Every other skip is still red.
   ci-gate:
     name: CI Gate
-    needs: [changes, web-lint, web-unit, browser-test, preprocess-test, wire-browser-url, e2e]
+    needs: [changes, web-lint, web-unit, browser-test, preprocess-test, wire-browser-url, wire-preprocess-url, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -538,11 +772,12 @@ jobs:
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
           R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
+          R_WIRE_PREPROCESS: ${{ needs.wire-preprocess-url.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
         run: |
           set -euo pipefail
-          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST wire-browser-url=$R_WIRE e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
@@ -557,7 +792,7 @@ jobs:
             fi
           fi
           # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
-          for kv in "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "wire-browser-url=$R_WIRE"; do
+          for kv in "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
             r="${kv#*=}"
             case "$r" in
               success|skipped) ;;
