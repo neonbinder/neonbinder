@@ -47,9 +47,7 @@ class TestStartupHookRoleGate:
     still set on the shared image.
     """
 
-    def test_fast_role_skips_the_warm_up_even_with_require_baked_weights(
-        self, monkeypatch
-    ):
+    def test_fast_role_skips_the_warm_up_even_with_require_baked_weights(self, monkeypatch):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
         monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
         # No U2NET_HOME weights on disk — HEAVY would raise here; FAST must not
@@ -80,9 +78,7 @@ class TestStartupHookRoleGate:
 
         assert called["warm_up"] == 0
 
-    def test_heavy_role_with_require_baked_weights_but_no_weights_raises(
-        self, monkeypatch
-    ):
+    def test_heavy_role_with_require_baked_weights_but_no_weights_raises(self, monkeypatch):
         # The unchanged HEAVY guard: baked weights required but missing → the
         # startup hook fails loudly rather than letting rembg silently
         # re-download at runtime.

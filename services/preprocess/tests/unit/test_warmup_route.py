@@ -144,9 +144,7 @@ class TestFastRoleWarmup:
     constructs a model session" invariant the FAST role guarantees everywhere.
     """
 
-    def test_fast_role_reports_ready_without_touching_the_loader(
-        self, monkeypatch, stub_loader
-    ):
+    def test_fast_role_reports_ready_without_touching_the_loader(self, monkeypatch, stub_loader):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
         response = _post_warmup()
         assert response.status_code == 200

@@ -85,6 +85,7 @@ def _preprocess_role() -> str:
     configured = os.environ.get(PREPROCESS_ROLE_ENV, "").strip().lower()
     return ROLE_FAST if configured == ROLE_FAST else ROLE_HEAVY
 
+
 # Concurrency for the GCS uploads inside /extract. The zip itself is read and
 # EXIF-normalised sequentially (one seekable stream, CPU-bound transposes), but
 # each derived object's upload is an independent round trip — overlapping them
