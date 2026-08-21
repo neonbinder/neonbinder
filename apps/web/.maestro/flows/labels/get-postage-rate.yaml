@@ -101,6 +101,11 @@ tags:
 - openLink: ${APP_URL || "https://localhost:3000"}/print/shipping
 - assertVisible: "Ship To"
 
+# Postage is ADDITIVE (caught regressed on the PR preview): with a key
+# connected, the free NEO-118 "Print Label" button must still be present
+# alongside the postage controls — buying postage replaced nothing.
+- assertVisible: "Print Label"
+
 - scrollUntilVisible:
     element:
       text: "Name"
@@ -139,26 +144,29 @@ tags:
 - tapOn: "ZIP"
 - inputText: "20500"
 
-# Step 5: price it. Free — no postage is bought by this tap.
+# Step 5: prices arrive on their own — no tap. Completing the ZIP completes the
+# address, and the page rates 1/2/3oz together (debounced past the last
+# keystroke) so the weight selector shows real prices. Nothing in this step can
+# spend money; rating is free and is also where address verification runs.
+#
+# Scroll target is "1 oz" (the fieldset), keeping the Buy button just below it
+# mid-viewport — centering the button itself shoves the fieldset under the
+# sticky header (the CI runner-7 lesson from print-label).
 - scrollUntilVisible:
     element:
-      text: "Get rate"
+      text: "1 oz"
     centerElement: true
-- tapOn: "Get rate"
 
-# Step 6: the feature. A priced letter comes back and the button becomes an
-# explicit, priced purchase. 30s: rating is a USPS round-trip behind EasyPost's
-# API, and it also runs address verification.
-#
-# Asserting on "Buy & print" is what proves the whole chain worked — that button
-# only renders once a rate exists, so it cannot appear from a failed call.
+# Step 6: the feature. A real price lands in the selector AND on the purchase
+# button. 30s: three parallel EasyPost rating calls, each a USPS round-trip,
+# plus address verification.
 - extendedWaitUntil:
     visible:
-      text: ".*Buy & print.*"
+      text: ".*\\$0\\.[0-9][0-9].*"
     timeout: 30000
 
-# And the price is shown BEFORE the irreversible action, not after. A dollar
-# amount on the button is the difference between an informed purchase and a
-# surprise. We stop here — see the header note.
+# The single purchase control carries the selected weight's dollar amount —
+# the money is on screen BEFORE the only irreversible action on the page,
+# which we never tap. We stop here — see the header note.
 - assertVisible:
-    text: ".*\\$0\\.[0-9][0-9].*"
+    text: ".*Buy postage — \\$0\\.[0-9][0-9].*"

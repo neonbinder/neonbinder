@@ -168,29 +168,28 @@ tags:
 - tapOn: "ZIP"
 - inputText: "62704"
 
-# Step 6b (NEO-120): the postage controls, asserted HERE — before Step 7 scrolls
-# down to the preview — because scrollUntilVisible only travels DOWNWARD. The
-# weight fieldset and the rate button live in the form, ABOVE the preview, so
-# once the viewport is parked on the label they are permanently out of reach and
-# the assertion fails with a confusing "no visible element". Same trap that made
-# credentials-lifecycle a tripwire on page height.
+# Step 6b: the FREE print action, asserted HERE — before Step 7 scrolls down to
+# the preview — because scrollUntilVisible only travels DOWNWARD. The button
+# lives in the form, ABOVE the preview, so once the viewport is parked on the
+# label it is permanently out of reach and the assertion fails with a confusing
+# "no visible element". Same trap that made credentials-lifecycle a tripwire on
+# page height.
 #
-# What this proves: the entry point is the FREE one. "Get rate" costs nothing;
-# "Buy & print" spends the seller's money and only appears once a rate has come
-# back. This flow taps NEITHER — see the header note — it just proves a purchase
-# is never one stray tap away.
+# "Print Label" is NEO-118's no-postage path and must never disappear behind
+# the postage feature (caught regressed on the NEO-120 PR preview). We assert
+# it exists but never tap it — window.print() wedges the runner (header note).
 #
-# Scroll target is "1 oz" (the weight fieldset), NOT "Get rate": centering the
-# button pushes the fieldset's radio row up under the sticky header, where
-# assertVisible correctly refuses to see it — that exact failure shipped from
-# CI runner 7 on this page's Print Shop geometry. Centering the fieldset keeps
-# the button (just below it) mid-viewport, so both assert without a second
-# scroll.
+# The NEO-120 postage controls are deliberately NOT asserted in this flow:
+# they render only for a seller with an EasyPost key, and whether this worker
+# has one depends on what ran before (local workers are persistent, and the
+# key lives in Secret Manager, which /testing/reset does not touch). The keyed
+# state is pinned by get-postage-rate.yaml, which seeds its own key; the
+# keyless state is pinned by the page's component tests.
 - scrollUntilVisible:
     element:
-      text: "1 oz"
+      text: "Print Label"
     centerElement: true
-- assertVisible: "Get rate"
+- assertVisible: "Print Label"
 
 # Step 7: bring the label itself on screen.
 #
