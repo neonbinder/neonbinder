@@ -179,11 +179,18 @@ tags:
 # "Buy & print" spends the seller's money and only appears once a rate has come
 # back. This flow taps NEITHER — see the header note — it just proves a purchase
 # is never one stray tap away.
+#
+# Scroll target is "1 oz" (the weight fieldset), NOT "Get rate": centering the
+# button pushes the fieldset's radio row up under the sticky header, where
+# assertVisible correctly refuses to see it — that exact failure shipped from
+# CI runner 7 on this page's Print Shop geometry. Centering the fieldset keeps
+# the button (just below it) mid-viewport, so both assert without a second
+# scroll.
 - scrollUntilVisible:
     element:
-      text: "Get rate"
+      text: "1 oz"
     centerElement: true
-- assertVisible: "1 oz"
+- assertVisible: "Get rate"
 
 # Step 7: bring the label itself on screen.
 #
