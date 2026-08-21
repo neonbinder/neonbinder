@@ -8,6 +8,7 @@ import { SportlotsAdapter } from "./adapters/sportlots-adapter";
 import { LoginDiagnostic } from "./services/login-diagnostic";
 import { credentialRateLimitKey } from "./rate-limit";
 import { createCredentialsRouter } from "./routes/credentials";
+import { createEasypostRouter } from "./routes/easypost";
 import { parseTransientCredentials } from "./transient-credentials";
 import {
   logBrowserOp,
@@ -404,6 +405,15 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
 // instead, which is why the 404 conflation on GET /credentials/:key/token went
 // unnoticed and untested. Keep new credential routes in the router, not here.
 app.use(createCredentialsRouter());
+
+// --- EasyPost postage endpoints (NEO-120) ---
+//
+// In ./routes/easypost for the same NEO-141 reason as the credential CRUD:
+// this file calls app.listen() at import time, so only a mountable Router is
+// testable. That router also carries the ONLY HTTP-reachable credential write
+// (PUT /easypost/:key) — see its header for why that does not reintroduce
+// what NEO-141 removed.
+app.use(createEasypostRouter());
 
 const PORT: number = parseInt(process.env.PORT || "8080", 10);
 app.listen(PORT, () => console.log(`[${ENV}] Listening on port ${PORT}`));

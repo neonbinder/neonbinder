@@ -255,14 +255,22 @@ async function assertBrowserContract(headers: Record<string, string>): Promise<v
  * calls `fetch` directly rather than `browserFetch`. That is deliberate: the
  * login path is the one NEO-141 broke, so the guard is placed where it cannot
  * be bypassed by adding another call site.
+ *
+ * NEO-120: exported (with {@link browserFetch} and {@link credKey}) for
+ * `convex/postage.ts` and `convex/shipping.ts`, which need the same
+ * IAM-authenticated channel to the browser service for EasyPost postage without
+ * inheriting the marketplace credential machinery wrapped around it. EasyPost
+ * is not a marketplace, and adding it to SUPPORTED_SITES would leak it into
+ * listUserSites, /credentials/check, the Credentials tab and the login flows.
  */
-async function browserAuthHeaders(): Promise<Record<string, string>> {
+export async function browserAuthHeaders(): Promise<Record<string, string>> {
   const headers = await buildAuthHeaders();
   await assertBrowserContract(headers);
   return headers;
 }
 
-async function browserFetch(
+/** NEO-120: exported alongside {@link browserAuthHeaders}, same reasoning. */
+export async function browserFetch(
   path: string,
   init: RequestInit,
 ): Promise<Response> {
@@ -281,7 +289,8 @@ async function browserFetch(
   }
 }
 
-function credKey(site: string, userId: string) {
+/** NEO-120: exported alongside {@link browserFetch}, same reasoning. */
+export function credKey(site: string, userId: string) {
   return `${site}-credentials-${userId}`;
 }
 

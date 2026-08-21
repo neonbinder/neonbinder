@@ -36,6 +36,7 @@ import ProfileLayout from "@/src/layouts/profile-layout";
 import ProfilePublic from "@/app/profile/public/page";
 import ProfileCredentials from "@/app/profile/credentials/page";
 import ProfileShipping from "@/app/profile/shipping/page";
+import ProfilePostage from "@/app/profile/postage/page";
 import ProfilePrizes from "@/app/profile/prizes/page";
 import SetSelector from "@/app/set-selector/page";
 import DesignPrimitives from "@/app/design/primitives/page";
@@ -102,6 +103,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route path="public" element={<ProfilePublic />} />
                 <Route path="credentials" element={<ProfileCredentials />} />
                 <Route path="shipping" element={<ProfileShipping />} />
+                <Route path="postage" element={<ProfilePostage />} />
                 <Route path="prizes" element={<ProfilePrizes />} />
               </Route>
               {/* Print Shop (NEO-145) — the print tools under one section.

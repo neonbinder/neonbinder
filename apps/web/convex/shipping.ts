@@ -19,6 +19,9 @@ import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { postalAddressValidator } from "./schema";
 
+/** How many purchases the history view shows. Reprints are a recent-item need. */
+const PURCHASE_HISTORY_LIMIT = 25;
+
 /**
  * The current user's saved return address, or null when they haven't set one.
  *
@@ -114,5 +117,80 @@ export const saveMyReturnAddress = mutation({
     }
 
     return null;
+  },
+});
+
+/**
+ * NEO-120 — record a label the seller has already paid for.
+ *
+ * Called after the purchase succeeds, from `postage.buyLetterLabel`. Kept as a
+ * plain mutation rather than folded into the action because by the time it runs
+ * the money is spent: a failure here must never be able to fail the purchase,
+ * so the caller logs rather than throws.
+ *
+ * Minimal by design — this is not NEO-121's `shipments` table. No scan events,
+ * no status machine, no sale linkage. It exists so a seller can see what they
+ * spent and reprint a label they have already bought.
+ */
+export const recordLabelPurchase = mutation({
+  args: {
+    easypostShipmentId: v.string(),
+    trackingCode: v.string(),
+    costCents: v.number(),
+    weightOz: v.number(),
+    toAddress: postalAddressValidator,
+    labelUrl: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    await ctx.db.insert("labelPurchases", {
+      userId,
+      easypostShipmentId: args.easypostShipmentId,
+      trackingCode: args.trackingCode,
+      costCents: args.costCents,
+      weightOz: args.weightOz,
+      // A snapshot, not a reference: what was printed on the label is a
+      // historical fact and must not change if anything else is edited later.
+      toAddress: args.toAddress,
+      labelUrl: args.labelUrl,
+      purchasedAt: Date.now(),
+    });
+
+    return null;
+  },
+});
+
+/**
+ * The seller's recent label purchases, newest first — for reprinting and for
+ * seeing what postage has cost.
+ */
+export const listMyLabelPurchases = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      _id: v.id("labelPurchases"),
+      _creationTime: v.number(),
+      userId: v.string(),
+      easypostShipmentId: v.string(),
+      trackingCode: v.string(),
+      costCents: v.number(),
+      weightOz: v.number(),
+      toAddress: postalAddressValidator,
+      labelUrl: v.string(),
+      purchasedAt: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) return [];
+
+    return await ctx.db
+      .query("labelPurchases")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(PURCHASE_HISTORY_LIMIT);
   },
 });

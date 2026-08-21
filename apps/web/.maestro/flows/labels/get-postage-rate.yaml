@@ -1,0 +1,179 @@
+# R1 — Single feature (NEO-120): a seller with an EasyPost key connected can
+# price a First-Class letter for a recipient and is shown the real cost before
+# anything is bought.
+#
+# REQUIRES `DEV_EASYPOST_API_KEY` on the Convex deployment, seeded into the
+# worker account by /testing/seed-credentials. **It must be a TEST key.** A
+# production key would let a stray change buy real postage on every CI run; a
+# test key prices labels and returns fake ones, charging nothing. Without the
+# env var this flow fails at the rate step with "Add your EasyPost API key" —
+# which is the honest failure, not a silent skip.
+#
+# HARD CONSTRAINT — we never tap "Buy & print". Even on a test key that would
+# exercise a purchase path whose success ends in window.print(), whose native
+# dialog wedges the run; and the same flow pointed at a production deployment
+# would spend real money. Rating is free, is where address verification runs,
+# and is the assertable half. Buying is not assertable at any price worth paying.
+#
+# Entry URL: sign in (new-profile) -> /testing/reset -> /testing/seed-credentials
+# -> /profile/shipping. The seed step is what puts the EasyPost key on this
+# worker; NEO-128 split /profile into routes, so the return-address form is a
+# direct landing rather than a 45s scroll down a ~5000px page.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile/shipping&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Shipping Labels — price a letter before buying it
+# Tagged `postage` ONLY, deliberately not `labels`: it is the one flow that
+# needs DEV_EASYPOST_API_KEY, so including it in the labels suite would fail
+# that whole suite on any deployment without a key. Opt in with
+# `npm run test:e2e:pick -- postage` once the key is configured.
+tags:
+  - postage
+---
+# Step 1: land on the freshly-reset Shipping section with credentials (including
+# the EasyPost key) seeded for this worker.
+- launchApp
+- extendedWaitUntil:
+    visible: "Profile Settings"
+    timeout: 45000
+
+# Step 2: a return address is required before any rate can be quoted — the FROM
+# address is half of what USPS prices. Same visible-label technique as
+# print-label.yaml; the scrolls are cheap no-ops on this short route, kept in
+# case the form grows.
+- extendedWaitUntil:
+    visible: "Your return address for printed shipping labels"
+    timeout: 10000
+
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Neon Seller"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+- inputText: "100 Binder Way"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Austin"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "TX"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "78701"
+
+- scrollUntilVisible:
+    element:
+      text: "Save Return Address"
+    centerElement: true
+- tapOn: "Save Return Address"
+- assertVisible: "Return address saved."
+
+# Step 3: confirm the seed actually connected EasyPost — its own route since
+# NEO-128 (/profile/postage). If the key is missing, the rate step below would
+# fail with a confusing "add your key" message — better to fail here, where the
+# cause is unambiguous. The status line comes back from a browser-service
+# round-trip, hence the wait.
+- openLink: ${APP_URL || "https://localhost:3000"}/profile/postage
+- extendedWaitUntil:
+    visible: "EasyPost key saved."
+    timeout: 30000
+
+# Step 4: address a package in the Print Shop's Shipping tool (NEO-145 moved it
+# from the top-level /labels). openLink for a fresh cross-page mount.
+#
+# (The additivity check on "Print Label" happens AFTER the Step-5 scroll, not
+# here: assertVisible enforces VIEWPORT visibility and the button is below the
+# fold on landing — asserting it at the top of the page fails on geometry, not
+# on the feature. Cost one CI cycle to learn, again.)
+- openLink: ${APP_URL || "https://localhost:3000"}/print/shipping
+- assertVisible: "Ship To"
+
+- scrollUntilVisible:
+    element:
+      text: "Name"
+    centerElement: true
+- tapOn: "Name"
+- inputText: "Dana Reyes"
+
+- scrollUntilVisible:
+    element:
+      text: "Street Address"
+    centerElement: true
+- tapOn: "Street Address"
+# A real, deliverable address: USPS verification runs during rating, so an
+# invented street would (correctly) fail the quote and this flow would be
+# testing the error path instead of the feature.
+- inputText: "1600 Pennsylvania Ave NW"
+
+- scrollUntilVisible:
+    element:
+      text: "City"
+    centerElement: true
+- tapOn: "City"
+- inputText: "Washington"
+
+- scrollUntilVisible:
+    element:
+      text: "State"
+    centerElement: true
+- tapOn: "State"
+- inputText: "DC"
+
+- scrollUntilVisible:
+    element:
+      text: "ZIP"
+    centerElement: true
+- tapOn: "ZIP"
+- inputText: "20500"
+
+# Step 5: prices arrive on their own — no tap. Completing the ZIP completes the
+# address, and the page rates 1/2/3oz together (debounced past the last
+# keystroke) so the weight selector shows real prices. Nothing in this step can
+# spend money; rating is free and is also where address verification runs.
+#
+# Scroll target is "1 oz" (the fieldset), keeping the Buy button just below it
+# mid-viewport — centering the button itself shoves the fieldset under the
+# sticky header (the CI runner-7 lesson from print-label).
+- scrollUntilVisible:
+    element:
+      text: "1 oz"
+    centerElement: true
+
+# Postage is ADDITIVE (caught regressed on the PR preview): with a key
+# connected, the free NEO-118 "Print Label" button must still be present
+# alongside the postage controls — buying postage replaced nothing. Asserted
+# at THIS scroll position because the button sits directly above the centered
+# fieldset, inside the viewport.
+- assertVisible: "Print Label"
+
+# Step 6: the feature. A real price lands in the selector AND on the purchase
+# button. 30s: three parallel EasyPost rating calls, each a USPS round-trip,
+# plus address verification.
+- extendedWaitUntil:
+    visible:
+      text: ".*\\$0\\.[0-9][0-9].*"
+    timeout: 30000
+
+# The single purchase control carries the selected weight's dollar amount —
+# the money is on screen BEFORE the only irreversible action on the page,
+# which we never tap. We stop here — see the header note.
+- assertVisible:
+    text: ".*Buy postage — \\$0\\.[0-9][0-9].*"

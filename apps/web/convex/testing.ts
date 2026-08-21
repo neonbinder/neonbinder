@@ -292,6 +292,30 @@ export const seedMyTestCredentials = action({
       seeded.push({ site, stored: storeResult.success });
     }
 
+    // NEO-120 — EasyPost postage key.
+    //
+    // Handled outside the loop because EasyPost is not a marketplace: no login,
+    // no token to warm, and deliberately absent from SUPPORTED_SITES (which
+    // would leak it into listUserSites, the Credentials tab and the login
+    // flows). It stores through postage.saveEasypostKey instead.
+    //
+    // **Configure a TEST key here, never a production one.** A production key
+    // would buy real postage on every CI run. A test key prices labels and
+    // returns fake ones, charging nothing — exactly what the E2E needs.
+    //
+    // Adds NOTHING to `seeded` when unset — deliberately, rather than reporting
+    // a "skipped" entry. Every caller of this action asserts on the exact array
+    // it gets back, so an unconditional extra element would change the result
+    // of seeding on every deployment that has no EasyPost key. Silence when
+    // unconfigured keeps this additive.
+    const easypostKey = process.env.DEV_EASYPOST_API_KEY;
+    if (easypostKey) {
+      const result = await ctx.runAction(api.postage.saveEasypostKey, {
+        apiKey: easypostKey,
+      });
+      seeded.push({ site: "easypost", stored: result.success });
+    }
+
     return { seeded };
   },
 });

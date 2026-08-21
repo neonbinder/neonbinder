@@ -33,6 +33,7 @@ const SECTIONS = [
   { label: "Public Profile", path: "/profile/public" },
   { label: "Credentials", path: "/profile/credentials" },
   { label: "Shipping", path: "/profile/shipping" },
+  { label: "Postage", path: "/profile/postage" },
   { label: "Prize Pool", path: "/profile/prizes" },
 ];
 

@@ -17,10 +17,16 @@
 # silently failed, it would render the "Add your return address" empty state
 # instead and every step below would fail on a missing field.
 #
-# HARD CONSTRAINT — we never tap "Print Label". It calls window.print(), whose
-# native dialog blocks every further browser event and wedges the run. The live
-# preview IS the assertable half of the feature; the printed sheet is the same
-# element serialized, so asserting the preview is asserting the label.
+# TWO HARD CONSTRAINTS, for two different reasons:
+#
+# 1. We never trigger a print. window.print()'s native dialog blocks every
+#    further browser event and wedges the run. The live preview IS the
+#    assertable half; the printed sheet is the same element serialized.
+#
+# 2. NEO-120: we never tap "Buy & print". That call BUYS REAL POSTAGE — with a
+#    production key it would spend the seller's money on every CI run, forever.
+#    Rating is free and is the assertable half of the purchase flow; buying is
+#    not assertable at any price worth paying.
 #
 # Entry URL: sign in (new-profile) -> /testing/reset (wipe to empty) ->
 # /profile/shipping. `account=new-profile` and `worker` are top-level sign-in
@@ -162,6 +168,29 @@ tags:
 - tapOn: "ZIP"
 - inputText: "62704"
 
+# Step 6b: the FREE print action, asserted HERE — before Step 7 scrolls down to
+# the preview — because scrollUntilVisible only travels DOWNWARD. The button
+# lives in the form, ABOVE the preview, so once the viewport is parked on the
+# label it is permanently out of reach and the assertion fails with a confusing
+# "no visible element". Same trap that made credentials-lifecycle a tripwire on
+# page height.
+#
+# "Print Label" is NEO-118's no-postage path and must never disappear behind
+# the postage feature (caught regressed on the NEO-120 PR preview). We assert
+# it exists but never tap it — window.print() wedges the runner (header note).
+#
+# The NEO-120 postage controls are deliberately NOT asserted in this flow:
+# they render only for a seller with an EasyPost key, and whether this worker
+# has one depends on what ran before (local workers are persistent, and the
+# key lives in Secret Manager, which /testing/reset does not touch). The keyed
+# state is pinned by get-postage-rate.yaml, which seeds its own key; the
+# keyless state is pinned by the page's component tests.
+- scrollUntilVisible:
+    element:
+      text: "Print Label"
+    centerElement: true
+- assertVisible: "Print Label"
+
 # Step 7: bring the label itself on screen.
 #
 # Two traps here, both paid for on this flow:
@@ -191,5 +220,8 @@ tags:
 # Step 3 — the proof that the /profile save persisted and is read back here.
 # "AUSTIN TX 78701" is likewise composed, belongs to no input on this page, and
 # uses a different city from the recipient so neither block can satisfy the
-# other's assertion. We do NOT tap "Print Label" — see the header note.
+# other's assertion.
 - assertVisible: "AUSTIN TX 78701"
+
+# (NEO-120 postage controls are asserted earlier, before the preview scroll —
+# see the note there for why order matters.)
