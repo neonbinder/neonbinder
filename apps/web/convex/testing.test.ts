@@ -266,6 +266,16 @@ function makeCredentialFetch(opts: {
       });
       return jsonResponse({ success: true, message: "ok" });
     }
+    // NEO-120: the EasyPost key store — the one credential write that survived
+    // NEO-141, easypost-scoped. See services/browser/src/routes/easypost.ts.
+    if (method === "PUT" && u.includes("/easypost/")) {
+      opts.puts.push({
+        url: u,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return jsonResponse({ success: true, message: "EasyPost key stored" });
+    }
     throw new Error(`unexpected fetch: ${method} ${u}`);
   };
 }
@@ -370,8 +380,7 @@ describe("seedMyTestCredentials", () => {
   test("adds nothing to the result when no EasyPost key is configured", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
     );
 
@@ -386,8 +395,7 @@ describe("seedMyTestCredentials", () => {
     process.env.DEV_EASYPOST_API_KEY = "EZTK_test_key";
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
     );
 
@@ -397,15 +405,12 @@ describe("seedMyTestCredentials", () => {
 
     expect(result.seeded).toContainEqual({ site: "easypost", stored: true });
 
-    // One secret per seller, keyed by Clerk user id — never a shared key.
-    const easypostPut = puts.find((p) => p.url.includes("easypost-credentials-"));
-    expect(easypostPut?.url).toContain(`easypost-credentials-${USER_A}`);
-    // username = the user id, password = the key. See postage.saveEasypostKey
-    // for why an API key lands in a field called `password`.
-    expect(easypostPut?.body).toEqual({
-      username: USER_A,
-      password: "EZTK_test_key",
-    });
+    // One secret per seller, keyed by Clerk user id — never a shared key. The
+    // write goes to the easypost-scoped route (PUT /easypost/:key), the only
+    // credential write NEO-141 left reachable over HTTP.
+    const easypostPut = puts.find((p) => p.url.includes("/easypost/"));
+    expect(easypostPut?.url).toContain(`/easypost/easypost-credentials-${USER_A}`);
+    expect(easypostPut?.body).toEqual({ apiKey: "EZTK_test_key" });
   });
 
   test("skips re-store (preserves token) when the stored username is already correct", async () => {
