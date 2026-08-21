@@ -4,9 +4,10 @@
  * Cold-starting the preprocess service costs a multi-minute BiRefNet load, and
  * the fix is to trigger that load BEFORE the first real image needs it:
  *
- *   - `warmupPreprocess` (internal): fires PREPROCESS_MAX_PARALLELISM warm-ups
- *     CONCURRENTLY. One warm-up warms one instance (container_concurrency = 1),
- *     so N concurrent calls spread across all N instances Cloud Run will run.
+ *   - `warmupPreprocess` (internal): fires PREPROCESS_MAX_PARALLELISM FAST warm-ups
+ *     CONCURRENTLY (one warm-up warms one fast instance, container_concurrency = 1),
+ *     PLUS one HEAVY warm-up upfront (NEO-175: the ~191s heavy load starts here so
+ *     it overlaps the fast phase). N+1 calls in flight at once.
  *   - Both start paths schedule it fire-and-forget, so the model loads while a
  *     zip extracts / a scanner collects.
  *   - `warmPreprocess` (public, authed): lets a client fire the same fan-out
@@ -39,15 +40,25 @@ const USER_A = { subject: "user_warmAAAA1111" };
 
 const WARMUP_FN = "placeholderBatch:warmupPreprocess";
 
+// Distinct loopback URLs so a stub can tell a FAST warm-up from the HEAVY one:
+// warmupPreprocess fires the fast fan-out PLUS one heavy warm-up upfront
+// (NEO-175 — the ~191s heavy load starts here so it overlaps the fast phase).
+const FAST_URL = "http://localhost:9997";
+const HEAVY_URL = "http://localhost:9998";
+const fastCount = (urls: string[]) => urls.filter((u) => u.startsWith(FAST_URL)).length;
+const heavyCount = (urls: string[]) => urls.filter((u) => u.startsWith(HEAVY_URL)).length;
+
 beforeEach(() => {
   process.env.TESTING_RESET_SECRET = "test-enabled";
   // Loopback → the OIDC path short-circuits, so no google-auth-library.
-  process.env.NEONBINDER_PREPROCESS_URL = "http://localhost:9998";
+  process.env.NEONBINDER_PREPROCESS_URL = HEAVY_URL;
+  process.env.NEONBINDER_PREPROCESS_FAST_URL = FAST_URL;
 });
 
 afterEach(() => {
   delete process.env.TESTING_RESET_SECRET;
   delete process.env.NEONBINDER_PREPROCESS_URL;
+  delete process.env.NEONBINDER_PREPROCESS_FAST_URL;
   vi.unstubAllGlobals();
   // Belt-and-suspenders against a test that enabled fake timers leaving pending
   // timers (or the fake-timer mode itself) visible to the next test's drain.
@@ -162,23 +173,25 @@ async function scheduledNames(t: ReturnType<typeof convexTest>): Promise<string[
 // ---------------------------------------------------------------------------
 
 describe("warmupPreprocess", () => {
-  test("fires exactly PREPROCESS_MAX_PARALLELISM warm-ups, all concurrently", async () => {
+  test("fires PREPROCESS_MAX_PARALLELISM fast warm-ups + one heavy, all concurrently", async () => {
     const t = convexTest(schema, modules);
     const N = PREPROCESS_MAX_PARALLELISM;
-    const barrier = makeWarmupBarrier(N);
+    const barrier = makeWarmupBarrier(N + 1);
 
     await t.action(internal.placeholderBatch.warmupPreprocess, {});
 
-    // One warm-up per instance the pool will run, and all in flight at once —
-    // which is the whole point, because one warm-up warms one instance.
-    expect(barrier.calls).toHaveLength(N);
-    expect(barrier.maxInFlight).toBe(N);
+    // One warm-up per fast instance the pool will run, PLUS one heavy warm-up
+    // (NEO-175: the heavy load starts here so it overlaps the fast phase), and
+    // all N+1 in flight at once — one warm-up warms one instance.
+    expect(fastCount(barrier.calls)).toBe(N);
+    expect(heavyCount(barrier.calls)).toBe(1);
+    expect(barrier.maxInFlight).toBe(N + 1);
   });
 
   test("a throwing fetch is swallowed — the action still resolves", async () => {
     const t = convexTest(schema, modules);
     const N = PREPROCESS_MAX_PARALLELISM;
-    makeWarmupBarrier(N, { fail: true });
+    makeWarmupBarrier(N + 1, { fail: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     // Every warm-up throws inside; the fan-out must not.
@@ -219,7 +232,8 @@ describe("warmPreprocess", () => {
     // Drain to clean up (the scheduler queue is shared across `t` within a file
     // run, so a left-behind schedule would leak into the next test).
     await drain(t);
-    expect(counter.calls).toHaveLength(PREPROCESS_MAX_PARALLELISM);
+    expect(fastCount(counter.calls)).toBe(PREPROCESS_MAX_PARALLELISM);
+    expect(heavyCount(counter.calls)).toBe(1);
   });
 
   test("end to end, fires PREPROCESS_MAX_PARALLELISM warm-ups when the scheduled fan-out runs", async () => {
@@ -233,7 +247,8 @@ describe("warmPreprocess", () => {
     await t.withIdentity(USER_A).action(api.placeholderPipeline.warmPreprocess, {});
     await drain(t);
 
-    expect(counter.calls).toHaveLength(N);
+    expect(fastCount(counter.calls)).toBe(N);
+    expect(heavyCount(counter.calls)).toBe(1);
   });
 
   test("a warm-up failure never reaches the caller", async () => {
@@ -269,9 +284,10 @@ describe("both start paths warm the service", () => {
 
     expect(await scheduledNames(t)).toContain(WARMUP_FN);
 
-    // Drain to clean up, and confirm end to end that it warms N instances.
+    // Drain to clean up, and confirm end to end that it warms N fast + 1 heavy.
     await drain(t);
-    expect(counter.calls).toHaveLength(PREPROCESS_MAX_PARALLELISM);
+    expect(fastCount(counter.calls)).toBe(PREPROCESS_MAX_PARALLELISM);
+    expect(heavyCount(counter.calls)).toBe(1);
   });
 
   test("startPlaceholderBatch schedules the warm-up fan-out", async () => {
@@ -298,7 +314,8 @@ describe("both start paths warm the service", () => {
     // Drain (runExtract fails terminally on the 404, warm-up fires) to leave the
     // shared queue empty for the next test.
     await drain(t);
-    expect(stub.warmups).toHaveLength(PREPROCESS_MAX_PARALLELISM);
+    expect(fastCount(stub.warmups)).toBe(PREPROCESS_MAX_PARALLELISM);
+    expect(heavyCount(stub.warmups)).toBe(1);
   });
 
   test("a start returns promptly and stays successful even when every warm-up fails", async () => {
