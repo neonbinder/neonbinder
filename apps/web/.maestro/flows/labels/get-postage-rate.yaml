@@ -98,13 +98,13 @@ tags:
 
 # Step 4: address a package in the Print Shop's Shipping tool (NEO-145 moved it
 # from the top-level /labels). openLink for a fresh cross-page mount.
+#
+# (The additivity check on "Print Label" happens AFTER the Step-5 scroll, not
+# here: assertVisible enforces VIEWPORT visibility and the button is below the
+# fold on landing — asserting it at the top of the page fails on geometry, not
+# on the feature. Cost one CI cycle to learn, again.)
 - openLink: ${APP_URL || "https://localhost:3000"}/print/shipping
 - assertVisible: "Ship To"
-
-# Postage is ADDITIVE (caught regressed on the PR preview): with a key
-# connected, the free NEO-118 "Print Label" button must still be present
-# alongside the postage controls — buying postage replaced nothing.
-- assertVisible: "Print Label"
 
 - scrollUntilVisible:
     element:
@@ -156,6 +156,13 @@ tags:
     element:
       text: "1 oz"
     centerElement: true
+
+# Postage is ADDITIVE (caught regressed on the PR preview): with a key
+# connected, the free NEO-118 "Print Label" button must still be present
+# alongside the postage controls — buying postage replaced nothing. Asserted
+# at THIS scroll position because the button sits directly above the centered
+# fieldset, inside the viewport.
+- assertVisible: "Print Label"
 
 # Step 6: the feature. A real price lands in the selector AND on the purchase
 # button. 30s: three parallel EasyPost rating calls, each a USPS round-trip,
