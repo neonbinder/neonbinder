@@ -141,11 +141,24 @@ export default function CardChecklistItem({
           keyboard/Maestro-targeted opener. */}
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium truncate">{card.cardName}</div>
-        {subParts.length > 0 && (
-          <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-            {subParts.join(" · ")}
-          </div>
-        )}
+        {/* Always reserve this secondary line's height, even when empty. The
+            NEO-90 background enrichment resolves a card's team AFTER the row
+            first renders; if this line only existed when non-empty, that later
+            team would ADD a line and GROW the row. A row height change
+            re-measures the Virtuoso list and reflows every row below it, which
+            shifts the Edit button out from under Maestro's already-read tap
+            coordinate mid-tap — CardChecklist.tsx's "bounds-then-tap window
+            races Virtuoso's height recompute", the long-standing dropped-tap
+            flake (checklist-bsc-team-enrichment). A constant row height,
+            regardless of enrichment state, removes that reflow; a resolved team
+            fills the reserved space instead of growing the row. min-h matches
+            the filled text-xs line height so the reserved line is invisible. */}
+        <div
+          className="text-xs text-gray-500 dark:text-gray-400 truncate min-h-[1rem]"
+          aria-hidden={subParts.length === 0 ? true : undefined}
+        >
+          {subParts.join(" · ")}
+        </div>
       </div>
       {/* Attribute badges */}
       {card.attributes && card.attributes.length > 0 && (
