@@ -59,10 +59,13 @@ export default function ChecklistSourceFilter({
               onClick={() => onChange({ ...filter, [side]: null })}
             />
             {cfg.chips.map((c) => (
+              // No "Primary source" tooltip — `primaryId` records which slot
+              // the reconciler owns, not where the cards were released, and
+              // labelling it as primary implied the others were secondary.
+              // See the note in MultiSourcePanel.
               <Chip
                 key={c.id}
                 label={c.label}
-                title={c.id === cfg.primaryId ? "Primary source" : undefined}
                 active={selected === c.id}
                 onClick={() => onChange({ ...filter, [side]: c.id })}
               />

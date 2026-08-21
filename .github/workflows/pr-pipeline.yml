@@ -49,13 +49,14 @@ jobs:
     outputs:
       web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
+      preprocess: ${{ steps.filter.outputs.preprocess }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
     permissions:
       contents: read
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -63,6 +64,8 @@ jobs:
               - 'apps/web/**'
             browser:
               - 'services/browser/**'
+            preprocess:
+              - 'services/preprocess/**'
 
       # May this PR skip the 8-worker matrix? Only if BOTH hold:
       #   1. it was authored by dependabot[bot]  (NEO-108), and
@@ -178,10 +181,17 @@ jobs:
 
             echo "Changed files:"; printf '%s\n' "$files" | sed 's/^/  /'
 
-            # Anything that is NOT a bare package.json / package-lock.json at any
-            # depth disqualifies the PR.
+            # Anything that is NOT a bare dependency manifest at any depth
+            # disqualifies the PR. npm: package.json / package-lock.json.
+            # pip (services/preprocess, NEO-123): requirements.txt /
+            # requirements-dev.txt — without these a Dependabot pip bump runs
+            # the full 8-worker matrix it cannot possibly affect.
+            #
+            # Keep this enumeration EXPLICIT rather than a permissive
+            # `requirements-.*\.txt`: a future requirements-<x>.txt should
+            # require a deliberate edit here, not slip through.
             offenders=$(printf '%s\n' "$files" \
-              | grep -vE '(^|/)package(-lock)?\.json$' || true)
+              | grep -vE '(^|/)package(-lock)?\.json$|(^|/)requirements(-dev)?\.txt$' || true)
 
             if [ -n "$offenders" ]; then
               echo "Non-manifest files present — E2E runs:"
@@ -455,6 +465,51 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  # Mirror of preprocess.yml `test` (kept in sync intentionally — same rationale
+  # as browser-test above).
+  #
+  # This is the FIRST Python job in the repo. Two things about it are not
+  # obvious from the YAML:
+  #
+  #  1. `working-directory` is load-bearing for pip and pytest, NOT for ruff.
+  #     `pip install -r requirements-dev.txt`, `pytest tests/unit` and
+  #     `--cov=app` are all cwd-relative and only resolve inside the service
+  #     directory; each fails loudly from anywhere else. (Ruff is the exception
+  #     — `ruff check .` from the repo root walks the tree and finds exactly the
+  #     same files, resolving config per-file from services/preprocess's own
+  #     pyproject.toml. Verified, rather than assumed.)
+  #
+  #  2. `cache-dependency-path` is an ACTION INPUT, so `defaults.run` does not
+  #     apply to it. It resolves from ${{ github.workspace }} and has to carry
+  #     the services/preprocess prefix explicitly. The requirements*.txt glob is
+  #     deliberate: requirements-dev.txt is `-r requirements.txt` plus tools, so
+  #     keying on the dev file alone would leave the cache blind to a runtime
+  #     pin bump.
+  preprocess-test:
+    name: Preprocess lint + unit tests
+    needs: changes
+    if: needs.changes.outputs.preprocess == 'true'
+    runs-on: ubuntu-latest
+    # 20, not 10: requirements-dev.txt transitively installs torch+cpu,
+    # transformers and opencv. A cold pip cache is several minutes.
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/preprocess
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/preprocess/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80
+
   # Single stable aggregator REQUIRED by the main ruleset. MUST stay in this
   # all-PR workflow (no `paths:` trigger) with `if: always()` so its check
   # registers on EVERY PR — including docs-only PRs where every gated job
@@ -468,7 +523,7 @@ jobs:
   # touched nothing but dependency manifests. Every other skip is still red.
   ci-gate:
     name: CI Gate
-    needs: [changes, web-lint, web-unit, browser-test, wire-browser-url, e2e]
+    needs: [changes, web-lint, web-unit, browser-test, preprocess-test, wire-browser-url, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -481,12 +536,13 @@ jobs:
           R_WEB_LINT: ${{ needs.web-lint.result }}
           R_WEB_UNIT: ${{ needs.web-unit.result }}
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
+          R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
         run: |
           set -euo pipefail
-          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST wire-browser-url=$R_WIRE e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST wire-browser-url=$R_WIRE e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
@@ -501,7 +557,7 @@ jobs:
             fi
           fi
           # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
-          for kv in "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "wire-browser-url=$R_WIRE"; do
+          for kv in "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "wire-browser-url=$R_WIRE"; do
             r="${kv#*=}"
             case "$r" in
               success|skipped) ;;

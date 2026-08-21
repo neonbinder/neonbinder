@@ -129,7 +129,18 @@ function makeB2CRouter(overrides = {}) {
     }
     if (u.includes("/oauth2/v2.0/token")) {
       if (overrides.token) return overrides.token(u, opts);
-      return makeResponse({ status: 200, json: { access_token: "fresh-access-token", token_type: "Bearer", expires_in: 3600 } });
+      // Shaped like the real B2C response, probed live 2026-08-11: an hour of
+      // access token and a DAY of refresh token, the latter rotating on use.
+      return makeResponse({
+        status: 200,
+        json: {
+          access_token: "fresh-access-token",
+          token_type: "Bearer",
+          expires_in: 3600,
+          refresh_token: "fresh-refresh-token",
+          refresh_token_expires_in: 86400,
+        },
+      });
     }
     if (u.includes("api-prod.buysportscards.com/marketplace/user/profile")) {
       if (overrides.profile) return overrides.profile(u, opts);
@@ -139,6 +150,74 @@ function makeB2CRouter(overrides = {}) {
   };
   handler.calls = calls;
   return handler;
+}
+
+/**
+ * A fetch router for the REFRESH grant.
+ *
+ * Records the refresh token presented on each call (so a test can prove the
+ * chain advanced) and mints a fresh, distinct one each time — which is what
+ * BSC's B2C tenant actually does: the grant ROTATES, invalidating the token
+ * presented. Anything other than /token or the profile endpoint throws, so a
+ * test that accidentally falls back to a password sign-in fails loudly instead
+ * of quietly passing.
+ *
+ * SECURITY NOTE for anyone extending this: the values below are fixtures with
+ * no relationship to any real token. Never paste a captured token into a test.
+ */
+function makeRefreshRouter({ tokenResponse } = {}) {
+  const presented = [];
+  let minted = 0;
+  const handler = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("/oauth2/v2.0/token")) {
+      const body = new URLSearchParams(String(opts.body ?? ""));
+      assert.equal(body.get("grant_type"), "refresh_token", "must use the refresh grant");
+      presented.push(body.get("refresh_token"));
+      if (tokenResponse) return tokenResponse(body, presented.length);
+      minted++;
+      return makeResponse({
+        status: 200,
+        json: {
+          access_token: `access-token-${minted}`,
+          expires_in: 3600,
+          refresh_token: `refresh-token-${minted}`,
+          refresh_token_expires_in: 86400,
+        },
+      });
+    }
+    if (u.includes("api-prod.buysportscards.com/marketplace/user/profile")) {
+      return makeResponse({
+        status: 200,
+        json: { sellerProfile: { sellerStoreName: "Acme Cards", sellerId: "seller-1" } },
+      });
+    }
+    throw new Error(`unexpected fetch in refresh test (password sign-in attempted?): ${u}`);
+  };
+  handler.presented = presented;
+  return handler;
+}
+
+/**
+ * A stateful stand-in for a Secret Manager secret.
+ *
+ * `updateCredentials` REPLACES the payload wholesale (Secret Manager stores a
+ * new version, it does not merge), and `getCredentials` hands back a copy with
+ * the access token forced expired — modelling the ordinary hourly cadence
+ * where the 1h access token has lapsed but the 24h refresh token has not.
+ * That is what makes a second call take the refresh path rather than a cache
+ * hit, which is the whole point of the rotation test below.
+ */
+function statefulSecret(initial) {
+  const state = { payload: { ...initial }, writes: [] };
+  return {
+    state,
+    credentials: () => ({ ...state.payload, expiresAt: Date.now() - 1 }),
+    updateCredentials: (_key, creds) => {
+      state.writes.push({ ...creds });
+      state.payload = { ...creds };
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +287,7 @@ describe("BSCAdapter.login — cache-hit path", () => {
 // ---------------------------------------------------------------------------
 
 describe("BSCAdapter.login — cache-invalid → fresh B2C login", () => {
-  it("clears the stale token, runs the browser-free B2C exchange, and persists the fresh token", async () => {
+  it("runs the browser-free B2C exchange and persists the fresh token with a SINGLE secret write", async () => {
     const updates = [];
     const baseCreds = {
       username: "seller@example.com",
@@ -236,19 +315,29 @@ describe("BSCAdapter.login — cache-invalid → fresh B2C login", () => {
     const result = await adapter.login("buysportscards-credentials-seller1");
     restore();
 
-    assert.equal(result.success, true, "fresh login should succeed after stale-cache clear");
+    assert.equal(result.success, true, "fresh login should succeed after the stale token is rejected");
     assert.equal(result.sellerId, "fresh-seller-id");
     assert.match(result.message, /Successfully logged into/, "message should reflect fresh login, not cached");
 
-    // First update clears the stale token; second persists the new one.
-    assert.equal(updates.length, 2, "should clear stale cache, then persist fresh token");
-    const [clear, persist] = updates;
-    assert.equal(clear.creds.token, undefined, "stale-clear update should remove token");
-    assert.equal(clear.creds.expiresAt, undefined);
-    assert.equal(clear.creds.username, "seller@example.com", "stale-clear must preserve username");
-    assert.equal(clear.creds.password, "secret", "stale-clear must preserve password");
+    // NEO-115: exactly ONE write. The old code wrote a token-cleared version
+    // first and then immediately overwrote it with the fresh token — two
+    // billed Secret Manager versions per hourly TTL expiry, to blank a field
+    // the second write set anyway. That intermediate write is gone; if it
+    // ever comes back, this assertion fails.
+    assert.equal(updates.length, 1, "stale-token path must write the secret exactly once");
+    const [persist] = updates;
     assert.equal(persist.creds.token, "fresh-access-token", "should persist the BARE access token (no 'Bearer ' prefix)");
     assert.ok(persist.creds.expiresAt > Date.now());
+    assert.equal(persist.creds.username, "seller@example.com", "write-back must preserve username");
+    // NEO-141: the write-back used to be `{...credentials, token, expiresAt}`,
+    // and that spread re-persisted the seller's password on EVERY hourly token
+    // refresh — the secret could never shed it no matter what the intake path
+    // did. It is now an explicit field list with no password in it.
+    assert.equal(
+      persist.creds.password,
+      undefined,
+      "write-back must NOT persist the password for a user key",
+    );
   });
 });
 
@@ -317,6 +406,290 @@ describe("BSCAdapter.login — fresh B2C login (no cached token)", () => {
     const token = router.calls.find((c) => c.url.includes("/oauth2/v2.0/token"));
     assert.ok(token.opts.body.includes("code_verifier="), "/token must include the PKCE verifier");
     assert.ok(token.opts.body.includes("grant_type=authorization_code"), "/token must use the auth-code grant");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-141 — the refresh grant, and the rotation chain
+// ---------------------------------------------------------------------------
+//
+// This is what replaced storing the user's password. BSC's B2C tenant issues a
+// 24h refresh token on every sign-in (proven live 2026-08-11 — `offline_access`
+// is not even required), and the refresh grant ROTATES it: each call returns a
+// new refresh token and invalidates the one presented.
+//
+// That rotation is what makes persistence non-negotiable. Miss one write and
+// the chain is severed: the token we hold is already dead, and the user is back
+// to typing a password we deliberately no longer store.
+
+describe("BSCAdapter.login — NEO-141 refresh grant", () => {
+  const LIVE_REFRESH = {
+    username: "seller@example.com",
+    token: "stale-access-token",
+    refreshToken: "refresh-token-0",
+    refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+  };
+
+  it("uses the refresh grant instead of a password sign-in when the access token is expired", async () => {
+    const secret = statefulSecret(LIVE_REFRESH);
+    const BSCAdapter = loadBSCAdapter(secret);
+    // makeRefreshRouter throws on any B2C sign-in URL, so reaching /authorize
+    // fails this test rather than silently passing on the old code path.
+    const router = makeRefreshRouter();
+    const restore = stubFetch(router);
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.match(result.message, /Refreshed token/);
+    assert.deepEqual(router.presented, ["refresh-token-0"], "should present the stored refresh token");
+  });
+
+  it("ACCEPTANCE: two refreshes in a row — the second presents the token minted by the first", async () => {
+    // The NEO-141 acceptance criterion. A single refresh proves nothing: the
+    // failure mode is a rotated token that is fetched, used, and then dropped,
+    // which looks perfect exactly once and then locks the user out forever.
+    const secret = statefulSecret(LIVE_REFRESH);
+    const BSCAdapter = loadBSCAdapter(secret);
+    const router = makeRefreshRouter();
+    const restore = stubFetch(router);
+
+    const first = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    const second = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(first.success, true);
+    assert.equal(second.success, true);
+
+    assert.equal(router.presented.length, 2, "both calls must have used the refresh grant");
+    assert.equal(router.presented[0], "refresh-token-0", "first refresh presents the seed token");
+    assert.equal(
+      router.presented[1],
+      "refresh-token-1",
+      "second refresh MUST present the token minted by the first — a rotated token is single-use",
+    );
+    assert.notEqual(
+      router.presented[1],
+      router.presented[0],
+      "re-presenting the original token means the rotation was never persisted",
+    );
+
+    // And the chain is left in a usable state for a third call.
+    assert.equal(
+      secret.state.payload.refreshToken,
+      "refresh-token-2",
+      "the newest rotated token must be what is left in the secret",
+    );
+    assert.equal(secret.state.writes.length, 2, "every refresh persists, exactly once each");
+  });
+
+  it("persists the rotated refresh token and its expiry, and never the password", async () => {
+    const secret = statefulSecret({ ...LIVE_REFRESH, password: "legacy-placeholder-value" });
+    const BSCAdapter = loadBSCAdapter(secret);
+    const restore = stubFetch(makeRefreshRouter());
+
+    const before = Date.now();
+    await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    const [write] = secret.state.writes;
+    assert.deepEqual(
+      Object.keys(write).sort(),
+      ["expiresAt", "refreshExpiresAt", "refreshToken", "token", "username"],
+      "the persisted payload must be exactly the session fields — no password, nothing extra",
+    );
+    assert.equal(write.password, undefined, "a legacy stored password must be SHED, not carried forward");
+    assert.equal(write.refreshToken, "refresh-token-1");
+    assert.ok(write.refreshExpiresAt > before + 23 * 60 * 60 * 1000, "~24h refresh expiry");
+    assert.ok(write.expiresAt > before, "access-token expiry must be in the future");
+  });
+
+  it("does NOT return success when persisting the rotated token fails", async () => {
+    // The token we presented is already dead by the time B2C answers. Reporting
+    // success here would hand the caller an access token with no way to renew
+    // it — a silent one-hour fuse. It must fail, and as a pageable fault (the
+    // write failing is our infrastructure, not the user's session).
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({ ...LIVE_REFRESH, expiresAt: Date.now() - 1 }),
+      updateCredentials: () => {
+        throw new Error("Failed to update credentials");
+      },
+    });
+    const restore = stubFetch(makeRefreshRouter());
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false, "a dropped rotation must never be reported as success");
+    assert.equal(result.error, "Authentication failed");
+    assert.notEqual(result.reauthRequired, true, "a failed WRITE is our fault and must stay pageable");
+  });
+
+  it("reports reauthRequired when the refresh grant is refused (invalid_grant)", async () => {
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({ ...LIVE_REFRESH, expiresAt: Date.now() - 1 }),
+      updateCredentials: () => assert.fail("nothing should be persisted after a refused grant"),
+    });
+    const restore = stubFetch(
+      makeRefreshRouter({
+        tokenResponse: () =>
+          makeResponse({ status: 400, ok: false, json: { error: "invalid_grant" } }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.equal(result.reauthRequired, true, "a refused grant is the user's cue to sign in again");
+    assert.equal(result.error, "Re-authentication required");
+  });
+
+  it("does NOT report reauthRequired when the token endpoint 5xxs (a BSC outage must page)", async () => {
+    // The expensive mistake in the other direction: a BSC outage presenting to
+    // every user as "your session expired" while paging nobody.
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({ ...LIVE_REFRESH, expiresAt: Date.now() - 1 }),
+      updateCredentials: null,
+    });
+    const restore = stubFetch(
+      makeRefreshRouter({
+        tokenResponse: () => makeResponse({ status: 503, ok: false, json: { error: "unavailable" } }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.notEqual(result.reauthRequired, true, "an unreachable token endpoint must stay a 502");
+    assert.equal(result.error, "Authentication failed");
+  });
+
+  it("falls back to a password sign-in when the grant is refused BUT a password is still stored", async () => {
+    // Legacy un-migrated secrets and the canary keys still carry one. They must
+    // keep working rather than being told to re-auth.
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({
+        ...LIVE_REFRESH,
+        password: "legacy-placeholder-value",
+        expiresAt: Date.now() - 1,
+      }),
+      updateCredentials: (key, creds) => updates.push(creds),
+    });
+    let refreshCalls = 0;
+    const router = makeB2CRouter({
+      token: (_u, opts) => {
+        const body = new URLSearchParams(String(opts.body ?? ""));
+        if (body.get("grant_type") === "refresh_token") {
+          refreshCalls++;
+          return makeResponse({ status: 400, ok: false, json: { error: "invalid_grant" } });
+        }
+        return makeResponse({
+          status: 200,
+          json: { access_token: "fresh-access-token", expires_in: 3600, refresh_token: "new-rt", refresh_token_expires_in: 86400 },
+        });
+      },
+    });
+    const restore = stubFetch(router);
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(refreshCalls, 1, "the refresh grant should be tried first");
+    assert.equal(result.success, true, "and a stored password should rescue the login");
+    assert.ok(
+      router.calls.some((c) => c.url.includes("/SelfAsserted")),
+      "the fallback must be a real B2C sign-in",
+    );
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].password, undefined, "even the rescue write sheds the password");
+  });
+
+  it("skips the refresh grant entirely once the refresh token has expired", async () => {
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => ({
+        username: "seller@example.com",
+        refreshToken: "refresh-token-0",
+        refreshExpiresAt: Date.now() - 1000, // dead
+      }),
+      updateCredentials: null,
+    });
+    const restore = stubFetch(async (u) => {
+      throw new Error(`no request should be made with a dead refresh token: ${u}`);
+    });
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, false);
+    assert.equal(result.reauthRequired, true);
+  });
+
+  it("captures the refresh token on a fresh password sign-in, using B2C's real expires_in", async () => {
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: { username: "seller@example.com", password: "placeholder-value" },
+      updateCredentials: (key, creds) => updates.push(creds),
+    });
+    const router = makeB2CRouter();
+    const restore = stubFetch(router);
+
+    const before = Date.now();
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    const [persisted] = updates;
+    assert.equal(
+      persisted.refreshToken,
+      "fresh-refresh-token",
+      "a sign-in must bank the refresh token — throwing it away is what forced password storage",
+    );
+    assert.ok(persisted.refreshExpiresAt > before + 23 * 60 * 60 * 1000, "~24h from refresh_token_expires_in");
+    // expires_in=3600 from the response, not a hardcoded constant.
+    assert.ok(persisted.expiresAt >= before + 3600 * 1000 - 5000);
+    assert.ok(persisted.expiresAt <= Date.now() + 3600 * 1000 + 5000);
+  });
+
+  it("requests offline_access on /authorize (intent made legible)", async () => {
+    const BSCAdapter = loadBSCAdapter({
+      credentials: { username: "seller@example.com", password: "placeholder-value" },
+      updateCredentials: null,
+    });
+    const router = makeB2CRouter();
+    const restore = stubFetch(router);
+    await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    const authorize = router.calls.find((c) => c.url.includes("/authorize"));
+    const scope = new URL(authorize.url).searchParams.get("scope");
+    assert.match(scope, /offline_access/);
+    assert.match(scope, /api\/read/, "the api/read resource scope must not be lost");
+  });
+
+  it("survives a token response with no refresh_token at all", async () => {
+    // Defensive: if BSC ever stops issuing one, a login must still succeed —
+    // it just costs a full sign-in at the next expiry instead of a refresh.
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: { username: "seller@example.com", password: "placeholder-value" },
+      updateCredentials: (key, creds) => updates.push(creds),
+    });
+    const restore = stubFetch(
+      makeB2CRouter({
+        token: () => makeResponse({ status: 200, json: { access_token: "only-access", expires_in: 3600 } }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-seller1");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.equal(updates[0].refreshToken, undefined);
+    assert.equal(updates[0].token, "only-access");
   });
 });
 
@@ -460,12 +833,16 @@ describe("BSCAdapter.login — failure branches", () => {
     assert.equal(result.error, "Authentication failed", "network errors must not leak request URLs/params to the caller");
   });
 
-  it("returns a structured 'Missing credentials' failure when username/password are absent", async () => {
+  it("reports reauthRequired (not a generic failure) when the secret has no token, no refresh token and no password", async () => {
+    // NEO-141: this is the steady state of a fully-lapsed USER secret, not a
+    // corrupt one — user secrets no longer store a password at all. It must
+    // therefore come back as its own thing, so Convex prompts a sign-in
+    // instead of inferring absence from a status code.
     const BSCAdapter = loadBSCAdapter({
-      credentials: { username: "", password: "" },
+      credentials: { username: "seller@example.com" },
       updateCredentials: null,
     });
-    // No fetch should ever be made.
+    // No fetch should ever be made — there is nothing to authenticate with.
     const restore = stubFetch(async (u) => { throw new Error(`unexpected fetch: ${u}`); });
 
     const adapter = new BSCAdapter(undefined);
@@ -473,7 +850,13 @@ describe("BSCAdapter.login — failure branches", () => {
     restore();
 
     assert.equal(result.success, false);
-    assert.match(result.error, /Missing credentials/);
+    assert.equal(result.reauthRequired, true, "must be the reauth signal, not a generic fault");
+    assert.equal(result.error, "Re-authentication required");
+    assert.notEqual(
+      result.credentialRejected,
+      true,
+      "nothing was rejected — no credentials were ever submitted",
+    );
   });
 });
 
@@ -794,5 +1177,251 @@ describe("BSCAdapter.login — NEO-43 canary mode", () => {
     assert.equal(fresh.success, true);
     assert.equal(freshUpdates.length, 1, "non-canary fresh login must still store the token");
     assert.equal(freshUpdates[0].creds.token, "fresh-access-token");
+  });
+
+  it("NEO-141 regression: still performs a REAL PASSWORD LOGIN, ignoring a live refresh token", async () => {
+    // Two live Cloud Scheduler jobs POST {key, canary:true} every 30 minutes,
+    // and the alerting they feed is only meaningful if the probe exercises the
+    // full B2C sign-in. A canary that took the cheap refresh grant would go
+    // green straight through a broken authorize/SelfAsserted flow — the exact
+    // blindness NEO-43 exists to prevent. The refresh path must be skipped on
+    // the flag alone, even when a usable refresh token is sitting right there.
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: {
+        username: "seller@example.com",
+        password: "canary-placeholder-value",
+        token: "cached-access-token",
+        expiresAt: Date.now() + 60 * 60 * 1000, // valid cache
+        refreshToken: "refresh-token-0", // and a usable refresh token
+        refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+
+    const router = makeB2CRouter();
+    const restore = stubFetch(router);
+    const result = await new BSCAdapter(undefined).login("bsc-credentials-canary", { canary: true });
+    restore();
+
+    assert.equal(result.success, true);
+    const tokenCalls = router.calls.filter((c) => c.url.includes("/oauth2/v2.0/token"));
+    assert.equal(tokenCalls.length, 1, "exactly one token call");
+    assert.ok(
+      new URLSearchParams(String(tokenCalls[0].opts.body)).get("grant_type") ===
+        "authorization_code",
+      "the canary must use the auth-code grant (a real login), never the refresh grant",
+    );
+    assert.ok(
+      router.calls.some((c) => c.url.includes("/SelfAsserted")),
+      "the canary must actually submit the password to B2C",
+    );
+    assert.deepEqual(updates, [], "and must still never write back");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-140/NEO-141 — transient credentials supplied in the request body
+// ---------------------------------------------------------------------------
+
+describe("BSCAdapter.login — transient request-body credentials", () => {
+  it("signs in with the supplied credentials WITHOUT reading the stored secret", async () => {
+    // This is the bootstrap path: the secret may not exist yet, so touching it
+    // first would fail a first-time sign-in outright.
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found for key: buysportscards-credentials-new");
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const router = makeB2CRouter();
+    const restore = stubFetch(router);
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-new", {
+      transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+    });
+    restore();
+
+    assert.equal(result.success, true);
+    const selfAsserted = router.calls.find((c) => c.url.includes("/SelfAsserted"));
+    assert.ok(
+      selfAsserted.opts.body.includes("signInName=new%40example.com"),
+      "the SUPPLIED username must be the one submitted, not a stored one",
+    );
+  });
+
+  it("persists only the session fields — the supplied password is never written", async () => {
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found for key: buysportscards-credentials-new");
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(makeB2CRouter());
+
+    await new BSCAdapter(undefined).login("buysportscards-credentials-new", {
+      transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+    });
+    restore();
+
+    assert.equal(updates.length, 1);
+    const written = updates[0].creds;
+    assert.deepEqual(
+      Object.keys(written).sort(),
+      ["expiresAt", "refreshExpiresAt", "refreshToken", "token", "username"],
+      "the intake write must contain exactly the session fields",
+    );
+    assert.equal(written.username, "new@example.com");
+    assert.equal(
+      JSON.stringify(written).includes("placeholder-value"),
+      false,
+      "the transient password must not survive anywhere in the persisted payload",
+    );
+  });
+
+  it("supplied credentials override a still-valid cached token (explicit re-auth)", async () => {
+    // A user re-entering their password is saying "use these", not "check
+    // whether my old session still works".
+    const BSCAdapter = loadBSCAdapter({
+      credentials: {
+        username: "old@example.com",
+        token: "cached-access-token",
+        expiresAt: Date.now() + 60 * 60 * 1000,
+      },
+      updateCredentials: null,
+    });
+    const router = makeB2CRouter();
+    const restore = stubFetch(router);
+
+    await new BSCAdapter(undefined).login("buysportscards-credentials-seller1", {
+      transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+    });
+    restore();
+
+    assert.ok(
+      router.calls.some((c) => c.url.includes("/SelfAsserted")),
+      "a supplied password must force a fresh sign-in, not a cache hit",
+    );
+  });
+
+  it("keeps the sanitized-diagnostic guarantee for a supplied password", async () => {
+    const BSCAdapter = loadBSCAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found");
+      },
+      updateCredentials: null,
+    });
+    const restore = stubFetch(
+      makeB2CRouter({
+        selfAsserted: () =>
+          makeResponse({
+            status: 200,
+            body: JSON.stringify({
+              status: "400",
+              message: "Rejected: new@example.com / transient-placeholder",
+            }),
+          }),
+      }),
+    );
+
+    const result = await new BSCAdapter(undefined).login("buysportscards-credentials-new", {
+      transientCredentials: { username: "new@example.com", password: "transient-placeholder" },
+    });
+    restore();
+
+    assert.equal(result.success, false);
+    const blob = JSON.stringify(result.diagnostic);
+    assert.doesNotMatch(blob, /new@example\.com/, "diagnostic must redact the supplied email");
+    assert.doesNotMatch(blob, /transient-placeholder/, "diagnostic must redact the supplied password");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-141 hardening — canary protection keys off the KEY, not the flag
+// ---------------------------------------------------------------------------
+//
+// The canary secrets are the only ones in the platform that still store a
+// password, and persistTokens writes an explicit field list with no `password`
+// in it while updateCredentials prunes to a single version. So ONE write-back
+// against a canary key destroys that password unrecoverably.
+//
+// Flag-based protection made that the caller's responsibility. A terraform edit
+// dropping `canary = true` from a scheduler body is enough: the request takes
+// the ordinary password path, succeeds, writes back, and every later run
+// answers 422 `reauth_required` — a class the alert policies deliberately
+// exclude as a caller error. The synthetic login canary would go permanently
+// and silently dead while the job kept running and logging.
+//
+// Pre-NEO-141 this self-healed by accident, because the write-back spread the
+// credentials it had just read and carried the password through.
+
+describe("BSCAdapter — canary-key write-back protection", () => {
+  it("never writes back to a canary key even WITHOUT canary:true on the request", async () => {
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: {
+        username: "seller@example.com",
+        password: "canary-placeholder-value",
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(makeB2CRouter());
+
+    // No opts at all — the terraform-drops-the-flag scenario.
+    const result = await new BSCAdapter(undefined).login("bsc-credentials-canary");
+    restore();
+
+    assert.equal(result.success, true, "the login itself must still succeed");
+    assert.deepEqual(
+      updates,
+      [],
+      "a canary key must never be written back, flag or no flag",
+    );
+  });
+
+  it("does not write back on the REFRESH path either", async () => {
+    // The other call site of persistTokens. A canary key should never hold a
+    // refresh token (it is never written back), but if one ever got there the
+    // rotated-token write must still not land on the canary secret — that
+    // write is the one the adapter treats as fatal-if-it-fails, so it must be
+    // skipped rather than attempted.
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: {
+        username: "seller@example.com",
+        password: "canary-placeholder-value",
+        refreshToken: "refresh-token-0",
+        refreshExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(makeB2CRouter());
+
+    const result = await new BSCAdapter(undefined).login("bsc-credentials-canary");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.deepEqual(updates, [], "the rotated token must not overwrite the canary secret");
+  });
+
+  it("a NON-canary key is unaffected — the guard is purely additive", async () => {
+    const updates = [];
+    const BSCAdapter = loadBSCAdapter({
+      credentials: { username: "seller@example.com", password: "secret" },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(makeB2CRouter());
+
+    const result = await new BSCAdapter(undefined).login("bsc-credentials-user_canary_fan");
+    restore();
+
+    assert.equal(result.success, true);
+    assert.equal(
+      updates.length,
+      1,
+      "a user key whose id merely CONTAINS 'canary' must still be written back",
+    );
   });
 });

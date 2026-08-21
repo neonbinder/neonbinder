@@ -139,8 +139,10 @@ tags:
 - tapOn:
     id: "Edit card 777-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # Expand the CardFeaturesEditor (collapsed by default). The editor renders one
 # row per EXPECTED_FEATURES entry with the card's OWN features value pre-filled.

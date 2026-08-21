@@ -25,11 +25,11 @@ export default function MissingCredentialsBanner({
         Set Builder requires marketplace credentials
       </h2>
       <p className="text-amber-800 dark:text-amber-200 mb-4">
-        You need saved credentials for <strong>{joined}</strong> before Set
-        Builder can work. Configure them on your Profile.
+        You need to connect <strong>{joined}</strong> before Set Builder can
+        work. Set them up on your Profile.
       </p>
       <Link
-        to="/profile"
+        to="/profile/credentials"
         aria-label="Configure credentials in Profile"
         className="inline-block px-4 py-2 rounded-md bg-neon-green text-black font-semibold hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-green"
         style={{ fontFamily: "'Lexend', sans-serif" }}

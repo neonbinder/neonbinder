@@ -1,17 +1,53 @@
 name: Cloud Run Revision GC
 
-# Backstop for NEO-114.
+# Backstop for NEO-114. Covers BOTH Cloud Run services (NEO-123).
 #
-# browser.yml now drops each deploy's `sha-<short>` scratch tag as part of the
-# promote step, which closes the leak at the source. But promotion only happens
-# on a successful deploy — a run that deploys and then fails its login probe
-# leaves a tagged, never-promoted revision behind. Under the old
-# `--min-instances=1` those revisions each held a warm instance 24/7; 27 of them
-# across dev and prod were costing $869.63/month, ~90% of the entire GCP bill.
+# browser.yml and preprocess.yml each drop their deploy's `sha-<short>` scratch
+# tag as part of the promote step, which closes the leak at the source. But
+# promotion only happens on a successful deploy — a run that deploys and then
+# fails its smoke/probe leaves a tagged, never-promoted revision behind. Under
+# the old `--min-instances=1` those revisions each held a warm instance 24/7;
+# 27 of them across dev and prod were costing $869.63/month, ~90% of the entire
+# GCP bill.
+#
+# preprocess was added to the matrix in NEO-123. Before that this workflow swept
+# only browser — while preprocess's own promote step was deliberately RETAINING
+# its scratch tag, so it had both the leak and no backstop. A manual sweep at
+# migration time cleared 42 revisions and 37 images; this keeps it cleared.
 #
 # This sweep reclaims whatever slips through. It is deliberately conservative:
 # dry-run unless explicitly applied, never touches the serving revision, and
-# keeps the 5 most recent revisions for rollback.
+# keeps the 2 most recent revisions for rollback.
+#
+# NEO-117: lowered 5 -> 2. Retained revisions cost nothing directly — every
+# revision is minScale=0 since NEO-114, so an idle one holds no instance. What
+# they DO cost is that each pins a container image in Artifact Registry, which
+# is a large part of what kept that registry at 117.8 GB (dev) / 41.7 GB (prod).
+# Product direction is that one rollback target is enough.
+#
+# NOTE for anyone tempted to mirror this number into the Artifact Registry
+# cleanup policies (neonbinder_terraform, google_artifact_registry_repository.gcr_io):
+# DO NOT. The conclusion still holds, but SINCE NEO-130 the reason has changed,
+# and the old one should not be repeated:
+#
+#   * WAS (pre-NEO-130): AR keep_count ranks by PUSH VOLUME, and PR previews
+#     pushed into the same `neonbinder-browser` package — dev spiked to 13 pushes
+#     in a single day, so a keep_count of 2 survived only until the next busy PR
+#     day. Previews now push to `<service>-preview`, so that confound is gone:
+#     one merge produces one version (`:<sha>` is new; moving `:latest` only
+#     retags), and rank there genuinely means "deploys deep".
+#
+#   * STILL TRUE: images and revisions are different axes. This workflow's keep 2
+#     counts REVISIONS; AR's keep_count counts IMAGE VERSIONS, and a revision
+#     retained here whose image was collected there cannot start at all — since
+#     minScale=0, every request cold-starts against a missing image and fails,
+#     and Cloud Run cannot self-heal because revisions are immutable. That is not
+#     merely "un-rollback-to-able". AR keeps 10 plus an independent 14-day age
+#     gate, and the two guards are deliberately sized to fail in opposite
+#     conditions (age protects fast-deploying services, rank protects slow ones).
+#
+# The numbers must not be kept "in sync". neonbinder_terraform/main.tf carries
+# the full derivation; keep the two files' reasoning consistent.
 
 on:
   schedule:
@@ -26,7 +62,7 @@ on:
       keep:
         description: 'Number of recent revisions to retain'
         type: string
-        default: '5'
+        default: '2'
 
 # Never let two sweeps mutate the same service concurrently.
 concurrency:
@@ -35,23 +71,46 @@ concurrency:
 
 jobs:
   gc:
-    name: GC ${{ matrix.env }}
+    name: GC ${{ matrix.service }} ${{ matrix.env }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       # fail-fast off: prod must still be swept if dev errors, and vice versa —
-      # each environment bills independently.
+      # each environment bills independently. Same reasoning now applies across
+      # services: a preprocess failure must not stop the browser sweep.
       fail-fast: false
       matrix:
+        # service x env. Until NEO-123 this matrix varied ONLY by env, and the
+        # script's `--service` default (neonbinder-browser) was never overridden
+        # — so preprocess had no revision backstop at all while its own promote
+        # step was retaining scratch tags. That combination is exactly how
+        # revisions pile up unnoticed.
+        #
+        # Each service authenticates as its OWN deployer SA rather than sharing
+        # browser's. Both hold project-wide roles/run.admin so either could sweep
+        # either service, but keeping them separate means revoking one deploy
+        # lane also revokes its GC — no cross-service authority by accident.
         include:
-          - env: dev
+          - service: neonbinder-browser
+            env: dev
             project: neonbinder-dev
             wif: GCP_WIF_PROVIDER_DEV
             sa: GCP_SERVICE_ACCOUNT_DEPLOYER_DEV
-          - env: prod
+          - service: neonbinder-browser
+            env: prod
             project: neonbinder
             wif: GCP_WIF_PROVIDER
             sa: GCP_SERVICE_ACCOUNT_DEPLOYER
+          - service: neonbinder-preprocess
+            env: dev
+            project: neonbinder-dev
+            wif: GCP_WIF_PROVIDER_PREPROCESS_DEV
+            sa: GCP_SA_PREPROCESS_DEPLOYER_DEV
+          - service: neonbinder-preprocess
+            env: prod
+            project: neonbinder
+            wif: GCP_WIF_PROVIDER_PREPROCESS
+            sa: GCP_SA_PREPROCESS_DEPLOYER
     permissions:
       contents: read
       id-token: write
@@ -68,14 +127,23 @@ jobs:
       - name: Sweep stale revisions
         env:
           PROJECT: ${{ matrix.project }}
-          KEEP: ${{ inputs.keep || '5' }}
+          SERVICE: ${{ matrix.service }}
+          # This fallback — not the workflow_dispatch input default — is what a
+          # SCHEDULED run uses, since `inputs.keep` is empty on a cron trigger.
+          # Both must be changed together or the weekly sweep silently keeps the
+          # old count.
+          KEEP: ${{ inputs.keep || '2' }}
           # Scheduled runs apply; manual dispatch is dry-run unless the box is
           # ticked. That way the weekly job actually reclaims instances, while a
           # human poking at it by hand cannot delete anything by accident.
           APPLY: ${{ github.event_name == 'schedule' || inputs.apply }}
         run: |
           set -euo pipefail
-          ARGS=(--project "$PROJECT" --keep "$KEEP")
+          # --service is passed EXPLICITLY. The script defaults to
+          # neonbinder-browser, so an omitted flag silently sweeps the wrong
+          # service rather than erroring — which is what left preprocess
+          # uncovered before NEO-123.
+          ARGS=(--project "$PROJECT" --service "$SERVICE" --keep "$KEEP")
           if [ "$APPLY" = "true" ]; then
             ARGS+=(--apply)
           fi
@@ -85,7 +153,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "### Revision GC — ${{ matrix.env }} (\`${{ matrix.project }}\`)"
+            echo "### Revision GC — \`${{ matrix.service }}\` in ${{ matrix.env }} (\`${{ matrix.project }}\`)"
             echo
             echo '```'
             cat "$RUNNER_TEMP/gc.log" 2>/dev/null || echo "(no output — the sweep failed before reporting)"

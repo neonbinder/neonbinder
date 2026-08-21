@@ -1,4 +1,4 @@
-# R1 — Single feature: the /qr-code page shows the "set up your profile first"
+# R1 — Single feature: the /print/qr page shows the "set up your profile first"
 # empty state (and a Go to Profile CTA) when the signed-in user has NO saved
 # public profile.
 #
@@ -12,16 +12,17 @@
 # that touches this account resets it at entry — so our reset immediately
 # precedes our assert and the empty state is deterministic.
 #
-# Entry URL: sign in as the new-profile account, reset it, land on /qr-code.
+# Entry URL: sign in as the new-profile account, reset it, land on /print/qr
+# (NEO-145 — the generator moved into the Print Shop; /qr-code redirects here).
 # `account=new-profile` and `worker` are TOP-LEVEL sign-in query params (the
 # inner redirect value is left unencoded so the router parses them as siblings).
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/qr-code&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/print/qr&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: QR Code — no profile empty state
 tags:
   - smoke
   - qr-code
 ---
-# Step 1: open the app at the signed-in, freshly-reset /qr-code route.
+# Step 1: open the app at the signed-in, freshly-reset /print/qr route.
 - launchApp
 
 # Step 2: with no saved profile, the page shows the empty-state copy verbatim.

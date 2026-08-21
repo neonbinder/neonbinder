@@ -1,5 +1,5 @@
 # R1 — Single feature: a signed-in user who HAS a saved return address can type a
-# recipient on /labels and watch the 4x6 label preview build itself from what
+# recipient on /print/shipping and watch the 4x6 label preview build itself from what
 # they typed (uppercased, USPS-style), with their own return address already in
 # the FROM block.
 #
@@ -12,10 +12,10 @@
 # and the NEO-41 dirty guard can't re-hydrate stale values over our typing).
 # No in-body re-login beyond that entry handshake (R4).
 #
-# R2 — this cannot go green without the feature: /labels only renders a "Ship To"
-# form when getMyReturnAddress is non-null. If the /profile save silently failed,
-# /labels would render the "Add your return address" empty state instead and
-# every step below would fail on a missing field.
+# R2 — this cannot go green without the feature: /print/shipping only renders a
+# "Ship To" form when getMyReturnAddress is non-null. If the /profile save
+# silently failed, it would render the "Add your return address" empty state
+# instead and every step below would fail on a missing field.
 #
 # TWO HARD CONSTRAINTS, for two different reasons:
 #
@@ -28,17 +28,18 @@
 #    Rating is free and is the assertable half of the purchase flow; buying is
 #    not assertable at any price worth paying.
 #
-# Entry URL: sign in (new-profile) -> /testing/reset (wipe to empty) -> /profile.
-# `account=new-profile` and `worker` are top-level sign-in query params (the
-# inner redirect value is left unencoded so the router parses them as siblings).
+# Entry URL: sign in (new-profile) -> /testing/reset (wipe to empty) ->
+# /profile/shipping. `account=new-profile` and `worker` are top-level sign-in
+# query params (the inner redirect value is left unencoded so the router parses
+# them as siblings).
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile/shipping&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: Shipping Labels — type a recipient and the label preview follows
 tags:
   - smoke
   - labels
 ---
-# Step 1: land on the freshly-reset /profile page.
+# Step 1: land on the freshly-reset Shipping section.
 - launchApp
 - extendedWaitUntil:
     visible: "Profile Settings"
@@ -46,25 +47,23 @@ tags:
 
 # Step 2: fill in the Shipping section — the seller's return address.
 #
-# The section is the LAST one on /profile (below Public Profile, Credentials and
-# Prize Pool), so reaching it is a long scroll on the 1024x629 headless viewport.
-# Anchor on the "Shipping" heading first, with a budget well above the default:
-# the sibling scroll in util-login-to-bsc.yaml already needed 17s of its 20s to
-# reach "Test Credentials" higher up this same page, and this target is further
-# down still. Getting there in one deliberate hop also means each field scroll
-# below is a short move rather than another full-page traversal.
-- scrollUntilVisible:
-    element:
-      text: "Shipping"
-    centerElement: true
-    timeout: 45000
+# NEO-128: Shipping is its own route, so the entry URL lands on it directly.
+# This used to be the LAST section of a ~5000px /profile and needed a 45s
+# scrollUntilVisible to reach — the longest single step in the suite, and a
+# tripwire on anything added above it.
+- extendedWaitUntil:
+    visible: "Your return address for printed shipping labels"
+    timeout: 10000
 
 # We target what the user SEES: the visible field labels. Each one's htmlFor
 # points at its input (ship-name, ship-line1, ship-city, ship-state,
 # ship-postal-code), so tapping the label focuses that field and the typing lands
-# in it. These five label texts appear nowhere else on /profile — the Public
-# Profile editor uses "Display Name", "Username", "Tagline" and "... URL", none
-# of which collide.
+# in it. These five label texts are unambiguous here: the Shipping route mounts
+# only this form, so the Public Profile editor's "Display Name" / "Username" /
+# "Tagline" fields are not even in the DOM to collide with (NEO-128 — before the
+# split they were on the same page and the non-collision had to be argued).
+# The scrolls below are kept as cheap no-ops: the form is short enough that they
+# resolve immediately, and they still position each field if it ever grows.
 # The Name field is optional — blank falls back to the seller's public display
 # name — but we fill it here so the FROM block is deterministic regardless of
 # what profile state the reset left behind. (The fallback chain itself is
@@ -115,10 +114,11 @@ tags:
 - tapOn: "Save Return Address"
 - assertVisible: "Return address saved."
 
-# Step 4: go to the Labels page. openLink (not a nav tap) = a fresh cross-page
-# mount, which avoids the post-tap CDP navigation crash and re-reads the return
-# address we just saved.
-- openLink: ${APP_URL || "https://localhost:3000"}/labels
+# Step 4: go to the Shipping tool in the Print Shop (NEO-145 moved it there from
+# the top-level /labels, which still redirects here). openLink (not a nav tap) =
+# a fresh cross-page mount, which avoids the post-tap CDP navigation crash and
+# re-reads the return address we just saved.
+- openLink: ${APP_URL || "https://localhost:3000"}/print/shipping
 - assertVisible: "Shipping Labels"
 
 # Step 5: confirm we are on the "has a return address" branch, not the empty

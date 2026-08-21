@@ -16,9 +16,11 @@
 # and is the assertable half. Buying is not assertable at any price worth paying.
 #
 # Entry URL: sign in (new-profile) -> /testing/reset -> /testing/seed-credentials
-# -> /profile. The seed step is what puts the EasyPost key on this worker.
+# -> /profile/shipping. The seed step is what puts the EasyPost key on this
+# worker; NEO-128 split /profile into routes, so the return-address form is a
+# direct landing rather than a 45s scroll down a ~5000px page.
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile/shipping&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: Shipping Labels — price a letter before buying it
 # Tagged `postage` ONLY, deliberately not `labels`: it is the one flow that
 # needs DEV_EASYPOST_API_KEY, so including it in the labels suite would fail
@@ -27,21 +29,20 @@ name: Shipping Labels — price a letter before buying it
 tags:
   - postage
 ---
-# Step 1: land on /profile with state reset and credentials (including the
-# EasyPost key) seeded for this worker.
+# Step 1: land on the freshly-reset Shipping section with credentials (including
+# the EasyPost key) seeded for this worker.
 - launchApp
 - extendedWaitUntil:
     visible: "Profile Settings"
     timeout: 45000
 
 # Step 2: a return address is required before any rate can be quoted — the FROM
-# address is half of what USPS prices. Fill the Shipping section, which sits at
-# the very bottom of /profile.
-- scrollUntilVisible:
-    element:
-      text: "Shipping"
-    centerElement: true
-    timeout: 45000
+# address is half of what USPS prices. Same visible-label technique as
+# print-label.yaml; the scrolls are cheap no-ops on this short route, kept in
+# case the form grows.
+- extendedWaitUntil:
+    visible: "Your return address for printed shipping labels"
+    timeout: 10000
 
 - scrollUntilVisible:
     element:
@@ -85,17 +86,19 @@ tags:
 - tapOn: "Save Return Address"
 - assertVisible: "Return address saved."
 
-# Step 3: confirm the seed actually connected EasyPost. If this is missing, the
-# rate step below would fail with a confusing "add your key" message — better to
-# fail here, where the cause is unambiguous.
-- scrollUntilVisible:
-    element:
-      text: "EasyPost key saved."
-    centerElement: true
+# Step 3: confirm the seed actually connected EasyPost — its own route since
+# NEO-128 (/profile/postage). If the key is missing, the rate step below would
+# fail with a confusing "add your key" message — better to fail here, where the
+# cause is unambiguous. The status line comes back from a browser-service
+# round-trip, hence the wait.
+- openLink: ${APP_URL || "https://localhost:3000"}/profile/postage
+- extendedWaitUntil:
+    visible: "EasyPost key saved."
     timeout: 30000
 
-# Step 4: address a package. openLink for a fresh cross-page mount.
-- openLink: ${APP_URL || "https://localhost:3000"}/labels
+# Step 4: address a package in the Print Shop's Shipping tool (NEO-145 moved it
+# from the top-level /labels). openLink for a fresh cross-page mount.
+- openLink: ${APP_URL || "https://localhost:3000"}/print/shipping
 - assertVisible: "Ship To"
 
 - scrollUntilVisible:

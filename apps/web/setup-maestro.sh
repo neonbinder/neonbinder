@@ -1,13 +1,15 @@
 #!/bin/bash
 set -e
 
-# setup-maestro.sh — Install Java 21 and Maestro CLI for E2E testing
+# setup-maestro.sh — Install Java 21, Maestro CLI and Chrome for E2E testing
 # Works on macOS (brew) and Linux (apt / SDKMAN fallback, no sudo required)
 #
 # Versions are pinned via:
-#   - .maestro/version    Maestro CLI version (single source of truth)
-#   - .java-version       Java major version (jenv-compatible)
-# CI reads the same files. Bumping either is a single PR.
+#   - .maestro/version         Maestro CLI version (single source of truth)
+#   - .java-version            Java major version (jenv-compatible)
+#   - .maestro/chrome-version  Chrome for Testing version (local runs only;
+#                              CI installs Chrome via setup-chrome instead)
+# CI reads the same files. Bumping any of them is a single PR.
 
 MAESTRO_BIN="$HOME/.maestro/bin"
 MAESTRO_CLI="$MAESTRO_BIN/maestro"
@@ -160,6 +162,36 @@ if [ "$installed_version" != "$PINNED_MAESTRO_VERSION" ]; then
   die "Maestro install reported '${installed_version}' but pin requires '${PINNED_MAESTRO_VERSION}'. Check $MAESTRO_VERSION_FILE."
 fi
 success "Maestro ${installed_version} ready (pinned)"
+
+# ── Chrome for Testing (pinned via .maestro/chrome-version) ───────────────────
+# Local Maestro MUST NOT drive branded Google Chrome. Branded Chrome exposes
+# chrome://omnibox-popup CDP targets ahead of the real tab, and Maestro — whose
+# CdpTarget model has no `type` field to filter on — navigates the popup widget
+# instead, so every flow runs in a 1x1 viewport (heightPixels=1) with 1x1
+# failure screenshots (NEO-138). Chrome for Testing has no such targets.
+#
+# Skipped in CI, which installs its own Chrome via browser-actions/setup-chrome.
+# shellcheck source=lib-e2e-chrome.sh
+source "$SCRIPT_DIR/lib-e2e-chrome.sh"
+if [ -n "$CI" ]; then
+  info "Chrome install skipped (CI provides its own via setup-chrome)"
+elif ! PINNED_CHROME_VERSION="$(e2e_chrome_pin)"; then
+  warn "No $SCRIPT_DIR/.maestro/chrome-version pin — skipping Chrome install."
+else
+  chrome_path="$(e2e_chrome_expected_path)"
+  if [ -x "$chrome_path" ]; then
+    success "Chrome for Testing ${PINNED_CHROME_VERSION} already installed"
+  elif ! command -v npx >/dev/null 2>&1; then
+    die "npx not found — needed to install Chrome for Testing ${PINNED_CHROME_VERSION}"
+  else
+    info "Installing Chrome for Testing ${PINNED_CHROME_VERSION}..."
+    npx --yes @puppeteer/browsers install "chrome@${PINNED_CHROME_VERSION}" \
+      --path "${PUPPETEER_CACHE_DIR:-$HOME/.cache/puppeteer}" >/dev/null \
+      || die "Chrome for Testing ${PINNED_CHROME_VERSION} install failed"
+    [ -x "$chrome_path" ] || die "Chrome installed but not found at ${chrome_path}"
+    success "Chrome for Testing ${PINNED_CHROME_VERSION} ready (pinned)"
+  fi
+fi
 
 # ── PATH reminder ─────────────────────────────────────────────────────────────
 echo ""

@@ -205,22 +205,29 @@ describe("SportlotsAdapter.login retry loop", () => {
     }
   });
 
-  it("does NOT retry when credentials are missing", async () => {
+  it("reports reauthRequired when there is no cached session and no password", async () => {
+    // NEO-141: the steady state of a lapsed USER secret. SL user secrets no
+    // longer store a password, so once the cookie dies there is nothing left
+    // to sign in with — and that is normal, not a fault. It must surface as
+    // the reauth signal (422, never pages) and must not touch the network.
     const SportlotsAdapter = loadSportlotsAdapter({
-      credentials: { username: "", password: "" },
+      credentials: { username: "user@example.com" },
     });
     // No fetch should happen; use a stub that would throw if called.
     const restore = stubFetch(async () => {
-      throw new Error("fetch should not be called when credentials are missing");
+      throw new Error("fetch should not be called when there is nothing to authenticate with");
     });
     try {
       const adapter = new SportlotsAdapter(null);
       const result = await adapter.login("sportlots-credentials-user_test");
       assert.equal(result.success, false);
-      assert.match(result.error, /Invalid credentials format/);
-      // NEO-98: SportLots never gets asked — the stored secret is incomplete.
-      // Caller-data problem, so 422 and no page.
-      assert.equal(result.credentialRejected, true);
+      assert.equal(result.reauthRequired, true);
+      assert.equal(result.error, "Re-authentication required");
+      assert.notEqual(
+        result.credentialRejected,
+        true,
+        "nothing was submitted, so nothing was rejected",
+      );
     } finally {
       restore();
     }
@@ -423,7 +430,7 @@ describe("SportlotsAdapter.login token cache", () => {
     }
   });
 
-  it("clears stale cache and falls through to fresh login when validation fails", async () => {
+  it("falls through to fresh login when validation fails, writing the secret exactly once", async () => {
     const updates = [];
     const SportlotsAdapter = loadSportlotsAdapter({
       credentials: {
@@ -454,18 +461,26 @@ describe("SportlotsAdapter.login token cache", () => {
       const adapter = new SportlotsAdapter(null);
       const result = await adapter.login("sportlots-credentials-user_test");
       assert.equal(result.success, true, "should succeed via fresh-login fallback");
-      assert.equal(stub.signinCalls(), 1, "should POST to signin.tpl after stale-cache clear");
+      assert.equal(stub.signinCalls(), 1, "should POST to signin.tpl after the stale cookie is rejected");
       // 1 validation from cache check + 1 from post-fresh-login validation = 2
       assert.equal(stub.validateCalls(), 2, "should validate twice (cache check + post-fresh-login)");
-      // First update: clearing the stale cache. Second update: persisting the new cookie.
-      assert.equal(updates.length, 2, "should clear stale cache, then persist fresh cookie");
-      const [clear, persist] = updates;
-      assert.equal(clear.creds.token, undefined, "stale-clear update should remove token");
-      assert.equal(clear.creds.expiresAt, undefined, "stale-clear update should remove expiresAt");
-      assert.equal(clear.creds.username, "user@example.com", "stale-clear must preserve username");
-      assert.equal(clear.creds.password, "pw", "stale-clear must preserve password");
+      // NEO-115: exactly ONE write. The old code wrote a token-cleared version
+      // first and then immediately overwrote it with the fresh cookie — two
+      // billed Secret Manager versions, to blank a field the second write set
+      // anyway. That intermediate write is gone; if it comes back this fails.
+      assert.equal(updates.length, 1, "stale-cookie path must write the secret exactly once");
+      const [persist] = updates;
       assert.ok(persist.creds.token, "fresh login should persist a new token");
       assert.ok(persist.creds.expiresAt > Date.now(), "fresh login must persist a future expiresAt");
+      assert.equal(persist.creds.username, "user@example.com", "write-back must preserve username");
+      // NEO-141: the write-back used to re-list `password:` explicitly, so a
+      // seller's SportLots password was rewritten on every successful login
+      // and could never leave the secret.
+      assert.equal(
+        persist.creds.password,
+        undefined,
+        "write-back must NOT persist the password for a user key",
+      );
     } finally {
       restore();
     }
@@ -701,6 +716,425 @@ describe("SportlotsAdapter.login — NEO-43 canary mode", () => {
       assert.equal(r.success, true);
       assert.equal(updates.length, 1, "non-canary success must still store the cookie");
       assert.ok(updates[0].creds.token.includes("sl_session=abc123"));
+    } finally {
+      restore();
+    }
+  });
+
+  it("NEO-141 regression: a canary key still logs in BY PASSWORD from its stored secret", async () => {
+    // The canary secrets are the one place a password is still stored, and
+    // deliberately so: a live Cloud Scheduler job POSTs {key, canary:true}
+    // every 30 minutes and the login alerting is only meaningful if that
+    // performs a real sign-in. The NEO-141 "no password → re-auth required"
+    // short-circuit must therefore NOT fire for them.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "canary@example.com",
+        password: "canary-placeholder-value",
+        token: "sl_session=cached; path=/",
+        expiresAt: Date.now() + 29 * 24 * 60 * 60 * 1000,
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const stub = scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]);
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-canary", {
+        canary: true,
+      });
+      assert.equal(result.success, true);
+      assert.notEqual(result.reauthRequired, true, "the canary must never report reauth_required");
+      assert.equal(stub.loginCalls(), 1, "it must POST the real signin form (cache bypassed)");
+      assert.deepEqual(updates, [], "and must still skip the write-back");
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-140/NEO-141 — transient credentials supplied in the request body
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter.login — transient request-body credentials", () => {
+  it("signs in with the supplied credentials without reading the stored secret", async () => {
+    // Bootstrap path: the secret may not exist yet.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found for key: sportlots-credentials-new");
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    let submitted = null;
+    const stub = cacheAwareFetch({
+      onSignin: (opts) => {
+        submitted = new URLSearchParams(String(opts.body));
+        return response({ status: 200, body: OK_LOGIN_BODY });
+      },
+    });
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-new", {
+        transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+      });
+      assert.equal(result.success, true);
+      assert.equal(stub.signinCalls(), 1);
+      assert.equal(
+        submitted.get("email_val"),
+        "new@example.com",
+        "the SUPPLIED username must be the one submitted",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("persists only {username, token, expiresAt} — never the supplied password", async () => {
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found for key: sportlots-credentials-new");
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(cacheAwareFetch());
+    try {
+      await new SportlotsAdapter(null).login("sportlots-credentials-new", {
+        transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+      });
+      assert.equal(updates.length, 1);
+      const written = updates[0].creds;
+      assert.deepEqual(
+        Object.keys(written).sort(),
+        ["expiresAt", "token", "username"],
+        "the intake write must be exactly the session fields",
+      );
+      assert.equal(
+        JSON.stringify(written).includes("placeholder-value"),
+        false,
+        "the transient password must not survive anywhere in the persisted payload",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("supplied credentials bypass a still-valid cached cookie (explicit re-auth)", async () => {
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "old@example.com",
+        token: "sl_session=cached; path=/",
+        expiresAt: Date.now() + 29 * 24 * 60 * 60 * 1000,
+      },
+      updateCredentials: null,
+    });
+    const stub = cacheAwareFetch();
+    const restore = stubFetch(stub);
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test", {
+        transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+      });
+      assert.equal(result.success, true);
+      assert.equal(stub.signinCalls(), 1, "a supplied password must force a fresh sign-in");
+      assert.equal(stub.validateCalls(), 1, "and must not spend a call revalidating the old cookie");
+    } finally {
+      restore();
+    }
+  });
+
+  it("a rejected supplied password is a rejection, NOT a re-auth prompt", async () => {
+    // The user just typed a password and SportLots refused it. Telling them
+    // "your session expired, sign in again" would be a loop; they need to know
+    // the credentials were wrong.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found");
+      },
+      updateCredentials: null,
+    });
+    const body = `<html><head> </head> <body onload='window.location = "\\?message=Invalid email address supplied";'> </body> </html>`;
+    const restore = stubFetch(scriptedLoginFetch([response({ status: 200, body })]));
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-new", {
+        transientCredentials: { username: "new@example.com", password: "placeholder-value" },
+      });
+      assert.equal(result.success, false);
+      assert.equal(result.credentialRejected, true);
+      assert.notEqual(result.reauthRequired, true);
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-141 — the stored cookie must carry no credential material
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter — stored session cookie hygiene", () => {
+  it("persists the cookie string verbatim and it contains neither username nor password", async () => {
+    // The ticket's 30-second check, pinned as a test. SportLots hands back an
+    // opaque session id in a `document.cookie =` assignment; what we persist as
+    // `token` is exactly those name=value pairs joined. This asserts the
+    // property we actually depend on — that the persisted blob is a session
+    // handle, not a credential in disguise — so a future SL change that starts
+    // echoing the login back in a cookie fails here instead of silently
+    // reintroducing password-at-rest through the side door.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found");
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const USERNAME = "hygiene-probe@example.com";
+    const PASSWORD = "hygiene-placeholder-value";
+    const restore = stubFetch(
+      cacheAwareFetch({
+        onSignin: () =>
+          response({
+            status: 200,
+            body:
+              `<html><body><script>document.cookie = "sl_session=OPAQUE1; path=/";` +
+              `document.cookie = "sl_user=OPAQUE2; path=/";</script></body></html>`,
+          }),
+      }),
+    );
+    try {
+      await new SportlotsAdapter(null).login("sportlots-credentials-new", {
+        transientCredentials: { username: USERNAME, password: PASSWORD },
+      });
+      const { token } = updates[0].creds;
+      assert.ok(!token.includes(PASSWORD), "the stored cookie must not contain the password");
+      assert.ok(!token.includes(USERNAME), "the stored cookie must not contain the username");
+      // Cookie NAMES are safe to assert on; values are not, so nothing here
+      // prints or matches a value beyond the fixture's own placeholders.
+      assert.ok(token.includes("sl_session="), "the session cookie should be what is kept");
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SECURITY — no raw SportLots response body may ever reach the log
+// ---------------------------------------------------------------------------
+//
+// The adapter used to `console.log` the first 200 characters of a response body
+// on two failure branches. SportLots sets its session cookies via inline
+// `document.cookie="…"` IN THE BODY — the very construct this adapter parses —
+// so those previews could put a live session cookie into Cloud Logging, where
+// it is readable for ~30 days by anyone holding logging.viewer. An SL session
+// cookie is account takeover for that seller and we control no revocation path.
+// Ordinary login failures reach both branches, so no attacker action is needed.
+//
+// The sanitized diagnostic still travels to PostHog on the HTTP response; that
+// is the intended channel for page-derived text.
+
+/** Run `fn` with console.log/console.error captured. Always restores. */
+async function captureConsole(fn) {
+  const lines = [];
+  const realLog = console.log;
+  const realError = console.error;
+  console.log = (...args) => lines.push(args.map(String).join(" "));
+  console.error = (...args) => lines.push(args.map(String).join(" "));
+  try {
+    await fn();
+  } finally {
+    console.log = realLog;
+    console.error = realError;
+  }
+  return lines.join("\n");
+}
+
+describe("SportlotsAdapter — response bodies never reach the log", () => {
+  // A fixture cookie value that is unmistakable in a haystack. It is a
+  // placeholder, never a real session id.
+  const COOKIE_VALUE = "SLSESSIONFIXTUREVALUE0123456789";
+
+  it("does not log the session cookie when validation bounces to the login form", async () => {
+    // The exact leak the audit blocked on: SL rejects the cookie it just
+    // issued and echoes the session id back in the body it serves.
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found");
+      },
+    });
+    const restore = stubFetch(
+      cacheAwareFetch({
+        onSignin: () =>
+          response({
+            status: 200,
+            body: `<html><body><script>document.cookie = "sl_session=${COOKIE_VALUE}; path=/";</script></body></html>`,
+          }),
+        // Validation fails AND echoes the cookie straight back — the property
+        // the adapter's own comment asserts about this branch, and the reason
+        // the cookie string is handed to buildLoginDiagnostic for exact-value
+        // redaction. The echo is inside the first 200 characters, i.e. exactly
+        // what the removed preview would have logged.
+        onValidate: () =>
+          response({
+            status: 200,
+            body:
+              `<html><body>sl_session=${COOKIE_VALUE} was not recognised. ` +
+              `Please <a href="/cust/custbin/signin.tpl">sign in</a>.</body></html>`,
+          }),
+      }),
+    );
+    let result;
+    try {
+      const logged = await captureConsole(async () => {
+        result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test", {
+          transientCredentials: { username: "probe@example.com", password: "placeholder-value" },
+        });
+      });
+
+      assert.equal(result.success, false, "the fixture should fail validation");
+      assert.ok(
+        !logged.includes(COOKIE_VALUE),
+        "a session cookie value must NEVER appear in logged output",
+      );
+      // The redacted diagnostic still leaves over HTTPS — that is the channel
+      // this material is allowed to use.
+      assert.ok(result.diagnostic, "the sanitized diagnostic must still be produced");
+      assert.ok(
+        !JSON.stringify(result.diagnostic).includes(COOKIE_VALUE),
+        "and the diagnostic itself must be redacted of the cookie value",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not log the raw body when no cookies are parsed", async () => {
+    // The other former preview site. A body with no `document.cookie=` match
+    // can still carry credential material — here, the submitted password.
+    const PASSWORD = "no-cookie-branch-placeholder";
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        throw new Error("Credentials not found");
+      },
+    });
+    const restore = stubFetch(
+      scriptedLoginFetch([
+        response({
+          status: 200,
+          body: `<html><body>psswd=${PASSWORD} Session ${COOKIE_VALUE} rejected.</body></html>`,
+        }),
+      ]),
+    );
+    try {
+      const logged = await captureConsole(async () => {
+        await new SportlotsAdapter(null).login("sportlots-credentials-user_test", {
+          transientCredentials: { username: "probe@example.com", password: PASSWORD },
+        });
+      });
+
+      assert.ok(!logged.includes(PASSWORD), "the submitted password must never be logged");
+      assert.ok(!logged.includes(COOKIE_VALUE), "no raw body material may be logged");
+      assert.ok(
+        logged.includes("challengeDetected="),
+        "the booleans derived from the body are still logged — only the text is gone",
+      );
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-141 hardening — canary protection keys off the KEY, not the flag
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter — canary-key write-back protection", () => {
+  it("never writes back to a canary key even WITHOUT canary:true on the request", async () => {
+    // The canary secrets are the only ones that still store a password, and a
+    // write-back persists no password + prunes to one version — so a single
+    // flag-less request against the canary key would destroy that password for
+    // good. Every subsequent run then answers 422 reauth_required, which the
+    // alert policies exclude as a caller error: the login canary goes silently
+    // dead while the scheduler keeps running green.
+    const updates = [];
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: {
+        username: "canary@example.com",
+        password: "canary-placeholder-value",
+      },
+      updateCredentials: (key, creds) => updates.push({ key, creds }),
+    });
+    const restore = stubFetch(scriptedLoginFetch([response({ status: 200, body: OK_LOGIN_BODY })]));
+    try {
+      // No opts at all — this is the terraform-drops-the-flag scenario.
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-canary");
+      assert.equal(result.success, true, "the login itself must still succeed");
+      assert.deepEqual(
+        updates,
+        [],
+        "a canary key must never be written back, flag or no flag",
+      );
+    } finally {
+      restore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-141 — a password-less secret must report reauth, never "bad credentials"
+// ---------------------------------------------------------------------------
+
+describe("SportlotsAdapter — password-less secret after a transient read failure", () => {
+  it("still reports reauthRequired when the FIRST getCredentials throws", async () => {
+    // login()'s reauth guard is skipped when the cache-lookup read threw
+    // (`stored` stays undefined so a Secret Manager blip keeps its old
+    // fall-through behaviour). attemptLogin then re-reads, succeeds, and finds
+    // a username with no password. Reported as "Invalid credentials format" it
+    // becomes 422 invalid_credentials — the user is told to check credentials
+    // they were never asked for, needsReauth is never set, and the amber
+    // "sign in again" card never renders.
+    let reads = 0;
+    const SportlotsAdapter = loadSportlotsAdapter({
+      credentials: () => {
+        reads++;
+        if (reads === 1) throw new Error("RESOURCE_EXHAUSTED: quota");
+        return { username: "user@example.com" };
+      },
+    });
+    const restore = stubFetch(async () => {
+      throw new Error("fetch must not be called when there is nothing to authenticate with");
+    });
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test");
+      assert.equal(reads, 2, "the transient failure must still fall through to the re-read");
+      assert.equal(result.success, false);
+      assert.equal(result.reauthRequired, true);
+      assert.equal(result.error, "Re-authentication required");
+      assert.notEqual(
+        result.credentialRejected,
+        true,
+        "nothing was submitted to SportLots, so nothing was rejected",
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("a supplied username with no password is still a caller-data error", async () => {
+    // The transient path is unchanged: if a REQUEST carried half a pair, that
+    // is the caller's bug, not a lapsed session. (parseTransientCredentials
+    // rejects it at the door; this pins the adapter's own behaviour.)
+    const SportlotsAdapter = loadSportlotsAdapter();
+    const restore = stubFetch(async () => {
+      throw new Error("fetch must not be called");
+    });
+    try {
+      const result = await new SportlotsAdapter(null).login("sportlots-credentials-user_test", {
+        transientCredentials: { username: "user@example.com", password: "" },
+      });
+      assert.equal(result.success, false);
+      assert.equal(result.credentialRejected, true);
+      assert.notEqual(result.reauthRequired, true);
     } finally {
       restore();
     }

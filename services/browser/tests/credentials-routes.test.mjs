@@ -1,28 +1,38 @@
 /**
- * Integration tests for the credential CRUD HTTP endpoints
+ * Route tests for the credential CRUD HTTP endpoints.
  *
- * Strategy: reconstruct the Express app in-process using the same middleware
- * stack as index.ts, but with SecretsManagerService replaced by an in-memory
- * store. This avoids importing dist/index.js (which calls app.listen() at
- * module load time) while still exercising the real route handler logic.
+ * ## What changed here, and why it is the point of the file (NEO-141)
  *
- * The in-memory SecretsManagerService mirrors the error-throwing behavior of
- * the real one so that error-path tests (404, 400 for bad key format) work.
+ * This suite used to RE-IMPLEMENT every route handler in-process (a local
+ * `buildApp` that copy-pasted the bodies of index.ts's handlers) because
+ * src/index.ts calls app.listen() at import time and therefore cannot be
+ * required from a test. That made the suite structurally incapable of catching
+ * route drift: it asserted against a copy, not the shipped code. The cost was
+ * concrete — GET /credentials/:key/token had NO test at all, and shipped for
+ * months answering 404 to two unrelated conditions, one of which is a normal
+ * state. Convex read only the status code and deleted users' credentials on it.
  *
- * NEO-20: app-layer auth was removed in favor of Cloud Run IAM, so these
- * tests no longer exercise an Authorization check — Cloud Run runs in front
- * of Express and is out of scope for an in-process test. The IAM gate is
- * enforced by Cloud Run config (--no-allow-unauthenticated + run.invoker
- * restricted to the convex SA); the login-probe integration suite exercises
- * the authenticated path against a real Cloud Run deployment.
+ * The handlers now live in src/routes/credentials.ts as a mountable Router, and
+ * this file mounts the REAL one over an in-memory store. There is no second
+ * copy of a handler anywhere in this file. Keep it that way: if a test needs a
+ * behaviour the router does not expose, change the router.
+ *
+ * NEO-20: app-layer auth was removed in favour of Cloud Run IAM, so these tests
+ * do not exercise an Authorization check — Cloud Run runs in front of Express
+ * and is out of scope for an in-process test.
+ *
+ * SECURITY: fixtures below use placeholder values that are never real
+ * credentials, and no assertion prints a token or password value.
  */
 
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createServer } from "node:http";
 
 const require = createRequire(import.meta.url);
+
+const { createCredentialsRouter } = require("../dist/routes/credentials");
 
 // ---------------------------------------------------------------------------
 // In-memory credentials store (mirrors real SecretsManagerService semantics)
@@ -30,9 +40,15 @@ const require = createRequire(import.meta.url);
 
 const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
 
+/**
+ * Mirrors the REAL SecretsManagerService's externally-visible behaviour: the
+ * key-format guard, and the exact error strings the route handlers pattern-match
+ * on to choose a status code. If those strings drift in the service, these
+ * tests must drift with them — that coupling is deliberate and is why the
+ * messages are spelled out rather than paraphrased.
+ */
 class InMemorySecretsManager {
   constructor(store) {
-    // store: Map<key, Credentials>
     this._store = store;
   }
 
@@ -68,110 +84,32 @@ class InMemorySecretsManager {
 }
 
 // ---------------------------------------------------------------------------
-// Build the Express app — mirrors index.ts structure but uses injectable deps
-// ---------------------------------------------------------------------------
-
-function buildApp({ secretsManager }) {
-  const express = require("express");
-  const rateLimit = require("express-rate-limit");
-  const helmet = require("helmet");
-
-  const app = express();
-
-  app.use(helmet());
-  app.use(express.json({ limit: "10kb" }));
-
-  // Rate limiter — use a very high limit so tests never hit it
-  const limiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: 10000,
-    standardHeaders: true,
-    legacyHeaders: false,
-    validate: { xForwardedForHeader: false, trustProxy: false },
-  });
-  app.use(limiter);
-
-  // PUT /credentials/:key
-  app.put("/credentials/:key", async (req, res) => {
-    const { username, password } = req.body;
-    if (!username || !password) {
-      res.status(400).json({ error: "Missing required fields: username, password" });
-      return;
-    }
-    try {
-      await secretsManager.updateCredentials(req.params.key, { username, password });
-      res.json({ success: true, message: "Credentials stored" });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      if (message.includes("Invalid credential key format")) {
-        res.status(400).json({ error: "Invalid credential key format" });
-      } else {
-        res.status(500).json({ error: "Failed to store credentials" });
-      }
-    }
-  });
-
-  // GET /credentials/:key/metadata
-  app.get("/credentials/:key/metadata", async (req, res) => {
-    try {
-      const credentials = await secretsManager.getCredentials(req.params.key);
-      res.json({
-        username: credentials.username,
-        hasToken: !!credentials.token,
-        expiresAt: credentials.expiresAt,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      if (message.includes("Invalid credential key format")) {
-        res.status(400).json({ error: "Invalid credential key format" });
-      } else if (message.includes("not found") || message.includes("No active version")) {
-        res.status(404).json({ error: "Credentials not found" });
-      } else {
-        res.status(500).json({ error: "Failed to retrieve credential metadata" });
-      }
-    }
-  });
-
-  // DELETE /credentials/:key
-  app.delete("/credentials/:key", async (req, res) => {
-    try {
-      await secretsManager.deleteCredentials(req.params.key);
-      res.json({ success: true, message: "Credentials deleted" });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      if (message.includes("Invalid credential key format")) {
-        res.status(400).json({ error: "Invalid credential key format" });
-      } else {
-        res.status(500).json({ error: "Failed to delete credentials" });
-      }
-    }
-  });
-
-  return app;
-}
-
-// ---------------------------------------------------------------------------
-// Test server lifecycle
+// Test server lifecycle — the real router, mounted over the in-memory store
 // ---------------------------------------------------------------------------
 
 let server;
 let baseUrl;
-let store; // shared in-memory store, reset per-test where needed
+let store;
 
 before(async () => {
+  const express = require("express");
   store = new Map();
-  const secretsManager = new InMemorySecretsManager(store);
-  const app = buildApp({ secretsManager });
+  const app = express();
+  app.use(express.json({ limit: "10kb" }));
+  app.use(createCredentialsRouter(() => new InMemorySecretsManager(store)));
   server = createServer(app);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  baseUrl = `http://127.0.0.1:${port}`;
+  baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
 after(async () => {
   await new Promise((resolve, reject) =>
     server.close((err) => (err ? reject(err) : resolve()))
   );
+});
+
+beforeEach(() => {
+  store.clear();
 });
 
 // ---------------------------------------------------------------------------
@@ -182,52 +120,134 @@ describe("Credential CRUD routes", () => {
   const validKey = "bsc-credentials-testuser1";
   const jsonHeaders = { "Content-Type": "application/json" };
 
-  describe("PUT /credentials/:key", () => {
-    it("should store credentials and return 200 with a valid key and body", async () => {
-      store.clear();
+  // -------------------------------------------------------------------------
+  // PUT /credentials/:key is GONE, and the router must not answer it.
+  //
+  // The route had no production callers left after NEO-141 (Convex's
+  // saveCredentials stopped issuing it, and a Convex test asserts that), while
+  // its blast radius grew: updateCredentials replaces the whole payload and
+  // prunes to one version, so a PUT against a live key wiped the user's token
+  // and rotating refresh token — unrepairable now that no password is stored.
+  // -------------------------------------------------------------------------
+
+  describe("PUT /credentials/:key (removed)", () => {
+    it("is not routed, and writes nothing", async () => {
       const res = await fetch(`${baseUrl}/credentials/${validKey}`, {
         method: "PUT",
         headers: jsonHeaders,
-        body: JSON.stringify({ username: "seller@example.com", password: "hunter2" }),
+        body: JSON.stringify({
+          username: "seller@example.com",
+          password: "placeholder-not-a-real-password",
+        }),
       });
 
-      assert.equal(res.status, 200, "should return 200 OK");
-      const body = await res.json();
-      assert.equal(body.success, true);
-      assert.equal(body.message, "Credentials stored");
-      assert.ok(store.has(validKey), "should persist credentials in the store");
+      assert.equal(res.status, 404, "the router must no longer handle PUT");
+      assert.equal(
+        store.has(validKey),
+        false,
+        "a removed route must not reach the credential store",
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /credentials/:key/token — FIRST route test for this endpoint.
+  //
+  // The whole NEO-141 bug lived here: 404 meant both "no token cached yet"
+  // (normal) and "no such secret" (not normal), and the caller could only tell
+  // them apart by string-matching the body — which it did not do. The four
+  // cases below pin the contract Convex now depends on.
+  // -------------------------------------------------------------------------
+
+  describe("GET /credentials/:key/token", () => {
+    it("returns 204 with an empty body when the secret exists but has no cached token", async () => {
+      store.set(validKey, { username: "seller@example.com" });
+
+      const res = await fetch(`${baseUrl}/credentials/${validKey}/token`);
+
+      assert.equal(
+        res.status,
+        204,
+        "a token-less secret is a NORMAL state and must not look like absence",
+      );
+      const text = await res.text();
+      assert.equal(text, "", "204 must carry no body — a body invites string-matching again");
     });
 
-    it("should return 400 when username is missing", async () => {
-      const res = await fetch(`${baseUrl}/credentials/${validKey}`, {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ password: "hunter2" }),
-      });
+    it("returns 204 (not 500) for a secret that holds a token-less, PASSWORD-LESS payload", async () => {
+      // Collateral fix: getCredentials used to require a `password` field, so
+      // the now-normal `{username}` payload threw and surfaced as a 500.
+      store.set(validKey, { username: "seller@example.com", expiresAt: 123 });
 
-      assert.equal(res.status, 400);
-      const body = await res.json();
-      assert.match(body.error, /username/, "error should mention missing field");
+      const res = await fetch(`${baseUrl}/credentials/${validKey}/token`);
+
+      assert.equal(res.status, 204);
     });
 
-    it("should return 400 when password is missing", async () => {
-      const res = await fetch(`${baseUrl}/credentials/${validKey}`, {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ username: "seller@example.com" }),
-      });
+    it("returns 404 'Credentials not found' when the secret genuinely does not exist", async () => {
+      const res = await fetch(`${baseUrl}/credentials/${validKey}/token`);
 
-      assert.equal(res.status, 400);
+      assert.equal(res.status, 404);
       const body = await res.json();
-      assert.match(body.error, /password/, "error should mention missing field");
+      assert.equal(body.error, "Credentials not found");
     });
 
-    it("should return 400 when the credential key format is invalid", async () => {
-      const res = await fetch(`${baseUrl}/credentials/INVALID_KEY_FORMAT`, {
-        method: "PUT",
-        headers: jsonHeaders,
-        body: JSON.stringify({ username: "u", password: "p" }),
+    it("distinguishes 'no token' from 'no secret' BY STATUS CODE, not by body text", async () => {
+      // The single assertion this endpoint exists to satisfy. Convex reads the
+      // status code; if these two ever collapse back to the same code it will
+      // resume deleting live credentials.
+      const absent = await fetch(`${baseUrl}/credentials/${validKey}/token`);
+      store.set(validKey, { username: "seller@example.com" });
+      const tokenless = await fetch(`${baseUrl}/credentials/${validKey}/token`);
+
+      assert.notEqual(
+        absent.status,
+        tokenless.status,
+        "'secret missing' and 'no token cached' MUST NOT share a status code",
+      );
+      assert.equal(absent.status, 404);
+      assert.equal(tokenless.status, 204);
+    });
+
+    it("returns 200 with the token and expiry when one is cached", async () => {
+      store.set(validKey, {
+        username: "seller@example.com",
+        token: "placeholder-token-value",
+        expiresAt: 9999999999,
       });
+
+      const res = await fetch(`${baseUrl}/credentials/${validKey}/token`);
+
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.token, "placeholder-token-value");
+      assert.equal(body.expiresAt, 9999999999);
+      assert.equal(body.username, undefined, "must not echo the username here");
+      assert.equal(body.password, undefined, "must never echo a password");
+      assert.equal(body.refreshToken, undefined, "the refresh token must NEVER leave the service");
+    });
+
+    it("does not leak the refresh token even when one is stored", async () => {
+      store.set(validKey, {
+        username: "seller@example.com",
+        token: "placeholder-token-value",
+        expiresAt: 9999999999,
+        refreshToken: "placeholder-refresh-value",
+        refreshExpiresAt: 9999999999,
+      });
+
+      const res = await fetch(`${baseUrl}/credentials/${validKey}/token`);
+      const raw = await res.text();
+
+      assert.equal(res.status, 200);
+      assert.ok(
+        !raw.includes("placeholder-refresh-value"),
+        "the rotating refresh token is the keys to the kingdom; it must never be served",
+      );
+    });
+
+    it("returns 400 for an invalid key format", async () => {
+      const res = await fetch(`${baseUrl}/credentials/INVALID_FORMAT/token`);
 
       assert.equal(res.status, 400);
       const body = await res.json();
@@ -236,40 +256,45 @@ describe("Credential CRUD routes", () => {
   });
 
   describe("GET /credentials/:key/metadata", () => {
-    it("should return metadata for an existing credential", async () => {
-      store.clear();
+    it("returns metadata for an existing credential without exposing secrets", async () => {
       store.set(validKey, {
         username: "seller@example.com",
-        password: "hunter2",
-        token: "Bearer tok",
+        token: "placeholder-token-value",
         expiresAt: 9999999999,
+        refreshToken: "placeholder-refresh-value",
+        refreshExpiresAt: 8888888888,
       });
 
       const res = await fetch(`${baseUrl}/credentials/${validKey}/metadata`);
 
       assert.equal(res.status, 200);
-      const body = await res.json();
-      assert.equal(body.username, "seller@example.com", "should return the username");
-      assert.equal(body.hasToken, true, "should report hasToken=true when token exists");
-      assert.equal(body.expiresAt, 9999999999, "should return expiresAt");
+      const raw = await res.text();
+      const body = JSON.parse(raw);
+      assert.equal(body.username, "seller@example.com");
+      assert.equal(body.hasToken, true);
+      assert.equal(body.expiresAt, 9999999999);
+      assert.equal(body.hasRefreshToken, true, "booleans let the caller reason about renewability");
+      assert.equal(body.refreshExpiresAt, 8888888888);
       assert.equal(body.password, undefined, "must NOT expose the password");
       assert.equal(body.token, undefined, "must NOT expose the raw token");
+      assert.ok(
+        !raw.includes("placeholder-token-value") && !raw.includes("placeholder-refresh-value"),
+        "no credential VALUE may appear anywhere in the metadata response",
+      );
     });
 
-    it("should return hasToken=false when no token is stored", async () => {
-      store.clear();
-      store.set(validKey, { username: "seller@example.com", password: "hunter2" });
+    it("reports hasToken/hasRefreshToken false for a bare username-only secret", async () => {
+      store.set(validKey, { username: "seller@example.com" });
 
       const res = await fetch(`${baseUrl}/credentials/${validKey}/metadata`);
 
       assert.equal(res.status, 200);
       const body = await res.json();
       assert.equal(body.hasToken, false);
+      assert.equal(body.hasRefreshToken, false);
     });
 
-    it("should return 404 for a key that does not exist", async () => {
-      store.clear();
-
+    it("returns 404 for a key that does not exist", async () => {
       const res = await fetch(`${baseUrl}/credentials/${validKey}/metadata`);
 
       assert.equal(res.status, 404);
@@ -277,7 +302,7 @@ describe("Credential CRUD routes", () => {
       assert.equal(body.error, "Credentials not found");
     });
 
-    it("should return 400 for an invalid key format", async () => {
+    it("returns 400 for an invalid key format", async () => {
       const res = await fetch(`${baseUrl}/credentials/INVALID_FORMAT/metadata`);
 
       assert.equal(res.status, 400);
@@ -287,40 +312,71 @@ describe("Credential CRUD routes", () => {
   });
 
   describe("DELETE /credentials/:key", () => {
-    it("should delete credentials and return 200", async () => {
-      store.clear();
-      store.set(validKey, { username: "seller@example.com", password: "hunter2" });
+    it("deletes credentials and returns 200", async () => {
+      store.set(validKey, { username: "seller@example.com" });
 
-      const res = await fetch(`${baseUrl}/credentials/${validKey}`, {
-        method: "DELETE",
-      });
+      const res = await fetch(`${baseUrl}/credentials/${validKey}`, { method: "DELETE" });
 
       assert.equal(res.status, 200);
       const body = await res.json();
       assert.equal(body.success, true);
       assert.equal(body.message, "Credentials deleted");
-      assert.equal(store.has(validKey), false, "key should be removed from the store");
+      assert.equal(store.has(validKey), false);
     });
 
-    it("should return 200 even when deleting a non-existent key (idempotent)", async () => {
-      store.clear();
-
-      const res = await fetch(`${baseUrl}/credentials/${validKey}`, {
-        method: "DELETE",
-      });
-
-      // The in-memory store (like the real GCP one) treats missing-key deletes as success
+    it("returns 200 even when deleting a non-existent key (idempotent)", async () => {
+      const res = await fetch(`${baseUrl}/credentials/${validKey}`, { method: "DELETE" });
       assert.equal(res.status, 200);
     });
 
-    it("should return 400 for an invalid key format", async () => {
-      const res = await fetch(`${baseUrl}/credentials/INVALID_FORMAT`, {
-        method: "DELETE",
-      });
+    it("returns 400 for an invalid key format", async () => {
+      const res = await fetch(`${baseUrl}/credentials/INVALID_FORMAT`, { method: "DELETE" });
 
       assert.equal(res.status, 400);
       const body = await res.json();
       assert.equal(body.error, "Invalid credential key format");
+    });
+  });
+
+  describe("POST /credentials/check", () => {
+    it("reports existence per key without revealing anything about contents", async () => {
+      store.set("bsc-credentials-present", { username: "seller@example.com" });
+
+      const res = await fetch(`${baseUrl}/credentials/check`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ keys: ["bsc-credentials-present", "bsc-credentials-absent"] }),
+      });
+
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.results, {
+        "bsc-credentials-present": true,
+        "bsc-credentials-absent": false,
+      });
+    });
+
+    it("returns 400 when keys is not an array of strings", async () => {
+      const res = await fetch(`${baseUrl}/credentials/check`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ keys: ["ok", 7] }),
+      });
+
+      assert.equal(res.status, 400);
+    });
+
+    it("does not mistake the literal 'check' segment for a credential key", async () => {
+      // Guard on the routing itself: POST /credentials/check must not fall
+      // through to a :key handler.
+      const res = await fetch(`${baseUrl}/credentials/check`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ keys: [] }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.deepEqual(body.results, {});
     });
   });
 });
@@ -358,8 +414,10 @@ describe("Rate limiting — per credential key (isolation)", () => {
         validate: { xForwardedForHeader: false, trustProxy: false },
       }),
     );
-    // Mirrors the real PUT /credentials/:key surface (credential key in the URL).
-    app.put("/credentials/:key", (_req, res) => res.json({ ok: true }));
+    // Mirrors a real URL-keyed credential route (credential key in the path).
+    // DELETE, not PUT: PUT /credentials/:key no longer exists, and a stub for a
+    // deleted route would quietly rot.
+    app.delete("/credentials/:key", (_req, res) => res.json({ ok: true }));
     rlServer = createServer(app);
     await new Promise((resolve) => rlServer.listen(0, "127.0.0.1", resolve));
     rlBase = `http://127.0.0.1:${rlServer.address().port}`;
@@ -371,21 +429,20 @@ describe("Rate limiting — per credential key (isolation)", () => {
     );
   });
 
-  const putKey = (key) =>
+  const hitKey = (key) =>
     fetch(`${rlBase}/credentials/${key}`, {
-      method: "PUT",
+      method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "u", password: "p" }),
     });
 
   it("buckets by the URL path :key (limiter runs before route params exist)", () => {
     // The limiter is global middleware; req.params is empty pre-routing, so the
-    // key MUST come from req.path for the URL-keyed routes — including the seed
-    // write PUT /credentials/:key whose 429s started this.
+    // key MUST come from req.path for the URL-keyed routes — which is what the
+    // credential-seed 429s that started this were hitting.
     assert.equal(
       credentialRateLimitKey({ path: "/credentials/bsc-credentials-userA", body: {} }),
       "cred:bsc-credentials-userA",
-      "PUT/DELETE /credentials/:key — path :key should drive the bucket",
+      "DELETE /credentials/:key — path :key should drive the bucket",
     );
     assert.equal(
       credentialRateLimitKey({ path: "/credentials/bsc-credentials-userA/metadata", body: {} }),
@@ -435,16 +492,16 @@ describe("Rate limiting — per credential key (isolation)", () => {
 
     // Drain key A's entire budget — all MAX requests are under the limit.
     for (let i = 0; i < MAX; i++) {
-      const res = await putKey(keyA);
+      const res = await hitKey(keyA);
       assert.equal(res.status, 200, `key A request ${i + 1}/${MAX} should be allowed`);
     }
     // The next request for key A is over budget → 429.
-    const overA = await putKey(keyA);
+    const overA = await hitKey(keyA);
     assert.equal(overA.status, 429, "key A should be limited after exhausting its budget");
 
     // A DIFFERENT credential key still has its own full budget → NOT limited.
     // This is the whole point of the fix: one user can't 429 another.
-    const firstB = await putKey(keyB);
+    const firstB = await hitKey(keyB);
     assert.equal(
       firstB.status,
       200,

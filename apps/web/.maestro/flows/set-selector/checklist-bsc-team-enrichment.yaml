@@ -87,13 +87,17 @@ tags:
 
 # Drawer opened — confirm it's the RIGHT card before asserting the feature.
 # Header shows "Card #300"; the "Card name" input value is the player name.
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 - assertVisible:
     text: ".*Card #300.*"
-- assertVisible:
-    id: "Card name"
-    text: ".*Julio Rodriguez.*"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+      text: ".*Julio Rodriguez.*"
+    timeout: 15000
 
 # ── ASSERT THE ENRICHED TEAM (the NEO-90 feature) ───────────────────────────
 # "Teams" is at the top of the drawer body (position 2, directly under Card

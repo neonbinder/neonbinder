@@ -222,11 +222,95 @@ describe("loginFailureOutcome — status contract (NEO-98)", () => {
 
   it("emits ONLY 422 or 502 — 400 and 500 belong to the routes, not this helper", () => {
     const statuses = new Set(
-      [{ credentialRejected: true }, { credentialRejected: false }, {}].map(
-        (r) => loginFailureOutcome(r, "x").status,
-      ),
+      [
+        { credentialRejected: true },
+        { credentialRejected: false },
+        { reauthRequired: true },
+        {},
+      ].map((r) => loginFailureOutcome(r, "x").status),
     );
     assert.deepEqual([...statuses].sort(), [422, 502]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-141 — the `reauth_required` error_class
+// ---------------------------------------------------------------------------
+//
+// MONITORING CONTRACT. `error_class` is a label on the `browser_login_failures`
+// log-based metric defined in neonbinder_terraform, and the alert policies
+// filter on it. This new member must behave like the other CALLER-error tags
+// (excluded from paging), and it is also the value Convex keys off to decide
+// "tell this user to sign in again" — replacing the 404-on-the-token-endpoint
+// misread that was deleting live credentials.
+
+describe("reauth_required — NEO-141 error_class", () => {
+  it("classifies the shared adapter error string", () => {
+    assert.equal(classifyBrowserError("Re-authentication required"), "reauth_required");
+  });
+
+  it("is checked BEFORE the invalid_credentials rule that would swallow it", () => {
+    // "Re-authentication required" contains neither "credential" nor
+    // "password", so today the ordering is not load-bearing — but the rule
+    // that catches it must keep winning if either string ever moves. A silent
+    // reclassification to invalid_credentials would tell users their password
+    // was wrong when their session merely lapsed.
+    assert.notEqual(classifyBrowserError("Re-authentication required"), "invalid_credentials");
+    assert.notEqual(classifyBrowserError("Re-authentication required"), "other");
+  });
+
+  it("maps to 422 and never pages", () => {
+    const outcome = loginFailureOutcome({ reauthRequired: true }, "Re-authentication required");
+    assert.equal(outcome.status, 422, "an expired session is not an outage");
+    assert.equal(outcome.errorClass, "reauth_required");
+  });
+
+  it("takes precedence over credentialRejected when both are set", () => {
+    // "Your session expired, sign in again" and "your password was wrong" need
+    // opposite UX. If an adapter ever sets both, the more specific instruction
+    // must win rather than being decided by field order.
+    const outcome = loginFailureOutcome(
+      { reauthRequired: true, credentialRejected: true },
+      "Re-authentication required",
+    );
+    assert.equal(outcome.errorClass, "reauth_required");
+  });
+
+  it("does not fire on an ordinary failure", () => {
+    assert.notEqual(loginFailureOutcome({}, "Authentication failed").errorClass, "reauth_required");
+    assert.notEqual(
+      loginFailureOutcome({ credentialRejected: true }, "Authentication failed").errorClass,
+      "reauth_required",
+    );
+  });
+
+  it("stays inside the closed tag set", () => {
+    // classifyBrowserError never interpolates the raw error — it returns one of
+    // a fixed list. That matters because the value is returned to the caller in
+    // the HTTP error body, and BSC's raw B2C message can echo the submitted
+    // identifier.
+    const CLOSED_SET = new Set([
+      "bad_key_format",
+      "missing_key",
+      "invalid_credentials",
+      "reauth_required",
+      "timeout",
+      "challenge",
+      "oom",
+      "other",
+    ]);
+    for (const raw of [
+      "Re-authentication required",
+      "Invalid credential key format",
+      "Authentication failed",
+      "Request timed out",
+      "captcha required",
+      "Out of memory",
+      "Invalid credentials supplied",
+      "seller@example.com rejected",
+    ]) {
+      assert.ok(CLOSED_SET.has(classifyBrowserError(raw)), `"${raw}" produced an out-of-set tag`);
+    }
   });
 });
 

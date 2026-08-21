@@ -1,0 +1,10 @@
+orient:
+  rotation_degrees: 270
+classify:
+  side: front
+  player:
+    equals: Jed Lowrie
+  team:
+    equals: Oakland Athletics
+  card_number:
+    is_null: true

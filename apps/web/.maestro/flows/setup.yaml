@@ -86,9 +86,16 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - launchApp
+
+# 120s, not the old 45s (NEO-141). This one wait covers the entire redirect chain
+# in the url above — Clerk sign-in, /testing/reset, then /testing/seed-credentials
+# — and seeding now performs a REAL marketplace sign-in for each platform it has
+# to (re-)store, without forwarding until that finishes. BSC and SportLots can
+# both need one on the same visit. This is the setup track's cold-start budget
+# doing exactly what it exists for; do NOT copy this ceiling into a feature flow.
 - extendedWaitUntil:
     visible: "Set Selector"
-    timeout: 45000
+    timeout: 120000
 
 # ── GLOBAL RESET ────────────────────────────────────────────────────────────
 # DESTRUCTIVE — sanctioned global wipe; gated by ALLOW_RESET_SET_BUILDER_DATA,
@@ -117,9 +124,9 @@ tags:
 # seed-credentials (in the url above) stored real BSC + SL creds but does NOT
 # warm the Puppeteer sessions. Force a fresh login for each so the syncs below
 # hit live marketplace data instead of stalling on a cold login mid-drill.
-# Each util taps "Test Credentials" on /profile (a cold login is a real ~22s
+# Each util taps "Test Credentials" on /profile/credentials (a cold login is a real ~22s
 # round-trip — the sanctioned long wait lives inside these utils, not here).
-# They also navigate to /profile, which sets up the fresh re-mount below.
+# They also navigate to /profile/credentials, which sets up the fresh re-mount below.
 - runFlow:
     file: util/util-login-to-bsc.yaml
 - runFlow:
@@ -326,6 +333,40 @@ tags:
 - tapOn:
     text: ".*Fetch from Marketplaces.*|Refresh"
 
+# NEO-137 — the card-pairing step now runs BEFORE any card is generated.
+# Sync returns candidates (matched / BSC-only / SportLots-only) and nothing is
+# written until Confirm. "Keep all" on both columns preserves exactly what a
+# pre-NEO-137 sync produced, which is what keeps the strict card counts below
+# honest: this seed must provision the SAME baseline as before, so it keeps
+# every candidate rather than silently narrowing the checklist.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 60000
+
 # First fetch: all players/teams are new → EntityReviewWizard opens.
 - extendedWaitUntil:
     visible:
@@ -353,14 +394,36 @@ tags:
           timeout: 30000
       - tapOn:
           text: ".*Confirm & Save.*"
-      - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
-          timeout: 30000
+      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
+      # is a positive terminal signal proving the same thing and more, so this
+      # negative gate against a repainting node only ever added a failure mode.
 
+# Strict count — the Base checklist is immutable once produced, so 335 is a
+# fixed fact, not "marketplace drift". Do NOT loosen it to hide a bug.
+#
+# Measured 2026-08-11 with the NEO-137 SportLots pagination fix in place: 335
+# cards, 335 carrying a BSC ref, 300 carrying a SportLots ref. The count is
+# BSC-driven and did NOT move when SL went from 88 refs to 300 — every extra SL
+# card matched an existing BSC card rather than adding a new one. That is
+# precisely why this count alone CANNOT catch an SL-truncation regression, and
+# why checklist-renders-rich-fields also asserts the per-card "SL" badge.
+# NEO-163 — this is now the ONLY gate on the save completing, and it absorbs
+# the budget the removed notVisible wait used to hold (30s + 30s), plus room.
+#
+# After "Confirm & Save" the wizard shows "Saving..." while the bulk row patch
+# and the card write land, and the header counts "N still being looked up" down
+# from the background Wikidata queue. On a slow runner that outran the old 30s
+# and killed the flow while the app was working correctly — this was the single
+# largest source of red CI, failing on unrelated branches about half the time.
+#
+# 120s is deliberate headroom, not a number tuned to one observed failure: the
+# seed flow's own ceiling is 600s and a healthy run reaches here around 3min.
+# If this ever times out, the save is genuinely broken — do not raise it again
+# without checking how long the write actually took.
 - extendedWaitUntil:
     visible:
-      text: ".*Saved [0-9]+ cards.*"
-    timeout: 30000
+      text: ".*Saved 335 cards.*"
+    timeout: 120000
 # A "#NNN" card row confirms the fetch + save pipeline ran end-to-end.
 - assertVisible:
     text: ".*#[0-9].*"
@@ -411,24 +474,29 @@ tags:
       # ReconciliationModal STRUCTURE coverage — folded in from the retired
       # insert-variant-flow / cascade/sets-inserts (which couldn't survive a
       # pre-saved column). Verify the modal before saving the matched rows.
+      # NEO-137 — the dialog builds NB SETS now, not marketplace pairs. Its two
+      # sections are Ready (sets that will be written) and Pending (marketplace
+      # sets not yet assigned to one). The old "N matched, N BSC-only, N SL-only"
+      # summary and the "Unmatched" heading no longer exist, and "keep as
+      # platform-only" is gone entirely — a set with mappings on one side only
+      # is ordinary now, not a special case needing its own shelf.
+      # Assert only what is ABOVE THE FOLD. The dialog body is its own
+      # overflow-y-auto scroller, and with a real set the Ready list runs long
+      # enough to push Pending and its two columns off a 1024x629 viewport —
+      # asserting them here failed for layout reasons, not behaviour.
+      # The header subtitle carries both counts and never scrolls away, so it
+      # gives the same structural coverage for free. The Pending columns are
+      # asserted properly (filtered, with counts) in
+      # inserts-1996-score-one-nb-set-two-bsc-sources, which scrolls to them.
       - assertVisible:
-          text: ".*[0-9]+ matched.*"
+          text: ".*[0-9]+ ready.*"
       - assertVisible:
-          text: ".*BSC-only.*"
-      - assertVisible:
-          text: ".*SL-only.*"
+          text: ".*Ready \\([0-9]+\\).*"
       - scrollUntilVisible:
           element:
-            text: ".*Unmatched.*"
-      - assertVisible:
-          text: ".*BSC.*"
-      - assertVisible:
-          text: ".*SportLots.*"
-      - scrollUntilVisible:
-          element:
-            text: ".*Save [0-9]+ matched.*"
+            text: ".*Save [0-9]+ sets.*"
       - tapOn:
-          text: ".*Save [0-9]+ matched.*"
+          text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
           notVisible: "Reconcile Inserts"
           timeout: 30000
@@ -467,6 +535,37 @@ tags:
     timeout: 15000
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
+# NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
+# columns reproduces exactly what a pre-NEO-137 sync produced, which is what
+# keeps the strict card counts below honest: this seed must provision the SAME
+# baseline as before, not a silently narrowed one.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 90000
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -493,16 +592,18 @@ tags:
           timeout: 30000
       - tapOn:
           text: ".*Confirm & Save.*"
-      - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
-          timeout: 30000
+      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
+      # is a positive terminal signal proving the same thing and more, so this
+      # negative gate against a repainting node only ever added a failure mode.
 # Strict count — a card checklist is immutable once produced, so "Saved 20 cards"
 # is a fixed fact. If this number is ever wrong it's a real fetch/save regression,
 # not "marketplace drift" — do NOT loosen it to hide a bug.
 - extendedWaitUntil:
     visible:
       text: ".*Saved 20 cards.*"
-    timeout: 30000
+    # NEO-163: absorbs the removed notVisible gate's budget. See the note on the
+    # 335-card wait above. Smaller set, same failure shape if the runner is slow.
+    timeout: 120000
 
 # ════════════════════════════════════════════════════════════════════════════
 # RE-DRILL TO PARALLEL — NEO-62 Lever 1 (continued).
@@ -540,24 +641,29 @@ tags:
       # ReconciliationModal STRUCTURE coverage — folded in from the retired
       # cascade/sets-parallels (which couldn't survive a pre-saved column).
       # Verify the modal before saving the matched rows.
+      # NEO-137 — the dialog builds NB SETS now, not marketplace pairs. Its two
+      # sections are Ready (sets that will be written) and Pending (marketplace
+      # sets not yet assigned to one). The old "N matched, N BSC-only, N SL-only"
+      # summary and the "Unmatched" heading no longer exist, and "keep as
+      # platform-only" is gone entirely — a set with mappings on one side only
+      # is ordinary now, not a special case needing its own shelf.
+      # Assert only what is ABOVE THE FOLD. The dialog body is its own
+      # overflow-y-auto scroller, and with a real set the Ready list runs long
+      # enough to push Pending and its two columns off a 1024x629 viewport —
+      # asserting them here failed for layout reasons, not behaviour.
+      # The header subtitle carries both counts and never scrolls away, so it
+      # gives the same structural coverage for free. The Pending columns are
+      # asserted properly (filtered, with counts) in
+      # inserts-1996-score-one-nb-set-two-bsc-sources, which scrolls to them.
       - assertVisible:
-          text: ".*[0-9]+ matched.*"
+          text: ".*[0-9]+ ready.*"
       - assertVisible:
-          text: ".*BSC-only.*"
-      - assertVisible:
-          text: ".*SL-only.*"
+          text: ".*Ready \\([0-9]+\\).*"
       - scrollUntilVisible:
           element:
-            text: ".*BSC.*"
-      # R6 — scrollUntilVisible already asserts the ".*BSC.*" element is visible;
-      # the redundant assertVisible of the same target was removed.
-      - assertVisible:
-          text: ".*SportLots.*"
-      - scrollUntilVisible:
-          element:
-            text: ".*Save [0-9]+ matched.*"
+            text: ".*Save [0-9]+ sets.*"
       - tapOn:
-          text: ".*Save [0-9]+ matched.*"
+          text: ".*Save [0-9]+ sets.*"
       - extendedWaitUntil:
           notVisible: "Reconcile Parallels"
           timeout: 30000
@@ -595,6 +701,37 @@ tags:
     timeout: 15000
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
+# NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
+# columns reproduces exactly what a pre-NEO-137 sync produced, which is what
+# keeps the strict card counts below honest: this seed must provision the SAME
+# baseline as before, not a silently narrowed one.
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+    timeout: 90000
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*BSC only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all BSC-only cards"
+      - runFlow:
+          when:
+            visible:
+              text: ".*SportLots only \\([1-9][0-9]*\\).*"
+          commands:
+            - tapOn:
+                id: "Keep all SportLots-only cards"
+      - tapOn:
+          id: "Confirm card matches"
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 90000
 - extendedWaitUntil:
     visible:
       text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
@@ -621,12 +758,55 @@ tags:
           timeout: 30000
       - tapOn:
           text: ".*Confirm & Save.*"
-      - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
-          timeout: 30000
+      # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
+      # is a positive terminal signal proving the same thing and more, so this
+      # negative gate against a repainting node only ever added a failure mode.
 # Strict count — checklists are immutable once produced, so "Saved 300 cards" is
 # a fixed fact. A wrong number is a real fetch/save regression, not drift.
 - extendedWaitUntil:
     visible:
       text: ".*Saved 300 cards.*"
-    timeout: 30000
+    # NEO-163: absorbs the removed notVisible gate's budget. See the note on the
+    # 335-card wait above. This is the second-largest write in the seed.
+    timeout: 120000
+
+# ── SPORTLOTS PAGINATION GUARD (NEO-137) ────────────────────────────────────
+# Both marketplace badges must appear on this checklist's rows.
+#
+# This is THE regression guard for the SportLots multi-page fetch, and it lives
+# here rather than on Base for a measured reason. Numbers taken from dev on
+# 2026-08-11:
+#
+#   Base            335 cards, 335 BSC, 300 SL  <- SL covers #1-#300 only
+#   Gold Wave (here) 300 cards, 300 BSC, 300 SL  <- 100% coverage
+#
+# The CardChecklist virtuoso opens at the BOTTOM of the list and Maestro cannot
+# scroll it upward, so an "SL" assertion only works where the LAST cards carry
+# an SL ref. On Base they do not (BSC lists more cards than SL for that set),
+# and both a bare assertVisible and a scrollUntilVisible/UP were tried and
+# failed against a perfectly healthy fetch. Here coverage is total, so the
+# badge is present exactly where the virtuoso lands.
+#
+# And this set is >100 cards, which is what makes the guard meaningful:
+# fetchSportLotsChecklist used to POST listcards.tpl once and parse only that
+# response, truncating SportLots to a single page. A regression to that
+# behaviour strips SL refs from everything past the first page — including the
+# tail this assertion reads — and fails right here.
+#
+# THE BADGE IS A BARE "SL" — and that is unambiguous here, for a reason worth
+# keeping. Maestro matches a selector against the WHOLE text of a node, so "SL"
+# matches only a node whose text is exactly "SL". The badge used to compose the
+# source label into it ("SL: 309111") and this assertion read ".*SL: .*"; the
+# label moved to a tooltip, so the composed form no longer exists.
+#
+# Note the asymmetry with BSC: a bare "BSC" WOULD be ambiguous, because the
+# Multi-source panel above the list renders "BSC" as a column header and would
+# satisfy the assertion with no card row on screen at all. Its SportLots header
+# reads "SPORTLOTS", which full-matches nothing, so "SL" stays card-specific.
+# Per-card BSC coverage is asserted separately in checklist-renders-rich-fields.
+- scrollUntilVisible:
+    element:
+      text: ".*#[0-9].*"
+    centerElement: true
+    timeout: 15000
+- assertVisible: "SL"

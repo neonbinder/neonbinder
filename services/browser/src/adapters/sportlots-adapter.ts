@@ -1,5 +1,11 @@
-import { BaseAdapter, AdapterResponse, LoginOptions } from "./base-adapter";
-import { SecretsManagerService } from "../services/secrets-manager";
+import {
+  BaseAdapter,
+  AdapterResponse,
+  LoginOptions,
+  REAUTH_REQUIRED_ERROR,
+  isCanaryKey,
+} from "./base-adapter";
+import { Credentials, SecretsManagerService } from "../services/secrets-manager";
 import { buildLoginDiagnostic } from "../services/login-diagnostic";
 
 // SportLots login POST endpoint — recorded as diagnostic.url on failures.
@@ -65,6 +71,17 @@ export class SportlotsAdapter extends BaseAdapter {
   async login(key: string, opts?: LoginOptions): Promise<AdapterResponse> {
     const secretsManager = new SecretsManagerService();
     const canary = opts?.canary === true;
+    const transient = opts?.transientCredentials;
+
+    // NEO-141: credentials supplied in the request body mean "sign in fresh
+    // with these" — the bootstrap and explicit-re-auth path. Skip the cache
+    // and the stored secret entirely (the secret may not exist yet), and run
+    // the normal retry loop. The password is used here and discarded; the
+    // write-back in attemptLogin persists only {username, token, expiresAt}.
+    if (transient) {
+      console.log(`[SportLots Adapter] request supplied credentials; fresh sign-in`);
+      return this.retryLogin(key, canary, transient);
+    }
 
     // Cache hit path: try the stored cookie before hitting the login form.
     //
@@ -73,8 +90,13 @@ export class SportlotsAdapter extends BaseAdapter {
     // form roughly once a month and spend every other run validating a stale
     // cookie — precisely blind to the multi-minute SL login hang that
     // prompted this ticket.
+    // Left undefined when the secret could not be READ at all — see the guard
+    // below, which depends on telling "read it, no password" apart from
+    // "couldn't read it".
+    let stored: Credentials | undefined;
     try {
       const credentials = await secretsManager.getCredentials(key);
+      stored = credentials;
       if (
         !canary &&
         credentials.token &&
@@ -93,18 +115,18 @@ export class SportlotsAdapter extends BaseAdapter {
             expiresAt: credentials.expiresAt,
           };
         }
-        // Stale or revoked cookie. Clear before falling through so the next
-        // call doesn't waste another validation round trip on the same dead
-        // token. Username/password are preserved.
+        // Stale or revoked cookie. Fall through to the fresh-login loop.
+        //
+        // NEO-115: we deliberately do NOT write a token-cleared version here.
+        // That write burned a whole Secret Manager version (billed forever)
+        // purely to blank a field that attemptLogin's write-back overwrites
+        // moments later. The dead cookie just stays in the secret until the
+        // fresh login replaces it; it can never cause a false success,
+        // because the cache-hit branch above only returns success when
+        // validateCachedCookie actually authenticates it.
         console.log(
-          `[SportLots Adapter] cached token invalid, clearing and re-authenticating...`,
+          `[SportLots Adapter] cached token invalid, re-authenticating...`,
         );
-        await secretsManager.updateCredentials(key, {
-          username: credentials.username,
-          password: credentials.password,
-          token: undefined,
-          expiresAt: undefined,
-        });
       }
     } catch (error) {
       // Cache lookup failure should never block a fresh login. Log and fall
@@ -117,6 +139,41 @@ export class SportlotsAdapter extends BaseAdapter {
       );
     }
 
+    // NEO-141: we read the secret, the cached cookie is gone or dead, and
+    // there is no password — neither in the request body nor in the secret,
+    // because user secrets no longer store one. There is nothing left to try.
+    //
+    // This is a NORMAL end state (SL sessions do eventually lapse), not a
+    // fault, so it must be reported as its own thing: reauth_required → 422,
+    // never pages, and tells Convex to prompt a sign-in.
+    //
+    // Note the guard on `stored`: if the secret could not be READ at all we
+    // fall through to the retry loop exactly as before, so a transient Secret
+    // Manager blip keeps its existing behaviour instead of being reported to
+    // the user as an expired session.
+    if (stored && !stored.password) {
+      console.log(
+        `[SportLots Adapter] no valid cached session and no password available — re-auth required`,
+      );
+      return { success: false, error: REAUTH_REQUIRED_ERROR, reauthRequired: true };
+    }
+
+    return this.retryLogin(key, canary, undefined);
+  }
+
+  /**
+   * The retry loop around attemptLogin.
+   *
+   * @param credentials when supplied, these transient request-body credentials
+   *   drive the sign-in and attemptLogin never reads the stored secret. When
+   *   omitted, each attempt reads the secret itself — the canary path, and the
+   *   legacy path for user secrets that still carry a password.
+   */
+  private async retryLogin(
+    key: string,
+    canary: boolean,
+    credentials: { username: string; password: string } | undefined,
+  ): Promise<AdapterResponse> {
     // NEO-43: reduced retry budget for the canary — see CANARY_MAX_ATTEMPTS.
     // Retrying hard would hide an intermittently-failing marketplace behind a
     // green canary; a monitoring probe must surface that, not paper over it.
@@ -131,7 +188,7 @@ export class SportlotsAdapter extends BaseAdapter {
           `[SportLots Adapter] retry attempt ${attempt}/${maxAttempts} — previous error: ${last.error}`,
         );
       }
-      last = await this.attemptLogin(key, attempt, canary);
+      last = await this.attemptLogin(key, attempt, canary, credentials);
       if (last.success) return last;
       if (!last.retryable || attempt === maxAttempts) return last;
       await sleepWithJitter(BACKOFFS_MS[attempt - 1]);
@@ -197,14 +254,37 @@ export class SportlotsAdapter extends BaseAdapter {
    * outer loop to retry (transient upstream issues, empty body); leaves it
    * undefined on permanent errors so the caller bails immediately.
    */
-  private async attemptLogin(key: string, attempt: number, canary = false): Promise<AdapterResponse> {
+  private async attemptLogin(
+    key: string,
+    attempt: number,
+    canary = false,
+    supplied?: { username: string; password: string },
+  ): Promise<AdapterResponse> {
     const t0 = Date.now();
     const log = (msg: string) =>
       console.log(`[SportLots Adapter] ${msg} (t+${Date.now() - t0}ms, attempt ${attempt}/${MAX_ATTEMPTS})`);
     try {
       log("login start");
       const secretsManager = new SecretsManagerService();
-      const credentials = await secretsManager.getCredentials(key);
+      // Transient request-body credentials win outright and short-circuit the
+      // secret read: on the bootstrap path the secret may not exist yet.
+      const credentials = supplied ?? (await secretsManager.getCredentials(key));
+      // NEO-141: a STORED secret with a username and no password is not a
+      // malformed credential — it is the normal steady state of every user
+      // secret whose SL session has lapsed, and it means exactly one thing:
+      // the user has to sign in again.
+      //
+      // login() normally catches this before we get here, but its guard is
+      // skipped when the first getCredentials threw transiently (`stored`
+      // stays undefined). Without this branch that path lands on the generic
+      // "Invalid credentials format" below → 422 invalid_credentials → the user
+      // is told to check credentials they were never asked for, and
+      // `needsReauth` is never set, so the amber "sign in again" card — the
+      // entire UX point of NEO-141 — never renders.
+      if (!supplied && credentials.username && !credentials.password) {
+        log("stored secret has a username but no password — re-auth required");
+        return { success: false, error: REAUTH_REQUIRED_ERROR, reauthRequired: true };
+      }
       if (!credentials.username || !credentials.password) {
         log("credentials missing username/password");
         return {
@@ -273,18 +353,32 @@ export class SportlotsAdapter extends BaseAdapter {
       log(`parsed ${cookies.length} cookie(s) from body`);
 
       if (cookies.length === 0) {
-        // Most often a blank/slow body from SL; retry once. If SL genuinely
-        // changed their response format we'll see it in the preview over
-        // multiple retries. This is also the "Not a valid Email Address"
-        // case the diagnostics work targets — build a sanitized diagnostic
-        // from the response body (redacted of the typed email/password).
-        const preview = responseBody.slice(0, 200).replace(/\s+/g, " ");
-        log(`no cookies parsed; body preview: ${preview}`);
+        // Most often a blank/slow body from SL; retry once. This is also the
+        // "Not a valid Email Address" case the diagnostics work targets —
+        // build a sanitized diagnostic from the response body (redacted of the
+        // typed email/password).
+        //
+        // SECURITY (NEO-141): this used to log the first 200 raw bytes of the
+        // body. It must not. SportLots sets its session cookies via inline
+        // `document.cookie="…"` IN THE RESPONSE BODY — that is the very thing
+        // the regex above parses — so a raw preview can put a live SL session
+        // cookie into Cloud Logging, where it is readable for ~30 days by
+        // anyone with logging.viewer and is an account takeover for that
+        // seller with no revocation path we control. Ordinary login failures
+        // reach this branch, so no attacker action is required.
+        //
+        // Only BOOLEANS derived from the body are logged. The redacted snippet
+        // still travels to PostHog on the response, which is the intended
+        // channel for page-derived text (see the diagnostic handling in
+        // src/index.ts, which logs challenge_detected and nothing else).
         const diagnostic = buildLoginDiagnostic(
           { url: loginUrl, rawText: responseBody },
           { email: credentials.username, password: credentials.password },
         );
-        log(`no-cookies diagnostic: challengeDetected=${diagnostic.challengeDetected}`);
+        log(
+          `no-cookies diagnostic: challengeDetected=${diagnostic.challengeDetected} ` +
+            `credentialRejectionDetected=${diagnostic.credentialRejectionDetected}`,
+        );
         // NEO-98/NEO-100: this branch is two different events wearing one
         // error string, and it matters because it IS the real seller-typo path
         // for SportLots — SL answers a refused login with HTTP 200, never a
@@ -329,11 +423,26 @@ export class SportlotsAdapter extends BaseAdapter {
       );
 
       if (validateBody.includes("login.tpl") || validateBody.includes("signin.tpl")) {
-        const preview = validateBody.slice(0, 200).replace(/\s+/g, " ");
-        log(`validation body contained login/signin reference; preview: ${preview}`);
+        // SECURITY (NEO-141): NO raw preview of this body, ever. The comment
+        // immediately below states the property that makes one unsafe — SL's
+        // response to a cookie it has just rejected can echo the session id
+        // straight back — so a `console.log` of the first 200 bytes would put
+        // a live session cookie into Cloud Logging while the sanitized copy
+        // that leaves over HTTPS is redacted. Booleans only here; the redacted
+        // snippet reaches PostHog on the response instead.
+        //
+        // NEO-141: the freshly-minted cookie string is passed for exact-value
+        // redaction. SL's response to a cookie it has just rejected can echo
+        // the session id straight back, and an SL cookie has no structural
+        // tell that redactSecrets' generic token patterns are guaranteed to
+        // catch — this diagnostic leaves the service in the HTTP response.
         const diagnostic = buildLoginDiagnostic(
           { url: loginUrl, rawText: validateBody },
-          { email: credentials.username, password: credentials.password },
+          {
+            email: credentials.username,
+            password: credentials.password,
+            token: cookieString,
+          },
         );
         log(`validation-failed diagnostic: challengeDetected=${diagnostic.challengeDetected}`);
         // NEO-98: SL handed us cookies and then bounced them straight back to
@@ -355,13 +464,24 @@ export class SportlotsAdapter extends BaseAdapter {
       // permanently-enabled Secret Manager version, and skipping it keeps the
       // canary key permanently cache-free so each run is guaranteed to
       // exercise the real signin form. See LoginOptions in ../observability.
+      //
+      // The guard is on the KEY as well as the flag, and the KEY half is the
+      // load-bearing one — see isCanaryKey. A canary-keyed request that simply
+      // omitted `canary: true` would otherwise write back a password-less
+      // payload, and keep-1 pruning would destroy the canary's password for
+      // good. Flag-only protection made that a caller's responsibility;
+      // key-based protection makes it structurally true.
       const expiresAt = Date.now() + CACHED_TOKEN_TTL_MS;
-      if (canary) {
-        log("login success; canary run — skipping token write-back");
+      if (canary || isCanaryKey(key)) {
+        log("login success; canary key/run — skipping token write-back");
       } else {
+        // NEO-141: `password` is deliberately NOT in this list. It used to be,
+        // which meant the seller's SportLots password was re-persisted on
+        // every single successful login and could never leave the secret. The
+        // session cookie in `token` is now the whole of the durable session
+        // state; the password was only ever needed to mint it.
         await secretsManager.updateCredentials(key, {
           username: credentials.username,
-          password: credentials.password,
           token: cookieString,
           expiresAt,
         });

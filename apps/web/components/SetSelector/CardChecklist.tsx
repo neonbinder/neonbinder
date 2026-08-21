@@ -9,6 +9,7 @@ import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
+import CardPairingModal, { type PairingCard } from "./CardPairingModal";
 import ChecklistSourceFilter, {
   Chip,
   type SourceChips,
@@ -80,7 +81,13 @@ type FetchPreview = {
     printRun?: number;
     autographType?: string;
     cardVariation?: string;
-    platformData: { bsc?: string; sportlots?: string };
+    // NEO-137: WIRE shape from fetchCardChecklist — ref plus the marketplace
+    // SET it came from. commitCardChecklist resolves setId to a slot on this
+    // card's parent row.
+    platformData: {
+      bsc?: { ref: string; setId?: string };
+      sportlots?: { ref: string; setId?: string };
+    };
     unmatched?: "bsc" | "sl";
   }>;
   unknownPlayers: string[];
@@ -94,6 +101,13 @@ export default function CardChecklist({
 }: CardChecklistProps) {
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
+  });
+  // Names the set in the pairing dialog's header. That dialog is modal and can
+  // be hundreds of rows long — without this it says only "Match Cards" and an
+  // operator who steps away has no way to tell which set they came back to.
+  // Convex dedupes same-arg queries, so this costs no extra round trip.
+  const variantRow = useQuery(api.selectorOptions.getSelectorOptionById, {
+    id: variantId,
   });
   // NEO-26: walk the ancestor chain once at this layer so every
   // CardChecklistItem below can hand the resolved sport to TeamPicker
@@ -111,6 +125,9 @@ export default function CardChecklist({
   const ancestorSportId = ancestorChain?.find((c) => c.level === "sport")?._id;
   const fetchChecklist = useAction(api.selectorOptions.fetchCardChecklist);
   const commitChecklist = useMutation(api.selectorOptions.commitCardChecklist);
+  const resolveEntities = useAction(
+    api.selectorOptions.resolveChecklistEntities,
+  );
   const addCustomCard = useMutation(api.selectorOptions.addCustomCard);
 
   const [syncing, setSyncing] = useState(false);
@@ -136,6 +153,14 @@ export default function CardChecklist({
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
   const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(null);
+  // NEO-137: the fetched candidate buckets, held between fetch and the
+  // operator's pairing confirmation. Nothing is written while this is set.
+  const [pendingPairing, setPendingPairing] = useState<{
+    sportId: Id<"selectorOptions">;
+    autoMatched: Array<{ card: PairingCard; confidence: number }>;
+    unmatchedBsc: PairingCard[];
+    unmatchedSl: PairingCard[];
+  } | null>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -157,6 +182,7 @@ export default function CardChecklist({
     setSourceFilter({ bsc: null, sportlots: null });
     setSelectedCardId(null);
     setHideCrossListed(false);
+    setPendingPairing(null);
   }, [variantId]);
 
   // Virtuoso scroll handle + a one-shot flag so when the user adds a card
@@ -170,12 +196,18 @@ export default function CardChecklist({
   const prevCardCountRef = useRef(0);
 
   /**
-   * Two-phase pipeline:
-   *   1. fetchChecklist → preview (no DB writes; player/team strings, not IDs)
-   *   2. If unknowns: open dialog → user confirms subset → commit
-   *      Otherwise: commit immediately with empty confirmedNew*.
-   * Either way, commitCardChecklist is the only path that writes
-   * cardChecklist rows + new player/team entities.
+   * Three-phase pipeline (NEO-137 moved pairing to the front):
+   *   1. fetchChecklist → three buckets of CANDIDATES. No NB card exists yet.
+   *   2. CardPairingModal → operator confirms pairs and keeps any deliberate
+   *      single-marketplace card. Everything else is discarded, which is what
+   *      keeps a shared SportLots set's sibling-owned cards from being
+   *      invented under this row.
+   *   3. resolveChecklistEntities on the CONFIRMED set → if unknowns, the
+   *      review wizard runs → commit.
+   *
+   * Entity/Wikidata work deliberately happens AFTER pairing: creating players
+   * and teams for candidates the operator is about to discard would enrich
+   * data for cards that never exist.
    */
   const handleSync = async () => {
     setSyncing(true);
@@ -186,27 +218,77 @@ export default function CardChecklist({
         setSyncMessage(result.message);
         return;
       }
-      const preview: FetchPreview = {
-        sportId: result.sportId,
-        batchId: result.batchId,
-        cards: result.cards,
-        unknownPlayers: result.unknownPlayers,
-        unknownTeams: result.unknownTeams,
-      };
-      if (preview.unknownPlayers.length === 0 && preview.unknownTeams.length === 0) {
-        await runCommit(preview);
-        setSyncMessage(`Saved ${result.cards.length} cards.`);
-      } else {
-        // Stash preview; dialog handles the rest.
-        setPendingPreview(preview);
-        setSyncMessage(result.message);
+      const nothingToPair =
+        result.autoMatched.length === 0 &&
+        result.unmatchedBsc.length === 0 &&
+        result.unmatchedSl.length === 0;
+      if (nothingToPair) {
+        // A custom subtree has no marketplace cards at all, so there is
+        // nothing to pair. Showing an empty pairing dialog would be a step
+        // the operator can only click through — go straight to entity
+        // resolution, which is where a custom card's own pendingPlayerNames
+        // surface.
+        await handlePairingConfirm({ cards: [] }, result.sportId);
+        return;
       }
+      setPendingPairing({
+        sportId: result.sportId,
+        autoMatched: result.autoMatched,
+        unmatchedBsc: result.unmatchedBsc,
+        unmatchedSl: result.unmatchedSl,
+      });
+      setSyncMessage(result.message);
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     } finally {
       setSyncing(false);
+    }
+  };
+
+  /**
+   * Operator confirmed the pairing. Only now do the confirmed cards become
+   * candidates for entity resolution and commit.
+   */
+  const handlePairingConfirm = async (
+    result: { cards: PairingCard[] },
+    // Passed explicitly on the nothing-to-pair path, where the modal never
+    // opened and `pendingPairing` was never set.
+    sportIdOverride?: Id<"selectorOptions">,
+  ) => {
+    const sportId = sportIdOverride ?? pendingPairing?.sportId;
+    if (!sportId) return;
+    setPendingPairing(null);
+    setCommitting(true);
+    try {
+      const { unknownPlayers, unknownTeams, batchId } = await resolveEntities({
+        selectorOptionId: variantId,
+        sportId,
+        cards: result.cards,
+      });
+      const preview: FetchPreview = {
+        sportId,
+        batchId,
+        cards: result.cards,
+        unknownPlayers,
+        unknownTeams,
+      };
+      if (unknownPlayers.length === 0 && unknownTeams.length === 0) {
+        await runCommit(preview);
+      } else {
+        // Stash preview; the review wizard handles the rest.
+        setPendingPreview(preview);
+        setSyncMessage(
+          `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+        );
+      }
+    } catch (error) {
+      setSyncMessage(
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setCommitting(false);
     }
   };
 
@@ -318,12 +400,15 @@ export default function CardChecklist({
     if (!cards) return [];
     return [...cards]
       .filter((c) => {
-        if (sourceFilter.bsc && c.sourcePlatformIds?.bsc !== sourceFilter.bsc) {
+        // NEO-137: the filter compares SLOT keys — `platformData.<side>.src`
+        // is the slot on this card's parent row, and the chips are keyed the
+        // same way.
+        if (sourceFilter.bsc && c.platformData?.bsc?.src !== sourceFilter.bsc) {
           return false;
         }
         if (
           sourceFilter.sportlots &&
-          c.sourcePlatformIds?.sportlots !== sourceFilter.sportlots
+          c.platformData?.sportlots?.src !== sourceFilter.sportlots
         ) {
           return false;
         }
@@ -598,6 +683,23 @@ export default function CardChecklist({
         onClose={() => setShowCrossListingModal(false)}
         targetVariantId={variantId}
       />
+
+      {pendingPairing && (
+        <CardPairingModal
+          isOpen
+          onClose={() => {
+            setPendingPairing(null);
+            setSyncMessage("Sync cancelled — no cards saved.");
+          }}
+          onConfirm={handlePairingConfirm}
+          setLabel={variantRow?.value}
+          initialData={{
+            autoMatched: pendingPairing.autoMatched,
+            unmatchedBsc: pendingPairing.unmatchedBsc,
+            unmatchedSl: pendingPairing.unmatchedSl,
+          }}
+        />
+      )}
 
       {pendingPreview?.batchId && (
         <EntityReviewWizard

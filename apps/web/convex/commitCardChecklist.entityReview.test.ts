@@ -104,7 +104,6 @@ function makeCard(overrides: Partial<{
     autographType: undefined,
     cardVariation: undefined,
     platformData: {},
-    sourcePlatformIds: undefined,
     unmatched: undefined,
   };
 }

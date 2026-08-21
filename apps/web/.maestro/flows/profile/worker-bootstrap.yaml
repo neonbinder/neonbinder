@@ -1,4 +1,4 @@
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/profile/credentials&worker=${WORKER_INDEX || "0"}
 name: "Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds"
 tags:
   - util
@@ -21,17 +21,34 @@ tags:
 # presence check on the Convex deployment (unset in prod → fails closed).
 
 - launchApp
+
+# 90s, not the old 45s (NEO-141). This one wait covers the WHOLE redirect chain
+# in the url above — Clerk sign-in, /testing/reset, then /testing/seed-credentials
+# — and the seed page awaits its action before it forwards here.
+#
+# What changed: seeding used to be an in-memory write, so the re-store path was
+# nearly free. `saveCredentials` is now connect-and-store, so whenever the worker's
+# stored session can no longer be renewed without a password (a BSC refresh token
+# lives 24h), the seed performs a REAL marketplace sign-in — 30-65s per platform,
+# and it can hit both BSC and SportLots on the same visit. That is a live
+# marketplace round-trip, the one sanctioned reason to wait past the 7s budget.
+#
+# It is one-time per worker: the next flow's seed sees a renewable session and
+# skips the login entirely. Raising this ceiling costs nothing on the common
+# path — extendedWaitUntil returns as soon as the heading appears.
 - extendedWaitUntil:
     visible: "Profile Settings"
-    timeout: 45000
+    timeout: 90000
 
 # ============================================================
 # WARM MARKETPLACE TOKENS — BSC then SportLots (BEST-EFFORT)
 #
-# seed-credentials stored real creds in Secret Manager but does NOT
-# warm the Puppeteer sessions (eager auth was removed from
-# seedMyTestCredentials to keep the redirect snappy). Each util
-# navigates to /profile, taps "Test Credentials", and waits up to
+# seed-credentials made sure the worker has usable marketplace
+# credentials, but it does not necessarily leave a WARM session: on
+# the common path (a stored session that can still be renewed) it
+# skips the sign-in entirely to keep the redirect snappy. NEO-141:
+# when it can't skip, it does sign in for real — see the wait above.
+# Each util navigates to /profile, taps "Test Credentials", and waits up to
 # 30s for the "...authenticated successfully..." message — a cold
 # Puppeteer/SSO round-trip measures ~22s; 30s gives margin.
 #

@@ -76,15 +76,11 @@ async function failureFrom(response: Response, fallback: string): Promise<never>
  * Save (or replace) the seller's EasyPost API key.
  *
  * Stored at `easypost-credentials-<clerkUserId>` — one secret per seller, never
- * a shared one. The key goes in the `password` field of the existing
- * `{username, password}` credential shape, with the Clerk user id as
- * `username`.
- *
- * **An API key is not a password.** Reusing the field means no new
- * secret-handling code and no change to the browser service's storage routes,
- * which is worth more than the naming purity — but it is a compromise, and the
- * user id in `username` is there so the stored record is at least
- * self-describing about who it belongs to.
+ * a shared one — via `PUT /easypost/:key`, the easypost-scoped write route.
+ * NEO-141 removed the generic `PUT /credentials/:key` (marketplace passwords
+ * are transient now), but an EasyPost key IS the long-lived credential — there
+ * is no login that mints a token from it — so it keeps a storage path, guarded
+ * server-side to easypost keys only. See services/browser/src/routes/easypost.ts.
  */
 export const saveEasypostKey = action({
   args: { apiKey: v.string() },
@@ -101,10 +97,10 @@ export const saveEasypostKey = action({
       return { success: false, message: "That key is longer than any EasyPost key." };
     }
 
-    const response = await browserFetch(`/credentials/${credKey(EASYPOST_SITE, userId)}`, {
+    const response = await browserFetch(`/easypost/${credKey(EASYPOST_SITE, userId)}`, {
       method: "PUT",
       headers: { ...(await browserAuthHeaders()), "Content-Type": "application/json" },
-      body: JSON.stringify({ username: userId, password: apiKey }),
+      body: JSON.stringify({ apiKey }),
     });
 
     if (!response.ok) {

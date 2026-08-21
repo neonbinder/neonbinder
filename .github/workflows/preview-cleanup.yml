@@ -4,13 +4,49 @@ on:
   pull_request:
     types: [closed]
 
+# ⚠️ DO NOT close-and-reopen a PR to re-run CI. It fires this workflow.
+#
+# "Close/reopen to re-trigger the pipeline" is a common reflex and it is a trap
+# here: `types: [closed]` cannot distinguish "done with this PR" from "about to
+# reopen it". Closing tears the previews down; reopening does NOT rebuild them,
+# because the head SHA is unchanged and both Vercel and Convex reuse the
+# existing — now deleted — preview by name. Observed on PR #154:
+#
+#   attempt 1  wire-browser-url polled pr-154---….run.app → HTTP 404
+#              (this workflow had just removed the Cloud Run tag)
+#   attempt 2  the browser preview was back, but `convex env set --deployment
+#              earnest-wren-763` failed with "You don't have access to the
+#              selected project": the Vercel preview was not rebuilt on reopen,
+#              so its index.html still advertised a Convex preview deployment
+#              that no longer existed.
+#
+# Only a new commit recovers it — only a new SHA forces fresh previews.
+#
+# To re-run CI, in order of preference:
+#   * push a real commit (the E2E work-queue is keyed by E2E_RUN_ID, so a fresh
+#     run id is needed anyway once a queue has been drained);
+#   * `gh run rerun <id> --failed`, valid ONLY when the E2E job never ran, so
+#     there is no work-queue for that run id to collide with.
+#
 # When a PR closes (merged or not), tear down its per-PR previews:
 #
 #  1. cleanup            — browser preview on dev Cloud Run (browser.yml stands it
 #                          up). Removes the `pr-<N>` traffic tag and deletes the
 #                          `:pr-<N>` GCR image.
 #
-#  2. convex-preview-cleanup — deletes the Convex preview deployment that Vercel's
+#  2. preprocess-cleanup — same teardown for the preprocess preview that
+#                          preprocess.yml stands up. A SEPARATE job rather than
+#                          extra steps on `cleanup`, because preprocess
+#                          authenticates as its own WIF provider + deployer SA:
+#                          google-github-actions/auth rewrites ADC and
+#                          GOOGLE_APPLICATION_CREDENTIALS in place, so a second
+#                          auth inside `cleanup` would silently run every step
+#                          after it as the wrong identity — against the same dev
+#                          project, where some calls would partially succeed.
+#                          Separate jobs also mean a preprocess WIF problem can
+#                          never stop the browser tag from being removed.
+#
+#  3. convex-preview-cleanup — deletes the Convex preview deployment that Vercel's
 #                          build created via CONVEX_PREVIEW_DEPLOY_KEY. Without
 #                          this, previews accumulate to the team quota (40 hard cap)
 #                          and block future PR builds with DeploymentQuotaReached.
@@ -58,18 +94,86 @@ jobs:
             --project=neonbinder-dev \
             --remove-tags="$TAG"
 
-      - name: Delete the pr-<N> image from dev GCR (best-effort)
-        if: always()
+      # The `pr-<N>` IMAGE is deliberately NOT deleted here. A best-effort
+      # `gcloud container images delete ... || echo "ignoring"` step used to sit
+      # at this point; NEO-123 removed it because it could never succeed and was
+      # actively misleading.
+      #
+      # The deployer SAs hold roles/artifactregistry.writer + createOnPushWriter.
+      # Neither contains artifactregistry.versions.delete, so the call 403s on
+      # EVERY run — verified across PRs 129 and 131-135 — and the `|| echo`
+      # swallowed it into a green step. Cleanup that reports success while doing
+      # nothing is worse than no cleanup: it is why the accumulation went
+      # unnoticed long enough to matter.
+      #
+      # Granting the CI SA repoAdmin was considered and rejected in NEO-117:
+      # a server-side retention policy is least-privilege, whereas blanket
+      # registry delete from CI is a supply-chain risk for no benefit.
+      #
+      # Images are collected server-side by the Artifact Registry cleanup
+      # policies in neonbinder_ioc (google_artifact_registry_repository.gcr_io):
+      # `delete-stale-pr-images` removes `pr-*` tagged versions after 30 days
+      # across every package, on top of per-package keep/age policies.
+      # Collection lags by design — but it does not lie about having happened.
+
+  preprocess-cleanup:
+    if: |
+      github.base_ref == 'main'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      # `secrets` is not available in a job-level `if:`, so the
+      # not-yet-provisioned guard has to be a step-level check. Without it, this
+      # job goes red on every PR close until the preprocess WIF secrets exist.
+      - id: guard
+        name: Guard — preprocess WIF provisioned?
+        env:
+          WIF: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          SA: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WIF:-}" ] || [ -z "${SA:-}" ]; then
+            echo "::notice::preprocess WIF secrets not set — skipping preprocess teardown"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - if: steps.guard.outputs.ready == 'true'
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Remove pr-<N> tag from dev Cloud Run service
+        if: steps.guard.outputs.ready == 'true'
         env:
           PR: ${{ github.event.pull_request.number }}
         run: |
-          set -uo pipefail
-          IMAGE="gcr.io/neonbinder-dev/neonbinder-browser:pr-$PR"
-          echo "Deleting $IMAGE (best-effort; never fails the cleanup)"
-          # Best-effort: missing image or insufficient delete perms must not fail
-          # a PR close. The tag removal above is the load-bearing teardown.
-          gcloud container images delete "$IMAGE" --force-delete-tags --quiet || \
-            echo "image $IMAGE not deleted (absent or no delete permission) — ignoring"
+          set -euo pipefail
+          TAG="pr-$PR"
+          echo "Removing tag $TAG from neonbinder-preprocess (neonbinder-dev)"
+          # Idempotent, same as the browser teardown above — an absent tag still
+          # exits 0, so cleanup never fails a PR close.
+          gcloud run services update-traffic neonbinder-preprocess \
+            --region=us-central1 \
+            --project=neonbinder-dev \
+            --remove-tags="$TAG"
+
+      # No image delete here either — same reason as the browser job above, and
+      # it was verified failing on PR #135, this service's very first preview.
+      # Preprocess images are the larger ones (torch + ~375MB of baked SAM
+      # weights), which is why NEO-123 also added a `delete-tagged-preprocess`
+      # policy and dropped `keep-recent-preprocess` from 30 to 10 in
+      # neonbinder_ioc, so server-side collection actually reaches them.
 
   convex-preview-cleanup:
     # Delete the Convex preview deployment for this PR so it doesn't accumulate

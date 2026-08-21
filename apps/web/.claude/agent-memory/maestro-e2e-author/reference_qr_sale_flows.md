@@ -1,6 +1,6 @@
 ---
 name: qr-sale-flows
-description: Validated patterns for the /qr-code generator and /u/:username/sale running-total flows (NEO-53/54) — account-matching for getMyPublicProfile, off-fold QR content, reset-on-pay is not testable
+description: Validated patterns for the /print/qr generator and /u/:username/sale running-total flows (NEO-53/54) — account-matching for getMyPublicProfile, off-fold QR content, reset-on-pay is not testable
 metadata:
   type: reference
 ---
@@ -30,7 +30,9 @@ AND honors requires/provides, which masked the bug — green local, red cloud.)
 Fix: EACH flow creates the data it needs under its OWN ${TEST_USERNAME}, in-flow.
 - `generate-qr` + `running-total`: entry URL signs in (new-profile) → /testing/reset
   → /profile, then `runFlow: ../profile/util-fill-public-profile.yaml` fills+saves
-  the profile, then proceeds (generate-qr → /qr-code; running-total →
+  the profile, then proceeds (generate-qr → /print/qr — NEO-145 moved the
+  generator there from the old top-level /qr-code, which now redirects;
+  running-total →
   `launchApp: clearState` to sign out + clear localStorage → openLink the public
   sale page).
 - The shared fill is a `util`-tagged sub-flow (`profile/util-fill-public-profile.yaml`),

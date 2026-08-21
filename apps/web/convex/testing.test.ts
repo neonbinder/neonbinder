@@ -7,6 +7,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { __resetContractCache } from "./credentials";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -179,8 +180,14 @@ describe("resetMyTestState", () => {
 // `getSiteCredentials` / `saveCredentials` reach the browser service only
 // through `fetch`, so we point Convex at a loopback URL (skips OIDC via the
 // credentials.ts LOOPBACK_HOSTS check) and stub `fetch` to fake the browser
-// service's GET /metadata and PUT /credentials. The seed env values are read
+// service's GET /metadata and POST /login/<site>. The seed env values are read
 // from process.env (DEV_*); set them per-test.
+//
+// NEO-141: a re-store is no longer a cheap `PUT /credentials`. `saveCredentials`
+// is connect-and-store now — it POSTs the transient username/password to the
+// site's login route and the browser service persists only the resulting
+// session (never the password). The stub records those login calls where it
+// used to record PUTs.
 // ---------------------------------------------------------------------------
 
 const SL_USERNAME = "dev-sl@example.com";
@@ -201,13 +208,36 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /**
+ * NEO-143: every authenticated browser-service call pre-flights `GET /health`
+ * for the contract version. Serve it centrally so these tests keep asserting on
+ * the credential calls only.
+ */
+function stubFetch(handler: FetchStub) {
+  vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).endsWith("/health")) {
+      return jsonResponse({ status: "ok", environment: "test", contractVersion: 1 });
+    }
+    return handler(url, init);
+  }) as FetchStub);
+}
+
+/**
  * Build a fetch stub for the browser credential endpoints. `metadata` controls
  * what GET /credentials/<key>/metadata returns: a 404 (no secret) or an object
- * with the currently-stored username. Every PUT /credentials/<key> is recorded
- * in `puts` and answered 200.
+ * with the currently-stored username. Every POST /login/<site> — the store path
+ * since NEO-141 — is recorded in `puts` and answered as a successful login.
  */
 function makeCredentialFetch(opts: {
-  metadata: { username: string } | 404;
+  metadata:
+    | {
+        username: string;
+        /** Session state; the defaults describe a healthy long-lived session. */
+        hasToken?: boolean;
+        expiresAt?: number;
+        hasRefreshToken?: boolean;
+        refreshExpiresAt?: number;
+      }
+    | 404;
   puts: Array<{ url: string; method: string; body: unknown }>;
 }): FetchStub {
   return async (url, init) => {
@@ -215,28 +245,108 @@ function makeCredentialFetch(opts: {
     const method = init?.method ?? "GET";
     if (u.includes("/metadata")) {
       if (opts.metadata === 404) return jsonResponse({ error: "Credentials not found" }, 404);
+      const meta = opts.metadata;
       return jsonResponse({
-        username: opts.metadata.username,
-        hasToken: true,
-        expiresAt: 1_900_000_000_000,
+        username: meta.username,
+        hasToken: meta.hasToken ?? true,
+        expiresAt: meta.expiresAt ?? 1_900_000_000_000,
+        ...(meta.hasRefreshToken !== undefined && {
+          hasRefreshToken: meta.hasRefreshToken,
+        }),
+        ...(meta.refreshExpiresAt !== undefined && {
+          refreshExpiresAt: meta.refreshExpiresAt,
+        }),
       });
     }
-    if (method === "PUT") {
+    if (method === "POST" && u.includes("/login/")) {
       opts.puts.push({
         url: u,
         method,
         body: init?.body ? JSON.parse(String(init.body)) : null,
       });
-      return jsonResponse({ success: true });
+      return jsonResponse({ success: true, message: "ok" });
     }
     throw new Error(`unexpected fetch: ${method} ${u}`);
   };
 }
 
+describe("markSiteNeedsReauth", () => {
+  test("fails closed when TESTING_RESET_SECRET is unset (production)", async () => {
+    const t = convexTest(schema, modules);
+    delete process.env.TESTING_RESET_SECRET;
+    await expect(
+      t
+        .withIdentity({ subject: USER_A })
+        .mutation(api.testing.markSiteNeedsReauth, { site: "sportlots" }),
+    ).rejects.toThrow(/not enabled/i);
+  });
+
+  test("flags only the caller's own entry, and only the named site", async () => {
+    const t = convexTest(schema, modules);
+    process.env.TESTING_RESET_SECRET = "enabled";
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          { site: "sportlots", hasCredentials: true },
+          { site: "buysportscards", hasCredentials: true },
+        ],
+      });
+      // A second user who must be left untouched — the mutation takes no
+      // userId, but pin that it cannot reach across accounts.
+      await ctx.db.insert("userProfiles", {
+        userId: "user_other",
+        siteCredentials: [{ site: "sportlots", hasCredentials: true }],
+      });
+    });
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .mutation(api.testing.markSiteNeedsReauth, { site: "sportlots" });
+    expect(result).toEqual({ updated: true });
+
+    await t.run(async (ctx) => {
+      const mine = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_user", (q) => q.eq("userId", USER_A))
+        .first();
+      const sl = mine?.siteCredentials?.find((c) => c.site === "sportlots");
+      const bsc = mine?.siteCredentials?.find((c) => c.site === "buysportscards");
+      expect(sl?.needsReauth).toBe(true);
+      expect(typeof sl?.needsReauthSince).toBe("number");
+      // hasCredentials survives: the account is still connected, the session
+      // just died. The UI relies on this to render re-auth rather than "not
+      // connected".
+      expect(sl?.hasCredentials).toBe(true);
+      expect(bsc?.needsReauth).toBeUndefined();
+
+      const other = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_user", (q) => q.eq("userId", "user_other"))
+        .first();
+      expect(other?.siteCredentials?.[0]?.needsReauth).toBeUndefined();
+    });
+    delete process.env.TESTING_RESET_SECRET;
+  });
+
+  test("is a no-op when the caller has no entry for that site", async () => {
+    const t = convexTest(schema, modules);
+    process.env.TESTING_RESET_SECRET = "enabled";
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .mutation(api.testing.markSiteNeedsReauth, { site: "sportlots" });
+    expect(result).toEqual({ updated: false });
+    delete process.env.TESTING_RESET_SECRET;
+  });
+});
+
 describe("seedMyTestCredentials", () => {
   beforeEach(() => {
     // Loopback browser URL → getIdTokenClient short-circuits (no OIDC / no GCP creds).
     process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    // NEO-143: the contract probe is cached at module scope; reset it so tests
+    // cannot inherit a previous test's "healthy" result.
+    __resetContractCache();
     process.env.DEV_SPORTLOTS_USERNAME = SL_USERNAME;
     process.env.DEV_SPORTLOTS_PASSWORD = SL_PASSWORD;
     process.env.DEV_BSC_USERNAME = BSC_USERNAME;
@@ -301,8 +411,7 @@ describe("seedMyTestCredentials", () => {
   test("skips re-store (preserves token) when the stored username is already correct", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
     );
 
@@ -311,14 +420,111 @@ describe("seedMyTestCredentials", () => {
       .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
 
     expect(result.seeded).toEqual([{ site: "sportlots", stored: true }]);
-    expect(puts).toHaveLength(0); // no PUT → warmed token left intact
+    expect(puts).toHaveLength(0); // no login → warmed session left intact
+  });
+
+  test("clears a stale needsReauth flag on the skip path (seeding must repair)", async () => {
+    // Seeding is the suite's repair mechanism, so it has to actually repair.
+    // `reauthPatch(undefined)` returns `{}`, so without an explicit
+    // `needsReauth: false` the flag is STICKY here — a worker left flagged by
+    // an interrupted run would stay flagged through every later seed, and the
+    // re-auth card renders no "Test Credentials" button, so the util flows
+    // would keep failing on that runner with no way to self-heal.
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    await t.run(async (ctx) => {
+      await ctx.db.insert("userProfiles", {
+        userId: USER_A,
+        siteCredentials: [
+          {
+            site: "sportlots",
+            hasCredentials: true,
+            needsReauth: true,
+            needsReauthSince: Date.now() - 1000,
+          },
+        ],
+      });
+    });
+    stubFetch(
+      makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
+    );
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(puts).toHaveLength(0); // still the cheap skip path
+    await t.run(async (ctx) => {
+      const profile = await ctx.db
+        .query("userProfiles")
+        .withIndex("by_user", (q) => q.eq("userId", USER_A))
+        .first();
+      const entry = profile?.siteCredentials?.find((c) => c.site === "sportlots");
+      expect(entry?.hasCredentials).toBe(true);
+      expect(entry?.needsReauth ?? false).toBe(false);
+    });
+  });
+
+  test("re-authenticates when the username is correct but the session has EXPIRED", async () => {
+    // The idle-worker failure this guards (NEO-141). A BSC refresh token lives
+    // 24h; a worker idle longer keeps a perfectly correct username but a dead
+    // session. Matching on the username alone would skip the re-store, mint
+    // nothing, and leave the first fetch to come back `reauth_required` — at
+    // which point the panel renders the re-auth card, which deliberately does
+    // NOT offer "Test Credentials", so every shared util flow would HANG on
+    // its extendedWaitUntil for that label rather than fail fast.
+    //
+    // The seed is the only place that still holds a password, so it is the
+    // only place that can mint a replacement.
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(
+      makeCredentialFetch({
+        metadata: {
+          username: SL_USERNAME,
+          hasToken: true,
+          expiresAt: Date.now() - 60_000,
+          hasRefreshToken: true,
+          refreshExpiresAt: Date.now() - 60_000,
+        },
+        puts,
+      }),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toEqual([{ site: "sportlots", stored: true }]);
+    expect(puts).toHaveLength(1);
+    expect(puts[0].url).toContain("/login/sportlots");
+  });
+
+  test("re-authenticates when the browser service reports no renewable session", async () => {
+    // A revision predating NEO-141 omits `hasRefreshToken` entirely. Coercing
+    // that to false costs one redundant sign-in and never skips wrongly, which
+    // is the correct direction for an ambiguous signal.
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(
+      makeCredentialFetch({
+        metadata: { username: SL_USERNAME, hasToken: false },
+        puts,
+      }),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toEqual([{ site: "sportlots", stored: true }]);
+    expect(puts).toHaveLength(1);
   });
 
   test("re-stores from env when the stored username is stale (self-heal)", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: "old-stale@example.com" }, puts }),
     );
 
@@ -328,15 +534,21 @@ describe("seedMyTestCredentials", () => {
 
     expect(result.seeded).toEqual([{ site: "sportlots", stored: true }]);
     expect(puts).toHaveLength(1);
-    expect(puts[0].method).toBe("PUT");
-    expect(puts[0].url).toContain("/credentials/sportlots-credentials-");
-    expect(puts[0].body).toEqual({ username: SL_USERNAME, password: SL_PASSWORD });
+    expect(puts[0].method).toBe("POST");
+    expect(puts[0].url).toContain("/login/sportlots");
+    // The password rides along transiently for this one login and is never
+    // persisted (NEO-141) — the key identifies the secret to write the session to.
+    expect(puts[0].body).toEqual({
+      key: expect.stringContaining("sportlots-credentials-"),
+      username: SL_USERNAME,
+      password: SL_PASSWORD,
+    });
   });
 
   test("stores from env when no secret exists yet (metadata 404)", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal("fetch", makeCredentialFetch({ metadata: 404, puts }));
+    stubFetch(makeCredentialFetch({ metadata: 404, puts }));
 
     const result = await t
       .withIdentity({ subject: USER_A })
@@ -344,14 +556,17 @@ describe("seedMyTestCredentials", () => {
 
     expect(result.seeded).toEqual([{ site: "sportlots", stored: true }]);
     expect(puts).toHaveLength(1);
-    expect(puts[0].body).toEqual({ username: SL_USERNAME, password: SL_PASSWORD });
+    expect(puts[0].body).toEqual({
+      key: expect.stringContaining("sportlots-credentials-"),
+      username: SL_USERNAME,
+      password: SL_PASSWORD,
+    });
   });
 
   test("treats benign casing/whitespace drift as a match (no needless re-store)", async () => {
     const t = convexTest(schema, modules);
     const puts: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: `  ${SL_USERNAME.toUpperCase()} ` }, puts }),
     );
 
@@ -367,7 +582,7 @@ describe("seedMyTestCredentials", () => {
     delete process.env.DEV_SPORTLOTS_USERNAME;
     const t = convexTest(schema, modules);
     let fetchCalled = false;
-    vi.stubGlobal("fetch", (async () => {
+    stubFetch((async () => {
       fetchCalled = true;
       throw new Error("fetch must not be called when env creds are missing");
     }) as unknown as typeof fetch);
@@ -384,8 +599,7 @@ describe("seedMyTestCredentials", () => {
     // correct → skip
     const tOk = convexTest(schema, modules);
     const putsOk: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: BSC_USERNAME }, puts: putsOk }),
     );
     const okResult = await tOk
@@ -398,8 +612,7 @@ describe("seedMyTestCredentials", () => {
     vi.unstubAllGlobals();
     const tStale = convexTest(schema, modules);
     const putsStale: Array<{ url: string; method: string; body: unknown }> = [];
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       makeCredentialFetch({ metadata: { username: "stale-bsc@example.com" }, puts: putsStale }),
     );
     const staleResult = await tStale
@@ -407,6 +620,11 @@ describe("seedMyTestCredentials", () => {
       .action(api.testing.seedMyTestCredentials, { sites: ["buysportscards"] });
     expect(staleResult.seeded).toEqual([{ site: "buysportscards", stored: true }]);
     expect(putsStale).toHaveLength(1);
-    expect(putsStale[0].body).toEqual({ username: BSC_USERNAME, password: BSC_PASSWORD });
+    expect(putsStale[0].url).toContain("/login/bsc");
+    expect(putsStale[0].body).toEqual({
+      key: expect.stringContaining("buysportscards-credentials-"),
+      username: BSC_USERNAME,
+      password: BSC_PASSWORD,
+    });
   });
 });

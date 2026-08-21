@@ -87,9 +87,24 @@ const VARIANT_TYPE_ID = "variant-type-id-1" as unknown as Parameters<
   typeof BaseMappingForm
 >[0]["variantTypeId"];
 
+// NEO-137: the set row stores its BSC slugs as a SLOT MAP
+// (`{ b0: "...", b1: "..." }`), which is what getAncestorChain returns.
+//
+// This fixture used to build a bare `{ bsc: "slug" }` string — the
+// pre-NEO-137 shape — and the fallback test below passed because the
+// production code read it back with a matching `typeof === "string"`
+// narrowing. Both were stale together, so the test asserted a path that could
+// never work against real data. Building the real shape here means that
+// narrowing cannot come back unnoticed.
 function makeChain(
   overrides: Partial<{ setBsc: string | string[] }> = {},
 ) {
+  const slugs =
+    overrides.setBsc === undefined
+      ? []
+      : Array.isArray(overrides.setBsc)
+        ? overrides.setBsc
+        : [overrides.setBsc];
   return [
     { _id: "sport-id", level: "sport", value: "Baseball" },
     { _id: "year-id", level: "year", value: "2024" },
@@ -99,7 +114,9 @@ function makeChain(
       level: "setName",
       value: "2024 Topps Chrome",
       platformData:
-        overrides.setBsc !== undefined ? { bsc: overrides.setBsc } : {},
+        slugs.length > 0
+          ? { bsc: Object.fromEntries(slugs.map((s, i) => [`b${i}`, s])) }
+          : {},
     },
     { _id: "vt-id", level: "variantType", value: "Base" },
   ];

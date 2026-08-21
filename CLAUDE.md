@@ -6,26 +6,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 NeonBinder is a platform for trading card collectors to manage collections and sell across marketplaces (eBay, SportLots, BuySportsCards, MySlabs, MyCardPost).
 
-**This is the consolidated monorepo `neonbinder/neonbinder` (NEO-18).** One git repo, one CI pipeline (`.github/workflows/`), path-filtered lanes. Two deployable projects live side by side plus shared Claude config:
+**This is the consolidated monorepo `neonbinder/neonbinder` (NEO-18, NEO-123).** One git repo, one CI pipeline (`.github/workflows/`), path-filtered lanes. Three deployable projects live side by side plus shared Claude config:
 
 | Path | Purpose | Tech Stack | Deploy target |
 |------|---------|-----------|---------------|
 | `apps/web/` | Vite SPA + Convex backend | Vite 6, React 19, React Router 7, Convex, Clerk, TypeScript | Vercel (SPA) + Convex |
 | `services/browser/` | Puppeteer automation service for marketplace login/scraping | Node.js, Puppeteer, Express 5, TypeScript | GCP Cloud Run |
+| `services/preprocess/` | Image preprocessing (crop cascade + SAM, Vision OCR orient, Anthropic classify) | **Python 3.12**, FastAPI, PyTorch, pip | GCP Cloud Run |
 | `.claude/`, `CLAUDE.md` | Shared Claude Code config (agents, skills, memory) | — | — |
 | `.github/workflows/` | Unified CI/CD (see **CI/CD** below) | GitHub Actions | — |
 
-> A monorepo doesn't merge runtimes: `apps/web` still deploys to Vercel/Convex and `services/browser` still deploys to Cloud Run — they're just one repo now.
+> A monorepo doesn't merge runtimes: `apps/web` still deploys to Vercel/Convex, and `services/browser` and `services/preprocess` each deploy to their own Cloud Run service — they're just one repo now.
+>
+> **`services/preprocess/` is the only Python in the repo.** pip + pinned `requirements.txt` / `requirements-dev.txt` (no npm, no workspace), `ruff` + `pytest` rather than eslint + vitest, and all its commands run from `services/preprocess/` (its `pyproject.toml` sets `pythonpath = ["."]`). Nothing in `apps/web` or `services/browser` imports it yet — it is deployed and standalone.
 >
 > **Not in this repo:** GCP infrastructure is a separate Terraform repo, **`neonbinder/neonbinder_ioc`** (GitFlow: `develop`→dev apply, `main`→prod apply). The React Native mobile client (`NeonBinderApp`) is **paused** and not part of the monorepo today; it's expected to return after the web stabilizes (keep cross-platform concerns like Maestro in mind).
 
 ## Code Search & Navigation
 
-Application code lives under `apps/web/` and `services/browser/`. When searching:
+Application code lives under `apps/web/`, `services/browser/` and `services/preprocess/`. When searching:
 
-1. **Scope to the relevant project** — `apps/web/` (frontend + Convex) or `services/browser/` (Puppeteer service).
-2. **If unsure**, search both. Example: `Glob("**/*.ts", path="apps/web")` or `Grep("functionName", path="services/browser/src")`.
-3. The repo root holds only config (`.claude/`, `.github/`, `CLAUDE.md`, `CUTOVER.md`) — no application source.
+1. **Scope to the relevant project** — `apps/web/` (frontend + Convex), `services/browser/` (Puppeteer service), or `services/preprocess/` (Python image service).
+2. **If unsure**, search all three. Example: `Glob("**/*.ts", path="apps/web")` or `Grep("functionName", path="services/browser/src")`. Note `services/preprocess/` is `**/*.py` — a TypeScript-only glob silently misses it.
+3. The repo root holds only config (`.claude/`, `.github/`, `CLAUDE.md`) — no application source.
 
 ## Git & Branching
 
@@ -150,7 +153,11 @@ Each service uses a dedicated service account, managed by Terraform in the **`ne
 |---|---|---|---|
 | `neonbinder-browser-runtime` | `neonbinder-dev` (dev) / `neonbinder` (prod) | Browser service runtime (Cloud Run + local dev) | SA impersonation via ADC |
 | `neonbinder-browser-deployer` | `neonbinder-dev` (dev) / `neonbinder` (prod) | GitHub Actions CI/CD (WIF) | Workload Identity Federation |
+| `neonbinder-preprocess-runtime` | `neonbinder-dev` (dev) / `neonbinder` (prod) | Preprocess service runtime (Cloud Run) | SA impersonation via ADC |
+| `neonbinder-preprocess-deployer` | `neonbinder-dev` (dev) / `neonbinder` (prod) | GitHub Actions CI/CD for preprocess (WIF) | Workload Identity Federation |
 | `neonbinder-convex` | `neonbinder-dev` (dev) / `neonbinder` (prod) | Convex backend (GCS + OIDC to browser) | SA key in Convex env (`GOOGLE_APPLICATION_CREDENTIALS_B64`); Convex runs off-GCP, can't use WIF |
+
+> Browser and preprocess authenticate through **separate WIF providers** (`github` and `github-preprocess`) onto **separate deployer SAs**, so either deploy lane can be scoped or revoked without touching the other. Both providers trust this repo. The GitHub secrets differ per lane: `GCP_WIF_PROVIDER{,_DEV}` / `GCP_SERVICE_ACCOUNT_DEPLOYER{,_DEV}` for browser, `GCP_WIF_PROVIDER_PREPROCESS{,_DEV}` / `GCP_SA_PREPROCESS_DEPLOYER{,_DEV}` for preprocess.
 
 **Org policy:** SA key creation is disabled (`iam.disableServiceAccountKeyCreation`) except for the two `neonbinder-convex` SAs, which have an explicit exception because Convex Cloud requires a key to authenticate to GCS. Everywhere else, use impersonation. **All GCP changes go through `neonbinder_ioc` (Terraform)** — no console/CLI mutations.
 
@@ -176,6 +183,13 @@ Prerequisite: your user account needs `roles/iam.serviceAccountTokenCreator` on 
 # CLERK_SECRET_KEY             - Clerk secret (server-side / Convex only)
 # ENCRYPTION_KEY               - 32-char key for credential encryption
 # NEONBINDER_BROWSER_URL       - Browser service URL (Convex env; default: http://localhost:8080)
+# GCS_PLACEHOLDER_BUCKET       - Convex env only (set via `npx convex env set`, not .env.local).
+#                                 Name of the placeholder-uploads GCS bucket (NEO-148), e.g.
+#                                 neonbinder-placeholder-uploads-neonbinder-dev. Read by
+#                                 convex/adapters/placeholderUploads.ts. Unlike GCP_FEATURES_ENABLED-
+#                                 gated prizes code, this feature is NOT gated by that flag — it must
+#                                 work in dev. Value comes from the `placeholder_uploads_bucket_name`
+#                                 Terraform output in neonbinder_ioc.
 ```
 
 > Convex dev reads its own env from `.env.convex` when `npm run dev:backend` is used (see `apps/web/dev-backend.sh`).
@@ -214,12 +228,15 @@ Sensitive credentials are stored in **Google Cloud Secret Manager**, not `.env` 
 
 ## CI/CD
 
-All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-PR orchestrator; area CI is keyed on `apps/web/**` vs `services/browser/**`:
+All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-PR orchestrator; area CI is keyed on `apps/web/**` vs `services/browser/**` vs `services/preprocess/**`:
 
-- **`pr-pipeline.yml`** — the top-level per-PR orchestrator (runs on **every** PR, no path filter). `changes` (paths filter → `web` / `browser` outputs) → conditional **`web-lint`** + **`web-unit`** (apps/web eslint + vitest) and **`browser-test`** (services/browser build + unit) → `wire-browser-url` (when `services/browser` changed: point the Convex preview's `NEONBINDER_BROWSER_URL` at this PR's `pr-<N>` browser preview) → **`e2e`** (calls the reusable `e2e.yml`) → **`ci-gate`**. **`ci-gate`** is the single **required** status check: it `always()` runs and passes iff every in-scope job succeeded (out-of-area jobs skip), so web/browser lint+unit+E2E all block merge **without wedging** out-of-area PRs. A PR touching web + browser is validated end-to-end against its **own** browser code; web-only PRs run E2E against the dev browser default. **Vercel stays "dumb"** (SPA build + `convex deploy` only — it never calls the browser service); the browser-URL wiring is a deployment concern that lives here. *(web lint/unit are inlined here; there is no separate `web-ci.yml`.)*
-- **`browser.yml`** — `services/browser` build + unit tests (`test`, which also gates the deploy lane), the **per-PR browser preview** (builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, runs a real BSC + SportLots login probe against it), and the push-to-`main` prod deploy lane.
-- **`e2e.yml`** — reusable (`workflow_call`) Maestro suite on the NEO-49 dynamic Convex work-queue: a homogeneous pool of work-stealing runners drains a shared queue; the single required **`e2e`** gate is green iff every queued flow passed and the queue fully drained.
-- **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image.
+- **`pr-pipeline.yml`** — the top-level per-PR orchestrator (runs on **every** PR, no path filter). `changes` (paths filter → `web` / `browser` / `preprocess` outputs) → conditional **`web-lint`** + **`web-unit`** (apps/web eslint + vitest), **`browser-test`** (services/browser build + unit) and **`preprocess-test`** (services/preprocess ruff + pytest) → `wire-browser-url` (when `services/browser` changed: point the Convex preview's `NEONBINDER_BROWSER_URL` at this PR's `pr-<N>` browser preview) → **`e2e`** (calls the reusable `e2e.yml`) → **`ci-gate`**. **`ci-gate`** is the single **required** status check: it `always()` runs and passes iff every in-scope job succeeded (out-of-area jobs skip), so web/browser lint+unit+E2E all block merge **without wedging** out-of-area PRs. A PR touching web + browser is validated end-to-end against its **own** browser code; web-only PRs run E2E against the dev browser default. **Vercel stays "dumb"** (SPA build + `convex deploy` only — it never calls the browser service); the browser-URL wiring is a deployment concern that lives here. *(web lint/unit are inlined here; there is no separate `web-ci.yml`.)*
+- **`release.yml`** — ⚠️ **the single driver of every push-to-`main` production deploy** (NEO-143). `changes` (path diff → `browser` / `preprocess`) → those services' deploy lanes **to 100% traffic** → **then** the web job: `vercel pull` / `vercel build` (this is where `npx convex deploy` pushes production Convex) → `vercel deploy --prebuilt --prod --skip-domain` → smoke the staged build → `vercel promote`. Servers lead their clients: Convex is a client of the browser service, the SPA is a client of Convex. Before NEO-143 all three deployed in parallel from the same commit, putting ~5.5 minutes of new-Convex-against-old-browser-service in front of real users. **Do not add a `push:` trigger to any other workflow** — that is exactly what re-creates the race. Note Convex itself *cannot* be staged (one production deployment, and it owns its database), so the Convex push is a hard mid-job cutover; read `services/browser/README.md` → **Release contract** before changing anything on the Convex ↔ browser boundary.
+- **`browser.yml`** — `services/browser` build + unit tests + the **per-PR browser preview** (builds the image, deploys a `pr-<N>` tagged, **no-traffic** Cloud Run revision on the dev service, runs a real BSC + SportLots login probe against it). **Pre-merge only.**
+- **`browser-deploy.yml`** / **`preprocess-deploy.yml`** — the prod deploy lanes, `workflow_call`-only (invoked by `release.yml`; `workflow_dispatch` is retained for dev-only validation). **Both** dev and prod use blue/green — deploy at 0% under a `sha-<short>` tag, probe/smoke the tagged URL, then one atomic `update-traffic` that promotes *and* drops the tag (NEO-114). There is deliberately **no rollback job**: nothing is promoted until the probe passes, so there is nothing to roll back (NEO-67). Gated on the `BROWSER_DEPLOY_ENABLED` / `PREPROCESS_DEPLOY_ENABLED` repo variables.
+- **`preprocess.yml`** — `services/preprocess` lint + unit tests + the **per-PR preprocess preview** (`pr-<N>` tagged no-traffic revision on the dev service + smoke + sticky PR comment). **Pre-merge only.**
+- **`e2e.yml`** — reusable (`workflow_call`) Maestro suite on the NEO-49 dynamic Convex work-queue: a homogeneous pool of work-stealing runners drains a shared queue; the single required **`e2e`** gate is green iff every queued flow passed and the queue fully drained. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
+- **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image. Browser and preprocess get **separate jobs**, because each authenticates as its own deployer SA and `google-github-actions/auth` rewrites ADC in place — a second auth in one job would silently run later steps as the wrong identity.
 - **`refresh-flow-timings.yml`** — weekly chore PR keeping the LPT flow-timings table aligned to main's flow set.
 - **`e2e-repeat.yml`** — manual flakiness sampler (runs the suite N times).
 

@@ -1,0 +1,25 @@
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32
+pydantic==2.13.4
+google-cloud-vision==3.15.0
+anthropic==0.120.2
+Pillow==12.3.0
+# SAM crop fallback (slice 2b). CPU-only torch keeps the image size sane;
+# transformers pulls the SAM model + processor; opencv-headless handles
+# mask-to-contour math and image encoding; numpy is the shared dep.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.5.1+cpu
+transformers==4.47.1
+accelerate==1.2.1
+opencv-python-headless==4.10.0.84
+numpy==2.5.1
+# Tiered crop's BiRefNet model (NEO-161) — hot path, not a rare fallback:
+# tiered runs BiRefNet on virtually every image (fallback on classical QC
+# failure, verification on classical success). rembg wraps the BiRefNet ONNX
+# model; onnxruntime is its CPU inference backend (rembg's base package
+# deliberately omits it — that's what the rembg[cpu] extra would pin, but we
+# pin it explicitly to match this file's style). Weights are baked into the
+# image at build time via U2NET_HOME, same rationale as SAM above.
+rembg==2.0.78
+onnxruntime==1.28.0

@@ -11,15 +11,15 @@
 # ${TEST_USERNAME} via the shared util, THEN drops to a clean signed-out state to
 # exercise the public page. No in-body re-login beyond the entry handshake (R4).
 #
-# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile.
+# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile/public.
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile/public&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: Sale page — running total accumulates
 tags:
   - smoke
   - sale
 ---
-# Step 1: land on the freshly-reset /profile page.
+# Step 1: land on the freshly-reset Public Profile section.
 - launchApp
 - extendedWaitUntil:
     visible: "Profile Settings"

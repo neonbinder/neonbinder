@@ -29,6 +29,22 @@ out/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 
+# python (services/preprocess) — it keeps its own .gitignore too, but these
+# artifacts are generic enough to belong at the root. Deliberately NOT a copy of
+# that file: it ignores `scripts/logs.sh` / `scripts/logs-tail.sh`, which at the
+# root would also hide files in the monorepo's own scripts/ directory.
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.venv/
+**/.venv/
+.coverage
+**/.coverage
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+
 # editor / os
 .DS_Store
 *.log

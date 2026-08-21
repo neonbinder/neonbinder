@@ -247,8 +247,10 @@ tags:
 
 - tapOn:
     id: "Open add card form"
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 - inputText: "992-${ATTEMPT_ID}"
 - tapOn: "Player name"
 - inputText: "Propagation Test Player ${ATTEMPT_ID}"
@@ -281,8 +283,10 @@ tags:
 - tapOn:
     id: "Edit card 992-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 # Expand the card features editor.
 - tapOn:
@@ -436,8 +440,10 @@ tags:
 - tapOn:
     id: "Edit card 992-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
 
 - tapOn:
     id: "Show features editor"

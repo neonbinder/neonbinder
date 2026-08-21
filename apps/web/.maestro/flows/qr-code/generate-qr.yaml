@@ -1,5 +1,5 @@
 # R1 — Single feature: a signed-in user WITH a saved public profile can enter a
-# sale amount on /qr-code and generate a QR code whose sale URL points at their
+# sale amount on /print/qr and generate a QR code whose sale URL points at their
 # public sale page (https://neonbinder.io/u/<username>/sale?amt=<amount>), with
 # Download + Print actions appearing.
 #
@@ -8,22 +8,22 @@
 # profile — each must create its own. This flow signs in (new-profile account) +
 # resets to an empty profile, then fills+saves the public profile under its own
 # ${TEST_USERNAME} via the shared util (the QR generator only needs
-# getMyPublicProfile.username to be non-null — app/qr-code/page.tsx). We sign in
+# getMyPublicProfile.username to be non-null — app/print/qr/page.tsx). We sign in
 # as `new-profile` because getMyPublicProfile is keyed by the signed-in user, so
 # the account that fills the profile must also be the one that reads it on
-# /qr-code. No in-body re-login beyond this entry handshake (R4).
+# /print/qr. No in-body re-login beyond this entry handshake (R4).
 #
-# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile.
+# Entry URL: sign in (new-profile) → /testing/reset (wipe to empty) → /profile/public.
 # `account=new-profile` and `worker` are top-level sign-in query params (the
 # inner redirect value is left unencoded so the router parses them as siblings).
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile&account=new-profile&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/profile/public&account=new-profile&worker=${WORKER_INDEX || "0"}
 name: QR Code — generate sale QR
 tags:
   - smoke
   - qr-code
 ---
-# Step 1: land on the freshly-reset /profile page.
+# Step 1: land on the freshly-reset Public Profile section.
 - launchApp
 - extendedWaitUntil:
     visible: "Profile Settings"
@@ -35,9 +35,11 @@ tags:
 - runFlow:
     file: ../profile/util-fill-public-profile.yaml
 
-# Step 3: go to /qr-code (openLink = fresh cross-page mount; avoids the post-tap
-# CDP nav crash). The generator form renders because the profile now exists.
-- openLink: ${APP_URL || "https://localhost:3000"}/qr-code
+# Step 3: go to /print/qr (NEO-145 moved the generator into the Print Shop; the
+# old /qr-code route still redirects here). openLink = fresh cross-page mount;
+# avoids the post-tap CDP nav crash. The generator form renders because the
+# profile now exists.
+- openLink: ${APP_URL || "https://localhost:3000"}/print/qr
 - assertVisible: "QR Code Generator"
 
 # Step 4: enter a valid amount. We target what the USER perceives — the visible
@@ -50,6 +52,17 @@ tags:
 - inputText: "8"
 
 # Step 5: generate the QR code.
+#
+# The button has to be scrolled to since NEO-145: the Print Shop shell (heading,
+# blurb and sub-tabs) sits above the generator and pushes the button just past
+# the bottom of the 1024x629 headless viewport. Centering before the tap is R8;
+# without it the tap fails with "Element not found" even though the page is
+# perfectly fine — assertVisible/tapOn enforce viewport visibility in
+# maestro-web, they are not DOM-only lookups.
+- scrollUntilVisible:
+    element:
+      text: "Generate QR Code"
+    centerElement: true
 - tapOn: "Generate QR Code"
 
 # Step 6: the generated content (QR box, encoded-URL <p>, Download/Print) renders

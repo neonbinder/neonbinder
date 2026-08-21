@@ -2,15 +2,14 @@ import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { SUPPORTED_SITES } from "./adapters";
+import { CONTRACT_VERSION } from "./contract-version";
 import { BSCAdapter } from "./adapters/bsc-adapter";
 import { SportlotsAdapter } from "./adapters/sportlots-adapter";
-import { SecretsManagerService } from "./services/secrets-manager";
 import { LoginDiagnostic } from "./services/login-diagnostic";
-import {
-  createEasyPostClient,
-  type PostalAddressLike,
-} from "./services/easypost";
 import { credentialRateLimitKey } from "./rate-limit";
+import { createCredentialsRouter } from "./routes/credentials";
+import { createEasypostRouter } from "./routes/easypost";
+import { parseTransientCredentials } from "./transient-credentials";
 import {
   logBrowserOp,
   classifyBrowserError,
@@ -51,7 +50,17 @@ interface ErrorResponse {
 // the adapter skip both halves of the token cache (read AND write-back) and
 // tags the structured log line so alert policies can separate synthetic from
 // seller traffic. See LoginOptions in ./observability for the full rationale.
-type LoginRequestBody = { key: string; canary?: boolean };
+//
+// NEO-140/NEO-141: `username`/`password` are OPTIONAL and TRANSIENT. When
+// present they drive one fresh sign-in and are never persisted; when absent
+// the adapter falls back to the stored secret, which is exactly what the
+// canary jobs (`{key, canary:true}`) do. See parseTransientCredentials.
+type LoginRequestBody = {
+  key: string;
+  canary?: boolean;
+  username?: string;
+  password?: string;
+};
 
 interface SitesResponse {
   sites: Record<string, string>;
@@ -74,7 +83,8 @@ app.use(express.json({ limit: "10kb" }));
 // gates callers to the neonbinder-convex SA, so every request shares that one
 // backend's egress IP — an IP-keyed limit was a single global budget that
 // parallel users / E2E workers 429'd each other on, silently dropping the
-// credential seeds (PUT /credentials) and poisoning the parallel suite.
+// credential seeds (then the PUT /credentials write, since removed) and
+// poisoning the parallel suite.
 const limiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
   max: 60, // per credential key — ample for one user+site, still catches a runaway loop
@@ -93,9 +103,28 @@ app.use(limiter);
 // when the service was still --allow-unauthenticated. The /health endpoint
 // remains public so Cloud Run's HTTP probe can reach it.
 
-// Health endpoint
+// Health endpoint.
+//
+// `contractVersion` (NEO-143) is what Convex reads to decide whether this
+// service is new enough to understand the request it is about to send. It must
+// stay on /health specifically: this is the one route Convex can call before it
+// commits to a request shape, and it is cheap enough to poll. Do not remove it
+// or rename the field without updating apps/web/convex/credentials.ts —
+// a missing field reads as version 0 and will (deliberately) fail every
+// credential operation loudly.
+// Deliberately does NOT report the Cloud Run revision name. Not for exposure
+// reasons — this route is IAM-gated like every other one (verified 2026-08-12:
+// only named service accounts hold roles/run.invoker on this service in both
+// projects; there is no allUsers binding, and an unauthenticated GET /health
+// gets a 403 from Cloud Run before Express sees it). It is omitted simply
+// because nothing needs it: the guard keys off contractVersion alone, and the
+// serving revision is already in Cloud Run's console and logs.
 app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok", environment: ENV });
+  res.json({
+    status: "ok",
+    environment: ENV,
+    contractVersion: CONTRACT_VERSION,
+  });
 });
 
 // Get list of supported sites
@@ -128,6 +157,23 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
     res.status(400).json({ error: "Missing required field: key" });
     return;
   }
+  // NEO-141: optional transient credentials. Rejecting a malformed pair here
+  // keeps a caller bug from presenting as a mysterious re-auth loop.
+  const transient = parseTransientCredentials(req.body);
+  if (!transient.ok) {
+    logBrowserOp({
+      msg: "browser_login_call",
+      operation: "login_sportlots",
+      platform: "sportlots",
+      duration_ms: Date.now() - startMs,
+      success: false,
+      status_code: 400,
+      error_class: "invalid_credentials",
+      canary,
+    });
+    res.status(400).json({ error: transient.error, error_class: "invalid_credentials" });
+    return;
+  }
   // Adapter reads credentials from Secret Manager internally. Wrap the call in
   // try/finally so adapter.cleanup() runs no matter what — that closes any
   // Puppeteer Browser child process the adapter launched. SportLots is
@@ -138,7 +184,10 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
   // skipped.
   const adapter = new SportlotsAdapter(undefined);
   try {
-    const result = await adapter.login(key, { canary });
+    const result = await adapter.login(key, {
+      canary,
+      transientCredentials: transient.credentials,
+    });
     if (result.success) {
       logBrowserOp({
         msg: "browser_login_call",
@@ -196,7 +245,14 @@ app.post("/login/sportlots", async (req: Request<{}, {}, LoginRequestBody>, res:
     if (isBadKey) {
       res.status(400).json({ error: "Invalid credential key format", error_class: errorClass });
     } else {
-      console.error("Sportlots login failed:", err);
+      // Name + message only, never the error OBJECT. Same rule as
+      // secrets-manager.ts's catch: an arbitrary error graph from a client
+      // library can carry the request payload it failed on, and on this path
+      // that payload is a marketplace credential.
+      console.error(
+        "Sportlots login failed:",
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      );
       res.status(500).json({ error: "Login failed", error_class: errorClass });
     }
   } finally {
@@ -229,6 +285,23 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
     res.status(400).json({ error: "Missing required field: key" });
     return;
   }
+  // NEO-141: optional transient credentials. Rejecting a malformed pair here
+  // keeps a caller bug from presenting as a mysterious re-auth loop.
+  const transient = parseTransientCredentials(req.body);
+  if (!transient.ok) {
+    logBrowserOp({
+      msg: "browser_login_call",
+      operation: "login_bsc",
+      platform: "bsc",
+      duration_ms: Date.now() - startMs,
+      success: false,
+      status_code: 400,
+      error_class: "invalid_credentials",
+      canary,
+    });
+    res.status(400).json({ error: transient.error, error_class: "invalid_credentials" });
+    return;
+  }
   // Adapter reads credentials from Secret Manager internally. Wrap the call
   // in try/finally so adapter.cleanup() runs whether login succeeds, fails,
   // or throws. Without this, the Puppeteer Browser child process leaks
@@ -239,7 +312,10 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
   // accepted the login (the response just never made it back to Convex).
   const adapter = new BSCAdapter(undefined);
   try {
-    const result = await adapter.login(key, { canary });
+    const result = await adapter.login(key, {
+      canary,
+      transientCredentials: transient.credentials,
+    });
     if (result.success) {
       logBrowserOp({
         msg: "browser_login_call",
@@ -308,7 +384,11 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
     if (isBadKey) {
       res.status(400).json({ error: "Invalid credential key format", error_class: errorClass });
     } else {
-      console.error("BSC login failed:", err);
+      // Name + message only — see the matching comment on the SportLots route.
+      console.error(
+        "BSC login failed:",
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+      );
       res.status(500).json({ error: "BSC login failed", error_class: errorClass });
     }
   } finally {
@@ -317,229 +397,23 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
 });
 
 // --- Credential CRUD endpoints ---
-
-// Store credentials for a key (no marketplace validation)
-app.put("/credentials/:key", async (req: Request<{ key: string }, {}, { username: string; password: string }>, res: Response) => {
-  const { username, password } = req.body;
-  if (!username || !password) {
-    res.status(400).json({ error: "Missing required fields: username, password" });
-    return;
-  }
-  try {
-    const secretsManager = new SecretsManagerService();
-    await secretsManager.updateCredentials(req.params.key, { username, password });
-    res.json({ success: true, message: "Credentials stored" });
-  } catch (err) {
-    console.error("Failed to store credentials:", err);
-    const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("Invalid credential key format")) {
-      res.status(400).json({ error: "Invalid credential key format" });
-    } else {
-      res.status(500).json({ error: "Failed to store credentials" });
-    }
-  }
-});
-
-// Get credential metadata (no secrets) for a key
-app.get("/credentials/:key/metadata", async (req: Request<{ key: string }>, res: Response) => {
-  try {
-    const secretsManager = new SecretsManagerService();
-    const credentials = await secretsManager.getCredentials(req.params.key);
-    res.json({
-      username: credentials.username,
-      hasToken: !!credentials.token,
-      expiresAt: credentials.expiresAt,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("Invalid credential key format")) {
-      res.status(400).json({ error: "Invalid credential key format" });
-    } else if (message.includes("not found") || message.includes("No active version")) {
-      res.status(404).json({ error: "Credentials not found" });
-    } else {
-      console.error("Failed to retrieve credential metadata:", err);
-      res.status(500).json({ error: "Failed to retrieve credential metadata" });
-    }
-  }
-});
-
-// Get token only (for internal adapter use — no username/password exposed)
-app.get("/credentials/:key/token", async (req: Request<{ key: string }>, res: Response) => {
-  try {
-    const secretsManager = new SecretsManagerService();
-    const credentials = await secretsManager.getCredentials(req.params.key);
-    if (!credentials.token) {
-      res.status(404).json({ error: "No token available" });
-      return;
-    }
-    res.json({
-      token: credentials.token,
-      expiresAt: credentials.expiresAt,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("Invalid credential key format")) {
-      res.status(400).json({ error: "Invalid credential key format" });
-    } else if (message.includes("not found") || message.includes("No active version")) {
-      res.status(404).json({ error: "Credentials not found" });
-    } else {
-      console.error("Failed to retrieve token:", err);
-      res.status(500).json({ error: "Failed to retrieve token" });
-    }
-  }
-});
-
-// Delete credentials for a key
-app.delete("/credentials/:key", async (req: Request<{ key: string }>, res: Response) => {
-  try {
-    const secretsManager = new SecretsManagerService();
-    await secretsManager.deleteCredentials(req.params.key);
-    res.json({ success: true, message: "Credentials deleted" });
-  } catch (err) {
-    console.error("Failed to delete credentials:", err);
-    const message = err instanceof Error ? err.message : "Unknown error";
-    if (message.includes("Invalid credential key format")) {
-      res.status(400).json({ error: "Invalid credential key format" });
-    } else {
-      res.status(500).json({ error: "Failed to delete credentials" });
-    }
-  }
-});
-
-// Check which keys have credentials
-app.post("/credentials/check", async (req: Request<{}, {}, { keys: string[] }>, res: Response) => {
-  const { keys } = req.body || {};
-  if (!Array.isArray(keys) || keys.some((key) => typeof key !== "string")) {
-    res.status(400).json({ error: "Invalid request body: 'keys' must be an array of strings" });
-    return;
-  }
-  try {
-    const secretsManager = new SecretsManagerService();
-    const results: Record<string, boolean> = {};
-    await Promise.all(
-      keys.map(async (key) => {
-        results[key] = await secretsManager.credentialsExist(key);
-      })
-    );
-    res.json({ results });
-  } catch (err) {
-    console.error("Failed to check credentials:", err);
-    res.status(500).json({ error: "Failed to check credentials" });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// NEO-120 — EasyPost postage, proxied because Convex must never hold the key
-// ---------------------------------------------------------------------------
-// The seller's EasyPost API key spends their money. Per NEO-20's boundary, only
-// this service ever reads a per-user secret in plaintext — no route hands a
-// password back — so Convex cannot call EasyPost itself and asks us instead,
-// exactly as it already does for BSC and SportLots logins.
 //
-// Like those, this launches no Chromium. It is plain HTTP.
+// NEO-141: these live in ./routes/credentials so the test suite can mount the
+// REAL handlers over an in-memory store. They used to be inline here, and
+// because this file calls app.listen() at import time a test could never load
+// them — tests/credentials-routes.test.mjs re-implemented every handler
+// instead, which is why the 404 conflation on GET /credentials/:key/token went
+// unnoticed and untested. Keep new credential routes in the router, not here.
+app.use(createCredentialsRouter());
 
-/** Load a seller's EasyPost key, or 404 if they haven't saved one. */
-async function loadEasyPostKey(key: string): Promise<string> {
-  const secretsManager = new SecretsManagerService();
-  const credentials = await secretsManager.getCredentials(key);
-  // Stored via PUT /credentials/:key as {username: clerkUserId, password: key}.
-  // An API key is not a password, but reusing the existing shape means no new
-  // secret-handling code — see the note in convex/shipping.ts.
-  if (!credentials.password) {
-    throw new Error("No active version");
-  }
-  return credentials.password;
-}
-
-/** Map an EasyPostError kind onto a status the UI can act on. */
-function easypostStatus(kind: string | undefined): number {
-  switch (kind) {
-    case "auth":
-      return 401;
-    case "address":
-    case "no_rate":
-      return 422;
-    case "payment":
-      return 402;
-    case "timeout":
-      return 504;
-    default:
-      return 502;
-  }
-}
-
-function handleEasyPostFailure(err: unknown, res: Response, context: string) {
-  const message = err instanceof Error ? err.message : "Unknown error";
-  if (message.includes("Invalid credential key format")) {
-    res.status(400).json({ error: "Invalid credential key format" });
-    return;
-  }
-  if (message.includes("not found") || message.includes("No active version")) {
-    res.status(404).json({ error: "No EasyPost key saved for this user" });
-    return;
-  }
-  const kind = (err as { kind?: string })?.kind;
-  // Deliberately forwards EasyPost's message: these are seller-actionable
-  // ("address not found", "insufficient funds"), and swallowing them would
-  // leave the UI saying "something went wrong" for a fixable typo. The key
-  // itself never appears in these messages.
-  if (kind) {
-    res.status(easypostStatus(kind)).json({ error: message, kind });
-    return;
-  }
-  console.error(`${context} failed:`, err);
-  res.status(502).json({ error: "EasyPost request failed" });
-}
-
-// Price a First-Class letter. Charges nothing.
-app.post(
-  "/easypost/:key/rate",
-  async (
-    req: Request<{ key: string }, {}, { to?: unknown; from?: unknown; weightOz?: number }>,
-    res: Response,
-  ) => {
-    const { to, from, weightOz } = req.body || {};
-    if (!to || !from || typeof weightOz !== "number" || weightOz <= 0) {
-      res.status(400).json({ error: "Missing required fields: to, from, weightOz" });
-      return;
-    }
-    try {
-      const apiKey = await loadEasyPostKey(req.params.key);
-      const client = createEasyPostClient({ apiKey });
-      res.json(
-        await client.quoteLetterRate({
-          to: to as PostalAddressLike,
-          from: from as PostalAddressLike,
-          weightOz,
-        }),
-      );
-    } catch (err) {
-      handleEasyPostFailure(err, res, "EasyPost rate");
-    }
-  },
-);
-
-// Buy a previously-quoted rate. THIS SPENDS THE SELLER'S MONEY.
-app.post(
-  "/easypost/:key/buy",
-  async (
-    req: Request<{ key: string }, {}, { shipmentId?: string; rateId?: string }>,
-    res: Response,
-  ) => {
-    const { shipmentId, rateId } = req.body || {};
-    if (!shipmentId || !rateId) {
-      res.status(400).json({ error: "Missing required fields: shipmentId, rateId" });
-      return;
-    }
-    try {
-      const apiKey = await loadEasyPostKey(req.params.key);
-      const client = createEasyPostClient({ apiKey });
-      res.json(await client.buyLabel({ shipmentId, rateId }));
-    } catch (err) {
-      handleEasyPostFailure(err, res, "EasyPost buy");
-    }
-  },
-);
+// --- EasyPost postage endpoints (NEO-120) ---
+//
+// In ./routes/easypost for the same NEO-141 reason as the credential CRUD:
+// this file calls app.listen() at import time, so only a mountable Router is
+// testable. That router also carries the ONLY HTTP-reachable credential write
+// (PUT /easypost/:key) — see its header for why that does not reintroduce
+// what NEO-141 removed.
+app.use(createEasypostRouter());
 
 const PORT: number = parseInt(process.env.PORT || "8080", 10);
 app.listen(PORT, () => console.log(`[${ENV}] Listening on port ${PORT}`));

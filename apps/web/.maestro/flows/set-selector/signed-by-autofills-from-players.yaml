@@ -154,6 +154,36 @@ tags:
     commands:
       - tapOn:
           text: ".*Fetch from Marketplaces.*"
+      # NEO-137: pairing runs before any card is generated. This is a real set,
+      # so the dialog opens; "Keep all" on both columns reproduces exactly what
+      # a pre-NEO-137 sync produced, keeping this fallback's baseline identical.
+      - extendedWaitUntil:
+          visible:
+            text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+          timeout: 60000
+      - runFlow:
+          when:
+            visible: "Match Cards.*"
+          commands:
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*BSC only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all BSC-only cards"
+            - runFlow:
+                when:
+                  visible:
+                    text: ".*SportLots only \\([1-9][0-9]*\\).*"
+                commands:
+                  - tapOn:
+                      id: "Keep all SportLots-only cards"
+            - tapOn:
+                id: "Confirm card matches"
+            - extendedWaitUntil:
+                notVisible: "Match Cards.*"
+                timeout: 60000
       # First fetch: all players/teams are new → EntityReviewWizard opens.
       # A populated-enough set may commit immediately ("Saved N cards.").
       - extendedWaitUntil:
@@ -179,13 +209,14 @@ tags:
                 timeout: 30000
             - tapOn:
                 text: ".*Confirm & Save.*"
-            - extendedWaitUntil:
-                notVisible: "Confirm New Players & Teams"
-                timeout: 30000
+            # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
+            # a positive terminal signal proving the same thing and more, so this
+            # negative gate against a repainting node only added a failure mode.
       - extendedWaitUntil:
           visible:
             text: ".*Saved [0-9]+ cards.*"
-          timeout: 30000
+          # NEO-163: absorbs the removed notVisible gate's budget.
+          timeout: 120000
 
 # ============================================================
 # STEP 1 — OPEN A REAL BASE CARD's DETAIL DRAWER
@@ -209,8 +240,23 @@ tags:
 - tapOn:
     id: "Edit card 300"
     waitToSettleTimeoutMs: 2000
-- assertVisible:
-    id: "Card name"
+# NEO-109 class: the scroll above proves card 300 EXISTS, so a failure here is
+# the detail drawer not having opened yet — not a missing card. A bare
+# assertVisible gives the drawer no time at all; wait for it the same
+# result-keyed way the rest of this suite waits on a revealed surface.
+#
+# SCROLL, don't just wait. CardDetailPanel renders AFTER the virtuoso list
+# container (CardChecklist.tsx), and that list is `height: min(70vh, 800px)` —
+# ~437px of the 625px headless viewport. So the panel opens BELOW the fold, and
+# `extendedWaitUntil: visible` (which never scrolls) timed out even though the
+# drawer was mounted and correct — the failure screenshot showed a healthy card
+# list with no drawer in frame. scrollUntilVisible both waits and scrolls, so a
+# drawer that genuinely fails to open still fails here.
+- scrollUntilVisible:
+    element:
+      id: "Card name"
+    centerElement: true
+    timeout: 20000
 
 # Confirm we opened the intended card (drawer header shows "Card #300").
 - assertVisible:

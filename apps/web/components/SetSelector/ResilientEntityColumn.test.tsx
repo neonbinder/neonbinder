@@ -43,18 +43,33 @@ vi.mock("../../convex/_generated/api", () => ({
 // Mutable holders read lazily by the mocked hooks at call time, so a test can
 // flip `items` from undefined → resolved and re-render to simulate the fresh
 // subscription finally delivering.
-const state: { items: unknown; status: unknown } = {
+const state: { items: unknown; status: unknown; connection: unknown } = {
   items: undefined,
   status: null,
+  // Shape of Convex's ConnectionState. Defaults to the NEO-84 signature: the
+  // client believes nothing is wrong (`isWebSocketConnected: true`) yet has
+  // delivered nothing — which is precisely why the snapshot is worth capturing.
+  connection: {
+    isWebSocketConnected: true,
+    connectionCount: 1,
+    connectionRetries: 0,
+    inflightMutations: 0,
+    inflightActions: 0,
+    timeOfOldestInflightRequest: null,
+    hasInflightRequests: false,
+    hasEverConnected: true,
+  },
 };
 
 vi.mock("convex/react", () => ({
   useMutation: () => vi.fn(),
   useAction: () => vi.fn(),
+  useConvex: () => ({ connectionState: () => state.connection }),
   useQuery: (ref: string) =>
     ref === "getSelectorSyncStatus" ? state.status : state.items,
 }));
 
+import { ConvexReconnectContext } from "../modules/convexReconnect";
 import ResilientEntityColumn, {
   MAX_RESUBSCRIBE_ATTEMPTS,
   SELECTOR_OPTIONS_STALL_BACKSTOP_MS,
@@ -70,18 +85,33 @@ function MountProbe() {
   return <div>selector-probe</div>;
 }
 
+// The socket-level escalation (NEO-84) is delivered through the real context,
+// not a module mock, so these tests exercise the actual wiring the app uses.
+const reconnectSpy = vi.fn();
+
 function columnElement() {
   return (
-    <ResilientEntityColumn
-      selector={<MountProbe />}
-      renderForm={() => <div>legacy-form</div>}
-      addButtonText="Sync Variant Types"
-      isVisible={true}
-      level="variantType"
-      useEnsureSync
-      syncingLabel="Syncing Variant Types"
-    />
+    <ConvexReconnectContext.Provider value={reconnectSpy}>
+      <ResilientEntityColumn
+        selector={<MountProbe />}
+        renderForm={() => <div>legacy-form</div>}
+        addButtonText="Sync Variant Types"
+        isVisible={true}
+        level="variantType"
+        useEnsureSync
+        syncingLabel="Syncing Variant Types"
+      />
+    </ConvexReconnectContext.Provider>
   );
+}
+
+/** Advance far enough to exhaust every re-subscribe and reach give-up. */
+function driveToGiveUp() {
+  for (let i = 0; i <= MAX_RESUBSCRIBE_ATTEMPTS; i++) {
+    act(() => {
+      vi.advanceTimersByTime(SELECTOR_OPTIONS_STALL_BACKSTOP_MS);
+    });
+  }
 }
 
 beforeEach(() => {
@@ -89,6 +119,16 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.items = undefined;
   state.status = null;
+  state.connection = {
+    isWebSocketConnected: true,
+    connectionCount: 1,
+    connectionRetries: 0,
+    inflightMutations: 0,
+    inflightActions: 0,
+    timeOfOldestInflightRequest: null,
+    hasInflightRequests: false,
+    hasEverConnected: true,
+  };
 });
 
 afterEach(() => {
@@ -210,5 +250,137 @@ describe("ResilientEntityColumn — stalled-read backstop (NEO-83)", () => {
     expect(mountSpy).toHaveBeenCalledTimes(1); // never remounted
     expect(queryByText(/Couldn't load/i)).toBeNull();
     expect(getByText("selector-probe")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-84 — socket-level escalation and on-screen diagnostics.
+ *
+ * Re-subscribing cannot fix a wedged websocket: in CI run 31839119469 the
+ * initial subscription and both fresh query ids all stalled on one socket.
+ * So once the cheap retries are spent the column asks for a whole new Convex
+ * client, and records what the socket looked like at that moment — on screen,
+ * because PostHog is disabled under E2E and Maestro captures no console.
+ */
+describe("ResilientEntityColumn — socket escalation (NEO-84)", () => {
+  it("does not escalate while cheap re-subscribes are still available", () => {
+    state.items = undefined;
+    render(columnElement());
+
+    // Every attempt up to (not including) the cap is a plain remount.
+    for (let i = 0; i < MAX_RESUBSCRIBE_ATTEMPTS; i++) {
+      act(() => {
+        vi.advanceTimersByTime(SELECTOR_OPTIONS_STALL_BACKSTOP_MS);
+      });
+    }
+    expect(mountSpy).toHaveBeenCalledTimes(1 + MAX_RESUBSCRIBE_ATTEMPTS);
+    expect(reconnectSpy).not.toHaveBeenCalled();
+  });
+
+  it("asks for a new websocket exactly once when every re-subscribe fails", () => {
+    state.items = undefined; // never resolves on any subscription
+    const { getByText } = render(columnElement());
+
+    driveToGiveUp();
+
+    expect(getByText(/Couldn't load/i)).toBeTruthy();
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+
+    // The column is stopped now, so no timer re-arms and no reconnect storm
+    // follows — the provider's cooldown is a backstop, not the only guard.
+    act(() => {
+      vi.advanceTimersByTime(SELECTOR_OPTIONS_STALL_BACKSTOP_MS * 5);
+    });
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders the socket snapshot so a CI screenshot carries it", () => {
+    state.items = undefined;
+    state.connection = {
+      isWebSocketConnected: false,
+      connectionCount: 4,
+      connectionRetries: 7,
+      inflightMutations: 1,
+      inflightActions: 2,
+      timeOfOldestInflightRequest: new Date(Date.now() - 18_000),
+      hasInflightRequests: true,
+      hasEverConnected: true,
+    };
+
+    const { getByTestId } = render(columnElement());
+    driveToGiveUp();
+
+    const text = getByTestId("stall-connection-state").textContent ?? "";
+    expect(text).toContain("ws=down"); // the socket died and nobody noticed
+    expect(text).toContain("conns=4");
+    expect(text).toContain("retries=7");
+    expect(text).toContain("inflight=3"); // mutations + actions
+
+    // The age is measured when we give up, not when the request was made, so
+    // it accumulates the time spent on every failed re-subscribe. That is the
+    // number worth reporting — "this request has been outstanding for N
+    // seconds" is what distinguishes a wedged socket from a slow one.
+    const secsWaiting =
+      18 +
+      ((SELECTOR_OPTIONS_STALL_BACKSTOP_MS / 1000) *
+        (MAX_RESUBSCRIBE_ATTEMPTS + 1));
+    expect(text).toContain(`oldest=${secsWaiting}s`);
+  });
+
+  it("reports ws=up when the socket is live but delivering nothing", () => {
+    // The NEO-84 signature proper: healthy-looking socket, no delivery. This
+    // is the reading that would point upstream rather than at our own code.
+    state.items = undefined;
+    const { getByTestId } = render(columnElement());
+    driveToGiveUp();
+
+    const text = getByTestId("stall-connection-state").textContent ?? "";
+    expect(text).toContain("ws=up");
+    expect(text).toContain("oldest=none");
+  });
+
+  it("clears the snapshot when a late value heals the column", () => {
+    state.items = undefined;
+    const { rerender, queryByTestId } = render(columnElement());
+    driveToGiveUp();
+    expect(queryByTestId("stall-connection-state")).not.toBeNull();
+
+    // A value lands — the snapshot described a socket that is no longer the
+    // problem, so leaving it on screen would be actively misleading.
+    state.items = [{ _id: "vt1", value: "Base" }];
+    act(() => {
+      rerender(columnElement());
+    });
+    expect(queryByTestId("stall-connection-state")).toBeNull();
+  });
+
+  it("asks for a new websocket again on a manual Retry", () => {
+    state.items = undefined;
+    const { getByRole } = render(columnElement());
+    driveToGiveUp();
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      fireEvent.click(getByRole("button", { name: /retry/i }));
+    });
+
+    // Retry lands only after the automatic escalation already failed, so a
+    // remount alone would not be enough. Whether it actually swaps the client
+    // is the provider's call (cooldown + cap), not the column's.
+    expect(reconnectSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("survives a client that cannot report its connection state", () => {
+    // Diagnostics must never break recovery: a throwing/absent client still
+    // gives up cleanly, still escalates, and simply shows no snapshot line.
+    state.items = undefined;
+    state.connection = null;
+
+    const { getByText, queryByTestId } = render(columnElement());
+    driveToGiveUp();
+
+    expect(getByText(/Couldn't load/i)).toBeTruthy();
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+    expect(queryByTestId("stall-connection-state")).toBeNull();
   });
 });
