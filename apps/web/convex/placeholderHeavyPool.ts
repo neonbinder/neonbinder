@@ -40,16 +40,21 @@ import { findJob, recordImageOutcomeImpl } from "./placeholderPipeline";
  * them than fast instances. Resolved from `HEAVY_PREPROCESS_MAX_PARALLELISM` at
  * module load; see convex/preprocessCapacity.ts.
  *
- * Same retry stance as the fast pool: idempotent action (write-once GCS output,
- * re-derived input), 5 attempts across ~75s of cumulative backoff — sized here
- * for the failure it actually exists for, a 191s heavy cold start, so a retry
- * does not abort a request that was about to succeed on a booting instance.
+ * Idempotent action (write-once GCS output, re-derived input), but FEWER
+ * attempts than the fast pool (3, not 5) for two reasons unique to heavy. First,
+ * a heavy attempt is expensive: its budget is PREPROCESS_HEAVY_TIMEOUT_MS (400s,
+ * sized in adapters/preprocess.ts to CLEAR a ~315s cold start + inference), so a
+ * cold call now succeeds on the FIRST attempt — retries are for genuine
+ * transients (429/503/network), not for cold starts, and those don't need five
+ * tries. Second, 5 × 400s + backoff is ~34 min, which would overrun the 30-min
+ * watchdog (PLACEHOLDER_WEDGE_STALE_MS) and let it heal a batch mid-retry; 3 ×
+ * 400s + ~15s backoff is ~20 min, comfortably inside it.
  */
 export const heavyPreprocessPool = new Workpool(components.heavyPreprocessPool, {
   maxParallelism: HEAVY_MAX_PARALLELISM,
   retryActionsByDefault: true,
   defaultRetryBehavior: {
-    maxAttempts: 5,
+    maxAttempts: 3,
     initialBackoffMs: 5000,
     base: 2,
   },

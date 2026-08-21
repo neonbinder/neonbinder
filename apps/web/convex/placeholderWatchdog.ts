@@ -83,12 +83,15 @@ import { deploymentName } from "./observability";
  * only thing that makes it stale is genuinely no image completing.
  *
  * The worst-case single image is a preprocess call that exhausts its retry
- * budget: 5 attempts, each up to PREPROCESS_FETCH_TIMEOUT_MS (4 min), plus
- * ~75s of cumulative backoff (see placeholderPool.ts) — about 21 minutes before
- * that one image settles as failed, during which no OTHER image is completing
- * only if it is the last one in flight. Thirty minutes clears that worst case
- * with room to spare, so "no completion in 30 minutes" is a genuine stall rather
- * than a slow tail. It also comfortably outlasts extraction, which self-fails in
+ * budget. The heavy lane dominates: 3 attempts (placeholderHeavyPool.ts), each
+ * up to PREPROCESS_HEAVY_TIMEOUT_MS (400s), plus ~15s of cumulative backoff —
+ * about 20 minutes before that one image settles as failed; the fast lane's 5
+ * attempts × 60s + ~75s backoff is only ~6 minutes. During either, no OTHER
+ * image is completing only if it is the last one in flight. Thirty minutes
+ * clears the worst case with room to spare, so "no completion in 30 minutes" is
+ * a genuine stall rather than a slow tail (the retry budgets are deliberately
+ * kept under it — see placeholderHeavyPool.ts). It also comfortably outlasts
+ * extraction, which self-fails in
  * ~12 minutes (three attempts, see runExtract).
  *
  * Erring long is deliberate: a false positive here FAILS a healthy batch, while

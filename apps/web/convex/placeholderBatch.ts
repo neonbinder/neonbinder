@@ -216,40 +216,50 @@ export const processHeavyEntryWorker = internalAction({
 });
 
 /**
- * Warm every FAST preprocess instance, in the background, at the start of a
- * batch.
+ * Warm the FAST fan-out AND one HEAVY preprocess instance, in the background, at
+ * the start of a batch.
  *
  * Scheduled fire-and-forget from `startPlaceholderStream` and
  * `startPlaceholderBatch` (via `ctx.scheduler.runAfter(0, ...)`), so the start
  * mutation returns inside the 7-second UI budget and instances are up WHILE the
- * user uploads or scans. The fast service cold-starts in seconds, so this is a
- * smaller win than it once was, but it is free and keeps the first fast image
- * off even that short cold start.
+ * user uploads or scans. The fast service cold-starts in seconds, so its warm-up
+ * is a smaller win, but it is free and keeps the first fast image off even that
+ * short cold start.
  *
- * Fires PREPROCESS_MAX_PARALLELISM warm-ups CONCURRENTLY, and that count is
- * load-bearing: the service runs `container_concurrency = 1`, so one warm-up
- * lands on one instance and warms exactly that instance. Firing N at once is
- * what spreads them across all N fast instances Cloud Run will run.
+ * Fires PREPROCESS_MAX_PARALLELISM fast warm-ups CONCURRENTLY to spread across
+ * the fast instances Cloud Run will run, plus ONE heavy warm-up.
  *
- * Warms the FAST service ONLY. The HEAVY service is deliberately NOT warmed on
- * start — it is the 191s cold-loader, and pre-warming it on every batch (most of
- * which never escalate) would burn heavy capacity for nothing. It is warmed on
- * demand by `warmupHeavyPreprocess`, the warm-gate, on the first escalation.
+ * Heavy IS warmed on start now (NEO-175 revision, at the user's request): its
+ * ~191s cold load is the dominant latency an escalation pays, and starting it
+ * here — rather than only when the first image escalates — overlaps that load
+ * with the entire fast phase, so a mid-batch escalation waits far less (often
+ * nothing) for the model. The cost is one heavy instance per batch that scales
+ * back to zero on idle if nothing escalates. It does NOT suppress the cold-start
+ * notice: `heavyWarmStartedAt` is still set on the first escalation
+ * (placeholderPipeline.ts), so a batch that escalates before the load finishes
+ * shows the notice exactly as before. The on-escalation warm-gate stays as a
+ * cheap belt-and-suspenders fallback for the rare batch that skipped this.
  *
- * `callWarmupFast` never throws, so this action cannot fail; `Promise.all` over
- * non-throwing calls is safe.
+ * `callWarmupFast`/`callWarmupHeavy` never throw, so this action cannot fail;
+ * `Promise.all` over non-throwing calls is safe.
  */
 export const warmupPreprocess = internalAction({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
     const requested = PREPROCESS_MAX_PARALLELISM;
-    const results = await Promise.all(
-      Array.from({ length: requested }, () => callWarmupFast(ctx)),
-    );
-    const warmed = results.filter((r) => r.warmed).length;
+    const [fastResults, heavy] = await Promise.all([
+      Promise.all(Array.from({ length: requested }, () => callWarmupFast(ctx))),
+      callWarmupHeavy(ctx),
+    ]);
+    const warmed = fastResults.filter((r) => r.warmed).length;
     console.log(
-      JSON.stringify({ msg: "preprocess_warmup", requested, warmed }),
+      JSON.stringify({
+        msg: "preprocess_warmup",
+        requested,
+        warmed,
+        heavyWarmed: heavy.warmed,
+      }),
     );
     return null;
   },

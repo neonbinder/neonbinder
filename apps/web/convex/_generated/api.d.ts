@@ -22,6 +22,7 @@ import type * as adapters_sportlots from "../adapters/sportlots.js";
 import type * as adapters_testBscSetParameters from "../adapters/testBscSetParameters.js";
 import type * as adapters_types from "../adapters/types.js";
 import type * as adapters_wikidata from "../adapters/wikidata.js";
+import type * as adminUsers from "../adminUsers.js";
 import type * as auth from "../auth.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
 import type * as browserAudience from "../browserAudience.js";
@@ -41,17 +42,21 @@ import type * as lib_pairing_pairBatch from "../lib/pairing/pairBatch.js";
 import type * as lib_pairing_pool from "../lib/pairing/pool.js";
 import type * as lib_pairing_types from "../lib/pairing/types.js";
 import type * as lib_placeholderObjects from "../lib/placeholderObjects.js";
+import type * as machineAuth from "../machineAuth.js";
 import type * as myFunctions from "../myFunctions.js";
 import type * as observability from "../observability.js";
 import type * as placeholderBatch from "../placeholderBatch.js";
+import type * as placeholderHeavyPool from "../placeholderHeavyPool.js";
 import type * as placeholderJobs from "../placeholderJobs.js";
 import type * as placeholderPairing from "../placeholderPairing.js";
 import type * as placeholderPipeline from "../placeholderPipeline.js";
 import type * as placeholderPool from "../placeholderPool.js";
 import type * as placeholderStream from "../placeholderStream.js";
+import type * as placeholderWatchdog from "../placeholderWatchdog.js";
 import type * as platformSlots from "../platformSlots.js";
 import type * as players from "../players.js";
 import type * as posthog from "../posthog.js";
+import type * as preprocessAudience from "../preprocessAudience.js";
 import type * as preprocessCapacity from "../preprocessCapacity.js";
 import type * as publicProfile from "../publicProfile.js";
 import type * as resolveRedirect from "../resolveRedirect.js";
@@ -63,6 +68,7 @@ import type * as sportConfig from "../sportConfig.js";
 import type * as teams from "../teams.js";
 import type * as testing from "../testing.js";
 import type * as userProfile from "../userProfile.js";
+import type * as wikidataPool from "../wikidataPool.js";
 
 import type {
   ApiFromModules,
@@ -85,6 +91,7 @@ declare const fullApi: ApiFromModules<{
   "adapters/testBscSetParameters": typeof adapters_testBscSetParameters;
   "adapters/types": typeof adapters_types;
   "adapters/wikidata": typeof adapters_wikidata;
+  adminUsers: typeof adminUsers;
   auth: typeof auth;
   backfillCardFeatures: typeof backfillCardFeatures;
   browserAudience: typeof browserAudience;
@@ -104,17 +111,21 @@ declare const fullApi: ApiFromModules<{
   "lib/pairing/pool": typeof lib_pairing_pool;
   "lib/pairing/types": typeof lib_pairing_types;
   "lib/placeholderObjects": typeof lib_placeholderObjects;
+  machineAuth: typeof machineAuth;
   myFunctions: typeof myFunctions;
   observability: typeof observability;
   placeholderBatch: typeof placeholderBatch;
+  placeholderHeavyPool: typeof placeholderHeavyPool;
   placeholderJobs: typeof placeholderJobs;
   placeholderPairing: typeof placeholderPairing;
   placeholderPipeline: typeof placeholderPipeline;
   placeholderPool: typeof placeholderPool;
   placeholderStream: typeof placeholderStream;
+  placeholderWatchdog: typeof placeholderWatchdog;
   platformSlots: typeof platformSlots;
   players: typeof players;
   posthog: typeof posthog;
+  preprocessAudience: typeof preprocessAudience;
   preprocessCapacity: typeof preprocessCapacity;
   publicProfile: typeof publicProfile;
   resolveRedirect: typeof resolveRedirect;
@@ -126,6 +137,7 @@ declare const fullApi: ApiFromModules<{
   teams: typeof teams;
   testing: typeof testing;
   userProfile: typeof userProfile;
+  wikidataPool: typeof wikidataPool;
 }>;
 
 /**
@@ -155,5 +167,7 @@ export declare const internal: FilterApi<
 >;
 
 export declare const components: {
-  preprocessPool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"preprocessPool">;
+  fastPreprocessPool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"fastPreprocessPool">;
+  heavyPreprocessPool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"heavyPreprocessPool">;
+  wikidataPool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"wikidataPool">;
 };

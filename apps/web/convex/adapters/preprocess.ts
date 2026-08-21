@@ -86,17 +86,33 @@ const HEAVY_SERVICE = (): PreprocessService => ({
 });
 
 /**
- * 4 minutes. A single `/process-entry` is a full BiRefNet inference plus a
- * Vision round-trip — roughly 40s warm — but the request may also be the one
- * that triggers a Cloud Run cold start, and a cold start on a multi-GB model
- * image is measured in minutes, not seconds. The timeout has to clear
- * cold-start + work, or the pool would abort exactly the requests that were
- * about to succeed and retry them into another cold start.
+ * Per-call fetch budgets, split by service because their latencies differ by
+ * two orders of magnitude (NEO-175). One shared 240s budget is wrong for both:
+ * too long for the fast lane, too SHORT for a cold heavy call.
  *
- * `/extract` shares the budget: unzipping a 500MB upload (the signed-policy
- * cap, see adapters/placeholderUploads.ts) is I/O-bound but not fast.
+ * FAST `/process-entry` is classical-only — ~4s warm, ~26s on a cold instance
+ * (role=fast skips the model load, measured 2026-08-21). 60s clears a cold
+ * start with margin while failing fast: the whole point of the fast lane is
+ * that nobody waits on it, so a stuck fast request must retry in seconds, not
+ * sit for minutes.
+ *
+ * HEAVY `/process-entry` is the full BiRefNet cascade — ~124s warm (measured),
+ * and a COLD instance additionally pays the ~191s model load at container
+ * startup, so a cold heavy call is ~315s wall-clock. The budget MUST exceed
+ * that: the pre-split 240s aborted exactly the cold requests that were about to
+ * succeed and retried them into another cold start, turning a 6-image
+ * escalation batch into tens of minutes. 400s clears cold-load + inference with
+ * margin. (GPU — NEO-173, quota-blocked — is the path back to seconds; until
+ * then heavy is CPU-bound and 315s is the real cold number, not a preview
+ * artifact: the preview instance is the terraform 4vCPU/16Gi sizing.)
+ *
+ * `/extract` is I/O-bound (unzip up to the 500MB signed-policy cap, see
+ * adapters/placeholderUploads.ts) and hits the FAST service (no model), so it
+ * keeps its own generous budget rather than the fast process-entry one.
  */
-const PREPROCESS_FETCH_TIMEOUT_MS = 240_000;
+const PREPROCESS_FAST_TIMEOUT_MS = 60_000;
+const PREPROCESS_HEAVY_TIMEOUT_MS = 400_000;
+const PREPROCESS_EXTRACT_TIMEOUT_MS = 240_000;
 
 /**
  * Terminal HTTP statuses. Retrying any of these re-runs a request whose
@@ -283,6 +299,9 @@ async function preprocessPost<T>(
   path: string,
   body: Record<string, unknown>,
   operation: string,
+  // Per-call fetch budget (ms). Fast/heavy/extract differ by orders of
+  // magnitude — see the PREPROCESS_*_TIMEOUT_MS constants.
+  timeoutMs: number,
   // Correlation for the telemetry event only — never sent to the service (the
   // service re-derives everything from `body`). `jobId`/`entryIndex` let a
   // preprocess `adapter_sync_call` in PostHog be joined to the exact
@@ -321,7 +340,7 @@ async function preprocessPost<T>(
       method: "POST",
       headers: await preprocessHeaders(service),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(PREPROCESS_FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
     // Network failure, DNS failure, or AbortSignal.timeout firing
@@ -330,7 +349,7 @@ async function preprocessPost<T>(
     const message = err instanceof Error ? err.message : String(err);
     const isTimeout = err instanceof Error && err.name === "TimeoutError";
     const text = isTimeout
-      ? `preprocess request timed out after ${PREPROCESS_FETCH_TIMEOUT_MS / 1000}s: ${path}`
+      ? `preprocess request timed out after ${timeoutMs / 1000}s: ${path}`
       : `preprocess request failed (network): ${path}: ${message}`;
     await record(false, text);
     throw new Error(text);
@@ -399,6 +418,7 @@ export async function callExtract(
     "/extract",
     { job_id: args.jobId, user_id: args.userId },
     "preprocessExtract",
+    PREPROCESS_EXTRACT_TIMEOUT_MS,
     // Extract is a per-job call — no entryIndex, so a slow extract still joins
     // to its batch in the telemetry.
     { jobId: args.jobId },
@@ -425,6 +445,7 @@ export async function callProcessEntryFast(
     // from heavy load — the two services scale independently and "which one is
     // saturated" is the whole question.
     "preprocessProcessEntryFast",
+    PREPROCESS_FAST_TIMEOUT_MS,
     { jobId: args.jobId, entryIndex: args.entryIndex },
   );
 }
@@ -445,6 +466,7 @@ export async function callProcessEntryHeavy(
     "/process-entry",
     { job_id: args.jobId, user_id: args.userId, entry_index: args.entryIndex },
     "preprocessProcessEntryHeavy",
+    PREPROCESS_HEAVY_TIMEOUT_MS,
     { jobId: args.jobId, entryIndex: args.entryIndex },
   );
 }
@@ -452,7 +474,7 @@ export async function callProcessEntryHeavy(
 /**
  * How long a warm-up call waits before giving up.
  *
- * Shorter than PREPROCESS_FETCH_TIMEOUT_MS (4 min) and deliberately so: a
+ * Shorter than the process-entry budgets and deliberately so: a
  * warm-up that has not returned in a minute has already done its ONE useful
  * thing — it landed on an instance and told Cloud Run to keep that instance
  * alive with the model loading — and waiting longer for the `{status:"warm"}`
