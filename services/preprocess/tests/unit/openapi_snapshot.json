@@ -28,6 +28,11 @@
       },
       "Body_process_process_post": {
         "properties": {
+          "crop_quality": {
+            "default": "fast",
+            "title": "Crop Quality",
+            "type": "string"
+          },
           "image": {
             "anyOf": [
               {
@@ -116,6 +121,114 @@
         "title": "CropStrategyOutput",
         "type": "object"
       },
+      "ExtractEntry": {
+        "description": "One archive member's outcome, in zip order.\n\n`index` is the member's ordinal among non-ignored zip members and\npreserves zip order \u2014 downstream pairing in Convex reads it as scan\norder, so it is load-bearing, not cosmetic. Callers only ever hold\n`{job_id, user_id, index}`; there is deliberately no object key or path\nhere (the service derives keys \u2014 see `ExtractRequest`).\n\nAccepted entries carry the sniffed `content_type` and `size_bytes` of the\nbytes actually stored (post EXIF normalisation); rejected ones carry a\nstable machine `reason` instead and never fail the archive.",
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "required": [
+          "index",
+          "name",
+          "accepted",
+          "content_type",
+          "size_bytes",
+          "reason"
+        ],
+        "title": "ExtractEntry",
+        "type": "object"
+      },
+      "ExtractRequest": {
+        "description": "Body for POST /extract.\n\n**There is no object-path field, and there must never be one.** Both\n`neonbinder-convex` and the preprocess runtime SA hold bucket-wide\n`objectViewer` on the placeholder bucket, so a caller-supplied path would\nmake this endpoint a cross-user read oracle. The service takes the two\nidentifiers and derives every key itself (`app.jobs.layout`); the caller's\nauthority to use them was established by Convex, which owns the\n`placeholderJobs` ownership row and re-derives the same path from it.",
+        "properties": {
+          "job_id": {
+            "description": "The jobId minted by createPlaceholderUploadUrl (a UUID).",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "The Clerk subject id that owns the job.",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "user_id"
+        ],
+        "title": "ExtractRequest",
+        "type": "object"
+      },
+      "ExtractResponse": {
+        "description": "Response body for POST /extract.\n\n`entries` has one row per non-ignored zip member, in zip order.\n`accepted_count + rejected_count == len(entries)`.",
+        "properties": {
+          "accepted_count": {
+            "title": "Accepted Count",
+            "type": "integer"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractEntry"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "rejected_count": {
+            "title": "Rejected Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entries",
+          "accepted_count",
+          "rejected_count"
+        ],
+        "title": "ExtractResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -127,6 +240,168 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ProcessEntryRequest": {
+        "description": "Body for POST /process-entry. Same no-path rule as `ExtractRequest`.",
+        "properties": {
+          "crop_quality": {
+            "default": "fast",
+            "description": "Crop cascade quality: 'fast' (classical identity skip) or 'strong'.",
+            "enum": [
+              "fast",
+              "strong"
+            ],
+            "title": "Crop Quality",
+            "type": "string"
+          },
+          "entry_index": {
+            "description": "The entry's zip ordinal, from /extract.",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Entry Index",
+            "type": "integer"
+          },
+          "job_id": {
+            "description": "The jobId minted by createPlaceholderUploadUrl (a UUID).",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "user_id": {
+            "description": "The Clerk subject id that owns the job.",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "user_id",
+          "entry_index"
+        ],
+        "title": "ProcessEntryRequest",
+        "type": "object"
+      },
+      "ProcessEntryResponse": {
+        "description": "Response body for POST /process-entry. Metadata only \u2014 never image bytes.\n\n\u2500\u2500 The `needs_escalation` contract (NEO-175) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTwo mutually exclusive outcomes share this one 200 response, distinguished\nby `needs_escalation`:\n\n  (a) `needs_escalation == false` \u2014 a COMPLETED crop result. Every\n      crop-result field below is populated (identity + dhash +\n      output_written, exactly as before this field existed) and the\n      processed image has been written to its derived output key. This is\n      the HEAVY role's only outcome, and the FAST role's outcome when the\n      classical fast path settled the card. The pre-existing fields keep\n      their pre-NEO-175 values byte-for-byte; the only additive change is\n      `needs_escalation: false`.\n\n  (b) `needs_escalation == true` \u2014 the FAST role (`PREPROCESS_ROLE=fast`)\n      DECLINED: the classical-only fast path did not settle this card and\n      the FAST service must never run the model-backed cascade. There is\n      NO crop result (every crop-result field is left at its default \u2014\n      empty `players`, null identity/dhash, `output_written=false`) and\n      nothing was written to the output key. Convex re-enqueues this entry\n      to the HEAVY service. The body carries no crop, no image bytes, and\n      no secrets \u2014 only this flag and the machine-default placeholders.\n\nA consumer decides purely on `needs_escalation`; it is always present. The\ncrop-result fields are documented per (a)/(b) above.\n\nThe processed image (case a) lives at its derived output key; Convex\nre-derives that key from `{user_id, job_id, entry_index}` when it needs the\nobject.\n\n`dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted\nORIGINAL \u2014 computed before any cropping, matching cardlister's \"hash the\noriginal scan, never the crop\" rule \u2014 serialized as 16 lowercase hex\ncharacters because a 64-bit integer does not survive JSON's float64. Null\nonly in the escalation case (b).\n\n`output_written` is False when the output object already existed (a\nretried entry): the write is once-only (`if_generation_match=0`) and\nfirst-write-wins on retry is the documented, accepted behaviour. It is\nalso False in the escalation case (b), where nothing is written at all.",
+        "properties": {
+          "card_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Number"
+          },
+          "cropped_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cropped Source"
+          },
+          "dhash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dhash"
+          },
+          "needs_escalation": {
+            "default": false,
+            "title": "Needs Escalation",
+            "type": "boolean"
+          },
+          "orient_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orient Confidence"
+          },
+          "output_written": {
+            "default": false,
+            "title": "Output Written",
+            "type": "boolean"
+          },
+          "player": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Player"
+          },
+          "players": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Players",
+            "type": "array"
+          },
+          "rotation_degrees": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rotation Degrees"
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Side"
+          },
+          "team": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Team"
+          },
+          "text_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Count"
+          }
+        },
+        "title": "ProcessEntryResponse",
         "type": "object"
       },
       "ProcessResponse": {
@@ -258,6 +533,25 @@
         ],
         "title": "ValidationError",
         "type": "object"
+      },
+      "WarmupResponse": {
+        "description": "Response body for POST /warmup.\n\n`status` is always \"warm\" on success \u2014 the model is resident when the\nresponse is sent. `was_cold` distinguishes the two ways that came to be:\nTrue when THIS call triggered the model load (the instance was genuinely\ncold), False when the session was already resident and the call was the\nidempotent fast path. Callers show a \"warming up\u2026\" message only on\nwas_cold=True; a pre-warmed instance stays silent.",
+        "properties": {
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "was_cold": {
+            "title": "Was Cold",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "was_cold"
+        ],
+        "title": "WarmupResponse",
+        "type": "object"
       }
     }
   },
@@ -324,6 +618,63 @@
         "summary": "Crop Alternatives"
       }
     },
+    "/extract": {
+      "post": {
+        "description": "Unpack a job's `input.zip` into per-entry EXIF-uprighted originals.\n\nStateless and idempotent: re-running a timed-out extract re-derives the\nsame keys and treats each occupied key (GCS 412) as success. Archive-level\nrejections (`ZIP_REJECTED`, 422) are terminal \u2014 they describe an archive\nnobody assembled by accident, so the caller must not retry. Per-entry\nproblems never fail the archive; they come back as `accepted=false` rows.\n\nFailure codes: `INVALID_IDENTIFIER` (400), `INPUT_NOT_FOUND` (404),\n`INPUT_TOO_LARGE` (413), `ZIP_REJECTED` (422, terminal),\n`EXTRACT_NOT_CONFIGURED` (503, retryable); unexpected storage failures\nsurface as 502.",
+        "operationId": "extract_extract_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtractRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Extract"
+      }
+    },
     "/health": {
       "get": {
         "operationId": "health_health_get",
@@ -348,7 +699,7 @@
     },
     "/process": {
       "post": {
-        "description": "Preprocess an image for card identification.\n\nThree request modes:\n  - **image-only** (unchanged default): `image` attached, no `precropped`.\n    Runs the full crop cascade on the original.\n  - **image + precropped** (unchanged opt-in): both attached. The\n    precropped is tried as the cascade's stage-1 candidate; if it's\n    rejected, the server falls back to its own crop strategies on the\n    original. Saves SAM/Haiku cost when the client crop is good; costs\n    full upload bandwidth regardless.\n  - **crop-only** (new): only `precropped` attached. Server validates the\n    crop and runs orient+classify on it if it passes. If validation\n    fails, returns `422 {\"error_code\":\"CROP_VALIDATION_FAILED\", ...,\n    \"retry_with_original\": true}` so the caller can retry with the\n    original. No silent server-side fallback \u2014 saving upload bandwidth\n    is the whole point.",
+        "description": "Preprocess an image for card identification.\n\nThree request modes:\n  - **image-only** (unchanged default): `image` attached, no `precropped`.\n    Runs the full crop cascade on the original.\n  - **image + precropped** (unchanged opt-in): both attached. The\n    precropped is tried as the cascade's stage-1 candidate; if it's\n    rejected, the server falls back to its own crop strategies on the\n    original. Saves SAM/Haiku cost when the client crop is good; costs\n    full upload bandwidth regardless.\n  - **crop-only** (new): only `precropped` attached. Server validates the\n    crop and runs orient+classify on it if it passes. If validation\n    fails, returns `422 {\"error_code\":\"CROP_VALIDATION_FAILED\", ...,\n    \"retry_with_original\": true}` so the caller can retry with the\n    original. No silent server-side fallback \u2014 saving upload bandwidth\n    is the whole point.\n\n`crop_quality` (form field, NEO-173) tunes the image cascade: `\"fast\"`\n(default) runs a classical-only identity short-circuit that skips the\n~35s BiRefNet pass on the pre-cropped-scanner majority, escalating every\nother image to the full pipeline; `\"strong\"` forces the tiered/BiRefNet\ncascade. It has no effect in crop-only mode.",
         "operationId": "process_process_post",
         "parameters": [
           {
@@ -400,6 +751,110 @@
           }
         },
         "summary": "Process"
+      }
+    },
+    "/process-entry": {
+      "post": {
+        "description": "Run the full crop cascade on one extracted entry and store the result.\n\nThe same orient \u2192 crop \u2192 rotate \u2192 classify pipeline as POST /process\n(image-only mode, no precropped), applied to the object /extract wrote for\nthis ordinal, plus a dHash of the uprighted original computed BEFORE any\ncropping. The rotated winning crop is written once to its derived output\nkey; on retry the first write wins and `output_written` comes back False.\n\nFailure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,\nterminal \u2014 /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`\n(503, retryable); Vision/Anthropic and unexpected storage failures surface\nas 502, exactly like /process.",
+        "operationId": "process_entry_process_entry_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessEntryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessEntryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Process Entry"
+      }
+    },
+    "/warmup": {
+      "post": {
+        "description": "Force the BiRefNet crop model resident on this instance, then report warm.\n\nA scale-to-zero container pays the ~930MB BiRefNet load plus ORT's first-run\nallocations on its first inference; cold, that latency lands on the first real\n/process-entry call (minutes of effective wait). Convex calls this at\nsession-start to pre-spin the model so the real calls hit a warm instance.\n\nSynchronous \"load then return\": the load runs the SAME path a real crop uses\n(`tiered.warm_up` \u2192 `_get_session` + one tiny in-memory 64x64 inference), needs\nno GCS object or real image, does NO GCS / Vision / Anthropic I/O, and writes\nnothing \u2014 pure model residency. Cloud Run holds the request while a cold\ninstance loads, so a 200 tells the caller the instance is actually ready.\n\nIdempotent and cheap when already warm: `is_session_loaded()` short-circuits so\na repeat call returns immediately with no reload and no inference, and reports\n`was_cold=False` so the caller knows the instance was already ready.\n\nConcurrency: the service runs container_concurrency=1, so one /warmup warms the\nONE instance that happens to handle it. Warming all N instances of a scaled-out\nrevision needs N concurrent /warmup calls (Convex fans out N = capacity); this\nendpoint only ever warms its own instance.\n\nNEO-175: the FAST role has no local model to make resident, so it must not\nreach the loader at all (the whole point of the role is that it never\nconstructs a model session). It short-circuits to `was_cold=False` without\nimporting or touching the tiered session helpers.",
+        "operationId": "warmup_warmup_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-internal-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Internal-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WarmupResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Warmup"
       }
     }
   }

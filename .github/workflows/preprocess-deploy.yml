@@ -36,6 +36,10 @@ defaults:
 
 env:
   SERVICE: neonbinder-preprocess
+  # NEO-175 Phase D: the fast service runs the SAME image as SERVICE above,
+  # selected into the fast role by terraform's PREPROCESS_ROLE=fast env var —
+  # see the "Fast-service lane" job block below for the full deploy story.
+  FAST_SERVICE: neonbinder-preprocess-fast
   REGION: us-central1
   DEV_PROJECT: neonbinder-dev
   PROD_PROJECT: neonbinder
@@ -209,9 +213,19 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder-dev/neonbinder-preprocess:${{ github.sha }}
           project_id: neonbinder-dev
+          # env_vars is REPLACE-semantics — every plain var terraform sets on
+          # the service must be repeated here or the deploy drops it (see
+          # preprocess.yml's deploy-preview for the same note).
+          # GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the dev
+          # placeholder-uploads bucket — must match
+          # apps/web/convex/adapters/placeholderUploads.ts's Convex-side env
+          # var of the same name, and terraform's
+          # google_storage_bucket.placeholder_uploads naming
+          # (neonbinder-placeholder-uploads-${var.gcp_project_id}).
           env_vars: |
             ENVIRONMENT=dev
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
+            GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder-dev
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
 
@@ -259,6 +273,40 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      # NEO-170 Phase D: mint an IAM identity token alongside the pre-existing
+      # x-internal-key header. Terraform lands a run.invoker binding for this
+      # deployer SA before this deploys, but the allUsers invoker binding is
+      # removed LATER (terraform T2) — until then the service is still
+      # public, so both auth mechanisms travel together and either one alone
+      # gets the request through. Cloud Run validates the ID token's audience
+      # against the BASE service URL even when the request targets a tagged
+      # revision host (same pattern as browser-deploy.yml's login probe).
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      # The auth action masks the token internally, but that guarantee belongs
+      # to the action's implementation — assert it ourselves so an action bump
+      # cannot silently start echoing the token into logs.
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
       - name: Fetch internal API key (dev)
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
@@ -273,6 +321,7 @@ jobs:
       - name: Run smoke tests against dev tagged URL
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
 
   dev-promote:
@@ -358,9 +407,15 @@ jobs:
           region: us-central1
           image: gcr.io/neonbinder/neonbinder-preprocess:${{ github.sha }}
           project_id: neonbinder
+          # env_vars is REPLACE-semantics — see the same note on deploy-dev
+          # above. GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the prod
+          # placeholder-uploads bucket, matching
+          # apps/web/convex/adapters/placeholderUploads.ts and terraform's
+          # google_storage_bucket.placeholder_uploads naming.
           env_vars: |
             ENVIRONMENT=prod
             GOOGLE_CLOUD_PROJECT=neonbinder
+            GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
 
@@ -408,6 +463,35 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      # NEO-170 Phase D: see dev-smoke's copy of this comment for the
+      # transition rationale (both auth mechanisms travel together while the
+      # allUsers invoker binding is still present).
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      # The auth action masks the token internally, but that guarantee belongs
+      # to the action's implementation — assert it ourselves so an action bump
+      # cannot silently start echoing the token into logs.
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
       - name: Fetch internal API key (prod)
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
@@ -422,6 +506,7 @@ jobs:
       - name: Run smoke tests against prod tagged URL
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
 
   prod-promote:
@@ -454,6 +539,415 @@ jobs:
         run: |
           set -euo pipefail
           gcloud run services update-traffic "$SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --to-revisions="$NEW_REVISION=100" \
+            --remove-tags="$TAG"
+
+  # ---------------------------------------------------------------------------
+  # Fast-service lane (NEO-175 Phase D).
+  #
+  # Same image as heavy, deployed a second time to the neonbinder-preprocess-fast
+  # Cloud Run service that terraform (a separate repo) owns creating. Mirrors
+  # the heavy chain's blue/green shape service-for-service (no_traffic + sha
+  # tag, promote only after a passing check), but is kept fully independent of
+  # the heavy jobs above: nothing here gates dev-promote/deploy-prod/
+  # prod-promote, and nothing above gates this. Two tolerances make it safe to
+  # land ahead of the terraform apply that creates the service:
+  #
+  #   * EXISTENCE — every deploy job opens with a `gcloud run services
+  #     describe` guard. A 404 sets exists=false and every step after it in
+  #     that job is skipped (the job itself still reports success), so a run
+  #     before terraform creates the service stays green. `gcloud run deploy`
+  #     is deliberately never called before the guard confirms the service is
+  #     there — it happily CREATES a missing service, which would race
+  #     terraform for ownership of a resource terraform is supposed to own
+  #     exclusively.
+  #
+  #   * SMOKE — dev-smoke-fast/prod-smoke-fast ping /health instead of running
+  #     tests/smoke's full suite. That suite's happy-path test posts to
+  #     /process, which runs the full BiRefNet/SAM cascade regardless of
+  #     PREPROCESS_ROLE — pointed at the fast service's smaller, classical-CV-
+  #     sized container that would be slow at best and OOM at worst. The ping
+  #     step uses continue-on-error so a flake can never fail the job (and
+  #     therefore never trips report-failure, which intentionally only watches
+  #     the heavy chain above); its real pass/fail is threaded through a job
+  #     output, and THAT is what gates promotion — so a broken revision still
+  #     can't reach 100% traffic even though the check that caught it is
+  #     non-blocking at the workflow-status level.
+  #
+  # No env_vars input on any deploy step here: terraform owns every var on
+  # this service (PREPROCESS_ROLE=fast, ENVIRONMENT, GOOGLE_CLOUD_PROJECT, the
+  # two secret-backed vars). Omitting the input entirely means the action
+  # never passes --set-env-vars, so gcloud leaves the existing values
+  # untouched — unlike env_vars' REPLACE semantics on the heavy service above,
+  # which must repeat every var to avoid dropping one.
+  # ---------------------------------------------------------------------------
+
+  deploy-dev-fast:
+    name: Deploy dev fast service (no-traffic, sha tag) if it exists
+    needs: build-push
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      exists: ${{ steps.guard.outputs.exists }}
+      new_revision: ${{ steps.capture-new.outputs.new_revision }}
+      tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
+      prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: guard
+        name: Check whether the fast Cloud Run service exists yet
+        run: |
+          set -euo pipefail
+          if gcloud run services describe "$FAST_SERVICE" \
+              --region="$REGION" --project="$DEV_PROJECT" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$FAST_SERVICE not found in $DEV_PROJECT (terraform hasn't created it yet) — skipping the fast-service dev deploy."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: capture-prev
+        name: Capture dev fast's currently-serving revision
+        if: steps.guard.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          PREV=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.traffic[0].revisionName)')
+          echo "Previous dev fast revision: $PREV"
+          echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to dev fast Cloud Run (no_traffic + sha tag)
+        if: steps.guard.outputs.exists == 'true'
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: neonbinder-preprocess-fast
+          region: us-central1
+          image: gcr.io/neonbinder-dev/neonbinder-preprocess:${{ github.sha }}
+          project_id: neonbinder-dev
+          no_traffic: true
+          tag: ${{ needs.build-push.outputs.deploy_tag }}
+
+      - id: capture-new
+        name: Capture new dev fast revision + tagged URL
+        if: steps.guard.outputs.exists == 'true'
+        env:
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          NEW=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.latestCreatedRevisionName)')
+          TAGGED_URL=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "::error::tagged URL for tag=$TAG not found on $FAST_SERVICE."
+            exit 1
+          fi
+          echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+  dev-smoke-fast:
+    name: Ping dev fast service (tagged URL)
+    needs: deploy-dev-fast
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.deploy-dev-fast.outputs.exists == 'true'
+      && needs.deploy-dev-fast.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      smoke_passed: ${{ steps.ping.outputs.passed }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: base-url
+        name: Capture fast base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
+      # Deliberately a bare /health ping, not tests/smoke — see the fast-lane
+      # block comment above. continue-on-error means a failure here can never
+      # fail this job or the workflow run; steps.ping.outputs.passed is what
+      # actually gates dev-promote-fast below.
+      - id: ping
+        name: Ping /health on the tagged URL
+        continue-on-error: true
+        env:
+          TAGGED_URL: ${{ needs.deploy-dev-fast.outputs.tagged_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          set -uo pipefail
+          STATUS=$(curl -s -o /tmp/health.json -w '%{http_code}' \
+            -H "Authorization: Bearer $PROBE_TOKEN" \
+            "$TAGGED_URL/health")
+          BODY=$(cat /tmp/health.json 2>/dev/null || true)
+          echo "status=$STATUS body=$BODY"
+          if [ "$STATUS" = "200" ] && [ "$BODY" = '{"status":"ok"}' ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::fast-service /health ping failed (status=$STATUS body=$BODY) — not blocking the deploy."
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  dev-promote-fast:
+    name: Promote dev fast service to 100%
+    needs: [build-push, deploy-dev-fast, dev-smoke-fast]
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.deploy-dev-fast.outputs.exists == 'true'
+      && needs.dev-smoke-fast.outputs.smoke_passed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Promote and drop the scratch tag
+        env:
+          NEW_REVISION: ${{ needs.deploy-dev-fast.outputs.new_revision }}
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --to-revisions="$NEW_REVISION=100" \
+            --remove-tags="$TAG"
+
+  deploy-prod-fast:
+    name: Deploy prod fast service (no-traffic, sha tag) if it exists
+    needs: [build-push, dev-promote-fast]
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.dev-promote-fast.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      exists: ${{ steps.guard.outputs.exists }}
+      new_revision: ${{ steps.capture-new.outputs.new_revision }}
+      tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
+      prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: guard
+        name: Check whether the fast Cloud Run service exists yet
+        run: |
+          set -euo pipefail
+          if gcloud run services describe "$FAST_SERVICE" \
+              --region="$REGION" --project="$PROD_PROJECT" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$FAST_SERVICE not found in $PROD_PROJECT (terraform hasn't created it yet) — skipping the fast-service prod deploy."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - id: capture-prev
+        name: Capture prod fast's currently-serving revision
+        if: steps.guard.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
+          PREV=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --format='value(status.traffic[0].revisionName)')
+          echo "Previous prod fast revision: $PREV"
+          echo "prev_revision=$PREV" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to prod fast Cloud Run (no_traffic + sha tag)
+        if: steps.guard.outputs.exists == 'true'
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: neonbinder-preprocess-fast
+          region: us-central1
+          image: gcr.io/neonbinder/neonbinder-preprocess:${{ github.sha }}
+          project_id: neonbinder
+          no_traffic: true
+          tag: ${{ needs.build-push.outputs.deploy_tag }}
+
+      - id: capture-new
+        name: Capture new prod fast revision + tagged URL
+        if: steps.guard.outputs.exists == 'true'
+        env:
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          NEW=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --format='value(status.latestCreatedRevisionName)')
+          TAGGED_URL=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "::error::tagged URL for tag=$TAG not found on $FAST_SERVICE."
+            exit 1
+          fi
+          echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
+          echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+
+  prod-smoke-fast:
+    name: Ping prod fast service (tagged URL)
+    needs: deploy-prod-fast
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.deploy-prod-fast.outputs.exists == 'true'
+      && needs.deploy-prod-fast.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      smoke_passed: ${{ steps.ping.outputs.passed }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: base-url
+        name: Capture fast base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$PROD_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
+      - id: ping
+        name: Ping /health on the tagged URL
+        continue-on-error: true
+        env:
+          TAGGED_URL: ${{ needs.deploy-prod-fast.outputs.tagged_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          set -uo pipefail
+          STATUS=$(curl -s -o /tmp/health.json -w '%{http_code}' \
+            -H "Authorization: Bearer $PROBE_TOKEN" \
+            "$TAGGED_URL/health")
+          BODY=$(cat /tmp/health.json 2>/dev/null || true)
+          echo "status=$STATUS body=$BODY"
+          if [ "$STATUS" = "200" ] && [ "$BODY" = '{"status":"ok"}' ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::fast-service /health ping failed (status=$STATUS body=$BODY) — not blocking the deploy."
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  prod-promote-fast:
+    name: Promote prod fast service to 100%
+    needs: [build-push, deploy-prod-fast, prod-smoke-fast]
+    if: |
+      github.event_name == 'push'
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.deploy-prod-fast.outputs.exists == 'true'
+      && needs.prod-smoke-fast.outputs.smoke_passed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Promote and drop the scratch tag
+        env:
+          NEW_REVISION: ${{ needs.deploy-prod-fast.outputs.new_revision }}
+          TAG: ${{ needs.build-push.outputs.deploy_tag }}
+        run: |
+          set -euo pipefail
+          gcloud run services update-traffic "$FAST_SERVICE" \
             --region="$REGION" --project="$PROD_PROJECT" \
             --to-revisions="$NEW_REVISION=100" \
             --remove-tags="$TAG"

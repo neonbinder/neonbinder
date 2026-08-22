@@ -26,6 +26,7 @@ import { mutation, action } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
+import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects";
 
 export const resetMyTestState = mutation({
   args: {},
@@ -129,6 +130,78 @@ export const markSiteNeedsReauth = mutation({
       ),
     });
     return { updated: true };
+  },
+});
+
+/**
+ * Materialise a "collecting" placeholder run owned by the CALLER, so an E2E flow
+ * has something real to abort (NEO-170 admin operability).
+ *
+ * Exists for the same reason `markSiteNeedsReauth` does: the state the flow needs
+ * to assert against is otherwise unreachable from the UI in test time. Reaching a
+ * genuine collecting run means opening a scanner session and uploading an image
+ * to GCS through a signed policy — a real object, a real `/process-entry`, and
+ * minutes of Cloud Run work — none of which the abort flow is testing. What it
+ * IS testing is that an admin can see another user's run and stop it, and that
+ * needs precisely one row.
+ *
+ * Deliberately **not** a call to `startPlaceholderStream`, for two reasons. That
+ * mutation enforces the per-user active-job cap, so a suite that left a run
+ * behind would start failing its own fixture; and it belongs to the product
+ * surface, which should not grow a test-only bypass. This writes the row it
+ * needs directly, in the same shape `startPlaceholderStream` writes — including
+ * the job prefix as `objectPath`, built with the shared helper rather than
+ * hand-formatted, so the fixture cannot drift from the real thing.
+ *
+ * No images and no GCS: the row references a prefix under which nothing was ever
+ * uploaded, which is exactly what an abandoned session looks like anyway.
+ *
+ * Safety, in the same shape as the other helpers in this file:
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - only ever creates a row owned by the CALLER — there is no userId argument
+ *     to spoof, so it cannot be used to plant a job on someone else;
+ *   - creates an EMPTY run. It enqueues nothing, so it spends no Vision or model
+ *     budget, and the idle sweep closes it within the hour even if the flow that
+ *     made it never aborts it.
+ */
+export const seedMyTestPlaceholderStream = mutation({
+  args: {},
+  returns: v.object({ jobId: v.string() }),
+  handler: async (ctx) => {
+    // Fail closed in production: the enabling flag is unset there.
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test placeholder seeding is not enabled on this deployment");
+    }
+
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    if (!CLERK_USER_ID_RE.test(userId)) {
+      // Same check the real mint makes: this value becomes a literal object-path
+      // segment, so refuse to build one from an unexpected shape even here.
+      throw new Error("Unexpected user id shape");
+    }
+
+    const jobId = crypto.randomUUID();
+    const now = Date.now();
+    await ctx.db.insert("placeholderJobs", {
+      jobId,
+      userId,
+      objectPath: placeholderJobPrefix(userId, jobId),
+      createdAt: now,
+      mode: "stream",
+      status: "collecting",
+      startedAt: now,
+      totalImages: 0,
+      processedImages: 0,
+      failedImages: 0,
+      rejectedEntries: 0,
+      nextEntryIndex: 0,
+      lastActivityAt: now,
+    });
+
+    return { jobId };
   },
 });
 

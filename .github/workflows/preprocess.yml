@@ -55,6 +55,10 @@ defaults:
 
 env:
   SERVICE: neonbinder-preprocess
+  # NEO-175 Phase D: fast runs the SAME preview image built for deploy-preview
+  # below — see deploy-preview-fast, which deploys it a second time rather
+  # than rebuilding.
+  FAST_SERVICE: neonbinder-preprocess-fast
   REGION: us-central1
   DEV_PROJECT: neonbinder-dev
   PROD_PROJECT: neonbinder
@@ -188,9 +192,17 @@ jobs:
           # terraform sets on the service must be repeated here or the deploy
           # drops it. Secret-backed vars (INTERNAL_API_KEY, ANTHROPIC_API_KEY)
           # are managed separately via --set-secrets and are NOT affected.
+          # GCS_PLACEHOLDER_BUCKET (NEO-170 Phase D) names the dev
+          # placeholder-uploads bucket — must match
+          # apps/web/convex/adapters/placeholderUploads.ts's Convex-side env
+          # var of the same name, and terraform's
+          # google_storage_bucket.placeholder_uploads naming
+          # (neonbinder-placeholder-uploads-${var.gcp_project_id}). Previews
+          # deploy into the dev project, so this is the dev bucket.
           env_vars: |
             ENVIRONMENT=dev
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
+            GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder-dev
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
 
@@ -237,6 +249,37 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
+      # NEO-170 Phase D: mint an IAM identity token alongside the pre-existing
+      # x-internal-key header — see preprocess-deploy.yml's dev-smoke for the
+      # full transition rationale. Cloud Run validates the ID token's audience
+      # against the BASE service URL even though the preview lives on a
+      # tagged (`pr-<N>`) host.
+      - id: base-url
+        name: Capture base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      # The auth action masks the token internally, but that guarantee belongs
+      # to the action's implementation — assert it ourselves so an action bump
+      # cannot silently start echoing the token into logs.
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
       - name: Fetch internal API key (dev)
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
@@ -255,13 +298,187 @@ jobs:
       - name: Run smoke tests against preview
         env:
           SMOKE_TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: pytest tests/smoke -v
+
+  # ---------------------------------------------------------------------------
+  # Fast-service preview lane (NEO-175 Phase D).
+  #
+  # Deploys the SAME pr-<N> preview image built by deploy-preview above to the
+  # fast Cloud Run service a second time — no rebuild, just a second tagged
+  # no-traffic deploy. Mirrors preprocess-deploy.yml's fast-lane tolerances:
+  #
+  #   * EXISTENCE — guarded by a `gcloud run services describe` before ever
+  #     calling deploy-cloudrun, so a PR opened before terraform creates
+  #     neonbinder-preprocess-fast still gets a green (skipped, not failed)
+  #     preview job. `gcloud run deploy` is never reached in that case — it
+  #     would happily create the missing service, racing terraform for
+  #     ownership of a resource it owns exclusively.
+  #
+  #   * SMOKE — preview-smoke-fast pings /health rather than running the full
+  #     tests/smoke suite against the fast preview. See
+  #     preprocess-deploy.yml's fast-lane comment for why: that suite's
+  #     happy-path test exercises /process, which runs the full BiRefNet/SAM
+  #     cascade regardless of PREPROCESS_ROLE, and would be slow-to-OOM on the
+  #     fast service's smaller container. continue-on-error means a flake here
+  #     can never fail this job or the PR preview overall; the result still
+  #     surfaces in the sticky comment below.
+  #
+  # No env_vars input: terraform owns every var on this service, same as the
+  # deploy lane.
+  # ---------------------------------------------------------------------------
+  deploy-preview-fast:
+    name: Deploy per-PR Cloud Run preview (fast service) if it exists
+    needs: deploy-preview
+    if: |
+      github.event_name == 'pull_request'
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.deploy-preview.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    # This job never checks out the repo (gcloud-only steps), so the
+    # workflow-level `defaults.run.working-directory: services/preprocess`
+    # would point `run:` steps at a path that doesn't exist on the runner —
+    # bash fails to even start (observed: job red at ~13s on the guard step,
+    # before gcloud ever ran). Same override deploy-dev-fast already carries
+    # in preprocess-deploy.yml; ported here too.
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      exists: ${{ steps.guard.outputs.exists }}
+      preview_url: ${{ steps.capture.outputs.preview_url }}
+      preview_tag: ${{ steps.capture.outputs.preview_tag }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: guard
+        name: Check whether the fast Cloud Run service exists yet
+        run: |
+          set -euo pipefail
+          if gcloud run services describe "$FAST_SERVICE" \
+              --region="$REGION" --project="$DEV_PROJECT" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$FAST_SERVICE not found in $DEV_PROJECT (terraform hasn't created it yet) — skipping the fast-service preview deploy."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy tagged no-traffic preview to fast Cloud Run
+        if: steps.guard.outputs.exists == 'true'
+        uses: google-github-actions/deploy-cloudrun@2028e2d7d30a78c6910e0632e48dd561b064884d # v3.0.1
+        with:
+          service: neonbinder-preprocess-fast
+          region: us-central1
+          # Same already-pushed preview image deploy-preview built above — see
+          # that job's comment for why previews live in DEV_PREVIEW_IMAGE
+          # rather than DEV_IMAGE.
+          image: gcr.io/neonbinder-dev/neonbinder-preprocess-preview:pr-${{ github.event.pull_request.number }}
+          project_id: neonbinder-dev
+          no_traffic: true
+          tag: pr-${{ github.event.pull_request.number }}
+
+      - id: capture
+        name: Capture fast preview URL
+        if: steps.guard.outputs.exists == 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          TAG="pr-$PR"
+          TAGGED_URL=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" --format=json \
+            | jq -r ".status.traffic[] | select(.tag == \"$TAG\") | .url")
+          if [ -z "$TAGGED_URL" ] || [ "$TAGGED_URL" = "null" ]; then
+            echo "::error::fast preview URL for tag=$TAG not found on $FAST_SERVICE."
+            exit 1
+          fi
+          echo "preview_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
+          echo "preview_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Fast preview URL: $TAGGED_URL"
+
+  preview-smoke-fast:
+    name: Ping the fast preview
+    needs: deploy-preview-fast
+    if: |
+      needs.deploy-preview-fast.outputs.exists == 'true'
+      && needs.deploy-preview-fast.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    # No checkout here either — same reasoning as deploy-preview-fast above.
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    outputs:
+      smoke_passed: ${{ steps.ping.outputs.passed }}
+    steps:
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - id: base-url
+        name: Capture fast base service URL (token audience)
+        run: |
+          set -euo pipefail
+          BASE_URL=$(gcloud run services describe "$FAST_SERVICE" \
+            --region="$REGION" --project="$DEV_PROJECT" \
+            --format='value(status.url)')
+          echo "base_url=$BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.base-url.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
+      - id: ping
+        name: Ping /health on the tagged URL
+        continue-on-error: true
+        env:
+          TAGGED_URL: ${{ needs.deploy-preview-fast.outputs.preview_url }}
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          set -uo pipefail
+          STATUS=$(curl -s -o /tmp/health.json -w '%{http_code}' \
+            -H "Authorization: Bearer $PROBE_TOKEN" \
+            "$TAGGED_URL/health")
+          BODY=$(cat /tmp/health.json 2>/dev/null || true)
+          echo "status=$STATUS body=$BODY"
+          if [ "$STATUS" = "200" ] && [ "$BODY" = '{"status":"ok"}' ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::fast preview /health ping failed (status=$STATUS body=$BODY) — not blocking the PR."
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+          fi
 
   # Sticky PR comment with preview URL + results. Runs regardless of outcome so
   # a failure still leaves a trace pointing at the run.
   comment-preview:
     name: Comment preview URL
-    needs: [deploy-preview, preview-smoke]
+    needs: [deploy-preview, preview-smoke, deploy-preview-fast, preview-smoke-fast]
     if: |
       always()
       && github.event_name == 'pull_request'
@@ -287,6 +504,11 @@ jobs:
           TAG: ${{ needs.deploy-preview.outputs.preview_tag }}
           DEPLOY_RESULT: ${{ needs.deploy-preview.result }}
           SMOKE_RESULT: ${{ needs.preview-smoke.result }}
+          FAST_EXISTS: ${{ needs.deploy-preview-fast.outputs.exists }}
+          FAST_URL: ${{ needs.deploy-preview-fast.outputs.preview_url }}
+          FAST_TAG: ${{ needs.deploy-preview-fast.outputs.preview_tag }}
+          FAST_DEPLOY_RESULT: ${{ needs.deploy-preview-fast.result }}
+          FAST_SMOKE_PASSED: ${{ needs.preview-smoke-fast.outputs.smoke_passed }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -307,6 +529,27 @@ jobs:
             URL_LINE="$URL"
           fi
 
+          # NEO-175 Phase D: the fast service's preview is a distinct
+          # tri-state, not just pass/fail — it may not exist yet at all
+          # (terraform hasn't created neonbinder-preprocess-fast in this
+          # environment), which is expected and not an error.
+          if [ "$FAST_EXISTS" != "true" ]; then
+            FAST_URL_LINE="not created yet — terraform hasn't provisioned neonbinder-preprocess-fast"
+            FAST_DEPLOY_LINE="skipped (service absent)"
+            FAST_SMOKE_LINE="skipped"
+          else
+            FAST_URL_LINE="not deployed — see workflow run"
+            if [ "$FAST_DEPLOY_RESULT" = "success" ] && [ -n "$FAST_URL" ]; then
+              FAST_URL_LINE="$FAST_URL"
+            fi
+            FAST_DEPLOY_LINE="$(status "$FAST_DEPLOY_RESULT")"
+            if [ "$FAST_SMOKE_PASSED" = "true" ]; then
+              FAST_SMOKE_LINE="PASS"
+            else
+              FAST_SMOKE_LINE="FAIL (non-blocking)"
+            fi
+          fi
+
           # Marker invariant: comment lookup below is a SUBSTRING match, so no
           # marker may be a substring of another. This one and browser.yml's
           # `neonbinder-browser-preview-marker` are disjoint. Never introduce a
@@ -321,6 +564,12 @@ jobs:
           **Checks**
           - Deploy: $(status "$DEPLOY_RESULT")
           - Smoke: $(status "$SMOKE_RESULT")
+
+          **Fast service preview**
+          - URL: $FAST_URL_LINE
+          - Tag: \`$FAST_TAG\`
+          - Deploy: $FAST_DEPLOY_LINE
+          - Health ping: $FAST_SMOKE_LINE
 
           Preview auto-updates on each push to this PR and is torn down when the PR closes. [Workflow run]($RUN_URL)
           EOF

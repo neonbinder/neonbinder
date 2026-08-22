@@ -157,6 +157,16 @@ def warm_up() -> None:
     rembg.remove(dummy, session=session)
 
 
+def is_session_loaded() -> bool:
+    """Cheap, side-effect-free check: is the BiRefNet session already resident?
+
+    True once `_get_session()` (via a crop or `warm_up()`) has constructed and
+    cached the session for this process. Lets a repeat warm-up short-circuit —
+    no reload, no inference — instead of paying even a tiny dummy pass again.
+    """
+    return _session is not None
+
+
 # ── Input ───────────────────────────────────────────────────────────────────
 
 
@@ -696,4 +706,72 @@ def tiered_crop(image_bytes: bytes) -> bytes | None:
         return _run_tiered(image_bytes, full, work, scale)
     except Exception:
         logger.exception("tiered_crop: pipeline failed")
+        return None
+
+
+# ── NEO-173 crop fast-path ───────────────────────────────────────────────────
+
+
+def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
+    """Classical-only fast path (NO BiRefNet / torch): the ~35s-BiRefNet skip.
+
+    Returns the input bytes UNTOUCHED when the image is an unambiguous
+    pre-cropped card-aspect frame — the "identity" outcome — and `None` to
+    tell the caller it must ESCALATE to the full `tiered_crop` (BiRefNet)
+    pipeline. `None` is deliberately the only non-accept signal: this
+    function NEVER produces a new crop, so a caller that gets `None` runs the
+    complete, unchanged pipeline and cannot end up with a worse crop than
+    `strong` mode would have produced.
+
+    Why identity-only. The live scanner majority (~80% of images) is already
+    a tight card-aspect frame; the full pipeline confirms that by paying a
+    ~35s BiRefNet pass whose only job is to re-affirm "yes, already a card"
+    (measured: 479/596 corpus images are `identity`, avg 35.7s each). That
+    pass is the waste this path removes. We accept identity here ONLY on the
+    `should_identity` "frame" verdict — the top classical component fills the
+    card-aspect frame — which that function's own contract calls "settled —
+    do not bother a second tier". Validated 284/284 correct against the
+    BiRefNet ground truth on the corpus's identity set.
+
+    Why NOT a classical crop fast-accept. A classical crop cannot be trusted
+    without the pipeline's BiRefNet *verification* stage: a border-shave
+    (dark-on-dark charcoal borders, white-on-white) warps to a clean card
+    aspect and passes every classical gate — QC score, rectangularity,
+    axis-alignment, uniform-margin — while quietly clipping the card. The
+    corpus's `2026-08-11-0083` (charcoal border on a dark belt) and the
+    `tc52r` white-border set both do exactly this; only BiRefNet seeing a
+    materially larger card recovers the border. So EVERY crop escalates
+    (see NEO-173 validation notes), which also means any image needing
+    deskew/rotation reaches the full deskew path untouched — the fast path
+    never emits a crop at all, let alone an un-deskewed one.
+    """
+    try:
+        full, work, scale = _load(image_bytes)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("fast_tiered_crop: cannot open image: %s", exc)
+        return None  # escalate; the full pipeline owns the undecodable path
+
+    try:
+        fh, fw = work.shape[:2]
+        near_card_frame = abs(min(fh, fw) / max(fh, fw) - CARD_ASPECT) <= FRAME_CARD_WINDOW
+        if not near_card_frame:
+            # A frame that is not itself card-aspect is never a pre-cropped
+            # card handed back to us — it is a photo with framing to remove.
+            logger.info("fast: escalate (frame not card-aspect)")
+            return None
+
+        lab_work = cv2.cvtColor(work, cv2.COLOR_BGR2LAB).astype(np.float32)
+        bg = border_bg_lab(lab_work)
+        comps = _run_classical(work, bg)
+        identity, reason = should_identity(comps, work, lab_work, bg)
+        # Only the "frame" verdict is classically settled. "weak"/"margin"
+        # mean a better (semantic) mask might still justify a crop — exactly
+        # what BiRefNet is for — so those escalate rather than pass through.
+        if identity and reason == "frame":
+            logger.info("fast: identity (frame-fill card-aspect frame), skipping BiRefNet")
+            return image_bytes
+        logger.info("fast: escalate (identity=%s reason=%s)", identity, reason)
+        return None
+    except Exception:
+        logger.exception("fast_tiered_crop: classical pass failed; escalating")
         return None

@@ -8,8 +8,8 @@
  * losing a link or ceasing to mark the current section.
  *
  * `aria-current="page"` is the assertion that matters. It is the only thing
- * telling a screen reader user which of the four sections they are on — the
- * colour change carries that information for everyone else.
+ * telling a screen reader user which section they are on — the colour change
+ * carries that information for everyone else.
  */
 
 import { render, screen } from "@testing-library/react";
@@ -37,6 +37,7 @@ function renderAt(path: string) {
           <Route path="credentials" element={<div>credentials panel</div>} />
           <Route path="shipping" element={<div>shipping panel</div>} />
           <Route path="prizes" element={<div>prizes panel</div>} />
+        <Route path="api-keys" element={<div>api keys panel</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -57,6 +58,7 @@ describe("ProfileLayout", () => {
       ["Credentials", "/profile/credentials"],
       ["Shipping", "/profile/shipping"],
       ["Prize Pool", "/profile/prizes"],
+      ["API Keys", "/profile/api-keys"],
     ]);
   });
 
@@ -65,6 +67,7 @@ describe("ProfileLayout", () => {
     ["/profile/credentials", "Credentials"],
     ["/profile/shipping", "Shipping"],
     ["/profile/prizes", "Prize Pool"],
+    ["/profile/api-keys", "API Keys"],
   ])("marks %s as the current page", (path, label) => {
     renderAt(path);
     expect(

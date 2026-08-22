@@ -11,14 +11,20 @@ import { fetchEspnTeamInfo } from "./espn";
  * teams (city, league, years active) from query.wikidata.org. No API
  * key required.
  *
- * Concurrency model: enrichment runs through a chained queue
- * (`processEnrichmentQueue`) so global request rate stays one-at-a-time
- * regardless of how many entities a fetch produces. Each entity's
- * processing reschedules the next one after `INTER_ENTITY_DELAY_MS`,
- * which Wikidata's WMF service is happy with even under bursty
- * batches like 300+ players. We previously used `scheduler.runAfter(0)`
- * per entity which fired N parallel actions — each with its own
- * isolated throttle counter — and hit 429s immediately at scale.
+ * Concurrency model (NEO-99): every SPARQL caller — the review-wizard
+ * drain and the id-based `enrichPlayer`/`enrichTeam` alike — is enqueued
+ * onto the deployment-wide `wikidataPool` (convex/wikidataPool.ts, pinned
+ * to `maxParallelism: 5`). That pool is the ONLY thing rate-limiting
+ * Wikidata now, and it does so across the whole deployment: Wikidata's
+ * documented ceiling is 5 parallel queries per client IP, and Convex Cloud
+ * egresses one IP, so a per-batch chain was never enough — several review
+ * batches (or the E2E runners) draining at once each ran their own serial
+ * chain and still summed past 5 parallel, Wikidata throttled the IP, and a
+ * lookup with no fetch timeout hung forever, stranding the wizard on
+ * "Looking up…". The pool replaces the old per-batch `runAfter` chains
+ * (`processEntityReviewQueue` / `processEnrichmentQueue`, both removed):
+ * 100s of items queue and drain exactly 5-wide, so the wizard's reactive
+ * `getBatch` streams rows resolving one-by-one instead of blocking.
  *
  * Why Wikidata over baseball-reference / TheSportsDB:
  * - one source covers every sport (no per-sport adapter sprawl)
@@ -35,12 +41,23 @@ const SPARQL_ENDPOINT = "https://query.wikidata.org/sparql";
 const USER_AGENT = "NeonBinder/1.0 (https://neonbinder.io; jburich@neonbinder.io)";
 
 /**
- * Gap between processing successive entities in the enrichment queue.
- * 3000ms is well within Wikidata's published etiquette (≤1 req/sec) and
- * leaves headroom for the two SPARQL calls each entity performs (search +
- * detail). Bumped from 1100ms after live testing showed 429s at scale.
+ * Hard ceiling on a single SPARQL round trip (NEO-99).
+ *
+ * `runSparql` had no timeout at all, which is the second half of the
+ * "Looking up…" hang: when Wikidata throttled our IP a request could stall
+ * indefinitely, and because the `await` never returned, the row was never
+ * patched out of `pending` — the pool's `onComplete` and the stale-row cron
+ * are backstops, but the primary fix is to never stall in the first place.
+ * `AbortSignal.timeout` makes a throttled/slow call reject fast; `runSparql`
+ * already maps any rejection to `null`, so the caller resolves the row to
+ * "error" (shown as "No Wikidata match found") within seconds instead of hanging.
+ *
+ * 10s is comfortably above a healthy query — a single direct SPARQL call
+ * returns in ~0.4s — while short enough that a genuinely stuck request gives
+ * up long before a user would. Each lookup makes at most two of these
+ * sequentially (search + detail), so the worst case per entity is ~20s.
  */
-const INTER_ENTITY_DELAY_MS = 3000;
+const WIKIDATA_FETCH_TIMEOUT_MS = 10_000;
 
 /**
  * NEO-96: everything this module needs to know about a sport, resolved by the
@@ -111,13 +128,17 @@ function sparqlStringLiteral(raw: string): string {
 
 /**
  * Run a SPARQL query against Wikidata. Returns null on any non-OK
- * response (including 429 rate-limit and 5xx). The chained queue caller
- * handles retry sequencing — this function does not retry inline.
+ * response (including 429 rate-limit and 5xx), and null on a timeout or
+ * network error — a throttled or slow request aborts after
+ * `WIKIDATA_FETCH_TIMEOUT_MS` and is mapped to null like any other failure,
+ * so the caller resolves its row to "error" rather than awaiting forever.
  *
- * Note: there is no in-process throttle here. The serial queue
- * provides the only rate limit; running this from outside the queue
- * (e.g., directly from another action) is allowed but bypasses
- * pacing — do so only for one-off lookups.
+ * Concurrency is NOT this function's concern: the `wikidataPool` bounds how
+ * many of these run at once across the whole deployment (≤5). The timeout
+ * bounds how LONG any single one may run. Together they are what make the
+ * "Looking up…" hang impossible — the pool keeps us under Wikidata's
+ * 5-parallel-per-IP ceiling so it does not throttle us, and the timeout
+ * guarantees termination even if it does. This function does not retry.
  */
 async function runSparql(query: string): Promise<SparqlResults | null> {
   const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
@@ -127,6 +148,10 @@ async function runSparql(query: string): Promise<SparqlResults | null> {
         Accept: "application/sparql-results+json",
         "User-Agent": USER_AGENT,
       },
+      // Aborts a throttled/stalled request instead of hanging the action (and
+      // with it the review row) indefinitely — see WIKIDATA_FETCH_TIMEOUT_MS.
+      // A fired timeout rejects fetch with a TimeoutError, caught below → null.
+      signal: AbortSignal.timeout(WIKIDATA_FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {
       console.warn(`[wikidata] SPARQL ${response.status}`);
@@ -236,7 +261,7 @@ async function findTeamQid(
  * Player enrichment result, shared by both consumers:
  *  - `enrichPlayer` (id-based, post-creation) resolves `careerTeams` names
  *    to real team ids via teams.findOrCreateInternal before persisting.
- *  - `processEntityReviewQueue` (NEO-92, name-based, pre-creation preview)
+ *  - `runEntityReviewLookup` (NEO-92, name-based, pre-creation preview)
  *    stores `careerTeams` as bare names — resolving to real team rows is
  *    deferred to commit time (only once "create" is the confirmed decision)
  *    so a mere preview lookup can never orphan a team row for a player the
@@ -374,7 +399,7 @@ export const enrichPlayer = internalAction({
     const result = await lookupPlayerEnrichment(player.name, sportCtx);
     if (!result) return null;
 
-    const teamYears: Array<{ teamId: import("../_generated/dataModel").Id<"teams">; fromYear: number; toYear?: number }> = [];
+    const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [];
     for (const ct of result.careerTeams) {
       const teamId = await ctx.runMutation(internal.teams.findOrCreateInternal, {
         name: ct.name,
@@ -499,115 +524,64 @@ export const enrichTeam = internalAction({
 });
 
 /**
- * Chained serial queue for Wikidata enrichment.
+ * NEO-99: one review row's Wikidata preview lookup — the `wikidataPool` work
+ * item that replaced the old chained `processEntityReviewQueue`.
  *
- * commitCardChecklist hands the full list of newly-created player +
- * team IDs to this action via `scheduler.runAfter(0, ...)`. The action
- * pops one id off the front, enriches it, then reschedules itself with
- * the remaining tail after `INTER_ENTITY_DELAY_MS`. Result: globally
- * one Wikidata request at a time, regardless of how many entities a
- * fetch produced. Players are processed before teams so card render
- * gets HoF/career-team flags first; team metadata (city, league)
- * matters less for the immediate UI.
+ * The pool (convex/wikidataPool.ts) enqueues exactly one of these per pending
+ * `entityReviewQueue` row and drains 5 at a time across the whole deployment.
+ * Each item is fully self-contained: it resolves the row's sport config, runs
+ * the name+sport lookup (nothing is written to `players`/`teams` — only the
+ * review row's own `status`/`enrichment`), and patches the row. The wizard's
+ * reactive `getBatch` turns each patch into a visible "one more reviewed" step,
+ * so rows stream in as the pool works through them.
  *
- * Errors on a single entity are caught and logged — the queue moves
- * on. We do NOT retry on 429 here; the 3-second gap is already
- * conservative and a transient 429 just means that one entity stays
- * unenriched until a future fetch.
+ * Self-contained on purpose: the pool coordinates concurrency and the fetch
+ * timeout bounds duration, so a single item completes fast (success, a
+ * no-match "error", or a timed-out "error") and never blocks the lane. The row
+ * is patched in BOTH the success and the caught-error branches here — the
+ * pool's `onEntityReviewLookupComplete` is a further backstop for the residue
+ * this cannot reach on its own (an UNCAUGHT throw, an action-level timeout, or
+ * a pool cancellation), so a row can never be stranded on `pending`.
+ *
+ * Deliberately does its own try/catch rather than letting the error propagate
+ * to the pool: resolving the row here keeps every lookup outcome in one place
+ * and lets the streaming counter advance immediately, instead of waiting for
+ * the completion callback to fire.
  */
-export const processEnrichmentQueue = internalAction({
+export const runEntityReviewLookup = internalAction({
   args: {
-    playerIds: v.array(v.id("players")),
-    teamIds: v.array(v.id("teams")),
+    rowId: v.id("entityReviewQueue"),
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
-    let nextPlayerIds: Array<Id<"players">> = args.playerIds;
-    let nextTeamIds: Array<Id<"teams">> = args.teamIds;
+    const row = await ctx.runQuery(internal.entityReviewQueue.getInternal, {
+      id: args.rowId,
+    });
+    // The row can legitimately be gone: a Cancel deletes the batch's rows while
+    // this item may still be draining. Nothing to resolve.
+    if (!row) return null;
 
-    if (nextPlayerIds.length > 0) {
-      const [head, ...tail] = nextPlayerIds;
-      try {
-        await ctx.runAction(internal.adapters.wikidata.enrichPlayer, { playerId: head });
-      } catch (error) {
-        console.error(`[enrichment-queue] enrichPlayer ${head} failed:`, error);
-      }
-      nextPlayerIds = tail;
-    } else if (nextTeamIds.length > 0) {
-      const [head, ...tail] = nextTeamIds;
-      try {
-        await ctx.runAction(internal.adapters.wikidata.enrichTeam, { teamId: head });
-      } catch (error) {
-        console.error(`[enrichment-queue] enrichTeam ${head} failed:`, error);
-      }
-      nextTeamIds = tail;
-    } else {
-      // Both queues empty — done.
-      console.log(`[enrichment-queue] queue drained.`);
-      return null;
-    }
-
-    if (nextPlayerIds.length > 0 || nextTeamIds.length > 0) {
-      await ctx.scheduler.runAfter(
-        INTER_ENTITY_DELAY_MS,
-        internal.adapters.wikidata.processEnrichmentQueue,
-        { playerIds: nextPlayerIds, teamIds: nextTeamIds },
+    try {
+      const sportCtx = await ctx.runQuery(
+        internal.selectorOptions.getSportEnrichmentContext,
+        { sportId: row.sportId },
       );
-    }
-    return null;
-  },
-});
-
-/**
- * NEO-92: chained serial queue for the pre-creation review-wizard preview
- * (see entityReviewQueue.ts). Same shape/pacing as processEnrichmentQueue
- * above (same Wikidata rate-limit constraint applies) but processes
- * `entityReviewQueue` rows by name+sport instead of already-created
- * player/team ids — nothing is written to `players`/`teams` here, only the
- * review row's own `status`/`enrichment` fields. The wizard's reactive
- * `getBatch` query is what turns each patch into a visible UI update.
- */
-export const processEntityReviewQueue = internalAction({
-  args: {
-    ids: v.array(v.id("entityReviewQueue")),
-  },
-  returns: v.null(),
-  handler: async (ctx, args): Promise<null> => {
-    const [head, ...tail] = args.ids;
-    if (!head) return null;
-
-    const row = await ctx.runQuery(internal.entityReviewQueue.getInternal, { id: head });
-    if (row) {
-      try {
-        const sportCtx = await ctx.runQuery(
-          internal.selectorOptions.getSportEnrichmentContext,
-          { sportId: row.sportId },
-        );
-        const result = !sportCtx
-          ? null
-          : row.kind === "player"
-            ? await lookupPlayerEnrichment(row.name, sportCtx)
-            : await lookupTeamEnrichment(row.name, sportCtx);
-        await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
-          id: head,
-          status: result ? "ready" : "error",
-          enrichment: result ?? undefined,
-        });
-      } catch (error) {
-        console.error(`[entity-review-queue] lookup for ${head} failed:`, error);
-        await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
-          id: head,
-          status: "error",
-        });
-      }
-    }
-
-    if (tail.length > 0) {
-      await ctx.scheduler.runAfter(
-        INTER_ENTITY_DELAY_MS,
-        internal.adapters.wikidata.processEntityReviewQueue,
-        { ids: tail },
-      );
+      const result = !sportCtx
+        ? null
+        : row.kind === "player"
+          ? await lookupPlayerEnrichment(row.name, sportCtx)
+          : await lookupTeamEnrichment(row.name, sportCtx);
+      await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
+        id: args.rowId,
+        status: result ? "ready" : "error",
+        enrichment: result ?? undefined,
+      });
+    } catch (error) {
+      console.error(`[entity-review-lookup] lookup for ${args.rowId} failed:`, error);
+      await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
+        id: args.rowId,
+        status: "error",
+      });
     }
     return null;
   },

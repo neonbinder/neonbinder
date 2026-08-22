@@ -1,8 +1,25 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { api } from "./_generated/api";
+import { exchangeMachineToken } from "./machineAuth";
 
 const http = httpRouter();
+
+// ─── Machine auth (NEO-172) ──────────────────────────────────────────────────
+// A headless client presents its Clerk API key and gets back a genuine Clerk
+// session JWT minted from the `convex` template — so `ctx.auth` validation,
+// `getCurrentUserId`, and every ownership check built on them are completely
+// unchanged, and `identity.subject` is the real user.
+//
+// Imported as a plain ES module rather than reached through the generated `api`
+// object, because `httpRouter` takes the action itself. Keeping the
+// implementation out of this file matters: it is ~3 upstream calls with a
+// careful error-shape contract, and this file is a route table.
+http.route({
+  path: "/machine/token",
+  method: "POST",
+  handler: exchangeMachineToken,
+});
 
 // ─── E2E work-queue HTTP endpoints (NEO-49) ──────────────────────────────────
 // CI runners (bash) POST here to pull the next flow + report results, so a
