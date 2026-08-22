@@ -673,6 +673,13 @@ jobs:
       && needs.deploy-dev-fast.outputs.exists == 'true'
       && needs.deploy-dev-fast.result == 'success'
     runs-on: ubuntu-latest
+    # gcloud-only job with no checkout — override the workflow-level
+    # `working-directory: services/preprocess` default (that path doesn't exist
+    # here, so bash fails to start before the continue-on-error ping runs).
+    # Matches every deploy/promote job in this file.
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -860,6 +867,13 @@ jobs:
       && needs.deploy-prod-fast.outputs.exists == 'true'
       && needs.deploy-prod-fast.result == 'success'
     runs-on: ubuntu-latest
+    # gcloud-only job with no checkout — override the workflow-level
+    # `working-directory: services/preprocess` default (that path doesn't exist
+    # here, so bash fails to start before the continue-on-error ping runs).
+    # Matches every deploy/promote job in this file.
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     timeout-minutes: 10
     permissions:
       contents: read
