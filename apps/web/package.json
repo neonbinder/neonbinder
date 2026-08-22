@@ -59,7 +59,7 @@
     "convex": "^1.43.0",
     "convex-helpers": "^0.1.122",
     "crypto-js": "^4.2.0",
-    "google-auth-library": "^10.9.1",
+    "google-auth-library": "^11.0.2",
     "posthog-js": "^1.413.2",
     "posthog-node": "^5.48.0",
     "qr-scanner": "^1.4.2",
