@@ -17,7 +17,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@google-cloud/secret-manager": "^6.3.0",
+    "@google-cloud/secret-manager": "^7.0.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
     "helmet": "^8.3.0",
