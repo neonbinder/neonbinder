@@ -50,6 +50,13 @@ const AFTERPRINT_FALLBACK_MS = 120_000;
 /** Fonts should already be local (system stack); don't hang if that changes. */
 const FONTS_READY_TIMEOUT_MS = 3_000;
 
+/**
+ * Images are the slow dependency: a purchased postage label is a REMOTE PNG
+ * fetched from the carrier, not inline markup. More generous than the font
+ * budget for that reason, but still bounded — printing late beats hanging.
+ */
+const IMAGES_READY_TIMEOUT_MS = 15_000;
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -101,6 +108,75 @@ function waitForFonts(doc: Document): Promise<void> {
 }
 
 /**
+ * The slice of `Document` {@link waitForImages} actually needs.
+ *
+ * Narrowed to this so the function can be unit-tested by handing it a plain
+ * object with an `images` array — no DOM environment, no iframe, no real
+ * decoding. A real `Document` satisfies it structurally.
+ */
+export interface ImageBearingDocument {
+  images: ArrayLike<PrintableImage>;
+}
+
+/** The image surface used here — `HTMLImageElement` satisfies it structurally. */
+export interface PrintableImage {
+  complete: boolean;
+  naturalWidth: number;
+  decode(): Promise<unknown>;
+  addEventListener(
+    type: "load" | "error",
+    listener: () => void,
+    options?: { once?: boolean },
+  ): void;
+}
+
+/**
+ * Wait for every <img> in the print document to be decoded and ready to paint.
+ *
+ * The iframe's `load` event does NOT cover this. `load` fires when the document
+ * and its subresources are considered loaded, but an image added via `srcdoc`
+ * can still be mid-fetch or decoded-but-not-yet-painted when `print()` runs —
+ * and a print snapshot taken at that moment captures a blank box where the
+ * label should be. Silent, intermittent, and worst on exactly the slow
+ * connection where it matters most.
+ *
+ * This is why it exists at all: a purchased postage label is a remote PNG from
+ * the carrier. Nothing printed before NEO-120 used an image, so the gap was
+ * latent rather than broken.
+ *
+ * `decode()` is the precise primitive — it resolves when the image is ready to
+ * paint, not merely fetched. Individual failures resolve rather than reject: a
+ * broken image should still print (visibly missing, so the operator can see it)
+ * instead of throwing away a label the seller has already paid for.
+ */
+export function waitForImages(doc: ImageBearingDocument): Promise<void> {
+  const images = Array.from(doc.images ?? []);
+  if (images.length === 0) return Promise.resolve();
+
+  const settled = images.map((img) => {
+    if (img.complete && img.naturalWidth > 0) {
+      return img.decode().catch(() => undefined);
+    }
+    return new Promise<void>((resolve) => {
+      img.addEventListener("load", () => {
+        img.decode().then(
+          () => resolve(),
+          () => resolve(),
+        );
+      }, { once: true });
+      img.addEventListener("error", () => resolve(), { once: true });
+    });
+  });
+
+  return Promise.race([
+    Promise.all(settled).then(() => undefined),
+    new Promise<void>((resolve) =>
+      setTimeout(resolve, IMAGES_READY_TIMEOUT_MS),
+    ),
+  ]);
+}
+
+/**
  * Render `bodyHtml` into a hidden iframe and open the browser's print dialog
  * for it. Resolves once the dialog has been dismissed (or the fallback fires) —
  * the iframe is removed by then.
@@ -134,7 +210,11 @@ export async function printHtmlDocument(
       throw new Error("Print frame was not reachable");
     }
 
-    await waitForFonts(frameDocument);
+    // Both, in parallel — they are independent and each is separately bounded.
+    await Promise.all([
+      waitForFonts(frameDocument),
+      waitForImages(frameDocument),
+    ]);
 
     // Resolve on afterprint so the iframe outlives the dialog. Registered
     // before print() because print() can block until the dialog is dismissed.

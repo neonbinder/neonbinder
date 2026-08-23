@@ -38,6 +38,7 @@ import ProfileLayout from "@/src/layouts/profile-layout";
 import ProfilePublic from "@/app/profile/public/page";
 import ProfileCredentials from "@/app/profile/credentials/page";
 import ProfileShipping from "@/app/profile/shipping/page";
+import ProfilePostage from "@/app/profile/postage/page";
 import ProfilePrizes from "@/app/profile/prizes/page";
 import ProfileApiKeys from "@/app/profile/api-keys/page";
 import SetSelector from "@/app/set-selector/page";
@@ -121,6 +122,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route path="public" element={<ProfilePublic />} />
                 <Route path="credentials" element={<ProfileCredentials />} />
                 <Route path="shipping" element={<ProfileShipping />} />
+                <Route path="postage" element={<ProfilePostage />} />
                 <Route path="prizes" element={<ProfilePrizes />} />
                 {/* NEO-172 — self-service Clerk API keys. Protected by the
                     same ProtectedLayout gate as the rest of /profile. */}

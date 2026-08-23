@@ -33,6 +33,7 @@ const SECTIONS = [
   { label: "Public Profile", path: "/profile/public" },
   { label: "Credentials", path: "/profile/credentials" },
   { label: "Shipping", path: "/profile/shipping" },
+  { label: "Postage", path: "/profile/postage" },
   { label: "Prize Pool", path: "/profile/prizes" },
   // NEO-172. The UserButton menu also links straight here, but a section that
   // exists only in that menu would be a page with no entry in the nav of the

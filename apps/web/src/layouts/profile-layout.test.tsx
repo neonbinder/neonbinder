@@ -36,6 +36,7 @@ function renderAt(path: string) {
           <Route path="public" element={<div>public panel</div>} />
           <Route path="credentials" element={<div>credentials panel</div>} />
           <Route path="shipping" element={<div>shipping panel</div>} />
+          <Route path="postage" element={<div>postage panel</div>} />
           <Route path="prizes" element={<div>prizes panel</div>} />
         <Route path="api-keys" element={<div>api keys panel</div>} />
         </Route>
@@ -57,6 +58,7 @@ describe("ProfileLayout", () => {
       ["Public Profile", "/profile/public"],
       ["Credentials", "/profile/credentials"],
       ["Shipping", "/profile/shipping"],
+      ["Postage", "/profile/postage"],
       ["Prize Pool", "/profile/prizes"],
       ["API Keys", "/profile/api-keys"],
     ]);
@@ -66,6 +68,7 @@ describe("ProfileLayout", () => {
     ["/profile/public", "Public Profile"],
     ["/profile/credentials", "Credentials"],
     ["/profile/shipping", "Shipping"],
+    ["/profile/postage", "Postage"],
     ["/profile/prizes", "Prize Pool"],
     ["/profile/api-keys", "API Keys"],
   ])("marks %s as the current page", (path, label) => {

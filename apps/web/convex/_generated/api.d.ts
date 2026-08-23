@@ -55,6 +55,7 @@ import type * as placeholderStream from "../placeholderStream.js";
 import type * as placeholderWatchdog from "../placeholderWatchdog.js";
 import type * as platformSlots from "../platformSlots.js";
 import type * as players from "../players.js";
+import type * as postage from "../postage.js";
 import type * as posthog from "../posthog.js";
 import type * as preprocessAudience from "../preprocessAudience.js";
 import type * as preprocessCapacity from "../preprocessCapacity.js";
@@ -124,6 +125,7 @@ declare const fullApi: ApiFromModules<{
   placeholderWatchdog: typeof placeholderWatchdog;
   platformSlots: typeof platformSlots;
   players: typeof players;
+  postage: typeof postage;
   posthog: typeof posthog;
   preprocessAudience: typeof preprocessAudience;
   preprocessCapacity: typeof preprocessCapacity;

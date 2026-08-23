@@ -266,6 +266,16 @@ function makeCredentialFetch(opts: {
       });
       return jsonResponse({ success: true, message: "ok" });
     }
+    // NEO-120: the EasyPost key store — the one credential write that survived
+    // NEO-141, easypost-scoped. See services/browser/src/routes/easypost.ts.
+    if (method === "PUT" && u.includes("/easypost/")) {
+      opts.puts.push({
+        url: u,
+        method,
+        body: init?.body ? JSON.parse(String(init.body)) : null,
+      });
+      return jsonResponse({ success: true, message: "EasyPost key stored" });
+    }
     throw new Error(`unexpected fetch: ${method} ${u}`);
   };
 }
@@ -360,6 +370,47 @@ describe("seedMyTestCredentials", () => {
     delete process.env.DEV_SPORTLOTS_PASSWORD;
     delete process.env.DEV_BSC_USERNAME;
     delete process.env.DEV_BSC_PASSWORD;
+    delete process.env.DEV_EASYPOST_API_KEY;
+  });
+
+  // NEO-120: seeding EasyPost is additive. Every test above asserts the exact
+  // `seeded` array, so reporting on EasyPost when it is not configured would
+  // change the result of seeding on every deployment that has no key — which is
+  // why the action stays silent rather than pushing a "skipped" entry.
+  test("adds nothing to the result when no EasyPost key is configured", async () => {
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(
+      makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded.some((s) => s.site === "easypost")).toBe(false);
+  });
+
+  test("stores the EasyPost key when one is configured", async () => {
+    process.env.DEV_EASYPOST_API_KEY = "EZTK_test_key";
+    const t = convexTest(schema, modules);
+    const puts: Array<{ url: string; method: string; body: unknown }> = [];
+    stubFetch(
+      makeCredentialFetch({ metadata: { username: SL_USERNAME }, puts }),
+    );
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toContainEqual({ site: "easypost", stored: true });
+
+    // One secret per seller, keyed by Clerk user id — never a shared key. The
+    // write goes to the easypost-scoped route (PUT /easypost/:key), the only
+    // credential write NEO-141 left reachable over HTTP.
+    const easypostPut = puts.find((p) => p.url.includes("/easypost/"));
+    expect(easypostPut?.url).toContain(`/easypost/easypost-credentials-${USER_A}`);
+    expect(easypostPut?.body).toEqual({ apiKey: "EZTK_test_key" });
   });
 
   test("skips re-store (preserves token) when the stored username is already correct", async () => {
