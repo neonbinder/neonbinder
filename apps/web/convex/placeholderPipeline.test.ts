@@ -32,7 +32,11 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { recordImageOutcomeImpl } from "./placeholderPipeline";
+import {
+  recordImageOutcomeImpl,
+  resolveMaxActiveJobsPerUser,
+  DEFAULT_MAX_ACTIVE_JOBS_PER_USER,
+} from "./placeholderPipeline";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -1614,5 +1618,77 @@ describe("listDoneImagesForPairing", () => {
 
     expect(rows.map((r) => r.entryIndex)).toEqual([0, 2, 3]);
     expect(rows.every((r) => typeof r._id === "string" && r._id.length > 0)).toBe(true);
+  });
+});
+
+// ── NEO-176: env-configurable active-batch limit ────────────────────────────
+// Mirrors the resolver tests in preprocessCapacity.test.ts: valid integers in
+// range are honoured, everything else falls back to the default rather than
+// being clamped or coerced, and a present-but-invalid value is warned about.
+describe("resolveMaxActiveJobsPerUser", () => {
+  /** Resolve while capturing the diagnostic, so both halves can be asserted. */
+  function resolveWithWarnings(raw: string | undefined) {
+    const warnings: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      if (typeof args[0] === "string") warnings.push(args[0]);
+    });
+    try {
+      return { value: resolveMaxActiveJobsPerUser(raw), warnings };
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  test.each([
+    ["unset", undefined],
+    ["empty", ""],
+    ["whitespace only", "   "],
+  ])("falls back to the default when %s, without warning", (_label, raw) => {
+    // Unset is the INTENDED configuration on dev/preview — no diagnostic.
+    const { value, warnings } = resolveWithWarnings(raw);
+    expect(value).toBe(2);
+    expect(value).toBe(DEFAULT_MAX_ACTIVE_JOBS_PER_USER);
+    expect(warnings.filter((w) => w.includes("max_active_jobs_per_user"))).toHaveLength(0);
+  });
+
+  test.each([
+    ["the raised prod value", "3", 3],
+    ["the default stated explicitly", "2", 2],
+    ["the minimum", "1", 1],
+    ["the maximum accepted", "10", 10],
+    ["a value with surrounding whitespace", "  3  ", 3],
+  ])("accepts %s", (_label, raw, expected) => {
+    const { value, warnings } = resolveWithWarnings(raw);
+    expect(value).toBe(expected);
+    expect(warnings.filter((w) => w.includes("max_active_jobs_per_user"))).toHaveLength(0);
+  });
+
+  test.each([
+    ["zero", "0"],
+    ["negative", "-2"],
+    ["above the accepted ceiling", "11"],
+    ["a typo'd digit", "30"],
+    ["non-numeric", "three"],
+    ["a trailing-garbage number", "3abc"],
+    ["an out-of-range exponent", "2e3"],
+    ["fractional", "2.5"],
+    ["infinity", "Infinity"],
+  ])("falls back for %s rather than clamping or coercing", (_label, raw) => {
+    const { value } = resolveWithWarnings(raw);
+    expect(value).toBe(DEFAULT_MAX_ACTIVE_JOBS_PER_USER);
+  });
+
+  test("an invalid value is reported with what was configured and what was used", () => {
+    const { warnings } = resolveWithWarnings("30");
+    const lines = warnings
+      .filter((w) => w.includes("max_active_jobs_per_user_invalid"))
+      .map((w) => JSON.parse(w) as Record<string, unknown>);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toEqual({
+      msg: "max_active_jobs_per_user_invalid",
+      configured: "30",
+      using: 2,
+      accepted: "integer 1-10",
+    });
   });
 });
