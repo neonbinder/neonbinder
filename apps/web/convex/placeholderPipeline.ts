@@ -158,19 +158,81 @@ export const PLACEHOLDER_STREAM_IDLE_MS = 30 * 60 * 1000;
 export const PAIRING_DEBOUNCE_MS = 5 * 1000;
 
 /**
- * How many batches one user may have in flight at once.
+ * Default for how many batches one user may have in flight at once.
  *
  * Two, not one, so a user can start the next sheet while the previous one is
- * still pairing — and not more, because a batch is the unit of paid work.
- * Each one is up to MAX_ZIP_ENTRIES `/process-entry` calls, every one of which
- * is a Vision round-trip and a model inference we pay for, and `/extract` runs
- * OUTSIDE the workpool (one request per job, see placeholderBatch.ts) so it is
- * the pool's parallelism cap that concurrent jobs bypass. The cap is therefore
- * doing two jobs at once: bounding concurrent extract load against a
- * three-instance service, and bounding how fast a single account can replay
- * paid API spend by hammering Start.
+ * still pairing — and bounded, because a batch is a unit of *paid* work: each is
+ * up to MAX_ZIP_ENTRIES `/process-entry` calls, every one a Vision round-trip and
+ * a model inference we pay for. The cap's remaining job is to stop a single
+ * account from hammering Start to replay paid API spend faster than intended.
+ *
+ * It does NOT bound per-batch throughput: every batch of every user enqueues into
+ * the ONE deployment-wide `fastPreprocessPool` (maxParallelism = 20), so the pool
+ * — not the batch count — governs peak `/process-entry` concurrency and the real
+ * spend rate. Concurrent batches once also added `/extract` load, but that step is
+ * zip-upload-only (a "stream" job never extracts, see placeholderBatch.ts) and
+ * post-NEO-175 the fast service scales to 20 instances, so that concern no longer
+ * bounds the choice.
  */
-export const MAX_ACTIVE_JOBS_PER_USER = 2;
+export const DEFAULT_MAX_ACTIVE_JOBS_PER_USER = 2;
+
+/**
+ * Widest value we will accept from the environment — a typo guard, not a capacity
+ * opinion. Ten concurrent batches per account is already generous; a stray digit
+ * turning 3 into 30 would let one account queue far more paid work than intended,
+ * so reject rather than honour it (and, like the parallelism bound, this moves in
+ * the same change if a real need ever exceeds it).
+ */
+const MAX_ACCEPTED_ACTIVE_JOBS = 10;
+
+/**
+ * Resolve the configured active-batch limit, or fall back to the default.
+ *
+ * Mirrors `resolveMaxParallelism` (preprocessCapacity.ts): anything that is not a
+ * base-10 integer in [1, MAX_ACCEPTED_ACTIVE_JOBS] falls back to the default
+ * rather than being clamped, and a present-but-invalid value is warned about so a
+ * typo is visible in the log instead of surviving as surprising behaviour. An
+ * unset variable is NOT warned about — dev/preview leave it unset on purpose.
+ *
+ * Exported so it can be unit-tested directly: `process.env` is read once at module
+ * load, which is right for the runtime and useless for a test.
+ */
+export function resolveMaxActiveJobsPerUser(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_MAX_ACTIVE_JOBS_PER_USER;
+  }
+
+  const trimmed = raw.trim();
+  const parsed = Number(trimmed);
+  const usable =
+    Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_ACCEPTED_ACTIVE_JOBS;
+
+  if (!usable) {
+    console.warn(
+      JSON.stringify({
+        msg: "max_active_jobs_per_user_invalid",
+        configured: trimmed,
+        using: DEFAULT_MAX_ACTIVE_JOBS_PER_USER,
+        accepted: `integer 1-${MAX_ACCEPTED_ACTIVE_JOBS}`,
+      }),
+    );
+    return DEFAULT_MAX_ACTIVE_JOBS_PER_USER;
+  }
+
+  return parsed;
+}
+
+/**
+ * How many batches one user may have in flight at once (NEO-176: env-configurable).
+ *
+ * Set `MAX_ACTIVE_JOBS_PER_USER` on the deployment to raise it without a redeploy —
+ * e.g. a power-user intake workflow that keeps set-building, scanning and
+ * cropping/matching running as separate sessions in parallel. Unset keeps the
+ * conservative default.
+ */
+export const MAX_ACTIVE_JOBS_PER_USER = resolveMaxActiveJobsPerUser(
+  process.env.MAX_ACTIVE_JOBS_PER_USER,
+);
 
 /**
  * Which client started a run — a display hint for the admin page, not a security
