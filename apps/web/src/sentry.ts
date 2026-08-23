@@ -24,6 +24,14 @@ if (import.meta.env.VITE_CLERK_TESTING_ENABLED !== "true") {
         // the Session Replay "network entry" capture path, separate from the
         // breadcrumb/span pipeline below.
         beforeAddRecordingEvent: (event) => scrubSignedStorageUrls(event),
+        // Explicit, not inherited: these are the library defaults, but they
+        // are load-bearing for /profile/api-keys — the reveal-once API-key
+        // dialog is on-screen text, and replay films 10% of sessions (100%
+        // on error). Masking every text node and input is what keeps a
+        // user's key out of the recording; never relax these without a
+        // block-selector covering the API-keys surface (NEO-172 audit).
+        maskAllText: true,
+        maskAllInputs: true,
       }),
     ],
 

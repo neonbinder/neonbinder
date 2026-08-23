@@ -1,7 +1,7 @@
 import { SignedIn, SignedOut, SignInButton, UserButton } from "@clerk/clerk-react";
 import { useAuth } from "@clerk/clerk-react";
 import { useNavigate } from "react-router";
-import { Bars3Icon, XMarkIcon } from "@heroicons/react/24/outline";
+import { Bars3Icon, KeyIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import NeonButton from "./NeonButton";
 
 interface BinderHeaderProps {
@@ -32,7 +32,24 @@ export default function BinderHeader({
       </div>
       <div className="flex items-center gap-3 pointer-events-auto">
         <SignedIn>
-          <UserButton />
+          {/* NEO-172 — API Keys hangs off the account menu, not the binder tab
+              staircase. The staircase is the six-item nav NEO-145 settled on
+              and it names FEATURES; an account-level credential screen is the
+              same kind of thing as the rest of /profile, so it belongs where
+              the account already lives.
+
+              `labelIcon` is required by Clerk, and Clerk renders the node as-is
+              next to the label, so the icon must be hidden from assistive tech
+              or it doubles the item's accessible name. */}
+          <UserButton>
+            <UserButton.MenuItems>
+              <UserButton.Link
+                label="API Keys"
+                labelIcon={<KeyIcon className="w-4 h-4" aria-hidden="true" />}
+                href="/profile/api-keys"
+              />
+            </UserButton.MenuItems>
+          </UserButton>
           <NeonButton cancel onClick={handleSignOut} className="hidden sm:inline-flex">
             Sign out
           </NeonButton>

@@ -1,0 +1,158 @@
+# R1 — Single feature: the placeholder pipeline's HEAVY escalation path and its
+# cold-start notice (NEO-175). ONE INSET-on-noise scan PAIR (two images) goes in;
+# the fast classical service DECLINES both (there is a card to crop out of a
+# background), so Convex re-enqueues each to the HEAVY BiRefNet service, which
+# cold-loads the ~191s model. The one thing this flow exists to prove is that
+# WHILE that heavy cold start runs, the user is TOLD — the "Warming up the full
+# card processor…" notice is on screen, and each escalating image shows an
+# "Escalating — deeper processing…" badge — rather than staring at a frozen
+# screen. It then proves the batch still finishes correctly through the heavy
+# service (2 of 2, 0 failed, 1 pair).
+#
+# The FAST path (frame-filling scans → accepted in seconds → no cold start) is the
+# opposite user case, proved by pipeline-pairs-uploaded-scans.yaml. This flow is
+# the escalation half.
+#
+# ── WHY ONE PAIR (not six images) ─────────────────────────────────────────
+# An all-heavy batch is CPU-bound: the heavy service runs BiRefNet on CPU (GPU is
+# NEO-173, quota-blocked), so each image costs ~124s of inference on top of the
+# ~191s one-time model cold load. Six images would run many minutes past the
+# 5-minute cold-start bar the user set. A single pair (cold load ~191s + ~124s
+# inference ≈ ~315s) lands NEAR that bar — a little over is fine — while still
+# proving the whole escalation story end to end: fast decline → escalate →
+# cold-start notice → per-image escalating badge → heavy completion → pairing. And
+# crucially, every second the user waits is covered by VISIBLE progress (the
+# notice, Step 3 + the per-image badge, Step 4), so they always know what is
+# happening — the user's hard requirement for this multi-minute path.
+#
+# R2 — It cannot go green without the feature.
+#   * If nothing escalated (a regression where the fast path accepted these inset
+#     cards), `heavyWarming` never turns true, the notice never renders, and
+#     Step 3 times out and FAILS.
+#   * If images escalated but the notice was never shown — the exact "frozen
+#     screen" bug this flow is the guard against — Step 3 FAILS.
+#   * If the heavy service dropped or failed an image, the completion arithmetic
+#     ("2 of 2 … 0 failed, 1 pair") never matches and Step 6 FAILS. Every image
+#     can only reach "done"/counted via a HEAVY completion (an escalated row is
+#     not counted until heavy resolves it), so 2/2 here proves the heavy service
+#     processed both images.
+# There is no `when:` branch anywhere in it, and the precondition proves a real
+# two-image job exists before any wait.
+#
+# R3 — Nothing else covers the escalation path. The fast-path and print-layout
+# placeholders flows do not. Both fixture sets are described in
+# apps/web/scripts/generate-placeholder-fixtures.py.
+#
+# R4 — Standard /testing/sign-in entry, no in-body login. The only addition to the
+# entry URL is `fixtures=placeholder-fixtures-escalation-pair`, which tells the
+# seed page to push the one-pair inset set through the real upload path (the same
+# pattern the fast-path flow uses to select its full-bleed set).
+#
+# R7 — Non-destructive: a per-user placeholder job under the signed-in worker's
+# own account; no shared/marketplace data. It never taps "Abort Session".
+#
+# ── WHY A TESTING PAGE UPLOADS THE FILES ──────────────────────────────────
+# maestro-web cannot drive a file input, so /testing/seed-placeholder-upload
+# fetches the committed fixtures and pushes them through the SAME client upload
+# path the real page uses (same signed POST policy, same GCS objects, same
+# pipeline kickoff); only the OS picker is bypassed. Gated on
+# VITE_CLERK_TESTING_ENABLED plus a server-side secret unset in production.
+#
+# ── WHY THE INSET FIXTURES ESCALATE ───────────────────────────────────────
+# apps/web/public/placeholder-fixtures-escalation-pair/ — ONE inset pair (Marcus
+# QUILLDEN: 03-quillden-front.jpg + 04-quillden-back.jpg, manifest.json pairCount
+# 1), copied byte-for-byte from the full inset set. Each card is a rectangle INSET
+# on a grainy scanner bed — a smaller card on a uniform margin. The fast classical
+# pass sees a card to crop OUT of a background, which is NOT the "already a
+# frame-filling card" identity case, so it declines and BOTH images escalate to
+# the heavy model (the inset recipe is validated against the real fast_tiered_crop:
+# inset cards return None → escalate). Both sides print the same full name so the
+# identity pool pairs them into ONE card.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-escalation-pair&worker=${WORKER_INDEX || "0"}
+name: Placeholder pipeline (heavy escalation) — inset pair, cold-start notice, one pair
+tags:
+  - placeholders
+  - regression
+---
+# Step 1: sign in, then the seed page uploads the two inset fixtures and forwards
+# to the run view. This wait covers cold Clerk sign-in, fetching the fixtures, and
+# two real signed-POST uploads to GCS — an external round-trip, which is why it is
+# allowed past the 7s budget.
+- launchApp
+- extendedWaitUntil:
+    visible: "Placeholder Scans"
+    timeout: 90000
+
+# Step 2: PRECONDITION — a real two-image session exists. Matches at any point in
+# the run and pins the batch size before we commit to waiting.
+- assertVisible: ".*of 2 images processed.*"
+
+# Step 3a: bring the session panel into view so the cold-start notice's location
+# is on screen when it appears. The notice renders asynchronously (only once the
+# first fast decline has escalated an image), and extendedWaitUntil never scrolls,
+# so we position first on a STABLE element that is present from the start and sits
+# just below where the notice appears: the "resolver calls" line. No
+# centerElement — this line sits high on the page with little above it to centre
+# against (centering there cannot settle), and this is a position-only scroll, not
+# a scroll-to-tap.
+- scrollUntilVisible:
+    element:
+      text: ".*resolver calls.*"
+
+# ── Step 3: THE hard requirement — the user is told during the cold start ──────
+# `heavyWarming` turns true the moment the first image escalates and stays true
+# until the first HEAVY result lands — a window of at least the heavy inference
+# (~124s) and up to the full ~191s model cold load when it has not finished warming
+# — so this notice is on screen for that whole window: the visible progress the
+# user must see instead of a frozen screen. (Convex now pre-warms the heavy service
+# UPFRONT at batch start so its ~191s load overlaps the fast phase, but the notice
+# still fires on the first escalation exactly as before.) This is the sanctioned
+# wait on a live compute round-trip: the fast declines that trigger it are a real
+# fast-service pass. It resolves the instant the notice appears (well within the
+# window above, since the fast instances are pre-warmed and declines are quick), so
+# the 120s ceiling is margin, not time this burns. The regex tolerates the exact
+# copy "…the full card processor…" via `.*` between "the" and "card".
+- extendedWaitUntil:
+    visible: ".*[Ww]arming up the .*card processor.*"
+    timeout: 120000
+
+# Step 4: the per-image "Escalating — deeper processing…" badge. While
+# `heavyWarming` is true (which Step 3 just proved), NO escalated image has
+# resolved yet, so every escalated row is still processing on the heavy service
+# and badged. scrollUntilVisible scrolls DOWN into the Images section and IS the
+# assertion (R6): if nothing is escalating, it scrolls to the end and fails.
+- scrollUntilVisible:
+    element:
+      text: ".*Escalating.*deeper processing.*"
+
+# Step 5: re-anchor the status line into view for the completion wait. Step 4
+# scrolled down to the Images section, so the status line is now ABOVE — scroll
+# UP to it. Plain scroll (no centerElement): it leaves the line low in the
+# viewport, which keeps it on screen even after the cold-start notice above it
+# disappears (the first heavy result clears `heavyWarming`, removing ~70px above
+# the line). extendedWaitUntil below never scrolls, so the line must be in view
+# before it runs.
+- scrollUntilVisible:
+    direction: UP
+    element:
+      text: ".*of 2 images processed.*"
+
+# ── Step 6: the pair finishes through the HEAVY service (~5 min) ───────────────
+# This is the ONE sanctioned multi-minute wait, and it is legitimate ONLY because
+# every second of it is covered by VISIBLE progress: the "Warming up…" notice
+# (Step 3) is up from the first escalation until the first heavy result, and the
+# per-image "Escalating — deeper processing…" badge (Step 4) sits on each row until
+# it resolves — the user is never left staring at a frozen screen. The wait must
+# cover a COLD heavy run for the pair: ~191s BiRefNet model cold load + ~124s CPU
+# inference per image (GPU is NEO-173, quota-blocked) ≈ ~315s, so 480s gives margin
+# without burning time — it resolves the instant the pair completes. Every number
+# is load-bearing: both images accounted for, none failed, exactly one pair — a
+# dropped image, a failed heavy crop, or a mis-pair produces different numbers and
+# fails here. A batch that genuinely needs longer than this is a heavy-capacity
+# PRODUCT finding to raise, never a timeout to inflate. (The status line always
+# pluralizes — it renders "1 pairs" — so the "1 pair" here matches via the trailing
+# `.*`; the count is still exact.)
+- extendedWaitUntil:
+    visible: ".*2 of 2 images processed, 0 failed, 1 pair.*"
+    timeout: 480000

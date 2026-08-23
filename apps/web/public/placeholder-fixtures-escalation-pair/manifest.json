@@ -1,0 +1,12 @@
+{
+  "description": "ONE inset pair (Marcus QUILLDEN, front + back) for the NEO-175 heavy-escalation cold-start E2E. A single pair keeps the all-heavy batch near the ~5-min cold-start bar the user set (cold heavy = ~191s model load + ~124s inference), while still proving escalation + the cold-start notice + heavy completion + pairing. Copied byte-for-byte from placeholder-fixtures/ (the classical fast pass declines these inset cards, so they escalate). `files` is the contract the seed page reads.",
+  "pairCount": 1,
+  "files": [
+    "03-quillden-front.jpg",
+    "04-quillden-back.jpg"
+  ],
+  "images": [
+    { "file": "03-quillden-front.jpg", "side": "front", "player": "Marcus QUILLDEN", "cardNumber": null },
+    { "file": "04-quillden-back.jpg", "side": "back", "player": "Marcus QUILLDEN", "cardNumber": "42" }
+  ]
+}

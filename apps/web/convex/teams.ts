@@ -285,12 +285,22 @@ export const applyEnrichmentInternal = internalMutation({
   },
 });
 
+/**
+ * Wikidata enrichment kickoff — non-blocking. NEO-99: enqueues onto the shared
+ * Wikidata pool (convex/wikidataPool.ts) rather than running the enrichment
+ * inline, so this entry point spends the SAME deployment-wide 5-parallel SPARQL
+ * budget as the review-wizard drain instead of adding an uncoordinated request.
+ * Still fire-and-forget — the pool runs enrichTeam in the background and it
+ * persists its own result; an unenriched team is a valid end state.
+ */
 export const enrichFromWikidata = action({
   args: { id: v.id("teams") },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     try {
-      await ctx.runAction(internal.adapters.wikidata.enrichTeam, { teamId: args.id });
+      await ctx.runMutation(internal.wikidataPool.enqueueEnrichment, {
+        teamIds: [args.id],
+      });
     } catch (error) {
       console.error("[teams.enrichFromWikidata] failed:", error);
     }
