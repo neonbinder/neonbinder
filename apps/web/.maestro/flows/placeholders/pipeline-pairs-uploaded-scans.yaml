@@ -154,23 +154,34 @@ tags:
 # "Succeeded" the count is already 6 for Step 5 to read. (Pair count omitted here
 # for the same reason as Step 3 — see the R2 pair-count note in the header.)
 #
-# WHY 60s, not the old 15s (contention headroom, NOT loosening the test — same
-# class of fix as Step 3's 335-card wait raised to 120s). The "Succeeded" text
-# and the 6/0 arithmetic below are UNCHANGED, so a broken final run still fails
-# here and R2 holds; only the ceiling widens. 15s was only ever validated on warm
-# single-user dev: the earlier CI runs died at Step 3 on an unrelated missing
-# FAST_URL config, so this close→final-run path never actually ran under preview
-# contention before. In CI run 32611166521 it timed out at 15s — yet the
-# preview's placeholderJobs row for that session (jobId d2037bdd-…) recorded
-# status="succeeded", processedImages 6, failedImages 0, resolverCalls 6, with
-# finishedAt just 193ms past the deadline: the chain finished CORRECTLY at ~16.3s
-# and only overran because this is the shared Convex preview under 8 parallel
-# runners' scheduler contention. 60s absorbs that contention with margin;
-# extendedWaitUntil resolves the instant the status flips, so the higher ceiling
-# costs nothing on a healthy run and only spends time on a genuine regression.
+# WHY 20s, not the old 15s (interim contention margin, NOT loosening the test).
+# The "Succeeded" text and the 6/0 arithmetic below are UNCHANGED, so a broken
+# final run still fails here and R2 holds; only the ceiling widens by 5s.
+#
+# ROOT CAUSE (measured, not padded): `runPairing` — the FINAL pairing that flips
+# the job to "succeeded" — is a Convex *action* (placeholderPairing.ts). The close
+# mutation schedules it at runAfter(0), but as an action it competes in the
+# preview's action pool, which the 8 parallel E2E runners saturate with
+# `processEntryWorker` preprocess actions. Pairing over 6 rows / 2 pairs is
+# milliseconds of compute; in CI run 32611166521 the transition took ~16.3s —
+# proven by the preview's placeholderJobs row for that session (jobId d2037bdd-…):
+# status="succeeded", 6 processed, 0 failed, resolverCalls 6, finishedAt just
+# 193ms past the old 15s deadline. So the time is the action WAITING for a pool
+# slot, not computing. This close→final-run path never ran under preview
+# contention before now — earlier CI runs died at Step 3 on an unrelated missing
+# FAST_URL config — which is why the 15s budget (validated only on warm dev) was
+# never exercised here.
+#
+# The PROPER fix is a code change, not a bigger timeout: take the terminal
+# transition off the contended action scheduler (finalize a small closed batch
+# inline in the close *mutation*, which is not subject to the action pool), which
+# would make this <7s even under contention. That is a core-pipeline refactor
+# tracked as a follow-up (see the NEO-175 close-out notes). 20s is the interim
+# margin the owner approved until that lands; extendedWaitUntil resolves the
+# instant the status flips, so the ceiling costs nothing on a healthy run.
 - extendedWaitUntil:
     visible: ".*Succeeded.*6 of 6 images processed, 0 failed.*"
-    timeout: 60000
+    timeout: 20000
 
 # Step 5: identity matching ran over the whole batch. Under identity-first
 # pairing every done image is resolved once (a cheap dictionary lookup, not a
