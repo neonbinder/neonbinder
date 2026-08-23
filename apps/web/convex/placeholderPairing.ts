@@ -64,6 +64,8 @@ import {
   MAX_PLAYERS,
   findJob,
   findOwnedJob,
+  markJobFailedImpl,
+  markJobSucceededImpl,
   requireUserId,
 } from "./placeholderPipeline";
 
@@ -324,6 +326,340 @@ export function guardedAdjacencyFallback(leftovers: PoolCard[]): Array<[PoolCard
 }
 
 /**
+ * The `listDoneImagesForPairing` row shape — one done image, as the pairing pass
+ * reads it. Declared here so `computePairingDiff` and both of its callers (the
+ * scheduled action and the inline close-path finalize) share ONE definition and
+ * cannot drift.
+ */
+export type PairingImageRow = {
+  _id: Id<"placeholderImages">;
+  entryIndex: number;
+  originalName: string;
+  players?: string[];
+  team?: string;
+  cardNumber?: string;
+  side?: string;
+  textCount?: number;
+  dhash?: string;
+  pairStatus?: "paired" | "unmatched";
+};
+
+/** The `listPairsForDiff` row shape — one stored pair, as the diff compares it. */
+export type StoredPairRow = {
+  _id: Id<"placeholderPairs">;
+  frontIndex: number;
+  backIndex: number;
+  player?: string;
+  team?: string;
+  cardNumber?: string;
+  confidence: Confidence;
+  // Includes "manual": the diff reads the mechanism to tell manual (sticky) pairs
+  // from automatic ones.
+  mechanism: "adjacency" | "pool" | "manual";
+  score: number;
+};
+
+/** One new pair in the shape `applyPairDiff` inserts — carries NO image ids. */
+export type PairInsertRow = {
+  frontIndex: number;
+  backIndex: number;
+  player?: string;
+  team?: string;
+  cardNumber?: string;
+  confidence: Confidence;
+  mechanism: Mechanism;
+  score: number;
+};
+
+/**
+ * The complete result of one pairing recomputation, as data: the pair-row diff
+ * (delete / patch / insert), the image `pairStatus` diff (becomingPaired /
+ * becomingUnmatched), and the resolver-call count. The scheduled action and the
+ * inline finalize apply this identically.
+ */
+export type PairingDiff = {
+  resolverCalls: number;
+  deleteIds: Id<"placeholderPairs">[];
+  patches: PairPatch[];
+  insertRows: PairInsertRow[];
+  becomingPaired: Id<"placeholderImages">[];
+  becomingUnmatched: Id<"placeholderImages">[];
+};
+
+/**
+ * Recompute a batch's pairing from the done rows and the stored pairs, returning
+ * the writes as data. This is the PURE heart of a pairing pass — everything
+ * between reading the rows and writing them: manual-pair stickiness, the
+ * identity-first `pairBatch`, the guarded adjacency fallback, the front-preferred
+ * identity merge, and both the pair-row and image-status diffs.
+ *
+ * Extracted verbatim from `runPairing` (NEO-175) so the inline finalize on the
+ * close path (`finalizePairingInline`) produces byte-identical pairs,
+ * `resolverCalls` and `pairStatus` without a scheduler hop. It touches no `ctx`
+ * and no job status — those stay with the two callers that APPLY the diff.
+ */
+export function computePairingDiff(
+  rows: PairingImageRow[],
+  stored: StoredPairRow[],
+): PairingDiff {
+  // ---- Manual pairs are STICKY (NEO-152) ----------------------------
+  //
+  // Three properties, all enforced here, together:
+  //   (b) never re-pair a manually-paired image → its index is removed from
+  //       the pairBatch input (`autoRows`), so the automatic matcher never
+  //       even sees it;
+  //   (a) never delete or overwrite a manual pair row → the diff below
+  //       compares only against `autoStored` (the non-manual pairs), so a
+  //       manual row is never a "removed" candidate and never patched;
+  //   (c) still re-pair everything else freely → every non-manual image and
+  //       pair flows through exactly as before.
+  // The image's partner in a manual pair is likewise excluded, which is what
+  // frees the OTHER images (a manually-taken front's identity twin is now
+  // available to pair with its real partner).
+  const manualIndexes = new Set<number>();
+  for (const pair of stored) {
+    if (pair.mechanism !== "manual") continue;
+    manualIndexes.add(pair.frontIndex);
+    manualIndexes.add(pair.backIndex);
+  }
+  const autoRows = rows.filter((r) => !manualIndexes.has(r.entryIndex));
+  const autoStored = stored.filter((p) => p.mechanism !== "manual");
+
+  // Key by zip index. It is stable, unique within the batch, and — unlike
+  // the original filename — cannot collide, which matters because the pool
+  // uses the key as a dictionary key. The VALUE carries `_id`, which is
+  // what the write-back is keyed on; see the note on
+  // `listDoneImagesForPairing`. Manually-paired rows are excluded.
+  const byKey = new Map(autoRows.map((r) => [String(r.entryIndex), r] as const));
+
+  // The desired state, recomputed from scratch every run. `pairBatch` is a
+  // pure function of the done rows in entry-index order, so two runs over
+  // the same rows produce the same answer — which is what lets the writes
+  // below be a diff rather than a rebuild.
+  const desired: DesiredPair[] = [];
+  const pairedIds = new Set<string>();
+  let resolverCalls = 0;
+
+  if (autoRows.length > 0) {
+    const result = pairBatch(
+      autoRows.map((r) => ({
+        key: String(r.entryIndex),
+        textCount: r.textCount ?? 0,
+        originalFilename: r.originalName,
+        side: asCardSide(r.side),
+      })),
+      {
+        // Already-resolved identity, straight off the row — see the module
+        // comment. Returning null for a key we do not have lets pairing
+        // degrade to the text-count side heuristic instead of throwing.
+        resolveIdentity: (key: string) => {
+          const row = byKey.get(key);
+          if (!row) return null;
+          return {
+            // `players` is the canonical list. `player` is derived from it
+            // here rather than read from a column, because the row has no
+            // such column — the service computes its `player` field as
+            // `players[0]` and a stored copy could only go stale.
+            // CardIdentity is an interface and cannot derive one from the
+            // other, so both are supplied.
+            players: row.players ?? [],
+            player: row.players?.[0] ?? null,
+            team: row.team ?? null,
+            cardNumber: row.cardNumber ?? null,
+            side: asCardSide(row.side),
+          };
+        },
+        // The perceptual hash `/process-entry` already computed. Null when
+        // the service could not produce one (or produced a malformed one —
+        // see `asDhash` in placeholderPipeline.ts); pairing treats that as
+        // "cannot compare these two images" rather than "they differ".
+        hashImage: (key: string) => byKey.get(key)?.dhash ?? null,
+        // IDENTITY FIRST. `false` turns off the ported adjacency PRE-pass, so
+        // every card goes through the identity pool and front↔back are
+        // matched by who is on the card, not by who was scanned next to whom.
+        //
+        // This inverts the cardlister precedence on purpose, and the reason
+        // is that the cardlister precedence was an answer to a cost that no
+        // longer exists. There, `resolveIdentity` was a Haiku call, so the
+        // pre-pass paired confident neighbours FIRST precisely to avoid
+        // paying for it. Here identity is already on the row (it is a
+        // dictionary lookup — see the module comment), so there is no cost to
+        // avoid and a real correctness price to pay: the pre-pass matched on
+        // side-disagreement ALONE, which paired a Sonny Gray front next to an
+        // Eric Hosmer back — opposite sides, so it grabbed them — before the
+        // pool could pair each with its own partner. Any dropped or reordered
+        // side cascaded into mispairs.
+        //
+        // Scan order is not discarded, only demoted: `guardedAdjacencyFallback`
+        // below applies it to whatever identity could not place, and only
+        // between neighbours nothing contradicts.
+        useAdjacency: false,
+      },
+    );
+
+    resolverCalls = result.resolverCalls;
+    for (const match of result.matches) {
+      const front =
+        typeof match.front?.key === "string" ? byKey.get(match.front.key) : undefined;
+      const back =
+        typeof match.back?.key === "string" ? byKey.get(match.back.key) : undefined;
+      // A match whose keys don't resolve back to rows we read is unusable —
+      // dropping it leaves both images "unmatched", which is accurate,
+      // rather than writing a pair row pointing at images that don't exist.
+      if (!front || !back) continue;
+      pairedIds.add(front._id);
+      pairedIds.add(back._id);
+      desired.push({
+        frontImageId: front._id,
+        backImageId: back._id,
+        frontIndex: front.entryIndex,
+        backIndex: back.entryIndex,
+        // Identity, with a WRAPPER-LEVEL backfill — see `mergedRowIdentity`.
+        // The algorithm's answer always wins; the rows only fill a gap it
+        // left, which in practice means adjacency pairs.
+        ...mergedRowIdentity(match, front, back),
+        // Deliberately NOT backfilled. These three describe HOW the match
+        // was made, and an adjacency pair genuinely was made from side
+        // evidence alone with a score of 0 — "side-only" is the honest
+        // account of the evidence even when the two rows happen to agree on
+        // a player. Enriching them would turn a description of the method
+        // into a claim about confidence that nothing actually checked.
+        confidence: asConfidence(match.confidence),
+        mechanism: asMechanism(match.mechanism),
+        score: typeof match.score === "number" ? match.score : 0,
+      });
+    }
+
+    // ---- Scan-order fallback over the identity pass's leftovers --------
+    //
+    // Everything the identity pool could not place, paired by adjacency
+    // where nothing contradicts — see `guardedAdjacencyFallback`. These are
+    // the WEAKEST pairs the batch produces, and they are labelled as such:
+    // mechanism "adjacency", confidence "side-only", score 0, exactly the
+    // shape the /placeholders review page renders as "front/back only · by
+    // scan order". Identity pairs above keep their real pool confidence.
+    for (const [a, b] of guardedAdjacencyFallback(result.unmatched)) {
+      const front = byKey.get(a.side === "front" ? a.key : b.key);
+      const back = byKey.get(a.side === "front" ? b.key : a.key);
+      // A leftover key that no longer resolves to a row is dropped, same as
+      // an identity match above — leaving both images unmatched is accurate.
+      if (!front || !back) continue;
+      pairedIds.add(front._id);
+      pairedIds.add(back._id);
+      desired.push({
+        frontImageId: front._id,
+        backImageId: back._id,
+        frontIndex: front.entryIndex,
+        backIndex: back.entryIndex,
+        // No algorithm identity to keep — an adjacency fallback pair was
+        // made without consulting one — so the label comes entirely from the
+        // rows, front-preferred for player/team and back-only for the card
+        // number (the same asymmetry `mergedRowIdentity` documents).
+        ...mergedRowIdentity({ player: null, team: null, cardNumber: null }, front, back),
+        confidence: "side-only",
+        mechanism: "adjacency",
+        score: 0,
+      });
+    }
+  }
+
+  // ---- Diff the desired state against the AUTOMATIC stored pairs -----
+  //
+  // Against `autoStored`, NOT `stored`: manual pairs are excluded so the diff
+  // can neither delete nor overwrite them. This is the load-bearing half of
+  // "manual pairs survive an automatic re-run" — a manual row is never in
+  // `desired` (its images were excluded from pairBatch) and never in the
+  // set the delete/patch computation walks, so nothing here can touch it.
+  //
+  // Otherwise unchanged: runs on every pass, including the first (empty
+  // `autoStored` → insert everything) and a pass over zero auto rows (every
+  // auto pair is stale and goes). One code path, no special cases.
+  const storedByKey = new Map(
+    autoStored.map((p) => [pairKey(p.frontIndex, p.backIndex), p]),
+  );
+
+  const inserts: DesiredPair[] = [];
+  const patches: PairPatch[] = [];
+  const desiredKeys = new Set<string>();
+  for (const pair of desired) {
+    const key = pairKey(pair.frontIndex, pair.backIndex);
+    desiredKeys.add(key);
+    const current = storedByKey.get(key);
+    if (!current) {
+      inserts.push(pair);
+    } else if (
+      // Identity of a pair row is (frontIndex, backIndex); everything else
+      // is revisable. An untouched row is the common case by far — most
+      // pairs are settled by the first run that sees both halves — and NOT
+      // writing it is the point: a patch is a change the client's
+      // subscription re-renders on.
+      current.player !== pair.player ||
+      current.team !== pair.team ||
+      current.cardNumber !== pair.cardNumber ||
+      current.confidence !== pair.confidence ||
+      current.mechanism !== pair.mechanism ||
+      current.score !== pair.score
+    ) {
+      patches.push({
+        pairId: current._id,
+        player: pair.player,
+        team: pair.team,
+        cardNumber: pair.cardNumber,
+        confidence: pair.confidence,
+        mechanism: pair.mechanism,
+        score: pair.score,
+      });
+    }
+  }
+  // From `autoStored`, so a manual pair is NEVER a delete candidate — the
+  // single point that makes manual pairs survive the diff. (Mutation-tested:
+  // switching this to `stored` deletes manual pairs on the next auto-run.)
+  const deleteIds = autoStored
+    .filter((p) => !desiredKeys.has(pairKey(p.frontIndex, p.backIndex)))
+    .map((p) => p._id);
+
+  // `frontImageId` / `backImageId` are dropped on the way in: they address
+  // the IMAGE rows for the pairStatus half of the diff and are not columns
+  // on a pair row, which stores entry indexes (see `applyPairDiff`).
+  const insertRows: PairInsertRow[] = inserts.map((pair) => ({
+    frontIndex: pair.frontIndex,
+    backIndex: pair.backIndex,
+    player: pair.player,
+    team: pair.team,
+    cardNumber: pair.cardNumber,
+    confidence: pair.confidence,
+    mechanism: pair.mechanism,
+    score: pair.score,
+  }));
+
+  // The same diff, applied to `placeholderImages.pairStatus`. Derived from
+  // what was actually PAIRED above rather than from `result.unmatched`: a
+  // match dropped for an unresolvable key must end up marked unmatched, and
+  // reading the paired set back is the only way that stays true. Rows whose
+  // verdict is unchanged are excluded here rather than inside the mutation
+  // so an unchanged batch costs zero mutations, not one per chunk.
+  const becomingPaired: Array<Id<"placeholderImages">> = [];
+  const becomingUnmatched: Array<Id<"placeholderImages">> = [];
+  // Over `autoRows`, not `rows`: a manually-paired image is excluded, so its
+  // "paired" status set by `manuallyPairPlaceholderImages` is left untouched
+  // rather than being reset to "unmatched" (it is not in `pairedIds`).
+  for (const row of autoRows) {
+    const want = pairedIds.has(row._id) ? "paired" : "unmatched";
+    if (row.pairStatus === want) continue;
+    (want === "paired" ? becomingPaired : becomingUnmatched).push(row._id);
+  }
+
+  return {
+    resolverCalls,
+    deleteIds,
+    patches,
+    insertRows,
+    becomingPaired,
+    becomingUnmatched,
+  };
+}
+
+/**
  * Pair up a batch and — on the final run only — set its terminal status.
  *
  * The terminal decision is made here rather than at the end of processing
@@ -429,315 +765,98 @@ export const runPairing = internalAction({
         jobId: args.jobId,
       });
 
-      // ---- Manual pairs are STICKY (NEO-152) ----------------------------
-      //
-      // Three properties, all enforced here, together:
-      //   (b) never re-pair a manually-paired image → its index is removed from
-      //       the pairBatch input (`autoRows`), so the automatic matcher never
-      //       even sees it;
-      //   (a) never delete or overwrite a manual pair row → the diff below
-      //       compares only against `autoStored` (the non-manual pairs), so a
-      //       manual row is never a "removed" candidate and never patched;
-      //   (c) still re-pair everything else freely → every non-manual image and
-      //       pair flows through exactly as before.
-      // The image's partner in a manual pair is likewise excluded, which is what
-      // frees the OTHER images (a manually-taken front's identity twin is now
-      // available to pair with its real partner).
-      const manualIndexes = new Set<number>();
-      for (const pair of stored) {
-        if (pair.mechanism !== "manual") continue;
-        manualIndexes.add(pair.frontIndex);
-        manualIndexes.add(pair.backIndex);
-      }
-      const autoRows = rows.filter((r) => !manualIndexes.has(r.entryIndex));
-      const autoStored = stored.filter((p) => p.mechanism !== "manual");
-
-      // Key by zip index. It is stable, unique within the batch, and — unlike
-      // the original filename — cannot collide, which matters because the pool
-      // uses the key as a dictionary key. The VALUE carries `_id`, which is
-      // what the write-back is keyed on; see the note on
-      // `listDoneImagesForPairing`. Manually-paired rows are excluded.
-      const byKey = new Map(autoRows.map((r) => [String(r.entryIndex), r] as const));
-
-      // The desired state, recomputed from scratch every run. `pairBatch` is a
-      // pure function of the done rows in entry-index order, so two runs over
-      // the same rows produce the same answer — which is what lets the writes
-      // below be a diff rather than a rebuild.
-      const desired: DesiredPair[] = [];
-      const pairedIds = new Set<string>();
-      let resolverCalls = 0;
-
-      if (autoRows.length > 0) {
-        const result = pairBatch(
-          autoRows.map((r) => ({
-            key: String(r.entryIndex),
-            textCount: r.textCount ?? 0,
-            originalFilename: r.originalName,
-            side: asCardSide(r.side),
-          })),
-          {
-            // Already-resolved identity, straight off the row — see the module
-            // comment. Returning null for a key we do not have lets pairing
-            // degrade to the text-count side heuristic instead of throwing.
-            resolveIdentity: (key: string) => {
-              const row = byKey.get(key);
-              if (!row) return null;
-              return {
-                // `players` is the canonical list. `player` is derived from it
-                // here rather than read from a column, because the row has no
-                // such column — the service computes its `player` field as
-                // `players[0]` and a stored copy could only go stale.
-                // CardIdentity is an interface and cannot derive one from the
-                // other, so both are supplied.
-                players: row.players ?? [],
-                player: row.players?.[0] ?? null,
-                team: row.team ?? null,
-                cardNumber: row.cardNumber ?? null,
-                side: asCardSide(row.side),
-              };
-            },
-            // The perceptual hash `/process-entry` already computed. Null when
-            // the service could not produce one (or produced a malformed one —
-            // see `asDhash` in placeholderPipeline.ts); pairing treats that as
-            // "cannot compare these two images" rather than "they differ".
-            hashImage: (key: string) => byKey.get(key)?.dhash ?? null,
-            // IDENTITY FIRST. `false` turns off the ported adjacency PRE-pass, so
-            // every card goes through the identity pool and front↔back are
-            // matched by who is on the card, not by who was scanned next to whom.
-            //
-            // This inverts the cardlister precedence on purpose, and the reason
-            // is that the cardlister precedence was an answer to a cost that no
-            // longer exists. There, `resolveIdentity` was a Haiku call, so the
-            // pre-pass paired confident neighbours FIRST precisely to avoid
-            // paying for it. Here identity is already on the row (it is a
-            // dictionary lookup — see the module comment), so there is no cost to
-            // avoid and a real correctness price to pay: the pre-pass matched on
-            // side-disagreement ALONE, which paired a Sonny Gray front next to an
-            // Eric Hosmer back — opposite sides, so it grabbed them — before the
-            // pool could pair each with its own partner. Any dropped or reordered
-            // side cascaded into mispairs.
-            //
-            // Scan order is not discarded, only demoted: `guardedAdjacencyFallback`
-            // below applies it to whatever identity could not place, and only
-            // between neighbours nothing contradicts.
-            useAdjacency: false,
-          },
-        );
-
-        resolverCalls = result.resolverCalls;
-        for (const match of result.matches) {
-          const front =
-            typeof match.front?.key === "string" ? byKey.get(match.front.key) : undefined;
-          const back =
-            typeof match.back?.key === "string" ? byKey.get(match.back.key) : undefined;
-          // A match whose keys don't resolve back to rows we read is unusable —
-          // dropping it leaves both images "unmatched", which is accurate,
-          // rather than writing a pair row pointing at images that don't exist.
-          if (!front || !back) continue;
-          pairedIds.add(front._id);
-          pairedIds.add(back._id);
-          desired.push({
-            frontImageId: front._id,
-            backImageId: back._id,
-            frontIndex: front.entryIndex,
-            backIndex: back.entryIndex,
-            // Identity, with a WRAPPER-LEVEL backfill — see `mergedRowIdentity`.
-            // The algorithm's answer always wins; the rows only fill a gap it
-            // left, which in practice means adjacency pairs.
-            ...mergedRowIdentity(match, front, back),
-            // Deliberately NOT backfilled. These three describe HOW the match
-            // was made, and an adjacency pair genuinely was made from side
-            // evidence alone with a score of 0 — "side-only" is the honest
-            // account of the evidence even when the two rows happen to agree on
-            // a player. Enriching them would turn a description of the method
-            // into a claim about confidence that nothing actually checked.
-            confidence: asConfidence(match.confidence),
-            mechanism: asMechanism(match.mechanism),
-            score: typeof match.score === "number" ? match.score : 0,
-          });
-        }
-
-        // ---- Scan-order fallback over the identity pass's leftovers --------
-        //
-        // Everything the identity pool could not place, paired by adjacency
-        // where nothing contradicts — see `guardedAdjacencyFallback`. These are
-        // the WEAKEST pairs the batch produces, and they are labelled as such:
-        // mechanism "adjacency", confidence "side-only", score 0, exactly the
-        // shape the /placeholders review page renders as "front/back only · by
-        // scan order". Identity pairs above keep their real pool confidence.
-        for (const [a, b] of guardedAdjacencyFallback(result.unmatched)) {
-          const front = byKey.get(a.side === "front" ? a.key : b.key);
-          const back = byKey.get(a.side === "front" ? b.key : a.key);
-          // A leftover key that no longer resolves to a row is dropped, same as
-          // an identity match above — leaving both images unmatched is accurate.
-          if (!front || !back) continue;
-          pairedIds.add(front._id);
-          pairedIds.add(back._id);
-          desired.push({
-            frontImageId: front._id,
-            backImageId: back._id,
-            frontIndex: front.entryIndex,
-            backIndex: back.entryIndex,
-            // No algorithm identity to keep — an adjacency fallback pair was
-            // made without consulting one — so the label comes entirely from the
-            // rows, front-preferred for player/team and back-only for the card
-            // number (the same asymmetry `mergedRowIdentity` documents).
-            ...mergedRowIdentity({ player: null, team: null, cardNumber: null }, front, back),
-            confidence: "side-only",
-            mechanism: "adjacency",
-            score: 0,
-          });
-        }
-      }
-
-      // ---- Diff the desired state against the AUTOMATIC stored pairs -----
-      //
-      // Against `autoStored`, NOT `stored`: manual pairs are excluded so the diff
-      // can neither delete nor overwrite them. This is the load-bearing half of
-      // "manual pairs survive an automatic re-run" — a manual row is never in
-      // `desired` (its images were excluded from pairBatch) and never in the
-      // set the delete/patch computation walks, so nothing here can touch it.
-      //
-      // Otherwise unchanged: runs on every pass, including the first (empty
-      // `autoStored` → insert everything) and a pass over zero auto rows (every
-      // auto pair is stale and goes). One code path, no special cases.
-      const storedByKey = new Map(
-        autoStored.map((p) => [pairKey(p.frontIndex, p.backIndex), p]),
-      );
-
-      const inserts: DesiredPair[] = [];
-      const patches: PairPatch[] = [];
-      const desiredKeys = new Set<string>();
-      for (const pair of desired) {
-        const key = pairKey(pair.frontIndex, pair.backIndex);
-        desiredKeys.add(key);
-        const current = storedByKey.get(key);
-        if (!current) {
-          inserts.push(pair);
-        } else if (
-          // Identity of a pair row is (frontIndex, backIndex); everything else
-          // is revisable. An untouched row is the common case by far — most
-          // pairs are settled by the first run that sees both halves — and NOT
-          // writing it is the point: a patch is a change the client's
-          // subscription re-renders on.
-          current.player !== pair.player ||
-          current.team !== pair.team ||
-          current.cardNumber !== pair.cardNumber ||
-          current.confidence !== pair.confidence ||
-          current.mechanism !== pair.mechanism ||
-          current.score !== pair.score
-        ) {
-          patches.push({
-            pairId: current._id,
-            player: pair.player,
-            team: pair.team,
-            cardNumber: pair.cardNumber,
-            confidence: pair.confidence,
-            mechanism: pair.mechanism,
-            score: pair.score,
-          });
-        }
-      }
-      // From `autoStored`, so a manual pair is NEVER a delete candidate — the
-      // single point that makes manual pairs survive the diff. (Mutation-tested:
-      // switching this to `stored` deletes manual pairs on the next auto-run.)
-      const deleteIds = autoStored
-        .filter((p) => !desiredKeys.has(pairKey(p.frontIndex, p.backIndex)))
-        .map((p) => p._id);
+      // The whole recompute — manual-pair stickiness, the identity-first
+      // pairBatch, the guarded adjacency fallback, the front-preferred identity
+      // merge, and the pair-row + image-status diff — is a PURE function of the
+      // done rows and the stored pairs. Extracted (NEO-175) so the inline
+      // finalize on the close path runs byte-identical logic against the same
+      // inputs.
+      const diff = computePairingDiff(rows, stored);
 
       // Deletes first, then patches, then inserts. The three sets are disjoint
       // by construction so the order cannot change the outcome — but it does
       // change what a client subscribed to `listPlaceholderPairs` sees in
       // between, and "the superseded pair disappears before its replacement
       // appears" is the honest intermediate state. The reverse order briefly
-      // shows the same image paired twice.
-      for (let i = 0; i < deleteIds.length; i += PAIR_CHUNK_SIZE) {
+      // shows the same image paired twice. Chunked so a large sheet's pairs
+      // never build one oversized, conflict-prone transaction.
+      for (let i = 0; i < diff.deleteIds.length; i += PAIR_CHUNK_SIZE) {
         await ctx.runMutation(internal.placeholderPairing.applyPairDiff, {
           jobId: args.jobId,
           userId: args.userId,
-          deleteIds: deleteIds.slice(i, i + PAIR_CHUNK_SIZE),
+          deleteIds: diff.deleteIds.slice(i, i + PAIR_CHUNK_SIZE),
           patches: [],
           inserts: [],
         });
       }
-      for (let i = 0; i < patches.length; i += PAIR_CHUNK_SIZE) {
+      for (let i = 0; i < diff.patches.length; i += PAIR_CHUNK_SIZE) {
         await ctx.runMutation(internal.placeholderPairing.applyPairDiff, {
           jobId: args.jobId,
           userId: args.userId,
           deleteIds: [],
-          patches: patches.slice(i, i + PAIR_CHUNK_SIZE),
+          patches: diff.patches.slice(i, i + PAIR_CHUNK_SIZE),
           inserts: [],
         });
       }
-      // `frontImageId` / `backImageId` are dropped on the way in: they address
-      // the IMAGE rows for the pairStatus half of the diff and are not columns
-      // on a pair row, which stores entry indexes (see `applyPairDiff`).
-      const insertRows = inserts.map((pair) => ({
-        frontIndex: pair.frontIndex,
-        backIndex: pair.backIndex,
-        player: pair.player,
-        team: pair.team,
-        cardNumber: pair.cardNumber,
-        confidence: pair.confidence,
-        mechanism: pair.mechanism,
-        score: pair.score,
-      }));
-      for (let i = 0; i < insertRows.length; i += PAIR_CHUNK_SIZE) {
+      for (let i = 0; i < diff.insertRows.length; i += PAIR_CHUNK_SIZE) {
         await ctx.runMutation(internal.placeholderPairing.applyPairDiff, {
           jobId: args.jobId,
           userId: args.userId,
           deleteIds: [],
           patches: [],
-          inserts: insertRows.slice(i, i + PAIR_CHUNK_SIZE),
+          inserts: diff.insertRows.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
 
-      // The same diff, applied to `placeholderImages.pairStatus`. Derived from
-      // what was actually PAIRED above rather than from `result.unmatched`: a
-      // match dropped for an unresolvable key must end up marked unmatched, and
-      // reading the paired set back is the only way that stays true. Rows whose
-      // verdict is unchanged are excluded here rather than inside the mutation
-      // so an unchanged batch costs zero mutations, not one per chunk.
-      const becomingPaired: Array<Id<"placeholderImages">> = [];
-      const becomingUnmatched: Array<Id<"placeholderImages">> = [];
-      // Over `autoRows`, not `rows`: a manually-paired image is excluded, so its
-      // "paired" status set by `manuallyPairPlaceholderImages` is left untouched
-      // rather than being reset to "unmatched" (it is not in `pairedIds`).
-      for (const row of autoRows) {
-        const want = pairedIds.has(row._id) ? "paired" : "unmatched";
-        if (row.pairStatus === want) continue;
-        (want === "paired" ? becomingPaired : becomingUnmatched).push(row._id);
-      }
-      for (let i = 0; i < becomingPaired.length; i += PAIR_CHUNK_SIZE) {
+      // The same diff, applied to `placeholderImages.pairStatus`. Rows whose
+      // verdict is unchanged were excluded inside `computePairingDiff` so an
+      // unchanged batch costs zero mutations, not one per chunk.
+      for (let i = 0; i < diff.becomingPaired.length; i += PAIR_CHUNK_SIZE) {
         await ctx.runMutation(internal.placeholderPairing.syncImagePairStatus, {
           jobId: args.jobId,
           pairStatus: "paired",
-          imageIds: becomingPaired.slice(i, i + PAIR_CHUNK_SIZE),
+          imageIds: diff.becomingPaired.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
-      for (let i = 0; i < becomingUnmatched.length; i += PAIR_CHUNK_SIZE) {
+      for (let i = 0; i < diff.becomingUnmatched.length; i += PAIR_CHUNK_SIZE) {
         await ctx.runMutation(internal.placeholderPairing.syncImagePairStatus, {
           jobId: args.jobId,
           pairStatus: "unmatched",
-          imageIds: becomingUnmatched.slice(i, i + PAIR_CHUNK_SIZE),
+          imageIds: diff.becomingUnmatched.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
 
       if (rows.length > 0) {
+        // The log's shape counters are reconstructed from the same two inputs the
+        // diff came from — they are NOT in `computePairingDiff`'s return, which is
+        // kept to the minimal set both callers apply. `pairs` = the auto pairs
+        // that survive this run (stored auto pairs, less deletes, plus inserts),
+        // and every paired image is one of two halves, so paired images = 2×pairs.
+        const manualPairs = stored.filter((p) => p.mechanism === "manual");
+        const manualEntryIndexes = new Set<number>();
+        for (const p of manualPairs) {
+          manualEntryIndexes.add(p.frontIndex);
+          manualEntryIndexes.add(p.backIndex);
+        }
+        const autoImages = rows.filter(
+          (r) => !manualEntryIndexes.has(r.entryIndex),
+        ).length;
+        const autoStoredCount = stored.length - manualPairs.length;
+        const pairs = autoStoredCount - diff.deleteIds.length + diff.insertRows.length;
         console.log(
           JSON.stringify({
             msg: "placeholder_pairing_done",
             jobId: args.jobId,
             final,
             force: args.force ?? false,
-            images: autoRows.length,
-            manual: stored.length - autoStored.length,
-            pairs: desired.length,
-            unmatched: autoRows.length - pairedIds.size,
-            inserted: inserts.length,
-            revised: patches.length,
-            removed: deleteIds.length,
-            resolverCalls,
+            images: autoImages,
+            manual: manualPairs.length,
+            pairs,
+            unmatched: autoImages - pairs * 2,
+            inserted: diff.insertRows.length,
+            revised: diff.patches.length,
+            removed: diff.deleteIds.length,
+            resolverCalls: diff.resolverCalls,
           }),
         );
       }
@@ -753,7 +872,7 @@ export const runPairing = internalAction({
       // unpaired and would report a call the finished batch never needed.
       await ctx.runMutation(internal.placeholderPairing.recordResolverCalls, {
         jobId: args.jobId,
-        calls: resolverCalls,
+        calls: diff.resolverCalls,
       });
 
       // Terminal decision. `failedImages * 2 > totalImages` rather than a
@@ -820,11 +939,25 @@ export const clearPairingScheduled = internalMutation({
   handler: async (ctx, args) => {
     const job = await findJob(ctx, args.jobId);
     if (!job) return null;
-    if (job.pairingScheduled === undefined) return null;
-    await ctx.db.patch(job._id, { pairingScheduled: undefined });
+    await clearPairingScheduledImpl(ctx, job);
     return null;
   },
 });
+
+/**
+ * The debounce-latch clear itself, as a plain function taking the job DOC, so a
+ * caller that already holds the row — the inline close-path finalize
+ * (`finalizePairingInline`) — makes the SAME write rather than a hand-rolled
+ * copy. A no-op when the latch is already clear, which keeps the job row (and
+ * every `getPlaceholderJob` subscriber) from being written for no reason.
+ */
+export async function clearPairingScheduledImpl(
+  ctx: MutationCtx,
+  job: Doc<"placeholderJobs">,
+): Promise<void> {
+  if (job.pairingScheduled === undefined) return;
+  await ctx.db.patch(job._id, { pairingScheduled: undefined });
+}
 
 /**
  * Every pair currently stored for a job, in the shape the diff compares on.
@@ -903,12 +1036,25 @@ export const recordResolverCalls = internalMutation({
   handler: async (ctx, args) => {
     const job = await findJob(ctx, args.jobId);
     if (!job) return null;
-    const next = args.calls > 0 ? args.calls : undefined;
-    if (job.resolverCalls === next) return null;
-    await ctx.db.patch(job._id, { resolverCalls: next });
+    await recordResolverCallsImpl(ctx, job, args.calls);
     return null;
   },
 });
+
+/**
+ * The resolver-count write itself, as a plain function taking the job DOC, so
+ * the inline finalize (`finalizePairingInline`) records the count identically —
+ * zero stored as ABSENT, and the write skipped when the row already agrees.
+ */
+export async function recordResolverCallsImpl(
+  ctx: MutationCtx,
+  job: Doc<"placeholderJobs">,
+  calls: number,
+): Promise<void> {
+  const next = calls > 0 ? calls : undefined;
+  if (job.resolverCalls === next) return;
+  await ctx.db.patch(job._id, { resolverCalls: next });
+}
 
 /**
  * Apply one chunk of the pair diff: delete stale rows, revise changed ones,
@@ -985,47 +1131,71 @@ export const applyPairDiff = internalMutation({
     inserted: v.number(),
   }),
   handler: async (ctx, args) => {
-    let deleted = 0;
-    for (const pairId of args.deleteIds) {
-      const pair = await ctx.db.get(pairId);
-      if (!pair || pair.jobId !== args.jobId) continue;
-      await ctx.db.delete(pair._id);
-      deleted += 1;
-    }
-
-    let revised = 0;
-    for (const patch of args.patches) {
-      const pair = await ctx.db.get(patch.pairId);
-      if (!pair || pair.jobId !== args.jobId) continue;
-      await ctx.db.patch(pair._id, {
-        player: patch.player,
-        team: patch.team,
-        cardNumber: patch.cardNumber,
-        confidence: patch.confidence,
-        mechanism: patch.mechanism,
-        score: patch.score,
-      });
-      revised += 1;
-    }
-
-    for (const insert of args.inserts) {
-      await ctx.db.insert("placeholderPairs", {
-        jobId: args.jobId,
-        userId: args.userId,
-        frontIndex: insert.frontIndex,
-        backIndex: insert.backIndex,
-        player: insert.player,
-        team: insert.team,
-        cardNumber: insert.cardNumber,
-        confidence: insert.confidence,
-        mechanism: insert.mechanism,
-        score: insert.score,
-      });
-    }
-
-    return { deleted, revised, inserted: args.inserts.length };
+    return applyPairDiffImpl(ctx, args.jobId, args.userId, {
+      deleteIds: args.deleteIds,
+      patches: args.patches,
+      inserts: args.inserts,
+    });
   },
 });
+
+/**
+ * The pair-diff apply itself, as a plain function, so the inline close-path
+ * finalize (`finalizePairingInline`) can apply the WHOLE diff in one transaction
+ * (unchunked) with the exact delete/patch/insert semantics the chunked action
+ * uses — the same id-keyed reads, the same `jobId` re-check, the same insert
+ * shape. Keeping one implementation is what stops the two paths diverging.
+ */
+export async function applyPairDiffImpl(
+  ctx: MutationCtx,
+  jobId: string,
+  userId: string,
+  args: {
+    deleteIds: Id<"placeholderPairs">[];
+    patches: PairPatch[];
+    inserts: PairInsertRow[];
+  },
+): Promise<{ deleted: number; revised: number; inserted: number }> {
+  let deleted = 0;
+  for (const pairId of args.deleteIds) {
+    const pair = await ctx.db.get(pairId);
+    if (!pair || pair.jobId !== jobId) continue;
+    await ctx.db.delete(pair._id);
+    deleted += 1;
+  }
+
+  let revised = 0;
+  for (const patch of args.patches) {
+    const pair = await ctx.db.get(patch.pairId);
+    if (!pair || pair.jobId !== jobId) continue;
+    await ctx.db.patch(pair._id, {
+      player: patch.player,
+      team: patch.team,
+      cardNumber: patch.cardNumber,
+      confidence: patch.confidence,
+      mechanism: patch.mechanism,
+      score: patch.score,
+    });
+    revised += 1;
+  }
+
+  for (const insert of args.inserts) {
+    await ctx.db.insert("placeholderPairs", {
+      jobId,
+      userId,
+      frontIndex: insert.frontIndex,
+      backIndex: insert.backIndex,
+      player: insert.player,
+      team: insert.team,
+      cardNumber: insert.cardNumber,
+      confidence: insert.confidence,
+      mechanism: insert.mechanism,
+      score: insert.score,
+    });
+  }
+
+  return { deleted, revised, inserted: args.inserts.length };
+}
 
 /**
  * Stamp one verdict onto a chunk of image rows.
@@ -1052,17 +1222,150 @@ export const syncImagePairStatus = internalMutation({
   },
   returns: v.number(),
   handler: async (ctx, args) => {
-    let marked = 0;
-    for (const imageId of args.imageIds) {
-      const image = await ctx.db.get(imageId);
-      if (!image) continue;
-      if (image.jobId !== args.jobId) continue;
-      await ctx.db.patch(image._id, { pairStatus: args.pairStatus });
-      marked += 1;
-    }
-    return marked;
+    return syncImagePairStatusImpl(ctx, args.jobId, args.pairStatus, args.imageIds);
   },
 });
+
+/**
+ * The pairStatus stamp itself, as a plain function, so the inline finalize
+ * (`finalizePairingInline`) stamps rows with the exact same by-id read, `jobId`
+ * re-check, and skip-if-gone semantics the chunked action uses. The caller has
+ * already filtered rows whose stored verdict matches, so every id is a genuine
+ * change.
+ */
+export async function syncImagePairStatusImpl(
+  ctx: MutationCtx,
+  jobId: string,
+  pairStatus: "paired" | "unmatched",
+  imageIds: Id<"placeholderImages">[],
+): Promise<number> {
+  let marked = 0;
+  for (const imageId of imageIds) {
+    const image = await ctx.db.get(imageId);
+    if (!image) continue;
+    if (image.jobId !== jobId) continue;
+    await ctx.db.patch(image._id, { pairStatus });
+    marked += 1;
+  }
+  return marked;
+}
+
+/**
+ * Finalize a SMALL closed batch INLINE, in the caller's own mutation
+ * transaction — the NEO-175 fast path that takes the terminal pairing
+ * transition off the Convex scheduler.
+ *
+ * Byte-identical to what the scheduled `runPairing` action does on its FINAL
+ * pass, but without the async hop that backs up under deployment load. It reads
+ * the same done rows and stored pairs, runs the same `computePairingDiff`,
+ * applies the same pair-row and pairStatus writes via the same plain helpers,
+ * records the same resolver count, and makes the same terminal decision. Because
+ * it runs inside the close mutation, the whole thing commits atomically at
+ * succeeded/failed and the client sees Collecting → terminal with no
+ * intermediate "pairing" flicker.
+ *
+ * Only safe for a SMALL batch — see `INLINE_FINALIZE_MAX_IMAGES` in
+ * placeholderStream.ts. It applies the ENTIRE diff in one transaction (no
+ * chunking), so a large sheet's read/write/time budget is exactly why big
+ * batches keep the chunked action path.
+ *
+ * The plain-function imports from placeholderPipeline (`markJobFailedImpl` /
+ * `markJobSucceededImpl`) do NOT create an import cycle: placeholderPipeline
+ * reaches placeholderPairing only through the generated `internal` api (a
+ * runtime value), never a static import, so this one-way static edge is safe.
+ *
+ * Returns the terminal status it set, so the close mutation can hand it straight
+ * back to the client.
+ */
+export async function finalizePairingInline(
+  ctx: MutationCtx,
+  job: Doc<"placeholderJobs">,
+): Promise<"succeeded" | "failed"> {
+  // Clear the debounce latch first, exactly as the action does before its first
+  // read: a provisional run scheduled while the batch was still collecting must
+  // not be able to fight this terminal write.
+  await clearPairingScheduledImpl(ctx, job);
+
+  // Done rows, read directly in entry-index order (load-bearing for pairing's
+  // adjacency reasoning), mapped to the SAME shape `listDoneImagesForPairing`
+  // returns so `computePairingDiff` sees an identical input.
+  const imageRows = await ctx.db
+    .query("placeholderImages")
+    .withIndex("by_job_and_index", (q) => q.eq("jobId", job.jobId))
+    .collect();
+  const rows: PairingImageRow[] = imageRows
+    .filter((r) => r.status === "done")
+    .map((r) => ({
+      _id: r._id,
+      entryIndex: r.entryIndex,
+      originalName: r.originalName,
+      players: r.players,
+      team: r.team,
+      cardNumber: r.cardNumber,
+      side: r.side,
+      textCount: r.textCount,
+      dhash: r.dhash,
+      pairStatus: r.pairStatus,
+    }));
+
+  // Stored pairs, read directly, mapped to the `listPairsForDiff` shape.
+  const storedPairs = await ctx.db
+    .query("placeholderPairs")
+    .withIndex("by_job", (q) => q.eq("jobId", job.jobId))
+    .collect();
+  const stored: StoredPairRow[] = storedPairs.map((p) => ({
+    _id: p._id,
+    frontIndex: p.frontIndex,
+    backIndex: p.backIndex,
+    player: p.player,
+    team: p.team,
+    cardNumber: p.cardNumber,
+    confidence: p.confidence,
+    mechanism: p.mechanism,
+    score: p.score,
+  }));
+
+  const diff = computePairingDiff(rows, stored);
+
+  // The whole diff at once — a small batch fits one transaction, which is the
+  // precondition the caller checks before taking this path.
+  await applyPairDiffImpl(ctx, job.jobId, job.userId, {
+    deleteIds: diff.deleteIds,
+    patches: diff.patches,
+    inserts: diff.insertRows,
+  });
+  await syncImagePairStatusImpl(ctx, job.jobId, "paired", diff.becomingPaired);
+  await syncImagePairStatusImpl(ctx, job.jobId, "unmatched", diff.becomingUnmatched);
+
+  await recordResolverCallsImpl(ctx, job, diff.resolverCalls);
+
+  // Terminal decision — identical to the action's final block (see the
+  // `runPairing` handler). `failed * 2 > total` rather than a division so the
+  // comparison is exact on odd totals (5 images, 3 failures is a failed batch;
+  // 5 and 2 is not).
+  const total = job.totalImages ?? 0;
+  const failed = job.failedImages ?? 0;
+  const noUsableImages = total === 0;
+  if (noUsableImages || failed * 2 > total) {
+    await markJobFailedImpl(
+      ctx,
+      job,
+      "TOO_MANY_IMAGE_FAILURES",
+      noUsableImages
+        ? // The two modes reach zero usable images by different routes, and
+          // telling a scanner user their "upload" was rejected sends them
+          // looking for a file they never chose.
+          job.mode === "stream"
+          ? "no images were uploaded before the batch was closed"
+          : "no images were accepted from the upload"
+        : `${failed} of ${total} images failed to process`,
+    );
+    return "failed";
+  }
+
+  await markJobSucceededImpl(ctx, job);
+  return "succeeded";
+}
 
 // ---------------------------------------------------------------------------
 // Public: manual correction surface (NEO-152)

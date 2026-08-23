@@ -144,16 +144,31 @@ tags:
 # button, "Yes, Close".
 - assertVisible: "Close this scan session?"
 - tapOn: "Yes, Close"
-# Wait for the batch to reach its terminal state — the final pairing run
-# settling. This is a Convex-internal scheduled chain (close mutation → scheduled
-# runPairing → recordResolverCalls → markJobSucceeded → reactive push), NOT
-# external compute: every image is already done, so there is no crop/OCR
-# round-trip here. That is why this is 15s and not Step 3's compute budget. The
-# status line flips "Collecting" → "Pairing" → "Succeeded"; matching "Succeeded"
-# on the same 6/0 arithmetic proves the final run finished, and
-# recordResolverCalls commits before markJobSucceeded, so once the status is
+# Wait for the batch to reach its terminal state. For a small batch (this flow's
+# six images; ≤100), the close mutation finalizes pairing INLINE in its own
+# transaction — recordResolverCalls + markJobSucceeded commit together, NOT via a
+# scheduled runPairing hop — then the reactive push flips the status line straight
+# to "Succeeded". There is no external compute here: every image is already done,
+# so there is no crop/OCR round-trip. The status line goes "Collecting" →
+# "Succeeded" directly (no visible "Pairing" step for a small batch); matching
+# "Succeeded" on the same 6/0 arithmetic proves the final run finished, and
+# recordResolverCalls commits with markJobSucceeded, so once the status is
 # "Succeeded" the count is already 6 for Step 5 to read. (Pair count omitted here
 # for the same reason as Step 3 — see the R2 pair-count note in the header.)
+#
+# The terminal transition is finalized INLINE in the close mutation for small
+# batches (NEO-175, commit 557f1d4): match fronts↔backs, record resolver calls,
+# and flip the job to "Succeeded" all commit atomically when the "Yes, Close"
+# tap's mutation returns — sub-second even under the preview's 8-runner
+# contention, with no scheduler hop and no action-queue wait. (Previously this
+# FINAL run was a Convex *action* scheduled at runAfter(0); as an action it backed
+# up behind the E2E runners' preprocess actions, so close→"Succeeded" took 16–33s
+# — which is why this budget had been interim-bumped to 20s. The code fix removed
+# the hop, so no inflated ceiling is needed.) The "Succeeded" text and the 6/0
+# arithmetic below are UNCHANGED, so a broken finalize still fails here and R2
+# holds. 15s is the tight restored budget (the pre-regression value): the
+# transition is now <1s, so extendedWaitUntil resolves instantly on a healthy run
+# and still fails a genuinely broken finalize.
 - extendedWaitUntil:
     visible: ".*Succeeded.*6 of 6 images processed, 0 failed.*"
     timeout: 15000

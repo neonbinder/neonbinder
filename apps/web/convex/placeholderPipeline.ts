@@ -1439,15 +1439,31 @@ export const markJobSucceeded = internalMutation({
   handler: async (ctx, args) => {
     const job = await findJob(ctx, args.jobId);
     if (!job) return null;
-    await ctx.db.patch(job._id, {
-      status: "succeeded",
-      finishedAt: Date.now(),
-      errorCode: undefined,
-      errorDetail: undefined,
-    });
+    await markJobSucceededImpl(ctx, job);
     return null;
   },
 });
+
+/**
+ * The terminal-success patch itself, as a plain function so a caller that
+ * already holds the job row — and cannot `runMutation` into `markJobSucceeded`
+ * because it is itself a mutation — makes the SAME transition rather than a
+ * hand-rolled copy. The inline close-path finalize (`finalizePairingInline`) is
+ * that caller. The mirror of `markJobFailedImpl`: sets `finishedAt` alongside
+ * the status so "the job is over" and "finishedAt is set" can never disagree,
+ * and clears any previous run's terminal error fields.
+ */
+export async function markJobSucceededImpl(
+  ctx: MutationCtx,
+  job: Doc<"placeholderJobs">,
+): Promise<void> {
+  await ctx.db.patch(job._id, {
+    status: "succeeded",
+    finishedAt: Date.now(),
+    errorCode: undefined,
+    errorDetail: undefined,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Internal queries used by the "use node" / action side
