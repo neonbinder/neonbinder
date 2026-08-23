@@ -46,9 +46,14 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { recordImageOutcomeImpl } from "./placeholderPipeline";
 import {
+  computePairingDiff,
   guardedAdjacencyFallback,
   identitiesContradict,
   mergedRowIdentity,
+} from "./placeholderPairing";
+import type {
+  PairingImageRow,
+  StoredPairRow,
 } from "./placeholderPairing";
 import { createPoolCard } from "./lib/pairing/types";
 
@@ -1314,5 +1319,132 @@ describe("guardedAdjacencyFallback", () => {
     // [front, back, front]: pairs 0-1, then index 2 is alone.
     const pairs = guardedAdjacencyFallback([card("0", "front"), card("1", "back"), card("2", "front")]);
     expect(pairs.map(([a, b]) => [a.key, b.key])).toEqual([["0", "1"]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computePairingDiff — the pure recompute both callers apply (NEO-175)
+// ---------------------------------------------------------------------------
+//
+// `runPairing` (the scheduled action) and `finalizePairingInline` (the inline
+// close path) both call this ONE function, which is what guarantees they produce
+// byte-identical pairs. These drive it directly, with no ctx: they pin the diff
+// shape the two callers rely on.
+
+describe("computePairingDiff (pure)", () => {
+  /** A done image row in the shape `listDoneImagesForPairing` returns. */
+  function imageRow(
+    entryIndex: number,
+    fields: Omit<Partial<PairingImageRow>, "_id" | "entryIndex" | "originalName">,
+  ): PairingImageRow {
+    return {
+      _id: `img-${entryIndex}` as unknown as Id<"placeholderImages">,
+      entryIndex,
+      originalName: `scan-${entryIndex}.jpg`,
+      ...fields,
+    };
+  }
+
+  const griffeyFront = (i: number) =>
+    imageRow(i, { side: "front", textCount: 1, players: ["Ken Griffey Jr."], team: "Seattle Mariners" });
+  const griffeyBack = (i: number) =>
+    imageRow(i, {
+      side: "back",
+      textCount: 40,
+      players: ["Ken Griffey Jr."],
+      team: "Seattle Mariners",
+      cardNumber: "24",
+    });
+
+  test("pairs a clean front/back by identity, inserting the merged row", () => {
+    const diff = computePairingDiff([griffeyFront(0), griffeyBack(1)], []);
+
+    expect(diff.deleteIds).toEqual([]);
+    expect(diff.patches).toEqual([]);
+    expect(diff.insertRows).toHaveLength(1);
+    // Merged identity: front-preferred player/team, back-only card number.
+    expect(diff.insertRows[0]).toMatchObject({
+      frontIndex: 0,
+      backIndex: 1,
+      player: "Ken Griffey Jr.",
+      team: "Seattle Mariners",
+      cardNumber: "24",
+    });
+    // Identity-first resolves one call per done image.
+    expect(diff.resolverCalls).toBe(2);
+    // Both images move to "paired"; nothing becomes unmatched.
+    expect(diff.becomingPaired.sort()).toEqual(
+      ["img-0", "img-1"].sort() as unknown as Id<"placeholderImages">[],
+    );
+    expect(diff.becomingUnmatched).toEqual([]);
+  });
+
+  test("a pair already stored identically produces NO writes (a diff, not a rebuild)", () => {
+    const rows = [griffeyFront(0), griffeyBack(1)];
+    // Compute once to get the exact stored shape, then feed it back as `stored`.
+    const first = computePairingDiff(rows, []);
+    const stored: StoredPairRow[] = first.insertRows.map((r, idx) => ({
+      _id: `pair-${idx}` as unknown as Id<"placeholderPairs">,
+      ...r,
+    }));
+    // And the images already carry the verdict the first run computed.
+    const rowsPaired = rows.map((r) => ({ ...r, pairStatus: "paired" as const }));
+
+    const second = computePairingDiff(rowsPaired, stored);
+    expect(second.deleteIds).toEqual([]);
+    expect(second.patches).toEqual([]);
+    expect(second.insertRows).toEqual([]);
+    expect(second.becomingPaired).toEqual([]);
+    expect(second.becomingUnmatched).toEqual([]);
+  });
+
+  test("a stored AUTO pair no longer desired is deleted", () => {
+    // Only a lone front is done now, but an auto pair (0,1) is still stored: it
+    // is stale and must be removed, and the surviving image goes unmatched.
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-stale" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 1,
+        player: "Ken Griffey Jr.",
+        team: "Seattle Mariners",
+        confidence: "exact",
+        mechanism: "pool",
+        score: 1,
+      },
+    ];
+    const diff = computePairingDiff([griffeyFront(0)], stored);
+    expect(diff.deleteIds).toEqual(["pair-stale"] as unknown as Id<"placeholderPairs">[]);
+    expect(diff.insertRows).toEqual([]);
+    expect(diff.becomingUnmatched).toEqual(["img-0"] as unknown as Id<"placeholderImages">[]);
+  });
+
+  test("a MANUAL pair is sticky — its images are excluded and its row untouched", () => {
+    // Front 0 and back 3 are manually paired; the automatic pass must not see
+    // either image, must not delete the manual row, and must pair the remaining
+    // real front/back (1,2).
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-manual" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 3,
+        confidence: "side-only",
+        mechanism: "manual",
+        score: 0,
+      },
+    ];
+    const diff = computePairingDiff(
+      [griffeyFront(0), griffeyFront(1), griffeyBack(2), griffeyBack(3)],
+      stored,
+    );
+    // The manual row is never a delete candidate.
+    expect(diff.deleteIds).toEqual([]);
+    // Exactly one new auto pair, over the non-manual images (1,2).
+    expect(diff.insertRows).toHaveLength(1);
+    expect(diff.insertRows[0]).toMatchObject({ frontIndex: 1, backIndex: 2 });
+    // The manually-paired images (0,3) are excluded from the pairStatus diff.
+    const touched = [...diff.becomingPaired, ...diff.becomingUnmatched];
+    expect(touched).not.toContain("img-0");
+    expect(touched).not.toContain("img-3");
   });
 });

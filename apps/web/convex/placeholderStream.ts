@@ -44,6 +44,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { fastPreprocessPool } from "./placeholderPool";
+import { finalizePairingInline } from "./placeholderPairing";
 import {
   ACTIVE_STATUSES,
   ENQUEUE_CHUNK_SIZE,
@@ -434,6 +435,15 @@ export async function closeStreamImpl(
   const now = Date.now();
 
   if (totalImages === 0 || settled >= totalImages) {
+    if (totalImages <= INLINE_FINALIZE_MAX_IMAGES) {
+      // Inline finalize — no scheduler hop, so the terminal transition is immune
+      // to action-queue backlog under load (NEO-175 follow-up). Commits
+      // atomically at succeeded/failed in THIS mutation, so the client sees
+      // Collecting -> terminal. No status→"pairing" patch first: the finalize
+      // sets the terminal status itself, so that write would be redundant churn.
+      const terminal = await finalizePairingInline(ctx, job); // job counters are intact
+      return terminal; // "succeeded" | "failed"
+    }
     await ctx.db.patch(job._id, { status: "pairing", lastActivityAt: now });
     await ctx.scheduler.runAfter(0, internal.placeholderPairing.runPairing, {
       jobId: job.jobId,
@@ -446,6 +456,16 @@ export async function closeStreamImpl(
   await ctx.db.patch(job._id, { status: "processing", lastActivityAt: now });
   return "processing";
 }
+
+/**
+ * Batch size at or below which a closed stream finalizes pairing INLINE — in the
+ * close mutation's own transaction — instead of scheduling the `runPairing`
+ * action (NEO-175 follow-up). At or below this a whole finalize fits one
+ * mutation: ≤100 image reads, ≤50 pair reads/writes, ≤100 pairStatus writes, and
+ * `pairBatch`'s O(n²) is trivial at this size. Larger batches keep the chunked
+ * action path for the mutation read/write/time limits.
+ */
+const INLINE_FINALIZE_MAX_IMAGES = 100;
 
 // ---------------------------------------------------------------------------
 // Internal: sweeps

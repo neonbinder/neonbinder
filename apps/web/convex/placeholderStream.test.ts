@@ -546,10 +546,13 @@ describe("closePlaceholderStream", () => {
     expect(job?.finishedAt).toBeUndefined();
   });
 
-  test("with nothing left to drain, goes straight to the terminal pass", async () => {
-    // Every image finished while the user was still scanning, so no completion
-    // is coming to fire the last-one-done transition. Without this branch the
-    // job would wait in "processing" forever.
+  test("with nothing left to drain, finalizes the batch INLINE in the close mutation", async () => {
+    // Every image finished while the user was still scanning. A SMALL closed
+    // batch is finalized in the close mutation's OWN transaction (NEO-175), so
+    // the terminal status, the pairs, the resolver count, and the image
+    // pairStatus are all present the INSTANT close returns — no scheduler hop.
+    // The absence of a `finishAllScheduledFunctions` call before these
+    // assertions is precisely the proof the finalize is synchronous.
     const t = convexTest(schema, modules);
     await seedJob(t, "job-drained", {
       mode: "stream",
@@ -572,26 +575,70 @@ describe("closePlaceholderStream", () => {
     });
 
     const result = await close(t, "job-drained");
-    expect(result).toEqual({ closed: true, status: "pairing" });
+    // Terminal INLINE — "succeeded", not the old "pairing" hand-off.
+    expect(result).toEqual({ closed: true, status: "succeeded" });
 
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-
+    // No tick between here and the close: everything below is already true.
     const job = await getJob(t, "job-drained");
     expect(job?.status).toBe("succeeded");
     expect(job?.finishedAt).toBeGreaterThan(0);
+    // Identity-first resolves one call per done image; 0 would store as absent.
+    expect(job?.resolverCalls).toBe(2);
+
     const pairs = await t.run(async (ctx) => ctx.db.query("placeholderPairs").collect());
     expect(pairs).toHaveLength(1);
+    // Merged identity: front-preferred player/team, back-only card number.
+    expect(pairs[0]).toMatchObject({
+      frontIndex: 0,
+      backIndex: 1,
+      player: "Ken Griffey Jr.",
+      team: "Seattle Mariners",
+      cardNumber: "24",
+    });
+
+    // Both images stamped paired, inline.
+    const images = await getImages(t, "job-drained");
+    expect(images.map((i) => i.pairStatus)).toEqual(["paired", "paired"]);
   });
 
-  test("closing an empty session fails it through the existing zero-images rule", async () => {
+  test("a small all-failed batch fails INLINE through the too-many-failures rule", async () => {
+    // `failedImages * 2 > totalImages` (2 of 3) is a failed batch. Small, so it
+    // is decided in the close mutation with no scheduler tick.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-mostly-failed", {
+      mode: "stream",
+      status: "collecting",
+      totalImages: 3,
+      processedImages: 1,
+      failedImages: 2,
+    });
+    await seedImage(t, "job-mostly-failed", 0, "done", {
+      side: "front",
+      textCount: 1,
+    });
+    await seedImage(t, "job-mostly-failed", 1, "failed");
+    await seedImage(t, "job-mostly-failed", 2, "failed");
+
+    const result = await close(t, "job-mostly-failed");
+    expect(result).toEqual({ closed: true, status: "failed" });
+
+    // No tick — the terminal failure is already stamped.
+    const job = await getJob(t, "job-mostly-failed");
+    expect(job?.status).toBe("failed");
+    expect(job?.finishedAt).toBeGreaterThan(0);
+    expect(job?.errorCode).toBe("TOO_MANY_IMAGE_FAILURES");
+    expect(job?.errorDetail).toBe("2 of 3 images failed to process");
+  });
+
+  test("closing an empty session fails it INLINE through the zero-images rule", async () => {
     const t = convexTest(schema, modules);
     const jobId = await openStream(t);
 
     const result = await close(t, jobId);
-    expect(result).toEqual({ closed: true, status: "pairing" });
+    // Failed INLINE (totalImages 0), not the old "pairing" hand-off.
+    expect(result).toEqual({ closed: true, status: "failed" });
 
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
-
+    // No tick: the terminal failure is set inside the close mutation.
     const job = await getJob(t, jobId);
     expect(job?.status).toBe("failed");
     expect(job?.errorCode).toBe("TOO_MANY_IMAGE_FAILURES");
@@ -641,11 +688,41 @@ describe("closePlaceholderStream", () => {
   test("refuses a second close, without throwing", async () => {
     const t = convexTest(schema, modules);
     const jobId = await openStream(t);
+    // First close of this empty session finalizes it INLINE to "failed"
+    // (zero-images rule), so it is no longer collecting.
     await close(t, jobId);
 
     const second = await close(t, jobId);
     expect(second.closed).toBe(false);
-    expect(second.reason).toMatch(/already pairing/i);
+    expect(second.reason).toMatch(/already failed/i);
+  });
+
+  test("a LARGE all-done batch keeps the scheduled action path", async () => {
+    // Above INLINE_FINALIZE_MAX_IMAGES a single mutation cannot safely read and
+    // rewrite the whole batch, so close stays "pairing" and hands off to the
+    // chunked `runPairing` action exactly as before. Only the counters gate the
+    // branch, so this proves the fallback without seeding 101 image rows.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-huge", {
+      mode: "stream",
+      status: "collecting",
+      totalImages: 101,
+      processedImages: 101,
+    });
+
+    const result = await close(t, "job-huge");
+    expect(result).toEqual({ closed: true, status: "pairing" });
+
+    // Not terminal in the close mutation — a runPairing action is scheduled to
+    // finish it. It stays "pairing" until that scheduled work runs.
+    const job = await getJob(t, "job-huge");
+    expect(job?.status).toBe("pairing");
+    expect(job?.finishedAt).toBeUndefined();
+
+    // The final runPairing IS scheduled (its absence would leave the job wedged
+    // in "pairing" forever). Draining it drives the batch to its terminal status.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect((await getJob(t, "job-huge"))?.status).toBe("succeeded");
   });
 
   test("refuses a zip job, and a job the caller does not own", async () => {
@@ -778,10 +855,9 @@ describe("sweepIdleStreams", () => {
     const result = await t.mutation(internal.placeholderStream.sweepIdleStreams, {});
     expect(result).toEqual({ closed: 1, done: true });
 
-    // Nothing was left to drain, so it went straight to the terminal pass —
-    // the same close path a user's Finish button takes.
-    expect((await getJob(t, "job-idle"))?.status).toBe("pairing");
-    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    // Nothing was left to drain and the batch is small, so the sweep's close
+    // finalized it INLINE — the same close path a user's Finish button takes.
+    // Terminal the instant the sweep returns, no scheduler tick needed.
     expect((await getJob(t, "job-idle"))?.status).toBe("succeeded");
   });
 
