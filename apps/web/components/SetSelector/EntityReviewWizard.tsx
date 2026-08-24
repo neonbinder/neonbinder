@@ -13,16 +13,20 @@ import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
  * UnknownEntitiesDialog (a flat checkbox list of every unknown name at
  * once, no per-name info). Presents ONE player/team at a time, showing
  * whatever the background Wikidata lookup (entityReviewQueue.ts +
- * adapters/wikidata.ts's processEntityReviewQueue) has already found —
- * fully reactive via `getBatch`, so a row's status flips live as the
- * queue drains without polling.
+ * adapters/wikidata.ts's runEntityReviewLookup, drained by the NEO-99
+ * Wikidata pool) has already found — fully reactive via `getBatch`, so a
+ * row's status flips live as the pool drains without polling.
  *
  * "Current item" = the earliest-inserted row that is no longer "pending"
- * and has no decision yet. Because the background queue is a single
- * serial chain (one Wikidata request at a time — see INTER_ENTITY_DELAY_MS
- * in wikidata.ts), completion order IS insertion order, so this is exactly
- * "present as soon as its lookup completes" — rows still "pending" are
- * simply skipped over, never blocking the wizard on a straggler.
+ * and has no decision yet. NEO-99: the background lookups now drain through
+ * the deployment-wide Wikidata pool (convex/wikidataPool.ts) 5 at a time
+ * rather than a single serial chain, so completion order is no longer
+ * strictly insertion order — a later row can resolve first. Presenting the
+ * earliest-inserted non-"pending", undecided row keeps the wizard stable
+ * regardless of that order: each item still appears "as soon as its lookup
+ * completes", rows still "pending" are skipped over rather than blocking on a
+ * straggler, and the header's "N still being looked up" streams down as the
+ * pool works through the batch.
  *
  * Every name resolves to exactly one of two decisions — there is no skip:
  *   - "Add as New" — recordDecision({action:"create"}); commitCardChecklist

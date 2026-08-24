@@ -422,6 +422,13 @@ export const applyEnrichmentInternal = internalMutation({
  * predates the pipeline, one whose sources had nothing at the time, or one
  * whose match turned out to be the wrong franchise.
  *
+ * NEO-99: the Wikidata leg enqueues onto the shared pool
+ * (convex/wikidataPool.ts) rather than running inline, so this entry point
+ * spends the SAME deployment-wide 5-parallel SPARQL budget as the
+ * review-wizard drain instead of adding an uncoordinated request. The pool
+ * runs enrichTeam in the background and it persists its own result; an
+ * unenriched team is a valid end state.
+ *
  * NEO-156 folded the legacy league conversion in here. It was a bulk
  * "backfill legacy leagues" button, which is a control that becomes
  * permanently useless the moment it succeeds; doing it as a side effect of
@@ -429,7 +436,9 @@ export const applyEnrichmentInternal = internalMutation({
  * remembering to run it.
  *
  * `force` re-runs the color search for a team that already has a resolved
- * source — otherwise that step is skipped as already done.
+ * source — otherwise that step is skipped as already done. The color search
+ * (teamColorSources, not Wikidata) still runs inline, which is what lets
+ * this return an outcome at all.
  *
  * Returns the color outcome so the UI can say what happened. Enrichment errors
  * stay swallowed: it is best-effort by design, and an unchanged row IS the
@@ -454,11 +463,11 @@ export const enrichFromWikidata = action({
     });
 
     try {
-      await ctx.runAction(internal.adapters.wikidata.enrichTeam, {
-        teamId: args.id,
+      await ctx.runMutation(internal.wikidataPool.enqueueEnrichment, {
+        teamIds: [args.id],
       });
     } catch (error) {
-      console.error("[teams.enrichFromWikidata] enrichment failed:", error);
+      console.error("[teams.enrichFromWikidata] enqueue failed:", error);
     }
 
     // enrichTeam already attempts colors, but skips a team that has a resolved

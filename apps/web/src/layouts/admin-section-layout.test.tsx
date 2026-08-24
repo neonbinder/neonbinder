@@ -35,6 +35,7 @@ function renderAt(path: string) {
           <Route index element={<AdminHub />} />
           <Route path="set-builder" element={<div>set builder tool</div>} />
           <Route path="teams" element={<div>teams tool</div>} />
+          <Route path="pipeline-runs" element={<div>pipeline runs tool</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -53,12 +54,14 @@ describe("AdminSectionLayout", () => {
     ).toEqual([
       ["Set Builder", "/admin/set-builder"],
       ["Teams", "/admin/teams"],
+      ["Pipeline Runs", "/admin/pipeline-runs"],
     ]);
   });
 
   it.each([
     ["/admin/set-builder", "Set Builder"],
     ["/admin/teams", "Teams"],
+    ["/admin/pipeline-runs", "Pipeline Runs"],
   ])("marks %s as the current page", (path, label) => {
     renderAt(path);
     const nav = screen.getByRole("navigation", { name: "Admin sections" });

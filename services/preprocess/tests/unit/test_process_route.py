@@ -9,6 +9,7 @@ wiring (rotated bytes are what classify sees).
 from __future__ import annotations
 
 import io
+import random
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,7 +17,7 @@ from PIL import Image
 
 from app import cropper
 from app.classify import ClassifyError, ClassifyResult
-from app.main import MAX_IMAGE_BYTES, app
+from app.main import MAX_IMAGE_BYTES, _verify_baked_weights, app
 from app.orient import OrientationResult
 
 client = TestClient(app)
@@ -25,6 +26,18 @@ client = TestClient(app)
 @pytest.fixture(autouse=True)
 def _set_internal_key(monkeypatch):
     monkeypatch.setenv("INTERNAL_API_KEY", "test-key")
+
+
+@pytest.fixture(autouse=True)
+def _decline_tiered(monkeypatch):
+    """These tests exercise the real cascade on tiny synthetic uploads.
+
+    The tiered strategy's BiRefNet fallback would need a real rembg session
+    (model download — forbidden in unit tests), so it declines here and the
+    pre-existing pil_trim/sam/haiku behavior under test is unchanged.
+    Tiered's own behavior is covered in test_cropper_tiered.py.
+    """
+    monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda _b: None)
 
 
 def _jpeg(size: tuple[int, int] = (8, 8), color: str = "white") -> bytes:
@@ -128,6 +141,58 @@ class TestRequestValidation:
             "/process",
             headers={"x-internal-key": "test-key"},
             files={"image": ("card.jpg", oversized, "image/jpeg")},
+        )
+        assert response.status_code == 413
+
+    def test_image_over_pixel_cap_returns_413(self, monkeypatch):
+        """The decoded-pixel ceiling rejects decode bombs the byte cap can't
+        see. Enforced via imaging.check_raster_size from the image header,
+        before any pixel decode — the cap is lowered here so a small test
+        image can trip it."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        monkeypatch.setattr("app.imaging.MAX_IMAGE_PIXELS", 1_000_000)
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(size=(1200, 1600)), "image/jpeg")},
+        )
+        assert response.status_code == 413
+        assert "1200x1600" in response.json()["detail"]
+
+    def test_image_between_service_cap_and_pillow_hard_limit_returns_413(self, monkeypatch):
+        """53MP sits in the band the old hand-rolled 60MP check silently
+        accepted: over imaging.MAX_IMAGE_PIXELS (50MP), under Pillow's own
+        raise threshold (100MP). One ceiling now — the upload is a 413."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        payload = io.BytesIO()
+        Image.new("RGB", (7300, 7300), color="white").save(payload, format="JPEG")
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", payload.getvalue(), "image/jpeg")},
+        )
+        assert response.status_code == 413
+        assert "7300x7300" in response.json()["detail"]
+
+    def test_bomb_past_pillow_hard_limit_returns_413_not_502(self, monkeypatch):
+        """Above 2x the process-wide ceiling Pillow refuses to even size the
+        header (DecompressionBombError). The old code swallowed that and
+        passed the bomb into the cascade as a 502; check_raster_size re-raises
+        it as RasterTooLargeError, so the caller sees the same 413."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        payload = io.BytesIO()
+        # 10500^2 = 110.25MP > 2 * 50MP. Flat colour keeps the file tiny.
+        Image.new("RGB", (10500, 10500), color="white").save(
+            payload, format="PNG", compress_level=1
+        )
+        assert len(payload.getvalue()) < MAX_IMAGE_BYTES  # clears the byte cap
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.png", payload.getvalue(), "image/png")},
         )
         assert response.status_code == 413
 
@@ -519,3 +584,117 @@ class TestCropOnlyMode:
         )
         assert response.status_code == 400
         assert "empty precropped" in response.json()["detail"]
+
+
+def _noisy_jpeg(size: tuple[int, int]) -> bytes:
+    """Card-shaped noise: clears the validator's grayscale-stddev gate,
+    which a flat-colour _jpeg() cannot."""
+    rng = random.Random(161)
+    im = Image.frombytes("RGB", size, rng.randbytes(size[0] * size[1] * 3))
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+class TestStartupWeightsGate:
+    """REQUIRE_BAKED_WEIGHTS=1 (set in the Dockerfile) makes startup fail
+    loudly when the baked weights are missing and pre-warm the BiRefNet
+    session when they're present. Unit runs never set the flag."""
+
+    def test_startup_raises_when_weights_missing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        monkeypatch.setenv("U2NET_HOME", str(tmp_path))  # exists, but empty
+        with pytest.raises(RuntimeError, match="no .onnx weights"):
+            _verify_baked_weights()
+
+    def test_startup_warms_the_session_when_weights_present(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        (tmp_path / "model.onnx").write_bytes(b"stub")
+        monkeypatch.setenv("U2NET_HOME", str(tmp_path))
+        called: list[bool] = []
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+
+        _verify_baked_weights()
+
+        assert called == [True]
+
+    def test_startup_is_a_noop_without_the_flag(self, monkeypatch):
+        monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
+        called: list[bool] = []
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+
+        _verify_baked_weights()
+
+        assert called == []
+
+
+class TestTieredIdentityContract:
+    def test_tiered_identity_echo_returns_null_b64(self, monkeypatch):
+        """When tiered returns the upload untouched (identity guard), the
+        cascade must report source="tiered" with cropped_image_b64 null —
+        the client already has those exact bytes. Consumers key off the
+        null check, not off which source won."""
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        # Override the autouse decline: echo the input, as identity does.
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda b: b)
+
+        image = _noisy_jpeg(size=(600, 900))
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", image, "image/jpeg")},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["cropped_source"] == "tiered"
+        assert body["cropped_image_b64"] is None
+
+
+class TestCropQuality:
+    """The NEO-173 `crop_quality` form field (fast|strong, default fast)."""
+
+    def test_invalid_crop_quality_returns_400(self, monkeypatch):
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+            data={"crop_quality": "ultra"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error_code"] == "INVALID_CROP_QUALITY"
+
+    def test_default_and_explicit_values_thread_to_the_cascade(self, monkeypatch):
+        captured: list[str] = []
+
+        def _fake_crop(*, image_bytes, precropped_bytes, crop_quality):
+            captured.append(crop_quality)
+            return cropper.CropResult(
+                image_bytes=image_bytes,
+                source="tiered",
+                returned_bytes_differ=False,
+                orientation=OrientationResult(rotation_degrees=0, confidence=1.0, text_count=5),
+                classification=ClassifyResult(
+                    players=[], team=None, card_number=None, side="front", raw_text="{}"
+                ),
+            )
+
+        monkeypatch.setattr(cropper, "crop", _fake_crop)
+
+        # Omitted → the "fast" default.
+        client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+        )
+        # Explicit "strong" is honoured.
+        client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+            data={"crop_quality": "strong"},
+        )
+        assert captured == ["fast", "strong"]

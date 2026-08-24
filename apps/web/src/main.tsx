@@ -32,15 +32,20 @@ import TestSignIn from "@/app/testing/sign-in/page";
 import TestReset from "@/app/testing/reset/page";
 import TestSeedCredentials from "@/app/testing/seed-credentials/page";
 import TestNeedsReauth from "@/app/testing/needs-reauth/page";
+import TestSeedPlaceholderRun from "@/app/testing/seed-placeholder-run/page";
+import TestSeedPlaceholderUpload from "@/app/testing/seed-placeholder-upload/page";
 import Dashboard from "@/app/dashboard/page";
 import ProfileLayout from "@/src/layouts/profile-layout";
 import ProfilePublic from "@/app/profile/public/page";
 import ProfileCredentials from "@/app/profile/credentials/page";
 import ProfileShipping from "@/app/profile/shipping/page";
+import ProfilePostage from "@/app/profile/postage/page";
 import ProfilePrizes from "@/app/profile/prizes/page";
+import ProfileApiKeys from "@/app/profile/api-keys/page";
 import AdminHub from "@/app/admin/page";
 import AdminSetBuilder from "@/app/admin/set-builder/page";
 import AdminTeams from "@/app/admin/teams/page";
+import PipelineRuns from "@/app/pipeline-runs/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
 import PrintHub from "@/app/print/page";
@@ -49,6 +54,7 @@ import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
 import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
+import PlaceholderScans from "@/app/placeholders/page";
 import Inventory from "@/app/inventory/page";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -91,6 +97,16 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<TestSeedCredentials />}
           />
           <Route path="/testing/needs-reauth" element={<TestNeedsReauth />} />
+          <Route
+            path="/testing/seed-placeholder-run"
+            element={<TestSeedPlaceholderRun />}
+          />
+          {/* The release E2E's door into the real upload path — maestro-web
+              cannot drive a file input, so only the picker is bypassed. */}
+          <Route
+            path="/testing/seed-placeholder-upload"
+            element={<TestSeedPlaceholderUpload />}
+          />
 
           {/* Protected routes — wrapped in binder shell */}
           <Route element={<ProtectedLayout />}>
@@ -98,6 +114,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/collection" element={<Collection />} />
               <Route path="/inventory" element={<Inventory />} />
+              {/* NEO-170 — stopgap scan intake, deliberately not in the nav.
+                  NEO-152 owns the real thing; see the note at the top of
+                  app/placeholders/page.tsx. */}
+              <Route path="/placeholders" element={<PlaceholderScans />} />
               {/* One route per profile section (NEO-128). Bare /profile keeps
                   working — every existing link and redirect lands on the index
                   and is forwarded to Public Profile. */}
@@ -106,7 +126,11 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route path="public" element={<ProfilePublic />} />
                 <Route path="credentials" element={<ProfileCredentials />} />
                 <Route path="shipping" element={<ProfileShipping />} />
+                <Route path="postage" element={<ProfilePostage />} />
                 <Route path="prizes" element={<ProfilePrizes />} />
+                {/* NEO-172 — self-service Clerk API keys. Protected by the
+                    same ProtectedLayout gate as the rest of /profile. */}
+                <Route path="api-keys" element={<ProfileApiKeys />} />
               </Route>
               {/* Print Shop (NEO-145) — the print tools under one section.
                   Bare /print lists them; each tool is its own sub-route. */}
@@ -137,15 +161,26 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                   <Route index element={<AdminHub />} />
                   <Route path="set-builder" element={<AdminSetBuilder />} />
                   <Route path="teams" element={<AdminTeams />} />
+                  {/* NEO-170 — operator view of every user's placeholder
+                      pipeline runs, with the abort lever. The queries behind
+                      it are requireAdmin server-side. Landed top-level while
+                      this section didn't exist yet; its own header comment
+                      planned this exact move. */}
+                  <Route path="pipeline-runs" element={<PipelineRuns />} />
                 </Route>
-                {/* The old top-level route. Kept forever rather than 404ing:
-                    it is bookmarked, and ~48 Maestro flows navigate here by
-                    URL (/testing/sign-in?redirect=/set-selector) instead of
-                    tapping the nav tab — this redirect is what keeps them
-                    green across the rename. */}
+                {/* The old top-level routes. Kept forever rather than 404ing:
+                    /set-selector is bookmarked, and ~48 Maestro flows navigate
+                    here by URL (/testing/sign-in?redirect=/set-selector)
+                    instead of tapping the nav tab — this redirect is what
+                    keeps them green across the rename. /pipeline-runs gets the
+                    same treatment for the NEO-170 era. */}
                 <Route
                   path="/set-selector"
                   element={<Navigate to="/admin/set-builder" replace />}
+                />
+                <Route
+                  path="/pipeline-runs"
+                  element={<Navigate to="/admin/pipeline-runs" replace />}
                 />
               </Route>
             </Route>

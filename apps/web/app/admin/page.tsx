@@ -1,5 +1,9 @@
 import { Link } from "react-router";
-import { SquaresPlusIcon, UserGroupIcon } from "@heroicons/react/24/outline";
+import {
+  SignalIcon,
+  SquaresPlusIcon,
+  UserGroupIcon,
+} from "@heroicons/react/24/outline";
 import { SECTIONS } from "@/src/layouts/admin-section-layout";
 
 /**
@@ -34,6 +38,12 @@ const TOOL_DETAILS: Record<
       "Resolve team colors, confirm ambiguous matches, and correct team details by hand.",
     icon: UserGroupIcon,
     accent: "text-neon-purple group-hover:border-neon-purple/50",
+  },
+  "/admin/pipeline-runs": {
+    description:
+      "Watch every user's placeholder pipeline runs and abort the ones that are wedged.",
+    icon: SignalIcon,
+    accent: "text-neon-green group-hover:border-neon-green/50",
   },
 };
 

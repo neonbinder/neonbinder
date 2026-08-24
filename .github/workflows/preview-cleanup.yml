@@ -35,8 +35,11 @@ on:
 #                          `:pr-<N>` GCR image.
 #
 #  2. preprocess-cleanup — same teardown for the preprocess preview that
-#                          preprocess.yml stands up. A SEPARATE job rather than
-#                          extra steps on `cleanup`, because preprocess
+#                          preprocess.yml stands up, for BOTH the heavy and
+#                          fast (NEO-175 Phase D) services — the fast leg is
+#                          itself guarded to a no-op when the fast service
+#                          doesn't exist yet in an environment. A SEPARATE job
+#                          rather than extra steps on `cleanup`, because preprocess
 #                          authenticates as its own WIF provider + deployer SA:
 #                          google-github-actions/auth rewrites ADC and
 #                          GOOGLE_APPLICATION_CREDENTIALS in place, so a second
@@ -174,6 +177,43 @@ jobs:
       # weights), which is why NEO-123 also added a `delete-tagged-preprocess`
       # policy and dropped `keep-recent-preprocess` from 30 to 10 in
       # neonbinder_ioc, so server-side collection actually reaches them.
+
+      # NEO-175 Phase D: preprocess.yml's deploy-preview-fast job tags the
+      # fast service with the SAME pr-<N> tag as heavy. Unlike a missing TAG
+      # (idempotent, see above), `update-traffic` on a SERVICE that doesn't
+      # exist at all fails hard — and neonbinder-preprocess-fast may not exist
+      # yet in every environment (terraform, a separate repo, owns creating
+      # it). Guard on that separately from the WIF guard above, so this stays
+      # a no-op-not-a-failure both before terraform creates the service and
+      # before any PR ever puts a tag on it. Leaving a tagged revision behind
+      # would keep it addressable — and therefore warm — forever, the same
+      # NEO-114 failure mode the deploy workflows' scratch-tag promotion
+      # exists to avoid.
+      - id: guard-fast
+        name: Guard — fast Cloud Run service exists?
+        if: steps.guard.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          if gcloud run services describe neonbinder-preprocess-fast \
+              --region=us-central1 --project=neonbinder-dev >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::neonbinder-preprocess-fast not found in neonbinder-dev — nothing to tear down"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Remove pr-<N> tag from dev fast Cloud Run service
+        if: steps.guard.outputs.ready == 'true' && steps.guard-fast.outputs.exists == 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          TAG="pr-$PR"
+          echo "Removing tag $TAG from neonbinder-preprocess-fast (neonbinder-dev)"
+          gcloud run services update-traffic neonbinder-preprocess-fast \
+            --region=us-central1 \
+            --project=neonbinder-dev \
+            --remove-tags="$TAG"
 
   convex-preview-cleanup:
     # Delete the Convex preview deployment for this PR so it doesn't accumulate

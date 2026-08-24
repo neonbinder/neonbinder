@@ -58,11 +58,37 @@ describe("BinderTabs", () => {
     // must follow the rendered position, not the position in NAV_ITEMS, or the
     // staircase gains a gap where the hidden tab used to be.
     role = undefined;
+    // DERIVED, not the literal `NAV_ITEMS.length - 1` this used to be: the
+    // admin-only tab count has already changed twice (NEO-170 added Pipeline
+    // Runs, NEO-155 folded it into Admin), and a hardcoded count has to be
+    // edited by hand every time that number changes — the same "keep two
+    // things in sync" trap the staircase offsets were pulled out of.
+    const adminOnlyCount = NAV_ITEMS.filter((item) => item.requiresAdmin).length;
+    expect(adminOnlyCount).toBeGreaterThan(0);
     const tabs = renderTabs();
-    expect(tabs.length).toBe(NAV_ITEMS.length - 1);
+    expect(tabs.length).toBe(NAV_ITEMS.length - adminOnlyCount);
     expect(Array.from(tabs).map((tab) => tab.getAttribute("style"))).toEqual(
       staircase(tabs.length),
     );
+  });
+
+  it("offers Admin to an admin", () => {
+    // The nav layer of the admin gate. The route guard
+    // (src/layouts/AdminLayout.tsx) and `requireAdmin` on the queries are the
+    // real boundary; this is the one that decides whether the door is visible.
+    // NEO-170's Pipeline Runs tab folded into this one section tab (NEO-155).
+    expect(renderTabs().length).toBe(NAV_ITEMS.length);
+    expect(
+      screen.getByRole("link", { name: "Admin" }).getAttribute("href"),
+    ).toBe("/admin");
+  });
+
+  it("hides Admin from a non-admin", () => {
+    role = undefined;
+    const hrefs = Array.from(renderTabs()).map((tab) =>
+      tab.getAttribute("href"),
+    );
+    expect(hrefs).not.toContain("/admin");
   });
 
   it("routes the print tools through one Print Shop tab", () => {

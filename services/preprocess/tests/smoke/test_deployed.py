@@ -26,7 +26,18 @@ from PIL import Image, ImageDraw
 
 TARGET_URL_ENV = "SMOKE_TARGET_URL"
 INTERNAL_KEY_ENV = "SMOKE_INTERNAL_KEY"
-REQUEST_TIMEOUT = 120.0  # Cold start on preprocess can be slow — SAM weights + torch init.
+# NEO-170 Phase D: optional IAM identity token, minted by the calling workflow
+# with audience = the service's BASE URL (see preprocess-deploy.yml /
+# preprocess.yml). Unset for local runs against a public/dev URL — behavior
+# there is unchanged. Once set, it goes on EVERY request alongside the
+# existing x-internal-key header, including /health: Cloud Run IAM applies
+# service-wide, so after the allUsers invoker binding is removed (terraform
+# T2) even the health check needs it.
+ID_TOKEN_ENV = "SMOKE_ID_TOKEN"
+# Startup pre-warms BiRefNet, but tiered still runs real ONNX inference per
+# request — 15-60s on 4 vCPU is normal for /process. 240s catches hangs
+# while tolerating an honest slow pass (Cloud Run's own cap is 300s).
+REQUEST_TIMEOUT = 240.0
 
 
 def _require_env(name: str) -> str:
@@ -44,6 +55,18 @@ def target_url() -> str:
 @pytest.fixture(scope="session")
 def internal_key() -> str:
     return _require_env(INTERNAL_KEY_ENV)
+
+
+@pytest.fixture(scope="session")
+def auth_headers() -> dict[str, str]:
+    """IAM Bearer header, present only when SMOKE_ID_TOKEN is set.
+
+    Merge this into every request's headers (`{**auth_headers, ...}`) — it is
+    additive to whatever x-internal-key behavior a given test is exercising,
+    never a substitute for it.
+    """
+    token = os.environ.get(ID_TOKEN_ENV)
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 @pytest.fixture(scope="session")
@@ -75,26 +98,29 @@ def synthetic_card_image() -> bytes:
 
 
 class TestHealthz:
-    def test_health_returns_ok(self, client: httpx.Client) -> None:
-        response = client.get("/health")
+    def test_health_returns_ok(self, client: httpx.Client, auth_headers: dict[str, str]) -> None:
+        response = client.get("/health", headers=auth_headers)
         assert response.status_code == 200, response.text
         assert response.json() == {"status": "ok"}
 
 
 class TestProcessAuth:
     def test_missing_key_returns_401(
-        self, client: httpx.Client, synthetic_card_image: bytes
+        self, client: httpx.Client, auth_headers: dict[str, str], synthetic_card_image: bytes
     ) -> None:
         response = client.post(
             "/process",
+            headers=auth_headers,
             files={"image": ("smoke.jpg", synthetic_card_image, "image/jpeg")},
         )
         assert response.status_code == 401, response.text
 
-    def test_wrong_key_returns_401(self, client: httpx.Client, synthetic_card_image: bytes) -> None:
+    def test_wrong_key_returns_401(
+        self, client: httpx.Client, auth_headers: dict[str, str], synthetic_card_image: bytes
+    ) -> None:
         response = client.post(
             "/process",
-            headers={"x-internal-key": "definitely-not-the-key"},
+            headers={**auth_headers, "x-internal-key": "definitely-not-the-key"},
             files={"image": ("smoke.jpg", synthetic_card_image, "image/jpeg")},
         )
         assert response.status_code == 401, response.text
@@ -105,11 +131,12 @@ class TestProcessHappyPath:
         self,
         client: httpx.Client,
         internal_key: str,
+        auth_headers: dict[str, str],
         synthetic_card_image: bytes,
     ) -> None:
         response = client.post(
             "/process",
-            headers={"x-internal-key": internal_key},
+            headers={**auth_headers, "x-internal-key": internal_key},
             files={"image": ("smoke.jpg", synthetic_card_image, "image/jpeg")},
         )
         assert response.status_code == 200, response.text
@@ -139,10 +166,15 @@ class TestProcessHappyPath:
         assert isinstance(body["text_count"], int) and body["text_count"] >= 0
         # Synthetic test image is card-shaped (600x900) and noisy → passes the
         # precropped validator. cropped_image_b64 should be null in that case.
+        # Keep in sync with cropper.STRATEGY_NAMES (not imported here — the
+        # smoke job runs without the service's heavyweight deps installed).
         assert body["cropped_source"] in {
             "precropped",
+            "tiered",
             "pil_trim_dark",
             "pil_trim_light",
+            "sam",
+            "haiku_bbox",
             "passthrough",
         }, f"unexpected cropped_source {body['cropped_source']!r}"
         if body["cropped_source"] == "precropped":

@@ -9,7 +9,9 @@
  * through the real `fetchCardChecklist` action just to get rows into the
  * table):
  *   - startBatch: one row per name, resumes (doesn't delete/recreate) an
- *     in-progress batch, schedules processEntityReviewQueue.
+ *     in-progress batch, schedules the Wikidata pool enqueue
+ *     (NEO-99: wikidataPool.enqueueEntityReviewLookups, not the removed
+ *     per-batch processEntityReviewQueue chain).
  *   - getBatch: scoped correctly by (selectorOptionId, batchId).
  *   - recordDecision: patches `decision` on exactly the targeted row.
  *   - cancelBatch: deletes all rows for a batch, touches nothing else.
@@ -22,16 +24,19 @@
  * `role: "admin"`). startBatch/getInternal/applyLookupResult/cleanupBatch
  * are internal (no client-reachable auth check), called via bare `t.mutation`.
  *
- * `processEntityReviewQueue`'s own pop-front/reschedule pacing and
- * `lookupPlayerEnrichment`/`lookupTeamEnrichment`'s pure-lookup behavior are
+ * The pool work item `runEntityReviewLookup` (a single row's lookup + patch)
+ * and `lookupPlayerEnrichment`/`lookupTeamEnrichment`'s pure-lookup behavior are
  * covered separately in convex/wikidataEntityReviewQueue.test.ts (that file
  * needs real Wikidata-shaped SPARQL fetch fixtures; this one only needs to
- * prove startBatch's scheduling WIRING, not the queue's own draining
- * behavior).
+ * prove startBatch's scheduling WIRING, not the lookup's own behavior). The
+ * actual `wikidataPool.enqueueAction` call cannot run under convex-test — the
+ * workpool component is not mounted — so startBatch tests assert the SCHEDULED
+ * enqueue rather than draining it (the same constraint the placeholder pool's
+ * tests work under).
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
@@ -91,6 +96,30 @@ async function insertRow(
   );
 }
 
+/**
+ * NEO-99: the "module:function" names of the currently-scheduled functions,
+ * used to assert startBatch queued the Wikidata pool enqueue WITHOUT running it
+ * (running it would reach `wikidataPool.enqueueAction`, which convex-test cannot
+ * mount). Same technique as convex/placeholderWarmup.test.ts.
+ */
+const ENQUEUE_FN = "wikidataPool:enqueueEntityReviewLookups";
+async function scheduledNames(
+  t: ReturnType<typeof convexTest>,
+): Promise<string[]> {
+  return t.run(async (ctx) => {
+    const rows = await (
+      ctx as unknown as {
+        db: {
+          system: {
+            query: (n: string) => { collect: () => Promise<Array<{ name: string }>> };
+          };
+        };
+      }
+    ).db.system.query("_scheduled_functions").collect();
+    return rows.map((r) => r.name);
+  });
+}
+
 // ===========================================================================
 // startBatch
 // ===========================================================================
@@ -101,52 +130,39 @@ describe("startBatch", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    // startBatch schedules the background enrichment queue as a side effect.
-    // The rows are asserted while still "pending" (that IS this test's point),
-    // then the queue is drained in the finally so its SPARQL/ESPN fetches
-    // cannot land inside a LATER test — one of which asserts nothing fetched
-    // at all. Pre-existing leak; it only started failing once the sport row
-    // carried real enrichment config for the lookups to act on.
-    vi.useFakeTimers();
-    vi.stubGlobal(
-      "fetch",
-      (async () =>
-        new Response(JSON.stringify({ results: { bindings: [] } }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        })) as unknown as typeof fetch,
-    );
-    try {
-      const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-        selectorOptionId,
-        createdByUserId: "user_review_001",
-        sportId: selectorOptionId,
-        playerNames: ["Mike Trout", "Aaron Judge"],
-        teamNames: ["Los Angeles Angels"],
-      });
+    // NEO-99: startBatch inserts the rows as `pending` and SCHEDULES the pool
+    // enqueue — it does not fetch or touch the pool itself, so there is nothing
+    // to drain here (and finishing the scheduled enqueue would reach the
+    // unmountable pool component). The rows are asserted while still "pending",
+    // which is this test's point; the enqueue scheduling is asserted below.
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout", "Aaron Judge"],
+      teamNames: ["Los Angeles Angels"],
+    });
 
-      expect(batchId).toBeTruthy();
+    expect(batchId).toBeTruthy();
 
-      const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-        selectorOptionId,
-        batchId,
-      });
-      expect(rows).toHaveLength(3);
-      for (const row of rows) {
-        expect(row.status).toBe("pending");
-        expect(row.batchId).toBe(batchId);
-        expect(row.decision).toBeUndefined();
-      }
-      const byName = new Map(rows.map((r) => [r.name, r]));
-      expect(byName.get("Mike Trout")?.kind).toBe("player");
-      expect(byName.get("Aaron Judge")?.kind).toBe("player");
-      expect(byName.get("Los Angeles Angels")?.kind).toBe("team");
-
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
-    } finally {
-      vi.useRealTimers();
-      vi.unstubAllGlobals();
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(rows).toHaveLength(3);
+    for (const row of rows) {
+      expect(row.status).toBe("pending");
+      expect(row.batchId).toBe(batchId);
+      expect(row.decision).toBeUndefined();
     }
+    const byName = new Map(rows.map((r) => [r.name, r]));
+    expect(byName.get("Mike Trout")?.kind).toBe("player");
+    expect(byName.get("Aaron Judge")?.kind).toBe("player");
+    expect(byName.get("Los Angeles Angels")?.kind).toBe("team");
+
+    // The rows are handed to the Wikidata pool via a scheduled enqueue, not the
+    // old per-batch fetch chain.
+    expect(await scheduledNames(t)).toContain(ENQUEUE_FN);
   });
 
   test("resumes an in-progress batch for the same selectorOptionId instead of deleting/recreating it", async () => {
@@ -260,92 +276,51 @@ describe("startBatch", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    // startBatch schedules the background enrichment queue as a side effect.
-    // Stub + drain it here so the SPARQL fetch cannot land during a LATER test
-    // — the next test asserts that nothing fetched, and was failing on this
-    // one's leaked scheduled action rather than on its own behaviour.
-    vi.useFakeTimers();
-    vi.stubGlobal(
-      "fetch",
-      (async () =>
-        new Response(JSON.stringify({ results: { bindings: [] } }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        })) as unknown as typeof fetch,
-    );
-    try {
-      const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-        selectorOptionId,
-        createdByUserId: "user_review_001",
-        sportId: selectorOptionId,
-        playerNames: ["Mike Trout"],
-        teamNames: [],
-      });
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    // NEO-99: startBatch no longer fetches inline (the pool work item does), so
+    // there is nothing to stub or drain — asserting the projected row is enough.
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
 
-      const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-        selectorOptionId,
-        batchId,
-      });
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).not.toHaveProperty("createdByUserId");
-    } finally {
-      vi.useRealTimers();
-      vi.unstubAllGlobals();
-    }
+    const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("createdByUserId");
   });
 
-  test("schedules processEntityReviewQueue for a non-empty name list (rows eventually leave 'pending')", async () => {
+  test("schedules the Wikidata pool enqueue for a non-empty name list", async () => {
+    // NEO-99: startBatch hands the pending rows to the deployment-wide pool via
+    // a scheduled `enqueueEntityReviewLookups` (which then drains them 5-wide),
+    // rather than the old per-batch serial chain. The actual enqueue reaches the
+    // workpool component and so cannot run under convex-test — the rows-leave-
+    // pending behavior is proven directly on `runEntityReviewLookup` in
+    // convex/wikidataEntityReviewQueue.test.ts. Here we assert the WIRING: the
+    // enqueue is scheduled exactly once for a non-empty batch.
     const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
 
-    vi.useFakeTimers();
-    vi.stubGlobal(
-      "fetch",
-      (async () =>
-        new Response(JSON.stringify({ results: { bindings: [] } }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        })) as unknown as typeof fetch,
-    );
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
 
-    try {
-      const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
-        selectorOptionId,
-        createdByUserId: "user_review_001",
-        sportId: selectorOptionId,
-        playerNames: ["Mike Trout"],
-        teamNames: [],
-      });
-      await t.finishAllScheduledFunctions(vi.runAllTimers);
-
-      const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
-        selectorOptionId,
-        batchId,
-      });
-      // No Wikidata match (empty bindings) -> "error", not "pending" — proves
-      // the scheduled queue actually ran, not just that the row exists.
-      expect(rows[0].status).toBe("error");
-    } finally {
-      vi.useRealTimers();
-      vi.unstubAllGlobals();
-    }
+    const scheduled = await scheduledNames(t);
+    expect(scheduled.filter((n) => n === ENQUEUE_FN)).toHaveLength(1);
   });
 
   test("an empty name list produces no rows and returns a batchId without scheduling anything", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
-
-    let fetchCalled = false;
-    vi.stubGlobal(
-      "fetch",
-      (async () => {
-        fetchCalled = true;
-        throw new Error("fetch must not be called — nothing was scheduled");
-      }) as unknown as typeof fetch,
-    );
 
     const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId,
@@ -360,8 +335,8 @@ describe("startBatch", () => {
       batchId,
     });
     expect(rows).toHaveLength(0);
-    expect(fetchCalled).toBe(false);
-    vi.unstubAllGlobals();
+    // NEO-99: nothing to look up, so the pool enqueue is never scheduled.
+    expect(await scheduledNames(t)).not.toContain(ENQUEUE_FN);
   });
 });
 

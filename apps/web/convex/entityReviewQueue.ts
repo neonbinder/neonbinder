@@ -4,9 +4,11 @@ import {
   internalMutation,
   internalQuery,
 } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
+import type { RunResult } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
 
 /**
@@ -218,10 +220,17 @@ export const startBatch = internalMutation({
       );
     }
     if (ids.length > 0) {
+      // NEO-99: hand the rows to the deployment-wide Wikidata pool
+      // (convex/wikidataPool.ts) instead of a per-batch serial chain. Scheduled
+      // rather than enqueued inline so THIS mutation — the one the user's fetch
+      // is waiting on — stays a plain insert and never touches the pool
+      // component; the scheduled `enqueueEntityReviewLookups` does the enqueuing
+      // (chunked) in the background. Same start/enqueue split as
+      // `startPlaceholderBatch` → `enqueueImageChunk`.
       await ctx.scheduler.runAfter(
         0,
-        internal.adapters.wikidata.processEntityReviewQueue,
-        { ids },
+        internal.wikidataPool.enqueueEntityReviewLookups,
+        { rowIds: ids },
       );
     }
     return batchId;
@@ -230,8 +239,12 @@ export const startBatch = internalMutation({
 
 /**
  * What the wizard subscribes to. Fully reactive — a row's `status` flips
- * live as the background queue (processEntityReviewQueue) drains, so the
- * client sees each Wikidata lookup complete without polling.
+ * live as the Wikidata pool (convex/wikidataPool.ts) drains its work items 5
+ * at a time, so the client sees each lookup complete and streams the rows in
+ * without polling. Because the pool runs 5-wide rather than one serial chain,
+ * completion order is no longer strictly insertion order; the wizard handles
+ * that by presenting the earliest-inserted row that is no longer "pending"
+ * (see EntityReviewWizard.tsx's `current`).
  */
 export const getBatch = query({
   args: {
@@ -448,14 +461,14 @@ export const cancelBatch = mutation({
   },
 });
 
-/** Internal — read one row for the background queue action. */
+/** Internal — read one row for the pool's lookup work item (runEntityReviewLookup). */
 export const getInternal = internalQuery({
   args: { id: v.id("entityReviewQueue") },
   returns: v.union(rowValidator, v.null()),
   handler: async (ctx, args) => await ctx.db.get(args.id),
 });
 
-/** Internal — the background queue patches status/enrichment as each lookup completes. */
+/** Internal — the pool's lookup work item patches status/enrichment as each lookup completes. */
 export const applyLookupResult = internalMutation({
   args: {
     id: v.id("entityReviewQueue"),
@@ -469,6 +482,131 @@ export const applyLookupResult = internalMutation({
       enrichment: args.enrichment,
     });
     return null;
+  },
+});
+
+/**
+ * The workpool completion backstop (NEO-99), as a plain exported function so
+ * the tests can drive it via `t.run` without mounting the workpool component —
+ * the same reason `recordImageOutcomeImpl` is a function rather than a
+ * registered mutation. `onEntityReviewLookupComplete` in wikidataPool.ts is the
+ * one-line delegation the pool actually calls.
+ *
+ * The invariant it guarantees: a review row can never be stranded on `pending`.
+ * `runEntityReviewLookup` resolves the row on its own happy and caught-error
+ * paths, so this normally finds the row already "ready"/"error" and no-ops. It
+ * exists for the residue that path cannot reach from within itself — an uncaught
+ * throw, an action-level timeout, or a pool cancellation, in each of which the
+ * action never ran its patch. In all of those the row is still `pending` when
+ * the work item finally completes, and this ages it to "error" ("No Wikidata
+ * match found"), which is the honest end state for a lookup that produced
+ * nothing usable.
+ *
+ * `result.kind` is not branched on: whatever terminal shape the work item ended
+ * in, a still-`pending` row means "no result landed", and "error" is the
+ * resolution for every one of them. An already-resolved row is left exactly as
+ * the action set it (a real "ready" with enrichment is never downgraded).
+ * `decision` is never touched, so a row bulk-decided while its lookup was in
+ * flight keeps its decision.
+ */
+export async function backstopEntityReviewRowImpl(
+  ctx: MutationCtx,
+  rowId: Id<"entityReviewQueue">,
+  result: RunResult,
+): Promise<null> {
+  const row = await ctx.db.get(rowId);
+  // Gone (a Cancel deleted the batch while this item drained) — nothing to age.
+  if (!row) return null;
+  // Already resolved by the action itself — the common path. Leave it be.
+  if (row.status !== "pending") return null;
+
+  // rowId is an opaque document id, never PII (see the no-PII rule in
+  // observability.ts). `result.kind` tells triage HOW the work item ended
+  // without the row having been resolved — the fingerprint of the residue this
+  // backstop exists for.
+  console.warn(
+    JSON.stringify({
+      msg: "entity_review_row_backstopped",
+      rowId,
+      resultKind: result.kind,
+    }),
+  );
+  await ctx.db.patch(rowId, { status: "error" });
+  return null;
+}
+
+/**
+ * How long a review row may sit `pending` before the cron sweep ages it to
+ * "error" (crons.ts → sweepStalePendingRows).
+ *
+ * This is the LAST line of defense, behind both the pool's `onComplete` and the
+ * fetch timeout — it only matters if a work item is lost so completely that its
+ * completion callback never fires at all. 30 minutes is deliberately generous:
+ * under the 5-wide pool a healthy row resolves within seconds, and even a
+ * pathological all-timeout drain of a many-hundred-entity batch finishes well
+ * inside this window, so a false positive (aging a row that was still going to
+ * resolve) is nearly impossible — and if every lookup really is timing out for
+ * half an hour, Wikidata is down and "error" is the correct outcome anyway.
+ * Erring long mirrors the placeholder wedge watchdog's exact philosophy: a
+ * safety net must never fire on healthy work.
+ */
+export const ENTITY_REVIEW_STALE_MS = 30 * 60 * 1000;
+
+/** Rows aged per sweep invocation before self-scheduling the rest — bounds the
+ *  transaction the way the placeholder watchdog's take does. */
+export const ENTITY_REVIEW_SWEEP_CHUNK = 100;
+
+/**
+ * Cron target (crons.ts): age review rows that have been `pending` past
+ * ENTITY_REVIEW_STALE_MS to "error", so a lookup whose work item died mid-flight
+ * — in a way even the pool's completion backstop never observed — cannot leave
+ * the wizard hung on "Looking up…" forever.
+ *
+ * Reads through `by_status`, which orders `pending` rows oldest-first (every
+ * index ends in `_creationTime` ascending), so the oldest — and therefore the
+ * only candidates that can be stale — come first. The scan STOPS at the first
+ * row younger than the cutoff: everything after it is younger still. In steady
+ * state that first row is a few seconds old, so the common run reads the oldest
+ * handful, ages none, and returns — cheap enough to run often.
+ *
+ * Bounded per invocation and self-scheduling for the remainder, mirroring
+ * sweepWedgedBatches: a mass strand after an incident drains across several
+ * runs rather than one giant transaction.
+ */
+export const sweepStalePendingRows = internalMutation({
+  args: {},
+  returns: v.object({ aged: v.number(), done: v.boolean() }),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - ENTITY_REVIEW_STALE_MS;
+    const oldest = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_status", (q) => q.eq("status", "pending"))
+      .take(ENTITY_REVIEW_SWEEP_CHUNK);
+
+    let aged = 0;
+    for (const row of oldest) {
+      // Ordered oldest-first: the first row at-or-after the cutoff means every
+      // remaining row is younger too, so there is nothing left to age.
+      if (row._creationTime >= cutoff) break;
+      await ctx.db.patch(row._id, { status: "error" });
+      aged += 1;
+    }
+
+    if (aged > 0) {
+      console.warn(
+        JSON.stringify({ msg: "entity_review_stale_rows_aged", aged }),
+      );
+    }
+
+    // Self-schedule only if the whole chunk was stale — then more may remain
+    // (the aged rows have left the `pending` index, so the next run resumes at
+    // the next-oldest and the set strictly shrinks). A partial chunk means the
+    // scan hit a fresh row and there is nothing further to do.
+    const done = aged < oldest.length || oldest.length < ENTITY_REVIEW_SWEEP_CHUNK;
+    if (!done) {
+      await ctx.scheduler.runAfter(0, internal.entityReviewQueue.sweepStalePendingRows, {});
+    }
+    return { aged, done };
   },
 });
 

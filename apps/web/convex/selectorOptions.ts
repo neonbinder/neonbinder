@@ -5444,17 +5444,18 @@ export const commitCardChecklist = mutation({
     // identical network round-trip per team for the same answer. Only the
     // rows that had no enrichment path at all are enqueued.
     //
-    // This is the first live caller of processEnrichmentQueue. It paces
-    // itself one entity at a time with INTER_ENTITY_DELAY_MS between, so a
-    // fetch that creates fifty career teams produces a slow trickle rather
-    // than fifty concurrent requests. `playerIds` is empty because players
+    // NEO-99 routed this through the shared Wikidata pool
+    // (convex/wikidataPool.ts), which replaced the self-paced
+    // processEnrichmentQueue: the pool's deployment-wide 5-parallel SPARQL
+    // budget is what keeps a fetch that creates fifty career teams from
+    // producing fifty concurrent requests. No `playerIds` because players
     // created here were already enriched from the wizard's own preview (see
     // the NEO-92 note above).
     if (enrichmentTeamIds.length > 0) {
       await ctx.scheduler.runAfter(
         0,
-        internal.adapters.wikidata.processEnrichmentQueue,
-        { playerIds: [], teamIds: enrichmentTeamIds },
+        internal.wikidataPool.enqueueEnrichment,
+        { teamIds: enrichmentTeamIds },
       );
     }
 

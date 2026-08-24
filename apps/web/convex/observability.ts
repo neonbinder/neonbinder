@@ -52,7 +52,14 @@ import { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getCurrentUserId } from "./auth";
 
-export type AdapterPlatform = "bsc" | "sportlots" | "aggregator";
+// "preprocess" (NEO-170) is not a marketplace — it is our own Cloud Run image
+// pipeline. It shares this event because the question the dashboard asks is the
+// same one ("which outbound dependency is slow / failing, and how often"), and
+// because `classifyAdapterError` already buckets the status codes it returns —
+// notably 429 → "rate_limited", which for preprocess means the workpool's
+// parallelism has drifted above the service's instance ceiling. See
+// convex/preprocessCapacity.ts.
+export type AdapterPlatform = "bsc" | "sportlots" | "aggregator" | "preprocess";
 
 export type AdapterCallProperties = {
   requestId: string;
@@ -85,6 +92,18 @@ export type AdapterCallProperties = {
   attempt?: number;
   // When stage="aggregator" and a child platform blew its deadline, which one.
   timed_out_platform?: string;
+  // ---- preprocess correlation (NEO-170) ----
+  // The placeholder batch and the image WITHIN it that this call is processing,
+  // so a slow or failing `/process-entry` in PostHog joins back to the exact
+  // `placeholderImages` row — and, through the watchdog's wedged-batch event
+  // (convex/placeholderWatchdog.ts), to a batch that later stranded. Only the
+  // preprocess call sites set these (`callProcessEntryFast` /
+  // `callProcessEntryHeavy` / `callExtract`); every
+  // other caller omits them. Both are opaque ids / positional integers — a
+  // `jobId` is an unguessable UUID and an `entryIndex` is a position in the zip,
+  // never a path and never PII. See the `objectPath` rule in schema.ts.
+  jobId?: string;
+  entryIndex?: number;
 };
 
 /**

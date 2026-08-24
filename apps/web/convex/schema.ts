@@ -187,6 +187,34 @@ export const selectorOptionFields = {
 
 // Using Clerk for authentication - users are identified by Clerk user IDs
 export default defineSchema({
+  /**
+   * NEO-120 — one row per postage label actually bought from EasyPost.
+   *
+   * Deliberately minimal, and deliberately NOT the `shipments` table NEO-121
+   * will add: no scan events, no status machine, no sale linkage. This exists
+   * so a seller can see what they spent and reprint a label they already paid
+   * for. Tracking is a separate feature with a separate table.
+   *
+   * `easypostShipmentId` is stored alongside `labelUrl` on purpose — **EasyPost
+   * label URLs expire.** The shipment id is how a reprint re-fetches a fresh
+   * URL; a stored URL alone silently stops working after a while.
+   *
+   * `toAddress` is a snapshot, not a reference: what was on the label is a
+   * historical fact and must not change if anything else is later edited.
+   */
+  labelPurchases: defineTable({
+    userId: v.string(), // Clerk user ID
+    easypostShipmentId: v.string(),
+    trackingCode: v.string(),
+    // Integer cents. Postage arrives as a decimal string ("0.78") and float
+    // money accumulates error the moment you total a month of it.
+    costCents: v.number(),
+    weightOz: v.number(),
+    toAddress: postalAddressValidator,
+    labelUrl: v.string(),
+    purchasedAt: v.number(),
+  }).index("by_user", ["userId"]),
+
   // Users table for storing Clerk user data
   users: defineTable({
     email: v.optional(v.string()),
@@ -556,12 +584,12 @@ export default defineSchema({
 
   // NEO-92: per-fetch review queue backing the step-through "new players &
   // teams" wizard (replaces the old single-screen checkbox dialog). One row
-  // per unknown name surfaced by fetchCardChecklist. A background chained
-  // action (processEntityReviewQueue in adapters/wikidata.ts) works through
-  // "pending" rows one at a time, patching status/enrichment as each
-  // Wikidata lookup completes — the wizard subscribes reactively and
-  // presents rows in COMPLETION order (whichever finishes first), not
-  // original fetch order. `decision` is patched by the user's own action in
+  // per unknown name surfaced by fetchCardChecklist. NEO-99: the Wikidata pool
+  // (convex/wikidataPool.ts) drains "pending" rows 5 at a time via the
+  // runEntityReviewLookup work item, patching status/enrichment as each lookup
+  // completes — the wizard subscribes reactively and presents rows in
+  // COMPLETION order (whichever finishes first), not original fetch order.
+  // `decision` is patched by the user's own action in
   // the wizard (recordDecision) — durable across a page refresh, unlike
   // keeping it only in React state. There is deliberately no "skip" decision
   // variant: every name must resolve to create-or-link.
@@ -642,7 +670,16 @@ export default defineSchema({
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])
-    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"]),
+    .index("by_selector_option_and_user", ["selectorOptionId", "createdByUserId"])
+    // NEO-99: lets the stale-pending sweep (crons.ts → sweepStalePendingRows)
+    // read only rows in a given status, oldest-first (every Convex index is
+    // ordered by its fields then `_creationTime` ascending). The sweep queries
+    // `status = "pending"` and ages the ones older than the cutoff to "error",
+    // so a lookup whose work item died mid-flight can never orphan a row on
+    // "Looking up…" forever. Cheap in steady state: pending rows resolve within
+    // seconds under the Wikidata pool, so the common run reads the oldest few,
+    // finds none stale, and stops.
+    .index("by_status", ["status"]),
 
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({
@@ -739,9 +776,13 @@ export default defineSchema({
   // identity.subject`, and re-derive `objectPath` FROM THE ROW — never
   // from a client-supplied argument.
   //
-  // ============================================================
+  // =====================================================================
   // NO FUNCTION ANYWHERE MAY ACCEPT `objectPath` AS AN ARGUMENT.
-  // ============================================================
+  // Scope: ALL THREE placeholder tables (placeholderJobs,
+  // placeholderImages, placeholderPairs) and every function that touches
+  // them — convex/placeholderPipeline.ts, placeholderBatch.ts,
+  // placeholderPairing.ts, adapters/preprocess.ts.
+  // =====================================================================
   // Both `neonbinder-convex` and the preprocess runtime SA hold
   // bucket-wide `roles/storage.objectViewer` on the placeholder-uploads
   // bucket (see neonbinder_ioc/main.tf) — they can read ANY user's
@@ -752,17 +793,307 @@ export default defineSchema({
   // directly, bypassing the ownership check entirely — it doesn't matter
   // how well the check is written if the path never goes through it.
   //
-  // Kept intentionally minimal: NEO-151 owns the full job lifecycle
-  // (progress counts, per-image status, failure states) and will extend
-  // this table with new fields as needed. What must NOT change when it
-  // does: `jobId` stays the only client-supplied handle.
+  // NEO-170 extended this table with the batch lifecycle the original comment
+  // reserved for NEO-151 (progress counts, per-image status, failure states),
+  // and added the two tables below it. The rule above did NOT relax when it
+  // did; it widened, which is why its scope line names three tables. In
+  // practice every function takes `jobId` as its only client-supplied handle,
+  // looks up THIS row, checks `row.userId === identity.subject`, and passes
+  // `jobId` + `userId` to the preprocess service — which re-derives the object
+  // path on its own side. `placeholderImages` and `placeholderPairs` carry
+  // `userId` too so an ownership check never has to hop through a join it
+  // might forget to make.
   placeholderJobs: defineTable({
-    jobId: v.string(), // server-generated (crypto.randomUUID()) in createPlaceholderUploadUrl
+    jobId: v.string(), // server-generated (crypto.randomUUID()) in createPlaceholderUploadUrl / startPlaceholderStream
     userId: v.string(), // Clerk user ID as string — ownership check is row.userId === identity.subject
-    objectPath: v.string(), // placeholders/{userId}/{jobId}/input.zip — re-derived server-side, never client input
+    // Where this job's bytes live. In "zip" mode that is the single uploaded
+    // archive, placeholders/{userId}/{jobId}/input.zip. In "stream" mode there
+    // is no archive — the browser POSTs one image at a time straight into
+    // extracted/ — so the row records the job PREFIX,
+    // placeholders/{userId}/{jobId}/, which is what both modes actually have in
+    // common. Either way it is re-derived server-side and is never client input.
+    objectPath: v.string(),
     createdAt: v.number(),
-    status: v.union(v.literal("pending"), v.literal("uploaded"), v.literal("failed")),
+    // How images get into this job (NEO-170 streaming intake). Optional, and
+    // ABSENT MEANS "zip" — every row written before streaming existed is a zip
+    // job, so backfilling the field would be a migration that changes nothing.
+    // Readers must treat `undefined` and `"zip"` as the same thing; the one
+    // place that must not is `startPlaceholderBatch`, which refuses `"stream"`
+    // explicitly (there is no archive for it to extract).
+    mode: v.optional(v.union(v.literal("zip"), v.literal("stream"))),
+    // Which client started this run — a DISPLAY hint for the admin page ("ran
+    // from the scanner CLI" vs "from the web app"), nothing more. Absent means
+    // unknown, which is every row that predates the field. It is NOT a security
+    // boundary and is deliberately spoofable: the client passes it, the server
+    // stores it verbatim, and no decision anywhere is gated on it — so there is
+    // nothing to gain by faking it. Kept to the two known clients as a union so
+    // the value is at least well-formed.
+    source: v.optional(v.union(v.literal("scanner"), v.literal("web"))),
+    // Lifecycle (NEO-170). "pending" is what `insertPlaceholderJob` writes at
+    // mint time. "uploaded" is RESERVED — nothing writes it yet, because
+    // confirming that the client actually finished its PUT is a NEO-152
+    // concern; it is in the union so that adding the confirm step later is not
+    // a schema migration. Until then a batch is startable straight from
+    // "pending", and starting one before the upload has landed fails with
+    // INPUT_NOT_FOUND from `/extract` — a clean terminal failure on a job the
+    // user can simply start again, which is why startable-from-pending is
+    // safe rather than merely convenient.
+    //
+    // The batch then runs "extracting" → "processing" → "pairing" →
+    // "succeeded", or lands on "failed" from any of them. "failed" is
+    // deliberately re-entrant: starting a batch from "failed" re-registers the
+    // zip's entries over the existing image rows, KEEPING the ones that already
+    // reached "done" (see registerExtractedImages) and sweeping the previous
+    // attempt's pairs. That is what makes a restart cheap — it never re-pays
+    // Vision/Anthropic for an image that already succeeded — and it is the
+    // difference between a retryable upload and a dead one.
+    // `cancelPlaceholderBatch` forces this same "failed" state, so a job wedged
+    // mid-flight has a recovery lever: cancel, then start again.
+    //
+    // "collecting" is the stream-mode entry state and has no zip-mode
+    // counterpart: the job is open, the scanner is still feeding it images, and
+    // each confirmed image is enqueued as it arrives. It leaves that state ONLY
+    // through `closePlaceholderStream` (explicitly, or via the idle-timeout
+    // cron), landing in "processing" when work is still draining or going
+    // straight to "pairing" when it is not. It is deliberately NOT startable:
+    // there is no archive to extract, and Start on a stream job is a category
+    // error rather than a retry.
+    status: v.union(
+      v.literal("pending"),
+      v.literal("uploaded"),
+      v.literal("collecting"),
+      v.literal("extracting"),
+      v.literal("processing"),
+      v.literal("pairing"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+    ),
+    // Progress counters (NEO-170). All optional so pre-NEO-170 rows — and the
+    // row `insertPlaceholderJob` writes at mint time — stay valid without a
+    // migration. `processedImages + failedImages === totalImages` is the
+    // batch-complete condition; see recordImageOutcomeImpl.
+    totalImages: v.optional(v.number()), // accepted entries the extract step found
+    processedImages: v.optional(v.number()),
+    failedImages: v.optional(v.number()),
+    rejectedEntries: v.optional(v.number()), // zip members extract declined (not images, too big, etc.)
+    startedAt: v.optional(v.number()), // when the batch was started, not when the job was created
+    finishedAt: v.optional(v.number()),
+    // Terminal failure detail. `errorCode` is the low-cardinality tag to group
+    // and alert on (e.g. "ZIP_REJECTED", "TOO_MANY_IMAGE_FAILURES");
+    // `errorDetail` is free text for a human reading one specific job.
+    errorCode: v.optional(v.string()),
+    errorDetail: v.optional(v.string()),
+    // ---- stream mode only (NEO-170) ----
+    // Next entry index `createPlaceholderImageUploadUrl` will hand out. The
+    // transactional allocation counter: read, bounds-checked against
+    // PLACEHOLDER_MAX_ENTRY_INDEX, and incremented inside one mutation, which
+    // is what makes two concurrent upload-URL requests get 3 and 4 rather than
+    // both getting 3 and writing over each other's object. Zip mode never sets
+    // it — there the indexes come from `/extract`.
+    nextEntryIndex: v.optional(v.number()),
+    // Last time this job saw the user do anything: an upload-URL allocation, a
+    // confirm, or an image completing. The idle sweep (crons.ts, every 10
+    // minutes) closes any "collecting" job whose last activity is older than
+    // PLACEHOLDER_STREAM_IDLE_MS, so a scanner session abandoned mid-batch
+    // still reaches a terminal state instead of holding one of the user's two
+    // active-job slots forever.
+    lastActivityAt: v.optional(v.number()),
+    // How many times pairing fell back to the identity resolver — as measured by
+    // the FINAL pairing run, over the complete batch.
+    //
+    // The number that matters is ZERO. The adjacency pre-pass exists so a batch
+    // scanned in order — front, back, front, back — is paired entirely from the
+    // free side evidence, without consulting identity for a single image. So
+    // this is a regression signal rather than a spend figure: a well-ordered
+    // batch reads 0, and anything above it means images reached the scoring
+    // pool. The release E2E asserts 0 for exactly that reason.
+    //
+    // ONLY the final run records it, and that is load-bearing rather than an
+    // optimisation. Incremental pairing recomputes the whole batch after every
+    // completion, and a run over a partial batch that ends on an odd prefix
+    // ALWAYS has one trailing image with no partner yet — which goes to the pool
+    // and costs a resolver call. Summing across runs would therefore report
+    // roughly one per odd-length intermediate pass even for a perfectly ordered
+    // scan, so the total would track how the completions happened to interleave
+    // rather than anything about the batch, and "assert 0" would be unusable.
+    // The final run sees every row, so its count is the honest answer for the
+    // batch as a whole — and an image that genuinely needs the pool still needs
+    // it there.
+    //
+    // Absent means 0, and nothing writes it on the healthy path. Reset with the
+    // other counters on restart.
+    resolverCalls: v.optional(v.number()),
+    // Debounce latch for incremental pairing. Set when a completion schedules a
+    // pairing run, cleared by that run before it reads any rows — so a
+    // completion landing mid-run re-schedules and the result converges, while a
+    // burst of completions between runs costs one run rather than one each.
+    // Not a lock: it bounds how many runs are QUEUED, and the pairing writes are
+    // an idempotent diff precisely because it does not bound how many overlap.
+    pairingScheduled: v.optional(v.boolean()),
+    // When the HEAVY preprocess service's warm-gate first fired for this batch
+    // (NEO-175). Set by `settleImageOutcome` the first time a fast completion
+    // escalates an image, alongside scheduling a single heavy `/warmup`. Its ONLY
+    // job is to make that warm-up fire exactly once per batch — every later
+    // escalation reads it set and skips the warm-up (a warm instance answers
+    // immediately, so a stray extra would be harmless, but there is no reason to
+    // send one). Absent means this batch has never needed the heavy service.
+    // Reset with the other counters on restart.
+    heavyWarmStartedAt: v.optional(v.number()),
   })
     .index("by_job", ["jobId"])
-    .index("by_user", ["userId"]),
+    .index("by_user", ["userId"])
+    // Feeds the idle-stream sweep, and nothing else. The equality on `status`
+    // keeps the scan inside the "collecting" jobs of the whole deployment
+    // (there are never many — a job stops collecting within minutes), and the
+    // range on `lastActivityAt` narrows it to the idle ones, so the cron reads
+    // the rows it is about to close and no others. Without it the sweep would
+    // be a full scan of every placeholder job ever created, ten minutes apart,
+    // forever.
+    .index("by_status_and_activity", ["status", "lastActivityAt"]),
+
+  // One row per image the extract step accepted out of a placeholder upload
+  // (NEO-170). This is the unit of work the preprocess workpool operates on:
+  // one row ⇄ one `/process-entry` call ⇄ one work item.
+  //
+  // `entryIndex` is the entry index WITHIN the zip, assigned by the preprocess
+  // service's extract step, and it is the only handle passed back to
+  // `/process-entry`. It is not a path and cannot be pointed at another user's
+  // upload — see the placeholderJobs comment above. (`index` would have been
+  // the obvious name; it is spelled `entryIndex` because "index" next to
+  // `.index(...)` in this file reads as the database concept, and because
+  // `entry_index` is what crosses the wire to the service.)
+  //
+  // `workId` is the workpool's opaque handle, stored so cancelPlaceholderBatch
+  // can cancel in-flight work. It is `v.string()` rather than a branded type
+  // because the brand (`WorkId`) is a TypeScript-only phantom; the value on the
+  // wire is a string.
+  placeholderImages: defineTable({
+    jobId: v.string(),
+    userId: v.string(), // denormalized from placeholderJobs so ownership needs no join
+    entryIndex: v.number(), // entry index within the zip (assigned by extract) or the stream (allocated by placeholderJobs.nextEntryIndex)
+    originalName: v.string(), // the zip member's filename — used by adjacency pairing
+    // "awaiting_upload" is the stream-mode entry state: the row and its object
+    // key exist and a signed POST policy has been handed out, but the browser
+    // has not yet told us the bytes landed. Such a row is NOT counted in
+    // `totalImages` and is NEVER enqueued — `confirmPlaceholderImageUpload` is
+    // what moves it to "queued" and does both. Closing or canceling the job
+    // deletes whatever is still in this state, which is what keeps an allocation
+    // whose upload was abandoned from wedging the batch-complete condition.
+    status: v.union(
+      v.literal("awaiting_upload"),
+      v.literal("queued"),
+      v.literal("processing"),
+      v.literal("done"),
+      v.literal("failed"),
+    ),
+    workId: v.optional(v.string()), // workpool handle, set once the row is enqueued
+    // Identity + orientation, populated from the /process-entry response.
+    // `players` is the canonical list (many for leaders/combo cards). There is
+    // deliberately no `player` column: the service derives its `player` field
+    // as `players[0]`, so a stored copy could never legitimately differ from
+    // `players[0]` and could only ever go stale. Callers that want the single
+    // headline name read `players[0]` themselves.
+    players: v.optional(v.array(v.string())),
+    team: v.optional(v.string()),
+    cardNumber: v.optional(v.string()),
+    side: v.optional(v.string()), // "front" | "back" as classified; string, not a union, because the service owns the vocabulary
+    rotationDegrees: v.optional(v.number()), // CCW rotation applied before classification
+    orientConfidence: v.optional(v.number()),
+    textCount: v.optional(v.number()), // Vision word count — the free signal the adjacency pre-pass runs on
+    croppedSource: v.optional(v.string()), // which stage of the crop cascade won
+    dhash: v.optional(v.string()), // 16-char lowercase hex perceptual hash, consumed by pairing
+    // Set true when the FAST preprocess service declined this image
+    // (`needs_escalation: true`) and it was re-routed to the HEAVY service
+    // (NEO-175). While `escalated === true && status === "processing"` the image
+    // is heavy-processing: its `workId` (if any) is a HEAVY-pool handle, so
+    // cancel must target the heavy pool for it, and the batch-level cold-start
+    // notice scopes to exactly these rows. Absent/false = fast tier (the common
+    // case). It stays set after the heavy result lands (a done/failed escalated
+    // row keeps the flag), which is what lets the notice clear once the heavy
+    // service has produced its first result. Reset with the other per-image
+    // fields when a restart re-queues a non-done row.
+    escalated: v.optional(v.boolean()),
+    // File extension of the PROCESSED output object ("jpg" | "png" | "webp"),
+    // memoised the first time a download URL is minted for this image.
+    //
+    // Not a copy of anything: the service does not report which extension it
+    // wrote (`ProcessEntryResponse` has no such field, and the output's format
+    // is whatever the CROPPED image sniffed as, not necessarily the input's), so
+    // `createPlaceholderImageDownloadUrl` finds the object by trying the known
+    // extensions in the service's own order and records the answer here. Absent
+    // means "not looked up yet", never "no output" — the row's `status` is what
+    // says whether an output exists.
+    //
+    // A cache, so it must stay derivable: deleting it costs one extra probe, not
+    // correctness. If the service ever starts reporting the output type, this is
+    // the column to populate at completion time instead.
+    outputExtension: v.optional(v.string()),
+    errorCode: v.optional(v.string()),
+    errorDetail: v.optional(v.string()),
+    // Set by the pairing pass, not by processing. Absent means pairing has not
+    // run for this row yet — distinct from "unmatched", which means it ran and
+    // found nothing.
+    pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
+  })
+    // The ONLY index this table needs. It answers both "every image of this
+    // job" (prefix `jobId` alone) and "this job's images in zip order", so a
+    // separate `by_job` on `["jobId"]` would be a strict prefix of this one —
+    // a second copy of the same index, paid for on every write, that Convex
+    // would never choose over this one for anything. Ordered iteration is a
+    // hot path rather than a convenience: pairing's adjacency pre-pass assumes
+    // a sheet's front and back are neighbours in the zip.
+    .index("by_job_and_index", ["jobId", "entryIndex"]),
+
+  // Front/back pairs produced by the pairing pass (NEO-170), one row per
+  // matched pair. Unmatched images are NOT recorded here — they are marked
+  // `pairStatus: "unmatched"` on placeholderImages instead, so "every image is
+  // accounted for" is a property of one table rather than a set difference.
+  //
+  // `confidence` and `mechanism` are kept separate on purpose: `mechanism`
+  // says HOW the pair was found (the free zip-adjacency pre-pass, or the paid
+  // identity-resolver pool pass) and `confidence` says how strong the evidence
+  // was. They vary independently — an adjacency match can be side-only, and a
+  // pool match can be exact — and the pair of them is what tells us whether
+  // the adjacency pre-pass is earning its keep.
+  placeholderPairs: defineTable({
+    jobId: v.string(),
+    // Denormalized from placeholderJobs. Defense in depth for a future
+    // per-user sweep (delete/export everything belonging to one user without
+    // joining through the jobs table) — it is NOT what ownership checks read
+    // today: every read path here resolves the job row from `jobId` and
+    // compares THAT row's `userId`, because the job row is the record the
+    // whole path-confinement design is anchored on.
+    userId: v.string(),
+    frontIndex: v.number(), // placeholderImages.entryIndex of the front
+    backIndex: v.number(), // placeholderImages.entryIndex of the back
+    player: v.optional(v.string()),
+    team: v.optional(v.string()),
+    cardNumber: v.optional(v.string()),
+    confidence: v.union(
+      v.literal("exact"),
+      v.literal("fuzzy"),
+      v.literal("side-only"),
+    ),
+    // How the pair was made. "adjacency" / "pool" are the automatic mechanisms.
+    // "manual" (NEO-152) is a pair a USER forced — for a card whose identity the
+    // model misread or could not read — and it is STICKY: the automatic pairing
+    // pass excludes manually-paired images from its input and never touches
+    // manual pair rows in its diff. That stickiness is the whole reason a manual
+    // pair needs its own mechanism value rather than being an ordinary pair the
+    // next auto-run would recompute away. See `runPairing` and
+    // `manuallyPairPlaceholderImages`.
+    mechanism: v.union(v.literal("adjacency"), v.literal("pool"), v.literal("manual")),
+    score: v.number(),
+    // No `createdAt` column: `_creationTime` already records when the pair was
+    // first found, and a hand-maintained copy could only ever drift from it.
+    //
+    // These rows ARE patched now — incremental pairing (NEO-170) re-runs after
+    // image completions and revises a pair whose merged identity, confidence,
+    // mechanism or score changed once a later image arrived, rather than
+    // deleting and re-inserting it. That is deliberate and load-bearing: the
+    // client subscribes to this table, and a delete+insert of an unchanged-
+    // looking pair is a visible flicker. The identity of a pair row is
+    // (jobId, frontIndex, backIndex); everything else on it is revisable until
+    // the job reaches a terminal status.
+  }).index("by_job", ["jobId"]),
 });

@@ -9,7 +9,7 @@
     "dev": "npx dotenv-cli -- ts-node src/index.ts",
     "dev:login": "gcloud auth application-default login --impersonate-service-account=neonbinder-browser-runtime@neonbinder-dev-io.iam.gserviceaccount.com",
     "deploy": "gcloud builds submit --config cloudbuild.yaml .",
-    "test": "node --test tests/base-adapter.test.mjs tests/bsc-adapter.test.mjs tests/sportlots-adapter.test.mjs tests/credentials-routes.test.mjs tests/login-diagnostic.test.mjs tests/observability.test.mjs tests/secrets-manager.test.mjs tests/transient-credentials.test.mjs",
+    "test": "node --test tests/base-adapter.test.mjs tests/bsc-adapter.test.mjs tests/sportlots-adapter.test.mjs tests/credentials-routes.test.mjs tests/login-diagnostic.test.mjs tests/observability.test.mjs tests/secrets-manager.test.mjs tests/transient-credentials.test.mjs tests/easypost.test.mjs tests/easypost-routes.test.mjs",
     "test:prod-gate": "node --test tests/integration/*.test.mjs"
   },
   "keywords": [],

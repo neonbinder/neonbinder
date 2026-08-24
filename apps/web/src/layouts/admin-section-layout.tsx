@@ -29,6 +29,9 @@ import { NavLink, Outlet } from "react-router";
 export const SECTIONS = [
   { label: "Set Builder", path: "/admin/set-builder" },
   { label: "Teams", path: "/admin/teams" },
+  // NEO-170's operator view. Landed as a top-level tab while this section
+  // didn't exist yet; its page header planned the move here all along.
+  { label: "Pipeline Runs", path: "/admin/pipeline-runs" },
 ];
 
 export default function AdminSectionLayout() {

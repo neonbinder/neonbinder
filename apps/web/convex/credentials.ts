@@ -5,9 +5,9 @@ import type { ActionCtx } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
-import { GoogleAuth, IdTokenClient } from "google-auth-library";
 import { randomUUID } from "crypto";
 import { oidcAudienceFor } from "./browserAudience";
+import { buildAuthHeaders } from "./lib/cloudRunAuth";
 import {
   classifyAdapterError,
   recordCredentialTest,
@@ -69,71 +69,17 @@ function browserUrl() {
 const BROWSER_FETCH_TIMEOUT_MS = 15_000;
 
 // NEO-20: the browser service Cloud Run instance requires IAM-authenticated
-// requests. Convex calls it as the neonbinder-convex service account
-// (credentials decoded from GOOGLE_APPLICATION_CREDENTIALS_B64) and mints a
-// Google OIDC ID token whose audience is the Cloud Run service URL. The
-// google-auth-library client caches and auto-refreshes the token, so we just
-// keep one client per audience for the life of this module.
-let cachedIdTokenClient: { audience: string; client: IdTokenClient } | null = null;
+// requests. The OIDC handshake itself (service-account credentials → ID token →
+// Authorization header, plus the fail-closed guard on non-https non-loopback
+// audiences) moved to convex/lib/cloudRunAuth.ts in NEO-170, when the
+// preprocess service became a second caller of the identical logic. Nothing
+// about the browser-service behavior changed: this file still resolves the
+// audience with oidcAudienceFor() before handing it over.
 
-// Loopback hosts allowed to bypass OIDC (local-dev browser service). Anything
-// else over plain http:// is treated as misconfiguration and throws — we do
-// NOT want to silently fall back to unauthenticated requests against a
-// real-but-misconfigured endpoint.
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
-
-async function getIdTokenClient(audience: string): Promise<IdTokenClient | null> {
-  if (!audience.startsWith("https://")) {
-    let host = "";
-    try {
-      host = new URL(audience).hostname;
-    } catch {
-      throw new Error(
-        `NEONBINDER_BROWSER_URL is not a valid URL: ${audience}`,
-      );
-    }
-    if (LOOPBACK_HOSTS.has(host)) {
-      // Local dev — browser service runs on the developer machine without
-      // Cloud Run IAM. Skip OIDC entirely.
-      return null;
-    }
-    throw new Error(
-      `NEONBINDER_BROWSER_URL must use https:// for non-loopback hosts; got ${audience}. Refusing to send unauthenticated requests to a remote browser service.`,
-    );
-  }
-
-  if (cachedIdTokenClient && cachedIdTokenClient.audience === audience) {
-    return cachedIdTokenClient.client;
-  }
-
-  const b64 = process.env.GOOGLE_APPLICATION_CREDENTIALS_B64;
-  if (!b64) {
-    throw new Error(
-      "GOOGLE_APPLICATION_CREDENTIALS_B64 not set — required to authenticate to the browser service",
-    );
-  }
-  const credentials = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
-  const auth = new GoogleAuth({ credentials });
-  const client = await auth.getIdTokenClient(audience);
-  cachedIdTokenClient = { audience, client };
-  return client;
-}
-
-async function buildAuthHeaders(): Promise<Record<string, string>> {
+async function buildBrowserAuthHeaders(): Promise<Record<string, string>> {
   // Send requests to browserUrl() (possibly a tagged pr-N--- preview host) but
   // mint the OIDC token against the base service URL that Cloud Run expects.
-  const client = await getIdTokenClient(oidcAudienceFor(browserUrl()));
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (!client) return headers;
-  const authHeaders = await client.getRequestHeaders();
-  // google-auth-library v10 returns a web-standard Headers object (v9 returned a
-  // plain object); iterate its entries (keys lowercased, values strings) to copy
-  // Authorization (and sometimes x-goog-user-project) across. Object.entries()
-  // would yield [] on a Headers instance and silently drop the auth header.
-  authHeaders.forEach((value, key) => {
-    headers[key] = value;
-  });
-  return headers;
+  return buildAuthHeaders(oidcAudienceFor(browserUrl()), "NEONBINDER_BROWSER_URL");
 }
 
 // ---------------------------------------------------------------------------
@@ -255,14 +201,22 @@ async function assertBrowserContract(headers: Record<string, string>): Promise<v
  * calls `fetch` directly rather than `browserFetch`. That is deliberate: the
  * login path is the one NEO-141 broke, so the guard is placed where it cannot
  * be bypassed by adding another call site.
+ *
+ * NEO-120: exported (with {@link browserFetch} and {@link credKey}) for
+ * `convex/postage.ts` and `convex/shipping.ts`, which need the same
+ * IAM-authenticated channel to the browser service for EasyPost postage without
+ * inheriting the marketplace credential machinery wrapped around it. EasyPost
+ * is not a marketplace, and adding it to SUPPORTED_SITES would leak it into
+ * listUserSites, /credentials/check, the Credentials tab and the login flows.
  */
-async function browserAuthHeaders(): Promise<Record<string, string>> {
-  const headers = await buildAuthHeaders();
+export async function browserAuthHeaders(): Promise<Record<string, string>> {
+  const headers = await buildBrowserAuthHeaders();
   await assertBrowserContract(headers);
   return headers;
 }
 
-async function browserFetch(
+/** NEO-120: exported alongside {@link browserAuthHeaders}, same reasoning. */
+export async function browserFetch(
   path: string,
   init: RequestInit,
 ): Promise<Response> {
@@ -281,7 +235,8 @@ async function browserFetch(
   }
 }
 
-function credKey(site: string, userId: string) {
+/** NEO-120: exported alongside {@link browserFetch}, same reasoning. */
+export function credKey(site: string, userId: string) {
   return `${site}-credentials-${userId}`;
 }
 

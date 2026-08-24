@@ -33,7 +33,13 @@ const SECTIONS = [
   { label: "Public Profile", path: "/profile/public" },
   { label: "Credentials", path: "/profile/credentials" },
   { label: "Shipping", path: "/profile/shipping" },
+  { label: "Postage", path: "/profile/postage" },
   { label: "Prize Pool", path: "/profile/prizes" },
+  // NEO-172. The UserButton menu also links straight here, but a section that
+  // exists only in that menu would be a page with no entry in the nav of the
+  // shell it renders inside — no highlighted tab, and no way back to it from
+  // the other sections.
+  { label: "API Keys", path: "/profile/api-keys" },
 ];
 
 /**
@@ -74,7 +80,7 @@ export default function ProfileLayout() {
       </div>
 
       <nav aria-label="Profile sections" className="border-b border-slate-800">
-        {/* Wraps rather than scrolls horizontally: four items fit two rows at
+        {/* Wraps rather than scrolls horizontally: the items fit two rows at
             375px, and a scrolling strip would hide sections off-screen — the
             same "you cannot see what is there" problem at a smaller scale. */}
         <ul className="flex flex-wrap gap-x-6 gap-y-2">

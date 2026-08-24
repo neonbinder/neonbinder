@@ -318,9 +318,16 @@ export const applyEnrichmentInternal = internalMutation({
 });
 
 /**
- * Wikidata enrichment kickoff — non-blocking. The action runs the SPARQL
- * query, then writes results back via applyEnrichmentInternal. Failures
- * are logged but never thrown; an unenriched player is still usable.
+ * Wikidata enrichment kickoff — non-blocking. `enrichPlayer` runs the SPARQL
+ * query and writes results back via applyEnrichmentInternal. Failures are
+ * logged but never thrown; an unenriched player is still usable.
+ *
+ * NEO-99: enqueues onto the shared Wikidata pool (convex/wikidataPool.ts)
+ * rather than running the enrichment inline, so this entry point spends the
+ * SAME deployment-wide 5-parallel SPARQL budget as the review-wizard drain
+ * instead of adding an uncoordinated request that could push Wikidata past its
+ * per-IP ceiling. Still fire-and-forget — the pool runs the work in the
+ * background and enrichPlayer persists its own result.
  */
 export const enrichFromWikidata = action({
   args: { id: v.id("players") },
@@ -332,7 +339,9 @@ export const enrichFromWikidata = action({
     // player id, at any rate. Enrichment writes to globally-shared player rows.
     await requireAdmin(ctx);
     try {
-      await ctx.runAction(internal.adapters.wikidata.enrichPlayer, { playerId: args.id });
+      await ctx.runMutation(internal.wikidataPool.enqueueEnrichment, {
+        playerIds: [args.id],
+      });
     } catch (error) {
       console.error("[players.enrichFromWikidata] failed:", error);
     }

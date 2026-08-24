@@ -79,11 +79,14 @@ def test_fixture_end_to_end(case: FixtureCase):
     # not already-tight card crops, so the cascade usually falls through to
     # passthrough in slice 2a (no SAM yet). Just verify the source is a
     # known label and the b64 field is consistent with it.
+    # Keep in sync with cropper.STRATEGY_NAMES.
     assert body["cropped_source"] in {
         "precropped",
+        "tiered",
         "pil_trim_dark",
         "pil_trim_light",
         "sam",
+        "haiku_bbox",
         "passthrough",
     }, f"{case.name}: unexpected cropped_source {body['cropped_source']!r}"
     if body["cropped_source"] == "precropped":
