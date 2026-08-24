@@ -19,7 +19,7 @@
 
 import { action } from "./_generated/server";
 import { api } from "./_generated/api";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { browserAuthHeaders, browserFetch, credKey } from "./credentials";
 import { postalAddressValidator } from "./schema";
@@ -60,7 +60,16 @@ interface RateQuoteResponse {
   };
 }
 
-/** Turn a browser-service failure into something the seller can act on. */
+/**
+ * Turn a browser-service failure into something the seller can act on.
+ *
+ * ConvexError, not Error: production Convex REDACTS thrown Error messages to
+ * "Server Error" (dev and preview deployments pass them through, which is why
+ * every actionable message looked fine in testing and then flattened on prod —
+ * found live on the first real purchase attempt: EasyPost's "Insufficient
+ * funds… check your billing settings" reached the seller as "Server Error").
+ * A ConvexError's data survives to the client in every deployment type.
+ */
 async function failureFrom(response: Response, fallback: string): Promise<never> {
   let message = fallback;
   try {
@@ -69,7 +78,7 @@ async function failureFrom(response: Response, fallback: string): Promise<never>
   } catch {
     // non-JSON body; keep the fallback
   }
-  throw new Error(message);
+  throw new ConvexError(message);
 }
 
 /**
@@ -167,21 +176,21 @@ export const quoteLetterRate = action({
     if (!userId) throw new Error("Not authenticated");
 
     if (!Number.isFinite(args.weightOz) || args.weightOz <= 0) {
-      throw new Error("Enter how much the envelope weighs.");
+      throw new ConvexError("Enter how much the envelope weighs.");
     }
     if (args.weightOz > MAX_WEIGHT_OZ) {
-      throw new Error(
+      throw new ConvexError(
         `First-Class letters top out at ${MAX_WEIGHT_OZ}oz. Heavier than that ships as a package.`,
       );
     }
 
     const saved = await ctx.runQuery(api.shipping.getMyReturnAddress, {});
     if (!saved) {
-      throw new Error("Add your return address on your profile first.");
+      throw new ConvexError("Add your return address on your profile first.");
     }
     const from = { ...saved.address, name: saved.resolvedName };
     if (!from.name.trim()) {
-      throw new Error(
+      throw new ConvexError(
         "Add a name to your return address, or set a display name on your public profile.",
       );
     }
@@ -196,7 +205,7 @@ export const quoteLetterRate = action({
     );
 
     if (response.status === 404) {
-      throw new Error("Add your EasyPost API key on your profile first.");
+      throw new ConvexError("Add your EasyPost API key on your profile first.");
     }
     if (!response.ok) {
       await failureFrom(response, "Could not get a postage rate.");
@@ -241,7 +250,7 @@ export const buyLetterLabel = action({
     );
 
     if (response.status === 404) {
-      throw new Error("Add your EasyPost API key on your profile first.");
+      throw new ConvexError("Add your EasyPost API key on your profile first.");
     }
     if (!response.ok) {
       await failureFrom(response, "Could not buy the label.");

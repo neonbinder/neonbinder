@@ -18,6 +18,7 @@ import {
 import { parseAddressText } from "@/lib/shipping/parse-address";
 import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
 import { printHtmlDocument } from "@/lib/print/print-html";
+import { sellerMessage } from "@/lib/shipping/postage-error";
 
 /**
  * NEO-118 / NEO-120 — address a 4×6 label and buy the postage for it.
@@ -274,9 +275,10 @@ export default function ShippingLabelsPage() {
           // message is seller-actionable, so surface it rather than a shrug.
           const firstErr = results[0];
           setPostageError(
-            firstErr.status === "rejected" && firstErr.reason instanceof Error
-              ? firstErr.reason.message
-              : "Could not get postage prices.",
+            sellerMessage(
+              firstErr.status === "rejected" ? firstErr.reason : undefined,
+              "Could not get postage prices.",
+            ),
           );
         }
         setRating(false);
@@ -342,9 +344,7 @@ export default function ShippingLabelsPage() {
       // accidentally buys a second label for the same recipient.
       clearForm();
     } catch (error) {
-      setPostageError(
-        error instanceof Error ? error.message : "Could not buy the label.",
-      );
+      setPostageError(sellerMessage(error, "Could not buy the label."));
     } finally {
       setBuying(false);
     }
