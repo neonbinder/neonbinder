@@ -18,6 +18,8 @@ import {
 import { parseAddressText } from "@/lib/shipping/parse-address";
 import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
 import { printHtmlDocument } from "@/lib/print/print-html";
+import { sellerMessage } from "@/lib/shipping/postage-error";
+import PurchasedTracking from "@/components/modules/PurchasedTracking";
 
 /**
  * NEO-118 / NEO-120 — address a 4×6 label and buy the postage for it.
@@ -87,6 +89,16 @@ export default function ShippingLabelsPage() {
    * kept by reverting its button to "Get rate". Any address edit clears it.
    */
   const [boughtAwaitingEdit, setBoughtAwaitingEdit] = useState(false);
+  /**
+   * NEO-182 — the last purchase's tracking number, displayed with a copy
+   * button. Deliberately NOT reset by clearForm(): a successful buy clears the
+   * form for the next package, and the tracking number must outlive that —
+   * it is what the seller pastes into SportLots. Replaced on the next buy.
+   */
+  const [lastPurchase, setLastPurchase] = useState<{
+    name: string;
+    trackingCode: string;
+  } | null>(null);
   /**
    * Staleness token for in-flight rate requests. Bumped whenever the address
    * inputs are invalidated (edit / paste / clear); a rating round that comes
@@ -274,9 +286,10 @@ export default function ShippingLabelsPage() {
           // message is seller-actionable, so surface it rather than a shrug.
           const firstErr = results[0];
           setPostageError(
-            firstErr.status === "rejected" && firstErr.reason instanceof Error
-              ? firstErr.reason.message
-              : "Could not get postage prices.",
+            sellerMessage(
+              firstErr.status === "rejected" ? firstErr.reason : undefined,
+              "Could not get postage prices.",
+            ),
           );
         }
         setRating(false);
@@ -310,6 +323,9 @@ export default function ShippingLabelsPage() {
         weightOz,
         to,
       });
+      // The purchase exists from here on, whatever printing does next — the
+      // tracking note must show on the print-failure path too.
+      setLastPurchase({ name: to.name, trackingCode: bought.trackingCode });
 
       try {
         await printHtmlDocument({
@@ -342,9 +358,7 @@ export default function ShippingLabelsPage() {
       // accidentally buys a second label for the same recipient.
       clearForm();
     } catch (error) {
-      setPostageError(
-        error instanceof Error ? error.message : "Could not buy the label.",
-      );
+      setPostageError(sellerMessage(error, "Could not buy the label."));
     } finally {
       setBuying(false);
     }
@@ -713,6 +727,13 @@ export default function ShippingLabelsPage() {
             </Link>{" "}
             — about $0.80 for a 1oz letter, a little less than a stamp.
           </p>
+        )}
+
+        {lastPurchase && (
+          <PurchasedTracking
+            name={lastPurchase.name}
+            trackingCode={lastPurchase.trackingCode}
+          />
         )}
 
         {/* Always mounted so the announcement is reliable. Postage failures are

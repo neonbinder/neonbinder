@@ -5,6 +5,7 @@ import { useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import NeonButton from "./NeonButton";
 import { Input } from "@/components/primitives/Input";
+import { sellerMessage } from "@/lib/shipping/postage-error";
 
 /**
  * NEO-120 — the seller's EasyPost API key, used to buy letter postage.
@@ -95,7 +96,7 @@ export default function EasypostKeyEditor() {
         await refresh();
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not save the key.");
+      setMessage(sellerMessage(error, "Could not save the key."));
       setMessageType("error");
     } finally {
       setBusy(false);
@@ -111,7 +112,7 @@ export default function EasypostKeyEditor() {
       setMessageType(result.success ? "success" : "error");
       await refresh();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not remove the key.");
+      setMessage(sellerMessage(error, "Could not remove the key."));
       setMessageType("error");
     } finally {
       setBusy(false);
