@@ -54,7 +54,7 @@ tags:
 
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # ── DRILL Baseball → 2024 → Topps → Topps Big League (R9) ────────────────────

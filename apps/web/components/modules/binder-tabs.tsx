@@ -6,8 +6,7 @@ import {
   ArchiveBoxIcon,
   PrinterIcon,
   UserIcon,
-  SquaresPlusIcon,
-  SignalIcon,
+  WrenchScrewdriverIcon,
 } from "@heroicons/react/24/outline";
 import { useIsAdmin } from "@/src/hooks/useIsAdmin";
 
@@ -43,22 +42,16 @@ export const NAV_ITEMS: NavItem[] = [
     activeColor: "text-neon-yellow",
   },
   {
-    label: "Set Builder",
-    path: "/set-selector",
-    icon: SquaresPlusIcon,
-    glowClass: "binder-tab-glow-orange",
-    activeColor: "text-neon-orange",
-    requiresAdmin: true,
-  },
-  {
-    // NEO-170 — the operator view of the placeholder pipeline. Admin-only, and
-    // it sits next to Set Builder because the two are the same kind of screen:
-    // platform operations, which no collector ever sees. Top-level rather than
-    // a sub-page of an /admin section because this branch has no such section —
-    // see the note at the top of app/pipeline-runs/page.tsx.
-    label: "Pipeline Runs",
-    path: "/pipeline-runs",
-    icon: SignalIcon,
+    // NEO-155 — one tab for every admin tool. This was "Set Builder" →
+    // /set-selector, and that page had become where anything admin-only
+    // landed (NEO-147's team colors worklist was the tipping point). Set
+    // Builder is now a section under /admin alongside Teams and NEO-170's
+    // Pipeline Runs (which sat top-level only until this section existed),
+    // with Players, Features and Leagues to follow. Same move as NEO-145
+    // made for /print.
+    label: "Admin",
+    path: "/admin",
+    icon: WrenchScrewdriverIcon,
     glowClass: "binder-tab-glow-orange",
     activeColor: "text-neon-orange",
     requiresAdmin: true,

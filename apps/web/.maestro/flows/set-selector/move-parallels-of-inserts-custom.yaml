@@ -41,7 +41,7 @@ tags:
 
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # The runner injects ATTEMPT_ID. This evalScript provides a fallback for standalone

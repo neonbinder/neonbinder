@@ -94,7 +94,7 @@ tags:
 # both need one on the same visit. This is the setup track's cold-start budget
 # doing exactly what it exists for; do NOT copy this ceiling into a feature flow.
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 120000
 
 # ── GLOBAL RESET ────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ tags:
 # the sync — without this, "Baseball" never appears and the drill below fails.
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 20000
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -149,6 +149,17 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 # ── SPORT: Baseball ─────────────────────────────────────────────────────────
+# Scroll the cascade into view FIRST. `visible` is false for an element that
+# exists but sits below the fold, and extendedWaitUntil does not scroll — so on
+# the 1024x629 headless viewport this waited 60s for a "Baseball" that had
+# already rendered off-screen. NEO-155 put a section header above the cascade
+# and that is what pushed it down; the header has since been trimmed, but the
+# scroll is what makes this independent of how tall the chrome happens to be.
+- scrollUntilVisible:
+    element:
+      text: "Sports"
+    centerElement: true
+    timeout: 10000
 - runFlow:
     when:
       notVisible: "Baseball"
@@ -528,11 +539,37 @@ tags:
       id: "Search inserts"
 
 # ── FETCH THE INSERT CHECKLIST ───────────────────────────────────────────────
+# Same fold-clipping trap as the Base section above. On an empty checklist the
+# "Fetch from Marketplaces" button is the LAST thing in the Cards card, so a
+# scroll aimed straight at it can stop with the button only fractionally on
+# screen and the tap then lands BELOW the 1024×629 viewport (CI run 32050269778:
+# button at y=620–652, 15% visible → dropped tap).
+#
+# Use the Base section's pattern:
+#   1. Settle anchor proving the Future Stars panels have mounted. Base uses
+#      "Re-map Base", which is base-specific; the insert equivalent is the set
+#      attributes summary bar, which is keyed to the DEEPEST selection and so
+#      names the leaf we just picked — it is the panel rendered immediately
+#      above the Cards card. Scrolled to rather than waited on, because after
+#      picking from the inserts column it sits below the fold.
+#   2. scrollUntilVisible "Add Card" (centerElement + vis:50) — centering the
+#      Cards header row drags the Fetch button well above the fold.
+#   3. assertVisible "Fetch from Marketplaces|Refresh" — confirm it's in-view.
+#   4. tapOn it.
 - scrollUntilVisible:
     element:
-      text: ".*Fetch from Marketplaces.*|Refresh"
+      text: ".*Attributes for Future Stars.*"
+    centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 30000
+- assertVisible:
+    text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
 # NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
@@ -694,11 +731,23 @@ tags:
       id: "Search parallels"
 
 # ── FETCH THE PARALLEL CHECKLIST ─────────────────────────────────────────────
+# Same fold-clipping trap and the same fix as the Insert section above — see the
+# comment there. The settle anchor is the set attributes summary bar for the
+# parallel we just picked; it renders immediately above the Cards card.
 - scrollUntilVisible:
     element:
-      text: ".*Fetch from Marketplaces.*|Refresh"
+      text: ".*Attributes for Gold Wave Refractors.*"
+    centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 30000
+- assertVisible:
+    text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
 # NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both

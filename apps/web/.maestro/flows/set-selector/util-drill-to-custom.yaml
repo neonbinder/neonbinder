@@ -51,7 +51,7 @@ tags:
 #     (A) Pass only SPORT="Baseball" → verify Sports drilled, Years visible, NO Year selected.
 #     (B) Pass SPORT="Baseball" + YEAR="2024" → verify Years drilled, Manufacturers visible.
 #     (C) Pass all 6 vars (team-picker path) → verify full depth, CardChecklist visible.
-#     (D) Pass no vars → verify page opens to Set Selector, Sports auto-syncs, no drilling.
+#     (D) Pass no vars → verify page opens to Set Builder, Sports auto-syncs, no drilling.
 #
 # SET_NAME and VARIANT_TYPE names are intentionally identical to
 # util-drill-to-custom-set.yaml so callers can migrate by swapping the
@@ -115,7 +115,7 @@ tags:
 
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 20000
 
 # ============================================================

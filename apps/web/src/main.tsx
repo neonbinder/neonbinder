@@ -14,6 +14,7 @@ import * as Sentry from "@sentry/react";
 import ProtectedLayout from "@/src/layouts/ProtectedLayout";
 import BinderLayout from "@/src/layouts/binder-layout";
 import AdminLayout from "@/src/layouts/AdminLayout";
+import AdminSectionLayout from "@/src/layouts/admin-section-layout";
 
 // Pages
 import Home from "@/app/page";
@@ -41,7 +42,9 @@ import ProfileShipping from "@/app/profile/shipping/page";
 import ProfilePostage from "@/app/profile/postage/page";
 import ProfilePrizes from "@/app/profile/prizes/page";
 import ProfileApiKeys from "@/app/profile/api-keys/page";
-import SetSelector from "@/app/set-selector/page";
+import AdminHub from "@/app/admin/page";
+import AdminSetBuilder from "@/app/admin/set-builder/page";
+import AdminTeams from "@/app/admin/teams/page";
 import PipelineRuns from "@/app/pipeline-runs/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
@@ -49,6 +52,7 @@ import PrintHub from "@/app/print/page";
 import PrintPlaceholders from "@/app/print/placeholders/page";
 import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
+import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
 import PlaceholderScans from "@/app/placeholders/page";
 import Inventory from "@/app/inventory/page";
@@ -135,6 +139,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 <Route path="shipping" element={<PrintShipping />} />
                 <Route path="qr" element={<PrintQrCode />} />
                 <Route path="placeholders" element={<PrintPlaceholders />} />
+                <Route path="spine-label" element={<PrintSpineLabel />} />
               </Route>
               {/* The old top-level routes. They are linked from outside the app
                   and sit in people's bookmarks, so they stay forever as
@@ -148,13 +153,35 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                 element={<Navigate to="/print/qr" replace />}
               />
               <Route path="/design/primitives" element={<DesignPrimitives />} />
-              {/* Admin-only routes — redirected to /dashboard for non-admins */}
+              {/* Admin-only routes — redirected to /dashboard for non-admins.
+                  AdminLayout is the AUTHORIZATION gate; AdminSectionLayout
+                  inside it is the visual shell with the sub-tabs (NEO-155). */}
               <Route element={<AdminLayout />}>
-                <Route path="/set-selector" element={<SetSelector />} />
-                {/* NEO-170 — operator view of every user's placeholder
-                    pipeline runs, with the abort lever. Gated by AdminLayout
-                    here; the queries behind it are requireAdmin server-side. */}
-                <Route path="/pipeline-runs" element={<PipelineRuns />} />
+                <Route path="/admin" element={<AdminSectionLayout />}>
+                  <Route index element={<AdminHub />} />
+                  <Route path="set-builder" element={<AdminSetBuilder />} />
+                  <Route path="teams" element={<AdminTeams />} />
+                  {/* NEO-170 — operator view of every user's placeholder
+                      pipeline runs, with the abort lever. The queries behind
+                      it are requireAdmin server-side. Landed top-level while
+                      this section didn't exist yet; its own header comment
+                      planned this exact move. */}
+                  <Route path="pipeline-runs" element={<PipelineRuns />} />
+                </Route>
+                {/* The old top-level routes. Kept forever rather than 404ing:
+                    /set-selector is bookmarked, and ~48 Maestro flows navigate
+                    here by URL (/testing/sign-in?redirect=/set-selector)
+                    instead of tapping the nav tab — this redirect is what
+                    keeps them green across the rename. /pipeline-runs gets the
+                    same treatment for the NEO-170 era. */}
+                <Route
+                  path="/set-selector"
+                  element={<Navigate to="/admin/set-builder" replace />}
+                />
+                <Route
+                  path="/pipeline-runs"
+                  element={<Navigate to="/admin/pipeline-runs" replace />}
+                />
               </Route>
             </Route>
           </Route>

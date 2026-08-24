@@ -468,6 +468,51 @@ export default defineSchema({
     // duplicates and could blow past Convex's 4096 document-scan budget on
     // a single mutation.
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
+    .index("by_sport_id", ["sportId"])
+    // NEO-147: the first search index in the codebase, backing
+    // `PlayerAutocomplete`. Every typeahead before this one fetched up to 500
+    // rows and filtered client-side with `.includes()` — workable for an admin
+    // scoped to one sport, not for a collector searching the whole player
+    // universe from the spine-label designer.
+    //
+    // Indexed on `name`, NOT `nameNormalized`: `normalizePlayerName()` sorts
+    // the name's tokens alphabetically for dedup, so "Ken Griffey Jr" is
+    // stored as "griffey jr ken". Prefix search over that returns nonsense
+    // ordering and misses the obvious query. The search index does its own
+    // tokenization and is case-insensitive, so the raw display name is both
+    // correct and what the user is actually typing.
+    .searchIndex("search_name", {
+      searchField: "name",
+      filterFields: ["sportId"],
+    }),
+
+  // NEO-156: leagues as a first-class entity.
+  //
+  // `teams.league` was a free-text string, and nothing populated it reliably —
+  // 0 of 35 dev teams and 2 of 58 prod teams carried one. Every team belongs to
+  // a league, so the relationship is modelled rather than typed.
+  //
+  // A REFERENCE, not a copied display label. Same lesson as NEO-96: when
+  // `teams.sport`/`players.primarySport` held display strings, three writers
+  // populated them with two different casings and reads silently missed each
+  // other, duplicating entities. A league renamed here stays the same row.
+  //
+  // Rows are seeded on demand from the sport's `sportConfig` — `league` gives
+  // the abbreviation ("MLB") and `espn.leagueName` the full name ("Major League
+  // Baseball") — so neither is invented here. Leagues an operator adds by hand
+  // carry whatever they typed.
+  leagues: defineTable({
+    name: v.string(),
+    // Short form for dense UI (a team list showing league beside each name).
+    // Optional because an operator-added league may only have one form.
+    abbreviation: v.optional(v.string()),
+    nameNormalized: v.string(),
+    // Leagues are per-sport: "National League" means nothing without one, and
+    // two sports can legitimately hold the same league name.
+    sportId: v.id("selectorOptions"),
+    lastUpdated: v.number(),
+  })
+    .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
 
   // Teams — first-class entity. Modeled with city + yearsActive to support
@@ -478,6 +523,15 @@ export default defineSchema({
     nameNormalized: v.string(),
     // NEO-96: reference, not a copied display label — see players.sportId.
     sportId: v.id("selectorOptions"),
+    // NEO-156: the league this team plays in. Every creation path attaches one
+    // through `leagues.resolveDefaultLeagueId`, so a team without it is either
+    // a pre-NEO-156 row or one whose sport has no configured league.
+    leagueId: v.optional(v.id("leagues")),
+    // DEPRECATED (NEO-156) — the free-text predecessor of `leagueId`. Kept so
+    // existing rows still validate and so the backfill has something to read;
+    // `backfillLeagueIds` resolves it to a real row. Nothing writes it any
+    // more, and reads prefer `leagueId`. Remove once prod shows zero rows
+    // carrying it and no `leagueId`.
     league: v.optional(v.string()),
     city: v.optional(v.string()),
     yearsActive: v.optional(v.object({
@@ -492,6 +546,30 @@ export default defineSchema({
       primary: v.optional(v.string()),
       secondary: v.optional(v.string()),
     })),
+    // NEO-147: provenance for `colors`, now that teamcolorcodes.com is the
+    // primary source (see convex/adapters/teamColorCodes.ts). Presence means
+    // "this row has been resolved against that site", and it is what makes the
+    // backfill re-runnable without redoing work: `enrichUnenrichedTeams` skips
+    // any row carrying it, including one a human resolved by hand.
+    colorSource: v.optional(v.object({
+      url: v.string(),
+      // The source-side name that won, kept so a human auditing a suspicious
+      // match can see what it matched against — our "UConn Huskies baseball"
+      // resolves to the site's "connecticut huskies", which looks wrong until
+      // you see both names side by side.
+      matchedName: v.string(),
+      resolvedAt: v.number(),
+    })),
+    // NEO-147: set when a name matched MORE THAN ONE source page — there are
+    // 10+ distinct "Huskies" teams on the site. Never guessed: the team editor
+    // presents these for a human to pick, which writes `colorSource` and
+    // clears this. Follows the entityReviewQueue principle (a human confirms
+    // ambiguity) without reusing that table, which is scoped to one fetch
+    // batch and consumed by its own wizard.
+    colorCandidates: v.optional(v.array(v.object({
+      name: v.string(),
+      url: v.string(),
+    }))),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()),
       espnId: v.optional(v.string()),
@@ -502,6 +580,7 @@ export default defineSchema({
     // Same compound-index optimization as players above. See its comment.
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"]),
+
 
   // NEO-92: per-fetch review queue backing the step-through "new players &
   // teams" wizard (replaces the old single-screen checkbox dialog). One row

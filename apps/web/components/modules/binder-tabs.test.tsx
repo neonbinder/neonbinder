@@ -54,14 +54,15 @@ describe("BinderTabs", () => {
   });
 
   it("keeps the staircase when the list is filtered", () => {
-    // A non-admin loses Set Builder from the MIDDLE of the list. The offsets
+    // A non-admin loses Admin from the MIDDLE of the list. The offsets
     // must follow the rendered position, not the position in NAV_ITEMS, or the
     // staircase gains a gap where the hidden tab used to be.
     role = undefined;
-    // DERIVED, not the literal `NAV_ITEMS.length - 1` this used to be: NEO-170
-    // added a second admin-only tab, and a hardcoded count has to be edited by
-    // hand every time that number changes — the same "keep two things in sync"
-    // trap the staircase offsets were pulled out of.
+    // DERIVED, not the literal `NAV_ITEMS.length - 1` this used to be: the
+    // admin-only tab count has already changed twice (NEO-170 added Pipeline
+    // Runs, NEO-155 folded it into Admin), and a hardcoded count has to be
+    // edited by hand every time that number changes — the same "keep two
+    // things in sync" trap the staircase offsets were pulled out of.
     const adminOnlyCount = NAV_ITEMS.filter((item) => item.requiresAdmin).length;
     expect(adminOnlyCount).toBeGreaterThan(0);
     const tabs = renderTabs();
@@ -71,22 +72,23 @@ describe("BinderTabs", () => {
     );
   });
 
-  it("offers Pipeline Runs to an admin", () => {
-    // NEO-170 — the nav layer of the admin gate. The route guard
+  it("offers Admin to an admin", () => {
+    // The nav layer of the admin gate. The route guard
     // (src/layouts/AdminLayout.tsx) and `requireAdmin` on the queries are the
     // real boundary; this is the one that decides whether the door is visible.
+    // NEO-170's Pipeline Runs tab folded into this one section tab (NEO-155).
     expect(renderTabs().length).toBe(NAV_ITEMS.length);
     expect(
-      screen.getByRole("link", { name: "Pipeline Runs" }).getAttribute("href"),
-    ).toBe("/pipeline-runs");
+      screen.getByRole("link", { name: "Admin" }).getAttribute("href"),
+    ).toBe("/admin");
   });
 
-  it("hides Pipeline Runs from a non-admin", () => {
+  it("hides Admin from a non-admin", () => {
     role = undefined;
     const hrefs = Array.from(renderTabs()).map((tab) =>
       tab.getAttribute("href"),
     );
-    expect(hrefs).not.toContain("/pipeline-runs");
+    expect(hrefs).not.toContain("/admin");
   });
 
   it("routes the print tools through one Print Shop tab", () => {

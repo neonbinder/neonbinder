@@ -28,6 +28,7 @@ export const SECTIONS = [
   { label: "Shipping", path: "/print/shipping" },
   { label: "QR Code", path: "/print/qr" },
   { label: "Placeholders", path: "/print/placeholders" },
+  { label: "Spine Labels", path: "/print/spine-label" },
 ];
 
 /**
@@ -46,6 +47,10 @@ export const SECTIONS = [
 function useWarmPrintQueries() {
   useQuery(api.shipping.getMyReturnAddress); // shipping labels
   useQuery(api.publicProfile.getMyPublicProfile); // QR code
+  // Spine labels (NEO-147) deliberately has nothing here. Both of its queries
+  // are demand-driven — `players.search` is skipped until the user types, and
+  // `teams.getManyByIds` needs a selected player — so neither paints a spinner
+  // on arrival and there is nothing to keep warm.
 }
 
 export default function PrintLayout() {

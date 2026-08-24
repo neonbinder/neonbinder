@@ -23,19 +23,13 @@ import {
 } from "./run-view";
 
 /**
- * /pipeline-runs — every user's placeholder pipeline runs, with an abort lever
- * (NEO-170).
+ * /admin/pipeline-runs — every user's placeholder pipeline runs, with an abort
+ * lever (NEO-170).
  *
- * ## Why this route is top-level and not under /admin
- * The only admin surface on this branch is `/set-selector`, gated by
- * `<AdminLayout>` in src/main.tsx and hidden from the nav by
- * `requiresAdmin` in binder-tabs. There is no `/admin` section here: the
- * NEO-155 consolidation that creates one lives on the unmerged
- * `neo-147-spine-labels` branch. Building half of that section here would put a
- * second, conflicting `/admin` in the tree for a PR that is already blocked, so
- * this page follows the convention that actually exists. When NEO-155 lands,
- * this moves under it the same way `/set-selector` does — a route rename plus a
- * redirect, with no change to the page itself.
+ * This page landed top-level at /pipeline-runs, before the NEO-155 /admin
+ * section existed, with the move here planned in this very comment. The old
+ * URL redirects (src/main.tsx), same as /set-selector — bookmarks from the
+ * top-level era keep working, and the page itself did not change.
  *
  * ## What an operator is here to do
  * Answer "is anything wedged, and whose is it", then stop it. That shapes every
@@ -286,7 +280,9 @@ export default function PipelineRunsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold mb-2">Pipeline Runs</h1>
+        {/* h2, not h1 — the Admin section layout above owns the page's one
+            h1, same as every other admin panel. */}
+        <h2 className="text-lg font-semibold mb-2">Pipeline Runs</h2>
         <p className="text-slate-400 max-w-2xl">
           Every user&apos;s placeholder pipeline runs. Abort a run that is
           wedged — the owner can start it again from their upload.
@@ -421,7 +417,7 @@ export default function PipelineRunsPage() {
                 className="rounded-lg border border-slate-800 bg-slate-900/40 p-4"
               >
                 <div className="flex flex-wrap items-center gap-3 mb-3">
-                  <h2
+                  <h3
                     id={`run-${run.jobId}-heading`}
                     tabIndex={-1}
                     title={run.jobId}
@@ -431,7 +427,7 @@ export default function PipelineRunsPage() {
                     className="font-mono text-base font-semibold outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
                   >
                     Run {short}
-                  </h2>
+                  </h3>
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs font-medium ${status.className}`}
                   >

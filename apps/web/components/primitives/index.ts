@@ -26,3 +26,5 @@ export { InlineCode } from "./InlineCode";
 export { ScrollListItem } from "./ScrollListItem";
 export { Poster } from "./Poster";
 export { ErrorAlert } from "./ErrorAlert";
+export { Autocomplete } from "./Autocomplete";
+export type { AutocompleteProps } from "./Autocomplete";

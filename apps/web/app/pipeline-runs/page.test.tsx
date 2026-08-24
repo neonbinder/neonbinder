@@ -25,6 +25,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // run it — it calls createRoot(...).render() on module load.
 import mainSource from "@/src/main.tsx?raw";
 import { NAV_ITEMS } from "@/components/modules/binder-tabs";
+import { SECTIONS } from "@/src/layouts/admin-section-layout";
 
 type Run = {
   jobId: string;
@@ -230,10 +231,11 @@ describe("PipelineRunsPage", () => {
       ];
     }
 
-    /** The rendered rows' short ids, top to bottom. */
+    /** The rendered rows' short ids, top to bottom. Run cards head with h3 —
+     * the page's own h2 sits under the Admin section layout's h1. */
     function renderedOrder(): string[] {
       return screen
-        .getAllByRole("heading", { level: 2 })
+        .getAllByRole("heading", { level: 3 })
         .map((h) => (h.textContent ?? "").replace("Run ", ""));
     }
 
@@ -289,7 +291,7 @@ describe("PipelineRunsPage", () => {
       render(<PipelineRunsPage />);
       // No run is pairing.
       fireEvent.click(screen.getByRole("button", { name: "Pairing" }));
-      expect(screen.queryAllByRole("heading", { level: 2 })).toHaveLength(0);
+      expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
       const message = screen.getByText(/No runs match this filter/);
       // Selecting a zero-match filter must be announced, not left for the user
       // to discover by navigating into an emptied list (WCAG 4.1.3).
@@ -429,10 +431,15 @@ describe("PipelineRunsPage", () => {
     expect(mocks.abort).not.toHaveBeenCalled();
   });
 
-  it("is reachable — main.tsx routes /pipeline-runs behind the admin guard", () => {
+  it("is reachable — main.tsx routes it under /admin behind the admin guard", () => {
     expect(mainSource).toContain('from "@/app/pipeline-runs/page"');
+    // NEO-155 folded this into the /admin section; the top-level era's URL
+    // redirects rather than 404ing.
     expect(mainSource).toMatch(
-      /path="\/pipeline-runs"\s+element=\{<PipelineRuns \/>\}/,
+      /path="pipeline-runs"\s+element=\{<PipelineRuns \/>\}/,
+    );
+    expect(mainSource).toMatch(
+      /path="\/pipeline-runs"\s+element=\{<Navigate to="\/admin\/pipeline-runs" replace \/>\}/,
     );
     // Inside the <AdminLayout> block, not merely inside ProtectedLayout: every
     // signed-in user would otherwise reach every other user's job ids by URL.
@@ -440,13 +447,22 @@ describe("PipelineRunsPage", () => {
       mainSource.indexOf("<Route element={<AdminLayout />}>"),
     );
     expect(adminBlock.slice(0, adminBlock.indexOf("</Route>"))).toContain(
-      '"/pipeline-runs"',
+      'path="pipeline-runs"',
     );
   });
 
-  it("is in the nav as an admin-only tab", () => {
-    const item = NAV_ITEMS.find((navItem) => navItem.path === "/pipeline-runs");
-    expect(item?.label).toBe("Pipeline Runs");
-    expect(item?.requiresAdmin).toBe(true);
+  it("is an admin-section tool behind the admin-only nav tab", () => {
+    // The top-level "Pipeline Runs" tab folded into the Admin section tab
+    // (NEO-155): the door in the nav is Admin, the tool is a SECTIONS entry.
+    expect(NAV_ITEMS.some((navItem) => navItem.path === "/pipeline-runs")).toBe(
+      false,
+    );
+    expect(NAV_ITEMS.find((navItem) => navItem.path === "/admin")?.requiresAdmin).toBe(
+      true,
+    );
+    const section = SECTIONS.find(
+      (s) => s.path === "/admin/pipeline-runs",
+    );
+    expect(section?.label).toBe("Pipeline Runs");
   });
 });

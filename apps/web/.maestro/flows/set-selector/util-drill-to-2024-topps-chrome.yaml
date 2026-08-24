@@ -31,7 +31,7 @@ tags:
 # ── NAVIGATE ─────────────────────────────────────────────────────────────────
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 20000
 
 # ── SPORT ─────────────────────────────────────────────────────────────────────

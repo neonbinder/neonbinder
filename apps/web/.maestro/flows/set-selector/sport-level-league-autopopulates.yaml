@@ -64,7 +64,7 @@ tags:
 # Step 1 — open the app at the signed-in /set-selector route.
 - launchApp
 - extendedWaitUntil:
-    visible: "Set Selector"
+    visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
 # Step 2 — drill to the real "Baseball" sport ONLY (util stops at the deepest
