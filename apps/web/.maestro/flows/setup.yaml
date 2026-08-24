@@ -539,11 +539,37 @@ tags:
       id: "Search inserts"
 
 # ── FETCH THE INSERT CHECKLIST ───────────────────────────────────────────────
+# Same fold-clipping trap as the Base section above. On an empty checklist the
+# "Fetch from Marketplaces" button is the LAST thing in the Cards card, so a
+# scroll aimed straight at it can stop with the button only fractionally on
+# screen and the tap then lands BELOW the 1024×629 viewport (CI run 32050269778:
+# button at y=620–652, 15% visible → dropped tap).
+#
+# Use the Base section's pattern:
+#   1. Settle anchor proving the Future Stars panels have mounted. Base uses
+#      "Re-map Base", which is base-specific; the insert equivalent is the set
+#      attributes summary bar, which is keyed to the DEEPEST selection and so
+#      names the leaf we just picked — it is the panel rendered immediately
+#      above the Cards card. Scrolled to rather than waited on, because after
+#      picking from the inserts column it sits below the fold.
+#   2. scrollUntilVisible "Add Card" (centerElement + vis:50) — centering the
+#      Cards header row drags the Fetch button well above the fold.
+#   3. assertVisible "Fetch from Marketplaces|Refresh" — confirm it's in-view.
+#   4. tapOn it.
 - scrollUntilVisible:
     element:
-      text: ".*Fetch from Marketplaces.*|Refresh"
+      text: ".*Attributes for Future Stars.*"
+    centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 30000
+- assertVisible:
+    text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
 # NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
@@ -705,11 +731,23 @@ tags:
       id: "Search parallels"
 
 # ── FETCH THE PARALLEL CHECKLIST ─────────────────────────────────────────────
+# Same fold-clipping trap and the same fix as the Insert section above — see the
+# comment there. The settle anchor is the set attributes summary bar for the
+# parallel we just picked; it renders immediately above the Cards card.
 - scrollUntilVisible:
     element:
-      text: ".*Fetch from Marketplaces.*|Refresh"
+      text: ".*Attributes for Gold Wave Refractors.*"
+    centerElement: true
     visibilityPercentage: 50
-    timeout: 15000
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 30000
+- assertVisible:
+    text: ".*Fetch from Marketplaces.*|Refresh"
 - tapOn:
     text: ".*Fetch from Marketplaces.*|^Refresh$"
 # NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
