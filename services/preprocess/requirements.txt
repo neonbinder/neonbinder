@@ -27,5 +27,5 @@ numpy==2.5.2
 # deliberately omits it — that's what the rembg[cpu] extra would pin, but we
 # pin it explicitly to match this file's style). Weights are baked into the
 # image at build time via U2NET_HOME, same rationale as SAM above.
-rembg==2.0.81
+rembg==2.0.78
 onnxruntime==1.29.0
