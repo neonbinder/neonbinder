@@ -1,5 +1,5 @@
 fastapi==0.141.1
-uvicorn[standard]==0.52.1
+uvicorn[standard]==0.52.4
 python-multipart==0.0.32
 pydantic==2.13.4
 google-cloud-vision==3.15.0
@@ -9,7 +9,7 @@ google-cloud-vision==3.15.0
 # google-auth/google-api-core with the Vision client above, so it adds only the
 # storage surface itself.
 google-cloud-storage==3.13.1
-anthropic==0.120.2
+anthropic==0.122.0
 Pillow==12.3.0
 # SAM crop fallback (slice 2b). CPU-only torch keeps the image size sane;
 # transformers pulls the SAM model + processor; opencv-headless handles
@@ -19,7 +19,7 @@ torch==2.5.1+cpu
 transformers==4.47.1
 accelerate==1.2.1
 opencv-python-headless==4.10.0.84
-numpy==2.5.1
+numpy==2.5.2
 # Tiered crop's BiRefNet model (NEO-161) — hot path, not a rare fallback:
 # tiered runs BiRefNet on virtually every image (fallback on classical QC
 # failure, verification on classical success). rembg wraps the BiRefNet ONNX
@@ -28,4 +28,4 @@ numpy==2.5.1
 # pin it explicitly to match this file's style). Weights are baked into the
 # image at build time via U2NET_HOME, same rationale as SAM above.
 rembg==2.0.78
-onnxruntime==1.28.0
+onnxruntime==1.29.0

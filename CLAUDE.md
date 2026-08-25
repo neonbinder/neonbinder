@@ -41,6 +41,100 @@ One repository, one git history. Standard model:
 
 End commit messages with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
+### The PR loop — cheap gates locally, E2E in CI, local for debugging
+
+**Do not use CI as your first check that the code compiles.** Do not use your
+laptop to run the full E2E suite. Those are different tools and the split is
+about wall-clock, not virtue.
+
+The economics, measured on 2026-08-25:
+
+| | Workers | E2E wall-clock | Actions cost | Vercel cost |
+|---|---|---|---|---|
+| CI | 8 shards | ~17–25 min | **$0** — public repo | 1 preview build |
+| Local | 1 | ~90 min | $0 | $0 |
+
+A dev laptop runs an individual flow at roughly CI's pace (median x1.08 over 18
+matched flows). CI is not faster per flow — it is faster because it runs eight
+at once. So **CI is the right place to discover E2E failures, and the laptop is
+the right place to fix them.**
+
+#### The loop
+
+1. Write the change.
+2. **Run the fast local gates.** These cost ~2 min for `apps/web`, ~30s for
+   `services/browser` — they are not the expensive part, and they catch most
+   breakage without a round trip.
+3. Push and open the PR. CI runs the full suite.
+4. On a red flow: **run that one flow locally**, with Vite pointed at the PR's
+   own preview stack (below).
+5. Push again **only once that flow passes locally.** This step is the actual
+   cost control — push-and-hope is what burns CI cycles, not the first push.
+6. Watch to green.
+7. Merge via the `pr-close` skill (merge → verify the prod deploy actually
+   reached READY → smoke → Linear → reclaim the worktree).
+
+#### The fast gates, by area
+
+| You changed | Run before pushing |
+|---|---|
+| `apps/web/**` | `npm run lint`, `npm run test:unit`, `npm run build`, `npx tsc -p convex/tsconfig.json --noEmit` |
+| `services/browser/**` | `npm run build && npm test` |
+| `services/preprocess/**` | `ruff check . && ruff format --check . && pytest tests/unit` |
+| Dependencies | see the `deps-batch` skill — gate each bump separately |
+
+**The one case that still wants the full local suite before pushing:** changes to
+`.maestro/**`, the maestro-runner action, or a pinned tool version. Those ARE the
+harness — a change there invalidates every other result, so a green CI run proves
+less than usual.
+
+#### Debugging a red flow against the PR's own services
+
+Local E2E normally points at **shared dev**, which means it cannot exercise the
+PR's `services/browser` or `services/preprocess` code at all. To close that gap,
+point Vite at the PR's Convex preview instead of dev:
+
+```bash
+# in apps/web/.env.local
+VITE_CONVEX_URL=<the PR's Convex preview URL>
+```
+
+`wire-browser-url` and `wire-preprocess-url` have already pointed that preview's
+`NEONBINDER_BROWSER_URL` / `NEONBINDER_PREPROCESS_URL` at the PR's own `pr-<N>`
+Cloud Run revisions, so this gives you local Vite → PR Convex → PR browser +
+preprocess: the whole stack of the change, debuggable locally.
+
+Then run the single flow: `npm run test:e2e:pick -- <flow>` (it resolves the
+prerequisite closure for you).
+
+> **Unverified as of 2026-08-25.** The preview's `TESTING_ENDPOINT_SECRET` must
+> match what `/testing/sign-in` expects, and protected previews may need
+> `VERCEL_AUTOMATION_BYPASS_SECRET`. Prove this on one PR before relying on it.
+
+#### Check `node --version` at the moment the gate runs
+
+Not before you `cd`. `node` here is a shell function that re-runs `load-nvmrc` on
+every invocation, so it re-reads `.nvmrc` and silently overrides an exported
+PATH. Wrong Node produces failures that look exactly like your change broke
+something — on 2026-08-24 a stale 22.5.1 (below the 22.12 `require(ESM)` floor)
+turned a clean `services/browser` suite into 175 pass / 63 fail.
+
+#### When something genuinely cannot run locally
+
+Some things cannot, and that is fine — what is not fine is silence. Say so
+**explicitly in the PR body**: what you could not run, why, and what covers it
+instead. Two live examples:
+
+* `services/preprocess` pytest — `requirements-dev.txt` pulls `torch==2.5.1+cpu`,
+  which publishes no macOS wheel, so the deps will not install on an arm64 Mac.
+  CI's `preprocess-test` job is the cover.
+* Anything needing the PR's own deployed services, if you have not wired the
+  preview stack above.
+
+An unrunnable test is a disclosure. An unrun one is a defect.
+
+If the local environment is what is blocking you, fix that rather than skipping
+— see NEO-181, and `.maestro/README.md` for the pinned toolchain.
 ## Development Commands
 
 ### apps/web (main development)
