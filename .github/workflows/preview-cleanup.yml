@@ -259,10 +259,19 @@ jobs:
 
           # Step 1: find the Vercel preview deployment record for this PR's SHA.
           # Vercel keeps preview deployments live after PR close, so the GitHub
-          # Deployments API record (creator=vercel[bot]) is still queryable.
+          # Deployments API record is still queryable.
+          #
+          # NEO-162 widened the creator filter. Previews used to be built by the
+          # Vercel git integration, which recorded them as vercel[bot]; they are
+          # now built by pr-pipeline.yml's `web-preview` job, which records them
+          # as github-actions[bot]. Both are accepted rather than just the new
+          # one, because PRs opened BEFORE that change still carry vercel[bot]
+          # records and their Convex previews must still be reclaimable — a
+          # filter that only matched the new shape would strand exactly the
+          # backlog this workflow exists to drain.
           deployment_id=$(gh api \
             "repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=100" \
-            --jq '[.[] | select(.creator.login == "vercel[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty' \
+            --jq '[.[] | select(.creator.login == "vercel[bot]" or .creator.login == "github-actions[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty' \
             || true)
           if [ -z "$deployment_id" ]; then
             echo "No Vercel deployment record for SHA=$SHA — no Convex preview to clean up"

@@ -5,10 +5,8 @@
   "installCommand": "npm ci",
   "outputDirectory": "dist",
   "git": {
-    "_comment": "NEO-143: main is released by .github/workflows/release.yml, NOT by the Vercel git integration. The integration deployed on merge in parallel with the Cloud Run lanes, so a build whose Convex code needed the new browser service could go live minutes before it — that is what broke production on the NEO-141 merge. release.yml promotes the services first, then runs vercel pull/build/deploy --skip-domain, smokes the staged build, and only then promotes. Re-enabling this races that pipeline. PR previews are unaffected: they build from PR branches, not main.",
-    "deploymentEnabled": {
-      "main": false
-    }
+    "_comment": "NEO-143 + NEO-162: NOTHING is deployed by the Vercel git integration — not main, not PR branches. Re-enabling any of it races a pipeline that already owns the ordering. (1) main is released by .github/workflows/release.yml. The integration used to deploy on merge in parallel with the Cloud Run lanes, so a build whose Convex code needed the new browser service could go live minutes before it — that is what broke production on the NEO-141 merge. release.yml promotes the services first, then runs vercel pull/deploy --skip-domain, smokes the staged build, and only then promotes. (2) NEO-162 extended the same treatment to PR previews, which are now created by the `web-preview` job in pr-pipeline.yml. The integration built a preview for EVERY PR including ones touching no web code, and Vercel could not tell — but pr-pipeline.yml's dorny/paths-filter already can, so the decision moved to the side that has the information. This is not merely a cost fix: three separate jobs used to poll the GitHub Deployments API for the vercel[bot] deployment, and they now read one job output instead, so they can no longer disagree about which preview a PR has.",
+    "deploymentEnabled": false
   },
   "rewrites": [
     {

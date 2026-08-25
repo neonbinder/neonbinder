@@ -3,7 +3,7 @@ name: PR Pipeline
 # Top-level per-PR deployment orchestration (NEO-18). The single pull_request
 # entry point that ties the web E2E to the PR's OWN browser code:
 #
-#   changes ──► wire-browser-url ──► e2e   (reusable .github/workflows/e2e.yml)
+#   changes ──► web-preview ──► wire-browser-url ──► e2e   (reusable e2e.yml)
 #
 # When a PR changes services/browser, Browser CI (browser.yml) independently
 # builds + deploys a `pr-<N>` tagged, NO-traffic Cloud Run preview on the dev
@@ -31,13 +31,16 @@ concurrency:
   cancel-in-progress: true
 
 # Superset of what the reusable e2e.yml needs (a called workflow's GITHUB_TOKEN
-# can't exceed the caller's): deployments:read to resolve the Vercel preview,
-# checks:write + pull-requests:write for the E2E "Maestro E2E" check + sticky
-# comment. The wire-browser-url job adds id-token:write at the job level (for
-# WIF) without granting it to the E2E jobs.
+# can't exceed the caller's): checks:write + pull-requests:write for the E2E
+# "Maestro E2E" check + sticky comment. The wire-* jobs add id-token:write at the
+# job level (for WIF), and web-preview adds deployments:write (for the preview's
+# Deployment record), without granting either to the E2E jobs.
+#
+# NEO-162 dropped the workflow-level deployments:read that used to be here: with
+# previews built rather than discovered, nothing reads the Deployments API any
+# more, and the one job that WRITES to it asks for that scope itself.
 permissions:
   contents: read
-  deployments: read
   checks: write
   pull-requests: write
 
@@ -206,6 +209,171 @@ jobs:
           decide
           echo "deps_only=${verdict}" >> "$GITHUB_OUTPUT"
 
+  # Create the PR's Vercel preview (NEO-162).
+  #
+  # WHY THIS JOB EXISTS AT ALL. Until NEO-162 the Vercel git integration built a
+  # preview for every PR, and three separate jobs (this pipeline's two wiring
+  # jobs plus e2e.yml's setup) each polled the GitHub Deployments API for the
+  # resulting vercel[bot] deployment. That was wrong in two ways at once:
+  #
+  #  1. COST. Vercel built even when the PR touched no web code. NEO-162 opened
+  #     on exactly that — a `services/preprocess`-only PR (#164) whose web jobs
+  #     all correctly skipped while Vercel built anyway. GitHub Actions already
+  #     knew the change was irrelevant to the web app (`changes` below); Vercel
+  #     had no way to know. Moving the trigger here puts the decision on the side
+  #     that has the information.
+  #  2. AGREEMENT. Three copies of the same poll could each reach a different
+  #     answer, and the failure mode was a five-minute timeout followed by a red
+  #     required check. They now read one job output, so they cannot disagree.
+  #
+  # THE TRAP THIS JOB IS SHAPED AROUND — the preview is NOT just a preview.
+  # `apps/web/vercel.json`'s buildCommand is `npx convex deploy ... --cmd 'npm run
+  # build'`, so building the preview is ALSO what creates the per-PR Convex
+  # preview deployment. Both wiring jobs then set env vars on that Convex
+  # deployment, and E2E reads its `.convex.site` URL out of the built page. So
+  # "skip the preview" is never only a build saving — it removes the substrate
+  # the entire E2E suite stands on. That is why the condition below is
+  # `deps_only`, matching the `e2e` job EXACTLY rather than the narrower
+  # `changes.outputs.web`: E2E deliberately runs on preprocess- and browser-only
+  # PRs, and every one of those needs a preview. If you ever want a tighter skip,
+  # the two conditions have to move together — see the note on `e2e`.
+  #
+  # Hosted build, not `vercel build`. The CLI refuses a LOCAL build for a project
+  # pinned to Node 24.x ("Found invalid Node.js Version: 24.x"), while Vercel's
+  # hosted builder supports it — the same constraint release.yml hit and
+  # documents at run 31653173626. It also keeps CONVEX_DEPLOY_KEY on Vercel's
+  # side instead of pulling it onto the runner.
+  web-preview:
+    name: Build the PR's Vercel preview
+    needs: changes
+    if: |
+      github.event_name == 'pull_request'
+      && needs.changes.outputs.deps_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # deployments:write is for the GitHub Deployment record this job creates at
+    # the end — see that step for why it is not bookkeeping.
+    permissions:
+      contents: read
+      deployments: write
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    # NO working-directory, and no `defaults.run.working-directory` either. The
+    # Vercel project's own Root Directory is already `apps/web` and the CLI
+    # composes that onto the cwd — running from apps/web makes it look for
+    # `apps/web/apps/web` and fail (release.yml, run 31655145099). setup-node's
+    # inputs below keep their `apps/web/` prefixes because ACTION INPUTS resolve
+    # from the workspace root regardless.
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Vercel CLI
+        run: npm i -g vercel@48.2.0
+
+      # Same preflight release.yml learned the hard way (run 31642167681): a bad
+      # `vercel pull` fails late and confusingly. Check the credentials resolve
+      # BEFORE spending a build on them.
+      - name: Preflight Vercel credentials
+        run: |
+          set -euo pipefail
+          if [ -z "${VERCEL_TOKEN:-}" ] || [ -z "${VERCEL_ORG_ID:-}" ] || [ -z "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "::error::VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID must all be set as repo secrets."
+            exit 1
+          fi
+          vercel whoami --token="$VERCEL_TOKEN"
+          vercel pull --yes --environment=preview \
+            --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN"
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+
+      # THE `--meta` FLAGS ARE LOAD-BEARING — do not drop them as noise.
+      #
+      # Convex names its preview deployment after the git branch, and it reads
+      # that from the git metadata Vercel attaches to the deployment. The git
+      # integration used to supply it for free. A CLI deploy does not: this job
+      # runs on `actions/checkout`'s DETACHED HEAD, so branch inference from the
+      # local repo cannot be relied on. Passing it explicitly is what keeps a
+      # PR's Convex preview stable across reruns instead of forking a new one —
+      # which also keeps NEO-184 (branch-reused previews missing env defaults)
+      # from getting quietly worse.
+      #
+      # No `--prod`, so this is a preview deployment and picks up preview env.
+      - name: Deploy preview (hosted build; creates the Convex preview)
+        id: deploy
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          URL="$(vercel deploy --token="$VERCEL_TOKEN" \
+            --meta githubCommitRef="$HEAD_REF" \
+            --meta githubCommitSha="$HEAD_SHA" \
+            --meta githubOrg="${GITHUB_REPOSITORY%%/*}" \
+            --meta githubRepo="${GITHUB_REPOSITORY##*/}")"
+          if [ -z "$URL" ]; then
+            echo "::error::vercel deploy returned no URL"; exit 1
+          fi
+          echo "Preview deployment: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      # THIS IS NOT BOOKKEEPING — it is what keeps Convex previews from leaking.
+      #
+      # preview-cleanup.yml runs on PR close and deletes the PR's Convex preview
+      # deployment. It finds it by looking up the GitHub Deployment record for
+      # the head SHA, reading `environment_url` off its success status, and
+      # scraping the preview's `x-convex-url` meta tag. That record used to be
+      # created by the Vercel git integration; NEO-162 turned the integration
+      # off, so if this job did not recreate it, cleanup would find nothing —
+      # and its "no deployment record ⇒ nothing to clean up" guard exits 0. The
+      # leak would have been SILENT and permanent.
+      #
+      # So: taking over preview creation means taking over the record too. The
+      # shape is deliberately identical to what vercel[bot] produced (a
+      # deployment on the head SHA plus a success status carrying
+      # `environment_url`), which is why preview-cleanup.yml needed only its
+      # creator filter widened rather than a rewrite.
+      #
+      # required_contexts must be [] or GitHub refuses to create a deployment
+      # whose commit has pending checks — which, mid-pipeline, is always.
+      - name: Record the preview as a GitHub Deployment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          URL: ${{ steps.deploy.outputs.url }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments" \
+            --method POST --input - --jq '.id' <<JSON
+          {
+            "ref": "$SHA",
+            "environment": "preview",
+            "description": "Vercel preview built by pr-pipeline web-preview (NEO-162)",
+            "auto_merge": false,
+            "required_contexts": [],
+            "transient_environment": true
+          }
+          JSON
+          )
+          if [ -z "$deployment_id" ]; then
+            echo "::error::failed to create a GitHub Deployment record — preview-cleanup would leak this PR's Convex preview."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
+            --method POST \
+            -f state=success \
+            -f environment_url="$URL" \
+            -f description="Preview ready" >/dev/null
+          echo "Recorded GitHub Deployment $deployment_id → $URL"
+
   # Point the Convex preview's NEONBINDER_BROWSER_URL at the PR's own pr-<N>
   # browser preview, so the E2E suite (invoked next) hits the PR's browser code.
   # Skipped for web-only PRs and for workflow_dispatch (no PR ⇒ no pr-<N>
@@ -224,18 +392,18 @@ jobs:
   # makes those PRs safe to merge at all. Only the unused Convex wiring goes.
   wire-browser-url:
     name: Wire NEONBINDER_BROWSER_URL → pr-<N> browser preview
-    needs: changes
+    needs: [changes, web-preview]
     if: |
       github.event_name == 'pull_request'
       && needs.changes.outputs.browser == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Job-scoped perms: id-token (WIF for gcloud), deployments (resolve Vercel
-    # preview via the API), contents (checkout). Does NOT need checks/PR-write.
+    # Job-scoped perms: id-token (WIF for gcloud), contents (checkout). Does NOT
+    # need checks/PR-write, and no longer needs deployments:read — NEO-162
+    # replaced the Deployments API poll with a `needs:` on web-preview.
     permissions:
       contents: read
-      deployments: read
       id-token: write
     env:
       PR: ${{ github.event.pull_request.number }}
@@ -269,36 +437,25 @@ jobs:
           echo "host=$host" >> "$GITHUB_OUTPUT"
           echo "Browser base host: $host"
 
-      # Resolve this PR's Vercel preview (proves the Convex preview exists). Same
-      # approach as e2e.yml's setup: poll the GitHub Deployments API for the
-      # vercel[bot] deployment on this SHA, then its success status URL.
-      - name: Resolve Vercel preview URL
+      # The PR's preview, from the one job that builds it (NEO-162).
+      #
+      # This was a 60-attempt poll of the GitHub Deployments API looking for a
+      # vercel[bot] deployment on this SHA — one of three byte-identical copies
+      # across this file and e2e.yml. `web-preview` is now a `needs:` of this
+      # job, so the URL is simply handed over: the deployment is GUARANTEED to
+      # exist rather than waited for, and the three former copies can no longer
+      # reach different answers about which preview this PR has.
+      - name: Adopt the PR's Vercel preview URL
         id: vercel
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.event.pull_request.head.sha }}
+          URL: ${{ needs.web-preview.outputs.url }}
         run: |
-          for attempt in $(seq 1 60); do
-            deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=100" \
-              --jq '[.[] | select(.creator.login == "vercel[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty')
-            if [ -n "$deployment_id" ]; then
-              url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
-                --jq '[.[] | select(.state == "success")] | .[0] | (.environment_url // .target_url // empty)')
-              if [ -n "$url" ]; then
-                echo "Vercel preview URL: $url"
-                echo "url=$url" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              failed=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
-                --jq '[.[] | select(.state == "failure" or .state == "error")] | length')
-              if [ "${failed:-0}" -gt 0 ]; then
-                echo "::error::Vercel deployment ${deployment_id} reported failure/error — cannot wire browser URL."; exit 1
-              fi
-            fi
-            echo "attempt $attempt/60: Vercel deployment not ready for $SHA — retry in 5s"
-            sleep 5
-          done
-          echo "::error::Timed out (5 min) waiting for a successful Vercel deployment on $SHA."; exit 1
+          set -euo pipefail
+          if [ -z "${URL:-}" ]; then
+            echo "::error::web-preview produced no URL — cannot wire browser URL."; exit 1
+          fi
+          echo "Vercel preview URL: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       # Extract the Convex deployment NAME (slug) from the preview's x-convex-url
       # meta (Vite injects VITE_CONVEX_URL at build). The slug is the
@@ -398,7 +555,7 @@ jobs:
   # any monorepo workflow, including this one, may assume it.
   wire-preprocess-url:
     name: Wire NEONBINDER_PREPROCESS_URL → pr-<N> preprocess preview(s)
-    needs: changes
+    needs: [changes, web-preview]
     if: |
       github.event_name == 'pull_request'
       && needs.changes.outputs.preprocess == 'true'
@@ -409,11 +566,11 @@ jobs:
     # fast per-PR revision deploys only AFTER deploy-preview — so this parallel
     # job must be able to wait ~25-30 min for both pr-<N> revisions to come up.
     timeout-minutes: 45
-    # Job-scoped perms: id-token (WIF), deployments (resolve Vercel preview),
-    # contents (checkout). Does NOT need checks/PR-write.
+    # Job-scoped perms: id-token (WIF), contents (checkout). Does NOT need
+    # checks/PR-write, and no longer needs deployments:read — NEO-162 replaced
+    # the Deployments API poll with a `needs:` on web-preview.
     permissions:
       contents: read
-      deployments: read
       id-token: write
     env:
       PR: ${{ github.event.pull_request.number }}
@@ -466,35 +623,19 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Resolve this PR's Vercel preview (proves the Convex preview exists).
-      # Exact copy of wire-browser-url's equivalent step.
-      - name: Resolve Vercel preview URL
+      # The PR's preview, handed over by `web-preview` (NEO-162). Same shape as
+      # wire-browser-url's equivalent step — see the reasoning there.
+      - name: Adopt the PR's Vercel preview URL
         id: vercel
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.event.pull_request.head.sha }}
+          URL: ${{ needs.web-preview.outputs.url }}
         run: |
-          for attempt in $(seq 1 60); do
-            deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=100" \
-              --jq '[.[] | select(.creator.login == "vercel[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty')
-            if [ -n "$deployment_id" ]; then
-              url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
-                --jq '[.[] | select(.state == "success")] | .[0] | (.environment_url // .target_url // empty)')
-              if [ -n "$url" ]; then
-                echo "Vercel preview URL: $url"
-                echo "url=$url" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              failed=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
-                --jq '[.[] | select(.state == "failure" or .state == "error")] | length')
-              if [ "${failed:-0}" -gt 0 ]; then
-                echo "::error::Vercel deployment ${deployment_id} reported failure/error — cannot wire preprocess URL."; exit 1
-              fi
-            fi
-            echo "attempt $attempt/60: Vercel deployment not ready for $SHA — retry in 5s"
-            sleep 5
-          done
-          echo "::error::Timed out (5 min) waiting for a successful Vercel deployment on $SHA."; exit 1
+          set -euo pipefail
+          if [ -z "${URL:-}" ]; then
+            echo "::error::web-preview produced no URL — cannot wire preprocess URL."; exit 1
+          fi
+          echo "Vercel preview URL: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       # Extract the Convex deployment NAME (slug) from the preview's
       # x-convex-url meta. Exact copy of wire-browser-url's equivalent step.
@@ -615,16 +756,26 @@ jobs:
   #
   # Also skipped for dependency-manifest-only PRs (NEO-87). That skip is the ONE
   # case ci-gate treats as acceptable — every other skip still fails the gate.
+  #
+  # NEO-162: `web-preview` is now a hard prerequisite, and its `if:` is
+  # deliberately the SAME `deps_only` condition this job uses. That pairing is
+  # load-bearing — the preview build is what creates the Convex preview this
+  # suite runs against, so a PR shape that runs E2E without building a preview
+  # would fail in `setup` with nothing useful to say. If either condition is ever
+  # narrowed, BOTH must narrow together.
   e2e:
     name: E2E
-    needs: [changes, wire-browser-url, wire-preprocess-url]
+    needs: [changes, web-preview, wire-browser-url, wire-preprocess-url]
     if: |
       always()
       && needs.changes.result == 'success'
       && needs.changes.outputs.deps_only != 'true'
+      && needs.web-preview.result == 'success'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
       && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
     uses: ./.github/workflows/e2e.yml
+    with:
+      preview_url: ${{ needs.web-preview.outputs.url }}
     secrets: inherit
 
   # --- Pre-merge area CI -----------------------------------------------------
@@ -761,7 +912,7 @@ jobs:
   # touched nothing but dependency manifests. Every other skip is still red.
   ci-gate:
     name: CI Gate
-    needs: [changes, web-lint, web-unit, browser-test, preprocess-test, wire-browser-url, wire-preprocess-url, e2e]
+    needs: [changes, web-preview, web-lint, web-unit, browser-test, preprocess-test, wire-browser-url, wire-preprocess-url, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -777,6 +928,7 @@ jobs:
           R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_WIRE_PREPROCESS: ${{ needs.wire-preprocess-url.result }}
+          R_WEB_PREVIEW: ${{ needs.web-preview.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
         run: |
@@ -796,7 +948,11 @@ jobs:
             fi
           fi
           # area + wiring jobs: success OR skipped (out-of-area) OK; else fail
-          for kv in "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
+          # web-preview joins this list rather than getting a rule of its own
+          # (NEO-162): it is `skipped` exactly when deps_only skips E2E, and any
+          # OTHER reason it fails to succeed already reds the gate through the
+          # e2e rule above, since e2e `needs:` it.
+          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
             r="${kv#*=}"
             case "$r" in
               success|skipped) ;;

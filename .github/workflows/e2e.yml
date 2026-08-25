@@ -9,7 +9,27 @@ name: E2E Tests
 # standalone runs (which exercise the canonical dev browser default).
 on:
   workflow_call:
+    inputs:
+      preview_url:
+        description: >-
+          The PR's Vercel preview URL. Supplied by pr-pipeline.yml's
+          `web-preview` job (NEO-162), which BUILDS the preview rather than
+          waiting for Vercel's git integration to — the integration is disabled
+          for every branch in apps/web/vercel.json. Required: without a preview
+          there is no per-PR Convex deployment either, so there is nothing for
+          this suite to run against.
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      preview_url:
+        description: >-
+          Vercel preview URL to run against. Must be passed explicitly for a
+          standalone run — with the git integration disabled there is no
+          vercel[bot] deployment to discover. Get one with
+          `vercel deploy --token=…` from the branch you want to exercise.
+        required: true
+        type: string
 # Cancel any in-flight run on this PR/branch when a newer commit arrives.
 # Two concurrent runs share the same Convex dev deployment, browser service,
 # and test users — concurrent /login/bsc calls for the same BSC account
@@ -24,9 +44,6 @@ concurrency:
 # and pull-requests:write to add its summary comment. Repo default is read-only.
 permissions:
   contents: read
-  # PRIVATE repo: GITHUB_TOKEN needs explicit deployments:read to resolve the
-  # Vercel preview via the Deployments API (was implicit on the old public repo).
-  deployments: read
   checks: write
   pull-requests: write
 
@@ -64,41 +81,32 @@ jobs:
       url: ${{ steps.vercel-preview.outputs.url }}
       convex_site: ${{ steps.convex.outputs.convex_site }}
     steps:
-      - name: Resolve Vercel preview URL
+      # NEO-162: this was a 60-attempt poll of the GitHub Deployments API,
+      # hunting for the vercel[bot] deployment on this SHA. The preview is now
+      # BUILT by pr-pipeline.yml's `web-preview` job and handed straight down, so
+      # the URL cannot be missing, cannot belong to a different commit, and
+      # cannot cost five minutes of polling before failing.
+      #
+      # The old poll's real hazard was that its absence read as a timeout rather
+      # than as a cause: a PR shape that produced no preview spent 5 minutes
+      # looking for one and then reported "timed out", which says nothing about
+      # why. A `needs:` edge says it at graph level instead.
+      #
+      # Readiness is still the NEXT step's job — `vercel deploy` returns once the
+      # deployment is READY, but Deployment Protection means the runner still has
+      # to prove itself with the bypass header before the URL answers 200.
+      - name: Adopt the Vercel preview URL
         id: vercel-preview
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        # Poll the GitHub Deployments API for the Vercel-created preview URL.
-        # Skips the HTTP 200-poll that patrickedqvist/wait-for-vercel-preview
-        # performs (~5 min of 401s every run under Vercel Deployment
-        # Protection, since the Actions runner has no SSO cookie and the
-        # action can't inject x-vercel-protection-bypass). Readiness is
-        # handled by the next step using the bypass header.
+          URL: ${{ inputs.preview_url }}
         run: |
-          for attempt in $(seq 1 60); do
-            deployment_id=$(gh api "repos/$GITHUB_REPOSITORY/deployments?sha=$SHA&per_page=100" \
-              --jq '[.[] | select(.creator.login == "vercel[bot]")] | sort_by(.created_at) | reverse | .[0].id // empty')
-            if [ -n "$deployment_id" ]; then
-              url=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
-                --jq '[.[] | select(.state == "success")] | .[0] | (.environment_url // .target_url // empty)')
-              if [ -n "$url" ]; then
-                echo "Vercel preview URL: $url"
-                echo "url=$url" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              failed=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$deployment_id/statuses" \
-                --jq '[.[] | select(.state == "failure" or .state == "error")] | length')
-              if [ "${failed:-0}" -gt 0 ]; then
-                echo "Vercel deployment ${deployment_id} reported failure/error state — aborting."
-                exit 1
-              fi
-            fi
-            echo "attempt $attempt/60: Vercel deployment not yet ready for $SHA — retrying in 5s"
-            sleep 5
-          done
-          echo "Timed out (5 min) waiting for a successful Vercel deployment on $SHA."
-          exit 1
+          set -euo pipefail
+          if [ -z "${URL:-}" ]; then
+            echo "::error::No preview_url supplied — the caller must build a preview first (pr-pipeline.yml's web-preview job)."
+            exit 1
+          fi
+          echo "Vercel preview URL: $URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
 
       - name: Wait for preview to respond (with bypass)
         env:
