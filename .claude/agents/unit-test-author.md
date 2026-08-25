@@ -155,8 +155,8 @@ Examples:
 Co-locate test files next to the code they test:
 ```
 convex/
-  myFunctions.ts
-  myFunctions.test.ts
+  <domain>.ts
+  <domain>.test.ts
   adapters/
     ebay.ts
     ebay.test.ts

@@ -15,7 +15,7 @@ You think about data at the schema level: table relationships, index coverage, q
 ## Project Context
 
 - **Schema source of truth:** `neonbinder_web/convex/schema.ts`
-- **Functions:** `neonbinder_web/convex/myFunctions.ts` (main), plus domain-specific files
+- **Functions:** `apps/web/convex/` — one domain-specific file per area; there is no catch-all module (`myFunctions.ts` was deleted in NEO-154)
 - **Auth helper:** `getCurrentUserId(ctx)` from `./auth`
 - **Dev command:** `npx convex dev` (hot reload)
 - **Deploy:** `npx convex deploy` (production)
@@ -152,7 +152,7 @@ When debugging slow queries:
 ## Workflow
 
 1. Always read `convex/schema.ts` first to understand the current state
-2. Review `convex/myFunctions.ts` and related files to understand query patterns
+2. Review the relevant `convex/<domain>.ts` files to understand query patterns
 3. Design schema changes with backward compatibility in mind
 4. If a migration is needed, plan the multi-step process explicitly
 5. Verify all existing queries still work with the new schema

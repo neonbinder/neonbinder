@@ -1,6 +1,6 @@
 "use node";
 
-import { action } from "../_generated/server";
+import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { BaseAdapter, CardAdapter, CardSearchParams, CardListingsResponse, CardListing } from "./base";
 import { api } from "../_generated/api";
@@ -109,7 +109,7 @@ interface EbayResponse {
 }
 
 // Convex action to search eBay
-export const searchEbay = action({
+export const searchEbay = internalAction({
   args: {
     cardName: v.string(),
     year: v.optional(v.number()),
@@ -152,7 +152,7 @@ export const searchEbay = action({
 });
 
 // Convex action to test eBay credentials
-export const testCredentials = action({
+export const testCredentials = internalAction({
   args: {},
   returns: v.object({
     success: v.boolean(),

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useQuery, useAction } from "convex/react";
+import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useParams, useLocation, Link } from "react-router";
 import { useSaleTotal } from "@/src/hooks/useSaleTotal";
@@ -116,16 +116,17 @@ function QrScannerModal({
   isOpen,
   onClose,
   onScan,
-  resolveRedirect,
 }: {
   isOpen: boolean;
   onClose: () => void;
   onScan: (amount: number) => void;
-  resolveRedirect: (args: { url: string }) => Promise<string>;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const scannerRef = useRef<QrScanner | null>(null);
-  const resolvingRef = useRef(false);
+  // Debounces the failure notice. The scanner re-decodes the same code many
+  // times a second, and without this the 2s message would re-arm on every
+  // frame and never clear while the code stayed in view.
+  const reportedRef = useRef(false);
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
@@ -133,9 +134,7 @@ function QrScannerModal({
 
     const scanner = new QrScanner(
       videoRef.current,
-      async (result) => {
-        if (resolvingRef.current) return;
-
+      (result) => {
         const directAmount = parseAmtFromUrl(result.data);
         if (directAmount !== null) {
           onScan(directAmount);
@@ -143,31 +142,27 @@ function QrScannerModal({
           return;
         }
 
-        // If it's a URL but no amt, try resolving the redirect
         try {
           new URL(result.data); // validate it's a URL
         } catch {
           return; // not a URL, ignore
         }
 
-        resolvingRef.current = true;
-        setStatus("Pulling card from the binder...");
-        try {
-          const finalUrl = await resolveRedirect({ url: result.data });
-          const amount = parseAmtFromUrl(finalUrl);
-          if (amount !== null) {
-            onScan(amount);
-            onClose();
-          } else {
-            setStatus("No amount found in QR code");
-            setTimeout(() => setStatus(null), 2000);
-          }
-        } catch {
-          setStatus("Failed to read QR code link");
-          setTimeout(() => setStatus(null), 2000);
-        } finally {
-          resolvingRef.current = false;
-        }
+        // A URL with no `amt` is as far as we go (NEO-154). This used to call
+        // a public, unauthenticated Convex action that fetched the URL and
+        // followed up to 10 redirects looking for an `amt` on the far side —
+        // a server-side request forgery primitive callable by anyone who could
+        // reach the deployment. It never fired for our OWN QRs: /print/qr
+        // encodes `amt` directly in the URL, so the branch above already
+        // handles those. It existed only for FOREIGN QRs hiding an amount
+        // behind a redirect, which is not a case we ship.
+        if (reportedRef.current) return;
+        reportedRef.current = true;
+        setStatus("No amount found in QR code");
+        setTimeout(() => {
+          setStatus(null);
+          reportedRef.current = false;
+        }, 2000);
       },
       {
         preferredCamera: "environment",
@@ -183,7 +178,7 @@ function QrScannerModal({
       scanner.destroy();
       scannerRef.current = null;
     };
-  }, [isOpen, onScan, onClose, resolveRedirect]);
+  }, [isOpen, onScan, onClose]);
 
   if (!isOpen) return null;
 
@@ -219,7 +214,6 @@ export default function SalePage() {
     username: username!,
   });
 
-  const resolveRedirect = useAction(api.resolveRedirect.resolveRedirect);
   const { saleTotal, addAmount, reset } = useSaleTotal(username!);
   const processedSearchRef = useRef<string | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -475,7 +469,6 @@ export default function SalePage() {
         isOpen={scannerOpen}
         onClose={closeScannerModal}
         onScan={handleScan}
-        resolveRedirect={resolveRedirect}
       />
     </div>
   );

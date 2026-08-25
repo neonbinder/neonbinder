@@ -192,7 +192,7 @@ All repositories should follow a **modular, domain-driven structure**, with pred
   /convex               # Convex backend (database, functions, auth)
     /adapters           # Marketplace adapters and integrations
     /schema.ts          # Database schema definitions
-    /myFunctions.ts      # Convex queries, mutations, actions
+    /<domain>.ts         # Convex queries, mutations, actions, one file per domain
     /auth.ts            # Authentication configuration
   /public               # Static assets (images, fonts, icons)
 ```
@@ -211,7 +211,7 @@ All repositories should follow a **modular, domain-driven structure**, with pred
     secret_manager.ts  # GCP Secret Manager integration
     types.ts           # Shared adapter types
   /schema.ts           # Convex schema definitions
-  /myFunctions.ts       # Queries, mutations, and actions
+  /<domain>.ts          # Queries, mutations, and actions, one file per domain
   /auth.ts             # Authentication setup (Clerk integration)
   /auth.config.ts      # Authentication configuration
   /http.ts             # HTTP endpoint handlers
@@ -225,7 +225,7 @@ All repositories should follow a **modular, domain-driven structure**, with pred
 - **Shared utilities** belong alongside the components/features that use them
 - **Global config** (styles, Sentry, PostHog) lives at the root level
 
-**Convex functions** should be organized by domain within `myFunctions.ts` or split into domain-specific files as the codebase grows. Use clear sections and comments to separate concerns.
+**Convex functions** are organized by domain, one file per domain (`selectorOptions.ts`, `placeholderPipeline.ts`, `credentials.ts`, …). There is no catch-all module — the old `myFunctions.ts` was deleted in NEO-154. Use clear sections and comments to separate concerns within a domain file.
 
 ### Working with Convex
 
@@ -250,7 +250,7 @@ export default defineSchema({
 });
 ```
 
-**Convex Functions** (`/convex/myFunctions.ts`)
+**Convex Functions** (`/convex/<domain>.ts`)
 - **Queries** (`query`) - Read data, can be called from client with `useQuery`
 - **Mutations** (`mutation`) - Write data, can be called from client with `useMutation`
 - **Actions** (`action`) - Call external APIs or complex operations, can be called from client with `useAction`
@@ -286,7 +286,7 @@ export const syncMarketplace = action({
     // Fetch from external API
     const data = await ctx.fetch("https://api.example.com/data");
     // Run a mutation with the result
-    await ctx.runMutation(api.myFunctions.processData, {
+    await ctx.runMutation(api.someDomain.processData, {
       data: await data.json(),
     });
   },
@@ -301,10 +301,10 @@ import { api } from "@/convex/_generated/api";
 
 function Component() {
   // Query example
-  const numbers = useQuery(api.myFunctions.listNumbers, { count: 10 });
+  const rows = useQuery(api.someDomain.listRows, { count: 10 });
   
   // Mutation example
-  const addNumber = useMutation(api.myFunctions.addNumber);
+  const addRow = useMutation(api.someDomain.addRow);
   
   const handleAdd = async () => {
     await addNumber({ value: 42 });

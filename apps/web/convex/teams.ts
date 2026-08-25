@@ -2,7 +2,7 @@ import { query, mutation, internalMutation, internalQuery, action } from "./_gen
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { getCurrentUserId, requireAdmin } from "./auth";
+import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import { normalizePlayerName } from "./players";
 
@@ -75,6 +75,7 @@ export const findByNameAndSport = query({
   },
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
     const normalized = normalizeTeamName(args.name);
     const matches = await ctx.db
       .query("teams")
@@ -91,6 +92,12 @@ export const findOrCreate = mutation({
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
+    // NEO-154: this was the one unauthenticated write primitive left after the
+    // myFunctions deletion — anyone who could reach the deployment URL could
+    // insert team rows. Its `players.findOrCreate` twin has always had this
+    // check; teams.ts simply never grew one.
+    await requireSignedIn(ctx);
+
     const normalized = normalizeTeamName(args.name);
     const matches = await ctx.db
       .query("teams")
@@ -279,6 +286,7 @@ export const list = query({
   },
   returns: v.array(teamDocValidator),
   handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
     const limit = args.limit ?? 100;
     if (args.sportId) {
       return await ctx.db
@@ -293,7 +301,10 @@ export const list = query({
 export const get = query({
   args: { id: v.id("teams") },
   returns: v.union(teamDocValidator, v.null()),
-  handler: async (ctx, args) => await ctx.db.get(args.id),
+  handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
+    return await ctx.db.get(args.id);
+  },
 });
 
 /**
@@ -306,6 +317,7 @@ export const getManyByIds = query({
   args: { ids: v.array(v.id("teams")) },
   returns: v.array(teamDocValidator),
   handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
     const rows = await Promise.all(args.ids.map((id) => ctx.db.get(id)));
     return rows.filter((r): r is NonNullable<typeof r> => r !== null);
   },

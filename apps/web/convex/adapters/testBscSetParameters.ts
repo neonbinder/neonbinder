@@ -1,9 +1,9 @@
-import { action } from "../_generated/server";
+import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { api } from "../_generated/api";
 
 // Test BSC set parameters
-export const testBscSetParameters = action({
+export const testBscSetParameters = internalAction({
   args: {
     partialParams: v.object({
       sport: v.optional(v.string()),

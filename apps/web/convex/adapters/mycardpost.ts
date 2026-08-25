@@ -1,6 +1,6 @@
 "use node";
 
-import { action } from "../_generated/server";
+import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
 import { BaseAdapter, CardAdapter, CardSearchParams, CardListingsResponse, CardListing } from "./base";
 
@@ -68,7 +68,7 @@ interface MyCardPostResponse {
 }
 
 // Convex action to search MyCardPost
-export const searchMyCardPost = action({
+export const searchMyCardPost = internalAction({
   args: {
     cardName: v.string(),
     year: v.optional(v.number()),

@@ -183,7 +183,7 @@ External Marketplaces (via Puppeteer / direct HTTP)
 - **Route layouts:** `apps/web/src/layouts/ProtectedLayout.tsx` (auth-gated), `apps/web/src/layouts/binder-layout.tsx` (binder shell)
 - **Page components:** under `apps/web/app/<route>/page.tsx` — imported into `src/main.tsx` and mapped to React Router `<Route>` elements (no Next.js file-system routing)
 - **Convex schema:** `apps/web/convex/schema.ts`
-- **Convex functions:** `apps/web/convex/myFunctions.ts`
+- **Convex functions:** `apps/web/convex/` — one file per domain (`selectorOptions.ts`, `placeholderPipeline.ts`, `credentials.ts`, …). There is no catch-all module; `myFunctions.ts` was deleted in NEO-154.
 - **Marketplace adapters (Convex side):** `apps/web/convex/adapters/`
 - **Browser automation:** `services/browser/src/index.ts` — Express server with adapter routes
 
@@ -219,8 +219,8 @@ export const myQuery = query({
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 
-const data = useQuery(api.myFunctions.myQuery, { id });
-const mutate = useMutation(api.myFunctions.myMutation);
+const data = useQuery(api.someDomain.myQuery, { id });
+const mutate = useMutation(api.someDomain.myMutation);
 ```
 
 > No `"use client"` directives — this is a Vite SPA, every component runs in the browser.

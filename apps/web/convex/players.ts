@@ -1,7 +1,7 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
-import { getCurrentUserId, requireAdmin } from "./auth";
+import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import type { Id } from "./_generated/dataModel";
 
 /**
@@ -99,6 +99,7 @@ export const findByNameAndSport = query({
   },
   returns: v.union(playerDocPublicValidator, v.null()),
   handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
     const normalized = normalizePlayerName(args.name);
     const matches = await ctx.db
       .query("players")
@@ -159,6 +160,7 @@ export const list = query({
   },
   returns: v.array(playerDocPublicValidator),
   handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
     const limit = args.limit ?? 100;
     const docs = args.sportId
       ? await ctx.db
@@ -244,6 +246,7 @@ export const get = query({
   args: { id: v.id("players") },
   returns: v.union(playerDocPublicValidator, v.null()),
   handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
     const doc = await ctx.db.get(args.id);
     return doc ? toPublicPlayer(doc) : null;
   },
