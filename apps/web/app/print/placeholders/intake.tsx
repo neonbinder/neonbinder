@@ -9,6 +9,7 @@ import { classifyIntake } from "@/lib/placeholders/intake-kind";
 import { deriveStage } from "@/lib/placeholders/intake-stage";
 import { Dropzone } from "./dropzone";
 import { PocketPage, type PocketPair } from "./pocket-page";
+import { ReviewGrid, type ReviewPair } from "./review-grid";
 import { ScanImage } from "./scan-image";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
 import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
@@ -140,6 +141,24 @@ export default function CardIntake() {
   );
   const [actionBusy, setActionBusy] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
+  /**
+   * Pairs the user has taken OUT of the print run, keyed `front-back`.
+   *
+   * Client-side by decision (2026-08-25): a print run is an ephemeral act, and
+   * persisting it costs a schema field, a mutation and an auth check to buy
+   * surviving a reload of the page you are actively printing from. Lifted to
+   * the page rather than kept in the grid because the pocket preview — and the
+   * print hand-off in the next stage — both have to read the same set.
+   */
+  const [excluded, setExcluded] = useState<ReadonlySet<string>>(new Set());
+  const toggleExcluded = useCallback((key: string) => {
+    setExcluded((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const job = useQuery(
     api.placeholderPipeline.getPlaceholderJob,
@@ -420,7 +439,16 @@ export default function CardIntake() {
           {/* THE SIGNATURE: the 9-pocket page this feature exists to fill,
               used as the progress display. See pocket-page.tsx. */}
           {pairs && pairs.length > 0 && (
-            <PocketPage jobId={jobId} pairs={pairs as PocketPair[]} />
+            <PocketPage
+              jobId={jobId}
+              // The preview is of what will PRINT, so a dropped pair leaves it
+              // and the pockets close up — which is also what the sheet does.
+              pairs={
+                (pairs as PocketPair[]).filter(
+                  (p) => !excluded.has(`${p.frontIndex}-${p.backIndex}`),
+                )
+              }
+            />
           )}
           {pairs?.length === 0 && stage !== "failed" && (
             <p className="text-sm text-slate-400">
@@ -444,10 +472,25 @@ export default function CardIntake() {
             </ul>
           )}
 
+          {/* Review only once the batch is finished: `unpairPlaceholderImages`
+              schedules a NO-FORCE re-pair, which the incremental guard skips on
+              a terminal job but runs on a live one — where it could re-create
+              the pair the user just split before they can fix it. See the
+              mutation's doc comment. */}
+          {stage === "done" && pairs && pairs.length > 0 && (
+            <ReviewGrid
+              jobId={jobId}
+              pairs={pairs as ReviewPair[]}
+              images={images ?? []}
+              excluded={excluded}
+              onToggleExcluded={toggleExcluded}
+            />
+          )}
+
           {/* Cards that did not pair. Never hidden: an unmatched front is the
               one thing the user has to act on, and a count alone would let it
               pass unnoticed. */}
-          {unmatched.length > 0 && (
+          {unmatched.length > 0 && stage !== "done" && (
             <div className="space-y-2">
               <h4 className="text-sm font-semibold text-slate-300">
                 Not matched yet ({unmatched.length})
