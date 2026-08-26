@@ -152,21 +152,38 @@ describe("CardIntake", () => {
     expect(screen.getByText("Nothing selected yet.")).not.toBeNull();
     // Nothing to upload yet, and the label says so rather than the button
     // silently doing nothing.
-    expect(
-      screen.getByRole("button", { name: "Start Upload" }).hasAttribute("disabled"),
-    ).toBe(true);
+    // There is no Start button — choosing files IS the upload. The guarantee
+    // worth pinning is that nothing has been sent before a choice is made.
+    expect(screen.queryByRole("button", { name: /Start Upload/ })).toBeNull();
+    expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
   });
 
-  it("counts the selected files", () => {
+  it("sends the files the moment they are chosen, with no Start step", async () => {
+    // The behaviour that replaced the button: a selection is a send. The old
+    // assertion here counted files sitting in a tray waiting for a click; that
+    // tray no longer exists, and its absence is the point.
     renderPage();
     selectFiles(["front.jpg", "back.jpg"]);
-    expect(screen.getByText("2 photos ready to upload.")).not.toBeNull();
+
+    await waitFor(() =>
+      expect(mocks.fns[REFS.start]).toHaveBeenCalled(),
+    );
+    expect(screen.queryByRole("button", { name: /Start Upload/ })).toBeNull();
+  });
+
+  it("refuses an impossible selection instead of sending it", async () => {
+    // With no button to intercept, the classification IS the guard: two zips
+    // would become two batches, so nothing is sent and the reason is shown.
+    renderPage();
+    selectFiles(["one.zip", "two.zip"]);
+
+    expect(screen.getByText(/one zip at a time/)).not.toBeNull();
+    expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
   });
 
   it("opens one session and uploads every file into it", async () => {
     renderPage();
     selectFiles(["front.jpg", "back.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
     await waitFor(() =>
       expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
@@ -191,7 +208,6 @@ describe("CardIntake", () => {
     });
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
     const notice = await screen.findByText(
       "Couldn't start a scan session — you already have 2 active batches (limit 2) — wait for one to finish.",
@@ -254,7 +270,6 @@ describe("CardIntake", () => {
 
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
     await waitFor(() =>
       expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull(),
     );
@@ -376,7 +391,6 @@ describe("CardIntake", () => {
     };
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
     const closeButton = await screen.findByRole("button", { name: /Finish/ });
     fireEvent.click(closeButton);
@@ -408,7 +422,6 @@ describe("CardIntake", () => {
     };
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Discard this batch" }));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });

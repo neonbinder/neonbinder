@@ -5,6 +5,7 @@ import type { FunctionReturnType } from "convex/server";
 import NeonButton from "@/components/modules/NeonButton";
 import { ConfirmDialog } from "@/components/modules/confirm-dialog";
 import { api } from "@/convex/_generated/api";
+import { classifyIntake } from "@/lib/placeholders/intake-kind";
 import { deriveStage } from "@/lib/placeholders/intake-stage";
 import { Dropzone } from "./dropzone";
 import { PocketPage, type PocketPair } from "./pocket-page";
@@ -153,14 +154,23 @@ export default function CardIntake() {
     jobId ? { jobId } : "skip",
   );
 
-  const handleUpload = useCallback(async () => {
-    if (files.length === 0 || uploading) return;
+  /**
+   * Selecting files IS starting the upload — there is no confirm step.
+   *
+   * Takes the list as an argument rather than reading `files` state: this runs
+   * straight out of the drop/change handler, where a `setFiles` in the same
+   * tick has not flushed yet, so reading state here would upload the PREVIOUS
+   * selection (nothing, the first time).
+   */
+  const handleUpload = useCallback(
+    async (chosen: File[]) => {
+    if (chosen.length === 0 || uploading) return;
     setNotice(null);
 
     try {
       // Label the run web-originated (NEO-170); the cardlister CLI passes
       // "scanner" on its own start path.
-      const outcome = await upload(files, { source: "web" });
+      const outcome = await upload(chosen, { source: "web" });
       if (!outcome.ok) {
         setNotice({
           tone: "error",
@@ -173,6 +183,9 @@ export default function CardIntake() {
       // survives a reload, and so the back button leaves the run rather than
       // silently keeping it.
       setSearchParams({ jobId: outcome.jobId });
+      // Clear the tray: these are on the server now, and leaving them listed
+      // as "ready to upload" invites a second, duplicate send.
+      setFiles([]);
       setNotice(
         outcome.failed === 0
           ? {
@@ -191,7 +204,9 @@ export default function CardIntake() {
         text: "Couldn't upload these scans. Please try again.",
       });
     }
-  }, [files, setSearchParams, upload, uploading]);
+    },
+    [setSearchParams, upload, uploading],
+  );
 
   const handleConfirmAction = useCallback(async () => {
     if (!jobId || !pendingAction) return;
@@ -304,24 +319,17 @@ export default function CardIntake() {
           scanner session IS — so the dropzone does not disappear once a run
           starts. It is hidden only when there is nothing left to add to. */}
       {stage !== "done" && stage !== "failed" && stage !== "finishing" && (
-        <form
-          className="space-y-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void handleUpload();
+        <Dropzone
+          files={files}
+          disabled={uploading}
+          onFiles={(chosen) => {
+            setFiles(chosen);
+            // A refusal (two zips, or a zip mixed with photos) must NOT upload;
+            // the dropzone renders the reason from the same classification.
+            if (classifyIntake(chosen).kind === "invalid") return;
+            void handleUpload(chosen);
           }}
-        >
-          <Dropzone files={files} onFiles={setFiles} disabled={uploading} />
-          <NeonButton type="submit" disabled={files.length === 0 || uploading}>
-            {/* Same condition as `disabled` (NEO-128) — the label is the only
-                evidence the E2E driver has that a control is inert. */}
-            {uploading
-              ? "Uploading..."
-              : jobId
-                ? "Add these to the batch"
-                : "Start Upload"}
-          </NeonButton>
-        </form>
+        />
       )}
 
       {jobId && (

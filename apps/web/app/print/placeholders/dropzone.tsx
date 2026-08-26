@@ -17,10 +17,15 @@ import { classifyIntake } from "@/lib/placeholders/intake-kind";
  * the drag handlers ride on the same element. `sr-only` rather than
  * `display:none`, because a hidden input is not focusable.
  *
- * ## Why the invalid case is shown here and not on submit
- * Choosing two zips is a mistake about the SELECTION, so it belongs beside the
- * selection while it can still be corrected — not behind a button press that
- * appears to have done nothing.
+ * ## There is no Start button, on purpose
+ * Choosing files IS starting the upload. A scanner session is a stream, and a
+ * confirm step between "I picked these" and "send them" is a form habit, not
+ * something the flow needs — it only adds a click and a state where the page
+ * looks ready but nothing is happening.
+ *
+ * That makes the invalid case load-bearing rather than cosmetic: two zips, or a
+ * zip mixed with photos, must be REFUSED here and reported beside the selection,
+ * because there is no button press left to intercept it.
  */
 export function Dropzone({
   files,
@@ -80,14 +85,19 @@ export function Dropzone({
         ].join(" ")}
       >
         <span className="text-base font-medium text-slate-200">
-          {dragging ? "Drop them here" : "Drag your card photos here"}
+          {dragging
+            ? "Drop them here"
+            : disabled
+              ? "Sending your photos…"
+              : "Drag your card photos here"}
         </span>
         <span className="text-sm text-slate-400">
           or <span className="text-neon-blue underline">browse your files</span>
         </span>
         <span className="text-xs text-slate-500">
-          JPEG or PNG, or a single zip. Front, back, front, back — scan order is
-          what pairs them.
+          JPEG or PNG, or a single zip. Uploading starts as soon as you choose —
+          keep them in scan order (front, back, front, back), because that order
+          is what pairs them.
         </span>
         <input
           id={inputId}
@@ -108,11 +118,13 @@ export function Dropzone({
       >
         {problem
           ? problem
-          : files.length === 0
-            ? "Nothing selected yet."
-            : intake?.kind === "zip"
-              ? `${files[0].name} — ready to upload.`
-              : `${files.length} photo${files.length === 1 ? "" : "s"} ready to upload.`}
+          : disabled
+            ? "Sending…"
+            : files.length === 0
+              ? "Nothing selected yet."
+              : intake?.kind === "zip"
+                ? `${files[0].name} sent.`
+                : `${files.length} photo${files.length === 1 ? "" : "s"} sent.`}
       </p>
     </div>
   );
