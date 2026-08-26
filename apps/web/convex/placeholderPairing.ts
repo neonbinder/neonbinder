@@ -398,32 +398,91 @@ export type PairingDiff = {
  * `resolverCalls` and `pairStatus` without a scheduler hop. It touches no `ctx`
  * and no job status — those stay with the two callers that APPLY the diff.
  */
+/**
+ * Is this pair final — locked out of this automatic run?
+ *
+ * The single definition of the lock, used by the diff that enforces it AND by
+ * the log counters that describe it. They were two expressions of the same rule
+ * once, and the log drifted the moment the rule grew a second clause.
+ *
+ *  - `manual`  the user forced it. Their decision outranks the matcher's,
+ *              unconditionally.
+ *  - `exact`   the identities agreed outright — a certainty, not a guess —
+ *              AND both halves are still done rows (see below).
+ *
+ * Everything else (`fuzzy`, `side-only`) stays fluid and is surfaced to the
+ * user as a POTENTIAL match, because those are exactly the ones a later image
+ * can legitimately improve.
+ */
+export function isLockedPair(
+  pair: {
+    mechanism: string;
+    confidence: string;
+    frontIndex: number;
+    backIndex: number;
+  },
+  doneIndexes: ReadonlySet<number>,
+): boolean {
+  // A user's decision outranks the matcher unconditionally.
+  if (pair.mechanism === "manual") return true;
+  if (pair.confidence !== "exact") return false;
+
+  // LIVENESS, and it is load-bearing. An exact pair is only locked while BOTH
+  // halves are still done rows. Without this a STALE exact pair — one whose
+  // partner was reset to "queued" by a restart, so it is no longer in `rows` —
+  // would be locked out of the diff and could never be deleted, leaving a pair
+  // pointing at an image that is not processed. The existing
+  // "a stored AUTO pair no longer desired is deleted" test caught exactly that.
+  return doneIndexes.has(pair.frontIndex) && doneIndexes.has(pair.backIndex);
+}
+
 export function computePairingDiff(
   rows: PairingImageRow[],
   stored: StoredPairRow[],
 ): PairingDiff {
-  // ---- Manual pairs are STICKY (NEO-152) ----------------------------
+  // ---- Settled pairs are STICKY (NEO-152) ---------------------------
+  //
+  // A pair is SETTLED when it is either manually forced by the user, or matched
+  // at "exact" confidence — the identity on both halves agreed outright. Both
+  // are locked; everything softer stays fluid.
   //
   // Three properties, all enforced here, together:
-  //   (b) never re-pair a manually-paired image → its index is removed from
-  //       the pairBatch input (`autoRows`), so the automatic matcher never
-  //       even sees it;
-  //   (a) never delete or overwrite a manual pair row → the diff below
-  //       compares only against `autoStored` (the non-manual pairs), so a
-  //       manual row is never a "removed" candidate and never patched;
-  //   (c) still re-pair everything else freely → every non-manual image and
+  //   (b) never re-pair a settled image → its index is removed from the
+  //       pairBatch input (`autoRows`), so the automatic matcher never even
+  //       sees it;
+  //   (a) never delete or overwrite a settled pair row → the diff below
+  //       compares only against `unsettledStored`, so a settled row is never a
+  //       "removed" candidate and never patched;
+  //   (c) still re-pair everything else freely → every unsettled image and
   //       pair flows through exactly as before.
-  // The image's partner in a manual pair is likewise excluded, which is what
-  // frees the OTHER images (a manually-taken front's identity twin is now
-  // available to pair with its real partner).
-  const manualIndexes = new Set<number>();
+  // The image's partner is likewise excluded, which is what frees the OTHER
+  // images (a taken front's identity twin is now available to pair with its
+  // real partner).
+  //
+  // ## Why "exact" joined "manual" here
+  // Pairing recomputes the WHOLE batch after every image completion, and the
+  // pool was free to revise an earlier decision when a later candidate scored
+  // better. That is defensible for a guess and indefensible for a certainty:
+  // it meant a pair the user had already seen settle could silently come apart
+  // and re-form differently several images later, which reads as the tool
+  // changing its mind about work it had finished. Locking "exact" makes a
+  // confident match final, and leaves "fuzzy" / "side-only" — the ones the UI
+  // surfaces as POTENTIAL matches — free to improve as more of the batch
+  // arrives, which is exactly where revision earns its keep.
+  //
+  // Known consequence, accepted: two copies of the SAME card in one batch have
+  // identical identities, so their four images can settle as front-A/back-B and
+  // front-B/back-A. Both pairs are still that card, so the printed placeholder
+  // is right either way — but the lock does mean that arrangement is now final.
+  const doneIndexes = new Set(rows.map((r) => r.entryIndex));
+  const settledIndexes = new Set<number>();
   for (const pair of stored) {
-    if (pair.mechanism !== "manual") continue;
-    manualIndexes.add(pair.frontIndex);
-    manualIndexes.add(pair.backIndex);
+    if (!isLockedPair(pair, doneIndexes)) continue;
+    settledIndexes.add(pair.frontIndex);
+    settledIndexes.add(pair.backIndex);
   }
-  const autoRows = rows.filter((r) => !manualIndexes.has(r.entryIndex));
-  const autoStored = stored.filter((p) => p.mechanism !== "manual");
+  const autoRows = rows.filter((r) => !settledIndexes.has(r.entryIndex));
+  const autoStored = stored.filter((p) => !isLockedPair(p, doneIndexes));
 
   // Key by zip index. It is stable, unique within the batch, and — unlike
   // the original filename — cannot collide, which matters because the pool
@@ -832,16 +891,18 @@ export const runPairing = internalAction({
         // kept to the minimal set both callers apply. `pairs` = the auto pairs
         // that survive this run (stored auto pairs, less deletes, plus inserts),
         // and every paired image is one of two halves, so paired images = 2×pairs.
-        const manualPairs = stored.filter((p) => p.mechanism === "manual");
-        const manualEntryIndexes = new Set<number>();
-        for (const p of manualPairs) {
-          manualEntryIndexes.add(p.frontIndex);
-          manualEntryIndexes.add(p.backIndex);
+        // Same predicate the diff used, not a second copy of the rule.
+        const doneIdx = new Set(rows.map((r) => r.entryIndex));
+        const settledPairs = stored.filter((p) => isLockedPair(p, doneIdx));
+        const settledEntryIndexes = new Set<number>();
+        for (const p of settledPairs) {
+          settledEntryIndexes.add(p.frontIndex);
+          settledEntryIndexes.add(p.backIndex);
         }
         const autoImages = rows.filter(
-          (r) => !manualEntryIndexes.has(r.entryIndex),
+          (r) => !settledEntryIndexes.has(r.entryIndex),
         ).length;
-        const autoStoredCount = stored.length - manualPairs.length;
+        const autoStoredCount = stored.length - settledPairs.length;
         const pairs = autoStoredCount - diff.deleteIds.length + diff.insertRows.length;
         console.log(
           JSON.stringify({
@@ -850,7 +911,12 @@ export const runPairing = internalAction({
             final,
             force: args.force ?? false,
             images: autoImages,
-            manual: manualPairs.length,
+            // `manual` keeps its original meaning — user-forced pairs — because
+            // something may already be reading it. `settled` is the number the
+            // counters beside it are actually computed against now: manual PLUS
+            // exact-confidence, i.e. everything locked out of this run.
+            manual: settledPairs.filter((p) => p.mechanism === "manual").length,
+            settled: settledPairs.length,
             pairs,
             unmatched: autoImages - pairs * 2,
             inserted: diff.insertRows.length,

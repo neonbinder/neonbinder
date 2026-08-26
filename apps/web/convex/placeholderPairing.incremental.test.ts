@@ -1419,6 +1419,89 @@ describe("computePairingDiff (pure)", () => {
     expect(diff.becomingUnmatched).toEqual(["img-0"] as unknown as Id<"placeholderImages">[]);
   });
 
+  test("an EXACT pair is sticky — a later, better candidate cannot break it", () => {
+    // The behaviour the lock exists for. Pairing recomputes the whole batch on
+    // every completion, and the pool was free to revise a settled decision when
+    // a later image scored better — so a pair the user had already seen could
+    // silently come apart and re-form. An exact match is a certainty, not a
+    // guess, so it is now final.
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-exact" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 3,
+        player: "Ken Griffey Jr.",
+        team: "Seattle Mariners",
+        confidence: "exact",
+        mechanism: "pool",
+        score: 1,
+      },
+    ];
+    const diff = computePairingDiff(
+      [griffeyFront(0), griffeyFront(1), griffeyBack(2), griffeyBack(3)],
+      stored,
+    );
+
+    // Never a delete candidate, exactly like a manual pair.
+    expect(diff.deleteIds).toEqual([]);
+    // The remaining two images pair with each other, not with 0 or 3.
+    expect(diff.insertRows).toHaveLength(1);
+    expect(diff.insertRows[0]).toMatchObject({ frontIndex: 1, backIndex: 2 });
+    const touched = [...diff.becomingPaired, ...diff.becomingUnmatched];
+    expect(touched).not.toContain("img-0");
+    expect(touched).not.toContain("img-3");
+  });
+
+  test("a STALE exact pair is still deleted — the lock requires both halves live", () => {
+    // The guard that the "stored AUTO pair no longer desired" test caught the
+    // absence of. Locking on confidence alone would strand a pair whose partner
+    // was reset to "queued" by a restart: excluded from the diff, so never
+    // deleted, pointing at an image that is not processed. Liveness is what
+    // keeps "sticky" from meaning "immortal".
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-exact-stale" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 1,
+        player: "Ken Griffey Jr.",
+        team: "Seattle Mariners",
+        confidence: "exact",
+        mechanism: "pool",
+        score: 1,
+      },
+    ];
+    // Only index 0 is done; index 1 is gone from the done set.
+    const diff = computePairingDiff([griffeyFront(0)], stored);
+    expect(diff.deleteIds).toEqual([
+      "pair-exact-stale",
+    ] as unknown as Id<"placeholderPairs">[]);
+  });
+
+  test("a FUZZY pair stays fluid — it is a potential match, not a settled one", () => {
+    // The other half of the rule. Anything below exact is what the UI shows as
+    // a POTENTIAL match, and those are precisely the ones a later image should
+    // be allowed to improve, so they must remain deletable and re-pairable.
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-fuzzy" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 3,
+        player: "Ken Griffey Jr.",
+        confidence: "fuzzy",
+        mechanism: "pool",
+        score: 0.5,
+      },
+    ];
+    const diff = computePairingDiff(
+      [griffeyFront(0), griffeyFront(1), griffeyBack(2), griffeyBack(3)],
+      stored,
+    );
+    // Not locked: the matcher reconsidered it, so the stale row goes.
+    expect(diff.deleteIds).toEqual([
+      "pair-fuzzy",
+    ] as unknown as Id<"placeholderPairs">[]);
+  });
+
   test("a MANUAL pair is sticky — its images are excluded and its row untouched", () => {
     // Front 0 and back 3 are manually paired; the automatic pass must not see
     // either image, must not delete the manual row, and must pair the remaining
