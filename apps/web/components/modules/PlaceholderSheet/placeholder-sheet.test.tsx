@@ -276,3 +276,98 @@ describe("PlaceholderSheet — print fidelity", () => {
     expect(html).not.toMatch(/class="/);
   });
 });
+
+describe("PlaceholderSheet — card art (NEO-152 §4)", () => {
+  const sheet = layoutSheets(3, SHEET_LETTER_3X3, DUPLEX_LONG)[0];
+
+  it("puts the art in the CELL, not the safe area — full bleed to the cut line", () => {
+    // The whole decision in one assertion. Dropping the image into the
+    // safe-area div is the path of least resistance and yields 2.34 x 3.34in of
+    // art inside a 2.5 x 3.5in card, with a ~2mm white frame on every side. The
+    // image must be a child of the full-size cell and fill it.
+    const ref = renderSheet(sheet, { imageForItem: () => "https://example/a.jpg" });
+    const cell = cellsOf(ref.current!)[0];
+    const img = cell.querySelector("img")!;
+
+    expect(img).toBeTruthy();
+    // A direct child of the cell, not nested inside the inset safe area.
+    expect(img.parentElement).toBe(cell);
+    expect(img.style.width).toBe("100%");
+    expect(img.style.height).toBe("100%");
+    expect(img.style.objectFit).toBe("cover");
+    // The cell clips, so a card whose aspect differs slightly is cropped rather
+    // than allowed to overhang into its neighbour.
+    expect(cell.style.overflow).toBe("hidden");
+  });
+
+  it("drops the big number when a cell has art and guides are off", () => {
+    // A real run: the number would print 56pt over the player's face.
+    const ref = renderSheet(sheet, {
+      imageForItem: () => "https://example/a.jpg",
+      guides: false,
+    });
+    expect(screen.queryByText("1")).toBeNull();
+  });
+
+  it("KEEPS the number over art when guides are on — that is calibration mode", () => {
+    // Guides-on is the NEO-157 instrument folded into the real tool. Printing
+    // with it and reading the numbers after cutting is still how duplex
+    // mirroring is proved, and over art the number is the only thing that says
+    // which pocket a card came from.
+    const ref = renderSheet(sheet, {
+      imageForItem: () => "https://example/a.jpg",
+      guides: true,
+    });
+    expect(screen.getByText("1")).toBeTruthy();
+  });
+
+  it("falls back to the numbered rectangle for a cell with no art", () => {
+    // A run can mix the two: a pocket whose card was never photographed still
+    // gets a placeholder.
+    const ref = renderSheet(sheet, {
+      imageForItem: (item) => (item === 0 ? "https://example/a.jpg" : undefined),
+    });
+    const cells = cellsOf(ref.current!);
+    expect(cells[0].querySelector("img")).toBeTruthy();
+    expect(cells[1].querySelector("img")).toBeNull();
+    expect(cells[1].textContent).toContain("2");
+  });
+
+  it("guides OFF removes the interior lines but keeps the corner ticks", () => {
+    // Interior lines are absolutely-positioned siblings drawn OVER the block, so
+    // with full-bleed art they print a black hairline along every cut edge —
+    // across the picture. The corner ticks sit inside the block and give the
+    // four outer cuts via a ruler, so they survive.
+    const withGuides = renderSheet(sheet, { guides: true });
+    const withoutGuides = renderSheet(sheet, { guides: false });
+
+    const linesIn = (root: HTMLElement) =>
+      [...root.querySelectorAll<HTMLElement>("div")].filter(
+        (d) => d.style.background === "#000000",
+      ).length;
+
+    // 4 corners x 2 ticks = 8 marks survive; the interior lines do not.
+    expect(linesIn(withoutGuides.current!)).toBe(8);
+    expect(linesIn(withGuides.current!)).toBeGreaterThan(8);
+  });
+
+  it("guides OFF also removes the dashed safe-area outline", () => {
+    const ref = renderSheet(sheet, { guides: false });
+    const dashed = [...ref.current!.querySelectorAll<HTMLElement>("div")].filter(
+      (d) => d.style.border.includes("dashed"),
+    );
+    expect(dashed).toHaveLength(0);
+  });
+
+  it("defaults are unchanged — NEO-157 still renders exactly as it did", () => {
+    // Guides on, no art, numbers present. Every existing caller passes neither
+    // new prop and must be unaffected.
+    const ref = renderSheet(sheet);
+    expect(ref.current!.querySelector("img")).toBeNull();
+    expect(ref.current!.textContent).toContain("1");
+    const dashed = [...ref.current!.querySelectorAll<HTMLElement>("div")].filter(
+      (d) => d.style.border.includes("dashed"),
+    );
+    expect(dashed.length).toBeGreaterThan(0);
+  });
+});

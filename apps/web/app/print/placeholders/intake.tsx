@@ -10,6 +10,7 @@ import { deriveStage } from "@/lib/placeholders/intake-stage";
 import { Dropzone } from "./dropzone";
 import { PocketPage, type PocketPair } from "./pocket-page";
 import { ReviewGrid, type ReviewPair } from "./review-grid";
+import { PrintRun, type PrintablePair } from "./print-run";
 import { ScanImage } from "./scan-image";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
 import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
@@ -493,6 +494,20 @@ export default function CardIntake() {
           {/* Cards that did not pair. Never hidden: an unmatched front is the
               one thing the user has to act on, and a count alone would let it
               pass unnoticed. */}
+          {/* Print last, and only what survived review. Dropping a pair takes
+              it out of here as well as out of the pocket preview — one
+              selection, read by both. */}
+          {pairs && pairs.length > 0 && (
+            <PrintRun
+              jobId={jobId}
+              pairs={
+                (pairs as PrintablePair[]).filter(
+                  (p) => !excluded.has(`${p.frontIndex}-${p.backIndex}`),
+                )
+              }
+            />
+          )}
+
           {/* Photos the cropper could not read at all — distinct from unmatched,
               and actionable in a different way (re-shoot, not re-pair). */}
           {failedCount > 0 && (

@@ -4,19 +4,22 @@ import { Link, useSearchParams } from "react-router";
 import { api } from "@/convex/_generated/api";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import CardIntake from "./intake";
-import BlankPlaceholderSheets from "./blank-sheets";
 
 /**
  * /print/placeholders — the Print Shop's placeholder tool (NEO-146).
  *
- * Two sections, in the order a collector actually needs them:
+ * Upload photos, watch them crop and pair, correct what the matcher got wrong,
+ * print the sheet. One control takes either a zip or loose images; see
+ * ./intake.tsx.
  *
- *  1. **Upload your cards** — the real feature. Drop a zip or photos, watch
- *     them crop and pair. One control, either input; see ./intake.tsx.
- *  2. **Blank placeholder sheets** — numbered rectangles, no photos. This is
- *     the NEO-157 tool, kept rather than displaced: it is the calibration
- *     instrument for every paper claim the print path makes, AND it is useful
- *     on its own for a pocket whose card was never photographed.
+ * ## The numbered-rectangle tool is gone
+ * NEO-157 shipped a sheet of numbered blanks here, and said so in its own
+ * header: "NEO-152 will fill these pockets with real card images". It was
+ * scaffolding — a way to answer the paper questions (does a cut card fit the
+ * pocket, does the duplexer land the back on the right front) before there were
+ * any cards to print. Real cards answer them directly now: card 1's front must
+ * have card 1's BACK behind it, which you can read off the printed sheet
+ * without needing a number on it.
  *
  * ## Resuming
  * A batch runs for minutes. `?jobId=` makes one addressable, and the "recent
@@ -104,21 +107,14 @@ export default function PlaceholderSheetsPage() {
         {/* h2, not h1: the "Print Shop" h1 lives in PrintLayout (NEO-145). */}
         <h2 className="text-3xl font-bold mb-2">Placeholder Sheets</h2>
         <p className="text-gray-400 max-w-xl mx-auto">
-          Fill a 9-pocket binder page with cards that live somewhere else —
-          upload photos of them, or print numbered blanks to cut and drop in.
+          Fill a 9-pocket binder page with cards that live somewhere else.
+          Upload photos, check the pairs, print a sheet to cut up.
         </p>
       </div>
 
       <CardIntake />
 
       <RecentRuns />
-
-      {/* A rule rather than a tab strip: these are one tool's two inputs, not
-          two tools, and the blank sheet is the fallback you reach for when you
-          have no photo — reading down to it is the right order. */}
-      <hr className="border-slate-800" />
-
-      <BlankPlaceholderSheets />
     </div>
   );
 }
