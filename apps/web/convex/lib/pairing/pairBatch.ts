@@ -234,6 +234,7 @@ export function poolCardFromIdentity(
   if (identity === null) {
     return createPoolCard({
       key: image.key,
+      order: image.order ?? null,
       side: validSide(image.side) ?? sideFromTextCount(image.textCount),
       textCount: image.textCount,
       identityResolved: false,
@@ -249,6 +250,7 @@ export function poolCardFromIdentity(
     identity.player ?? (identity.players.length > 0 ? identity.players[0] : null);
   return createPoolCard({
     key: image.key,
+    order: image.order ?? null,
     side,
     player,
     team: identity.team,

@@ -422,10 +422,25 @@ export function isLockedPair(
     backIndex: number;
   },
   doneIndexes: ReadonlySet<number>,
+  batchSettled: boolean,
 ): boolean {
-  // A user's decision outranks the matcher unconditionally.
+  // A user's decision outranks the matcher unconditionally, at any point.
   if (pair.mechanism === "manual") return true;
   if (pair.confidence !== "exact") return false;
+
+  // ONLY ONCE THE BATCH IS FINISHED, and this is the subtle one.
+  //
+  // A pair formed mid-batch is a verdict on a PARTIAL batch, and the right
+  // partner may still be in flight — images run several wide through the pool,
+  // so finishing out of order is routine, not exceptional. Locking then freezes
+  // a guess: {0,2} pair legitimately while 1 is still processing, and when 1
+  // lands it is the better partner for 0 and the old pair has to go.
+  //
+  // So while the batch is still running everything auto-matched stays fluid and
+  // the diff revises freely, exactly as before. What the lock buys is stability
+  // AFTER the batch is done: a later forced re-pair (an identity edit, say)
+  // cannot quietly undo a settled result the user has already reviewed.
+  if (!batchSettled) return false;
 
   // LIVENESS, and it is load-bearing. An exact pair is only locked while BOTH
   // halves are still done rows. Without this a STALE exact pair — one whose
@@ -439,6 +454,12 @@ export function isLockedPair(
 export function computePairingDiff(
   rows: PairingImageRow[],
   stored: StoredPairRow[],
+  /**
+   * Has this batch already finished? Only then do exact pairs lock — see
+   * `isLockedPair`. Defaults false so a caller that does not know treats every
+   * automatic pair as still revisable, which is the safe direction.
+   */
+  batchSettled = false,
 ): PairingDiff {
   // ---- Settled pairs are STICKY (NEO-152) ---------------------------
   //
@@ -477,12 +498,14 @@ export function computePairingDiff(
   const doneIndexes = new Set(rows.map((r) => r.entryIndex));
   const settledIndexes = new Set<number>();
   for (const pair of stored) {
-    if (!isLockedPair(pair, doneIndexes)) continue;
+    if (!isLockedPair(pair, doneIndexes, batchSettled)) continue;
     settledIndexes.add(pair.frontIndex);
     settledIndexes.add(pair.backIndex);
   }
   const autoRows = rows.filter((r) => !settledIndexes.has(r.entryIndex));
-  const autoStored = stored.filter((p) => !isLockedPair(p, doneIndexes));
+  const autoStored = stored.filter(
+    (p) => !isLockedPair(p, doneIndexes, batchSettled),
+  );
 
   // Key by zip index. It is stable, unique within the batch, and — unlike
   // the original filename — cannot collide, which matters because the pool
@@ -503,6 +526,10 @@ export function computePairingDiff(
     const result = pairBatch(
       autoRows.map((r) => ({
         key: String(r.entryIndex),
+        // Scan position, for the adjacency bonus. The entry index IS the scan
+        // order — it is allocated per upload, in the order the client sent the
+        // files, which is the constraint upload-run.ts exists to preserve.
+        order: r.entryIndex,
         textCount: r.textCount ?? 0,
         originalFilename: r.originalName,
         side: asCardSide(r.side),
@@ -830,7 +857,11 @@ export const runPairing = internalAction({
       // done rows and the stored pairs. Extracted (NEO-175) so the inline
       // finalize on the close path runs byte-identical logic against the same
       // inputs.
-      const diff = computePairingDiff(rows, stored);
+      // Settled only when this run is a re-pair of an ALREADY-FINISHED batch
+      // (a forced one, from an identity edit). While the batch is still
+      // running, every automatic pair stays revisable — see `isLockedPair`.
+      const batchIsSettled = job.status === "succeeded" || job.status === "failed";
+      const diff = computePairingDiff(rows, stored, batchIsSettled);
 
       // Deletes first, then patches, then inserts. The three sets are disjoint
       // by construction so the order cannot change the outcome — but it does
@@ -893,7 +924,9 @@ export const runPairing = internalAction({
         // and every paired image is one of two halves, so paired images = 2×pairs.
         // Same predicate the diff used, not a second copy of the rule.
         const doneIdx = new Set(rows.map((r) => r.entryIndex));
-        const settledPairs = stored.filter((p) => isLockedPair(p, doneIdx));
+        const settledPairs = stored.filter((p) =>
+          isLockedPair(p, doneIdx, batchIsSettled),
+        );
         const settledEntryIndexes = new Set<number>();
         for (const p of settledPairs) {
           settledEntryIndexes.add(p.frontIndex);
@@ -1391,7 +1424,10 @@ export async function finalizePairingInline(
     score: p.score,
   }));
 
-  const diff = computePairingDiff(rows, stored);
+  // `false`: this call IS the batch finishing, so the stored pairs it is
+  // comparing against are still provisional. Locking them here would freeze the
+  // mid-batch guesses instead of letting the final recompute decide.
+  const diff = computePairingDiff(rows, stored, false);
 
   // The whole diff at once — a small batch fits one transaction, which is the
   // precondition the caller checks before taking this path.

@@ -36,11 +36,21 @@ export type CardSide = "front" | "back";
 export type Mechanism = "adjacency" | "pool";
 
 /**
- * How much identity evidence backed a pool pairing.
- * - "exact"     : card number matched AND (player or team) matched
- * - "fuzzy"     : player or team matched
- * - "side-only" : no identity evidence at all (adjacency, or the lone
- *                 opposite-side fallback in `CardPool.findMatch`)
+ * How much evidence backed a pool pairing — a band of the match SCORE, not a
+ * checklist of which fields agreed.
+ *
+ * - "exact"     : score above EXACT_CONFIDENCE_THRESHOLD
+ * - "fuzzy"     : accepted, but below it
+ * - "side-only" : paired with no identity evidence at all (the lone
+ *                 opposite-side fallback in `CardPool.findMatch`, or the
+ *                 adjacency pass in `pairBatch`)
+ *
+ * It used to be the checklist `cardNumberMatched && (player || team)`, ported
+ * faithfully from the Python original. That rule was UNREACHABLE: it needs a
+ * card number on both halves, and no set prints the number on the front, so
+ * `exact` never occurred for a real pair. The score already weighed every
+ * signal properly and was only ever used to decide whether to pair at all;
+ * banding it is what makes the distinction mean something.
  */
 export type Confidence = "exact" | "fuzzy" | "side-only";
 
@@ -108,6 +118,13 @@ export type ImageHasher = (key: string) => string | null;
 export interface PoolCard {
   key: string;
   side: CardSide;
+  /**
+   * Position in the scan, when the caller knows it. Two cards one apart were
+   * photographed back to back, which is weak but real evidence they are the
+   * two sides of one card — see ADJACENCY_SCORE. Null when unknown; the pool
+   * simply scores no adjacency bonus then.
+   */
+  order: number | null;
   player: string | null;
   team: string | null;
   cardNumber: string | null;
@@ -122,6 +139,7 @@ export interface PoolCard {
 export interface PoolCardInit {
   key: string;
   side: CardSide;
+  order?: number | null;
   player?: string | null;
   team?: string | null;
   cardNumber?: string | null;
@@ -139,6 +157,7 @@ export function createPoolCard(init: PoolCardInit): PoolCard {
   return {
     key: init.key,
     side: init.side,
+    order: init.order ?? null,
     player: init.player ?? null,
     team: init.team ?? null,
     cardNumber: init.cardNumber ?? null,
@@ -256,6 +275,8 @@ export function makeMatchResult(
 export interface BatchImage {
   key: string;
   textCount: number;
+  /** Position in the scan. See `PoolCard.order`. */
+  order?: number | null;
   originalFilename?: string | null;
   side?: CardSide | null;
 }

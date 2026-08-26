@@ -112,7 +112,12 @@ describe("scoring weights", () => {
       { cardNumber: "25" },
       { cardNumber: "25" },
       CARD_NUMBER_EXACT_SCORE,
-      "side-only",
+      // Was "side-only" under the old boolean rule, which is the bug this
+      // banding fixes: a card number is the ONLY field that uniquely
+      // identifies a card within a set — it is weighted 2000 for exactly that
+      // reason — and the old rule labelled the strongest possible signal with
+      // the lowest confidence, because it also demanded a name or team.
+      "exact",
     ],
     [
       "player-exact",
