@@ -15,10 +15,15 @@ export function ScanImage({
   jobId,
   entryIndex,
   alt,
+  // The caller owns the box. This started life as a fixed `h-40` thumbnail for
+  // a list, and a pocket in the 9-up grid needs to be FILLED instead — the
+  // default keeps every existing caller rendering as before.
+  className = "h-40 w-auto rounded border border-slate-800 object-contain",
 }: {
   jobId: string;
   entryIndex: number;
   alt: string;
+  className?: string;
 }) {
   const createDownloadUrl = useAction(
     api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl,
@@ -50,7 +55,9 @@ export function ScanImage({
 
   if (failed) {
     return (
-      <div className="flex h-40 items-center justify-center rounded border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-400">
+      <div
+        className={`flex items-center justify-center bg-slate-900/60 p-2 text-center text-xs text-slate-400 ${className}`}
+      >
         Image unavailable
       </div>
     );
@@ -58,7 +65,9 @@ export function ScanImage({
 
   if (!url) {
     return (
-      <div className="flex h-40 items-center justify-center rounded border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-400">
+      <div
+        className={`flex items-center justify-center bg-slate-900/60 p-2 text-center text-xs text-slate-400 ${className}`}
+      >
         Loading image…
       </div>
     );
@@ -68,7 +77,7 @@ export function ScanImage({
     <img
       src={url}
       alt={alt}
-      className="h-40 w-auto rounded border border-slate-800 object-contain"
+      className={className}
       onError={() => {
         // One retry: a signed URL that expired while the tab sat open mints a
         // fresh one. A second failure is a real problem, not an expiry, and

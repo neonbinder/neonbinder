@@ -75,7 +75,11 @@ export function PocketPage({
                 Sheet {page + 1} of {pageCount}
               </p>
             )}
-            <ul className="grid grid-cols-3 gap-2 list-none p-0 sm:gap-3">
+            {/* Capped: a 9-pocket page is a physical object about 8.5in wide,
+                and stretched across a desktop column it stops reading as one.
+                Roughly card-sized pockets also make the front art legible at a
+                glance, which is the only reason to show it here. */}
+            <ul className="grid max-w-md grid-cols-3 gap-2 list-none p-0 sm:gap-3">
               {Array.from({ length: POCKETS_PER_PAGE }, (_, slot) => {
                 const pair = slice[slot];
                 if (!pair) {
@@ -83,7 +87,7 @@ export function PocketPage({
                     <li
                       key={slot}
                       aria-hidden="true"
-                      className="aspect-[2.5/3.5] rounded-md border border-dashed border-slate-800"
+                      className="aspect-[2.5/3.5] rounded-md border border-dashed border-slate-700/80"
                     />
                   );
                 }
@@ -97,10 +101,15 @@ export function PocketPage({
                       settled ? "border-neon-green/70" : "border-neon-yellow/70",
                     ].join(" ")}
                   >
+                    {/* Fills the pocket edge to edge, which is also how it
+                        PRINTS — NEO-152 decided card art is full bleed, right
+                        to the cut line, so a preview with the image floating in
+                        a corner would be lying about the output. */}
                     <ScanImage
                       jobId={jobId}
                       entryIndex={pair.frontIndex}
                       alt={`Front of ${cardName(pair)}`}
+                      className="h-full w-full object-cover"
                     />
                     <span
                       className={[
