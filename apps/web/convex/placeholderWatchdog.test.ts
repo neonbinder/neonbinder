@@ -28,7 +28,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import type { Doc } from "./_generated/dataModel";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { PLACEHOLDER_WEDGE_STALE_MS } from "./placeholderWatchdog";
 
 const modules = (import.meta as unknown as {
@@ -311,5 +311,91 @@ describe("healthy in-progress work is never touched", () => {
     expect(job?.status).toBe("processing");
     expect(job?.processedImages).toBe(2); // untouched
     expect(wedgeEvents(warnSpy)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-179 — a reaped job must FREE its active-batch slot
+// ---------------------------------------------------------------------------
+//
+// The ticket's worry: `processing` and `pairing` count toward ACTIVE_STATUSES,
+// so a job wedged in one holds a slot against MAX_ACTIVE_JOBS_PER_USER and a
+// user could be locked out by dead slots with nothing genuinely running.
+//
+// The sweep already writes a terminal status on both wedge paths, so the slot
+// is freed — but "status is terminal" is a proxy. These tests assert the thing
+// the user actually experiences: after the sweep, they can start a batch again.
+// That is what closes NEO-179, and it is why the assertion goes through
+// `startPlaceholderStream` rather than reading the row.
+describe("NEO-179: a reaped batch frees the user's active slot", () => {
+  async function fillSlotsWithWedgedJobs(t: ReturnType<typeof convexTest>) {
+    // Two wedged jobs = MAX_ACTIVE_JOBS_PER_USER at its default, both stuck in
+    // "processing" with a non-terminal row, both past the wedge threshold.
+    for (const jobId of ["wedged-1", "wedged-2"]) {
+      await seed(t, {
+        jobId,
+        status: "processing",
+        totalImages: 2,
+        processedImages: 1,
+        failedImages: 0,
+        lastActivityAt: STALE(),
+        images: [{ status: "done" }, { status: "processing" }],
+      });
+    }
+  }
+
+  test("before the sweep, the dead slots lock the user out", async () => {
+    const t = convexTest(schema, modules);
+    await fillSlotsWithWedgedJobs(t);
+
+    const blocked = await t
+      .withIdentity({ subject: USER })
+      .mutation(api.placeholderStream.startPlaceholderStream, {});
+
+    // This is the bug NEO-179 describes, reproduced: nothing is genuinely
+    // running, and the user cannot start anything.
+    expect(blocked.started).toBe(false);
+    expect(blocked.reason).toMatch(/active batches/);
+  });
+
+  test("after the sweep, the user can start again", async () => {
+    const t = convexTest(schema, modules);
+    await fillSlotsWithWedgedJobs(t);
+
+    await sweep(t);
+
+    // Both reaped terminally — "failed" is not in ACTIVE_STATUSES.
+    expect((await getJob(t, "wedged-1"))?.status).toBe("failed");
+    expect((await getJob(t, "wedged-2"))?.status).toBe("failed");
+
+    const allowed = await t
+      .withIdentity({ subject: USER })
+      .mutation(api.placeholderStream.startPlaceholderStream, {});
+    expect(allowed.started).toBe(true);
+  });
+
+  test("a reaped batch keeps its already-done images for a restart", async () => {
+    // The other half of NEO-179's scope: freeing the slot must not throw away
+    // completed work, or a restart re-pays for every image it already had.
+    const t = convexTest(schema, modules);
+    await seed(t, {
+      jobId: "wedged-keep",
+      status: "processing",
+      totalImages: 3,
+      processedImages: 2,
+      failedImages: 0,
+      lastActivityAt: STALE(),
+      images: [{ status: "done" }, { status: "done" }, { status: "processing" }],
+    });
+
+    await sweep(t);
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("placeholderImages")
+        .collect()
+        .then((all) => all.filter((r) => r.jobId === "wedged-keep")),
+    );
+    expect(rows.filter((r) => r.status === "done")).toHaveLength(2);
   });
 });
