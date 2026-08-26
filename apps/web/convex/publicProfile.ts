@@ -58,7 +58,14 @@ export const getMyPublicProfile = query({
 });
 
 /**
- * Check if a username is available (no auth required — live uniqueness check)
+ * Check if a username is available (no auth required — live uniqueness check).
+ *
+ * PUBLIC BY INTENT (reviewed under NEO-154). The anonymous caller is the signup
+ * form, which has to answer "is this name taken" before an account exists to
+ * authenticate as. It is an enumeration oracle by construction — that is the
+ * feature — and it discloses nothing that /u/<username> does not already, since
+ * a taken username resolves to a public profile page anyway. Returns only a
+ * boolean; no profile fields cross the boundary.
  */
 export const checkUsernameAvailable = query({
   args: { username: v.string() },
@@ -198,7 +205,14 @@ export const getProfileCompleteness = query({
 });
 
 /**
- * Fetch a public profile by username — no auth required, omits userId
+ * Fetch a public profile by username — no auth required, omits userId.
+ *
+ * PUBLIC BY INTENT (reviewed under NEO-154). The anonymous caller is the buyer
+ * on /u/<username>/sale — someone standing at a card-show table who scanned a
+ * seller's QR and will never sign in. Requiring auth here would break the only
+ * feature the landing page markets as available today. The deliberate omission
+ * of `userId` from the returned shape is what keeps it safe to expose; keep it
+ * that way when adding fields.
  */
 export const getPublicProfileByUsername = query({
   args: { username: v.string() },

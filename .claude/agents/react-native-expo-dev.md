@@ -72,8 +72,8 @@ Before considering any feature complete:
 import { useQuery, useMutation } from 'convex/react';
 import { api } from '@/convex/_generated/api';
 
-const cards = useQuery(api.myFunctions.getCards, { userId });
-const addCard = useMutation(api.myFunctions.addCard);
+const cards = useQuery(api.cards.getCards, { userId });
+const addCard = useMutation(api.cards.addCard);
 ```
 
 Always reference the schema at `neonbinder_web/convex/schema.ts` to understand available tables and fields.

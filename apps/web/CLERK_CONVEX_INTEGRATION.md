@@ -35,7 +35,7 @@ Successfully integrated Clerk authentication with Convex backend, following the 
 
 - **Updated Convex functions** - Changed from `getAuthUserId` to `getCurrentUserId`
   - `convex/userProfile.ts` ✅
-  - `convex/myFunctions.ts` ✅
+  - `convex/` domain modules ✅
   - Need to update:
     - `convex/adapters/secret_manager.ts`
     - `convex/adapters/sportlots.ts`

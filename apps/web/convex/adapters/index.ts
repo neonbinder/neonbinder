@@ -1,12 +1,12 @@
 "use node";
 
-import { action } from "../_generated/server";
+import { internalAction } from "../_generated/server";
 import { v } from "convex/values";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { CardListingsResponse } from "./base";
 
 // Unified search function for all platforms that support card searches
-export const searchAllCardPlatforms = action({
+export const searchAllCardPlatforms = internalAction({
   args: {
     cardName: v.string(),
     year: v.optional(v.number()),
@@ -55,16 +55,16 @@ export const searchAllCardPlatforms = action({
             if (!args.ebayAppId) {
               throw new Error("eBay App ID is required for eBay searches");
             }
-            result = await ctx.runAction(api.adapters.ebay.searchEbay, {
+            result = await ctx.runAction(internal.adapters.ebay.searchEbay, {
               ...args,
               appId: args.ebayAppId,
             });
             break;
           case "myslabs":
-            result = await ctx.runAction(api.adapters.myslabs.searchMySlabs, args);
+            result = await ctx.runAction(internal.adapters.myslabs.searchMySlabs, args);
             break;
           case "mycardpost":
-            result = await ctx.runAction(api.adapters.mycardpost.searchMyCardPost, args);
+            result = await ctx.runAction(internal.adapters.mycardpost.searchMyCardPost, args);
             break;
           default:
             throw new Error(`Unsupported platform: ${platform}`);
@@ -101,7 +101,7 @@ export const searchAllCardPlatforms = action({
 // Note: searchSets functionality has been removed as we're focusing on available sets identification 
 
 // Generic aggregator function for set parameters
-export const getAvailableSetParameters = action({
+export const getAvailableSetParameters = internalAction({
   args: {
     partialParams: v.object({
       sport: v.optional(v.string()),

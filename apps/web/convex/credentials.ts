@@ -878,7 +878,7 @@ export const testSiteCredentials = action({
 
           case "ebay": {
             console.log("[testSiteCredentials] Dispatching to ebay.testCredentials");
-            const result = await ctx.runAction(api.adapters.ebay.testCredentials, {});
+            const result = await ctx.runAction(internal.adapters.ebay.testCredentials, {});
             console.log(`[testSiteCredentials] ebay.testCredentials returned: success=${result.success}`);
             return result;
           }

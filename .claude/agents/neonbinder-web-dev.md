@@ -59,8 +59,8 @@ export const myQuery = query({
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 
-const data = useQuery(api.myFunctions.myQuery, { id });
-const mutate = useMutation(api.myFunctions.myMutation);
+const data = useQuery(api.someDomain.myQuery, { id });
+const mutate = useMutation(api.someDomain.myMutation);
 ```
 
 > No `"use client"` directives — this is a Vite SPA, every component runs in the browser.

@@ -135,7 +135,16 @@ install_pinned_maestro() {
   info "Installing Maestro ${PINNED_MAESTRO_VERSION}..."
   # The Maestro installer honors MAESTRO_VERSION to grab a specific tag instead
   # of latest. Without this, local boxes drift from CI as upstream releases land.
-  MAESTRO_VERSION="$PINNED_MAESTRO_VERSION" curl -Ls "https://get.maestro.mobile.dev" | bash
+  #
+  # The var goes on `bash`, NOT on `curl`. It used to sit on the curl, which put
+  # it in the environment of the process that FETCHES the script rather than the
+  # one that RUNS it — two separate processes in a pipeline, so the installer
+  # never saw it and always took its `releases/latest` branch. That stayed
+  # invisible for as long as the pin happened to equal upstream's latest, and
+  # surfaced the moment 2.8.0 shipped while the pin still said 2.6.0: the verify
+  # step below started failing with "install reported 2.8.0 but pin requires
+  # 2.6.0" on a script whose whole job is to honor the pin.
+  curl -Ls "https://get.maestro.mobile.dev" | MAESTRO_VERSION="$PINNED_MAESTRO_VERSION" bash
 }
 
 if [ -f "$MAESTRO_CLI" ]; then
