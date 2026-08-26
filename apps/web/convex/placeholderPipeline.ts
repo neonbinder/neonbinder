@@ -1915,11 +1915,13 @@ export const getPlaceholderJob = query({
       failedImages: v.number(),
       rejectedEntries: v.number(),
       pairCount: v.number(),
-      // Cumulative identity-resolver calls across every pairing run — see the
-      // schema comment. 0 is the healthy value: the adjacency pre-pass should
-      // pair a well-ordered scan without consulting identity once. Surfaced so
-      // the release E2E can assert it and catch a regression that silently
-      // starts paying per image.
+      // Identity-resolver calls as measured by the FINAL pairing run — see the
+      // schema comment. Diagnostics, not spend: since NEO-170 the identity is
+      // already on the image row, so a resolver call is a Map lookup, and
+      // pairing runs identity-first for every card by design. Roughly one per
+      // done image is the healthy reading; the release E2E asserts 6 for a
+      // six-image batch. (An earlier version of this comment claimed 0 was
+      // healthy and that the E2E asserted 0 — both were left behind by NEO-170.)
       resolverCalls: v.number(),
       // The cold-start NOTIFICATION flag (NEO-175). True while an escalated
       // image is waiting on a heavy service that has not yet produced a result
