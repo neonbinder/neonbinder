@@ -5,32 +5,39 @@ import type { FunctionReturnType } from "convex/server";
 import NeonButton from "@/components/modules/NeonButton";
 import { ConfirmDialog } from "@/components/modules/confirm-dialog";
 import { api } from "@/convex/_generated/api";
-import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
 import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
 
 /**
- * /placeholders — scan in, cropped pairs out (NEO-170).
+ * Card intake — the working front door for placeholder sheets (NEO-152).
  *
- * ## This is a stopgap, deliberately
- * NEO-152 owns the real intake UI: a scanner-shaped workflow with review,
- * re-pairing, corrections and print hand-off. Until it lands, the streaming
- * pipeline built in NEO-170 has no front door at all — it is exercised by
- * cardlister and by tests, and a person with a folder of scans cannot use it.
- * This page is that front door and nothing more: pick files, watch them land,
- * look at what came back. Expect NEO-152 to replace rather than extend it, and
- * do not grow features here on the assumption that it will not.
+ * Replaces the /placeholders stopgap this file grew out of. That page said
+ * outright it was temporary ("expect NEO-152 to replace rather than extend
+ * it"), and most of what it learned is preserved here rather than rewritten:
+ * the addressable job id, the reactive job/images/pairs subscriptions, the
+ * cold-start notice and the signed-URL re-minting in ScanImage all arrived
+ * there first and all still earn their place.
  *
- * ## Why the upload loop lives in ./upload-run.ts
+ * ## One control, two server paths
+ * The user drops a zip OR a pile of photos and never picks a mode.
+ * `classifyIntake` (lib/placeholders/intake-kind.ts) decides which path runs,
+ * and both return the same `UploadOutcome`, so everything from the progress
+ * line onward renders identically. A zip is extracted server-side into the same
+ * per-image rows a scan produces; from the workpool onward there is one
+ * pipeline, not two.
+ *
+ * ## The job id lives in the URL
+ * A batch runs for MINUTES, so it has to survive the tab closing. `?jobId=`
+ * makes a run addressable and reloadable; `listMyPlaceholderJobs` covers the
+ * other half — returning to the page with no URL and still finding the run.
+ * Component state would make a run reachable only by having just created it,
+ * which is the one thing intake must not do.
+ *
+ * ## Why the upload loop lives in lib/placeholders/upload-run.ts
  * Pairing reads adjacency — entry 0 is the front whose back is entry 1 — so the
  * ORDER of the allocate calls is a correctness constraint, not a performance
  * detail. That constraint is testable and is tested there; this file only wires
  * Convex actions into it.
- *
- * ## What is not here
- * The job id lives in component state only, so a reload loses sight of a running
- * session (the session itself keeps going server-side, and the idle sweep closes
- * it). Persisting it is NEO-152's problem, along with resuming one.
  */
 
 type PlaceholderJob = NonNullable<
@@ -62,6 +69,11 @@ const CONFIDENCE_LABELS: Record<PlaceholderPair["confidence"], string> = {
 const MECHANISM_LABELS: Record<PlaceholderPair["mechanism"], string> = {
   adjacency: "by scan order",
   pool: "by image pool",
+  // Added to the backend union when manual pairing landed, and never given a
+  // label here — a manually-forced pair rendered `undefined` in the mechanism
+  // slot. "you set this" rather than "manual" because the badge sits next to
+  // two machine-made explanations and the useful distinction is who decided.
+  manual: "you set this",
 };
 
 type Notice = { tone: "success" | "info" | "error"; text: string };
@@ -195,8 +207,7 @@ function resolverCallsOf(job: PlaceholderJob): number {
   return job.resolverCalls ?? 0;
 }
 
-export default function PlaceholderScansPage() {
-  useDocumentTitle("Placeholder Scans | Neon Binder");
+export default function CardIntake() {
   // Warm the model on mount, so it is loading while the user picks files rather
   // than only from the first upload. Best-effort; see the hook.
   useWarmPreprocess();
@@ -349,11 +360,12 @@ export default function PlaceholderScansPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold mb-2">Placeholder Scans</h1>
+        {/* h3: PrintLayout owns the h1 and the page owns the h2 (NEO-145). */}
+        <h3 className="text-2xl font-bold mb-2">Upload your cards</h3>
         <p className="text-slate-400 max-w-2xl">
-          Upload scanned card images and see them cropped and matched into
-          front/back pairs. Upload them in scan order — front, back, front,
-          back — because that order is what pairs them.
+          Drop a zip of card photos, or pick the images directly — either way
+          they are cropped and matched into front/back pairs. Keep them in scan
+          order (front, back, front, back): that order is what pairs them.
         </p>
       </div>
 
@@ -383,15 +395,22 @@ export default function PlaceholderScansPage() {
           htmlFor="scan-files"
           className="block text-sm font-medium text-slate-300"
         >
-          Scan images (JPEG)
+          Card photos, or a zip of them
         </label>
         {/* A raw file input: the Input primitive exists to give TEXT fields a
             document-unique class for the E2E driver, and a file picker is not a
-            field it types into. */}
+            field it types into.
+
+            `accept` takes a zip OR images through the one control — see
+            `classifyIntake`. `.zip` is listed by EXTENSION rather than MIME
+            because browsers disagree about the latter (application/zip,
+            application/x-zip-compressed, or "" depending on platform), and an
+            accept list missing the real type silently hides the file in the
+            picker. */}
         <input
           id="scan-files"
           type="file"
-          accept="image/jpeg"
+          accept=".zip,image/jpeg,image/png"
           multiple
           disabled={uploading}
           onChange={(event) =>
@@ -413,9 +432,9 @@ export default function PlaceholderScansPage() {
 
       {progress.length > 0 && (
         <section aria-labelledby="upload-progress-heading" className="space-y-2">
-          <h2 id="upload-progress-heading" className="text-lg font-semibold">
+          <h3 id="upload-progress-heading" className="text-lg font-semibold">
             Upload progress
-          </h2>
+          </h3>
           <ul className="space-y-1 text-sm">
             {progress.map((row) => (
               <li key={row.position} className="flex flex-wrap gap-2">

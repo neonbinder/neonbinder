@@ -54,7 +54,6 @@ import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
 import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
-import PlaceholderScans from "@/app/placeholders/page";
 import Inventory from "@/app/inventory/page";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -114,10 +113,15 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/collection" element={<Collection />} />
               <Route path="/inventory" element={<Inventory />} />
-              {/* NEO-170 — stopgap scan intake, deliberately not in the nav.
-                  NEO-152 owns the real thing; see the note at the top of
-                  app/placeholders/page.tsx. */}
-              <Route path="/placeholders" element={<PlaceholderScans />} />
+              {/* /placeholders was the NEO-170 stopgap intake. NEO-152 replaced
+                  it with the real thing at /print/placeholders, so the old path
+                  redirects rather than 404s: it was never in the nav, but it is
+                  in browser histories and in the /testing entry point the E2E
+                  suite uses. `replace` so Back does not bounce off it. */}
+              <Route
+                path="/placeholders"
+                element={<Navigate to="/print/placeholders" replace />}
+              />
               {/* One route per profile section (NEO-128). Bare /profile keeps
                   working — every existing link and redirect lands on the index
                   and is forwarded to Public Profile. */}

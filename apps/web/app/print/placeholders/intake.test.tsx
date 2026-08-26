@@ -77,7 +77,7 @@ vi.mock("convex/react", () => ({
   useAction: (ref: string) => mocks.fns[ref],
 }));
 
-import PlaceholderScansPage from "./page";
+import CardIntake from "./intake";
 
 /**
  * The page reads its session id from the query string now, so every render needs
@@ -87,14 +87,14 @@ function renderPage(initialEntry = "/placeholders") {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/placeholders" element={<PlaceholderScansPage />} />
+        <Route path="/placeholders" element={<CardIntake />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 function selectFiles(names: string[]) {
-  const input = screen.getByLabelText("Scan images (JPEG)") as HTMLInputElement;
+  const input = screen.getByLabelText("Card photos, or a zip of them") as HTMLInputElement;
   const files = names.map(
     (name) => new File(["bytes"], name, { type: "image/jpeg" }),
   );
@@ -105,7 +105,7 @@ function selectFiles(names: string[]) {
   return files;
 }
 
-describe("PlaceholderScansPage", () => {
+describe("CardIntake", () => {
   beforeEach(() => {
     mocks.queries = {};
     mocks.warm = vi.fn();
@@ -145,7 +145,9 @@ describe("PlaceholderScansPage", () => {
   it("explains what the page is for and starts with nothing selected", () => {
     renderPage();
     expect(
-      screen.getByRole("heading", { level: 1, name: "Placeholder Scans" }),
+      // level 3, not 1: PrintLayout owns the h1 ("Print Shop") and the page
+      // owns the h2 ("Placeholder Sheets") — intake is a section of it now.
+      screen.getByRole("heading", { level: 3, name: "Upload your cards" }),
     ).not.toBeNull();
     expect(screen.getByText("No files selected.")).not.toBeNull();
     // Nothing to upload yet, and the label says so rather than the button
@@ -462,22 +464,34 @@ describe("PlaceholderScansPage", () => {
     expect(screen.getByText("resolver calls: 0")).not.toBeNull();
   });
 
-  it("is reachable — main.tsx routes /placeholders inside the signed-in shell", () => {
-    expect(mainSource).toContain('from "@/app/placeholders/page"');
+  it("is reachable — main.tsx mounts the intake page under /print, signed in", () => {
+    // NEO-152 moved intake from the standalone /placeholders stopgap into the
+    // Print Shop. This asserts the destination rather than the old route.
+    expect(mainSource).toContain('from "@/app/print/placeholders/page"');
     expect(mainSource).toMatch(
-      /path="\/placeholders"\s+element=\{<PlaceholderScans \/>\}/,
+      /path="placeholders"\s+element=\{<PrintPlaceholders \/>\}/,
     );
+
     // Inside ProtectedLayout's subtree, and NOT inside the AdminLayout block —
-    // this is a page for every signed-in user.
+    // this is a page for every signed-in user, not an admin tool.
     const adminBlock = mainSource.slice(
       mainSource.indexOf("<Route element={<AdminLayout />}>"),
     );
     expect(adminBlock.slice(0, adminBlock.indexOf("</Route>"))).not.toContain(
-      '"/placeholders"',
+      'path="placeholders"',
     );
     const protectedBlock = mainSource.slice(
       mainSource.indexOf("<Route element={<ProtectedLayout />}>"),
     );
-    expect(protectedBlock).toContain('path="/placeholders"');
+    expect(protectedBlock).toContain('path="placeholders"');
+  });
+
+  it("keeps the old /placeholders URL working as a redirect", () => {
+    // The stopgap was never in the nav, but it IS in browser histories and in
+    // the /testing entry point the E2E suite drives. Deleting the route would
+    // turn those into a 404; this asserts they forward instead.
+    expect(mainSource).toMatch(
+      /path="\/placeholders"[\s\S]{0,200}?<Navigate to="\/print\/placeholders" replace \/>/,
+    );
   });
 });
