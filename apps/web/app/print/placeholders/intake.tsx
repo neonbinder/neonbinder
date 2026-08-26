@@ -5,6 +5,10 @@ import type { FunctionReturnType } from "convex/server";
 import NeonButton from "@/components/modules/NeonButton";
 import { ConfirmDialog } from "@/components/modules/confirm-dialog";
 import { api } from "@/convex/_generated/api";
+import { deriveStage } from "@/lib/placeholders/intake-stage";
+import { Dropzone } from "./dropzone";
+import { PocketPage, type PocketPair } from "./pocket-page";
+import { ScanImage } from "./scan-image";
 import { usePlaceholderUpload } from "@/src/hooks/usePlaceholderUpload";
 import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
 
@@ -84,87 +88,6 @@ const NOTICE_CLASSES: Record<Notice["tone"], string> = {
   error: "border border-neon-pink/40 bg-neon-pink/10 text-neon-pink",
 };
 
-/**
- * One cropped scan, behind a signed GET that expires in ~15 minutes.
- *
- * The URL is fetched when the image is first rendered rather than alongside the
- * pair list, because a list fetched at page load is a list of URLs that have
- * already started expiring — a user who leaves the tab open and comes back to
- * broken images is the exact failure this avoids. `onError` re-mints once, which
- * covers the same expiry from the other direction.
- */
-function ScanImage({
-  jobId,
-  entryIndex,
-  alt,
-}: {
-  jobId: string;
-  entryIndex: number;
-  alt: string;
-}) {
-  const createDownloadUrl = useAction(
-    api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl,
-  );
-  const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const result = await createDownloadUrl({ jobId, entryIndex });
-        if (!cancelled) setUrl(result.url);
-      } catch {
-        if (!cancelled) setFailed(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // `createDownloadUrl` is deliberately NOT a dependency: `useAction` returns
-    // a new function identity on every render, so including it re-runs this
-    // effect forever — the render loop documented for Convex actions in
-    // effects. The fetch is keyed on the arguments that actually identify the
-    // object, plus `attempt` for the re-mint.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, entryIndex, attempt]);
-
-  if (failed) {
-    return (
-      <div className="flex h-40 items-center justify-center rounded border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-400">
-        Image unavailable
-      </div>
-    );
-  }
-
-  if (!url) {
-    return (
-      <div className="flex h-40 items-center justify-center rounded border border-slate-800 bg-slate-900/60 p-2 text-xs text-slate-400">
-        Loading image…
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={url}
-      alt={alt}
-      className="h-40 w-auto rounded border border-slate-800 object-contain"
-      onError={() => {
-        // One retry: a signed URL that expired while the tab sat open mints a
-        // fresh one. A second failure is a real problem, not an expiry, and
-        // retrying it forever would hammer the action.
-        if (attempt < 1) {
-          setAttempt((previous) => previous + 1);
-          setUrl(null);
-        } else {
-          setFailed(true);
-        }
-      }}
-    />
-  );
-}
 
 function imageSummary(image: PlaceholderImage): string {
   if (image.status === "failed") {
@@ -190,22 +113,6 @@ function statusLabel(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function jobSummary(job: PlaceholderJob): string {
-  const done = job.processedImages + job.failedImages;
-  return `${statusLabel(job.status)} — ${done} of ${job.totalImages} images processed, ${job.failedImages} failed, ${job.pairCount} pairs`;
-}
-
-/**
- * How many times pairing had to ask the name resolver — the spend signal for a
- * run, since adjacency and the image pool are free and the resolver is not.
- *
- * Rendered on its own line rather than folded into the summary sentence so a
- * flow can assert it exactly. The `?? 0` is belt and braces for a row written
- * before the counter existed; the server already defaults it.
- */
-function resolverCallsOf(job: PlaceholderJob): number {
-  return job.resolverCalls ?? 0;
-}
 
 export default function CardIntake() {
   // Warm the model on mount, so it is loading while the user picks files rather
@@ -357,15 +264,24 @@ export default function CardIntake() {
   // escalated image resolves (proof the heavy service is warm).
   const warmingUp = job?.heavyWarming ?? false;
 
+  const stage = deriveStage({ job, images, uploading, selectedCount: files.length });
+  const settledCount = (images ?? []).filter(
+    (i) => i.status === "done" || i.status === "failed",
+  ).length;
+  const totalCount = (images ?? []).length;
+  const failedCount = (images ?? []).filter((i) => i.status === "failed").length;
+  const inFlight = (images ?? []).filter(
+    (i) => i.status !== "done" && i.status !== "failed",
+  );
+
   return (
     <div className="space-y-8">
       <div>
         {/* h3: PrintLayout owns the h1 and the page owns the h2 (NEO-145). */}
         <h3 className="text-2xl font-bold mb-2">Upload your cards</h3>
         <p className="text-slate-400 max-w-2xl">
-          Drop a zip of card photos, or pick the images directly — either way
-          they are cropped and matched into front/back pairs. Keep them in scan
-          order (front, back, front, back): that order is what pairs them.
+          Photograph the cards you want placeholders for, then drop them here.
+          They are cropped and matched into front/back pairs, nine to a sheet.
         </p>
       </div>
 
@@ -384,98 +300,100 @@ export default function CardIntake() {
         {notice?.text ?? ""}
       </div>
 
-      <form
-        className="space-y-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void handleUpload();
-        }}
-      >
-        <label
-          htmlFor="scan-files"
-          className="block text-sm font-medium text-slate-300"
+      {/* Adding is always available while the batch is open — that is what a
+          scanner session IS — so the dropzone does not disappear once a run
+          starts. It is hidden only when there is nothing left to add to. */}
+      {stage !== "done" && stage !== "failed" && stage !== "finishing" && (
+        <form
+          className="space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleUpload();
+          }}
         >
-          Card photos, or a zip of them
-        </label>
-        {/* A raw file input: the Input primitive exists to give TEXT fields a
-            document-unique class for the E2E driver, and a file picker is not a
-            field it types into.
-
-            `accept` takes a zip OR images through the one control — see
-            `classifyIntake`. `.zip` is listed by EXTENSION rather than MIME
-            because browsers disagree about the latter (application/zip,
-            application/x-zip-compressed, or "" depending on platform), and an
-            accept list missing the real type silently hides the file in the
-            picker. */}
-        <input
-          id="scan-files"
-          type="file"
-          accept=".zip,image/jpeg,image/png"
-          multiple
-          disabled={uploading}
-          onChange={(event) =>
-            setFiles(Array.from(event.target.files ?? []))
-          }
-          className="block w-full text-sm text-slate-300 file:mr-3 file:rounded file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-slate-200"
-        />
-        <p className="text-xs text-slate-400">
-          {files.length === 0
-            ? "No files selected."
-            : `${files.length} file${files.length === 1 ? "" : "s"} selected.`}
-        </p>
-        <NeonButton type="submit" disabled={files.length === 0 || uploading}>
-          {/* Same condition as `disabled` (NEO-128) — the label is the only
-              evidence the E2E driver has that a control is inert. */}
-          {uploading ? "Uploading..." : "Start Upload"}
-        </NeonButton>
-      </form>
-
-      {progress.length > 0 && (
-        <section aria-labelledby="upload-progress-heading" className="space-y-2">
-          <h3 id="upload-progress-heading" className="text-lg font-semibold">
-            Upload progress
-          </h3>
-          <ul className="space-y-1 text-sm">
-            {progress.map((row) => (
-              <li key={row.position} className="flex flex-wrap gap-2">
-                <span className="text-slate-200">{row.name}</span>
-                <span className="text-slate-400">
-                  {row.state === "pending" && "Waiting"}
-                  {row.state === "uploading" && "Uploading…"}
-                  {row.state === "uploaded" && `Uploaded (entry ${row.entryIndex})`}
-                  {row.state === "failed" && `Failed — ${row.error ?? "unknown error"}`}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+          <Dropzone files={files} onFiles={setFiles} disabled={uploading} />
+          <NeonButton type="submit" disabled={files.length === 0 || uploading}>
+            {/* Same condition as `disabled` (NEO-128) — the label is the only
+                evidence the E2E driver has that a control is inert. */}
+            {uploading
+              ? "Uploading..."
+              : jobId
+                ? "Add these to the batch"
+                : "Start Upload"}
+          </NeonButton>
+        </form>
       )}
 
       {jobId && (
-        <section aria-labelledby="session-heading" className="space-y-3">
-          {/* The programmatic focus target after Close/Abort, so it needs a
-              visible ring of its own — `outline-none` with no replacement left
-              a keyboard user with no idea where focus had gone (WCAG 2.4.7). */}
-          <h2
+        <section aria-labelledby="session-heading" className="space-y-4">
+          {/* The programmatic focus target after finishing or discarding, so it
+              needs a visible ring of its own — `outline-none` with no
+              replacement left a keyboard user with no idea where focus had gone
+              (WCAG 2.4.7). */}
+          <h3
             id="session-heading"
             tabIndex={-1}
-            className="text-lg font-semibold outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
+            className="text-lg font-semibold focus-visible:ring-2 focus-visible:ring-neon-purple rounded"
           >
-            Session {jobId.slice(0, 8)}
-          </h2>
-          <p className="text-sm text-slate-300">
-            {job === undefined
-              ? "Loading session…"
-              : job === null
-                ? "Session not found."
-                : jobSummary(job)}
-          </p>
-          {/* A distinct info-styled note by the status line — not error-toned,
-              since a heavy-service warm-up is expected, not a fault. role=status
-              + polite so it is announced; the sentence carries the meaning, so it
-              is not colour-only (the pulsing dot is decoration, hidden from AT).
-              Scoped to escalations (job.heavyWarming): fast-cropped cards keep
-              streaming into the lists below while this shows. */}
+            {stage === "done"
+              ? "Your cards are ready"
+              : stage === "failed"
+                ? "This batch stopped"
+                : "Your cards"}
+          </h3>
+
+          {/* ONE sentence saying what is happening, and one saying what to do.
+              This is the whole answer to "how would a new user know to wait?" */}
+          <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 space-y-2">
+            <p role="status" aria-live="polite" className="text-slate-200">
+              {stage === "uploading" && "Sending your photos…"}
+              {stage === "working" &&
+                (totalCount === 0
+                  ? "Getting your photos ready…"
+                  : `Reading your cards — ${settledCount} of ${totalCount} done.`)}
+              {stage === "waiting" &&
+                `All ${totalCount} photo${totalCount === 1 ? "" : "s"} read.`}
+              {stage === "finishing" && "Matching up the last pairs…"}
+              {stage === "done" &&
+                `${pairs?.length ?? 0} pair${(pairs?.length ?? 0) === 1 ? "" : "s"} ready to print.`}
+              {stage === "failed" && failureHeadline(job)}
+            </p>
+            <p className="text-sm text-slate-400">
+              {stage === "working" &&
+                "Pairs appear below as each card finishes. This takes a few minutes — you can close this tab and come back to it."}
+              {stage === "waiting" &&
+                "Add more photos above, or finish the batch when you have everything."}
+              {stage === "finishing" && "Almost done. Nothing else to do."}
+              {stage === "done" && "Check the pairs below before you print."}
+              {stage === "failed" && failureAdvice(job)}
+            </p>
+
+            {/* Finishing is a real decision, so it is offered plainly and only
+                becomes the primary action once there is nothing still running.
+                While work is in flight it stays secondary — pressing it then is
+                legitimate but rarely what someone means. */}
+            {canAct && (
+              <div className="flex flex-wrap gap-3 pt-1">
+                <NeonButton
+                  type="button"
+                  secondary={stage !== "waiting"}
+                  onClick={() => setPendingAction("close")}
+                >
+                  {stage === "waiting" ? "Finish the batch" : "Finish now"}
+                </NeonButton>
+                <button
+                  type="button"
+                  onClick={() => setPendingAction("abort")}
+                  className="text-sm text-slate-400 underline hover:text-neon-pink p-2 -m-2"
+                >
+                  Discard this batch
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* A heavy-service warm-up is expected, not a fault — info-toned, and
+              the sentence carries the meaning so it is not colour-only. */}
           {warmingUp && (
             <p
               role="status"
@@ -486,160 +404,153 @@ export default function CardIntake() {
                 aria-hidden="true"
                 className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-neon-blue"
               />
-              Warming up the full card processor — some scans need deeper
-              analysis, which can take a couple of minutes the first time. The
-              rest keep coming in below.
+              A few of these need a closer look, which takes a couple of minutes
+              the first time. The rest keep coming in below.
             </p>
           )}
-          {job && (
-            <p className="text-sm text-slate-400">
-              resolver calls: {resolverCallsOf(job)}
-            </p>
-          )}
-          {job?.errorCode && (
-            <p className="text-sm text-neon-pink">Error: {job.errorCode}</p>
-          )}
-          {canAct && (
-            <div className="flex gap-3">
-              <NeonButton
-                secondary
-                type="button"
-                onClick={() => setPendingAction("close")}
-              >
-                Close Session
-              </NeonButton>
-              <NeonButton
-                cancel
-                type="button"
-                onClick={() => setPendingAction("abort")}
-              >
-                Abort Session
-              </NeonButton>
-            </div>
-          )}
-        </section>
-      )}
 
-      {jobId && (
-        <section aria-labelledby="images-heading" className="space-y-2">
-          <h2 id="images-heading" className="text-lg font-semibold">
-            Images
-          </h2>
-          {images === undefined && (
-            <p className="text-sm text-slate-400">Loading images…</p>
+          {/* THE SIGNATURE: the 9-pocket page this feature exists to fill,
+              used as the progress display. See pocket-page.tsx. */}
+          {pairs && pairs.length > 0 && (
+            <PocketPage jobId={jobId} pairs={pairs as PocketPair[]} />
           )}
-          {images?.length === 0 && (
+          {pairs?.length === 0 && stage !== "failed" && (
             <p className="text-sm text-slate-400">
-              No images yet. They appear here as each upload is confirmed.
+              No pairs yet — they appear here as cards finish.
             </p>
           )}
-          {images && images.length > 0 && (
-            <ul className="space-y-1 text-sm">
-              {images.map((image) => (
+
+          {/* Which cards are still being read. Only in-flight rows — a finished
+              card is already in a pocket above, and listing it twice was one of
+              the redundancies that made the old page hard to scan. This is also
+              where an escalated card announces itself: without it a photo on the
+              slow path looks identical to one that is stuck. */}
+          {inFlight.length > 0 && (
+            <ul className="space-y-1 text-sm list-none p-0">
+              {inFlight.map((image) => (
                 <li key={image.entryIndex} className="flex flex-wrap gap-2">
-                  <span className="text-slate-400">#{image.entryIndex}</span>
-                  <span className="text-slate-200">{image.originalName}</span>
-                  <span className="text-slate-400">{imageSummary(image)}</span>
+                  <span className="text-slate-300">{image.originalName}</span>
+                  <span className="text-slate-500">{imageSummary(image)}</span>
                 </li>
               ))}
             </ul>
           )}
-        </section>
-      )}
 
-      {jobId && (
-        <section aria-labelledby="pairs-heading" className="space-y-3">
-          <h2 id="pairs-heading" className="text-lg font-semibold">
-            Matched pairs
-          </h2>
-          {pairs === undefined && (
-            <p className="text-sm text-slate-400">Loading pairs…</p>
-          )}
-          {pairs?.length === 0 && (
-            <p className="text-sm text-slate-400">
-              No pairs yet. Pairing runs as images finish processing.
-            </p>
-          )}
-          {pairs && pairs.length > 0 && (
-            <ul className="space-y-4">
-              {pairs.map((pair) => {
-                const identity = [
-                  pair.player ?? "Unidentified",
-                  pair.cardNumber ? `#${pair.cardNumber}` : null,
-                  CONFIDENCE_LABELS[pair.confidence],
-                  MECHANISM_LABELS[pair.mechanism],
-                ]
-                  .filter(Boolean)
-                  .join(" · ");
-                return (
-                  <li
-                    key={`${pair.frontIndex}-${pair.backIndex}`}
-                    className="rounded-lg border border-slate-800 bg-slate-900/40 p-3"
-                  >
-                    <p className="mb-2 text-sm text-slate-200">{identity}</p>
-                    <div className="flex flex-wrap gap-3">
-                      <ScanImage
-                        jobId={jobId}
-                        entryIndex={pair.frontIndex}
-                        alt={`Front of ${pair.player ?? "unidentified card"}`}
-                      />
-                      <ScanImage
-                        jobId={jobId}
-                        entryIndex={pair.backIndex}
-                        alt={`Back of ${pair.player ?? "unidentified card"}`}
-                      />
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-
+          {/* Cards that did not pair. Never hidden: an unmatched front is the
+              one thing the user has to act on, and a count alone would let it
+              pass unnoticed. */}
           {unmatched.length > 0 && (
-            <div className="space-y-1">
-              <h3 className="text-sm font-semibold text-slate-300">
-                Unmatched images
-              </h3>
-              <ul className="space-y-1 text-sm text-slate-400">
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold text-slate-300">
+                Not matched yet ({unmatched.length})
+              </h4>
+              <ul className="flex flex-wrap gap-2 list-none p-0">
                 {unmatched.map((image) => (
-                  <li key={image.entryIndex}>
-                    #{image.entryIndex} {image.originalName}
-                    {image.side ? ` — ${image.side} side` : ""}
+                  <li
+                    key={image.entryIndex}
+                    className="w-20 overflow-hidden rounded border border-slate-700"
+                  >
+                    <ScanImage
+                      jobId={jobId}
+                      entryIndex={image.entryIndex}
+                      alt={image.originalName}
+                    />
                   </li>
                 ))}
               </ul>
+              <p className="text-xs text-slate-500">
+                These need a partner. You can pair them by hand after the batch
+                finishes.
+              </p>
             </div>
           )}
+
+          {/* Photos the cropper could not read at all — distinct from unmatched,
+              and actionable in a different way (re-shoot, not re-pair). */}
+          {failedCount > 0 && (
+            <details className="text-sm text-slate-400">
+              <summary className="cursor-pointer">
+                {failedCount} photo{failedCount === 1 ? "" : "s"} couldn&apos;t be
+                read
+              </summary>
+              <ul className="mt-2 space-y-1 list-none p-0">
+                {(images ?? [])
+                  .filter((i) => i.status === "failed")
+                  .map((image) => (
+                    <li key={image.entryIndex}>{image.originalName}</li>
+                  ))}
+              </ul>
+              <p className="mt-2 text-xs text-slate-500">
+                Usually a blurry or very dark photo. Re-shoot those and add them
+                to a new batch.
+              </p>
+            </details>
+          )}
+
+          {/* The id is support information, not a heading. Kept, small and
+              selectable, because it is what identifies a run in a bug report. */}
+          <p className="text-xs text-slate-600 font-mono select-all">{jobId}</p>
         </section>
       )}
 
       {pendingAction === "close" && (
         <ConfirmDialog
-          title="Close this scan session?"
-          description="No more images can be added. Everything already uploaded finishes processing and pairing on its own."
-          confirmLabel="Yes, Close"
-          busyLabel="Closing..."
+          title="Finish this batch?"
+          description="No more photos can be added after this. Everything already uploaded finishes on its own."
+          confirmLabel="Finish it"
+          busyLabel="Finishing..."
           busy={actionBusy}
           onConfirm={() => void handleConfirmAction()}
-          onCancel={() => {
-            if (!actionBusy) setPendingAction(null);
-          }}
+          onCancel={() => setPendingAction(null)}
         />
       )}
 
       {pendingAction === "abort" && (
         <ConfirmDialog
-          title="Abort this scan session?"
-          description="Every image still queued is canceled and the session is marked failed. You can start a new one straight away."
-          confirmLabel="Yes, Abort"
-          busyLabel="Aborting..."
+          title="Discard this batch?"
+          description="Everything in it is thrown away, including cards already matched. This cannot be undone."
+          confirmLabel="Discard it"
+          busyLabel="Discarding..."
           busy={actionBusy}
           onConfirm={() => void handleConfirmAction()}
-          onCancel={() => {
-            if (!actionBusy) setPendingAction(null);
-          }}
+          onCancel={() => setPendingAction(null)}
         />
       )}
     </div>
   );
+}
+
+/** Plain-language headline for a stopped batch — never an error code. */
+function failureHeadline(job: PlaceholderJob | null | undefined): string {
+  if (!job) return "This batch stopped.";
+  // Cancelling writes status "failed" with errorCode CANCELED — there is no
+  // "canceled" status on the job row. Reading the status here would have
+  // shown a discarded batch the generic "stopped before it finished" copy.
+  if (job.errorCode === "CANCELED") return "You discarded this batch.";
+  switch (job.errorCode) {
+    case "CANCELED":
+      return "You discarded this batch.";
+    case "TOO_MANY_IMAGE_FAILURES":
+      return "Most of these photos couldn't be read.";
+    case "WEDGED":
+      return "This batch stalled and was stopped.";
+    case "INPUT_NOT_FOUND":
+      return "The upload didn't arrive.";
+    default:
+      return "This batch stopped before it finished.";
+  }
+}
+
+/** What to actually do about it. An error that offers no next step is a dead end. */
+function failureAdvice(job: PlaceholderJob | null | undefined): string {
+  if (!job || job.errorCode === "CANCELED")
+    return "Start a new batch when you're ready.";
+  switch (job.errorCode) {
+    case "TOO_MANY_IMAGE_FAILURES":
+      return "Cards need to be in focus and well lit, one card per photo. Re-shoot them and start a new batch.";
+    case "INPUT_NOT_FOUND":
+      return "Try uploading again — the file never reached us.";
+    default:
+      return "Start a new batch. If it keeps happening, send us the id below.";
+  }
 }

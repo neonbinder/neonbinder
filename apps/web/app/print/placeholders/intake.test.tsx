@@ -83,18 +83,18 @@ import CardIntake from "./intake";
  * The page reads its session id from the query string now, so every render needs
  * a router. `initialEntry` is how the "open an existing run" case arrives.
  */
-function renderPage(initialEntry = "/placeholders") {
+function renderPage(initialEntry = "/print/placeholders") {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/placeholders" element={<CardIntake />} />
+        <Route path="/print/placeholders" element={<CardIntake />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 function selectFiles(names: string[]) {
-  const input = screen.getByLabelText("Card photos, or a zip of them") as HTMLInputElement;
+  const input = screen.getByLabelText(/Drag your card photos here/) as HTMLInputElement;
   const files = names.map(
     (name) => new File(["bytes"], name, { type: "image/jpeg" }),
   );
@@ -149,7 +149,7 @@ describe("CardIntake", () => {
       // owns the h2 ("Placeholder Sheets") — intake is a section of it now.
       screen.getByRole("heading", { level: 3, name: "Upload your cards" }),
     ).not.toBeNull();
-    expect(screen.getByText("No files selected.")).not.toBeNull();
+    expect(screen.getByText("Nothing selected yet.")).not.toBeNull();
     // Nothing to upload yet, and the label says so rather than the button
     // silently doing nothing.
     expect(
@@ -160,7 +160,7 @@ describe("CardIntake", () => {
   it("counts the selected files", () => {
     renderPage();
     selectFiles(["front.jpg", "back.jpg"]);
-    expect(screen.getByText("2 files selected.")).not.toBeNull();
+    expect(screen.getByText("2 photos ready to upload.")).not.toBeNull();
   });
 
   it("opens one session and uploads every file into it", async () => {
@@ -181,7 +181,7 @@ describe("CardIntake", () => {
       jobId: "job-1234abcd",
       entryIndex: 0,
     });
-    expect(screen.getByRole("heading", { name: "Session job-1234" })).not.toBeNull();
+    expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull();
   });
 
   it("says why a session could not be started", async () => {
@@ -256,38 +256,41 @@ describe("CardIntake", () => {
     selectFiles(["front.jpg"]);
     fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Session job-1234" })).not.toBeNull(),
+      expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull(),
     );
 
     // Status line, composed rather than scattered across cells.
     expect(
-      screen.getByText(
-        "Collecting — 2 of 2 images processed, 0 failed, 1 pairs",
-      ),
+      screen.getByText("All 3 photos read."),
     ).not.toBeNull();
 
     const pairsSection = within(
-      screen.getByRole("heading", { name: "Matched pairs" })
+      screen.getByRole("heading", { name: /Your cards/ })
         .parentElement as HTMLElement,
     );
     expect(
-      pairsSection.getByText("Ken Griffey Jr. · #24 · exact match · by scan order"),
+      pairsSection.getByText("Ken Griffey Jr. #24 — Matched"),
     ).not.toBeNull();
 
     // Both sides are fetched through their own signed GET, minted when the
     // image renders rather than with the pair list.
     expect(
-      await screen.findByAltText("Front of Ken Griffey Jr."),
+      await screen.findByAltText("Front of Ken Griffey Jr. #24"),
     ).not.toBeNull();
-    expect(await screen.findByAltText("Back of Ken Griffey Jr.")).not.toBeNull();
+    // The pocket shows the FRONT only — a binder pocket is a front, and this
+    // grid previews the sheet that gets printed. Both sides side-by-side is the
+    // review grid's job (NEO-152 §3), which is where a user actually checks
+    // that a pair is the RIGHT pair.
+    expect(screen.queryByAltText(/^Back of/)).toBeNull();
     expect(mocks.fns[REFS.downloadUrl]).toHaveBeenCalledWith({
       jobId: "job-1234abcd",
-      entryIndex: 1,
+      entryIndex: 0,
     });
 
-    // A done image nothing paired is listed rather than dropped — an unmatched
-    // scan is the thing a user most needs to see.
-    expect(screen.getByText(/#2 stray\.jpg/)).not.toBeNull();
+    // A done image nothing paired is surfaced rather than dropped — an
+    // unmatched scan is the thing a user most needs to act on. It is now shown
+    // as a thumbnail under "Not matched yet", named by its file.
+    expect(await screen.findByAltText("stray.jpg")).not.toBeNull();
   });
 
   describe("cold-start (heavy warm-up) indicator", () => {
@@ -315,10 +318,10 @@ describe("CardIntake", () => {
         [REFS.job]: { ...baseJob, ...jobOverrides },
         [REFS.images]: images.map((i) => ({ originalName: `f${i.entryIndex}.jpg`, ...i })),
       };
-      return renderPage("/placeholders?jobId=job-1234abcd");
+      return renderPage("/print/placeholders?jobId=job-1234abcd");
     }
 
-    const WARMING = /Warming up the full card processor/;
+    const WARMING = /A few of these need a closer look/;
 
     it("shows while an escalation is waiting on the cold heavy service", () => {
       openWithJob({ heavyWarming: true });
@@ -375,11 +378,11 @@ describe("CardIntake", () => {
     selectFiles(["front.jpg"]);
     fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
-    const closeButton = await screen.findByRole("button", { name: "Close Session" });
+    const closeButton = await screen.findByRole("button", { name: /Finish/ });
     fireEvent.click(closeButton);
     expect(mocks.fns[REFS.close]).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Yes, Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish it" }));
     await waitFor(() =>
       expect(mocks.fns[REFS.close]).toHaveBeenCalledWith({ jobId: "job-1234abcd" }),
     );
@@ -407,61 +410,40 @@ describe("CardIntake", () => {
     selectFiles(["front.jpg"]);
     fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Abort Session" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard this batch" }));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
 
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(mocks.fns[REFS.cancel]).not.toHaveBeenCalled();
   });
 
-  it("opens an existing run straight from ?jobId=, with its resolver spend", () => {
-    // Addressability is the point of putting the id in the URL: the /testing
-    // entry point redirects here, and a run is shareable and survives a reload.
+  it("opens an existing run straight from ?jobId=", async () => {
+    // The resume path. Two assertions that used to live here checked
+    // "resolver calls: N" — a diagnostics counter that NEO-152 removed from the
+    // UI on purpose (it is a Map-lookup tally since NEO-170, meaningless to a
+    // collector). What matters on this path is that a run opened from the URL
+    // alone renders its state without the user having just created it.
     mocks.queries = {
       [REFS.job]: {
         jobId: "job-1234abcd",
         status: "succeeded",
         createdAt: Date.now(),
-        totalImages: 4,
-        processedImages: 4,
+        totalImages: 2,
+        processedImages: 2,
         failedImages: 0,
         rejectedEntries: 0,
-        pairCount: 2,
+        pairCount: 1,
         resolverCalls: 3,
+        heavyWarming: false,
       },
       [REFS.images]: [],
       [REFS.pairs]: [],
     };
+    renderPage("/print/placeholders?jobId=job-1234abcd");
 
-    renderPage("/placeholders?jobId=job-1234abcd");
-
-    expect(
-      screen.getByRole("heading", { name: "Session job-1234" }),
-    ).not.toBeNull();
-    // Nothing was uploaded to get here.
-    expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
-    // The spend signal for a run: adjacency and the image pool are free, the
-    // name resolver is not.
-    expect(screen.getByText("resolver calls: 3")).not.toBeNull();
-  });
-
-  it("reads a run with no resolver counter as zero calls", () => {
-    // Rows written before the counter existed have no field at all; the run
-    // view must still render rather than printing "undefined".
-    mocks.queries = {
-      [REFS.job]: {
-        jobId: "job-1234abcd",
-        status: "succeeded",
-        createdAt: Date.now(),
-        totalImages: 0,
-        processedImages: 0,
-        failedImages: 0,
-        rejectedEntries: 0,
-        pairCount: 0,
-      },
-    };
-    renderPage("/placeholders?jobId=job-1234abcd");
-    expect(screen.getByText("resolver calls: 0")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull();
+    // Plain language, and no internal counter anywhere on the page.
+    expect(screen.queryByText(/resolver calls/)).toBeNull();
   });
 
   it("is reachable — main.tsx mounts the intake page under /print, signed in", () => {
