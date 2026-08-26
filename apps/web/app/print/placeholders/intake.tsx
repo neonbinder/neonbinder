@@ -472,12 +472,15 @@ export default function CardIntake() {
             </ul>
           )}
 
-          {/* Review only once the batch is finished: `unpairPlaceholderImages`
-              schedules a NO-FORCE re-pair, which the incremental guard skips on
-              a terminal job but runs on a live one — where it could re-create
-              the pair the user just split before they can fix it. See the
-              mutation's doc comment. */}
-          {stage === "done" && pairs && pairs.length > 0 && (
+          {/* Review runs DURING processing, not after it.
+              A set upload is hundreds of cards and many minutes; nobody waits
+              for the batch to finish before starting to correct it. That used
+              to be unsafe — `unpairPlaceholderImages` only deleted the pair
+              row, so the next incremental pass re-formed it — and is now safe
+              because a split is recorded on both images (`unpairedFrom`) and
+              hard-rejected by the pool. User decisions are durable while the
+              matcher's own guesses stay fluid. */}
+          {pairs && (pairs.length > 0 || unmatched.length > 0) && (
             <ReviewGrid
               jobId={jobId}
               pairs={pairs as ReviewPair[]}
@@ -490,32 +493,6 @@ export default function CardIntake() {
           {/* Cards that did not pair. Never hidden: an unmatched front is the
               one thing the user has to act on, and a count alone would let it
               pass unnoticed. */}
-          {unmatched.length > 0 && stage !== "done" && (
-            <div className="space-y-2">
-              <h4 className="text-sm font-semibold text-slate-300">
-                Not matched yet ({unmatched.length})
-              </h4>
-              <ul className="flex flex-wrap gap-2 list-none p-0">
-                {unmatched.map((image) => (
-                  <li
-                    key={image.entryIndex}
-                    className="w-20 overflow-hidden rounded border border-slate-700"
-                  >
-                    <ScanImage
-                      jobId={jobId}
-                      entryIndex={image.entryIndex}
-                      alt={image.originalName}
-                    />
-                  </li>
-                ))}
-              </ul>
-              <p className="text-xs text-slate-500">
-                These need a partner. You can pair them by hand after the batch
-                finishes.
-              </p>
-            </div>
-          )}
-
           {/* Photos the cropper could not read at all — distinct from unmatched,
               and actionable in a different way (re-shoot, not re-pair). */}
           {failedCount > 0 && (

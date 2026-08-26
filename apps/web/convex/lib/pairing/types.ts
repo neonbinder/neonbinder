@@ -119,6 +119,14 @@ export interface PoolCard {
   key: string;
   side: CardSide;
   /**
+   * Keys this card must never be auto-paired with, because the user split them
+   * apart. A HARD reject in `CardPool.findMatch`, never a score penalty — a
+   * strong identity agreement must not be able to outvote an explicit human
+   * decision, which is the same reasoning as the player-disagreement reject.
+   */
+  unpairedFrom: readonly string[];
+
+  /**
    * Position in the scan, when the caller knows it. Two cards one apart were
    * photographed back to back, which is weak but real evidence they are the
    * two sides of one card — see ADJACENCY_SCORE. Null when unknown; the pool
@@ -140,6 +148,7 @@ export interface PoolCardInit {
   key: string;
   side: CardSide;
   order?: number | null;
+  unpairedFrom?: readonly string[];
   player?: string | null;
   team?: string | null;
   cardNumber?: string | null;
@@ -158,6 +167,7 @@ export function createPoolCard(init: PoolCardInit): PoolCard {
     key: init.key,
     side: init.side,
     order: init.order ?? null,
+    unpairedFrom: init.unpairedFrom ?? [],
     player: init.player ?? null,
     team: init.team ?? null,
     cardNumber: init.cardNumber ?? null,
@@ -275,6 +285,8 @@ export function makeMatchResult(
 export interface BatchImage {
   key: string;
   textCount: number;
+  /** Keys the user split this image from. See `PoolCard.unpairedFrom`. */
+  unpairedFrom?: readonly string[];
   /** Position in the scan. See `PoolCard.order`. */
   order?: number | null;
   originalFilename?: string | null;

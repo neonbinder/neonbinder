@@ -235,6 +235,7 @@ export function poolCardFromIdentity(
     return createPoolCard({
       key: image.key,
       order: image.order ?? null,
+      unpairedFrom: image.unpairedFrom ?? [],
       side: validSide(image.side) ?? sideFromTextCount(image.textCount),
       textCount: image.textCount,
       identityResolved: false,
@@ -251,6 +252,7 @@ export function poolCardFromIdentity(
   return createPoolCard({
     key: image.key,
     order: image.order ?? null,
+    unpairedFrom: image.unpairedFrom ?? [],
     side,
     player,
     team: identity.team,

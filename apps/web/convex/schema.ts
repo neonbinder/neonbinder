@@ -1044,6 +1044,25 @@ export default defineSchema({
     // run for this row yet — distinct from "unmatched", which means it ran and
     // found nothing.
     pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
+    // Entry indexes this image must never be AUTO-paired with again, because
+    // the user explicitly split them (NEO-152).
+    //
+    // A manual PAIR was always durable — the row carries mechanism "manual" and
+    // the matcher is told to leave it alone. A manual UNPAIR left no trace at
+    // all, so on a still-running batch the very next incremental pass was free
+    // to re-form the pair the user had just rejected. That made correcting a
+    // live batch impossible and forced review to wait for the batch to finish,
+    // which does not survive contact with a set upload of several hundred
+    // cards: nobody waits.
+    //
+    // Scoped to the PAIRING, not the image: splitting A from B says "these two
+    // are not partners", and leaves A free to pair with its real partner. A
+    // flag on the image would have said "never pair A again", which is a much
+    // bigger claim than the user made.
+    //
+    // Absent means no rejections. Cleared for a specific partner if the user
+    // later pairs them by hand after all.
+    unpairedFrom: v.optional(v.array(v.number())),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in zip order", so a

@@ -28,6 +28,8 @@ const REFS = {
   close: "placeholderStream:closePlaceholderStream",
   uploadUrl: "placeholderUploads:createPlaceholderImageUploadUrl",
   downloadUrl: "placeholderUploads:createPlaceholderImageDownloadUrl",
+  unpair: "placeholderPairing:unpairPlaceholderImages",
+  manualPair: "placeholderPairing:manuallyPairPlaceholderImages",
 } as const;
 
 const mocks = vi.hoisted(() => ({
@@ -56,6 +58,13 @@ vi.mock("@/convex/_generated/api", () => ({
       confirmPlaceholderImageUpload:
         "placeholderStream:confirmPlaceholderImageUpload",
       closePlaceholderStream: "placeholderStream:closePlaceholderStream",
+    },
+    // The review grid reaches for these; without the key the mocked `api`
+    // object yields undefined and the component throws during render.
+    placeholderPairing: {
+      unpairPlaceholderImages: "placeholderPairing:unpairPlaceholderImages",
+      manuallyPairPlaceholderImages:
+        "placeholderPairing:manuallyPairPlaceholderImages",
     },
     adapters: {
       placeholderUploads: {
@@ -289,14 +298,16 @@ describe("CardIntake", () => {
 
     // Both sides are fetched through their own signed GET, minted when the
     // image renders rather than with the pair list.
+    // TWO of each front now, and deliberately: the pocket grid previews the
+    // printed sheet, and the review grid below it shows the same card beside
+    // its back so the pairing can actually be judged.
     expect(
-      await screen.findByAltText("Front of Ken Griffey Jr. #24"),
-    ).not.toBeNull();
-    // The pocket shows the FRONT only — a binder pocket is a front, and this
-    // grid previews the sheet that gets printed. Both sides side-by-side is the
-    // review grid's job (NEO-152 §3), which is where a user actually checks
-    // that a pair is the RIGHT pair.
-    expect(screen.queryByAltText(/^Back of/)).toBeNull();
+      (await screen.findAllByAltText("Front of Ken Griffey Jr. #24")).length,
+    ).toBe(2);
+    // The back appears exactly once: in the review grid. The pocket grid shows
+    // fronts only — a binder pocket is a front — so a back here means the
+    // review grid rendered, which is where a pair is actually judged.
+    expect(screen.getAllByAltText(/^Back of/)).toHaveLength(1);
     expect(mocks.fns[REFS.downloadUrl]).toHaveBeenCalledWith({
       jobId: "job-1234abcd",
       entryIndex: 0,

@@ -419,7 +419,7 @@ describe("manuallyPairPlaceholderImages", () => {
 // ---------------------------------------------------------------------------
 
 describe("unpairPlaceholderImages", () => {
-  test("breaks an automatic pair and frees both images for re-pairing", async () => {
+  test("breaks an automatic pair, and the matcher does NOT put it back", async () => {
     const JOB = "job-unpair-auto";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
@@ -438,12 +438,18 @@ describe("unpairPlaceholderImages", () => {
     expect(await getPairs(t, JOB)).toHaveLength(0);
     expect((await getImages(t, JOB)).every((i) => i.pairStatus === "unmatched")).toBe(true);
 
-    // ...but eligible: a subsequent automatic run re-pairs them (they still match).
+    // ...and they STAY that way. This assertion was reversed on 2026-08-26:
+    // it used to expect a subsequent automatic run to re-pair them, since they
+    // still match on identity. That made a split meaningless on a live batch —
+    // the next incremental pass simply undid it — which is why review had to
+    // wait for the batch to finish. A several-hundred-card set upload cannot
+    // work that way, so the split is now recorded on both rows and hard-
+    // rejected by the pool AND by the adjacency fallback.
     await runAuto(t, JOB);
-    expect((await getPairs(t, JOB)).map((p) => [p.frontIndex, p.backIndex])).toEqual([[0, 1]]);
+    expect(await getPairs(t, JOB)).toHaveLength(0);
   });
 
-  test("breaks a manual pair, clearing the mark so the images re-enter auto", async () => {
+  test("breaks a manual pair, clearing the manual mark but not re-forming it", async () => {
     const JOB = "job-unpair-manual";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
@@ -463,12 +469,15 @@ describe("unpairPlaceholderImages", () => {
     await drain(t);
     expect(await getPairs(t, JOB)).toHaveLength(0);
 
-    // The manual mark is gone (the row WAS the mark) — a fresh auto run now
-    // treats them as ordinary images and pairs them by identity.
+    // The manual mark is gone (the row WAS the mark), so these are ordinary
+    // images again — but "ordinary" no longer means "re-pairable with each
+    // other". Breaking a pair is a decision about THESE TWO, and it holds
+    // whether the pair was manual or automatic.
     await runAuto(t, JOB);
-    const pairs = await getPairs(t, JOB);
-    expect(pairs).toHaveLength(1);
-    expect(pairs[0].mechanism).toBe("pool");
+    expect(await getPairs(t, JOB)).toHaveLength(0);
+    expect((await getImages(t, JOB)).every((i) => i.pairStatus === "unmatched")).toBe(
+      true,
+    );
   });
 
   test("refuses to unpair a pair that does not exist", async () => {
@@ -525,5 +534,102 @@ describe("ownership and auth", () => {
     await expect(
       t.mutation(P.unpairPlaceholderImages, { jobId: JOB, frontIndex: 0, backIndex: 1 }),
     ).rejects.toThrow(/not authenticated/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A user's split is durable — the matcher may not undo it (NEO-152)
+// ---------------------------------------------------------------------------
+//
+// Splitting used to only delete the pair row, which left the decision invisible
+// to the next incremental pass: on a live batch the matcher simply re-formed
+// the pair. That is why review had to wait for the batch to finish, and why a
+// several-hundred-card set upload was unworkable — nobody waits for it.
+describe("a split is recorded, not just applied", () => {
+  test("both images remember it, and an automatic run will not undo it", async () => {
+    const JOB = "job-split-durable";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
+    await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
+    await runAuto(t, JOB);
+    expect(await getPairs(t, JOB)).toHaveLength(1);
+
+    await t.withIdentity(USER_A).mutation(P.unpairPlaceholderImages, {
+      jobId: JOB,
+      frontIndex: 0,
+      backIndex: 1,
+    });
+
+    const rows = await getImages(t, JOB);
+    expect(rows.find((r) => r.entryIndex === 0)?.unpairedFrom).toEqual([1]);
+    expect(rows.find((r) => r.entryIndex === 1)?.unpairedFrom).toEqual([0]);
+
+    // The decisive assertion: these two agree on player AND team, so the pool
+    // would re-pair them instantly. It must not.
+    await runAuto(t, JOB);
+    expect(await getPairs(t, JOB)).toHaveLength(0);
+    expect((await getImages(t, JOB)).map((i) => i.pairStatus)).toEqual([
+      "unmatched",
+      "unmatched",
+    ]);
+  });
+
+  test("pairing them again by hand clears the split", async () => {
+    // The user changed their mind. A stale rejection would contradict the pair
+    // now sitting in the table.
+    const JOB = "job-split-cleared";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
+    await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
+    await runAuto(t, JOB);
+
+    const as = t.withIdentity(USER_A);
+    await as.mutation(P.unpairPlaceholderImages, {
+      jobId: JOB,
+      frontIndex: 0,
+      backIndex: 1,
+    });
+    await as.mutation(P.manuallyPairPlaceholderImages, {
+      jobId: JOB,
+      frontIndex: 0,
+      backIndex: 1,
+    });
+
+    const rows = await getImages(t, JOB);
+    expect(rows.find((r) => r.entryIndex === 0)?.unpairedFrom).toEqual([]);
+    expect(rows.find((r) => r.entryIndex === 1)?.unpairedFrom).toEqual([]);
+  });
+
+  test("a split image is still free to pair with someone else", async () => {
+    // Scoped to the PAIRING, not the image. "These two are not partners" is a
+    // much smaller claim than "never pair this card again", and only the
+    // smaller one is what the user made — so the freed front must still find
+    // its real partner on the next run.
+    const JOB = "job-split-repairs";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 3, processedImages: 3 });
+    await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
+    await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
+    await seedDone(t, JOB, 2, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
+    await runAuto(t, JOB);
+
+    const first = await getPairs(t, JOB);
+    expect(first).toHaveLength(1);
+    const rejected = first[0].backIndex;
+
+    await t.withIdentity(USER_A).mutation(P.unpairPlaceholderImages, {
+      jobId: JOB,
+      frontIndex: 0,
+      backIndex: rejected,
+    });
+    await runAuto(t, JOB);
+
+    const second = await getPairs(t, JOB);
+    expect(second).toHaveLength(1);
+    // Re-paired with the OTHER back, never the rejected one.
+    expect(second[0].frontIndex).toBe(0);
+    expect(second[0].backIndex).not.toBe(rejected);
   });
 });

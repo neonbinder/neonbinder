@@ -1720,6 +1720,7 @@ export const listDoneImagesForPairing = internalQuery({
       textCount: v.optional(v.number()),
       dhash: v.optional(v.string()),
       pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
+      unpairedFrom: v.optional(v.array(v.number())),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1740,6 +1741,7 @@ export const listDoneImagesForPairing = internalQuery({
         textCount: r.textCount,
         dhash: r.dhash,
         pairStatus: r.pairStatus,
+        unpairedFrom: r.unpairedFrom,
       }));
   },
 });

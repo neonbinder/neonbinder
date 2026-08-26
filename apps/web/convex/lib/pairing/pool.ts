@@ -247,6 +247,18 @@ export class CardPool {
         continue;
       }
 
+      // The user already separated these two. Also a hard reject, and for a
+      // stronger reason than the one above: no amount of identity agreement
+      // should let the matcher overrule a person who looked at both images and
+      // said no. Checked in both directions so the outcome cannot depend on
+      // which card the pool happens to be holding.
+      if (
+        card.unpairedFrom.includes(existing.key) ||
+        existing.unpairedFrom.includes(card.key)
+      ) {
+        continue;
+      }
+
       let score = 0;
       let cardNumberMatched = false;
       let playerMatched = false;
