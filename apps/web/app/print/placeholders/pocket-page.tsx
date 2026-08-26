@@ -34,8 +34,10 @@ export type PocketPair = {
 
 const POCKETS_PER_PAGE = 9;
 
-/** Settled = final. Mirrors `isLockedPair` on the server; see placeholderPairing.ts. */
-export function isSettled(pair: PocketPair): boolean {
+/** Settled = final. Mirrors `isLockedPair` on the server; see placeholderPairing.ts.
+ *  NOT exported: a non-component export here breaks react-refresh for the whole
+ *  module, which turns every edit into a full page reload. */
+function isSettled(pair: PocketPair): boolean {
   return pair.mechanism === "manual" || pair.confidence === "exact";
 }
 
@@ -110,6 +112,7 @@ export function PocketPage({
                       entryIndex={pair.frontIndex}
                       alt={`Front of ${cardName(pair)}`}
                       className="h-full w-full object-cover"
+                      forcePortrait
                     />
                     <span
                       className={[
