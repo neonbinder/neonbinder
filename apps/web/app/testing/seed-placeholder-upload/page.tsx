@@ -121,7 +121,7 @@ function TestingSeedPlaceholderUploadContent() {
   // Where to land afterwards. `{jobId}` in the value is substituted with the
   // session that was just created, so a flow can ask for the run view directly:
   // ?redirect=/placeholders%3FjobId%3D{jobId}
-  const redirect = searchParams.get("redirect") || "/placeholders?jobId={jobId}";
+  const redirect = searchParams.get("redirect") || "/print/placeholders?jobId={jobId}";
   // Which fixture set to upload (NEO-175). Allowlisted; anything unrecognised
   // (or absent) falls back to the default inset set.
   const requestedSet = searchParams.get("fixtures");

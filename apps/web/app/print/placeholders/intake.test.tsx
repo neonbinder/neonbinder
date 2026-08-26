@@ -492,12 +492,15 @@ describe("CardIntake", () => {
     expect(protectedBlock).toContain('path="placeholders"');
   });
 
-  it("keeps the old /placeholders URL working as a redirect", () => {
-    // The stopgap was never in the nav, but it IS in browser histories and in
-    // the /testing entry point the E2E suite drives. Deleting the route would
-    // turn those into a 404; this asserts they forward instead.
+  it("keeps the old /placeholders URL working, query string and all", () => {
+    // The stopgap was never in the nav, but it IS in browser histories and it
+    // is where /testing/seed-placeholder-upload sends the E2E suite. Deleting
+    // the route would 404 those; forwarding with a bare `to` would be worse —
+    // it drops `?jobId=`, so the run silently vanishes and the page looks empty
+    // rather than broken. The redirect must carry the search across.
+    expect(mainSource).toMatch(/path="\/placeholders" element=\{<LegacyPlaceholders \/>\}/);
     expect(mainSource).toMatch(
-      /path="\/placeholders"[\s\S]{0,200}?<Navigate to="\/print\/placeholders" replace \/>/,
+      /function LegacyPlaceholders\(\)[\s\S]{0,300}?to=\{`\/print\/placeholders\$\{search\}`\}/,
     );
   });
 });

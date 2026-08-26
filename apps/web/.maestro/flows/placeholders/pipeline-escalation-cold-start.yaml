@@ -49,7 +49,7 @@
 # pattern the fast-path flow uses to select its full-bleed set).
 #
 # R7 — Non-destructive: a per-user placeholder job under the signed-in worker's
-# own account; no shared/marketplace data. It never taps "Abort Session".
+# own account; no shared/marketplace data. It never taps "Discard this batch".
 #
 # ── WHY A TESTING PAGE UPLOADS THE FILES ──────────────────────────────────
 # maestro-web cannot drive a file input, so /testing/seed-placeholder-upload
@@ -81,7 +81,7 @@ tags:
 # allowed past the 7s budget.
 - launchApp
 - extendedWaitUntil:
-    visible: "Placeholder Scans"
+    visible: "Upload your cards"
     timeout: 90000
 
 # Step 2: PRECONDITION — a real two-image session exists. Matches at any point in
@@ -91,14 +91,20 @@ tags:
 # Step 3a: bring the session panel into view so the cold-start notice's location
 # is on screen when it appears. The notice renders asynchronously (only once the
 # first fast decline has escalated an image), and extendedWaitUntil never scrolls,
-# so we position first on a STABLE element that is present from the start and sits
-# just below where the notice appears: the "resolver calls" line. No
-# centerElement — this line sits high on the page with little above it to centre
-# against (centering there cannot settle), and this is a position-only scroll, not
-# a scroll-to-tap.
+# so we position first on a STABLE element present from the start and sitting just
+# ABOVE where the notice appears.
+#
+# That anchor used to be the "resolver calls" line. NEO-152 removed it from the
+# UI: it is a diagnostics tally (a Map lookup since NEO-170, not spend) and had
+# no business on a collector's screen. The section heading is the stable
+# replacement — it renders as soon as a job id is in the URL, which is the same
+# moment the old line did, and the notice renders inside the panel below it.
+#
+# No centerElement — this sits high on the page with little above it to centre
+# against, and this is a position-only scroll, not a scroll-to-tap.
 - scrollUntilVisible:
     element:
-      text: ".*resolver calls.*"
+      text: "Your cards"
 
 # ── Step 3: THE hard requirement — the user is told during the cold start ──────
 # `heavyWarming` turns true the moment the first image escalates and stays true

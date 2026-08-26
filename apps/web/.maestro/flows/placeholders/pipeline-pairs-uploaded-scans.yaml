@@ -22,7 +22,8 @@
 #   * Step 3b asserts the cold-start notice is ABSENT — so a regression that pushed
 #     these frame-filling cards onto the heavy service (the fast path silently
 #     declining them) surfaces here instead of passing unnoticed.
-#   * "resolver calls: 6" (Step 5) proves identity-first pairing RAN over all six
+#   * "3 pairs ready to print." (Step 5) proves pairing RAN over all six —
+#     six images cannot become three pairs any other way
 #     rows.
 # There is no `when:` branch anywhere in it, and the precondition below proves a
 # real six-image job exists BEFORE the wait.
@@ -36,7 +37,7 @@
 # product bug. Pairing correctness is owned by convex/lib/pairing/*.test.ts and
 # proven end-to-end on the HEAVY crop by pipeline-escalation-cold-start.yaml, so
 # this flow asserts only what the fast path makes deterministic (6/6, 0 failed,
-# no cold-start notice, resolver calls 6).
+# no cold-start notice, three pairs).
 #
 # R3 — Nothing else covers this. pipeline-escalation-cold-start.yaml exercises
 # the ESCALATION path; flip-edge-mirrors-the-backs tests print-sheet layout, not
@@ -52,7 +53,7 @@
 # this is a per-user placeholder job). Closing the session (Step 4) is NOT
 # destructive — it is the batch's normal terminal transition (collecting →
 # pairing → succeeded), the sanctioned way to finish a stream. It deliberately
-# does NOT tap "Abort Session", which IS destructive.
+# does NOT tap "Discard this batch", which IS destructive.
 #
 # ── WHY A TESTING PAGE UPLOADS THE FILES ──────────────────────────────────
 # maestro-web cannot attach a file to <input type=file> (there is no working
@@ -90,14 +91,20 @@ tags:
 # external round-trip, which is why it is allowed past the 7s budget.
 - launchApp
 - extendedWaitUntil:
-    visible: "Placeholder Scans"
+    visible: "Upload your cards"
     timeout: 90000
 
 # Step 2: PRECONDITION — a real six-image session exists. The status line reads
 # "<status> — <n> of 6 images processed, ...", so this matches at any point in
 # the run and pins the batch size before we commit to waiting on it. It also
 # proves the status line is on screen without scrolling, which Step 3 relies on.
-- assertVisible: ".*of 6 images processed.*"
+# The panel exists at all — it renders as soon as a job id is in the URL. The
+# old assertion matched a composed status line ("… of 6 images processed …")
+# that NEO-152 replaced with stage-specific copy: while images are in flight it
+# reads "Reading your cards — N of 6 done.", and the instant the last one lands
+# it becomes "All 6 photos read." A precondition cannot depend on which of those
+# it catches, so it asserts the panel and lets Step 3 gate on the real state.
+- assertVisible: "Your cards"
 
 # ── Step 3: the fast-path completion wait ─────────────────────────────────────
 # All six images process on the FAST classical service and none touches the model.
@@ -114,7 +121,7 @@ tags:
 # status line is above the fold (Step 2), and extendedWaitUntil never scrolls, so
 # no scroll is needed.
 - extendedWaitUntil:
-    visible: ".*6 of 6 images processed, 0 failed.*"
+    visible: "All 6 photos read."
     timeout: 120000
 
 # Step 3b: the cold-start notice is ABSENT. The fast path escalates nothing, so
@@ -131,34 +138,34 @@ tags:
 # ── Step 4: CLOSE the session so the FINAL pairing run records the count ───────
 # The 6/6 completion above happened while the stream was still "Collecting": the
 # provisional pairing runs formed the pairs but deliberately do NOT record
-# `resolverCalls`. Only the FINAL run does, over the whole batch at once, and it
-# fires when the stream is CLOSED. Without this step the page still reads
-# "resolver calls: 0" and Step 5 can never see 6.
+# the batch as SUCCEEDED. Only the FINAL run does, and it fires when the stream
+# is CLOSED. Without this step the panel stays on "All 6 photos read." and Step
+# 5 never sees the finished state.
 - scrollUntilVisible:
     element:
-      text: "Close Session"
+      text: "Finish the batch"
     centerElement: true
-- tapOn: "Close Session"
-# Closing is guarded behind an "are you sure". Its focus opens on Cancel (so a
-# reflexive Enter does the safe thing), which is why the confirm is the SECOND
-# button, "Yes, Close".
-- assertVisible: "Close this scan session?"
-- tapOn: "Yes, Close"
+- tapOn: "Finish the batch"
+# Finishing is guarded behind an "are you sure". Its focus opens on the cancel
+# choice (so a reflexive Enter does the safe thing), which is why the confirm is
+# the SECOND button, "Finish it".
+- assertVisible: "Finish this batch?"
+- tapOn: "Finish it"
 # Wait for the batch to reach its terminal state. For a small batch (this flow's
 # six images; ≤100), the close mutation finalizes pairing INLINE in its own
-# transaction — recordResolverCalls + markJobSucceeded commit together, NOT via a
-# scheduled runPairing hop — then the reactive push flips the status line straight
-# to "Succeeded". There is no external compute here: every image is already done,
+# transaction — the final pairing and markJobSucceeded commit together, NOT via a
+# scheduled runPairing hop — then the reactive push flips the panel straight to
+# the finished copy. There is no external compute here: every image is already done,
 # so there is no crop/OCR round-trip. The status line goes "Collecting" →
-# "Succeeded" directly (no visible "Pairing" step for a small batch); matching
-# "Succeeded" on the same 6/0 arithmetic proves the final run finished, and
-# recordResolverCalls commits with markJobSucceeded, so once the status is
-# "Succeeded" the count is already 6 for Step 5 to read. (Pair count omitted here
+# the finished state directly (no visible "Pairing" step for a small batch), and
+# the pair count in that copy is written by the same transaction — so once
+# "3 pairs ready to print." is on screen the final run has demonstrably
+# completed. (Per-pair detail omitted here
 # for the same reason as Step 3 — see the R2 pair-count note in the header.)
 #
 # The terminal transition is finalized INLINE in the close mutation for small
-# batches (NEO-175, commit 557f1d4): match fronts↔backs, record resolver calls,
-# and flip the job to "Succeeded" all commit atomically when the "Yes, Close"
+# batches (NEO-175, commit 557f1d4): match fronts↔backs, write the pairs, and
+# flip the job to succeeded all commit atomically when the "Finish it"
 # tap's mutation returns — sub-second even under the preview's 8-runner
 # contention, with no scheduler hop and no action-queue wait. (Previously this
 # FINAL run was a Convex *action* scheduled at runAfter(0); as an action it backed
@@ -170,16 +177,21 @@ tags:
 # transition is now <1s, so extendedWaitUntil resolves instantly on a healthy run
 # and still fails a genuinely broken finalize.
 - extendedWaitUntil:
-    visible: ".*Succeeded.*6 of 6 images processed, 0 failed.*"
+    visible: "3 pairs ready to print."
     timeout: 15000
 
-# Step 5: identity matching ran over the whole batch. Under identity-first
-# pairing every done image is resolved once (a cheap dictionary lookup, not a
-# model call), so 6 done images = 6 resolver calls. Only the FINAL pairing run
-# records the count — which is why Step 4 had to close the session to fire it — so
-# it is a stable 6. This proves identity-first pairing RAN over all six rows.
-# WHICH pairs the pool placed vs. the guarded adjacency fallback — and HOW MANY
-# pairs form on the fast crop — is a per-pair, model-dependent verdict owned by the
-# deterministic unit suite (convex/lib/pairing/pool.test.ts), NOT asserted here —
-# the E2E asserts only the deterministic outcome (6/6, 0 failed, resolver calls 6).
-- assertVisible: "resolver calls: 6"
+# Step 5: pairing ran over the whole batch. Six images resolving into THREE
+# pairs cannot happen any other way, and only the FINAL run writes that count —
+# which is why Step 4 had to finish the session to fire it.
+#
+# WHICH pairs the pool placed vs. the guarded adjacency fallback, and at what
+# confidence, is a per-pair model-dependent verdict owned by the deterministic
+# unit suite (convex/lib/pairing/pool.test.ts) and NOT asserted here. That
+# restraint matters more since NEO-152: confidence now varies legitimately with
+# the fixture — a set whose backs omit the player name pairs correctly on weaker
+# evidence — so an E2E that pinned the mechanism would fail on a card change
+# rather than on a regression.
+# And the review step exists for the pairs just formed — the correction surface
+# NEO-152 §3 requires, which is what makes the pairing trustworthy rather than
+# merely present.
+- assertVisible: "Check the pairs"
