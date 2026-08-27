@@ -22,22 +22,36 @@
 #   * Step 3b asserts the cold-start notice is ABSENT — so a regression that pushed
 #     these frame-filling cards onto the heavy service (the fast path silently
 #     declining them) surfaces here instead of passing unnoticed.
-#   * "3 pairs ready to print." (Step 5) proves pairing RAN over all six —
-#     six images cannot become three pairs any other way
-#     rows.
+#   * "2 pairs ready to print." together with "Not paired (2)" (Step 5)
+#     accounts for every image: 2 pairs x 2 + 2 loose = 6. Pairing demonstrably
+#     ran over the whole batch and dropped nothing. A pipeline that lost an
+#     image, or a matcher that paired greedily across sides, lands on different
+#     numbers and fails here.
 # There is no `when:` branch anywhere in it, and the precondition below proves a
 # real six-image job exists BEFORE the wait.
 #
-# WHY THE PAIR COUNT IS NOT ASSERTED HERE. On the FAST classical crop the synthetic
-# full-bleed FRONT of one fixture pair (Marcus VORKLE) deterministically classifies
-# as side "back" (reproduced with a direct /process-entry probe: needs_escalation
-# false, side "back"), so only 2 pairs form on the fast path, not 3. This is a
-# synthetic-fixture artifact — a real card front carries a player PHOTO, which
-# side-classifies reliably; the flat full-bleed synthetic front does not — NOT a
-# product bug. Pairing correctness is owned by convex/lib/pairing/*.test.ts and
-# proven end-to-end on the HEAVY crop by pipeline-escalation-cold-start.yaml, so
-# this flow asserts only what the fast path makes deterministic (6/6, 0 failed,
-# no cold-start notice, three pairs).
+# WHY TWO PAIRS AND NOT THREE. The fixture set was designed as three pairs, and
+# the number asserted here is deliberately 2. On the FAST classical crop the
+# synthetic full-bleed FRONT of one pair (Marcus VORKLE) deterministically
+# classifies as side "back" (reproduced with a direct /process-entry probe:
+# needs_escalation false, side "back"). The pool therefore holds two fronts and
+# four backs: two pairs form, and the two left over are BOTH backs, which can
+# never pair with each other. That is also why NEO-152's adjacency bonus does not
+# rescue them — adjacency only corroborates a match, it cannot create one across
+# two same-side images.
+#
+# This is a synthetic-fixture artifact, not a product bug: a real card front
+# carries a player PHOTO and side-classifies reliably, while a flat full-bleed
+# synthetic front does not. Verified against the dev deployment on 2026-08-26 by
+# pushing this exact fixture set through the same seed page this flow uses —
+# "All 6 photos read.", no cold-start notice, then "2 pairs ready to print."
+# and "Not paired (2)" once the batch was finished.
+#
+# WHICH pairs formed, and at what confidence, is still NOT asserted — that is a
+# model-dependent per-pair verdict owned by convex/lib/pairing/*.test.ts, and
+# NEO-152 made confidence legitimately fixture-dependent, so pinning the
+# mechanism here would fail on a card change rather than on a regression. What
+# is asserted is the arithmetic, which is deterministic.
 #
 # R3 — Nothing else covers this. pipeline-escalation-cold-start.yaml exercises
 # the ESCALATION path; flip-edge-mirrors-the-backs tests print-sheet layout, not
@@ -74,8 +88,8 @@
 # fast_tiered_crop: all six return the input untouched, none escalates). Each
 # front and back print the SAME full player name so the identity pool pairs them.
 # (The set was DESIGNED as three pairs, but on the fast crop one synthetic front
-# side-classifies as "back", so the fast path forms 2 — see the R2 pair-count note
-# above; the pair COUNT is not asserted here.)
+# side-classifies as "back", so the fast path forms 2 and leaves two backs loose
+# — see the "WHY TWO PAIRS AND NOT THREE" note above.)
 appId: com.neonbinder.web
 url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-fullbleed&worker=${WORKER_INDEX || "0"}
 name: Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start
@@ -117,9 +131,9 @@ tags:
 # "N of 6 images processed" counter is visible progress the whole time. Every
 # number in the assert is load-bearing: six accounted for, none failed; a dropped
 # image or a crashed crop produces different numbers and fails here. The pair
-# COUNT is intentionally omitted (see the R2 pair-count note in the header). The
-# status line is above the fold (Step 2), and extendedWaitUntil never scrolls, so
-# no scroll is needed.
+# count is not available yet at this point — it is written by the FINAL pairing
+# run, which Step 4 fires by finishing the batch. The status line is above the
+# fold (Step 2), and extendedWaitUntil never scrolls, so no scroll is needed.
 - extendedWaitUntil:
     visible: "All 6 photos read."
     timeout: 120000
@@ -159,9 +173,9 @@ tags:
 # so there is no crop/OCR round-trip. The status line goes "Collecting" →
 # the finished state directly (no visible "Pairing" step for a small batch), and
 # the pair count in that copy is written by the same transaction — so once
-# "3 pairs ready to print." is on screen the final run has demonstrably
-# completed. (Per-pair detail omitted here
-# for the same reason as Step 3 — see the R2 pair-count note in the header.)
+# "2 pairs ready to print." is on screen the final run has demonstrably
+# completed. (WHICH pairs, and at what confidence, stays unasserted — see the
+# two-pairs note in the header.)
 #
 # The terminal transition is finalized INLINE in the close mutation for small
 # batches (NEO-175, commit 557f1d4): match fronts↔backs, write the pairs, and
@@ -177,12 +191,16 @@ tags:
 # transition is now <1s, so extendedWaitUntil resolves instantly on a healthy run
 # and still fails a genuinely broken finalize.
 - extendedWaitUntil:
-    visible: "3 pairs ready to print."
+    visible: "2 pairs ready to print."
     timeout: 15000
 
-# Step 5: pairing ran over the whole batch. Six images resolving into THREE
-# pairs cannot happen any other way, and only the FINAL run writes that count —
-# which is why Step 4 had to finish the session to fire it.
+# Step 5: pairing ran over the whole batch, and every image is accounted for.
+# Two pairs plus two loose images is exactly six, and only the FINAL run writes
+# those counts — which is why Step 4 had to finish the session to fire it. The
+# orphan count is asserted alongside the pair count on purpose: the pair count
+# alone would still pass if the pipeline quietly lost the two leftovers, and
+# surfacing orphans rather than hiding them is a NEO-152 requirement in its own
+# right.
 #
 # WHICH pairs the pool placed vs. the guarded adjacency fallback, and at what
 # confidence, is a per-pair model-dependent verdict owned by the deterministic
@@ -195,3 +213,5 @@ tags:
 # NEO-152 §3 requires, which is what makes the pairing trustworthy rather than
 # merely present.
 - assertVisible: "Check the pairs"
+# The two unpaired backs are surfaced as their own bucket, not swallowed.
+- assertVisible: "Not paired (2)"

@@ -47,7 +47,13 @@ tags:
 ---
 # ============================================================
 # Step 1: land on the run view with a real batch behind it.
-# Six full-bleed fixtures upload on the fast path and pair into three cards.
+# Six full-bleed fixtures upload on the fast path and pair into TWO cards — the
+# set is designed as three pairs, but on the fast classical crop one synthetic
+# front side-classifies as "back", leaving two backs that can never pair. That
+# is a fixture artifact, explained in full in pipeline-pairs-uploaded-scans.yaml
+# ("WHY TWO PAIRS AND NOT THREE"), and verified on dev 2026-08-26. Two cards is
+# still all this flow needs: mirroring is about WHERE a pocket lands, and two
+# occupied pockets in one row prove a column reversal exactly as three would.
 # ============================================================
 - launchApp
 - extendedWaitUntil:
@@ -71,23 +77,23 @@ tags:
 - assertVisible: "Finish this batch?"
 - tapOn: "Finish it"
 - extendedWaitUntil:
-    visible: "3 pairs ready to print."
+    visible: "2 pairs ready to print."
     timeout: 120000
 
 # ============================================================
 # Step 3 — ASSERTION 1: the line the user budgets paper from.
 #
-# One composed sentence, recomputed from the form on every click. Three cards
-# fit one 9-pocket sheet and backs are on by default, so it reads:
+# One composed sentence, recomputed from the form on every click. Two cards fit
+# one 9-pocket sheet and backs are on by default, so it reads:
 #
-#     3 cards on 1 sheet of Letter, printed both sides. 9 fit on a sheet.
+#     2 cards on 1 sheet of Letter, printed both sides. 9 fit on a sheet.
 #
 # No input on the page holds that sentence, so matching it can only mean the
 # live summary. The scroll IS the assertion (R6).
 # ============================================================
 - scrollUntilVisible:
     element:
-      text: "3 cards on 1 sheet of Letter, printed both sides."
+      text: "2 cards on 1 sheet of Letter, printed both sides."
     centerElement: true
 
 # ============================================================
@@ -125,7 +131,7 @@ tags:
       containsDescendants:
         - text: "BACK"
       rightOf:
-        text: "3"
+        text: "2"
     centerElement: true
 
 # ============================================================
@@ -134,10 +140,15 @@ tags:
 # Short edge reverses ROWS rather than columns. With every card in row one there
 # is only one row, so the columns are NOT reversed and the back reads
 #
-#     1 2 3
+#     1 2
 #
-# — pocket 1 now sits to the LEFT of pocket 3, the exact inverse of Step 5. That
+# — pocket 1 now sits to the LEFT of pocket 2, the exact inverse of Step 5. That
 # inversion is the proof the radio is wired: nothing else on the page changes.
+#
+# Only OCCUPIED pockets carry a number, so with two cards the numbers on screen
+# are 1 and 2 and there is no pocket 3 to reference — measured on dev
+# 2026-08-26: long edge puts 1 at x=1879 and 2 at x=1790 (1 right of 2); short
+# edge puts 1 at x=1702 and 2 at x=1790 on a lower row (1 left of 2).
 # ============================================================
 - scrollUntilVisible:
     element:
@@ -150,7 +161,7 @@ tags:
       containsDescendants:
         - text: "BACK"
       leftOf:
-        text: "3"
+        text: "2"
     centerElement: true
 
 # ============================================================
@@ -167,7 +178,7 @@ tags:
 - tapOn: "Print the backs too"
 - scrollUntilVisible:
     element:
-      text: "3 cards on 1 sheet of Letter, front only."
+      text: "2 cards on 1 sheet of Letter, front only."
     centerElement: true
 - assertNotVisible: "Sheet 1 . back"
 - assertVisible: "Sheet 1 . front"

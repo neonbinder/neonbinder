@@ -7,7 +7,7 @@
 # card processor…" notice is on screen, and each escalating image shows an
 # "Escalating — deeper processing…" badge — rather than staring at a frozen
 # screen. It then proves the batch still finishes correctly through the heavy
-# service (2 of 2, 0 failed, 1 pair).
+# service — both images resolve and the pair forms.
 #
 # The FAST path (frame-filling scans → accepted in seconds → no cold start) is the
 # opposite user case, proved by pipeline-pairs-uploaded-scans.yaml. This flow is
@@ -31,11 +31,18 @@
 #     Step 3 times out and FAILS.
 #   * If images escalated but the notice was never shown — the exact "frozen
 #     screen" bug this flow is the guard against — Step 3 FAILS.
-#   * If the heavy service dropped or failed an image, the completion arithmetic
-#     ("2 of 2 … 0 failed, 1 pair") never matches and Step 6 FAILS. Every image
-#     can only reach "done"/counted via a HEAVY completion (an escalated row is
-#     not counted until heavy resolves it), so 2/2 here proves the heavy service
-#     processed both images.
+#   * If the heavy service dropped or failed an image, the batch cannot end on
+#     "1 pair ready to print." and Step 7 FAILS. That count is the load-bearing
+#     one, and it subsumes the old "0 failed" assertion: with exactly two images
+#     in the batch, a pair can only form if BOTH resolved successfully through
+#     the heavy service and side-classified as a front and a back. One failure
+#     yields zero pairs.
+#
+#     This matters because NEO-152 changed what the intermediate copy proves.
+#     "All 2 photos read." (Step 6) means every row has SETTLED, and deriveStage
+#     counts a failed row as settled — so that line alone no longer implies zero
+#     failures the way the old "2 of 2 … 0 failed" line did. Step 6 is therefore
+#     the wait for heavy completion; Step 7 is the correctness assertion.
 # There is no `when:` branch anywhere in it, and the precondition proves a real
 # two-image job exists before any wait.
 #
@@ -84,9 +91,16 @@ tags:
     visible: "Upload your cards"
     timeout: 90000
 
-# Step 2: PRECONDITION — a real two-image session exists. Matches at any point in
-# the run and pins the batch size before we commit to waiting.
-- assertVisible: ".*of 2 images processed.*"
+# Step 2: PRECONDITION — a real session exists behind this view. The panel
+# renders as soon as a job id is in the URL.
+#
+# This used to assert a composed status line ("… of 2 images processed …").
+# NEO-152 replaced that with stage-specific copy — "Getting your photos ready…"
+# before any row exists, then "Reading your cards — N of 2 done.", then "All 2
+# photos read." — so no single line is true at every moment and a precondition
+# cannot depend on catching one. It asserts the panel; Step 3 and Step 6 gate on
+# the real states.
+- assertVisible: "Your cards"
 
 # Step 3a: bring the session panel into view so the cold-start notice's location
 # is on screen when it appears. The notice renders asynchronously (only once the
@@ -142,7 +156,7 @@ tags:
 - scrollUntilVisible:
     direction: UP
     element:
-      text: ".*of 2 images processed.*"
+      text: "Your cards"
 
 # ── Step 6: the pair finishes through the HEAVY service (~5 min) ───────────────
 # This is the ONE sanctioned multi-minute wait, and it is legitimate ONLY because
@@ -153,12 +167,36 @@ tags:
 # cover a COLD heavy run for the pair: ~191s BiRefNet model cold load + ~124s CPU
 # inference per image (GPU is NEO-173, quota-blocked) ≈ ~315s, so 480s gives margin
 # without burning time — it resolves the instant the pair completes. Every number
-# is load-bearing: both images accounted for, none failed, exactly one pair — a
-# dropped image, a failed heavy crop, or a mis-pair produces different numbers and
-# fails here. A batch that genuinely needs longer than this is a heavy-capacity
-# PRODUCT finding to raise, never a timeout to inflate. (The status line always
-# pluralizes — it renders "1 pairs" — so the "1 pair" here matches via the trailing
-# `.*`; the count is still exact.)
+# A batch that genuinely needs longer than this is a heavy-capacity PRODUCT
+# finding to raise, never a timeout to inflate.
+#
+# "All 2 photos read." is the stage-`waiting` copy: every row in a two-image
+# batch has settled, which on this path can only happen once the heavy service
+# has returned for both. It is the heavy-completion wait, not the correctness
+# assertion — see the R2 note about failed rows counting as settled.
 - extendedWaitUntil:
-    visible: ".*2 of 2 images processed, 0 failed, 1 pair.*"
+    visible: "All 2 photos read."
     timeout: 480000
+
+# ── Step 7: close the batch, and assert the pairing arithmetic ────────────────
+# The pair count is only written by the FINAL pairing run, which fires when the
+# stream is CLOSED — so the batch has to be finished to see it. For a two-image
+# batch this finalizes inline in the close mutation (no scheduler hop), so the
+# panel flips almost immediately.
+#
+# "1 pair ready to print." is the load-bearing assertion of this whole flow's
+# second half: with two images, one pair proves both resolved through the heavy
+# service AND side-classified correctly. Zero pairs — the shape a dropped or
+# failed heavy crop produces — fails here. (NEO-152 pluralizes correctly, so the
+# copy really is "1 pair", singular; the old flow worked around a "1 pairs" bug
+# that no longer exists.)
+- scrollUntilVisible:
+    element:
+      text: "Finish the batch"
+    centerElement: true
+- tapOn: "Finish the batch"
+- assertVisible: "Finish this batch?"
+- tapOn: "Finish it"
+- extendedWaitUntil:
+    visible: "1 pair ready to print."
+    timeout: 30000
