@@ -701,12 +701,17 @@ describe("resolverCalls", () => {
     // Two pairs (Griffey pairs with Griffey by identity, twice over).
     expect(await getPairs(t, JOB)).toHaveLength(2);
     // Four done images → four identity resolutions in the final run.
-    expect(job?.resolverCalls).toBe(4);
+    // 2, not 4. Settled pairs leave the pool, so the final run only resolves
+    // what is still unsettled — the direct saving from matching once and moving
+    // on. The count is diagnostics, not spend (identity is a Map lookup since
+    // NEO-170), so this is a smaller number describing less work, not a
+    // regression.
+    expect(job?.resolverCalls).toBe(2);
     // Exposed to the owner — this is the number the release E2E reads.
     const visible = await t
       .withIdentity(USER_A)
       .query(api.placeholderPipeline.getPlaceholderJob, { jobId: JOB });
-    expect(visible?.resolverCalls).toBe(4);
+    expect(visible?.resolverCalls).toBe(2);
   });
 
   test("provisional runs record nothing — only the completed batch's count is stored", async () => {
@@ -733,7 +738,7 @@ describe("resolverCalls", () => {
 
     // The final run saw all four rows and records the batch's full count.
     expect((await getJob(t, JOB))?.status).toBe("succeeded");
-    expect((await getJob(t, JOB))?.resolverCalls).toBe(4);
+    expect((await getJob(t, JOB))?.resolverCalls).toBe(2);
   });
 
   test("the final run's count replaces a stale one rather than adding to it", async () => {
@@ -799,12 +804,23 @@ describe("resolverCalls", () => {
 // ---------------------------------------------------------------------------
 
 describe("a later arrival revises an earlier verdict", () => {
-  test("an out-of-order completion supersedes a pool pair, and both images flip", async () => {
-    // Images run three-wide through the pool, so they finish out of order as a
-    // matter of course: index 2 can be done while index 1 is still in flight.
-    // Pairing over {0, 2} legitimately matches them; pairing over {0, 1, 2} —
-    // which feeds the pool in entry-index order — legitimately does not. The
-    // superseded pair has to GO, and image 2 has to stop claiming to be paired.
+  test("an EXACT out-of-order pair is kept, and the straggler stays loose", async () => {
+    // REVERSED DELIBERATELY (2026-08-26). This test used to assert the opposite
+    // — that {0,2} is superseded when 1 arrives and scores higher. That churn
+    // is what made live review impossible: a set upload runs for many minutes
+    // and the user corrects alongside it, and pairs cannot rearrange themselves
+    // under the cursor.
+    //
+    // The rule now is match once and move on: an EXACT pair settles and leaves
+    // the pool. {0,2} agree on player and team (1500), so they settle while 1
+    // is still processing, and 1 stays loose even though {0,1} would have
+    // scored 1700 with the adjacency bonus.
+    //
+    // That is a real cost, accepted: order of arrival can now produce a worse
+    // pairing than a single end-of-batch run would. The mitigation is that the
+    // user can split and re-pair it live, which is the whole point of the
+    // review grid — and a wrong pair a human can fix beats a right pair that
+    // will not hold still.
     const JOB = "job-revise";
     const t = convexTest(schema, modules);
     await seedJob(t, JOB, { totalImages: 3 });
@@ -835,14 +851,15 @@ describe("a later arrival revises an earlier verdict", () => {
 
     const secondPass = await getPairs(t, JOB);
     expect(secondPass).toHaveLength(1);
-    expect([secondPass[0].frontIndex, secondPass[0].backIndex]).toEqual([0, 1]);
-    // A genuinely different pair, so a genuinely different row — the old one was
-    // deleted rather than edited into the new one.
-    expect(secondPass[0]._id).not.toBe(firstPass[0]._id);
+    // UNCHANGED: still {0,2}, and the very same row — settled means settled.
+    expect([secondPass[0].frontIndex, secondPass[0].backIndex]).toEqual([0, 2]);
+    expect(secondPass[0]._id).toBe(firstPass[0]._id);
+    // 1 is the straggler now, not 2 — it lands in the loose pile for the user
+    // to place, rather than displacing a settled pair.
     expect((await getImages(t, JOB)).map((i) => i.pairStatus)).toEqual([
       "paired",
-      "paired",
       "unmatched",
+      "paired",
     ]);
   });
 
@@ -1021,12 +1038,32 @@ describe("unchanged rows are not rewritten", () => {
 // ---------------------------------------------------------------------------
 
 describe("convergence", () => {
-  test("the state after the final run equals a single end-of-batch run", async () => {
-    // The property the whole design rests on. Job A is paired incrementally,
-    // with completions arriving out of order so intermediate runs reach WRONG
-    // conclusions and have to be revised. Job B is the control: identical
-    // images, seeded straight to "done", paired exactly once. The two outcomes
-    // must be indistinguishable.
+  test("incremental and single-run can DIVERGE — settling early is order-dependent", async () => {
+    // THIS TEST ASSERTED THE OPPOSITE UNTIL 2026-08-26, and the change is the
+    // most consequential one in this file, so it is spelled out rather than
+    // quietly inverted.
+    //
+    // The old property: "the state after the final run equals a single
+    // end-of-batch run, no matter how many provisional runs preceded it."
+    // Incremental pairing achieved it by recomputing everything every pass and
+    // revising freely.
+    //
+    // That is exactly the churn that makes live review impossible. A set upload
+    // is hundreds of cards over many minutes, and the user corrects alongside
+    // it — pairs cannot keep rearranging themselves. So an EXACT match now
+    // settles immediately and leaves the pool, and the cost is this: the answer
+    // depends on the order images finish in.
+    //
+    // Concretely, with these six images completing in the awkward order below,
+    // the incremental run settles front 0 with back 3 at 1500, while a single
+    // end-of-batch run pairs 0 with 1 at 1700 (the same identity plus the
+    // adjacency bonus). The incremental answer is genuinely worse.
+    //
+    // Accepted, because the alternative is worse in practice: a user can split
+    // and re-pair a wrong pair in seconds, and cannot work at all against a
+    // grid that will not hold still. What must NOT happen is silent divergence
+    // nobody knows about — hence this test, which pins the fact that the two
+    // paths differ and shows by how much.
     const specs: ImageSpec[] = [
       POOL_FRONT(0, "Ken Griffey Jr.", "Seattle Mariners"),
       POOL_BACK(1, "Ken Griffey Jr.", "Seattle Mariners", "24"),
@@ -1072,12 +1109,28 @@ describe("convergence", () => {
     });
     expect((await getJob(t, JOB_B))?.status).toBe("succeeded");
 
-    expect(pairingShape(await getPairs(t, JOB_A), await getImages(t, JOB_A))).toEqual(
-      pairingShape(await getPairs(t, JOB_B), await getImages(t, JOB_B)),
-    );
-    // Guard against the comparison being vacuous — a batch that paired nothing
-    // would satisfy the equality above for the wrong reason.
-    expect((await getPairs(t, JOB_A)).length).toBeGreaterThan(0);
+    const pairsA = await getPairs(t, JOB_A);
+    const pairsB = await getPairs(t, JOB_B);
+
+    // Not vacuous: both paired something.
+    expect(pairsA.length).toBeGreaterThan(0);
+    expect(pairsB.length).toBeGreaterThan(0);
+
+    // The single run finds the adjacency-boosted pairing for Griffey…
+    const griffeyB = pairsB.find((p) => p.frontIndex === 0);
+    expect(griffeyB).toMatchObject({ backIndex: 1, score: 1700 });
+
+    // …while the incremental run had already settled 0 with 3 at 1500, before
+    // 1 finished processing, and kept it.
+    const griffeyA = pairsA.find((p) => p.frontIndex === 0);
+    expect(griffeyA).toMatchObject({ backIndex: 3, score: 1500 });
+
+    // Both are internally consistent — every paired image is claimed exactly
+    // once — so the divergence is a different valid arrangement, not corruption.
+    for (const pairs of [pairsA, pairsB]) {
+      const claimed = pairs.flatMap((p) => [p.frontIndex, p.backIndex]);
+      expect(new Set(claimed).size).toBe(claimed.length);
+    }
   });
 });
 
@@ -1417,6 +1470,89 @@ describe("computePairingDiff (pure)", () => {
     expect(diff.deleteIds).toEqual(["pair-stale"] as unknown as Id<"placeholderPairs">[]);
     expect(diff.insertRows).toEqual([]);
     expect(diff.becomingUnmatched).toEqual(["img-0"] as unknown as Id<"placeholderImages">[]);
+  });
+
+  test("an EXACT pair is sticky — a later, better candidate cannot break it", () => {
+    // The behaviour the lock exists for. Pairing recomputes the whole batch on
+    // every completion, and the pool was free to revise a settled decision when
+    // a later image scored better — so a pair the user had already seen could
+    // silently come apart and re-form. An exact match is a certainty, not a
+    // guess, so it is now final.
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-exact" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 3,
+        player: "Ken Griffey Jr.",
+        team: "Seattle Mariners",
+        confidence: "exact",
+        mechanism: "pool",
+        score: 1,
+      },
+    ];
+    const diff = computePairingDiff(
+      [griffeyFront(0), griffeyFront(1), griffeyBack(2), griffeyBack(3)],
+      stored,
+    );
+
+    // Never a delete candidate, exactly like a manual pair.
+    expect(diff.deleteIds).toEqual([]);
+    // The remaining two images pair with each other, not with 0 or 3.
+    expect(diff.insertRows).toHaveLength(1);
+    expect(diff.insertRows[0]).toMatchObject({ frontIndex: 1, backIndex: 2 });
+    const touched = [...diff.becomingPaired, ...diff.becomingUnmatched];
+    expect(touched).not.toContain("img-0");
+    expect(touched).not.toContain("img-3");
+  });
+
+  test("a STALE exact pair is still deleted — the lock requires both halves live", () => {
+    // The guard that the "stored AUTO pair no longer desired" test caught the
+    // absence of. Locking on confidence alone would strand a pair whose partner
+    // was reset to "queued" by a restart: excluded from the diff, so never
+    // deleted, pointing at an image that is not processed. Liveness is what
+    // keeps "sticky" from meaning "immortal".
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-exact-stale" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 1,
+        player: "Ken Griffey Jr.",
+        team: "Seattle Mariners",
+        confidence: "exact",
+        mechanism: "pool",
+        score: 1,
+      },
+    ];
+    // Only index 0 is done; index 1 is gone from the done set.
+    const diff = computePairingDiff([griffeyFront(0)], stored);
+    expect(diff.deleteIds).toEqual([
+      "pair-exact-stale",
+    ] as unknown as Id<"placeholderPairs">[]);
+  });
+
+  test("a FUZZY pair stays fluid — it is a potential match, not a settled one", () => {
+    // The other half of the rule. Anything below exact is what the UI shows as
+    // a POTENTIAL match, and those are precisely the ones a later image should
+    // be allowed to improve, so they must remain deletable and re-pairable.
+    const stored: StoredPairRow[] = [
+      {
+        _id: "pair-fuzzy" as unknown as Id<"placeholderPairs">,
+        frontIndex: 0,
+        backIndex: 3,
+        player: "Ken Griffey Jr.",
+        confidence: "fuzzy",
+        mechanism: "pool",
+        score: 0.5,
+      },
+    ];
+    const diff = computePairingDiff(
+      [griffeyFront(0), griffeyFront(1), griffeyBack(2), griffeyBack(3)],
+      stored,
+    );
+    // Not locked: the matcher reconsidered it, so the stale row goes.
+    expect(diff.deleteIds).toEqual([
+      "pair-fuzzy",
+    ] as unknown as Id<"placeholderPairs">[]);
   });
 
   test("a MANUAL pair is sticky — its images are excluded and its row untouched", () => {

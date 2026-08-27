@@ -80,7 +80,11 @@ export interface UploadRunResult {
  * orchestration can be tested without a network.
  */
 export async function postSignedForm(
-  ticket: UploadTicket,
+  // Narrowed to what this actually reads, rather than the whole UploadTicket.
+  // The zip path (NEO-152) has a signed policy but no `entryIndex` — there is
+  // one object, not an indexed entry — and widening the caller to satisfy an
+  // unused field would mean inventing a number that means nothing.
+  ticket: Pick<UploadTicket, "uploadUrl" | "fields">,
   file: File,
 ): Promise<void> {
   const form = new FormData();

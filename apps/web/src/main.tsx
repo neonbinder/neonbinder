@@ -54,10 +54,23 @@ import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
 import PrintSpineLabel from "@/app/print/spine-label/page";
 import Collection from "@/app/collection/page";
-import PlaceholderScans from "@/app/placeholders/page";
 import Inventory from "@/app/inventory/page";
 
 const clerkPubKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+
+/**
+ * The old /placeholders stopgap URL, forwarded to the real tool.
+ *
+ * Carries the QUERY STRING across, which a bare `<Navigate to="/print/placeholders">`
+ * silently drops. `?jobId=…` is the whole point of the link: it is how a run is
+ * reopened, and how /testing/seed-placeholder-upload hands the E2E suite its
+ * freshly seeded batch. Dropping it lands the user on an empty page with their
+ * run apparently gone.
+ */
+function LegacyPlaceholders() {
+  const { search } = useLocation();
+  return <Navigate to={`/print/placeholders${search}`} replace />;
+}
 
 function ScrollToTop() {
   const { pathname } = useLocation();
@@ -114,10 +127,12 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/collection" element={<Collection />} />
               <Route path="/inventory" element={<Inventory />} />
-              {/* NEO-170 — stopgap scan intake, deliberately not in the nav.
-                  NEO-152 owns the real thing; see the note at the top of
-                  app/placeholders/page.tsx. */}
-              <Route path="/placeholders" element={<PlaceholderScans />} />
+              {/* /placeholders was the NEO-170 stopgap intake. NEO-152 replaced
+                  it with the real thing at /print/placeholders, so the old path
+                  redirects rather than 404s: it was never in the nav, but it is
+                  in browser histories and in the /testing entry point the E2E
+                  suite uses. `replace` so Back does not bounce off it. */}
+              <Route path="/placeholders" element={<LegacyPlaceholders />} />
               {/* One route per profile section (NEO-128). Bare /profile keeps
                   working — every existing link and redirect lands on the index
                   and is forwarded to Public Profile. */}

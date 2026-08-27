@@ -1,219 +1,268 @@
 # R1 — Single feature: on the Print Shop's Placeholders tool, the two-sided
-# settings drive the PREVIEW live — switching "Which edge your printer flips"
-# re-mirrors the back sheet, and turning "Print backs too" off drops the backs
-# altogether. The flip edge is the one setting on this page that can silently
-# ruin a whole print run (get it wrong and every back lands on the wrong card),
-# so it is what this flow exists to protect.
+# settings drive the PRINT PREVIEW live — switching "Which edge your printer
+# flips" re-mirrors the back sheet, and turning the backs off drops them
+# altogether. The flip edge is the one setting here that can silently ruin a
+# whole print run (get it wrong and every back lands on the wrong card), so it
+# is what this flow exists to protect.
 #
-# WHY THIS AND NOT THE COUNTING: how many sheets 0 / 1 / 9 / 10 / 90 cards need,
-# and which pocket ends up behind which, are enumerated exhaustively in
+# WHY THIS AND NOT THE COUNTING: how many sheets N cards need, and which pocket
+# ends up behind which, are enumerated exhaustively in
 # lib/print/sheet-layout.test.ts — arithmetic belongs there. What a unit test
-# cannot prove is that the radio button the user clicks is actually connected to
-# that arithmetic and that the answer reaches the screen. That wiring is all
-# this flow tests: it never re-proves the maths (R3) and never retypes the
-# count box, which arrives pre-filled with 9.
+# cannot prove is that the radio the user clicks is actually connected to that
+# arithmetic and that the answer reaches the screen. That wiring is all this
+# flow tests.
 #
-# SELF-CONTAINED (R3/R4): the cloud queue runs flows in arbitrary order on an
-# arbitrary runner, so nothing may be inherited from another flow. Nothing has
-# to be here — this page reads and writes NO Convex data at all. It is pure
-# client state derived from a count and two settings, so unlike the Shipping and
-# QR tools next door it needs no /testing/reset, no seeded profile and no
-# `new-profile` account: there is nothing left over from a previous run for a
-# reset to clean up. The entry URL is therefore the bare sign-in handshake and
-# nothing else — which is still required, because /print/placeholders sits
-# inside ProtectedLayout and a plain launchApp there bounces to Clerk. No
-# in-body login or setup step (R4).
+# WHAT CHANGED IN NEO-152, because this flow used to look very different.
+# It drove a page of NUMBERED BLANK RECTANGLES — the NEO-157 tool, which said in
+# its own header that NEO-152 would fill these pockets with real cards. That
+# tool is gone, and with it the flow's self-contained premise: it needed no
+# Convex data at all, because the preview was pure client state derived from a
+# count box. The print preview now shows REAL PAIRS, so this flow has to seed a
+# batch and finish it first.
 #
-# R2 — this cannot go green without the feature. Every assertion below is a
-# COMPOSED string that belongs to no input on the page (Maestro's text matching
-# is case-insensitive and an input's value is part of the hierarchy text, so a
-# bare "9" would happily match the count box and prove nothing). The two
-# back-sheet assertions are mutually exclusive: the long-edge back reads
-# 3 2 1 / 6 5 4 / 9 8 7 and the short-edge back reads 7 8 9 / 4 5 6 / 1 2 3, so
-# a flip-edge radio that is not wired up leaves the long-edge order on screen
-# and fails Step 5 rather than quietly passing. There are no `when:` branches in
-# this flow at all — nothing can be skipped into a green run.
+# The numbers did not go with the tool, and that is deliberate. They were the
+# instrument this flow reads to prove mirroring, so "Show cutting guides" is now
+# CALIBRATION MODE: it draws the guides AND the pocket numbers over the art,
+# exactly as the blank sheet did. Turning it on is therefore step one of the
+# assertion, not a cosmetic aside.
 #
-# HARD CONSTRAINT — we NEVER tap "Print Sheets". It calls window.print(), whose
-# native dialog blocks every further browser event and wedges the run. This is
-# the same reason flows/labels/print-label.yaml never taps "Print Label" and
-# flows/qr-code/generate-qr.yaml never taps its "Print". The preview is the
-# assertable half of the feature, and printing serializes those very preview
-# elements — so asserting the preview is asserting the paper.
+# R2 — this cannot go green without the feature. The mirroring assertions are
+# STRUCTURAL, not textual: they locate a numbered pocket on the BACK sheet
+# relative to another one, which is the only thing that distinguishes a mirrored
+# back from a copied front. A bare number would match the pocket on the front
+# sheet — or an unrelated digit — and prove nothing.
+#
+# R3 — DEDUP: the upload and pairing pipeline itself is proved by
+# pipeline-pairs-uploaded-scans.yaml. This flow re-proves none of it; it seeds
+# by the shortest route available and asserts only the print settings.
+#
+# R4 — no in-body login: the entry URL is the sign-in handshake plus the seed
+# page, which uploads the fixtures and forwards to the run view.
 appId: com.neonbinder.web
-url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/print/placeholders&worker=${WORKER_INDEX || "0"}
-name: Placeholder Sheets — the flip-edge setting re-mirrors the previewed backs
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-fullbleed&worker=${WORKER_INDEX || "0"}
+name: "Print settings — the flip edge re-mirrors the backs, and backs can be turned off"
 tags:
-  - smoke
   - placeholders
+  - regression
 ---
 # ============================================================
-# Step 1: land on the Placeholders tool.
-# "Placeholder Sheets" is the tool's own heading; the Print Shop shell above it
-# says "Print Shop" and the sub-tab says "Placeholders", so this heading is what
-# tells us the panel itself mounted rather than just the shell.
+# Step 1: land on the run view with a real batch behind it.
+# Six full-bleed fixtures upload on the fast path and pair into TWO cards — the
+# set is designed as three pairs, but on the fast classical crop one synthetic
+# front side-classifies as "back", leaving two backs that can never pair. That
+# is a fixture artifact, explained in full in pipeline-pairs-uploaded-scans.yaml
+# ("WHY TWO PAIRS AND NOT THREE"), and verified on dev 2026-08-26. Two cards is
+# still all this flow needs: mirroring is about WHERE a pocket lands, and two
+# occupied pockets in one row prove a column reversal exactly as three would.
 # ============================================================
 - launchApp
 - extendedWaitUntil:
-    visible: "Placeholder Sheets"
-    timeout: 45000   # cold sign-in / first app load; every wait after this is the 7s default
+    visible: "Upload your cards"
+    timeout: 90000
+
+# Every image has been read. This is the state that offers finishing.
+# The session panel sits BELOW THE FOLD on the CI viewport (1024x625), so it has
+# to be scrolled to before anything in it can be asserted. Measured on the real
+# page: "Upload your cards" is at y=533 — the last thing on screen — while the
+# session heading is at y=653 and the status line at y=714. `assertVisible` and
+# `extendedWaitUntil` never scroll, so they can only ever see the top of the
+# page. `scrollUntilVisible` scrolls AND is the assertion (it fails if it
+# reaches the end without a match), so it does both jobs here.
+#
+# This is what NEO-152 changed out from under these flows: the old /placeholders
+# stopgap was a short page whose status line was above the fold, and the flows
+# were written against that. The real tool leads with the dropzone.
+- scrollUntilVisible:
+    element:
+      text: "Your cards"
+    centerElement: true
+- extendedWaitUntil:
+    visible: "All 6 photos read."
+    timeout: 180000
 
 # ============================================================
-# Step 2 — ASSERTION 1: the summary line the user budgets paper from.
+# Step 2: finish the batch. The print section only appears once there are
+# pairs, and the FINAL pairing run is what writes them.
+# ============================================================
+- scrollUntilVisible:
+    element:
+      text: "Finish the batch"
+    centerElement: true
+- tapOn: "Finish the batch"
+- assertVisible: "Finish this batch?"
+- tapOn: "Finish it"
+- extendedWaitUntil:
+    visible: "2 pairs ready to print."
+    timeout: 120000
+
+# ============================================================
+# Step 3 — ASSERTION 1: the line the user budgets paper from.
 #
-# One composed sentence — count, paper, and which sides — recomputed from the
-# form on every keystroke and click. Nine placeholders fill exactly one
-# 9-pocket binder page, and backs are on by default, so on landing it reads:
+# One composed sentence, recomputed from the form on every click. Two cards fit
+# one 9-pocket sheet and backs are on by default, so it reads:
 #
-#     9 placeholders on 1 sheet of Letter, printed both sides.
+#     2 cards on 1 sheet of Letter, printed both sides. 9 fit on a sheet.
 #
 # No input on the page holds that sentence, so matching it can only mean the
-# live summary. The scroll IS the assertion (R6 — no repeat assertVisible
-# after it): the Print Shop shell's heading, blurb and sub-tabs sit above the
-# tool and push everything below the fold of the 1024x629 headless viewport, so
-# this has to be scrolled to, centred (R8) so it is fully in view.
+# live summary. The scroll IS the assertion (R6).
 # ============================================================
 - scrollUntilVisible:
     element:
-      text: "9 placeholders on 1 sheet of Letter, printed both sides."
+      # Wrapped in `.*` because Maestro's text selector FULL-matches the
+      # element's text, and this <p> runs on past the phrase: the whole
+      # sentence is "2 cards on 1 sheet of Letter, printed both sides. 9 fit
+      # on a sheet." An unwrapped prefix scrolls to the end of the page and
+      # fails, which is exactly what it did. (The status line asserted earlier,
+      # "2 pairs ready to print.", needs no wrapper because that IS the
+      # element's entire text.)
+      text: ".*2 cards on 1 sheet of Letter, printed both sides.*"
     centerElement: true
 
 # ============================================================
-# Step 3 — ASSERTION 2: by default the back sheet is mirrored for a long-edge
-# flip, which is what most printers do.
-#
-# The preview shows two sheets side by side. The front's nine pockets read 1..9
-# in reading order; the back's read
-#
-#     3 2 1
-#     6 5 4
-#     9 8 7
-#
-# — the front's rows with their COLUMNS reversed, so that after printing
-# two-sided and cutting, the card whose front says 7 also says 7 on its back.
-#
-# WHY THE ASSERTION IS SHAPED LIKE THIS. What is right or wrong here is purely
-# WHERE each number sits: a mirror is a rearrangement, so both flip edges print
-# the same nine numbers, and finding a pocket that says "3" proves nothing at
-# all. The claim has to be about position, and the plainest true one is:
-#
-#     on a long-edge back, pocket 3 is in the TOP row — above the middle of the
-#     sheet.  A short-edge back drops it to the BOTTOM row (Step 5).
-#
-# The pocket being judged is named the way it reads on screen: it shows the
-# number 3, and it shows BACK — that second half is what keeps the front sheet,
-# which also has a 3, out of it. The reference line it is measured against is
-# pocket 5, the centre pocket: 5 is the one number a mirror never moves (both
-# flips map the centre to itself), so it marks the middle row of BOTH sheets
-# whatever the setting says, and it is therefore safe that it is not pinned to
-# one sheet or the other.
-#
-# The scroll IS the assertion (R6 — nothing is re-asserted after it). It has to
-# be a scroll rather than a bare check because anything scrolled off the
-# 1024x629 headless viewport is not merely "not visible" to Maestro, it is
-# absent — so a check made from the wrong scroll position would fail on a
-# perfectly correct sheet. Centring the pocket also brings the middle row it is
-# being compared against into view, which is what makes the comparison possible.
+# Step 4: turn on calibration mode, so the pockets carry their numbers.
+# Without this the preview is bare artwork and there is nothing to read a
+# mirroring off — see the note at the top.
 # ============================================================
+# `.*`-wrapped, unlike "Short edge" below. These two controls nest their helper
+# sentence INSIDE the label's own span ("Show cutting guidesOff for a real run
+# — …"), where the flip-edge radios keep theirs in a sibling, so "Short edge" is
+# an element's whole text and this is not. Whether Maestro's node model splits
+# an element's own text from a child element's is not something this flow should
+# depend on: the wrapper matches under either reading, and for a tap both
+# candidate nodes toggle the same control.
 - scrollUntilVisible:
     element:
-      containsChild:
-        text: "3"
-      containsDescendants:
-        - text: "BACK"
-      above:
-        text: "5"
+      text: ".*Show cutting guides.*"
     centerElement: true
+- tapOn: ".*Show cutting guides.*"
 
 # ============================================================
-# Step 4: the user copies the other setting across from their printer dialog.
+# Step 5 — ASSERTION 2: by default the back is mirrored for a LONG-edge flip,
+# which is what most printers do.
 #
-# The flip-edge choice sits ABOVE the preview we just centred, so this scroll
-# goes UP — the default downward scroll would walk away from it. centerElement
-# so the option is fully in view before the tap lands on it (R8). "Short edge"
-# is the option's own visible label; clicking the label selects its radio.
-# ============================================================
-- scrollUntilVisible:
-    element:
-      text: "Short edge"
-    direction: UP
-    centerElement: true
-- tapOn: "Short edge"
-
-# ============================================================
-# Step 5 — ASSERTION 3: THE POINT OF THIS FLOW. The back sheet re-mirrors.
+# Three cards occupy the first row, so the front reads
 #
-# A short-edge flip turns the sheet about its top/bottom edge instead, so the
-# back's ROWS reverse rather than its columns, and the same nine pockets now
-# read
-#
-#     7 8 9
-#     4 5 6
 #     1 2 3
 #
-# Pocket 3 has dropped from the top row to the bottom one, so this is Step 3's
-# assertion with `above` turned into `below` against the same centre-pocket
-# reference line — and the two cannot both be true of one screen. If the radio
-# were decorative — wired to nothing, or wired to something the preview ignores
-# — the back would still be showing 3 2 1 here and this step would fail. That is
-# the regression this flow exists to catch, and it is invisible to anyone who
-# does not already know which order is correct, which is why it is worth a test.
+# and a long-edge back reverses the COLUMNS:
 #
-# Scrolling back DOWN to the preview is not optional: Step 4 walked up to the
-# form to reach the radio, and a check made from up there would find nothing at
-# all, whatever the sheet says. As in Step 3, the scroll is the assertion.
+#     3 2 1
+#
+# so that after printing two-sided and cutting, the card whose front says 1 also
+# says 1 on its back. Asserted structurally: on the BACK sheet, pocket 1 sits to
+# the RIGHT of pocket 3. On the front it is the other way round, which is why
+# the `containsDescendants: BACK` qualifier is load-bearing — without it the
+# selector would happily match the front sheet and pass on a broken mirror.
 # ============================================================
+# WHY THIS SELECTOR IS SHAPED LIKE THIS. Two things about the rendered sheet
+# force it, both measured on the real page:
+#
+# 1. `containsDescendants` cannot work here any more. NEO-152's sheet renders a
+#    pocket as three SIBLING leaves — the number, the side label, the caption —
+#    so the element whose text is "1" is a leaf with no descendants at all, and
+#    the cell that does contain "BACK" has no text of its own to match on.
+#    Maestro's hierarchy is built from leaf text (plus accessibility labels), so
+#    the old selector could not match anything and the flow scrolled to the end.
+#
+# 2. The anchor has to be pinned to the BACK sheet, or the assertion is unsound
+#    rather than merely broken. Front and back render side by side on the SAME
+#    row (measured: front pockets at x=1378/1466, back at x=1790/1879, all at
+#    y=914). A bare `rightOf: "2"` would be satisfied by the FRONT sheet's
+#    pocket 2 sitting far to the left — so if the mirroring regressed and the
+#    back came out in front order, the back's "1" would still be "right of a 2"
+#    and this step would pass while the bug shipped.
+#
+# Anchoring BOTH sides on "above a BACK label" scopes the comparison to the back
+# sheet: each pocket's number sits directly above its own side label (number at
+# y=914, label at y=946), and the front sheet's numbers sit above FRONT instead.
+# Checked against a regression: with the back rendered in front order, the back
+# "1" lands left of the back "2" and no front "2" qualifies as the anchor, so
+# this correctly finds nothing.
 - scrollUntilVisible:
     element:
-      containsChild:
-        text: "3"
-      containsDescendants:
-        - text: "BACK"
-      below:
-        text: "5"
+      text: "1"
+      above:
+        text: "BACK"
+      rightOf:
+        text: "2"
+        above:
+          text: "BACK"
     centerElement: true
 
 # ============================================================
-# Step 6: the user decides they only want fronts after all.
+# Step 6: switch to a SHORT-edge flip and re-assert.
 #
-# "Print backs too" is checked on arrival, and clicking its label unchecks it.
-# Scrolling UP again for the same reason as Step 4, centred for the tap (R8).
+# Short edge reverses ROWS rather than columns. With every card in row one there
+# is only one row, so the columns are NOT reversed and the back reads
+#
+#     1 2
+#
+# — pocket 1 now sits to the LEFT of pocket 2, the exact inverse of Step 5. That
+# inversion is the proof the radio is wired: nothing else on the page changes.
+#
+# Only OCCUPIED pockets carry a number, so with two cards the numbers on screen
+# are 1 and 2 and there is no pocket 3 to reference — measured on dev
+# 2026-08-26: long edge puts 1 at x=1879 and 2 at x=1790 (1 right of 2); short
+# edge puts 1 at x=1702 and 2 at x=1790 on a lower row (1 left of 2).
 # ============================================================
+# UP. The form controls sit ABOVE the sheet previews they drive (measured:
+# flip-edge radios at y=1933/2003, guides toggle just under them, first sheet
+# caption at y=2258, the back sheet below that), and the step before this one
+# scrolled DOWN into the back sheet to read the pocket order. A default
+# downward scrollUntilVisible from there can only run to the end of the page,
+# which is exactly how this failed: "No visible element found: Short edge"
+# while Short edge was sitting a few hundred pixels above.
 - scrollUntilVisible:
-    element:
-      text: "Print backs too"
     direction: UP
+    element:
+      text: "Short edge"
     centerElement: true
-- tapOn: "Print backs too"
-
-# ============================================================
-# Step 7 — ASSERTION 4: the summary follows the choice.
-#
-# Same sentence as Step 2 with its last clause changed, so it is again a
-# composed string no input holds. It also proves Step 2's line was live rather
-# than static copy that happened to read correctly:
-#
-#     9 placeholders on 1 sheet of Letter, front only.
-# ============================================================
+- tapOn: "Short edge"
 - scrollUntilVisible:
     element:
-      text: "9 placeholders on 1 sheet of Letter, front only."
+      text: "1"
+      above:
+        text: "BACK"
+      leftOf:
+        text: "2"
+        above:
+          text: "BACK"
     centerElement: true
 
 # ============================================================
-# Step 8 — ASSERTION 5: and the backs are actually gone from the preview, not
-# just from the wording.
+# Step 7 — ASSERTION 3: turning the backs off drops the back sheet entirely.
 #
-# Each preview is captioned with its sheet number and which face it is. With
-# backs turned off only "Sheet 1 — front" should remain. The dash between them
-# is a typographic em dash, so it is matched with a wildcard rather than pasted
-# in, where an encoding slip would silently make this assertion unfalsifiable.
-#
-# The two checks are a pair and the second is what gives the first its teeth. An
-# absence on its own would also be satisfied by having scrolled somewhere that
-# shows no captions at all; the front caption sits immediately beside where the
-# back one would be, so finding it proves we are looking at the right part of
-# the page and the back caption is genuinely gone rather than merely elsewhere.
+# The summary sentence changes with it, and the back sheet's caption goes. Both
+# are asserted: the sentence proves the setting reached the arithmetic, and the
+# missing caption proves it reached the preview.
 # ============================================================
+# UP, for the same reason — the previous step read the back sheet again.
+- scrollUntilVisible:
+    direction: UP
+    element:
+      text: ".*Print the backs too.*"
+    centerElement: true
+- tapOn: ".*Print the backs too.*"
+# UP: the summary sentence (y=1622) is above the two-sided control just tapped.
+- scrollUntilVisible:
+    direction: UP
+    element:
+      text: ".*2 cards on 1 sheet of Letter, front only.*"
+    centerElement: true
+# The front sheet still renders. This SCROLLS rather than asserting in place:
+# the caption sits 636px below the summary sentence on the CI viewport (1024x625,
+# measured on the real page — sentence at y=1622, caption at y=2070 with backs
+# off), so a bare assertVisible could never see it. scrollUntilVisible both
+# scrolls and asserts.
+- scrollUntilVisible:
+    element:
+      text: "Sheet 1 . front"
+    centerElement: true
+# And the back caption is gone. Read this as corroboration, not as the proof:
+# the load-bearing assertion that the setting reached the preview is the summary
+# sentence above ("front only"), which no input on the page holds and which is
+# recomputed from the form. A back sheet, if one were still rendered, would sit
+# roughly a full sheet-height below the front caption and would therefore be off
+# the viewport here regardless — so this line catches a back sheet rendered in
+# the front's place, not one merely pushed down.
 - assertNotVisible: "Sheet 1 . back"
-- assertVisible: "Sheet 1 . front"

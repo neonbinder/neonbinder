@@ -40,9 +40,23 @@
  *    throw is logged rather than failing the job. Everything about the terminal
  *    decision below is exactly as it was when this ran once per batch.
  *
- * Together those give the convergence property the design rests on: the state
- * after the final run is the state a single end-of-batch run would have
- * produced, no matter how many provisional runs preceded it.
+ * Those two held a CONVERGENCE property until 2026-08-26: the state after the
+ * final run equalled a single end-of-batch run, whatever order things arrived
+ * in. That is deliberately no longer true.
+ *
+ * An `exact` match now settles immediately and leaves the pool, so the result
+ * depends on completion order — an early exact pair is kept even when a later
+ * arrival would have scored higher. The trade is for LIVE REVIEW: a set upload
+ * is hundreds of cards over many minutes and the user corrects alongside it,
+ * which is impossible if pairs keep rearranging themselves. A wrong pair a
+ * human can split in seconds beats a right pair that will not hold still.
+ *
+ * The divergence is measured and pinned by the "incremental and single-run can
+ * DIVERGE" test rather than left to be discovered.
+ *
+ * What IS still guaranteed: every run is a full recomputation over the
+ * unsettled images, the writes are a diff, and no image is ever claimed by two
+ * pairs.
  */
 
 import {
@@ -314,7 +328,19 @@ export function guardedAdjacencyFallback(leftovers: PoolCard[]): Array<[PoolCard
   while (index < sorted.length - 1) {
     const first = sorted[index];
     const second = sorted[index + 1];
-    if (first.side !== second.side && !identitiesContradict(first, second)) {
+    // A split the user made is honoured HERE too, not only in the pool. Without
+    // this, splitting two adjacent images did nothing: the pool rejected them
+    // and the fallback immediately re-paired them on scan order alone, so the
+    // correction silently evaporated on the next pass.
+    const userSplitThem =
+      first.unpairedFrom.includes(second.key) ||
+      second.unpairedFrom.includes(first.key);
+
+    if (
+      first.side !== second.side &&
+      !userSplitThem &&
+      !identitiesContradict(first, second)
+    ) {
       pairs.push([first, second]);
       index += 2;
       continue;
@@ -342,6 +368,7 @@ export type PairingImageRow = {
   textCount?: number;
   dhash?: string;
   pairStatus?: "paired" | "unmatched";
+  unpairedFrom?: number[];
 };
 
 /** The `listPairsForDiff` row shape — one stored pair, as the diff compares it. */
@@ -398,32 +425,111 @@ export type PairingDiff = {
  * `resolverCalls` and `pairStatus` without a scheduler hop. It touches no `ctx`
  * and no job status — those stay with the two callers that APPLY the diff.
  */
+/**
+ * Is this pair final — locked out of this automatic run?
+ *
+ * The single definition of the lock, used by the diff that enforces it AND by
+ * the log counters that describe it. They were two expressions of the same rule
+ * once, and the log drifted the moment the rule grew a second clause.
+ *
+ *  - `manual`  the user forced it. Their decision outranks the matcher's,
+ *              unconditionally.
+ *  - `exact`   the identities agreed outright — a certainty, not a guess —
+ *              AND both halves are still done rows (see below).
+ *
+ * Everything else (`fuzzy`, `side-only`) stays fluid and is surfaced to the
+ * user as a POTENTIAL match, because those are exactly the ones a later image
+ * can legitimately improve.
+ */
+export function isLockedPair(
+  pair: {
+    mechanism: string;
+    confidence: string;
+    frontIndex: number;
+    backIndex: number;
+  },
+  doneIndexes: ReadonlySet<number>,
+): boolean {
+  // A user's decision outranks the matcher unconditionally, at any point.
+  if (pair.mechanism === "manual") return true;
+  if (pair.confidence !== "exact") return false;
+
+  // MATCH ONCE AND MOVE ON — immediately, not once the batch is finished.
+  //
+  // Pairing recomputes the whole batch after every completion, so without this
+  // an exact pair could be revised again and again as later images arrive. Two
+  // reasons that is wrong, and the second is the decisive one:
+  //
+  //  - It re-decides something already decided. An exact match is a certainty;
+  //    spending the rest of the batch reconsidering it buys nothing.
+  //  - It makes LIVE REVIEW impossible. A set upload is hundreds of cards over
+  //    many minutes and the user corrects alongside it — they will not wait for
+  //    the batch. Pairs that rearrange themselves under the cursor cannot be
+  //    reviewed at all.
+  //
+  // Accepted consequence, and it is a real one: an exact pair formed early wins
+  // over a better candidate that arrives later. {0,2} can settle while 1 is
+  // still processing even though {0,1} would have scored higher. Stability plus
+  // a human who can split and re-pair live beats continuous re-optimisation
+  // that never holds still. Anything BELOW exact is still held and still
+  // revisable, which is where late arrivals do their useful work.
+
+  // LIVENESS, and it is load-bearing. An exact pair is only locked while BOTH
+  // halves are still done rows. Without this a STALE exact pair — one whose
+  // partner was reset to "queued" by a restart, so it is no longer in `rows` —
+  // would be locked out of the diff and could never be deleted, leaving a pair
+  // pointing at an image that is not processed. The existing
+  // "a stored AUTO pair no longer desired is deleted" test caught exactly that.
+  return doneIndexes.has(pair.frontIndex) && doneIndexes.has(pair.backIndex);
+}
+
 export function computePairingDiff(
   rows: PairingImageRow[],
   stored: StoredPairRow[],
 ): PairingDiff {
-  // ---- Manual pairs are STICKY (NEO-152) ----------------------------
+  // ---- Settled pairs are STICKY (NEO-152) ---------------------------
+  //
+  // A pair is SETTLED when it is either manually forced by the user, or matched
+  // at "exact" confidence — the identity on both halves agreed outright. Both
+  // are locked; everything softer stays fluid.
   //
   // Three properties, all enforced here, together:
-  //   (b) never re-pair a manually-paired image → its index is removed from
-  //       the pairBatch input (`autoRows`), so the automatic matcher never
-  //       even sees it;
-  //   (a) never delete or overwrite a manual pair row → the diff below
-  //       compares only against `autoStored` (the non-manual pairs), so a
-  //       manual row is never a "removed" candidate and never patched;
-  //   (c) still re-pair everything else freely → every non-manual image and
+  //   (b) never re-pair a settled image → its index is removed from the
+  //       pairBatch input (`autoRows`), so the automatic matcher never even
+  //       sees it;
+  //   (a) never delete or overwrite a settled pair row → the diff below
+  //       compares only against `unsettledStored`, so a settled row is never a
+  //       "removed" candidate and never patched;
+  //   (c) still re-pair everything else freely → every unsettled image and
   //       pair flows through exactly as before.
-  // The image's partner in a manual pair is likewise excluded, which is what
-  // frees the OTHER images (a manually-taken front's identity twin is now
-  // available to pair with its real partner).
-  const manualIndexes = new Set<number>();
+  // The image's partner is likewise excluded, which is what frees the OTHER
+  // images (a taken front's identity twin is now available to pair with its
+  // real partner).
+  //
+  // ## Why "exact" joined "manual" here
+  // Pairing recomputes the WHOLE batch after every image completion, and the
+  // pool was free to revise an earlier decision when a later candidate scored
+  // better. That is defensible for a guess and indefensible for a certainty:
+  // it meant a pair the user had already seen settle could silently come apart
+  // and re-form differently several images later, which reads as the tool
+  // changing its mind about work it had finished. Locking "exact" makes a
+  // confident match final, and leaves "fuzzy" / "side-only" — the ones the UI
+  // surfaces as POTENTIAL matches — free to improve as more of the batch
+  // arrives, which is exactly where revision earns its keep.
+  //
+  // Known consequence, accepted: two copies of the SAME card in one batch have
+  // identical identities, so their four images can settle as front-A/back-B and
+  // front-B/back-A. Both pairs are still that card, so the printed placeholder
+  // is right either way — but the lock does mean that arrangement is now final.
+  const doneIndexes = new Set(rows.map((r) => r.entryIndex));
+  const settledIndexes = new Set<number>();
   for (const pair of stored) {
-    if (pair.mechanism !== "manual") continue;
-    manualIndexes.add(pair.frontIndex);
-    manualIndexes.add(pair.backIndex);
+    if (!isLockedPair(pair, doneIndexes)) continue;
+    settledIndexes.add(pair.frontIndex);
+    settledIndexes.add(pair.backIndex);
   }
-  const autoRows = rows.filter((r) => !manualIndexes.has(r.entryIndex));
-  const autoStored = stored.filter((p) => p.mechanism !== "manual");
+  const autoRows = rows.filter((r) => !settledIndexes.has(r.entryIndex));
+  const autoStored = stored.filter((p) => !isLockedPair(p, doneIndexes));
 
   // Key by zip index. It is stable, unique within the batch, and — unlike
   // the original filename — cannot collide, which matters because the pool
@@ -444,6 +550,13 @@ export function computePairingDiff(
     const result = pairBatch(
       autoRows.map((r) => ({
         key: String(r.entryIndex),
+        // Partners the user has explicitly split this image from — a HARD
+        // reject in the pool, never a score penalty.
+        unpairedFrom: (r.unpairedFrom ?? []).map(String),
+        // Scan position, for the adjacency bonus. The entry index IS the scan
+        // order — it is allocated per upload, in the order the client sent the
+        // files, which is the constraint upload-run.ts exists to preserve.
+        order: r.entryIndex,
         textCount: r.textCount ?? 0,
         originalFilename: r.originalName,
         side: asCardSide(r.side),
@@ -832,17 +945,26 @@ export const runPairing = internalAction({
         // kept to the minimal set both callers apply. `pairs` = the auto pairs
         // that survive this run (stored auto pairs, less deletes, plus inserts),
         // and every paired image is one of two halves, so paired images = 2×pairs.
-        const manualPairs = stored.filter((p) => p.mechanism === "manual");
-        const manualEntryIndexes = new Set<number>();
-        for (const p of manualPairs) {
-          manualEntryIndexes.add(p.frontIndex);
-          manualEntryIndexes.add(p.backIndex);
+        // Same predicate the diff used, not a second copy of the rule.
+        const doneIdx = new Set(rows.map((r) => r.entryIndex));
+        const settledPairs = stored.filter((p) => isLockedPair(p, doneIdx));
+        const settledEntryIndexes = new Set<number>();
+        for (const p of settledPairs) {
+          settledEntryIndexes.add(p.frontIndex);
+          settledEntryIndexes.add(p.backIndex);
         }
         const autoImages = rows.filter(
-          (r) => !manualEntryIndexes.has(r.entryIndex),
+          (r) => !settledEntryIndexes.has(r.entryIndex),
         ).length;
-        const autoStoredCount = stored.length - manualPairs.length;
-        const pairs = autoStoredCount - diff.deleteIds.length + diff.insertRows.length;
+        const autoStoredCount = stored.length - settledPairs.length;
+        // TOTAL pairs after this run, settled ones included. Counting only the
+        // auto pairs made the line read "pairs: 0" for a batch that plainly had
+        // one — the settled pair is excluded from the diff, not from reality,
+        // and a diagnostic that under-reports the thing it names is worse than
+        // no diagnostic. `settled` beside it says how many of these are locked.
+        const autoPairs =
+          autoStoredCount - diff.deleteIds.length + diff.insertRows.length;
+        const pairs = autoPairs + settledPairs.length;
         console.log(
           JSON.stringify({
             msg: "placeholder_pairing_done",
@@ -850,9 +972,14 @@ export const runPairing = internalAction({
             final,
             force: args.force ?? false,
             images: autoImages,
-            manual: manualPairs.length,
+            // `manual` keeps its original meaning — user-forced pairs — because
+            // something may already be reading it. `settled` is the number the
+            // counters beside it are actually computed against now: manual PLUS
+            // exact-confidence, i.e. everything locked out of this run.
+            manual: settledPairs.filter((p) => p.mechanism === "manual").length,
+            settled: settledPairs.length,
             pairs,
-            unmatched: autoImages - pairs * 2,
+            unmatched: autoImages - autoPairs * 2,
             inserted: diff.insertRows.length,
             revised: diff.patches.length,
             removed: diff.deleteIds.length,
@@ -1572,8 +1699,21 @@ export const manuallyPairPlaceholderImages = mutation({
       mechanism: "manual",
       score: 0,
     });
-    await ctx.db.patch(front._id, { pairStatus: "paired" });
-    await ctx.db.patch(back._id, { pairStatus: "paired" });
+    // Clear any earlier split between these two: the user has changed their
+    // mind, and leaving the rejection behind would be a stale contradiction of
+    // the pair now sitting in the table.
+    await ctx.db.patch(front._id, {
+      pairStatus: "paired",
+      unpairedFrom: (front.unpairedFrom ?? []).filter(
+        (i) => i !== args.backIndex,
+      ),
+    });
+    await ctx.db.patch(back._id, {
+      pairStatus: "paired",
+      unpairedFrom: (back.unpairedFrom ?? []).filter(
+        (i) => i !== args.frontIndex,
+      ),
+    });
 
     return { paired: true, frontIndex: args.frontIndex, backIndex: args.backIndex };
   },
@@ -1601,6 +1741,73 @@ export const manuallyPairPlaceholderImages = mutation({
  *     user's next deliberate action — a manual pair, or an identity edit (which
  *     DOES force) — drives the outcome instead.
  */
+/**
+ * Turn a pair around: the same two images, front and back swapped.
+ *
+ * ONE TRANSACTION, deliberately. The UI used to do this as unpair-then-pair,
+ * two round trips, and that was safe only while review waited for the batch to
+ * finish. Now that correcting a LIVE batch is the whole point, the window
+ * between the two calls is real: the no-force re-pair `unpairPlaceholderImages`
+ * schedules can fire in it and claim one of the freed halves for a different
+ * partner, after which `manuallyPairPlaceholderImages` refuses with "image is
+ * already paired" and the user's swap has silently become a split.
+ *
+ * Composing the two was the wrong shape for a second reason as well: it records
+ * a split in `unpairedFrom` and then immediately clears it, briefly asserting
+ * that the user rejected a pairing they were in fact only reorienting.
+ *
+ * The result is a MANUAL pair, exactly as if it had been forced by hand —
+ * because it was. That makes it sticky, so nothing re-pairs these two, and no
+ * re-pair needs scheduling: no other image's options changed.
+ */
+export const swapPairSides = mutation({
+  args: { jobId: v.string(), frontIndex: v.number(), backIndex: v.number() },
+  returns: v.object({ swapped: v.boolean() }),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const job = await findOwnedJob(ctx, args.jobId, userId);
+    if (!job) throw new Error("Job not found");
+
+    const pairs = await ctx.db
+      .query("placeholderPairs")
+      .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
+      .collect();
+    const pair = pairs.find(
+      (p) => p.frontIndex === args.frontIndex && p.backIndex === args.backIndex,
+    );
+    if (!pair) throw new Error("Pair not found");
+
+    const front = await imageByIndex(ctx, args.jobId, args.frontIndex);
+    const back = await imageByIndex(ctx, args.jobId, args.backIndex);
+    if (!front || !back) throw new Error("Image not found");
+
+    // Re-merge the label with the sides reversed: the identity rules are
+    // front-preferred player/team and back-only card number, so swapping the
+    // images without re-merging would leave a label describing the old
+    // orientation.
+    const identity = mergedRowIdentity(
+      { player: null, team: null, cardNumber: null },
+      { players: back.players, team: back.team, cardNumber: back.cardNumber },
+      { players: front.players, team: front.team, cardNumber: front.cardNumber },
+    );
+
+    await ctx.db.patch(pair._id, {
+      frontIndex: args.backIndex,
+      backIndex: args.frontIndex,
+      player: identity.player,
+      team: identity.team,
+      cardNumber: identity.cardNumber,
+      confidence: "side-only",
+      mechanism: "manual",
+      score: 0,
+    });
+
+    // The images stay paired throughout — neither ever becomes a candidate — so
+    // pairStatus needs no change and the pool never sees them.
+    return { swapped: true };
+  },
+});
+
 export const unpairPlaceholderImages = mutation({
   args: { jobId: v.string(), frontIndex: v.number(), backIndex: v.number() },
   returns: v.object({ unpaired: v.boolean(), wasManual: v.boolean() }),
@@ -1623,8 +1830,30 @@ export const unpairPlaceholderImages = mutation({
 
     const front = await imageByIndex(ctx, args.jobId, args.frontIndex);
     const back = await imageByIndex(ctx, args.jobId, args.backIndex);
-    if (front) await ctx.db.patch(front._id, { pairStatus: "unmatched" });
-    if (back) await ctx.db.patch(back._id, { pairStatus: "unmatched" });
+
+    // Record the split on BOTH rows so the matcher cannot undo it. Deleting the
+    // row alone left the decision invisible: on a live batch the next
+    // incremental pass simply re-formed the pair, which is why review used to
+    // have to wait for the batch to finish. It no longer does — a set upload of
+    // several hundred cards runs for many minutes and the user works alongside
+    // it, so every correction has to survive the passes that follow it.
+    //
+    // Symmetric, though the pool only needs one side to reject: a one-sided
+    // record would quietly depend on which of the two the matcher happens to
+    // offer first.
+    const withRejection = (
+      row: Doc<"placeholderImages"> | null,
+      partner: number,
+    ) =>
+      row
+        ? ctx.db.patch(row._id, {
+            pairStatus: "unmatched" as const,
+            unpairedFrom: [...new Set([...(row.unpairedFrom ?? []), partner])],
+          })
+        : Promise.resolve();
+
+    await withRejection(front, args.backIndex);
+    await withRejection(back, args.frontIndex);
 
     // No force: re-enters auto on an active job, stays put on a terminal one —
     // see the doc comment for why that keeps the correction workflow race-free.

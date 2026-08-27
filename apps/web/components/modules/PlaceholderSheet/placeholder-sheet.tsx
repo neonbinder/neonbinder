@@ -69,6 +69,28 @@ export interface PlaceholderSheetProps {
   pageBreakAfter?: boolean;
   /** Total sheets of paper in the run, for the "Sheet 2 of 3" caption. */
   totalSheets?: number;
+  /**
+   * Card art for a cell, by its 0-based item index, or undefined for none.
+   *
+   * A cell with art renders it FULL BLEED and drops the number; a cell without
+   * falls back to the numbered rectangle, so a run can mix the two (a pocket
+   * whose card was never photographed still gets a placeholder).
+   */
+  imageForItem?: (item: number) => string | undefined;
+  /**
+   * Draw the calibration guides. True (default) is what NEO-157 shipped and
+   * what paper-verification uses: interior gridlines, dashed safe-area
+   * rectangles, corner ticks.
+   *
+   * FALSE is the real run, and it exists because of full bleed. The interior
+   * lines are absolutely-positioned siblings drawn OVER the block, so with art
+   * in the cells they print as a black hairline along every edge you are about
+   * to cut — across the artwork. With guides off the abutting images are
+   * themselves the interior cut lines (cells tile edge to edge, sharing them),
+   * and the corner ticks survive because they sit inside the block and give the
+   * four outer cuts via a ruler laid between each pair.
+   */
+  guides?: boolean;
 }
 
 /** One pocket: the big number, what side it is, and the duplex-drift guide. */
@@ -77,11 +99,15 @@ function Cell({
   format,
   sideLabel,
   sheetCaption,
+  imageUrl,
+  guides,
 }: {
   itemNumber: number | null;
   format: SheetFormat;
   sideLabel: string;
   sheetCaption: string;
+  imageUrl?: string;
+  guides: boolean;
 }) {
   return (
     <div
@@ -95,6 +121,30 @@ function Cell({
       data-cell-item={itemNumber ?? ""}
     >
       {/*
+        FULL BLEED — the art goes in THIS div, the full-size cell, not in the
+        safe area below it. Dropping it into the safe area is the path of least
+        resistance and yields 2.34 x 3.34in of art inside a 2.5 x 3.5in card
+        with a ~2mm white frame on every side. Cells tile edge to edge sharing
+        cut lines, so neighbouring images abut with no gutter and a slightly-off
+        cut steals a sliver of the NEIGHBOUR's art instead of exposing white —
+        far more forgiving than a frame, where every miscut shows as an uneven
+        margin. A placeholder's whole job is to read as a card in the pocket.
+      */}
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt=""
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            display: "block",
+          }}
+        />
+      ) : null}
+      {/*
         The safe area, drawn. This is the measuring instrument for duplex drift:
         print both sides, hold the sheet to a light, and the front and back
         outlines either coincide or they show you exactly how far your duplexer
@@ -107,7 +157,7 @@ function Cell({
           right: `${format.safeAreaIn}in`,
           bottom: `${format.safeAreaIn}in`,
           left: `${format.safeAreaIn}in`,
-          border: `${HAIRLINE} dashed ${SAFE_AREA_COLOR}`,
+          border: guides ? `${HAIRLINE} dashed ${SAFE_AREA_COLOR}` : "none",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -115,7 +165,17 @@ function Cell({
           textAlign: "center",
         }}
       >
-        {itemNumber === null ? null : (
+        {/*
+          Numbers appear when there is no art, OR whenever guides are on.
+          Guides-on IS calibration mode: it is the NEO-157 instrument, folded
+          into the real tool rather than kept as a separate blank-sheet page.
+          Printing with guides on and reading the numbers after cutting is still
+          how you prove the duplexer mirrored correctly — card 7's front must
+          have card 7's back behind it — and over real art that is exactly when
+          you want the number, because the art itself cannot tell you which
+          pocket it came from.
+        */}
+        {itemNumber === null || (imageUrl && !guides) ? null : (
           <>
             {/*
               The number IS the verification. After printing duplex and cutting,
@@ -123,7 +183,18 @@ function Cell({
               edge is wrong it will read 9, and you can see that at a glance
               instead of measuring anything.
             */}
-            <div style={{ fontSize: "56pt", fontWeight: 700, lineHeight: 1 }}>
+            <div
+              style={{
+                fontSize: "56pt",
+                fontWeight: 700,
+                lineHeight: 1,
+                // Legible over artwork in calibration mode, and invisible on a
+                // plain white cell where there is nothing to sit on.
+                ...(imageUrl
+                  ? { color: "#ffffff", textShadow: "0 0 6px #000000" }
+                  : {}),
+              }}
+            >
               {itemNumber}
             </div>
             {/* Which face this is, so a cut card is self-describing off the
@@ -146,7 +217,14 @@ export const PlaceholderSheet = React.forwardRef<
   HTMLDivElement,
   PlaceholderSheetProps
 >(function PlaceholderSheet(
-  { sheet, format = DEFAULT_SHEET_FORMAT, pageBreakAfter = false, totalSheets },
+  {
+    sheet,
+    format = DEFAULT_SHEET_FORMAT,
+    pageBreakAfter = false,
+    totalSheets,
+    imageForItem,
+    guides = true,
+  },
   ref,
 ) {
   const blockWidthIn = format.cellWidthIn * format.cols;
@@ -281,13 +359,20 @@ export const PlaceholderSheet = React.forwardRef<
               format={format}
               sideLabel={sideLabel}
               sheetCaption={sheetCaption}
+              imageUrl={
+                cell.item !== null ? imageForItem?.(cell.item) : undefined
+              }
+              guides={guides}
             />
           ))}
         </div>
 
-        {/* Guides last so they paint over the cells rather than under them. */}
-        {verticalGuides}
-        {horizontalGuides}
+        {/* Guides last so they paint over the cells rather than under them —
+            which is exactly why the interior ones have to go for a real run:
+            over full-bleed art they are a black line across the picture, not a
+            line beside it. Corner ticks stay either way. */}
+        {guides ? verticalGuides : null}
+        {guides ? horizontalGuides : null}
         {cornerMarks}
       </div>
     </div>

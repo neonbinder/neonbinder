@@ -235,6 +235,119 @@ export const MAX_ACTIVE_JOBS_PER_USER = resolveMaxActiveJobsPerUser(
 );
 
 /**
+ * Per-user submission RATE limit — the volume half of the guardrail (NEO-160 f1).
+ *
+ * ## Why the concurrency cap is not enough
+ * `MAX_ACTIVE_JOBS_PER_USER` bounds how many batches are in flight AT ONCE. It
+ * says nothing about how many a user may submit over time: finish two, start two
+ * more, forever. Each batch is up to PLACEHOLDER_MAX_ENTRY_INDEX + 1 = 1001
+ * `/process-entry` calls, and every one of those is a Vision round-trip plus a
+ * model inference we pay for — with a possible heavy-tier escalation on top. So
+ * concurrency caps the *rate of parallelism* while volume stayed unbounded, and
+ * volume is the one that shows up on the bill.
+ *
+ * ## What this bounds, concretely
+ * Starts per rolling window, which composes with the existing per-job entry cap
+ * into a real ceiling on paid work:
+ *
+ *     MAX_JOB_STARTS_PER_WINDOW x (PLACEHOLDER_MAX_ENTRY_INDEX + 1) images/window
+ *
+ * At the defaults that is 12 x 1001 ≈ 12k images/hour for one account — still
+ * far more than a human with a scanner can produce, which is the point: the
+ * limit is sized to be invisible to honest use and to make a scripted account
+ * cost bounded rather than open-ended.
+ *
+ * ## Counted on `createdAt`, deliberately
+ * Not on `startedAt`. For a stream job the two are the same instant. For a zip
+ * job `createdAt` is when the upload URL was minted, which is earlier than the
+ * start — and minting is itself the thing that must be bounded, because it
+ * hands out a signed GCS write. Counting mint time closes the door a step
+ * earlier, and a user cannot start a batch they were never allowed to mint.
+ */
+export const DEFAULT_MAX_JOB_STARTS_PER_WINDOW = 12;
+
+/** The rolling window the limit is measured over. One hour. */
+export const JOB_START_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Widest value accepted from the environment — a typo guard, not a capacity
+ * opinion, exactly as MAX_ACCEPTED_ACTIVE_JOBS is for the concurrency cap. 200
+ * starts an hour is already far past any human workflow; a stray digit turning
+ * 20 into 200 should be refused rather than honoured.
+ */
+const MAX_ACCEPTED_JOB_STARTS_PER_WINDOW = 200;
+
+/**
+ * Resolve the configured submission rate limit, or fall back to the default.
+ *
+ * Same contract as `resolveMaxActiveJobsPerUser`: not a base-10 integer in
+ * [1, MAX_ACCEPTED_JOB_STARTS_PER_WINDOW] means fall back rather than clamp, a
+ * present-but-invalid value is warned about so a typo is visible, and an unset
+ * variable is silent because dev/preview leave it unset on purpose.
+ *
+ * Exported for direct unit testing — `process.env` is read once at module load.
+ */
+export function resolveMaxJobStartsPerWindow(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_MAX_JOB_STARTS_PER_WINDOW;
+  }
+
+  const trimmed = raw.trim();
+  const parsed = Number(trimmed);
+  const usable =
+    Number.isInteger(parsed) &&
+    parsed >= 1 &&
+    parsed <= MAX_ACCEPTED_JOB_STARTS_PER_WINDOW;
+
+  if (!usable) {
+    console.warn(
+      JSON.stringify({
+        msg: "max_job_starts_per_window_invalid",
+        configured: trimmed,
+        using: DEFAULT_MAX_JOB_STARTS_PER_WINDOW,
+        accepted: `integer 1-${MAX_ACCEPTED_JOB_STARTS_PER_WINDOW}`,
+      }),
+    );
+    return DEFAULT_MAX_JOB_STARTS_PER_WINDOW;
+  }
+
+  return parsed;
+}
+
+/**
+ * How many batches one user may START per rolling window.
+ *
+ * Set `MAX_JOB_STARTS_PER_WINDOW` on the deployment to change it without a
+ * redeploy, the same lever NEO-176 added for the concurrency cap.
+ */
+export const MAX_JOB_STARTS_PER_WINDOW = resolveMaxJobStartsPerWindow(
+  process.env.MAX_JOB_STARTS_PER_WINDOW,
+);
+
+/**
+ * Refusal reason if this user has started too many batches recently, else null.
+ *
+ * Takes the caller's own job rows rather than reading them, because both call
+ * sites have already collected exactly this list for the concurrency cap —
+ * the limit costs no extra database work, which is why it can sit on the hot
+ * path of every start without thought.
+ *
+ * Pure and exported so the window arithmetic is unit-testable without a job.
+ */
+export function jobStartRateLimitReason(
+  ownJobs: { createdAt: number }[],
+  now: number,
+  limit: number = MAX_JOB_STARTS_PER_WINDOW,
+): string | null {
+  const since = now - JOB_START_WINDOW_MS;
+  const recent = ownJobs.filter((j) => j.createdAt > since).length;
+  if (recent < limit) return null;
+
+  const minutes = Math.ceil(JOB_START_WINDOW_MS / 60000);
+  return `you have started ${recent} batches in the last ${minutes} minutes (limit ${limit}) — wait a few minutes and try again`;
+}
+
+/**
  * Which client started a run — a display hint for the admin page, not a security
  * boundary. See the `source` comment in schema.ts: the client supplies it, the
  * server stores it verbatim, and nothing is gated on it. Shared by both start
@@ -410,6 +523,11 @@ export const startPlaceholderBatch = mutation({
         reason: `you already have ${activeCount} active batches (limit ${MAX_ACTIVE_JOBS_PER_USER}) — wait for one to finish`,
       };
     }
+
+    // Volume, on the same read. The concurrency cap above bounds how many run
+    // at once; this bounds how many may be started over time (NEO-160 f1).
+    const rateLimited = jobStartRateLimitReason(ownJobs, Date.now());
+    if (rateLimited) return { started: false, reason: rateLimited };
 
     await ctx.db.patch(job._id, {
       status: "extracting",
@@ -1602,6 +1720,7 @@ export const listDoneImagesForPairing = internalQuery({
       textCount: v.optional(v.number()),
       dhash: v.optional(v.string()),
       pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
+      unpairedFrom: v.optional(v.array(v.number())),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1622,6 +1741,7 @@ export const listDoneImagesForPairing = internalQuery({
         textCount: r.textCount,
         dhash: r.dhash,
         pairStatus: r.pairStatus,
+        unpairedFrom: r.unpairedFrom,
       }));
   },
 });
@@ -1797,11 +1917,13 @@ export const getPlaceholderJob = query({
       failedImages: v.number(),
       rejectedEntries: v.number(),
       pairCount: v.number(),
-      // Cumulative identity-resolver calls across every pairing run — see the
-      // schema comment. 0 is the healthy value: the adjacency pre-pass should
-      // pair a well-ordered scan without consulting identity once. Surfaced so
-      // the release E2E can assert it and catch a regression that silently
-      // starts paying per image.
+      // Identity-resolver calls as measured by the FINAL pairing run — see the
+      // schema comment. Diagnostics, not spend: since NEO-170 the identity is
+      // already on the image row, so a resolver call is a Map lookup, and
+      // pairing runs identity-first for every card by design. Roughly one per
+      // done image is the healthy reading; the release E2E asserts 6 for a
+      // six-image batch. (An earlier version of this comment claimed 0 was
+      // healthy and that the E2E asserted 0 — both were left behind by NEO-170.)
       resolverCalls: v.number(),
       // The cold-start NOTIFICATION flag (NEO-175). True while an escalated
       // image is waiting on a heavy service that has not yet produced a result
@@ -1998,6 +2120,74 @@ export const listPlaceholderPairs = query({
       score: p.score,
       createdAt: p._creationTime,
     }));
+  },
+});
+
+/**
+ * The caller's own recent placeholder jobs, newest first.
+ *
+ * ## Why this exists (NEO-152)
+ * `getPlaceholderJob` answers "how is THIS job doing" and needs a jobId to do
+ * it. That is enough for a session you never leave, and not enough for the one
+ * thing intake actually promises: a batch runs for minutes, so you must be able
+ * to close the tab, come back, and still find it. Without a listing the only
+ * handle is the `?jobId=` in the URL — fine if you bookmarked it, useless if you
+ * just navigated back to /print/placeholders.
+ *
+ * Caller-scoped by construction: reads through `by_user` for the verified Clerk
+ * subject, exactly like the concurrency cap. There is no argument that could
+ * name another user's jobs, which is the same shape as every other function on
+ * this table and the reason it needs no ownership check of its own.
+ *
+ * Bounded because a listing is a UI affordance, not a history export: a user who
+ * has run hundreds of batches should not pay for all of them to render a
+ * "resume" list. Newest-first is the useful order and the only one asked for.
+ */
+export const listMyPlaceholderJobs = query({
+  args: { limit: v.optional(v.number()) },
+  returns: v.array(
+    v.object({
+      jobId: v.string(),
+      status: JOB_STATUS_VALIDATOR,
+      mode: v.optional(v.union(v.literal("zip"), v.literal("stream"))),
+      source: v.optional(SOURCE_VALIDATOR),
+      createdAt: v.number(),
+      finishedAt: v.optional(v.number()),
+      totalImages: v.number(),
+      processedImages: v.number(),
+      failedImages: v.number(),
+      // Whether this job still counts against MAX_ACTIVE_JOBS_PER_USER. Derived
+      // here rather than left to the client so the "you have N running" copy and
+      // the server's own refusal can never disagree about what "active" means.
+      active: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const limit = Math.min(Math.max(args.limit ?? 20, 1), 100);
+
+    const rows = await ctx.db
+      .query("placeholderJobs")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+
+    return rows
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+      .map((job) => ({
+        jobId: job.jobId,
+        status: job.status,
+        mode: job.mode,
+        source: job.source,
+        createdAt: job.createdAt,
+        finishedAt: job.finishedAt,
+        totalImages: job.totalImages ?? 0,
+        processedImages: job.processedImages ?? 0,
+        failedImages: job.failedImages ?? 0,
+        active: ACTIVE_STATUSES.has(job.status),
+        // NOTE: `objectPath` is deliberately absent here for the same reason
+        // `getPlaceholderJob` omits it — server-only state.
+      }));
   },
 });
 

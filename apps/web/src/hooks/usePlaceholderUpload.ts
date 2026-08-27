@@ -6,6 +6,7 @@ import {
   runPlaceholderUpload,
   type FileProgress,
 } from "@/lib/placeholders/upload-run";
+import { classifyIntake } from "@/lib/placeholders/intake-kind";
 
 /**
  * Open a scan session and push files into it — the whole intake path, in one
@@ -76,6 +77,12 @@ export function usePlaceholderUpload(): PlaceholderUpload {
   const createUploadUrl = useAction(
     api.adapters.placeholderUploads.createPlaceholderImageUploadUrl,
   );
+  // The zip half of the same front door. Separate Convex functions, identical
+  // outcome shape — see the `classifyIntake` branch below.
+  const createZipUploadUrl = useAction(
+    api.adapters.placeholderUploads.createPlaceholderUploadUrl,
+  );
+  const startBatch = useMutation(api.placeholderPipeline.startPlaceholderBatch);
 
   const [progress, setProgress] = useState<FileProgress[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -88,6 +95,15 @@ export function usePlaceholderUpload(): PlaceholderUpload {
         return { ok: false, reason: "no files to upload" };
       }
 
+      // ONE control, two server paths. The user picked files; they did not pick
+      // a mode. Everything after this returns the same `UploadOutcome`, so the
+      // page renders a zip run and a scan run identically — which is the whole
+      // requirement (NEO-152).
+      const intake = classifyIntake(files);
+      if (intake.kind === "invalid") {
+        return { ok: false, reason: intake.reason };
+      }
+
       setUploading(true);
       setProgress(
         files.map((file, position) => ({
@@ -98,6 +114,51 @@ export function usePlaceholderUpload(): PlaceholderUpload {
       );
 
       try {
+        if (intake.kind === "zip") {
+          // Mint first: the job row is created by the mint, so a refusal here
+          // costs nothing and the user is told before the bytes move. This is
+          // also where the submission rate limit bites for zips, because the
+          // limit counts `createdAt` — see jobStartRateLimitReason.
+          const ticket = await createZipUploadUrl({});
+
+          if (intake.file.size > ticket.maxUploadBytes) {
+            const limitMb = Math.floor(ticket.maxUploadBytes / (1024 * 1024));
+            setProgress([
+              { position: 0, name: intake.file.name, state: "failed", error: "too large" },
+            ]);
+            return {
+              ok: false,
+              reason: `that zip is larger than the ${limitMb}MB limit`,
+            };
+          }
+
+          setProgress([{ position: 0, name: intake.file.name, state: "uploading" }]);
+          await postSignedForm(
+            { uploadUrl: ticket.uploadUrl, fields: ticket.fields },
+            intake.file,
+          );
+          setProgress([{ position: 0, name: intake.file.name, state: "uploaded" }]);
+
+          // Extraction is server-side from here. `started: false` is a refusal
+          // with a reason (the caps), not an error — same shape the stream
+          // start uses, so the page's one error path covers both.
+          const started = await startBatch({ jobId: ticket.jobId, source: "web" });
+          if (!started.started) {
+            return { ok: false, reason: started.reason ?? "try again" };
+          }
+
+          // `uploaded: 1` counts the ARCHIVE, not the cards inside it — the
+          // image count is not known until /extract has run, and the page reads
+          // it from the job's `totalImages` like it does for a scan.
+          return {
+            ok: true,
+            jobId: ticket.jobId,
+            uploaded: 1,
+            failed: 0,
+            total: 1,
+          };
+        }
+
         // Only include `source` when a caller asks for it, so a no-source upload
         // sends `{}` and stays compatible with the current validator. `{source}`
         // is assignable to the empty-args type, so no cast is needed; the
@@ -138,7 +199,7 @@ export function usePlaceholderUpload(): PlaceholderUpload {
         setUploading(false);
       }
     },
-    [confirmUpload, createUploadUrl, startStream],
+    [confirmUpload, createUploadUrl, createZipUploadUrl, startBatch, startStream],
   );
 
   return { progress, uploading, reset, upload };

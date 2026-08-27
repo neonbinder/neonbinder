@@ -901,12 +901,22 @@ export default defineSchema({
     // How many times pairing fell back to the identity resolver — as measured by
     // the FINAL pairing run, over the complete batch.
     //
-    // The number that matters is ZERO. The adjacency pre-pass exists so a batch
-    // scanned in order — front, back, front, back — is paired entirely from the
-    // free side evidence, without consulting identity for a single image. So
-    // this is a regression signal rather than a spend figure: a well-ordered
-    // batch reads 0, and anything above it means images reached the scoring
-    // pool. The release E2E asserts 0 for exactly that reason.
+    // PURE DIAGNOSTICS — not a spend figure, and NOT expected to be zero.
+    //
+    // This comment used to say "the number that matters is ZERO", on the
+    // reasoning that the adjacency pre-pass should pair an in-order scan without
+    // consulting identity once. That was true while pairing lived in preprocess
+    // and `resolveIdentity` was a Haiku call. NEO-170 ended both halves of it:
+    // identity is now produced by /process-entry and sits on this row, so
+    // `resolveIdentity` is an in-memory Map lookup costing nothing, and pairing
+    // deliberately runs `useAdjacency: false` — identity-first for EVERY card —
+    // because the pre-pass matched on side-disagreement alone and produced real
+    // mispairs (see the useAdjacency comment in placeholderPairing.ts).
+    //
+    // So one call per done image is the healthy reading, not a regression: the
+    // release E2E asserts `resolver calls: 6` for a six-image batch, precisely
+    // to prove identity-first pairing ran over all of them. What this number is
+    // still good for is noticing that pairing ran at all, and over how much.
     //
     // ONLY the final run records it, and that is load-bearing rather than an
     // optimisation. Incremental pairing recomputes the whole batch after every
@@ -1034,6 +1044,25 @@ export default defineSchema({
     // run for this row yet — distinct from "unmatched", which means it ran and
     // found nothing.
     pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
+    // Entry indexes this image must never be AUTO-paired with again, because
+    // the user explicitly split them (NEO-152).
+    //
+    // A manual PAIR was always durable — the row carries mechanism "manual" and
+    // the matcher is told to leave it alone. A manual UNPAIR left no trace at
+    // all, so on a still-running batch the very next incremental pass was free
+    // to re-form the pair the user had just rejected. That made correcting a
+    // live batch impossible and forced review to wait for the batch to finish,
+    // which does not survive contact with a set upload of several hundred
+    // cards: nobody waits.
+    //
+    // Scoped to the PAIRING, not the image: splitting A from B says "these two
+    // are not partners", and leaves A free to pair with its real partner. A
+    // flag on the image would have said "never pair A again", which is a much
+    // bigger claim than the user made.
+    //
+    // Absent means no rejections. Cleared for a specific partner if the user
+    // later pairs them by hand after all.
+    unpairedFrom: v.optional(v.array(v.number())),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in zip order", so a

@@ -28,6 +28,8 @@ const REFS = {
   close: "placeholderStream:closePlaceholderStream",
   uploadUrl: "placeholderUploads:createPlaceholderImageUploadUrl",
   downloadUrl: "placeholderUploads:createPlaceholderImageDownloadUrl",
+  unpair: "placeholderPairing:unpairPlaceholderImages",
+  manualPair: "placeholderPairing:manuallyPairPlaceholderImages",
 } as const;
 
 const mocks = vi.hoisted(() => ({
@@ -57,6 +59,13 @@ vi.mock("@/convex/_generated/api", () => ({
         "placeholderStream:confirmPlaceholderImageUpload",
       closePlaceholderStream: "placeholderStream:closePlaceholderStream",
     },
+    // The review grid reaches for these; without the key the mocked `api`
+    // object yields undefined and the component throws during render.
+    placeholderPairing: {
+      unpairPlaceholderImages: "placeholderPairing:unpairPlaceholderImages",
+      manuallyPairPlaceholderImages:
+        "placeholderPairing:manuallyPairPlaceholderImages",
+    },
     adapters: {
       placeholderUploads: {
         createPlaceholderImageUploadUrl:
@@ -77,24 +86,24 @@ vi.mock("convex/react", () => ({
   useAction: (ref: string) => mocks.fns[ref],
 }));
 
-import PlaceholderScansPage from "./page";
+import CardIntake from "./intake";
 
 /**
  * The page reads its session id from the query string now, so every render needs
  * a router. `initialEntry` is how the "open an existing run" case arrives.
  */
-function renderPage(initialEntry = "/placeholders") {
+function renderPage(initialEntry = "/print/placeholders") {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
       <Routes>
-        <Route path="/placeholders" element={<PlaceholderScansPage />} />
+        <Route path="/print/placeholders" element={<CardIntake />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
 function selectFiles(names: string[]) {
-  const input = screen.getByLabelText("Scan images (JPEG)") as HTMLInputElement;
+  const input = screen.getByLabelText(/Drag your card photos here/) as HTMLInputElement;
   const files = names.map(
     (name) => new File(["bytes"], name, { type: "image/jpeg" }),
   );
@@ -105,7 +114,7 @@ function selectFiles(names: string[]) {
   return files;
 }
 
-describe("PlaceholderScansPage", () => {
+describe("CardIntake", () => {
   beforeEach(() => {
     mocks.queries = {};
     mocks.warm = vi.fn();
@@ -145,26 +154,45 @@ describe("PlaceholderScansPage", () => {
   it("explains what the page is for and starts with nothing selected", () => {
     renderPage();
     expect(
-      screen.getByRole("heading", { level: 1, name: "Placeholder Scans" }),
+      // level 3, not 1: PrintLayout owns the h1 ("Print Shop") and the page
+      // owns the h2 ("Placeholder Sheets") — intake is a section of it now.
+      screen.getByRole("heading", { level: 3, name: "Upload your cards" }),
     ).not.toBeNull();
-    expect(screen.getByText("No files selected.")).not.toBeNull();
+    expect(screen.getByText("Nothing selected yet.")).not.toBeNull();
     // Nothing to upload yet, and the label says so rather than the button
     // silently doing nothing.
-    expect(
-      screen.getByRole("button", { name: "Start Upload" }).hasAttribute("disabled"),
-    ).toBe(true);
+    // There is no Start button — choosing files IS the upload. The guarantee
+    // worth pinning is that nothing has been sent before a choice is made.
+    expect(screen.queryByRole("button", { name: /Start Upload/ })).toBeNull();
+    expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
   });
 
-  it("counts the selected files", () => {
+  it("sends the files the moment they are chosen, with no Start step", async () => {
+    // The behaviour that replaced the button: a selection is a send. The old
+    // assertion here counted files sitting in a tray waiting for a click; that
+    // tray no longer exists, and its absence is the point.
     renderPage();
     selectFiles(["front.jpg", "back.jpg"]);
-    expect(screen.getByText("2 files selected.")).not.toBeNull();
+
+    await waitFor(() =>
+      expect(mocks.fns[REFS.start]).toHaveBeenCalled(),
+    );
+    expect(screen.queryByRole("button", { name: /Start Upload/ })).toBeNull();
+  });
+
+  it("refuses an impossible selection instead of sending it", async () => {
+    // With no button to intercept, the classification IS the guard: two zips
+    // would become two batches, so nothing is sent and the reason is shown.
+    renderPage();
+    selectFiles(["one.zip", "two.zip"]);
+
+    expect(screen.getByText(/one zip at a time/)).not.toBeNull();
+    expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
   });
 
   it("opens one session and uploads every file into it", async () => {
     renderPage();
     selectFiles(["front.jpg", "back.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
     await waitFor(() =>
       expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
@@ -179,7 +207,7 @@ describe("PlaceholderScansPage", () => {
       jobId: "job-1234abcd",
       entryIndex: 0,
     });
-    expect(screen.getByRole("heading", { name: "Session job-1234" })).not.toBeNull();
+    expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull();
   });
 
   it("says why a session could not be started", async () => {
@@ -189,7 +217,6 @@ describe("PlaceholderScansPage", () => {
     });
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
     const notice = await screen.findByText(
       "Couldn't start a scan session — you already have 2 active batches (limit 2) — wait for one to finish.",
@@ -252,40 +279,49 @@ describe("PlaceholderScansPage", () => {
 
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
     await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Session job-1234" })).not.toBeNull(),
+      expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull(),
     );
 
     // Status line, composed rather than scattered across cells.
     expect(
-      screen.getByText(
-        "Collecting — 2 of 2 images processed, 0 failed, 1 pairs",
-      ),
+      screen.getByText("All 3 photos read."),
     ).not.toBeNull();
 
     const pairsSection = within(
-      screen.getByRole("heading", { name: "Matched pairs" })
+      screen.getByRole("heading", { name: /Your cards/ })
         .parentElement as HTMLElement,
     );
-    expect(
-      pairsSection.getByText("Ken Griffey Jr. · #24 · exact match · by scan order"),
-    ).not.toBeNull();
+    // The card, and what the matcher had to go on. That used to be one
+    // sr-only string on the pocket ("… — Matched"); with the pocket preview
+    // gone the review row carries both as visible text, which is better —
+    // the evidence is the thing a user acts on and it was invisible before.
+    expect(screen.getByText("Ken Griffey Jr. #24")).not.toBeNull();
+    expect(screen.getByText("Name and details match")).not.toBeNull();
 
     // Both sides are fetched through their own signed GET, minted when the
     // image renders rather than with the pair list.
+    // ONE of each front. There were briefly two — a pocket preview above the
+    // review grid, plus the grid itself — and the duplication is exactly what
+    // made the page hard to scan. The printable grid at the bottom is the only
+    // preview now; this section shows each pair beside its back so the pairing
+    // can be judged.
     expect(
-      await screen.findByAltText("Front of Ken Griffey Jr."),
-    ).not.toBeNull();
-    expect(await screen.findByAltText("Back of Ken Griffey Jr.")).not.toBeNull();
+      (await screen.findAllByAltText("Front of Ken Griffey Jr. #24")).length,
+    ).toBe(1);
+    // The back appears exactly once: in the review grid. The pocket grid shows
+    // fronts only — a binder pocket is a front — so a back here means the
+    // review grid rendered, which is where a pair is actually judged.
+    expect(screen.getAllByAltText(/^Back of/)).toHaveLength(1);
     expect(mocks.fns[REFS.downloadUrl]).toHaveBeenCalledWith({
       jobId: "job-1234abcd",
-      entryIndex: 1,
+      entryIndex: 0,
     });
 
-    // A done image nothing paired is listed rather than dropped — an unmatched
-    // scan is the thing a user most needs to see.
-    expect(screen.getByText(/#2 stray\.jpg/)).not.toBeNull();
+    // A done image nothing paired is surfaced rather than dropped — an
+    // unmatched scan is the thing a user most needs to act on. It is now shown
+    // as a thumbnail under "Not matched yet", named by its file.
+    expect(await screen.findByAltText("stray.jpg")).not.toBeNull();
   });
 
   describe("cold-start (heavy warm-up) indicator", () => {
@@ -313,10 +349,10 @@ describe("PlaceholderScansPage", () => {
         [REFS.job]: { ...baseJob, ...jobOverrides },
         [REFS.images]: images.map((i) => ({ originalName: `f${i.entryIndex}.jpg`, ...i })),
       };
-      return renderPage("/placeholders?jobId=job-1234abcd");
+      return renderPage("/print/placeholders?jobId=job-1234abcd");
     }
 
-    const WARMING = /Warming up the full card processor/;
+    const WARMING = /A few of these need a closer look/;
 
     it("shows while an escalation is waiting on the cold heavy service", () => {
       openWithJob({ heavyWarming: true });
@@ -371,13 +407,12 @@ describe("PlaceholderScansPage", () => {
     };
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
-    const closeButton = await screen.findByRole("button", { name: "Close Session" });
+    const closeButton = await screen.findByRole("button", { name: /Finish/ });
     fireEvent.click(closeButton);
     expect(mocks.fns[REFS.close]).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Yes, Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish it" }));
     await waitFor(() =>
       expect(mocks.fns[REFS.close]).toHaveBeenCalledWith({ jobId: "job-1234abcd" }),
     );
@@ -403,81 +438,74 @@ describe("PlaceholderScansPage", () => {
     };
     renderPage();
     selectFiles(["front.jpg"]);
-    fireEvent.click(screen.getByRole("button", { name: "Start Upload" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Abort Session" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard this batch" }));
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
 
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(mocks.fns[REFS.cancel]).not.toHaveBeenCalled();
   });
 
-  it("opens an existing run straight from ?jobId=, with its resolver spend", () => {
-    // Addressability is the point of putting the id in the URL: the /testing
-    // entry point redirects here, and a run is shareable and survives a reload.
+  it("opens an existing run straight from ?jobId=", async () => {
+    // The resume path. Two assertions that used to live here checked
+    // "resolver calls: N" — a diagnostics counter that NEO-152 removed from the
+    // UI on purpose (it is a Map-lookup tally since NEO-170, meaningless to a
+    // collector). What matters on this path is that a run opened from the URL
+    // alone renders its state without the user having just created it.
     mocks.queries = {
       [REFS.job]: {
         jobId: "job-1234abcd",
         status: "succeeded",
         createdAt: Date.now(),
-        totalImages: 4,
-        processedImages: 4,
+        totalImages: 2,
+        processedImages: 2,
         failedImages: 0,
         rejectedEntries: 0,
-        pairCount: 2,
+        pairCount: 1,
         resolverCalls: 3,
+        heavyWarming: false,
       },
       [REFS.images]: [],
       [REFS.pairs]: [],
     };
+    renderPage("/print/placeholders?jobId=job-1234abcd");
 
-    renderPage("/placeholders?jobId=job-1234abcd");
-
-    expect(
-      screen.getByRole("heading", { name: "Session job-1234" }),
-    ).not.toBeNull();
-    // Nothing was uploaded to get here.
-    expect(mocks.fns[REFS.start]).not.toHaveBeenCalled();
-    // The spend signal for a run: adjacency and the image pool are free, the
-    // name resolver is not.
-    expect(screen.getByText("resolver calls: 3")).not.toBeNull();
+    expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull();
+    // Plain language, and no internal counter anywhere on the page.
+    expect(screen.queryByText(/resolver calls/)).toBeNull();
   });
 
-  it("reads a run with no resolver counter as zero calls", () => {
-    // Rows written before the counter existed have no field at all; the run
-    // view must still render rather than printing "undefined".
-    mocks.queries = {
-      [REFS.job]: {
-        jobId: "job-1234abcd",
-        status: "succeeded",
-        createdAt: Date.now(),
-        totalImages: 0,
-        processedImages: 0,
-        failedImages: 0,
-        rejectedEntries: 0,
-        pairCount: 0,
-      },
-    };
-    renderPage("/placeholders?jobId=job-1234abcd");
-    expect(screen.getByText("resolver calls: 0")).not.toBeNull();
-  });
-
-  it("is reachable — main.tsx routes /placeholders inside the signed-in shell", () => {
-    expect(mainSource).toContain('from "@/app/placeholders/page"');
+  it("is reachable — main.tsx mounts the intake page under /print, signed in", () => {
+    // NEO-152 moved intake from the standalone /placeholders stopgap into the
+    // Print Shop. This asserts the destination rather than the old route.
+    expect(mainSource).toContain('from "@/app/print/placeholders/page"');
     expect(mainSource).toMatch(
-      /path="\/placeholders"\s+element=\{<PlaceholderScans \/>\}/,
+      /path="placeholders"\s+element=\{<PrintPlaceholders \/>\}/,
     );
+
     // Inside ProtectedLayout's subtree, and NOT inside the AdminLayout block —
-    // this is a page for every signed-in user.
+    // this is a page for every signed-in user, not an admin tool.
     const adminBlock = mainSource.slice(
       mainSource.indexOf("<Route element={<AdminLayout />}>"),
     );
     expect(adminBlock.slice(0, adminBlock.indexOf("</Route>"))).not.toContain(
-      '"/placeholders"',
+      'path="placeholders"',
     );
     const protectedBlock = mainSource.slice(
       mainSource.indexOf("<Route element={<ProtectedLayout />}>"),
     );
-    expect(protectedBlock).toContain('path="/placeholders"');
+    expect(protectedBlock).toContain('path="placeholders"');
+  });
+
+  it("keeps the old /placeholders URL working, query string and all", () => {
+    // The stopgap was never in the nav, but it IS in browser histories and it
+    // is where /testing/seed-placeholder-upload sends the E2E suite. Deleting
+    // the route would 404 those; forwarding with a bare `to` would be worse —
+    // it drops `?jobId=`, so the run silently vanishes and the page looks empty
+    // rather than broken. The redirect must carry the search across.
+    expect(mainSource).toMatch(/path="\/placeholders" element=\{<LegacyPlaceholders \/>\}/);
+    expect(mainSource).toMatch(
+      /function LegacyPlaceholders\(\)[\s\S]{0,300}?to=\{`\/print\/placeholders\$\{search\}`\}/,
+    );
   });
 });

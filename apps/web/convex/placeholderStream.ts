@@ -53,6 +53,7 @@ import {
   PLACEHOLDER_STREAM_IDLE_MS,
   SOURCE_VALIDATOR,
   findOwnedJob,
+  jobStartRateLimitReason,
   requireUserId,
 } from "./placeholderPipeline";
 import {
@@ -149,6 +150,12 @@ export const startPlaceholderStream = mutation({
         reason: `you already have ${activeCount} active batches (limit ${MAX_ACTIVE_JOBS_PER_USER}) — finish or cancel one first`,
       };
     }
+
+    // Volume, on the same read — see `jobStartRateLimitReason`. Shared with
+    // `startPlaceholderBatch` so a user cannot dodge the limit by alternating
+    // between a zip upload and a scan, exactly as the concurrency cap above.
+    const rateLimited = jobStartRateLimitReason(ownJobs, Date.now());
+    if (rateLimited) return { started: false, reason: rateLimited };
 
     const jobId = crypto.randomUUID();
     const now = Date.now();

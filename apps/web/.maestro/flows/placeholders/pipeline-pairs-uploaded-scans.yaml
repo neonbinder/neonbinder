@@ -6,7 +6,7 @@
 # scans — and the path the product must keep fast.
 #
 # The HEAVY escalation path (inset-on-noise scans → the ~191s BiRefNet cold start
-# → the "Warming up the full card processor…" notice) is a DIFFERENT user case,
+# → the "A few of these need a closer look…" notice) is a DIFFERENT user case,
 # proved by its own flow, pipeline-escalation-cold-start.yaml. This flow proves
 # the opposite: fast in, no model, no cold-start notice.
 #
@@ -22,21 +22,36 @@
 #   * Step 3b asserts the cold-start notice is ABSENT — so a regression that pushed
 #     these frame-filling cards onto the heavy service (the fast path silently
 #     declining them) surfaces here instead of passing unnoticed.
-#   * "resolver calls: 6" (Step 5) proves identity-first pairing RAN over all six
-#     rows.
+#   * "2 pairs ready to print." together with "Not paired (2)" (Step 5)
+#     accounts for every image: 2 pairs x 2 + 2 loose = 6. Pairing demonstrably
+#     ran over the whole batch and dropped nothing. A pipeline that lost an
+#     image, or a matcher that paired greedily across sides, lands on different
+#     numbers and fails here.
 # There is no `when:` branch anywhere in it, and the precondition below proves a
 # real six-image job exists BEFORE the wait.
 #
-# WHY THE PAIR COUNT IS NOT ASSERTED HERE. On the FAST classical crop the synthetic
-# full-bleed FRONT of one fixture pair (Marcus VORKLE) deterministically classifies
-# as side "back" (reproduced with a direct /process-entry probe: needs_escalation
-# false, side "back"), so only 2 pairs form on the fast path, not 3. This is a
-# synthetic-fixture artifact — a real card front carries a player PHOTO, which
-# side-classifies reliably; the flat full-bleed synthetic front does not — NOT a
-# product bug. Pairing correctness is owned by convex/lib/pairing/*.test.ts and
-# proven end-to-end on the HEAVY crop by pipeline-escalation-cold-start.yaml, so
-# this flow asserts only what the fast path makes deterministic (6/6, 0 failed,
-# no cold-start notice, resolver calls 6).
+# WHY TWO PAIRS AND NOT THREE. The fixture set was designed as three pairs, and
+# the number asserted here is deliberately 2. On the FAST classical crop the
+# synthetic full-bleed FRONT of one pair (Marcus VORKLE) deterministically
+# classifies as side "back" (reproduced with a direct /process-entry probe:
+# needs_escalation false, side "back"). The pool therefore holds two fronts and
+# four backs: two pairs form, and the two left over are BOTH backs, which can
+# never pair with each other. That is also why NEO-152's adjacency bonus does not
+# rescue them — adjacency only corroborates a match, it cannot create one across
+# two same-side images.
+#
+# This is a synthetic-fixture artifact, not a product bug: a real card front
+# carries a player PHOTO and side-classifies reliably, while a flat full-bleed
+# synthetic front does not. Verified against the dev deployment on 2026-08-26 by
+# pushing this exact fixture set through the same seed page this flow uses —
+# "All 6 photos read.", no cold-start notice, then "2 pairs ready to print."
+# and "Not paired (2)" once the batch was finished.
+#
+# WHICH pairs formed, and at what confidence, is still NOT asserted — that is a
+# model-dependent per-pair verdict owned by convex/lib/pairing/*.test.ts, and
+# NEO-152 made confidence legitimately fixture-dependent, so pinning the
+# mechanism here would fail on a card change rather than on a regression. What
+# is asserted is the arithmetic, which is deterministic.
 #
 # R3 — Nothing else covers this. pipeline-escalation-cold-start.yaml exercises
 # the ESCALATION path; flip-edge-mirrors-the-backs tests print-sheet layout, not
@@ -52,7 +67,7 @@
 # this is a per-user placeholder job). Closing the session (Step 4) is NOT
 # destructive — it is the batch's normal terminal transition (collecting →
 # pairing → succeeded), the sanctioned way to finish a stream. It deliberately
-# does NOT tap "Abort Session", which IS destructive.
+# does NOT tap "Discard this batch", which IS destructive.
 #
 # ── WHY A TESTING PAGE UPLOADS THE FILES ──────────────────────────────────
 # maestro-web cannot attach a file to <input type=file> (there is no working
@@ -73,8 +88,8 @@
 # fast_tiered_crop: all six return the input untouched, none escalates). Each
 # front and back print the SAME full player name so the identity pool pairs them.
 # (The set was DESIGNED as three pairs, but on the fast crop one synthetic front
-# side-classifies as "back", so the fast path forms 2 — see the R2 pair-count note
-# above; the pair COUNT is not asserted here.)
+# side-classifies as "back", so the fast path forms 2 and leaves two backs loose
+# — see the "WHY TWO PAIRS AND NOT THREE" note above.)
 appId: com.neonbinder.web
 url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-fullbleed&worker=${WORKER_INDEX || "0"}
 name: Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start
@@ -90,14 +105,34 @@ tags:
 # external round-trip, which is why it is allowed past the 7s budget.
 - launchApp
 - extendedWaitUntil:
-    visible: "Placeholder Scans"
+    visible: "Upload your cards"
     timeout: 90000
 
 # Step 2: PRECONDITION — a real six-image session exists. The status line reads
 # "<status> — <n> of 6 images processed, ...", so this matches at any point in
 # the run and pins the batch size before we commit to waiting on it. It also
 # proves the status line is on screen without scrolling, which Step 3 relies on.
-- assertVisible: ".*of 6 images processed.*"
+# The panel exists at all — it renders as soon as a job id is in the URL. The
+# old assertion matched a composed status line ("… of 6 images processed …")
+# that NEO-152 replaced with stage-specific copy: while images are in flight it
+# reads "Reading your cards — N of 6 done.", and the instant the last one lands
+# it becomes "All 6 photos read." A precondition cannot depend on which of those
+# it catches, so it asserts the panel and lets Step 3 gate on the real state.
+# The session panel sits BELOW THE FOLD on the CI viewport (1024x625), so it has
+# to be scrolled to before anything in it can be asserted. Measured on the real
+# page: "Upload your cards" is at y=533 — the last thing on screen — while the
+# session heading is at y=653 and the status line at y=714. `assertVisible` and
+# `extendedWaitUntil` never scroll, so they can only ever see the top of the
+# page. `scrollUntilVisible` scrolls AND is the assertion (it fails if it
+# reaches the end without a match), so it does both jobs here.
+#
+# This is what NEO-152 changed out from under these flows: the old /placeholders
+# stopgap was a short page whose status line was above the fold, and the flows
+# were written against that. The real tool leads with the dropzone.
+- scrollUntilVisible:
+    element:
+      text: "Your cards"
+    centerElement: true
 
 # ── Step 3: the fast-path completion wait ─────────────────────────────────────
 # All six images process on the FAST classical service and none touches the model.
@@ -110,15 +145,25 @@ tags:
 # "N of 6 images processed" counter is visible progress the whole time. Every
 # number in the assert is load-bearing: six accounted for, none failed; a dropped
 # image or a crashed crop produces different numbers and fails here. The pair
-# COUNT is intentionally omitted (see the R2 pair-count note in the header). The
-# status line is above the fold (Step 2), and extendedWaitUntil never scrolls, so
-# no scroll is needed.
+# count is not available yet at this point — it is written by the FINAL pairing
+# run, which Step 4 fires by finishing the batch. The status line is above the
+# fold (Step 2), and extendedWaitUntil never scrolls, so no scroll is needed.
+# 180s, not the 120s this flow used to carry. The identical wait — six
+# frame-filling fixtures through the fast path — is budgeted at 180s in
+# flip-edge-mirrors-the-backs.yaml, and two flows disagreeing about how long the
+# same operation takes is a bug in one of them. Neither number was ever
+# observed, because until now this wait could not see the status line at all
+# (it is below the fold; see the scroll note above), so both flows failed before
+# reaching it. Taking the more conservative value already in the tree is not
+# inflating a budget to hide a slow path: it resolves the instant the batch
+# completes, and a fast path that genuinely needs longer than three minutes for
+# six cards is still a PRODUCT finding to raise rather than a number to raise.
 - extendedWaitUntil:
-    visible: ".*6 of 6 images processed, 0 failed.*"
-    timeout: 120000
+    visible: "All 6 photos read."
+    timeout: 180000
 
 # Step 3b: the cold-start notice is ABSENT. The fast path escalates nothing, so
-# `heavyWarming` is false and the "Warming up the full card processor…" notice
+# `heavyWarming` is false and the "A few of these need a closer look…" notice
 # never renders. This is what distinguishes the fast path from the heavy one:
 # without it, a run that quietly escalated every card could still reach 6/6 and
 # pass Step 3. The assertion is meaningful here (not a look-somewhere-else
@@ -126,39 +171,46 @@ tags:
 # and the notice, if it existed, would sit in the same session panel right below
 # that line — in view. (The regex tolerates the exact copy "…the full card
 # processor…" via `.*` between "the" and "card".)
-- assertNotVisible: ".*[Ww]arming up the .*card processor.*"
+#
+# The string here is NEO-152's copy. It previously named the old "Warming up the
+# full card processor…" notice, which NEO-152 deleted — so the assertion was
+# passing because nothing in the app could ever render that text, not because
+# the fast path declined to escalate. An assertNotVisible on a string that
+# cannot exist is not a test, and this one sat in the flow's R2 list as one of
+# the three things that make it fail without the feature.
+- assertNotVisible: ".*A few of these need a closer look.*"
 
 # ── Step 4: CLOSE the session so the FINAL pairing run records the count ───────
 # The 6/6 completion above happened while the stream was still "Collecting": the
 # provisional pairing runs formed the pairs but deliberately do NOT record
-# `resolverCalls`. Only the FINAL run does, over the whole batch at once, and it
-# fires when the stream is CLOSED. Without this step the page still reads
-# "resolver calls: 0" and Step 5 can never see 6.
+# the batch as SUCCEEDED. Only the FINAL run does, and it fires when the stream
+# is CLOSED. Without this step the panel stays on "All 6 photos read." and Step
+# 5 never sees the finished state.
 - scrollUntilVisible:
     element:
-      text: "Close Session"
+      text: "Finish the batch"
     centerElement: true
-- tapOn: "Close Session"
-# Closing is guarded behind an "are you sure". Its focus opens on Cancel (so a
-# reflexive Enter does the safe thing), which is why the confirm is the SECOND
-# button, "Yes, Close".
-- assertVisible: "Close this scan session?"
-- tapOn: "Yes, Close"
+- tapOn: "Finish the batch"
+# Finishing is guarded behind an "are you sure". Its focus opens on the cancel
+# choice (so a reflexive Enter does the safe thing), which is why the confirm is
+# the SECOND button, "Finish it".
+- assertVisible: "Finish this batch?"
+- tapOn: "Finish it"
 # Wait for the batch to reach its terminal state. For a small batch (this flow's
 # six images; ≤100), the close mutation finalizes pairing INLINE in its own
-# transaction — recordResolverCalls + markJobSucceeded commit together, NOT via a
-# scheduled runPairing hop — then the reactive push flips the status line straight
-# to "Succeeded". There is no external compute here: every image is already done,
+# transaction — the final pairing and markJobSucceeded commit together, NOT via a
+# scheduled runPairing hop — then the reactive push flips the panel straight to
+# the finished copy. There is no external compute here: every image is already done,
 # so there is no crop/OCR round-trip. The status line goes "Collecting" →
-# "Succeeded" directly (no visible "Pairing" step for a small batch); matching
-# "Succeeded" on the same 6/0 arithmetic proves the final run finished, and
-# recordResolverCalls commits with markJobSucceeded, so once the status is
-# "Succeeded" the count is already 6 for Step 5 to read. (Pair count omitted here
-# for the same reason as Step 3 — see the R2 pair-count note in the header.)
+# the finished state directly (no visible "Pairing" step for a small batch), and
+# the pair count in that copy is written by the same transaction — so once
+# "2 pairs ready to print." is on screen the final run has demonstrably
+# completed. (WHICH pairs, and at what confidence, stays unasserted — see the
+# two-pairs note in the header.)
 #
 # The terminal transition is finalized INLINE in the close mutation for small
-# batches (NEO-175, commit 557f1d4): match fronts↔backs, record resolver calls,
-# and flip the job to "Succeeded" all commit atomically when the "Yes, Close"
+# batches (NEO-175, commit 557f1d4): match fronts↔backs, write the pairs, and
+# flip the job to succeeded all commit atomically when the "Finish it"
 # tap's mutation returns — sub-second even under the preview's 8-runner
 # contention, with no scheduler hop and no action-queue wait. (Previously this
 # FINAL run was a Convex *action* scheduled at runAfter(0); as an action it backed
@@ -170,16 +222,34 @@ tags:
 # transition is now <1s, so extendedWaitUntil resolves instantly on a healthy run
 # and still fails a genuinely broken finalize.
 - extendedWaitUntil:
-    visible: ".*Succeeded.*6 of 6 images processed, 0 failed.*"
+    visible: "2 pairs ready to print."
     timeout: 15000
 
-# Step 5: identity matching ran over the whole batch. Under identity-first
-# pairing every done image is resolved once (a cheap dictionary lookup, not a
-# model call), so 6 done images = 6 resolver calls. Only the FINAL pairing run
-# records the count — which is why Step 4 had to close the session to fire it — so
-# it is a stable 6. This proves identity-first pairing RAN over all six rows.
-# WHICH pairs the pool placed vs. the guarded adjacency fallback — and HOW MANY
-# pairs form on the fast crop — is a per-pair, model-dependent verdict owned by the
-# deterministic unit suite (convex/lib/pairing/pool.test.ts), NOT asserted here —
-# the E2E asserts only the deterministic outcome (6/6, 0 failed, resolver calls 6).
-- assertVisible: "resolver calls: 6"
+# Step 5: pairing ran over the whole batch, and every image is accounted for.
+# Two pairs plus two loose images is exactly six, and only the FINAL run writes
+# those counts — which is why Step 4 had to finish the session to fire it. The
+# orphan count is asserted alongside the pair count on purpose: the pair count
+# alone would still pass if the pipeline quietly lost the two leftovers, and
+# surfacing orphans rather than hiding them is a NEO-152 requirement in its own
+# right.
+#
+# WHICH pairs the pool placed vs. the guarded adjacency fallback, and at what
+# confidence, is a per-pair model-dependent verdict owned by the deterministic
+# unit suite (convex/lib/pairing/pool.test.ts) and NOT asserted here. That
+# restraint matters more since NEO-152: confidence now varies legitimately with
+# the fixture — a set whose backs omit the player name pairs correctly on weaker
+# evidence — so an E2E that pinned the mechanism would fail on a card change
+# rather than on a regression.
+# And the review step exists for the pairs just formed — the correction surface
+# NEO-152 §3 requires, which is what makes the pairing trustworthy rather than
+# merely present.
+- scrollUntilVisible:
+    element:
+      text: "Check the pairs"
+    centerElement: true
+# The two unpaired backs are surfaced as their own bucket, not swallowed. Also
+# below the fold, and further down than the review heading, so it scrolls too.
+- scrollUntilVisible:
+    element:
+      text: "Not paired (2)"
+    centerElement: true

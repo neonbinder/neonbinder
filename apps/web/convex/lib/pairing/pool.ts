@@ -74,10 +74,38 @@ export const TEAM_EXACT_SCORE = 500;
 export const TEAM_FUZZY_SCORE = 200;
 
 /**
+ * Photographed one after the other.
+ *
+ * Most scans run front, back, front, back, so two images one apart are
+ * probably two sides of one card — but only probably, which is exactly why
+ * this is a small bonus and not a mechanism. It is deliberately the same
+ * weight as the weakest identity signal (a fuzzy team hit): enough to break a
+ * tie and to lift a corroborated identity match over the exact threshold.
+ *
+ * It is applied ONLY when identity has already scored — see the call site.
+ * Ungated it would equal MATCH_ACCEPT_THRESHOLD on its own and pair two
+ * adjacent images with no identity whatsoever, displacing the guarded
+ * adjacency fallback that exists to handle exactly that case honestly.
+ */
+export const ADJACENCY_SCORE = 200;
+
+/**
  * Minimum score to accept a candidate. Set to the weakest single signal so
  * that any one identity agreement pairs, but zero agreement never does.
  */
 export const MATCH_ACCEPT_THRESHOLD = 200;
+
+/**
+ * Above this, a pairing is treated as settled — see `Confidence`.
+ *
+ * STRICTLY above, and that is the point: an exact player-name match alone
+ * scores exactly 1000 and stays `fuzzy`. A name on its own is not proof, since
+ * one player can appear on several cards in a set. It needs corroboration —
+ * the team agreeing (+500), or the two images being adjacent in the scan
+ * (+200) — to settle. A card-number agreement (2000) clears it outright, on
+ * the rare occasion both halves carry one.
+ */
+export const EXACT_CONFIDENCE_THRESHOLD = 1000;
 
 /**
  * Do these two cards describe the same physical card?
@@ -196,7 +224,6 @@ export class CardPool {
     const wanted = oppositeSide(card.side);
     let bestCandidate: PoolCard | null = null;
     let bestScore = 0;
-    let bestConfidence: Confidence = "side-only";
 
     // Tracked for the side-only fallback below.
     let oppositeCount = 0;
@@ -216,6 +243,18 @@ export class CardPool {
         card.player &&
         existing.player &&
         !playerNamesMatch(card.player, existing.player).match
+      ) {
+        continue;
+      }
+
+      // The user already separated these two. Also a hard reject, and for a
+      // stronger reason than the one above: no amount of identity agreement
+      // should let the matcher overrule a person who looked at both images and
+      // said no. Checked in both directions so the outcome cannot depend on
+      // which card the pool happens to be holding.
+      if (
+        card.unpairedFrom.includes(existing.key) ||
+        existing.unpairedFrom.includes(card.key)
       ) {
         continue;
       }
@@ -255,19 +294,45 @@ export class CardPool {
         }
       }
 
+      // Scan order — CORROBORATION ONLY, never grounds for a pairing.
+      //
+      // Gated on the identity signals having already scored something. On its
+      // own the bonus equals MATCH_ACCEPT_THRESHOLD exactly, so an ungated
+      // version would pair any two adjacent opposite-side images with no
+      // identity at all — quietly taking over from the guarded adjacency
+      // fallback below, which handles that case deliberately and labels it
+      // `mechanism: "adjacency"`, `confidence: "side-only"` so the UI can say
+      // "this is only scan order". Boosting a real match is the job; inventing
+      // one is not.
+      //
+      // Both positions must be known: an absent order means "we do not know",
+      // not "not adjacent", and must not be scored either way.
+      if (
+        score > 0 &&
+        card.order !== null &&
+        existing.order !== null &&
+        Math.abs(card.order - existing.order) === 1
+      ) {
+        score += ADJACENCY_SCORE;
+      }
+
       // Strict `>` — ties keep the first-offered candidate.
       if (score > bestScore) {
         bestScore = score;
         bestCandidate = existing;
-        if (cardNumberMatched && (playerMatched || teamMatched)) {
-          bestConfidence = "exact";
-        } else if (playerMatched || teamMatched) {
-          bestConfidence = "fuzzy";
-        } else {
-          bestConfidence = "side-only";
-        }
       }
     }
+
+    // Confidence is a band of the winning SCORE. The old checklist —
+    // `cardNumberMatched && (playerMatched || teamMatched)` — could never be
+    // true, because it wanted a card number on both halves and no set prints
+    // one on the front. See the `Confidence` doc comment.
+    const bestConfidence: Confidence =
+      bestScore > EXACT_CONFIDENCE_THRESHOLD
+        ? "exact"
+        : bestScore > 0
+          ? "fuzzy"
+          : "side-only";
 
     if (bestCandidate !== null && bestScore >= MATCH_ACCEPT_THRESHOLD) {
       const [front, back] = orient(card, bestCandidate);
