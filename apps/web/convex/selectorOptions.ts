@@ -629,6 +629,12 @@ export const getCardChecklist = query({
       printRun: v.optional(v.number()),
       autographType: v.optional(v.string()),
       cardVariation: v.optional(v.string()),
+      // NEO-189: the card this one is a variation OF. Convex validates
+      // `returns` STRICTLY, so omitting a field the table carries throws
+      // `Object contains extra field` at runtime for every row that has it —
+      // the exact failure `selectorOptionFields` exists to prevent one table
+      // over.
+      variationOfCardId: v.optional(v.id("cardChecklist")),
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
       listingTitle: v.optional(v.string()),
       listingDescription: v.optional(v.string()),

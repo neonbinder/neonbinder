@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useAction, useMutation } from "convex/react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../convex/_generated/api";
@@ -396,6 +396,21 @@ export default function CardChecklist({
   // churns the list and widens the reflow window a Maestro tap can land in.
   // Guarded for the not-yet-loaded case so the hook stays above the early
   // return (Rules of Hooks). Sort semantics are unchanged.
+  // NEO-189: which parents are showing their variations. Collapsed by default
+  // — the point of the grouping is that a 908-row set reads as its 725 real
+  // cards until you ask for more.
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleVariations = useCallback((id: Id<"cardChecklist">) => {
+    setExpandedParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(id as string)) next.delete(id as string);
+      else next.add(id as string);
+      return next;
+    });
+  }, []);
+
   const sortedCards = useMemo(() => {
     if (!cards) return [];
     return [...cards]
@@ -417,6 +432,63 @@ export default function CardChecklist({
       })
       .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
   }, [cards, sourceFilter, hideCrossListed]);
+
+  // NEO-189 — variations hang off their parent instead of sitting flat in the
+  // scroll.
+  //
+  // 2021 Topps Heritage is 908 cards of which 183 are variations. Flat, that
+  // buries five near-identical "Bryce Harper" rows between #13 and #14 and the
+  // checklist stops reading as a checklist. Collapsed by default, the list is
+  // its 725 real cards again, and a parent says how many it is holding.
+  //
+  // `displayRows` is the flattened, virtualization-friendly view: every parent
+  // in card order, each followed by its variations only while it is open.
+  // Virtuoso keeps working on a flat array, so nothing here costs the list its
+  // windowing.
+  //
+  // A variation whose parent is NOT in the filtered list renders at TOP level
+  // rather than vanishing. Source filters and the cross-listing toggle can
+  // remove a parent while keeping its children, and a row you cannot see is a
+  // row you cannot fix — the same reason commitCardChecklist reports ambiguous
+  // groups instead of dropping them.
+  const variationsByParent = useMemo(() => {
+    const map = new Map<string, typeof sortedCards>();
+    for (const card of sortedCards) {
+      if (!card.variationOfCardId) continue;
+      const key = card.variationOfCardId as string;
+      const bucket = map.get(key);
+      if (bucket) bucket.push(card);
+      else map.set(key, [card]);
+    }
+    return map;
+  }, [sortedCards]);
+
+  const displayRows = useMemo(() => {
+    const presentIds = new Set(sortedCards.map((c) => c._id as string));
+    const rows: Array<{
+      card: (typeof sortedCards)[number];
+      isVariation: boolean;
+      variationCount: number;
+    }> = [];
+    for (const card of sortedCards) {
+      // Rendered under its parent below, unless that parent is filtered out.
+      if (card.variationOfCardId && presentIds.has(card.variationOfCardId as string)) {
+        continue;
+      }
+      const children = variationsByParent.get(card._id as string) ?? [];
+      rows.push({
+        card,
+        isVariation: !!card.variationOfCardId,
+        variationCount: children.length,
+      });
+      if (children.length > 0 && expandedParents.has(card._id as string)) {
+        for (const child of children) {
+          rows.push({ card: child, isVariation: true, variationCount: 0 });
+        }
+      }
+    }
+    return rows;
+  }, [sortedCards, variationsByParent, expandedParents]);
 
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
@@ -443,16 +515,24 @@ export default function CardChecklist({
   }
 
   // NEO-25: resolve the open card from its id against the live sorted list.
+  //
+  // NEO-189: indexed against `displayRows`, NOT `sortedCards`. Virtuoso renders
+  // displayRows, and selectByIndex hands its index straight to
+  // `scrollToIndex` — indexing the two differently would scroll to a different
+  // row than the one it selected the moment any set has a variation in it.
+  //
+  // Prev/next therefore walks what is actually on screen: a collapsed
+  // variation is not steppable, which is the same rule as not being clickable.
   const selectedIndex = selectedCardId
-    ? sortedCards.findIndex((c) => c._id === selectedCardId)
+    ? displayRows.findIndex((r) => r.card._id === selectedCardId)
     : -1;
-  const selectedCard = selectedIndex >= 0 ? sortedCards[selectedIndex] : null;
+  const selectedCard = selectedIndex >= 0 ? displayRows[selectedIndex].card : null;
 
   // Move selection to a list position and keep it in view. "center" matches
   // the add-card scroll and dodges the sticky binder-header at y≈84.
   const selectByIndex = (idx: number) => {
-    if (idx < 0 || idx >= sortedCards.length) return;
-    setSelectedCardId(sortedCards[idx]._id);
+    if (idx < 0 || idx >= displayRows.length) return;
+    setSelectedCardId(displayRows[idx].card._id);
     virtuosoRef.current?.scrollToIndex({
       index: idx,
       align: "center",
@@ -631,15 +711,21 @@ export default function CardChecklist({
         ) : (
           <Virtuoso
             ref={virtuosoRef}
-            data={sortedCards}
-            computeItemKey={(_, card) => card._id}
-            itemContent={(_, card) => (
+            data={displayRows}
+            computeItemKey={(_, row) => row.card._id}
+            itemContent={(_, row) => (
               <div className="pb-1.5">
                 <CardChecklistItem
-                  card={card}
+                  card={row.card}
                   sourceLabelMaps={sourceLabelMaps}
-                  isSelected={card._id === selectedCardId}
+                  isSelected={row.card._id === selectedCardId}
                   onEdit={(id) => setSelectedCardId(id)}
+                  variationCount={row.variationCount}
+                  isVariation={row.isVariation}
+                  isExpanded={expandedParents.has(row.card._id as string)}
+                  onToggleVariations={
+                    row.variationCount > 0 ? toggleVariations : undefined
+                  }
                 />
               </div>
             )}
@@ -653,7 +739,7 @@ export default function CardChecklist({
             // real operator returns to a checklist: they want to see what
             // they were last working on, not browse from #001 every time.
             initialTopMostItemIndex={
-              sortedCards.length > 0 ? sortedCards.length - 1 : 0
+              displayRows.length > 0 ? displayRows.length - 1 : 0
             }
             style={{ height: "min(70vh, 800px)" }}
             increaseViewportBy={{ top: 200, bottom: 400 }}
@@ -674,7 +760,7 @@ export default function CardChecklist({
           onPrev={() => selectByIndex(selectedIndex - 1)}
           onNext={() => selectByIndex(selectedIndex + 1)}
           hasPrev={selectedIndex > 0}
-          hasNext={selectedIndex >= 0 && selectedIndex < sortedCards.length - 1}
+          hasNext={selectedIndex >= 0 && selectedIndex < displayRows.length - 1}
         />
       )}
 
