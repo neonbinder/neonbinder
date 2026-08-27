@@ -292,18 +292,23 @@ describe("CardIntake", () => {
       screen.getByRole("heading", { name: /Your cards/ })
         .parentElement as HTMLElement,
     );
-    expect(
-      pairsSection.getByText("Ken Griffey Jr. #24 — Matched"),
-    ).not.toBeNull();
+    // The card, and what the matcher had to go on. That used to be one
+    // sr-only string on the pocket ("… — Matched"); with the pocket preview
+    // gone the review row carries both as visible text, which is better —
+    // the evidence is the thing a user acts on and it was invisible before.
+    expect(screen.getByText("Ken Griffey Jr. #24")).not.toBeNull();
+    expect(screen.getByText("Name and details match")).not.toBeNull();
 
     // Both sides are fetched through their own signed GET, minted when the
     // image renders rather than with the pair list.
-    // TWO of each front now, and deliberately: the pocket grid previews the
-    // printed sheet, and the review grid below it shows the same card beside
-    // its back so the pairing can actually be judged.
+    // ONE of each front. There were briefly two — a pocket preview above the
+    // review grid, plus the grid itself — and the duplication is exactly what
+    // made the page hard to scan. The printable grid at the bottom is the only
+    // preview now; this section shows each pair beside its back so the pairing
+    // can be judged.
     expect(
       (await screen.findAllByAltText("Front of Ken Griffey Jr. #24")).length,
-    ).toBe(2);
+    ).toBe(1);
     // The back appears exactly once: in the review grid. The pocket grid shows
     // fronts only — a binder pocket is a front — so a back here means the
     // review grid rendered, which is where a pair is actually judged.

@@ -8,7 +8,6 @@ import { api } from "@/convex/_generated/api";
 import { classifyIntake } from "@/lib/placeholders/intake-kind";
 import { deriveStage } from "@/lib/placeholders/intake-stage";
 import { Dropzone } from "./dropzone";
-import { PocketPage, type PocketPair } from "./pocket-page";
 import { ReviewGrid, type ReviewPair } from "./review-grid";
 import { PrintRun, type PrintablePair } from "./print-run";
 import { ScanImage } from "./scan-image";
@@ -437,40 +436,25 @@ export default function CardIntake() {
             </p>
           )}
 
-          {/* THE SIGNATURE: the 9-pocket page this feature exists to fill,
-              used as the progress display. See pocket-page.tsx. */}
-          {pairs && pairs.length > 0 && (
-            <PocketPage
-              jobId={jobId}
-              // The preview is of what will PRINT, so a dropped pair leaves it
-              // and the pockets close up — which is also what the sheet does.
-              pairs={
-                (pairs as PocketPair[]).filter(
-                  (p) => !excluded.has(`${p.frontIndex}-${p.backIndex}`),
-                )
-              }
-            />
-          )}
-          {pairs?.length === 0 && stage !== "failed" && (
-            <p className="text-sm text-slate-400">
-              No pairs yet — they appear here as cards finish.
-            </p>
-          )}
-
-          {/* Which cards are still being read. Only in-flight rows — a finished
-              card is already in a pocket above, and listing it twice was one of
-              the redundancies that made the old page hard to scan. This is also
-              where an escalated card announces itself: without it a photo on the
-              slow path looks identical to one that is stuck. */}
+          {/* STILL READING. Only in-flight rows — a finished card appears
+              below, as a pair or as an unmatched image, and listing it here too
+              was one of the duplications that made this page hard to scan.
+              This is also where an escalated card announces itself: without it
+              a photo on the slow path looks identical to one that is stuck. */}
           {inFlight.length > 0 && (
-            <ul className="space-y-1 text-sm list-none p-0">
-              {inFlight.map((image) => (
-                <li key={image.entryIndex} className="flex flex-wrap gap-2">
-                  <span className="text-slate-300">{image.originalName}</span>
-                  <span className="text-slate-500">{imageSummary(image)}</span>
-                </li>
-              ))}
-            </ul>
+            <section aria-labelledby="still-reading-heading" className="space-y-2">
+              <h3 id="still-reading-heading" className="text-lg font-semibold">
+                Still reading ({inFlight.length})
+              </h3>
+              <ul className="space-y-1 text-sm list-none p-0">
+                {inFlight.map((image) => (
+                  <li key={image.entryIndex} className="flex flex-wrap gap-2">
+                    <span className="text-slate-300">{image.originalName}</span>
+                    <span className="text-slate-500">{imageSummary(image)}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
 
           {/* Review runs DURING processing, not after it.
@@ -491,12 +475,10 @@ export default function CardIntake() {
             />
           )}
 
-          {/* Cards that did not pair. Never hidden: an unmatched front is the
-              one thing the user has to act on, and a count alone would let it
-              pass unnoticed. */}
-          {/* Print last, and only what survived review. Dropping a pair takes
-              it out of here as well as out of the pocket preview — one
-              selection, read by both. */}
+          {/* Print last, and only what survived review — the printable grid IS
+              the preview now, so a dropped pair simply leaves it and the
+              pockets close up, which is what the sheet does too. There is no
+              second grid above to keep in step. */}
           {pairs && pairs.length > 0 && (
             <PrintRun
               jobId={jobId}
