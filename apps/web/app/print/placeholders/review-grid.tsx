@@ -95,11 +95,14 @@ export function ReviewGrid({
   const manuallyPair = useMutation(
     api.placeholderPairing.manuallyPairPlaceholderImages,
   );
+  const updateIdentity = useMutation(
+    api.placeholderPairing.updatePlaceholderImageIdentity,
+  );
 
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [chosenFront, setChosenFront] = useState<number | null>(null);
-  const [chosenBack, setChosenBack] = useState<number | null>(null);
+  /** Entry indexes ticked for pairing. Two, of opposite sides, makes a pair. */
+  const [selected, setSelected] = useState<readonly number[]>([]);
 
   // Loose = processed, but nothing claimed it. Never hidden behind a count:
   // an unmatched front is the single thing on this page a user must act on.
@@ -109,36 +112,40 @@ export function ReviewGrid({
     [images],
   );
 
-  /**
-   * The classifier already decided front or back when it read each card, so the
-   * radios start on its verdict rather than asking for something we have. For
-   * the common case — a split that put exactly one of each back in the pile —
-   * the pair is ready to confirm without touching a radio.
-   *
-   * DERIVED, not stored in an effect. An effect would have to re-sync every
-   * time the pile changes and would fight the user's own click; deriving makes
-   * the rule plain: an explicit choice wins while it is still in the pile, and
-   * the default fills in otherwise.
-   */
-  const present = new Set(loose.map((i) => i.entryIndex));
-  const firstWithSide = (side: "front" | "back") =>
-    loose.find((i) => i.side === side)?.entryIndex ?? null;
-
-  const frontChoice =
-    chosenFront !== null && present.has(chosenFront)
-      ? chosenFront
-      : firstWithSide("front");
-  const backChoice =
-    chosenBack !== null && present.has(chosenBack)
-      ? chosenBack
-      : firstWithSide("back");
-
-  // What the pile can actually offer. All-backs is a normal mid-batch state —
-  // fronts often escalate to the slower path while backs sail through — and
-  // telling someone to "pick one front" when there is no front to pick reads
+  // What the pile can offer. All-backs is a normal mid-batch state — fronts
+  // escalate to the slow path far more often than backs, which are text-dense
+  // and settle fast — so telling someone to pick a front when none exists reads
   // as the tool being broken.
   const looseFronts = loose.filter((i) => i.side === "front").length;
   const looseBacks = loose.filter((i) => i.side === "back").length;
+
+  // Only images still in the pile can stay selected.
+  const present = new Set(loose.map((i) => i.entryIndex));
+  const picked = selected.filter((i) => present.has(i));
+  const pickedRows = picked
+    .map((i) => loose.find((l) => l.entryIndex === i))
+    .filter((r): r is ReviewImage => r !== undefined);
+
+  const front = pickedRows.find((r) => r.side === "front");
+  const back = pickedRows.find((r) => r.side === "back");
+  // Two selected, one of each side. Which is which comes from the SIDE, not
+  // from the order they were ticked — that is the whole point of the side being
+  // a property of the image.
+  const canPair = pickedRows.length === 2 && front !== undefined && back !== undefined;
+
+  const toggleSelected = (entryIndex: number) =>
+    setSelected((current) =>
+      current.includes(entryIndex)
+        ? current.filter((i) => i !== entryIndex)
+        : // Cap at two: a pair is two cards, and silently dropping the oldest
+          // is friendlier than refusing a click with no explanation.
+          [...current.filter((i) => present.has(i)), entryIndex].slice(-2),
+    );
+
+  const setSide = (entryIndex: number, side: "front" | "back") =>
+    run(`side-${entryIndex}`, () =>
+      updateIdentity({ jobId, entryIndex, side }),
+    );
 
   const run = useCallback(
     async (key: string, action: () => Promise<unknown>) => {
@@ -184,14 +191,13 @@ export function ReviewGrid({
 
   const pairChosen = () =>
     run("pair-chosen", async () => {
-      if (frontChoice === null || backChoice === null) return;
+      if (!front || !back) return;
       await manuallyPair({
         jobId,
-        frontIndex: frontChoice,
-        backIndex: backChoice,
+        frontIndex: front.entryIndex,
+        backIndex: back.entryIndex,
       });
-      setChosenFront(null);
-      setChosenBack(null);
+      setSelected([]);
     });
 
   return (
@@ -325,14 +331,25 @@ export function ReviewGrid({
               ? "Only backs here so far — their fronts are still being read. They will pair up as those finish."
               : looseBacks === 0
                 ? "Only fronts here so far — their backs are still being read. They will pair up as those finish."
-                : "Pick one front and one back, then pair them."}
+                : "Tick two cards — a front and a back — then pair them."}
           </p>
           <ul className="flex flex-wrap gap-3 list-none p-0">
             {loose.map((image) => {
-              const isFront = frontChoice === image.entryIndex;
-              const isBack = backChoice === image.entryIndex;
+              const isPicked = picked.includes(image.entryIndex);
+              const side =
+                image.side === "front" || image.side === "back"
+                  ? image.side
+                  : null;
               return (
-                <li key={image.entryIndex} className="w-32 space-y-1">
+                <li
+                  key={image.entryIndex}
+                  className={[
+                    "w-32 space-y-1 rounded border p-1",
+                    isPicked
+                      ? "border-neon-purple bg-neon-purple/10"
+                      : "border-transparent",
+                  ].join(" ")}
+                >
                   <ScanImage
                     jobId={jobId}
                     entryIndex={image.entryIndex}
@@ -342,60 +359,76 @@ export function ReviewGrid({
                   <p className="truncate text-[10px] text-slate-500">
                     {image.originalName}
                   </p>
-                  {/* What the classifier read it as. Shown because the radios
-                      below are pre-filled from it — an unexplained default is
-                      worse than none, and a wrong one needs to be visibly
-                      wrong so the user knows to change it. */}
-                  <p className="text-[10px] text-slate-600">
-                    {image.side === "front" || image.side === "back"
-                      ? `Looks like a ${image.side}`
-                      : "Side unclear"}
-                  </p>
-                  {/* Two radio groups, not a drag target: choosing "which front"
-                      and "which back" is exactly what radios express, and they
-                      arrow-key for free. */}
-                  <div className="flex gap-2 text-xs">
-                    <label className="flex items-center gap-1 text-slate-300">
-                      <input
-                        type="radio"
-                        name="review-front"
-                        checked={isFront}
-                        onChange={() => setChosenFront(image.entryIndex)}
-                        className="accent-[#A44AFF]"
-                      />
-                      Front
-                    </label>
-                    <label className="flex items-center gap-1 text-slate-300">
-                      <input
-                        type="radio"
-                        name="review-back"
-                        checked={isBack}
-                        onChange={() => setChosenBack(image.entryIndex)}
-                        className="accent-[#A44AFF]"
-                      />
-                      Back
-                    </label>
-                  </div>
+
+                  {/* WHICH SIDE THIS CARD IS — a property of the image, not of
+                      the pair being built, which is why every card shows its
+                      own answer rather than one card in the pile being "the
+                      front". Pre-filled from the classifier and SAVED when
+                      changed: a corrected side is written back with
+                      updatePlaceholderImageIdentity, which forces a re-pair, so
+                      fixing a misread here can resolve the pairing on its own
+                      without anyone pairing by hand. */}
+                  <fieldset className="flex gap-2 text-xs">
+                    <legend className="sr-only">
+                      Which side is {image.originalName}?
+                    </legend>
+                    {(["front", "back"] as const).map((value) => (
+                      <label
+                        key={value}
+                        className="flex items-center gap-1 text-slate-300 capitalize"
+                      >
+                        <input
+                          type="radio"
+                          name={`side-${image.entryIndex}`}
+                          checked={side === value}
+                          disabled={busy !== null}
+                          onChange={() => void setSide(image.entryIndex, value)}
+                          className="accent-[#A44AFF]"
+                        />
+                        {value}
+                      </label>
+                    ))}
+                  </fieldset>
+                  {side === null && (
+                    <p className="text-[10px] text-neon-yellow">
+                      Side unclear — pick one
+                    </p>
+                  )}
+
+                  {/* Separate from the side, because they answer different
+                      questions: what IS this, and do I want to pair it now. */}
+                  <label className="flex items-center gap-1 text-xs text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={isPicked}
+                      disabled={busy !== null}
+                      onChange={() => toggleSelected(image.entryIndex)}
+                      className="accent-[#00D558]"
+                    />
+                    Pair this
+                  </label>
                 </li>
               );
             })}
           </ul>
           <NeonButton
             type="button"
-            disabled={
-              frontChoice === null ||
-              backChoice === null ||
-              frontChoice === backChoice ||
-              busy !== null
-            }
+            disabled={!canPair || busy !== null}
             onClick={() => void pairChosen()}
           >
             {busy === "pair-chosen" ? "Pairing…" : "Pair these two"}
           </NeonButton>
-          {frontChoice !== null && frontChoice === backChoice && (
+          {/* Say WHY it is unavailable. A disabled button with no explanation
+              is the same dead end as an error with no next step. */}
+          {picked.length === 2 && !canPair && (
             <p className="text-sm text-neon-pink">
-              A card can&apos;t be its own back — pick a different image for one
-              of them.
+              Those are both {front ? "fronts" : "backs"} — a pair needs one of
+              each. Change a side above, or pick a different card.
+            </p>
+          )}
+          {picked.length === 1 && (
+            <p className="text-sm text-slate-400">
+              Pick one more — a pair needs a front and a back.
             </p>
           )}
         </div>
