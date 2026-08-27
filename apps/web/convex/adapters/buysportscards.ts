@@ -560,49 +560,37 @@ function parsePlayerAttributeTokens(raw: unknown): string[] {
 }
 
 /**
- * NEO-189: markers that mean `playerAttributeDesc` names a genuine printing
- * VARIETY — something that distinguishes this physical card from another card
- * carrying the same checklist slot, and therefore something a buyer is
- * selecting on:
+ * NEO-189: the ONE marker that means `playerAttributeDesc` names a printing
+ * VARIATION — a second version of a card occupying the same checklist slot,
+ * and therefore something a buyer selects on.
  *
- *   VAR — a variation ("VAR: Action", "VAR: Team Color", "VAR: Nickname")
- *   UER — an uncorrected error, the hobby's own term for a misprint that was
- *         never fixed mid-run, and which collectors price separately
+ * `UER` (Uncorrected Error) is deliberately NOT here. It is an ATTRIBUTE of a
+ * single card — a misprint that was never fixed mid-run — not a second version
+ * of one, so it has no parent to hang off and must not become a variation
+ * name. BSC already carries it as a token in `playerAttribute` ("UER",
+ * "SP, UER"), which `parsePlayerAttributeTokens` lifts into `attributes[]`, so
+ * it is captured where it belongs and excluding it here loses nothing.
+ * Confirmed live 2026-08-27: every `UER:` description in the corpus is
+ * accompanied by a `UER` attribute token.
  *
  * Everything else in that field is a NOTE, not a variety. See
  * `parseVariationDescription` for why the distinction is load-bearing.
  */
-const BSC_VARIETY_MARKERS = new Set(["VAR", "UER"]);
+const BSC_VARIETY_MARKERS = new Set(["VAR"]);
 
 /**
- * NEO-189 — split a BSC `cardNo` into its numeric STEM and alpha suffix.
- * `"11"` → stem `11`, no suffix. `"11b"` → stem `11`, suffix `b`. `"1a"` →
- * stem `1`, suffix `a`. Anything not of that shape (`"CC-JA"`, `"MIR-AJ"`) has
- * no stem and groups only with an exact match on itself.
+ * NEO-189 — does BSC mark this row as a variation of some other card?
  *
- * Case-insensitive on purpose: 2022 Topps Heritage carries a single uppercase
- * `"…C"` among 297 otherwise-lowercase suffixes.
- */
-const BSC_CARD_NO_STEM = /^(\d+)([a-z]+)$/i;
-
-export function bscCardNumberStem(cardNumber: string): string {
-  const m = cardNumber.trim().match(BSC_CARD_NO_STEM);
-  return m ? m[1] : cardNumber.trim();
-}
-
-/**
- * NEO-189 — is this row a printing VARIATION of some other card?
+ * Reads BOTH signals, because measured across seven live payloads they
+ * disagree in both directions: 2021 Topps has 11 rows with the `VAR` attribute
+ * token and no `VAR:` description (e.g. `52d`, whose description reads
+ * "Ultra SP, VAR: Legend; …" and so carries no leading marker), while the 2021
+ * Heritage inserts have 4 rows with a `VAR:` description and no token (#251 and
+ * #378, the checklist print variations). Neither alone is sufficient.
  *
- * Reads BOTH signals, because measured across seven live BSC payloads they
- * disagree in both directions:
- *
- *   2021 Topps base       11 rows carry the `VAR` attribute token with no
- *                         `VAR:` description
- *   2021 Heritage insert   4 rows carry a `VAR:` description with no `VAR`
- *                         attribute token (the #251 / #378 checklist
- *                         print variations)
- *
- * Neither signal alone is sufficient, so this is a union, not an intersection.
+ * This is the BSC-side answer to a DOMAIN question — see
+ * `lib/cards/variations.ts`, which owns the concept. Everything downstream of
+ * this boolean is marketplace-agnostic.
  */
 export function isBscVariationRow(row: {
   attributes?: string[];
@@ -681,135 +669,6 @@ export function parseVariationDescription(
   // never empty.
   const text = rest || marker;
   return { marker, text, isVariety: BSC_VARIETY_MARKERS.has(marker) && !!rest };
-}
-
-export interface VariationLinkInput {
-  cardNumber: string;
-  attributes?: string[];
-  playerAttributeDesc?: unknown;
-}
-
-/**
- * NEO-189 — decide, for each row, which other row it is a variation OF.
- *
- * Returns a map from the variation's `cardNumber` to its parent's
- * `cardNumber`. A row absent from the map is not a variation.
- *
- * ── THE RULE, AND WHY IT IS NOT THE OBVIOUS ONE ─────────────────────────────
- *
- * The obvious rule — "a bare number is the parent, an alpha suffix means
- * child" — is WRONG, and measurably so. Validated against seven live BSC
- * payloads pulled 2026-08-27:
- *
- *   set                          groups w/ a variation   bare-is-parent   this rule
- *   2021 Topps Heritage base              77                  77/77         77/77
- *   2022 Topps Heritage base             144                 144/144       144/144
- *   2021 Topps base                      152                   2/152       152/152   <—
- *   2021 Donruss football base            50                  50/50         50/50
- *   2021 Panini Prizm basketball base     36                  36/36         36/36
- *
- * 2021 Topps is the counter-example: its base cards are themselves suffixed.
- * Card #1 does not exist — the set ships `1a` "BASE: Rounding Base"
- * (Fernando Tatis Jr.), `1b` "VAR: Sliding" (SP), `1c` "VAR: In Dugout" (SSP).
- * 150 of its 660 stems have no bare-numbered row at all. A bare-is-parent rule
- * gets 2 of 152 groups right there.
- *
- * What DOES hold, across all 459 variation groups in the five base sets:
- * group by numeric stem, and **exactly one row in the group is not marked as a
- * variation**. That row is the parent, whatever its number looks like.
- *
- * ── WHERE IT STILL DOES NOT HOLD ───────────────────────────────────────────
- *
- * The `insert` level is a different world and this function deliberately does
- * not force a link there. In 2021 Topps Heritage inserts:
- *
- *   #251  two rows, both "VAR:" (Large Print / Small Print), NO parent row
- *   #378  two rows, both "VAR:" (Star / Asterisk before copyright), NO parent
- *   #18   Juan Pizarro twice, both VAR (Yellow / Green under C and S),
- *         same cardNo, NO suffix
- *
- * So a group can have zero parents, and two variations can share one
- * `cardNumber` with nothing to tell them apart but their BSC `cardId`. Rows in
- * such a group are left unlinked and reported, rather than guessed at — see
- * `unresolvedVariationStems` on the return. They are also exactly the rows that
- * would collide in `commitCardChecklist`'s `existingByNumber` upsert, so the
- * caller must not silently upsert them.
- *
- * ── DO NOT ADD A "SAME PLAYER" GUARD ───────────────────────────────────────
- *
- * It looks like an easy safety net and it is actively wrong. A variation
- * routinely features a COMPLETELY DIFFERENT player from its parent — the
- * hobby's "Legend" short-print convention:
- *
- *   2021 Topps #52   base = Archie Bradley
- *                    52b  = Mickey Mantle   (SP,  "VAR: Legend; Batting")
- *                    52c  = Mickey Mantle   (SSP, "VAR: Legend; Holding three bats")
- *   2021 Topps #4    base = David Bote  →  4b  = Ernie Banks    ("VAR: Legend")
- *   2021 Topps #29   base = Chris Davis →  29b = Cal Ripken Jr. ("VAR: Legend")
- *   2022 Heritage #201  base = a team-highlight card → 201b-f = Aaron Judge
- *
- * Requiring player overlap was measured against the corpus and drops 63 of 213
- * legitimate links in 2021 Topps alone, plus 9 in 2021 Heritage, 6 in 2022
- * Heritage and 1 in Prizm. It is not a viable guard.
- *
- * ── SCOPE THE INPUT TO ONE MARKETPLACE SET ─────────────────────────────────
- *
- * This groups purely on the numeric stem, so it is only sound when `rows`
- * covers ONE BSC set. Run over a payload spanning several and unrelated cards
- * collide: querying every 2021 Heritage insert at once puts Bill Bonham's
- * "VAR: Yellow under C and S" at #29 in the same stem as Deivi Garcia's #29,
- * and they link. The structure is indistinguishable from the legitimate
- * Mantle/Bradley case above — only the scoping tells them apart.
- *
- * `fetchCardChecklist` fetches per selectorOption row, so the normal path is
- * fine. The case that needs care is NEO-137's N:M mapping, where one NB row
- * fans out across several BSC sets: group per source set, not across the
- * merged result.
- */
-export function resolveVariationParents(rows: VariationLinkInput[]): {
-  /** variation cardNumber → parent cardNumber */
-  parentByCardNumber: Map<string, string>;
-  /** stems where a variation exists but no single parent could be identified */
-  unresolvedVariationStems: string[];
-} {
-  const byStem = new Map<string, VariationLinkInput[]>();
-  for (const row of rows) {
-    const stem = bscCardNumberStem(row.cardNumber);
-    const bucket = byStem.get(stem);
-    if (bucket) bucket.push(row);
-    else byStem.set(stem, [row]);
-  }
-
-  const parentByCardNumber = new Map<string, string>();
-  const unresolvedVariationStems: string[] = [];
-
-  for (const [stem, group] of byStem) {
-    const variations = group.filter((r) => isBscVariationRow(r));
-    if (variations.length === 0) continue;
-
-    const parents = group.filter((r) => !isBscVariationRow(r));
-    // Zero parents (an orphaned checklist variation) or more than one (a stem
-    // shared by unrelated cards, which happens once insert subsets are
-    // flattened together) — both are ambiguous. Report, do not guess.
-    if (parents.length !== 1) {
-      unresolvedVariationStems.push(stem);
-      continue;
-    }
-    const parentNumber = parents[0].cardNumber;
-    for (const v of variations) {
-      // Two variations sharing one cardNumber cannot both be addressed by
-      // number. Flag the stem rather than letting the second silently
-      // overwrite the first downstream.
-      if (parentByCardNumber.has(v.cardNumber)) {
-        unresolvedVariationStems.push(stem);
-        parentByCardNumber.delete(v.cardNumber);
-        break;
-      }
-      parentByCardNumber.set(v.cardNumber, parentNumber);
-    }
-  }
-
-  return { parentByCardNumber, unresolvedVariationStems };
 }
 
 /**

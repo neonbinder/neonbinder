@@ -3,6 +3,7 @@
 import { action, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { primaryId } from "../platformSlots";
+import { canonicalVariationName } from "../../lib/cards/variations";
 import { api, internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
 import { Id } from "../_generated/dataModel";
@@ -670,6 +671,47 @@ async function fetchSetNames(
     success: true,
     options,
     message: `Found ${options.length} sets from SportLots`,
+  };
+}
+
+/**
+ * NEO-189 — pull a VARIATION marker out of a SportLots card description.
+ *
+ * SL appends ` [ VAR <name> ]` to the description of a variation and leaves the
+ * card number IDENTICAL to its parent's. Confirmed live 2026-08-27 by walking
+ * `listcards.tpl` for set 189991 (2021 Topps Heritage) as a logged-in seller:
+ *
+ *   11  2021 Topps Heritage #11 Alec Bohm|Spencer Howard
+ *   11  2021 Topps Heritage #11 Alec Bohm [ VAR Action Image ]
+ *   11  2021 Topps Heritage #11 Alec Bohm [ VAR Throwback Alternate ]
+ *
+ * This is why `platformRef` below is the full description and not the bare
+ * number: the number alone cannot tell those three rows apart. (The existing
+ * note at the `platformRef` assignment says exactly this — SL's variation
+ * support was already known here, it just had no domain model behind it.)
+ *
+ * Returns the variation's name mapped onto the NeonBinder vocabulary, plus the
+ * description with the marker stripped so `cardName` does not carry it. SL's
+ * spelling differs from BSC's for the same variation ("Action Image" vs
+ * "Action", "Team Name Color Swap" vs "Team Color"), which is precisely why
+ * neither is stored raw — see `lib/cards/variations.ts`.
+ */
+export function parseSlVariationMarker(desc: string): {
+  isVariation: boolean;
+  variationName?: string;
+  residual: string;
+} {
+  // Tolerant of internal spacing: "[ VAR Action Image ]" and "[VAR Action]"
+  // both appear plausible from a hand-maintained catalog.
+  const m = desc.match(/\s*\[\s*VAR\s+([^\]]+?)\s*\]\s*/i);
+  if (!m) return { isVariation: false, residual: desc };
+  const residual = (desc.slice(0, m.index) + desc.slice(m.index! + m[0].length))
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    isVariation: true,
+    variationName: canonicalVariationName(m[1]),
+    residual,
   };
 }
 

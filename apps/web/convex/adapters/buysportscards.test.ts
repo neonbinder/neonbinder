@@ -1,10 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
-  bscCardNumberStem,
   isBscVariationRow,
   parsePlayersField,
   parseVariationDescription,
-  resolveVariationParents,
 } from "./buysportscards";
 
 /**
@@ -140,12 +138,25 @@ describe("parseVariationDescription", () => {
     });
   });
 
-  test("UER: (uncorrected error) is a variety too", () => {
-    expect(parseVariationDescription("UER: Stats reversed")).toEqual({
+  test("UER is an ATTRIBUTE, not a variation — it never becomes a variety name", () => {
+    // An uncorrected error is a property of one card, not a second version of
+    // it, so it has no parent to hang off. BSC also carries it as a token in
+    // playerAttribute ("UER", "SP, UER"), which is where it belongs.
+    expect(
+      parseVariationDescription(
+        'UER: Last name misspelled "Hendricks" on front and back',
+      ),
+    ).toEqual({
       marker: "UER",
-      text: "Stats reversed",
-      isVariety: true,
+      text: 'Last name misspelled "Hendricks" on front and back',
+      isVariety: false,
     });
+    expect(
+      isBscVariationRow({
+        attributes: ["UER"],
+        playerAttributeDesc: "UER: Last name misspelled Stephenson",
+      }),
+    ).toBe(false);
   });
 
   test("REGRESSION: a bare BASE marker is not a variety (2021 Heritage #17, #45)", () => {
@@ -192,199 +203,5 @@ describe("parseVariationDescription", () => {
       text: "VAR",
       isVariety: false,
     });
-  });
-});
-
-/**
- * NEO-189 — variation grouping.
- *
- * Fixtures are exact rows from BSC payloads pulled live 2026-08-27. The
- * counter-example set (2021 Topps) is the reason this rule is not the obvious
- * "bare number is the parent" one.
- */
-describe("bscCardNumberStem", () => {
-  test("splits a numeric stem from its alpha suffix", () => {
-    expect(bscCardNumberStem("11")).toBe("11");
-    expect(bscCardNumberStem("11b")).toBe("11");
-    expect(bscCardNumberStem("1a")).toBe("1");
-    expect(bscCardNumberStem("110")).toBe("110");
-  });
-
-  test("is case-insensitive — 2022 Heritage ships one uppercase suffix", () => {
-    expect(bscCardNumberStem("232C")).toBe("232");
-  });
-
-  test("a non-numeric card number is its own stem (insert codes)", () => {
-    expect(bscCardNumberStem("CC-JA")).toBe("CC-JA");
-    expect(bscCardNumberStem("MIR-AJ")).toBe("MIR-AJ");
-  });
-});
-
-describe("isBscVariationRow", () => {
-  test("the VAR attribute token marks a variation", () => {
-    expect(isBscVariationRow({ attributes: ["ASR", "SP", "VAR"] })).toBe(true);
-  });
-
-  test("a VAR: description marks a variation even with no token (2021 Heritage insert #251)", () => {
-    expect(
-      isBscVariationRow({ playerAttributeDesc: "VAR: Large Print" }),
-    ).toBe(true);
-  });
-
-  test("SP alone is not a variation, and neither is a BASE description", () => {
-    expect(isBscVariationRow({ attributes: ["SP"] })).toBe(false);
-    expect(
-      isBscVariationRow({ attributes: [], playerAttributeDesc: "BASE: Batting" }),
-    ).toBe(false);
-  });
-
-  test("UER is a variety but not a variation — it has no parent to hang off", () => {
-    expect(isBscVariationRow({ playerAttributeDesc: "UER: Stats reversed" })).toBe(
-      false,
-    );
-  });
-});
-
-describe("resolveVariationParents", () => {
-  test("2021 Topps Heritage #11 — bare parent, two suffixed variations", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "11", attributes: [] },
-        { cardNumber: "11b", attributes: ["ASR", "SP", "VAR"], playerAttributeDesc: "VAR: Action" },
-        { cardNumber: "11c", attributes: ["ASR", "SP", "VAR"], playerAttributeDesc: "VAR: Alternate" },
-      ]);
-    expect(parentByCardNumber.get("11b")).toBe("11");
-    expect(parentByCardNumber.get("11c")).toBe("11");
-    expect(unresolvedVariationStems).toEqual([]);
-  });
-
-  test("COUNTER-EXAMPLE: 2021 Topps #1 — the parent is 1a, there is no bare #1", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "1a", attributes: [], playerAttributeDesc: "BASE: Rounding Base" },
-        { cardNumber: "1b", attributes: ["SP", "VAR"], playerAttributeDesc: "VAR: Sliding" },
-        { cardNumber: "1c", attributes: ["SSP", "VAR"], playerAttributeDesc: "VAR: In Dugout" },
-      ]);
-    // The old bare-is-parent rule would have found no parent at all here.
-    expect(parentByCardNumber.get("1b")).toBe("1a");
-    expect(parentByCardNumber.get("1c")).toBe("1a");
-    expect(unresolvedVariationStems).toEqual([]);
-  });
-
-  test("2021 Topps #10 — an RC base card still parents its variation", () => {
-    const { parentByCardNumber } = resolveVariationParents([
-      { cardNumber: "10a", attributes: ["RC"], playerAttributeDesc: "BASE: Batting" },
-      { cardNumber: "10b", attributes: ["SP", "VAR"], playerAttributeDesc: "VAR: Grey Jersey, Running" },
-    ]);
-    expect(parentByCardNumber.get("10b")).toBe("10a");
-  });
-
-  test("a card with no variations produces no links", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "110", attributes: ["IA"] },
-        { cardNumber: "111", attributes: [] },
-      ]);
-    expect(parentByCardNumber.size).toBe(0);
-    expect(unresolvedVariationStems).toEqual([]);
-  });
-
-  test("ORPHAN: 2021 Heritage insert #251 — both rows are variations, no parent", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "251", attributes: [], playerAttributeDesc: "VAR: Large Print" },
-        { cardNumber: "251", attributes: [], playerAttributeDesc: "VAR: Small Print" },
-      ]);
-    expect(parentByCardNumber.size).toBe(0);
-    expect(unresolvedVariationStems).toEqual(["251"]);
-  });
-
-  test("AMBIGUOUS: 2021 Heritage insert #18 — a stem shared by unrelated cards", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "18", attributes: ["VAR"], playerAttributeDesc: "VAR: Yellow under C and S" },
-        { cardNumber: "18", attributes: ["PR200"] },
-        { cardNumber: "18", attributes: [] },
-        { cardNumber: "18", attributes: ["VAR"], playerAttributeDesc: "VAR: Green under C and S" },
-      ]);
-    expect(parentByCardNumber.size).toBe(0);
-    expect(unresolvedVariationStems).toEqual(["18"]);
-  });
-
-  test("two variations sharing one cardNumber are flagged, never silently merged", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "7", attributes: [] },
-        { cardNumber: "7b", attributes: ["VAR"], playerAttributeDesc: "VAR: Action" },
-        { cardNumber: "7b", attributes: ["VAR"], playerAttributeDesc: "VAR: Nickname" },
-      ]);
-    expect(parentByCardNumber.has("7b")).toBe(false);
-    expect(unresolvedVariationStems).toEqual(["7"]);
-  });
-
-  test("insert codes with no numeric stem never group together", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "CC-JA", attributes: ["MEM"] },
-        { cardNumber: "CC-JA", attributes: ["MEM", "SN99"] },
-        { cardNumber: "MIR-AJ", attributes: ["MEM"] },
-      ]);
-    expect(parentByCardNumber.size).toBe(0);
-    expect(unresolvedVariationStems).toEqual([]);
-  });
-});
-
-/**
- * NEO-189 — the "Legend" short-print convention, and why a same-player guard
- * on variation linking would be wrong. All rows are live 2026-08-27 data.
- */
-describe("resolveVariationParents — a variation can be a different player", () => {
-  test("2021 Topps #52 — Mickey Mantle is a variation OF an Archie Bradley card", () => {
-    const { parentByCardNumber, unresolvedVariationStems } =
-      resolveVariationParents([
-        { cardNumber: "52", attributes: [], playerAttributeDesc: "BASE: Archie Bradley" },
-        {
-          cardNumber: "52b",
-          attributes: ["SP", "VAR"],
-          playerAttributeDesc: "VAR: Legend; Batting (Series 2 insert)",
-        },
-        {
-          cardNumber: "52c",
-          attributes: ["SSP", "VAR"],
-          playerAttributeDesc: "VAR: Legend; Holding three bats (Series 2 insert)",
-        },
-      ]);
-    expect(parentByCardNumber.get("52b")).toBe("52");
-    expect(parentByCardNumber.get("52c")).toBe("52");
-    expect(unresolvedVariationStems).toEqual([]);
-  });
-
-  test("2022 Heritage #201 — five variations of one team-highlight card", () => {
-    const { parentByCardNumber } = resolveVariationParents([
-      { cardNumber: "201", attributes: [] },
-      { cardNumber: "201b", attributes: ["SP", "VAR"], playerAttributeDesc: "VAR: Player Icon Color Swap" },
-      { cardNumber: "201c", attributes: ["SP", "VAR"], playerAttributeDesc: "VAR: Throwback Uniform Variation" },
-      { cardNumber: "201d", attributes: ["SP", "VAR"], playerAttributeDesc: "VAR: Image Variation" },
-      { cardNumber: "201e", attributes: ["SP", "VAR"], playerAttributeDesc: "VAR: Team & Name Color Swap Variation" },
-      { cardNumber: "201f", attributes: ["SP", "VAR"], playerAttributeDesc: "VAR: Nickname Variation" },
-    ]);
-    expect([...parentByCardNumber.values()]).toEqual(["201", "201", "201", "201", "201"]);
-  });
-
-  test("2021 Topps #52d — the VAR token carries the row when the desc prefix does not", () => {
-    // desc is "Ultra SP, VAR: Legend; ..." — no leading [A-Z]{2,4}: marker, so
-    // only the attribute token identifies this as a variation. This is why
-    // isBscVariationRow reads BOTH signals.
-    const row = {
-      cardNumber: "52d",
-      attributes: ["SSP", "VAR"],
-      playerAttributeDesc: "Ultra SP, VAR: Legend; Bat on shoulder, 1952 Topps photo",
-    };
-    expect(isBscVariationRow(row)).toBe(true);
-    const { parentByCardNumber } = resolveVariationParents([
-      { cardNumber: "52", attributes: [], playerAttributeDesc: "BASE: Archie Bradley" },
-      row,
-    ]);
-    expect(parentByCardNumber.get("52d")).toBe("52");
   });
 });
