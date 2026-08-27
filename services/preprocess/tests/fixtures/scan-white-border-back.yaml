@@ -1,0 +1,11 @@
+orient:
+  rotation_degrees: 90
+
+crop:
+  category: pre-cropped-scan / white border, back
+  source: scan_metadata
+  identity: true
+
+# The reverse of scan-white-border-front. Salmon stat block on white, and the
+# text runs sideways — so this is also the fixture asserting that a quarter-turn
+# is still reported when the crop is an identity.

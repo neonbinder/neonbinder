@@ -1,0 +1,10 @@
+orient:
+  rotation_degrees: 0
+
+crop:
+  category: pre-cropped-scan / chrome RC refractor, dark border, front
+  source: scan_metadata
+  identity: true
+
+# Second shiny front from a different product, because one refractor is a
+# sample of one. Measured: escalate(margin) at topArea 0.769.

@@ -1,0 +1,15 @@
+crop:
+  category: bed-scan / single card on the black bed, skewed
+  source: tiered
+  identity: false
+  aspect: 0.714
+  aspect_tolerance: 0.04
+  min_area_fraction: 0.10
+  max_area_fraction: 0.45
+
+# The crop-AND-deskew case: one white-bordered card sitting rotated a few
+# degrees on the black scanner bed, 3540x1926. The card must come out square
+# and whole. Measured: tiered -> 1006x1408, aspect 0.7145, 20.8% of source,
+# ~46s. The band is wide because BiRefNet is not bit-deterministic; it is still
+# narrow enough that a border shave (which lands near 0.18) or a runaway crop
+# would fall outside it.

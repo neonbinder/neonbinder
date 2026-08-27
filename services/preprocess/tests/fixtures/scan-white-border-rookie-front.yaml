@@ -1,0 +1,7 @@
+orient:
+  rotation_degrees: 0
+
+crop:
+  category: pre-cropped-scan / white border, front
+  source: scan_metadata
+  identity: true

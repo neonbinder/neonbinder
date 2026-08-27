@@ -292,6 +292,28 @@ pytest tests/unit
 ruff check . && ruff format --check .
 ```
 
+### The four test suites
+
+They differ along two axes — what they run against, and what they assert.
+
+| Suite | Runs against | Asserts | Gate |
+|---|---|---|---|
+| `tests/unit` | in-process, models stubbed | logic, routing, validators | `preprocess-test`, blocking |
+| `tests/functional` | a **deployed** revision | crop / deskew / rotate on real cards | `preprocess-crop-matrix`, blocking |
+| `tests/smoke` | a **deployed** revision | response envelope, auth, wiring | `preview-smoke`, advisory |
+| `tests/integration` | in-process, real Vision + Anthropic | classify accuracy | manual, `RUN_INTEGRATION_TESTS=1` |
+
+`tests/unit` can never exercise BiRefNet — `tests/unit/conftest.py` blocks
+`rembg.new_session` so a stray test cannot pull ~1GB of weights in CI. That is
+the whole reason `tests/functional` exists: the crop cascade's behaviour is a
+property of the deployed artifact, and the only honest way to assert it is to
+send a real card to a real revision. See `tests/functional/test_crop_matrix.py`
+for why this does not belong in E2E.
+
+`tests/functional` and `tests/smoke` share the `SMOKE_TARGET_URL` /
+`SMOKE_INTERNAL_KEY` / `SMOKE_ID_TOKEN` env contract, and both skip when it is
+unset. Neither is in `testpaths`, so a bare `pytest` never picks them up.
+
 ### Apple Silicon
 
 `requirements.txt` pins `torch==2.5.1+cpu` against the PyTorch CPU wheel index
