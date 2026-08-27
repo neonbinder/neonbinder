@@ -1,0 +1,13 @@
+orient:
+  rotation_degrees: 270
+
+crop:
+  category: pre-cropped-scan / dark textured, front
+  source: scan_metadata
+  identity: true
+
+# Dark, heavily textured art running to the card edge — no border step at all
+# for classical to find (measured: escalate(weak), topArea 0.729). Also the
+# 270-degree rotation case: the landscape/rotation fixture this set was meant
+# to carry has no source image (every scan and phone photo on hand is portrait
+# with EXIF orientation 1), so this is what covers a three-quarter turn.

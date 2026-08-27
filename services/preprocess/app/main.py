@@ -20,6 +20,7 @@ import glob
 import hmac
 import logging
 import os
+import sys
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Annotated, Literal
@@ -45,6 +46,48 @@ from app.imaging import RasterTooLargeError, check_raster_size
 from app.jobs import layout, zipsafe
 from app.jobs.gcs import ObjectAlreadyExistsError, ObjectRef, ObjectStore
 from app.jobs.layout import InvalidJobIdentifierError
+
+# ── Logging (NEO-191) ───────────────────────────────────────────────────────
+# Nothing in this service used to configure logging, and uvicorn only ever
+# configures its OWN loggers ("uvicorn", "uvicorn.error", "uvicorn.access", all
+# with propagate=False). Every `logging.getLogger(__name__)` in `app.*`
+# therefore propagated to a bare root logger sitting at the default WARNING and
+# was dropped: for the whole week before this was found, production had zero
+# `cascade:` / `tiered:` / `process:` lines and only uvicorn's access log. A
+# crop pipeline whose every routing decision is invisible cannot be diagnosed
+# from logs at all — the 2026-08-27 border-shaving investigation had to be
+# reconstructed on a laptop.
+LOG_LEVEL_ENV = "LOG_LEVEL"
+DEFAULT_LOG_LEVEL = "INFO"
+
+
+def _configure_logging() -> None:
+    """Attach a stdout handler to the root logger so `app.*` INFO is visible.
+
+    Cloud Run captures stdout, so this is all it takes for the crop cascade's
+    decisions to reach Cloud Logging. Touching only the root logger leaves
+    uvicorn's non-propagating loggers alone, so access lines are not doubled.
+
+    Deliberately NOT `force=True`. basicConfig is a no-op when the root logger
+    already has handlers, which is the right deference to an embedder that
+    configured logging itself (a `--log-config`, or pytest's capture plugin —
+    forcing there would tear out the handlers a test is asserting against). The
+    level is then set explicitly, since that part must apply either way.
+
+    An unparseable `LOG_LEVEL` falls back to INFO rather than raising — a typo
+    in an env var must not take the container down on import.
+    """
+    requested = os.environ.get(LOG_LEVEL_ENV, DEFAULT_LOG_LEVEL).strip().upper()
+    level = logging.getLevelNamesMapping().get(requested, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s %(name)s: %(message)s",
+        stream=sys.stdout,
+    )
+    logging.getLogger().setLevel(level)
+
+
+_configure_logging()
 
 logger = logging.getLogger(__name__)
 

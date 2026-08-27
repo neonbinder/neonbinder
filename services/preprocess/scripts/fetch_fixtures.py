@@ -38,14 +38,31 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 FIXTURES_BUCKET = "gs://neonbinder-dev-preprocess-fixtures"
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 SUPPORTED_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 
 
-def _sidecar_stems() -> list[str]:
-    """All `.yaml` sidecar stems in tests/fixtures/."""
-    return sorted(p.stem for p in FIXTURES_DIR.iterdir() if p.is_file() and p.suffix == ".yaml")
+def _sidecar_stems(crop_only: bool = False) -> list[str]:
+    """`.yaml` sidecar stems in tests/fixtures/.
+
+    `crop_only` narrows to sidecars declaring a `crop:` block — the set the
+    deployed crop matrix (NEO-191) needs. CI uses it because this script exits
+    non-zero on any sidecar whose image is absent from the bucket, and the
+    repo carries older sidecars whose images were never uploaded; without the
+    filter their absence would fail a job that does not want them.
+    """
+    stems = sorted(p.stem for p in FIXTURES_DIR.iterdir() if p.is_file() and p.suffix == ".yaml")
+    if not crop_only:
+        return stems
+    kept = []
+    for stem in stems:
+        raw = yaml.safe_load((FIXTURES_DIR / f"{stem}.yaml").read_text()) or {}
+        if raw.get("crop") is not None:
+            kept.append(stem)
+    return kept
 
 
 def _local_image_for(stem: str) -> Path | None:
@@ -92,13 +109,18 @@ def main() -> int:
         help="re-download even when the local image already exists",
     )
     parser.add_argument(
+        "--crop",
+        action="store_true",
+        help="only fetch fixtures whose sidecar declares a crop: block (the NEO-191 matrix)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print what would be fetched without downloading",
     )
     args = parser.parse_args()
 
-    stems = _sidecar_stems()
+    stems = _sidecar_stems(crop_only=args.crop)
     if not stems:
         print(f"No .yaml sidecars in {FIXTURES_DIR} — nothing to fetch.")
         return 0

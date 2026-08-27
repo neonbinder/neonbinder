@@ -1,0 +1,12 @@
+orient:
+  rotation_degrees: 90
+
+crop:
+  category: pre-cropped-scan / dark border, back
+  source: scan_metadata
+  identity: true
+
+# The worst measured shave in the corpus and the highest-value fixture here:
+# the classical path crops this to 925x1295, 86.8% of a 996x1386 source, at
+# aspect 0.714 — a textbook card ratio, so no downstream gate rejects it. If
+# scan_metadata ever stops firing, this is the fixture that screams.

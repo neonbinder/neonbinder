@@ -61,3 +61,68 @@ python scripts/push_fixtures.py --only <name>
 # regenerate the sidecar if classify results differ
 python scripts/label_fixtures.py --fixture <name>.jpg --force
 ```
+
+## Crop fixtures (NEO-191)
+
+A sidecar that declares a `crop:` block joins the **deployed crop matrix** in
+`tests/functional/` — the suite that asserts what the cascade actually did with
+a real card, against a real Cloud Run revision.
+
+```yaml
+orient:
+  rotation_degrees: 90        # optional; asserted by both suites
+
+crop:
+  category: pre-cropped-scan / dark border, back   # free text, for readability
+  source: scan_metadata                            # expected cropped_source
+  identity: true                                   # input returned untouched
+  # when identity is false, geometry is asserted instead:
+  # aspect: 0.714
+  # aspect_tolerance: 0.04
+  # min_area_fraction: 0.10
+  # max_area_fraction: 0.45
+```
+
+`identity: true` is the load-bearing assertion. For an already-tight scan,
+returning the upload untouched is the *only* correct answer, so
+`cropped_image_b64 is None` is what catches a border shave. `identity: false`
+switches to measuring the returned crop, which covers deskewing too — a card
+that gets cropped but not straightened fails the aspect check.
+
+Fetch just these (the repo carries older sidecars whose images were never
+uploaded, and the script exits non-zero on any absence):
+
+```bash
+python scripts/fetch_fixtures.py --crop
+```
+
+### Calibrating a new crop fixture
+
+Numbers in a sidecar should come from a measured run, never a guess — a wrong
+band is a red gate on somebody else's PR. Point the suite at a deployed
+revision and read the values off it:
+
+```bash
+export SMOKE_TARGET_URL=https://pr-<N>---<host>          # or the dev service
+export SMOKE_INTERNAL_KEY=$(gcloud secrets versions access latest \
+  --secret=internal-api-key --project=neonbinder-dev)
+export SMOKE_ID_TOKEN=$(gcloud auth print-identity-token \
+  --impersonate-service-account=neonbinder-preprocess-runtime@neonbinder-dev.iam.gserviceaccount.com \
+  --audiences=https://<base-host>)
+pytest tests/functional -v
+```
+
+Leave the area band roughly ±50% around the measured fraction. BiRefNet is not
+bit-deterministic, and a band tight enough to flake is worse than no band —
+but keep it far enough from a border shave (which lands near 0.87 of source on
+an already-tight scan) that a regression still falls outside.
+
+### Known gap: no landscape / EXIF-rotated fixture
+
+Every scan and phone photo on hand is portrait with EXIF orientation `1`, so
+nothing here exercises a landscape source or the `apply_exif_orientation`
+transpose path — including the resolution-swap that path performs for NEO-191.
+`scan-dark-textured-front` covers a 270-degree upright rotation, which is the
+nearest available substitute. Add a real sideways scan when one exists; the
+legacy `landscape.yaml` sidecar records the intent but has no image in the
+bucket.

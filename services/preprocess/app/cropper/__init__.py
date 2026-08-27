@@ -28,6 +28,8 @@ identify this card" and route to a manual path upstream.
 
 Source labels (order of preference):
     precropped      : client-supplied crop (only when the client sent one)
+    scan_metadata   : the scanner's own resolution proves the frame IS one
+                      card, so there is no background to crop (NEO-191)
     tiered          : classical OpenCV + BiRefNet tiered pipeline (NEO-161)
     pil_trim_dark   : PIL blur + threshold + trim (card lighter than bg)
     pil_trim_light  : PIL blur + threshold + trim (card darker than bg)
@@ -43,7 +45,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.classify import ClassifyResult, classify_card
-from app.cropper import haiku_bbox, pil_trim, sam, tiered
+from app.cropper import haiku_bbox, pil_trim, sam, scan_meta, tiered
 from app.cropper._utils import rotate_image_bytes
 from app.cropper.validator import is_plausible_crop
 from app.orient import OrientationResult, detect_orientation
@@ -70,6 +72,13 @@ MIN_ABSOLUTE_TEXT_COUNT = 1
 CROP_QUALITY_FAST = "fast"
 CROP_QUALITY_STRONG = "strong"
 CROP_QUALITIES: frozenset[str] = frozenset({CROP_QUALITY_FAST, CROP_QUALITY_STRONG})
+
+# Source label for the NEO-191 scanner-metadata identity. Deliberately distinct
+# from "tiered" even though both return the input untouched: they are different
+# claims — "the pixels say this is already a card" versus "the device that made
+# this file says the frame measures one card" — and only a distinct label lets
+# `croppedSource` show which one carried an image.
+SOURCE_SCAN_METADATA = "scan_metadata"
 
 # Type for a crop strategy: takes raw image bytes, returns cropped bytes or None.
 CropStrategy = Callable[[bytes], bytes | None]
@@ -353,13 +362,18 @@ def crop(
 
     `crop_quality` (NEO-173) tunes the image cascade, and ONLY it — precropped
     and crop-only modes are unaffected:
-      - ``"fast"`` (default): before the strategy loop, `tiered.fast_tiered_crop`
-        runs a classical-only pass. When the image is an unambiguous pre-cropped
-        card-aspect frame it returns the input untouched (identity) WITHOUT a
-        BiRefNet inference — the ~80% majority's ~35s skip. On any other verdict
-        it declines and the cascade escalates to the full tiered/BiRefNet path
-        below, so a `"fast"` crop is never worse than a `"strong"` one — the
-        winning identity bytes are byte-identical to what `"strong"` produces.
+      - ``"fast"`` (default): two identity short-circuits run before the
+        strategy loop. First `scan_meta.is_card_sized_scan` (NEO-191) reads the
+        scanner's own resolution off the untouched upload — a frame that
+        physically measures one 2.5x3.5in card has no background to crop, which
+        settles ~95% of scanner intake with no pixel work at all. Then
+        `tiered.fast_tiered_crop` runs a classical-only pass for sources whose
+        metadata says nothing, returning the input untouched for an unambiguous
+        pre-cropped card-aspect frame WITHOUT a BiRefNet inference. On any other
+        verdict both decline and the cascade escalates to the full
+        tiered/BiRefNet path below, so a `"fast"` crop is never worse than a
+        `"strong"` one — the winning identity bytes are byte-identical to what
+        `"strong"` produces.
       - ``"strong"``: the classical fast-path is skipped and the cascade runs
         tiered-first (BiRefNet) exactly as before.
 
@@ -425,16 +439,55 @@ def crop(
         if result is not None:
             return result
 
-    # ── Fast path (NEO-173) — classical-only identity short-circuit ─────
-    # In "fast" mode, try to settle the ~80% pre-cropped-scanner majority
-    # WITHOUT a ~35s BiRefNet pass. `fast_tiered_crop` returns the input
-    # untouched only for an unambiguous card-aspect identity frame, else None
-    # (escalate). A returned identity flows through the SAME `_try_stage`
-    # gates as any tiered result, labelled `source="tiered"` — indistinguishable
-    # from the "strong" identity outcome, just cheaper. Anything it declines
-    # (every crop, every ambiguous or deskew-needing frame) falls straight
-    # through to the full tiered/BiRefNet cascade below.
+    # ── Fast-path identity short-circuits ───────────────────────────────
+    # Two cheap ways to answer "is this frame already the card?", tried in
+    # order of evidence quality before the model-backed cascade below.
     if crop_quality == CROP_QUALITY_FAST:
+        # ── Scanner-metadata identity (NEO-191) ─────────────────────────
+        # Ahead of the classical pass because it settles the same question
+        # with strictly better evidence and no pixel work at all. When a
+        # scanner reports a resolution, resolution x pixel dimensions is a
+        # physical size, and a frame measuring one 2.5x3.5in card cannot
+        # also contain a card plus background — so there is nothing to crop.
+        #
+        # This exists because the pixel path gets this case confidently
+        # WRONG, not merely slowly: with the background already cropped away
+        # the classical detector locks onto the printed inner panel and
+        # shaves the card's own border at a clean card aspect that no later
+        # gate rejects (see `scan_meta` and NEO-192).
+        #
+        # Reads `image_bytes` — the upload as the route received it. The one
+        # thing upstream that rewrites those bytes is `apply_exif_orientation`,
+        # which now carries the resolution across its transpose for exactly
+        # this reason; any OTHER re-encode inserted between the upload and here
+        # would drop the JFIF density and silently blind this check.
+        #
+        # The result still flows through the same `_try_stage` gates as
+        # every other candidate, so nothing is bypassed; on the vanishing
+        # chance they reject it, the cascade continues below.
+        if scan_meta.is_card_sized_scan(image_bytes) is not None:
+            result = _try_stage(
+                source=SOURCE_SCAN_METADATA,
+                candidate_bytes=image_bytes,
+                source_area_bytes=image_bytes,
+                text_threshold=text_threshold,
+                returned_bytes_differ=False,
+            )
+            if result is not None:
+                return result
+
+        # ── Classical identity (NEO-173) ────────────────────────────────
+        # The fallback for sources whose metadata says nothing: a phone
+        # photo, a re-encoded upload, a scanner that records no resolution.
+        # `fast_tiered_crop` returns the input untouched only for an
+        # unambiguous card-aspect identity frame, else None (escalate), and
+        # never produces a NEW crop — so it cannot ship a border-shaved or
+        # un-deskewed result. A returned identity flows through the SAME
+        # `_try_stage` gates as any tiered result, labelled `source="tiered"`
+        # — indistinguishable from the "strong" identity outcome, just
+        # cheaper. Anything it declines (every crop, every ambiguous or
+        # deskew-needing frame) falls straight through to the full
+        # tiered/BiRefNet cascade below.
         fast_bytes = tiered.fast_tiered_crop(image_bytes)
         if fast_bytes is not None:
             result = _try_stage(

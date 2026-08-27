@@ -52,6 +52,11 @@ EXIF_ORIENTATION_TAG = 0x0112
 EXIF_ORIENTATION_AS_STORED = 1
 EXIF_ORIENTATION_VALUES = frozenset(range(1, 9))
 
+# The four orientations whose transpose involves a quarter turn, so width and
+# height (and with them the horizontal and vertical resolution) swap. 2/3/4 are
+# mirrors and a half turn, which move pixels in place.
+EXIF_ORIENTATIONS_SWAPPING_AXES = frozenset({5, 6, 7, 8})
+
 # Quality used when an image's pixels had to be rewritten. A transpose forces
 # a re-encode, and that generation of loss is unavoidable; 95 keeps it
 # invisible at the scale the downstream Vision OCR and SAM care about, at
@@ -104,7 +109,27 @@ def apply_exif_orientation(image_bytes: bytes) -> tuple[bytes, int]:
 
     with Image.open(BytesIO(image_bytes)) as img:
         source_format = (img.format or "JPEG").upper()
+        source_dpi = img.info.get("dpi")
         transposed = ImageOps.exif_transpose(img)
+
+    # Carry the physical resolution across the re-encode (NEO-191). A save
+    # without `dpi=` drops the JFIF density silently, and `app.cropper.scan_meta`
+    # reads exactly that field to decide whether a frame already measures one
+    # card — so an image that merely needed rotating would arrive at the crop
+    # cascade stripped of the metadata that keeps its printed border intact.
+    # Rotating a page does not change its physical size, so the pair only has to
+    # follow the axes: a quarter-turn swaps width and height, and therefore
+    # swaps the horizontal and vertical resolution with them.
+    #
+    # Keyed on the orientation VALUE rather than on whether the dimensions
+    # actually changed, because a square image transposes without changing size
+    # and would silently keep an anisotropic pair the wrong way round.
+    save_kwargs: dict[str, object] = {}
+    if source_dpi:
+        x_dpi, y_dpi = source_dpi
+        if orientation in EXIF_ORIENTATIONS_SWAPPING_AXES:
+            x_dpi, y_dpi = y_dpi, x_dpi
+        save_kwargs["dpi"] = (x_dpi, y_dpi)
 
     out = BytesIO()
     if source_format in _ROUND_TRIP_FORMATS:
@@ -116,8 +141,12 @@ def apply_exif_orientation(image_bytes: bytes) -> tuple[bytes, int]:
         # JPEG cannot hold an alpha channel or a palette; a transposed PNG-ish
         # image falling back to JPEG has to be flattened first.
         transposed = transposed.convert("RGB")
-        transposed.save(out, format="JPEG", quality=EXIF_REENCODE_JPEG_QUALITY)
+        transposed.save(out, format="JPEG", quality=EXIF_REENCODE_JPEG_QUALITY, **save_kwargs)
+    elif target_format == "PNG":
+        transposed.save(out, format=target_format, **save_kwargs)
     else:
+        # WEBP has no resolution field to write the pair into; passing `dpi=`
+        # would be silently ignored at best, so don't.
         transposed.save(out, format=target_format)
 
     logger.info("exif: normalised orientation=%d format=%s", orientation, target_format)

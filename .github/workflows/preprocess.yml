@@ -199,10 +199,22 @@ jobs:
           # google_storage_bucket.placeholder_uploads naming
           # (neonbinder-placeholder-uploads-${var.gcp_project_id}). Previews
           # deploy into the dev project, so this is the dev bucket.
+          # PREVIEW_SHA (NEO-191) stamps the revision with the commit it was
+          # built from. Nothing else on a preview revision identifies its
+          # source: the `:<head-sha>` image tag was dropped under NEO-130 to
+          # stop previews consuming package version slots, so a revision is
+          # otherwise distinguishable only by digest.
+          #
+          # Without it, consumers that wait on the pr-<N> URL cannot tell a
+          # freshly-built revision from the PREVIOUS push's. `wire-preprocess-url`
+          # waits only for that URL to stop 404ing, which on any second-or-later
+          # push is already true of the stale revision — so it passed in ~30s and
+          # everything downstream tested the old container. Observed on PR #193.
           env_vars: |
             ENVIRONMENT=dev
             GOOGLE_CLOUD_PROJECT=neonbinder-dev
             GCS_PLACEHOLDER_BUCKET=neonbinder-placeholder-uploads-neonbinder-dev
+            PREVIEW_SHA=${{ github.event.pull_request.head.sha }}
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
 

@@ -572,6 +572,13 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # NEO-191: this job already resolves the heavy service's base host and waits
+    # for the pr-<N> revision to answer, so it is the cheapest place to publish
+    # both. `preprocess-crop-matrix` consumes them rather than re-deriving them
+    # - and inherits the wait for free, so it can never race the deploy.
+    outputs:
+      heavy_base_url: ${{ steps.host-heavy.outputs.host && format('https://{0}', steps.host-heavy.outputs.host) }}
+      heavy_preview_url: ${{ steps.heavy.outputs.url }}
     env:
       PR: ${{ github.event.pull_request.number }}
     steps:
@@ -910,9 +917,166 @@ jobs:
   # That pairing is what keeps the NEO-68 vacuous-skip trap closed — a skipped
   # E2E is green only when an authoritative, fail-closed signal says the PR
   # touched nothing but dependency manifests. Every other skip is still red.
+  # NEO-191 — crop / deskew / rotate matrix against the PR's OWN deployed
+  # preprocess revision.
+  #
+  # Why it is here and not in E2E: the border-shaving bug this suite exists to
+  # catch shipped to production and ran for a week with E2E green the whole
+  # time. Maestro asserts on rendered UI, and a card cropped to 87% of itself
+  # still renders, classifies and pairs. The defect was geometry, so the
+  # assertion has to be geometry.
+  #
+  # Why it is here and not in preprocess.yml: that workflow is path-filtered
+  # and therefore cannot be a required check, which is exactly what "blocking"
+  # needs. This file always runs and `ci-gate` aggregates it.
+  #
+  # Why it costs no wall-clock: it needs a strict SUBSET of what `e2e` needs,
+  # so the two run concurrently. ~2 min beside e2e's 17-25, entirely hidden.
+  preprocess-crop-matrix:
+    name: Preprocess crop matrix (deployed)
+    needs: [changes, wire-preprocess-url]
+    if: |
+      github.event_name == 'pull_request'
+      && needs.changes.outputs.preprocess == 'true'
+      && needs.changes.outputs.deps_only != 'true'
+    runs-on: ubuntu-latest
+    # The matrix itself is ~2 min, but this job may first have to wait out the
+    # ~25 min preview image build (see the stale-revision guard below), so it
+    # carries wire-preprocess-url's 45-minute headroom rather than a budget
+    # sized only for the requests.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: services/preprocess
+    env:
+      DEV_PROJECT: neonbinder-dev
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # httpx/pytest/PyYAML/Pillow only — NOT requirements.txt. The service
+      # under test is the deployed container; installing torch here would add
+      # minutes to a job that never imports it.
+      - name: Install client deps
+        run: pip install httpx==0.28.1 pytest==9.1.1 PyYAML==6.0.3 Pillow==12.3.0
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # `--crop` restricts to sidecars declaring a `crop:` block. Without it the
+      # script also tries the repo's older sidecars, whose images were never
+      # uploaded, and exits non-zero on their absence.
+      - name: Fetch fixture images
+        run: python scripts/fetch_fixtures.py --crop
+
+      # Cloud Run validates an ID token's audience against the BASE service URL
+      # even when the request goes to a tagged pr-<N> host.
+      - id: probe-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
+          service_account: ${{ secrets.GCP_SA_PREPROCESS_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ needs.wire-preprocess-url.outputs.heavy_base_url }}
+          id_token_include_email: true
+
+      # The auth action masks the token internally, but that guarantee is the
+      # action's implementation detail — assert it so an action bump cannot
+      # silently start echoing a credential into a public repo's logs.
+      - name: Mask probe token
+        env:
+          PROBE_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: echo "::add-mask::$PROBE_TOKEN"
+
+      # The emptiness assertions are load-bearing: tests/functional SKIPS when
+      # its env is unset, so a silently-failed secret fetch would produce a
+      # green job that asserted nothing. Same trap preview-smoke guards against.
+      - name: Fetch internal API key (dev)
+        env:
+          TARGET: ${{ needs.wire-preprocess-url.outputs.heavy_preview_url }}
+        run: |
+          set -euo pipefail
+          KEY=$(gcloud secrets versions access latest --secret=internal-api-key --project="$DEV_PROJECT")
+          echo "::add-mask::$KEY"
+          [ -n "$KEY" ] || { echo "::error::internal-api-key came back empty"; exit 1; }
+          [ -n "${TARGET:-}" ] || { echo "::error::heavy preview URL is empty"; exit 1; }
+          echo "SMOKE_INTERNAL_KEY=$KEY" >> "$GITHUB_ENV"
+
+      # ── Refuse to test a stale revision (NEO-191) ────────────────────
+      # `wire-preprocess-url` waits only for the pr-<N> URL to stop 404ing.
+      # On the FIRST push that means waiting out the ~25 min image build, but
+      # on any later push the URL already answers — serving the PREVIOUS
+      # push's revision — so it returns in ~30s and everything downstream
+      # would assert against the wrong container. Observed on this PR: a green
+      # matrix in 2m against an image built from the prior commit.
+      #
+      # deploy-preview stamps each revision with PREVIEW_SHA, so wait for the
+      # revision behind the tag to actually be THIS commit. On a first push
+      # this passes on the first poll (wire-preprocess-url already waited);
+      # on a later push it absorbs the remaining build time, which is the
+      # cost of the gate meaning what it says.
+      - name: Wait for the pr-<N> revision to be built from this commit
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do   # ~40 min ceiling; build is ~25
+            # `|| true` on both reads: a transient gcloud/API blip must cost
+            # one poll, not the whole job. Same idiom as the wait loops above.
+            REV=$(gcloud run services describe neonbinder-preprocess \
+              --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
+              | jq -r --arg t "pr-$PR" '.status.traffic[]? | select(.tag==$t) | .revisionName' || true)
+            if [ -n "$REV" ] && [ "$REV" != "null" ]; then
+              ACTUAL=$(gcloud run revisions describe "$REV" \
+                --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
+                | jq -r '.spec.containers[0].env[]? | select(.name=="PREVIEW_SHA") | .value' || true)
+              if [ "$ACTUAL" = "$EXPECTED_SHA" ]; then
+                echo "$REV is built from $EXPECTED_SHA"
+                exit 0
+              fi
+              echo "attempt $attempt/120: $REV has PREVIEW_SHA='${ACTUAL:-<unset>}', want $EXPECTED_SHA — retry in 20s"
+            else
+              echo "attempt $attempt/120: no revision serving tag pr-$PR yet — retry in 20s"
+            fi
+            sleep 20
+          done
+          echo "::error::pr-$PR never served a revision built from $EXPECTED_SHA — preprocess.yml deploy-preview may have failed."
+          exit 1
+
+      # A cold preview would otherwise spend the first fixture's timeout loading
+      # ~930MB of BiRefNet. /warmup is synchronous and idempotent.
+      - name: Warm the preview
+        env:
+          TARGET: ${{ needs.wire-preprocess-url.outputs.heavy_preview_url }}
+          TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 420 -X POST \
+            -H "Authorization: Bearer $TOKEN" -H "x-internal-key: $SMOKE_INTERNAL_KEY" \
+            "$TARGET/warmup")
+          echo "warmup -> HTTP $code"
+          [ "$code" = "200" ] || { echo "::error::warmup failed (HTTP $code)"; exit 1; }
+
+      - name: Run the crop matrix
+        env:
+          SMOKE_TARGET_URL: ${{ needs.wire-preprocess-url.outputs.heavy_preview_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: pytest tests/functional -v
+
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-unit, browser-test, preprocess-test, wire-browser-url, wire-preprocess-url, e2e]
+    needs: [changes, web-preview, web-lint, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -926,6 +1090,7 @@ jobs:
           R_WEB_UNIT: ${{ needs.web-unit.result }}
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
           R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
+          R_CROP_MATRIX: ${{ needs.preprocess-crop-matrix.result }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_WIRE_PREPROCESS: ${{ needs.wire-preprocess-url.result }}
           R_WEB_PREVIEW: ${{ needs.web-preview.result }}
@@ -933,7 +1098,7 @@ jobs:
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
         run: |
           set -euo pipefail
-          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "changes=$R_CHANGES web-lint=$R_WEB_LINT web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
@@ -952,7 +1117,7 @@ jobs:
           # (NEO-162): it is `skipped` exactly when deps_only skips E2E, and any
           # OTHER reason it fails to succeed already reds the gate through the
           # e2e rule above, since e2e `needs:` it.
-          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
+          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
             r="${kv#*=}"
             case "$r" in
               success|skipped) ;;
