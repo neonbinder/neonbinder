@@ -100,7 +100,21 @@ tags:
 # photos read." — so no single line is true at every moment and a precondition
 # cannot depend on catching one. It asserts the panel; Step 3 and Step 6 gate on
 # the real states.
-- assertVisible: "Your cards"
+# The session panel sits BELOW THE FOLD on the CI viewport (1024x625), so it has
+# to be scrolled to before anything in it can be asserted. Measured on the real
+# page: "Upload your cards" is at y=533 — the last thing on screen — while the
+# session heading is at y=653 and the status line at y=714. `assertVisible` and
+# `extendedWaitUntil` never scroll, so they can only ever see the top of the
+# page. `scrollUntilVisible` scrolls AND is the assertion (it fails if it
+# reaches the end without a match), so it does both jobs here.
+#
+# This is what NEO-152 changed out from under these flows: the old /placeholders
+# stopgap was a short page whose status line was above the fold, and the flows
+# were written against that. The real tool leads with the dropzone.
+- scrollUntilVisible:
+    element:
+      text: "Your cards"
+    centerElement: true
 
 # Step 3a: bring the session panel into view so the cold-start notice's location
 # is on screen when it appears. The notice renders asynchronously (only once the

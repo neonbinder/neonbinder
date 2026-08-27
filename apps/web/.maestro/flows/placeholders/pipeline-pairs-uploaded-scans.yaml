@@ -118,7 +118,21 @@ tags:
 # reads "Reading your cards — N of 6 done.", and the instant the last one lands
 # it becomes "All 6 photos read." A precondition cannot depend on which of those
 # it catches, so it asserts the panel and lets Step 3 gate on the real state.
-- assertVisible: "Your cards"
+# The session panel sits BELOW THE FOLD on the CI viewport (1024x625), so it has
+# to be scrolled to before anything in it can be asserted. Measured on the real
+# page: "Upload your cards" is at y=533 — the last thing on screen — while the
+# session heading is at y=653 and the status line at y=714. `assertVisible` and
+# `extendedWaitUntil` never scroll, so they can only ever see the top of the
+# page. `scrollUntilVisible` scrolls AND is the assertion (it fails if it
+# reaches the end without a match), so it does both jobs here.
+#
+# This is what NEO-152 changed out from under these flows: the old /placeholders
+# stopgap was a short page whose status line was above the fold, and the flows
+# were written against that. The real tool leads with the dropzone.
+- scrollUntilVisible:
+    element:
+      text: "Your cards"
+    centerElement: true
 
 # ── Step 3: the fast-path completion wait ─────────────────────────────────────
 # All six images process on the FAST classical service and none touches the model.
@@ -134,9 +148,19 @@ tags:
 # count is not available yet at this point — it is written by the FINAL pairing
 # run, which Step 4 fires by finishing the batch. The status line is above the
 # fold (Step 2), and extendedWaitUntil never scrolls, so no scroll is needed.
+# 180s, not the 120s this flow used to carry. The identical wait — six
+# frame-filling fixtures through the fast path — is budgeted at 180s in
+# flip-edge-mirrors-the-backs.yaml, and two flows disagreeing about how long the
+# same operation takes is a bug in one of them. Neither number was ever
+# observed, because until now this wait could not see the status line at all
+# (it is below the fold; see the scroll note above), so both flows failed before
+# reaching it. Taking the more conservative value already in the tree is not
+# inflating a budget to hide a slow path: it resolves the instant the batch
+# completes, and a fast path that genuinely needs longer than three minutes for
+# six cards is still a PRODUCT finding to raise rather than a number to raise.
 - extendedWaitUntil:
     visible: "All 6 photos read."
-    timeout: 120000
+    timeout: 180000
 
 # Step 3b: the cold-start notice is ABSENT. The fast path escalates nothing, so
 # `heavyWarming` is false and the "Warming up the full card processor…" notice
@@ -212,6 +236,13 @@ tags:
 # And the review step exists for the pairs just formed — the correction surface
 # NEO-152 §3 requires, which is what makes the pairing trustworthy rather than
 # merely present.
-- assertVisible: "Check the pairs"
-# The two unpaired backs are surfaced as their own bucket, not swallowed.
-- assertVisible: "Not paired (2)"
+- scrollUntilVisible:
+    element:
+      text: "Check the pairs"
+    centerElement: true
+# The two unpaired backs are surfaced as their own bucket, not swallowed. Also
+# below the fold, and further down than the review heading, so it scrolls too.
+- scrollUntilVisible:
+    element:
+      text: "Not paired (2)"
+    centerElement: true
