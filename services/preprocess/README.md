@@ -71,6 +71,28 @@ filesystem glob, and a missing-weights boot failure should stay loud — and
 starts the warm on a daemon thread. uvicorn listens within seconds, the probe
 passes, and the model loads while the container is already healthy.
 
+### The warm is now request-driven, and that is the trade
+
+Cloud Run throttles an instance's CPU whenever no request is in flight (the
+default; these services set no `cpu-throttling` annotation, and turning it off
+means paying for idle CPU — the opposite of why they scale to zero). The old
+inline warm ran inside the startup window, where full CPU is guaranteed. The
+background thread does not: once the probe passes and the instance goes idle,
+the warm is starved until something drives it.
+
+So the warm typically completes on the **first request**, and `/warmup` is that
+request in normal operation — Convex fans it out at session start precisely so
+the load lands there instead of on a real `/process`. Verified on
+`neonbinder-preprocess-00153-foz`: the container listened 3ms after the startup
+hook, served `/health` in 1.15s, and had not finished warming while idle.
+
+This is a deliberate exchange of a **fatal** failure mode for a **recoverable**
+one. Before: the warm raced a 240s deadline it lost 7 times in prod and 100+
+times on dev in two weeks, and losing meant the revision was destroyed. After:
+the worst case is a slow first request when nobody called `/warmup` — which is
+exactly the pre-warm-hook behaviour, and which `_get_session()`'s lazy load has
+always handled correctly.
+
 What that means for callers:
 
 - **`/health`** answers immediately, warm or not. It is a liveness probe, not a

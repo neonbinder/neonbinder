@@ -249,6 +249,15 @@ def _verify_baked_weights() -> None:
     # it out at session start), and it now does what its name says instead of
     # being redundant with a boot that had already blocked on the model.
     #
+    # Caveat worth knowing: Cloud Run throttles CPU whenever no request is in
+    # flight, so this thread is starved while the instance is idle and the warm
+    # usually completes on the FIRST request rather than on its own. `/warmup`
+    # is that request in normal operation (Convex fans it out at session
+    # start), so the load still lands off the hot path. That is the deliberate
+    # trade: a fatal failure mode (revision destroyed) for a recoverable one (a
+    # slow first request if nobody warmed it), which `_get_session()`'s lazy
+    # load has always handled.
+    #
     # daemon=True so a warm still in flight never holds up interpreter exit;
     # Cloud Run gives ~10s to drain on shutdown and an unfinished warm has
     # nothing worth saving.
