@@ -205,7 +205,15 @@ tags:
 # 2026-08-26: long edge puts 1 at x=1879 and 2 at x=1790 (1 right of 2); short
 # edge puts 1 at x=1702 and 2 at x=1790 on a lower row (1 left of 2).
 # ============================================================
+# UP. The form controls sit ABOVE the sheet previews they drive (measured:
+# flip-edge radios at y=1933/2003, guides toggle just under them, first sheet
+# caption at y=2258, the back sheet below that), and the step before this one
+# scrolled DOWN into the back sheet to read the pocket order. A default
+# downward scrollUntilVisible from there can only run to the end of the page,
+# which is exactly how this failed: "No visible element found: Short edge"
+# while Short edge was sitting a few hundred pixels above.
 - scrollUntilVisible:
+    direction: UP
     element:
       text: "Short edge"
     centerElement: true
@@ -228,12 +236,16 @@ tags:
 # are asserted: the sentence proves the setting reached the arithmetic, and the
 # missing caption proves it reached the preview.
 # ============================================================
+# UP, for the same reason — the previous step read the back sheet again.
 - scrollUntilVisible:
+    direction: UP
     element:
       text: ".*Print the backs too.*"
     centerElement: true
 - tapOn: ".*Print the backs too.*"
+# UP: the summary sentence (y=1622) is above the two-sided control just tapped.
 - scrollUntilVisible:
+    direction: UP
     element:
       text: ".*2 cards on 1 sheet of Letter, front only.*"
     centerElement: true
