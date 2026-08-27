@@ -17,14 +17,27 @@ The resulting design:
 
 - **One Cloud Run service**, scale-to-zero, 4 CPU / 4Gi / concurrency 3 /
   max-instances 3.
-- **Crop** — the benchmarked tiered pipeline first (classical OpenCV +
-  BiRefNet, NEO-161), then the older cascade (PIL trim → SAM → Haiku bbox).
+- **Crop** — a scanner-metadata pre-check first (NEO-191), then the benchmarked
+  tiered pipeline (classical OpenCV + BiRefNet, NEO-161), then the older
+  cascade (PIL trim → SAM → Haiku bbox).
   BiRefNet is NOT a rarely-hit fallback: tiered runs it on virtually every
   image — as the fallback when classical fails its QC gate, and as a
   verification pass when classical succeeds — so size capacity and latency
   expectations around ~5-10s/image of ONNX inference per request. Both model
   weights (BiRefNet via rembg, SAM) are baked into the image at build time so
   there is no runtime download.
+
+  The pre-check is what keeps that cost off the scanner majority. Pixel
+  strategies find the card by locating a card/background boundary, which does
+  not exist once a scanner has already cropped the background away — and the
+  classical detector then locks onto the printed inner panel and shaves the
+  card's own border at a clean 2.5:3.5 aspect that no later gate rejects. A
+  scanner records its resolution, so resolution × pixel dimensions is a
+  physical size, and a frame measuring one 2.5×3.5in card cannot also contain
+  a card *plus* background. Measured over a 574-image intake batch: 547 scans
+  at 2.450–2.500 × 3.450–3.495in against 27 multi-card bed scans at 8.85 ×
+  4.80in, with nothing in between, and 0 false accepts over 338 phone photos
+  (all 72dpi, rejected on provenance). See `app/cropper/scan_meta.py`.
 - **Orient** — Cloud Vision `DOCUMENT_TEXT_DETECTION` rather than a bundled
   EasyOCR model, keeping ~300MB out of the container.
 - **Classify** — Anthropic Claude Haiku, key from Secret Manager, never baked
@@ -49,6 +62,15 @@ clients that can't send the raw photo and let the service crop.
 Auth: all non-health endpoints require the `x-internal-key` header matching
 the `INTERNAL_API_KEY` env var (sourced from Secret Manager in Cloud Run).
 
+Logging: `LOG_LEVEL` (default `INFO`) sets the root logger's level at import.
+It has to be set at all because uvicorn configures only its own
+non-propagating loggers — before NEO-191 nothing configured root, so every
+`logger.info` in `app.*` was silently discarded and production emitted only
+the access log. An unrecognised value falls back to `INFO` rather than
+raising. `INFO` is what makes the crop cascade's per-image routing decisions
+(`scan_meta:`, `fast:`, `tiered:`, `cascade:`) visible in Cloud Logging; drop
+to `WARNING` if that volume ever becomes a problem.
+
 ### `POST /process` modes
 
 Accepts two optional multipart file fields: `image` (the original photo)
@@ -58,7 +80,7 @@ modes — the mode only affects which work the server performs.
 
 | Mode | `image` | `precropped` | What runs | When to use |
 |---|:-:|:-:|---|---|
-| **image-only** | yes | — | Full crop cascade (tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
+| **image-only** | yes | — | Full crop cascade (scan metadata → tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
 | **image + precropped** | yes | yes | Tries the crop first; if rejected, falls back to the full cascade on the original. | Callers that can guess a crop but want a server-side safety net. |
 | **crop-only** | — | yes | Validates the crop; on pass, runs orient + classify on it. On reject, returns 422 so the caller retries with the original. | Bandwidth-constrained callers whose client-side crops are usually good. Skips the 22 MB-per-image upload entirely when the crop passes. |
 
@@ -270,11 +292,32 @@ pytest tests/unit
 ruff check . && ruff format --check .
 ```
 
+### Apple Silicon
+
 `requirements.txt` pins `torch==2.5.1+cpu` against the PyTorch CPU wheel index
 (`--extra-index-url`). That build publishes no macOS arm64 wheel, so installing
-the full runtime set on Apple Silicon fails on torch. CI installs it on Linux,
-where the pin resolves. Locally, either install only what the unit tests need or
-run the container.
+the full runtime set on Apple Silicon fails on torch, and the whole suite is
+unrunnable locally the moment one import chain reaches it.
+
+The `+cpu` **local version** is the only part that is Linux-only — plain
+`torch==2.5.1` has a macOS arm64 wheel, and on a Mac it *is* CPU-only anyway.
+So the full suite runs locally with a two-token edit:
+
+```bash
+sed -e 's|^--extra-index-url.*||' -e 's|^torch==2.5.1+cpu|torch==2.5.1|' \
+    requirements-dev.txt > /tmp/requirements-mac.txt
+uv venv --python 3.12 .venv && uv pip install -r /tmp/requirements-mac.txt
+.venv/bin/python -m pytest tests/unit
+```
+
+Python **3.12** is load-bearing: torch 2.5.1 publishes no wheel for 3.13+, so a
+default `python3 -m venv` on a current Mac fails to resolve regardless of the
+`+cpu` question. `uv venv --python 3.12` fetches the right interpreter itself.
+
+Do not commit the edited file — the `+cpu` pin is what CI and the container
+need. This is a local escape hatch, not a second supported dependency set.
+First run takes ~8 minutes because the SAM weights download; subsequent runs
+are ~1 minute.
 
 ## Deploy
 
