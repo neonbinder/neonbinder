@@ -154,13 +154,39 @@ tags:
 # the `containsDescendants: BACK` qualifier is load-bearing — without it the
 # selector would happily match the front sheet and pass on a broken mirror.
 # ============================================================
+# WHY THIS SELECTOR IS SHAPED LIKE THIS. Two things about the rendered sheet
+# force it, both measured on the real page:
+#
+# 1. `containsDescendants` cannot work here any more. NEO-152's sheet renders a
+#    pocket as three SIBLING leaves — the number, the side label, the caption —
+#    so the element whose text is "1" is a leaf with no descendants at all, and
+#    the cell that does contain "BACK" has no text of its own to match on.
+#    Maestro's hierarchy is built from leaf text (plus accessibility labels), so
+#    the old selector could not match anything and the flow scrolled to the end.
+#
+# 2. The anchor has to be pinned to the BACK sheet, or the assertion is unsound
+#    rather than merely broken. Front and back render side by side on the SAME
+#    row (measured: front pockets at x=1378/1466, back at x=1790/1879, all at
+#    y=914). A bare `rightOf: "2"` would be satisfied by the FRONT sheet's
+#    pocket 2 sitting far to the left — so if the mirroring regressed and the
+#    back came out in front order, the back's "1" would still be "right of a 2"
+#    and this step would pass while the bug shipped.
+#
+# Anchoring BOTH sides on "above a BACK label" scopes the comparison to the back
+# sheet: each pocket's number sits directly above its own side label (number at
+# y=914, label at y=946), and the front sheet's numbers sit above FRONT instead.
+# Checked against a regression: with the back rendered in front order, the back
+# "1" lands left of the back "2" and no front "2" qualifies as the anchor, so
+# this correctly finds nothing.
 - scrollUntilVisible:
     element:
       text: "1"
-      containsDescendants:
-        - text: "BACK"
+      above:
+        text: "BACK"
       rightOf:
         text: "2"
+        above:
+          text: "BACK"
     centerElement: true
 
 # ============================================================
@@ -187,10 +213,12 @@ tags:
 - scrollUntilVisible:
     element:
       text: "1"
-      containsDescendants:
-        - text: "BACK"
+      above:
+        text: "BACK"
       leftOf:
         text: "2"
+        above:
+          text: "BACK"
     centerElement: true
 
 # ============================================================
