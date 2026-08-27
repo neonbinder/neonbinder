@@ -806,6 +806,9 @@ export const fetchSportLotsChecklist = action({
         printRun: v.optional(v.number()),
         autographType: v.optional(v.string()),
         cardVariation: v.optional(v.string()),
+        // NEO-189: does this source consider the row a variation of another
+        // card? A domain answer, not a marketplace field.
+        isVariation: v.optional(v.boolean()),
         platformRef: v.optional(v.string()),
         sportlotsRef: v.optional(v.string()),
       }),
@@ -879,6 +882,10 @@ export const fetchSportLotsChecklist = action({
         printRun?: number;
         autographType?: string;
         cardVariation?: string;
+        /** NEO-189: SL marks a variation with ` [ VAR … ] ` and keeps the
+         *  parent's card number, so this flag is the only thing separating
+         *  these rows from the card they vary. */
+        isVariation?: boolean;
         platformRef?: string;
         sportlotsRef?: string;
       }> = [];
@@ -980,8 +987,19 @@ export const fetchSportLotsChecklist = action({
             working = working.substring(echo + cardNumber.length + 1).trim();
           }
 
-          const { attributes, printRun, residual } = tokenizeSlDescription(working);
-          const cardName = residual || fullDescription;
+          // NEO-189: lift SL's ` [ VAR … ] ` marker before tokenizing, so the
+          // marker never lands in cardName and the variation signal reaches
+          // the domain. SL keeps the parent's card number, so this flag is the
+          // ONLY thing distinguishing these rows from their parent.
+          const {
+            isVariation,
+            variationLabel,
+            residual: withoutVariation,
+          } = parseSlVariationMarker(working);
+
+          const { attributes, printRun, residual } =
+            tokenizeSlDescription(withoutVariation);
+          const cardName = residual || withoutVariation || fullDescription;
 
           pageCards.push({
             cardNumber,
@@ -989,6 +1007,10 @@ export const fetchSportLotsChecklist = action({
             attributes: attributes.length ? attributes : undefined,
             printRun,
             autographType: attributes.includes("AU") ? "Unknown" : undefined,
+            // NEO-189: SportLots' answer to the domain question, plus its own
+            // wording for the variation. Untranslated — see parseSlVariationMarker.
+            isVariation: isVariation || undefined,
+            cardVariation: variationLabel,
             // NEO-91: the raw, un-tokenized description (not the bare card
             // number) — this is what lands in cardChecklist.platformData.
             // sportlots. SL reuses the same cardNumber across variation rows

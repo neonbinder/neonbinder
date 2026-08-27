@@ -503,6 +503,9 @@ const checklistCardValidator = v.object({
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
+  // NEO-189: does this source consider the row a variation of another
+  // card? A domain answer, not a marketplace field.
+  isVariation: v.optional(v.boolean()),
   platformRef: v.optional(v.string()),
   sportlotsRef: v.optional(v.string()),
   // NEO-6: the BSC source-set slug this card came from (e.g.
@@ -780,7 +783,7 @@ export const fetchBscChecklist = action({
     cards: v.array(checklistCardValidator),
     message: v.optional(v.string()),
   }),
-  handler: async (ctx, args): Promise<{ success: boolean; cards: Array<{ cardNumber: string; cardName: string; team?: string; teams?: string[]; players?: string[]; attributes?: string[]; printRun?: number; autographType?: string; cardVariation?: string; platformRef?: string; sportlotsRef?: string; sourceBscSetSlug?: string }>; message?: string }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; cards: Array<{ cardNumber: string; cardName: string; team?: string; teams?: string[]; players?: string[]; attributes?: string[]; printRun?: number; autographType?: string; cardVariation?: string; isVariation?: boolean; platformRef?: string; sportlotsRef?: string; sourceBscSetSlug?: string }>; message?: string }> => {
     await requireAdmin(ctx);
     try {
       const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
@@ -1058,6 +1061,12 @@ export const fetchBscChecklist = action({
             printRun: undefined,
             autographType: undefined,
             cardVariation,
+            // NEO-189: BSC's answer to the domain question. Reads both signals
+            // because they disagree in both directions — see isBscVariationRow.
+            isVariation: isBscVariationRow({
+              attributes,
+              playerAttributeDesc: r.playerAttributeDesc,
+            }),
             platformRef,
             sportlotsRef: undefined,
             sourceBscSetSlug,

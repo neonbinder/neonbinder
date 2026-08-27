@@ -26,6 +26,7 @@ import {
   generateListingDescription,
 } from "./features/generateListing";
 import { generateSku } from "./sku";
+import { resolveVariationParents } from "../lib/cards/variations";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
@@ -4150,6 +4151,9 @@ interface ReconciledCard {
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
+  /** NEO-189: this row is a second version of another card in the same set.
+   *  Which one is resolved at commit, not here. */
+  isVariation?: boolean;
   // NEO-137: WIRE shape — each ref carries the marketplace SET it came from,
   // so the source travels with the ref instead of in a parallel
   // `sourcePlatformIds` that could drift out of step. Commit resolves `setId`
@@ -4175,6 +4179,18 @@ const previewCardValidator = v.object({
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
+  // NEO-189: the adapter's answer to a DOMAIN question — "is this row a second
+  // version of another card in this set?" Each adapter derives it from its own
+  // signals (BSC from its `VAR` token / `cardNo` suffix, SportLots from its
+  // ` [ VAR … ]` description marker); nothing downstream of here knows or cares
+  // which marketplace it came from.
+  //
+  // The PARENT is not on the wire. It is resolved at commit by
+  // `resolveVariationParents`, which groups on the card-number stem and takes
+  // the one non-variation row in each group. Sending a parent pointer instead
+  // would mean trusting the client to preserve array order or ids it has no
+  // reason to preserve.
+  isVariation: v.optional(v.boolean()),
   // NEO-137: ref + the marketplace set it came from. Replaces the separate
   // `sourcePlatformIds`, which carried the full set id on every card. This is
   // the WIRE shape — commit resolves `setId` to a slot on the parent row.
@@ -4365,6 +4381,9 @@ export const fetchCardChecklist = action({
         printRun?: number;
         autographType?: string;
         cardVariation?: string;
+        /** NEO-189 — SL tags a variation in the description and reuses the
+         *  parent's card number. */
+        isVariation?: boolean;
         platformRef?: string;
         sportlotsRef?: string;
         sourceSlSetId?: string;
@@ -4510,6 +4529,9 @@ export const fetchCardChecklist = action({
         printRun?: number;
         autographType?: string;
         cardVariation?: string;
+        /** NEO-189 — BSC marks a variation with a VAR token and/or a `VAR:`
+         *  description, and suffixes the card number. */
+        isVariation?: boolean;
         platformRef?: string;
         sportlotsRef?: string;
         sourceBscSetSlug?: string;
@@ -4674,7 +4696,12 @@ export const fetchCardChecklist = action({
           isRelic: attributes.includes("RELIC") || undefined,
           printRun,
           autographType: bsc.autographType ?? sl?.autographType,
-          cardVariation: bsc.cardVariation,
+          cardVariation: bsc.cardVariation ?? sl?.cardVariation,
+          // NEO-189: EITHER source recognising a variation makes it one. They
+          // mark it differently (BSC suffixes the number, SL tags the
+          // description) and one may carry a variation the other has not
+          // catalogued, so this is a union rather than a preference.
+          isVariation: bsc.isVariation || sl?.isVariation || undefined,
           // NEO-137: each ref carries the marketplace SET it came from, so
           // the source travels with the ref rather than in a parallel
           // `sourcePlatformIds` object that could fall out of step with it.
@@ -4722,6 +4749,8 @@ export const fetchCardChecklist = action({
           isRelic: sl.attributes?.includes("RELIC") || undefined,
           printRun: sl.printRun,
           autographType: sl.autographType,
+          cardVariation: sl.cardVariation,
+          isVariation: sl.isVariation,
           platformData: sl.platformRef
             ? {
                 sportlots: {
@@ -5175,6 +5204,9 @@ export const commitCardChecklist = mutation({
         printRun: c.printRun,
         autographType: c.autographType,
         cardVariation: c.cardVariation,
+        // NEO-189: carried through so the parent link can be resolved after
+        // every row has an id (see the variation pass below the write loop).
+        isVariation: c.isVariation,
         // NEO-137: WIRE shape here (marketplace set ids); resolved to slots
         // just below so a stored card's `src` always names a slot on its own
         // parent row.
@@ -5263,6 +5295,11 @@ export const commitCardChecklist = mutation({
     // but no team resolved yet get queued for the throttled per-card BSC
     // team lookup below (see processBscTeamEnrichmentQueue).
     const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
+    // NEO-189: richCards index → the row's stored id, filled by the write loop
+    // below and consumed by the variation pass after it. Collecting ids as we
+    // go means the loop needs no ordering constraint: parents and children can
+    // be written in any order and the pointer is patched once both exist.
+    const storedIdByIndex: Array<Id<"cardChecklist"> | undefined> = [];
 
     for (let i = 0; i < richCards.length; i++) {
       const card = richCards[i];
@@ -5270,6 +5307,7 @@ export const commitCardChecklist = mutation({
       const newSortOrder = targetSortOrder.get(card.cardNumber) ?? i;
       const existing = existingByNumber.get(card.cardNumber);
       if (existing) {
+        storedIdByIndex[i] = existing._id;
         // Merge per side so a sync that resolves only one marketplace does not
         // wipe the other side's confirmed ref.
         const mergedPlatformData = {
@@ -5351,7 +5389,7 @@ export const commitCardChecklist = mutation({
           shortPrint: mergedFeatures.shortPrint,
         };
 
-        const newCardId = await ctx.db.insert("cardChecklist", {
+        const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
           cardNumber: card.cardNumber,
           cardName: card.cardName,
@@ -5377,6 +5415,7 @@ export const commitCardChecklist = mutation({
         // suffix — not the id — is what guarantees uniqueness, but the id
         // has to exist before we can patch it in). Cheap, well-precedented
         // insert-then-patch pattern already used elsewhere in this file.
+        storedIdByIndex[i] = newCardId;
         await ctx.db.patch(newCardId, {
           sku: generateSku({
             skuCode: commitSportRow?.sportConfig?.skuCode,
@@ -5394,6 +5433,69 @@ export const commitCardChecklist = mutation({
           bscTeamEnrichmentIds.push(newCardId);
         }
       }
+    }
+
+    // ── NEO-189: link each variation to the card it varies ──────────────────
+    //
+    // Runs AFTER the write loop so every row already has an id; the loop itself
+    // needs no parent-before-child ordering.
+    //
+    // The grouping rule lives in lib/cards/variations.ts and is deliberately
+    // not "a suffixed number belongs to the bare one" — 2021 Topps has no card
+    // #1 at all, only 1a/1b/1c, and SportLots gives every variation of #13 the
+    // number 13. What holds is: group by card-number stem, and the single row
+    // in the group that is NOT a variation is the parent.
+    //
+    // `unresolvedStems` are groups where that fails — a stem with no
+    // non-variation row (2021 Heritage inserts #251/#378, two checklist print
+    // variations and no base card) or more than one. Those rows are left
+    // unlinked rather than guessed at, and reported so the set builder can
+    // surface them. Guessing here would silently marry two unrelated cards.
+    const variationLinks = resolveVariationParents(
+      richCards.map((c) => ({
+        cardNumber: c.cardNumber,
+        isVariation: !!c.isVariation,
+        variationLabel: c.cardVariation,
+      })),
+    );
+    let variationsLinked = 0;
+    for (const [childIndex, parentIndex] of variationLinks.parentByIndex) {
+      const childId = storedIdByIndex[childIndex];
+      const parentId = storedIdByIndex[parentIndex];
+      // A row the loop skipped (blank card number) has no id; skip rather than
+      // write a dangling pointer.
+      if (!childId || !parentId || childId === parentId) continue;
+      await ctx.db.patch(childId, {
+        variationOfCardId: parentId,
+        lastUpdated: Date.now(),
+      });
+      variationsLinked++;
+    }
+    // A row that USED to be a variation and no longer is must lose its pointer,
+    // or a re-sync after an upstream correction leaves it parented to the wrong
+    // card forever.
+    for (let i = 0; i < richCards.length; i++) {
+      if (variationLinks.parentByIndex.has(i)) continue;
+      const id = storedIdByIndex[i];
+      if (!id) continue;
+      const row = await ctx.db.get(id);
+      if (row?.variationOfCardId) {
+        await ctx.db.patch(id, {
+          variationOfCardId: undefined,
+          lastUpdated: Date.now(),
+        });
+      }
+    }
+    if (variationsLinked > 0 || variationLinks.unresolvedStems.length > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "commit_card_variations",
+          selectorOptionId: args.selectorOptionId,
+          variationsLinked,
+          unresolvedStems: variationLinks.unresolvedStems.slice(0, 20),
+          unresolvedStemCount: variationLinks.unresolvedStems.length,
+        }),
+      );
     }
 
     for (const existing of existingCards) {
