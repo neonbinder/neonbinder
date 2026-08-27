@@ -51,6 +51,43 @@ clients that can't send the raw photo and let the service crop.
 > It references internal projects and local machine setup, so it is
 > deliberately not published here.
 
+## Cold start — the container listens first, then warms
+
+These instances are expensive to hold warm, so the service scales to zero and
+**cold start has to be reliable rather than avoided**. The thing that makes it
+reliable is that the HEAVY role does NOT load its model before serving.
+
+FastAPI completes every `startup` handler before uvicorn accepts connections,
+so anything blocking in there holds the port shut. BiRefNet takes 116-190s to
+warm (measured on dev, 2026-08-27) and Cloud Run destroys a revision whose
+startup probe has not passed within **240s** — with the torch / transformers /
+rembg / onnxruntime imports still to pay first. Warming inline spent ~80% of
+that budget before the port opened and lost the race 7 times in prod and 100+
+times on dev over 14 days, including one that took down a release
+(`HealthCheckContainerError`, NEO-194).
+
+So `_verify_baked_weights` now checks the baked weights synchronously — a
+filesystem glob, and a missing-weights boot failure should stay loud — and
+starts the warm on a daemon thread. uvicorn listens within seconds, the probe
+passes, and the model loads while the container is already healthy.
+
+What that means for callers:
+
+- **`/health`** answers immediately, warm or not. It is a liveness probe, not a
+  readiness signal, and it never waited on the model even before this change.
+- **`/warmup`** is the readiness signal, and now genuinely does what its name
+  says. It blocks until the session is resident (sharing the same
+  double-checked lock as the background thread, so the two never double-load)
+  and reports `was_cold`. Convex fans it out at session start.
+- **A request landing mid-warm** blocks on `_get_session()` — the exact load it
+  would have paid anyway. No request is ever served against a half-loaded
+  model.
+- **A failed warm** is logged and contained. It degrades to a slow first
+  request rather than a dead container, because `_get_session()` is lazy.
+
+The FAST role (`PREPROCESS_ROLE=fast`) has no local model and skips all of this;
+it has always cold-started in seconds.
+
 ## Endpoints
 
 - `GET /health` — liveness probe, returns `{"status":"ok"}`.

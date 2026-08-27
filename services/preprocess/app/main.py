@@ -21,6 +21,7 @@ import hmac
 import logging
 import os
 import sys
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Annotated, Literal
@@ -172,6 +173,29 @@ _EXTRACTED_EXTENSIONS = ("jpg", "png", "webp")
 _object_store = ObjectStore()
 
 
+def _warm_birefnet_in_background() -> None:
+    """Body of the warm thread. Never raises — a failed warm is not a dead container.
+
+    Anything that escapes here would die inside a daemon thread and leave the
+    container *healthy but silently unwarmed*, which is strictly worse than a
+    slow first request: `_get_session()` is lazy, so a failure here degrades to
+    the pre-warm behaviour rather than breaking anything.
+    """
+    from app.cropper import tiered
+
+    started = time.monotonic()
+    try:
+        tiered.warm_up()
+    except Exception:
+        logger.exception(
+            "startup: background BiRefNet warm failed after %.1fs — the first "
+            "request will load the model lazily instead",
+            time.monotonic() - started,
+        )
+        return
+    logger.info("BiRefNet session warmed in %.1fs", time.monotonic() - started)
+
+
 @app.on_event("startup")
 def _verify_baked_weights() -> None:
     """Fail loudly at boot if the baked model weights are missing.
@@ -202,14 +226,38 @@ def _verify_baked_weights() -> None:
         raise RuntimeError(
             f"REQUIRE_BAKED_WEIGHTS=1 but no .onnx weights under U2NET_HOME={u2net_home!r}"
         )
-    # Warm the BiRefNet session now, while Cloud Run still allocates full
-    # startup CPU and no request is waiting on it. Cold, the load + first
-    # inference exceeded the smoke test's timeout.
-    from app.cropper import tiered
-
-    started = time.monotonic()
-    tiered.warm_up()
-    logger.info("BiRefNet session warmed in %.1fs", time.monotonic() - started)
+    # ── Warm OFF the critical path (NEO-194) ────────────────────────────
+    # This warm used to run inline, here. FastAPI completes every `startup`
+    # handler BEFORE uvicorn accepts connections, so the container did not
+    # listen on $PORT until BiRefNet was resident — and Cloud Run allows 240s
+    # from "checking container health" before it destroys the revision.
+    #
+    # Measured warm times on dev (2026-08-27, visible only once NEO-191 added
+    # a logging config): 116, 130, 154, 162, 165, 166, 187, 190s. Against a
+    # 240s ceiling, with torch/transformers/rembg/onnxruntime imports still to
+    # pay first, that spent ~80% of the budget before the port opened and left
+    # ~50s of margin at the observed tail. It lost that race 7 times in prod
+    # and 100+ times on dev over 14 days, and took down the NEO-191 release.
+    #
+    # A thread fixes it outright rather than widening the window: uvicorn
+    # listens in seconds, the probe passes, and the model loads concurrently
+    # while the container is already healthy. Nothing downstream changes —
+    # `_get_session()` is lazy behind double-checked locking, so a request
+    # arriving mid-warm blocks on the same load it would have paid anyway, and
+    # `/warmup` racing this thread is safe for the same reason. `/warmup`
+    # remains the "actually ready" signal callers wait on (Convex already fans
+    # it out at session start), and it now does what its name says instead of
+    # being redundant with a boot that had already blocked on the model.
+    #
+    # daemon=True so a warm still in flight never holds up interpreter exit;
+    # Cloud Run gives ~10s to drain on shutdown and an unfinished warm has
+    # nothing worth saving.
+    threading.Thread(
+        target=_warm_birefnet_in_background,
+        name="birefnet-warm",
+        daemon=True,
+    ).start()
+    logger.info("startup: BiRefNet warm started in the background; serving now")
 
 
 class CropStrategyOutput(BaseModel):
