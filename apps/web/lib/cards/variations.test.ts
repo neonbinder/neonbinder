@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
 import {
-  BOOTSTRAP_VARIATION_ALIASES,
   cardNumberStem,
   displayVariationLabel,
   resolveVariationParents,
+  suggestVariationPairings,
   variationLabelKey,
   type VariationCandidate,
 } from "./variations";
@@ -159,33 +159,95 @@ describe("displayVariationLabel", () => {
   });
 });
 
-describe("BOOTSTRAP_VARIATION_ALIASES", () => {
-  test("is seed data only — every entry names both marketplaces' spelling", () => {
-    for (const e of BOOTSTRAP_VARIATION_ALIASES) {
-      expect(e.canonical.length).toBeGreaterThan(0);
-      expect(e.bsc.length).toBeGreaterThan(0);
-      expect(e.sportlots.length).toBeGreaterThan(0);
-    }
+/**
+ * NEO-189 — pairing suggestions are computed per set and thrown away. Nothing
+ * about what a marketplace calls a variation is stored; the durable output of a
+ * confirmed pairing is the two platform refs on the card row.
+ *
+ * Labels below are the real ones from 2021 Topps Heritage.
+ */
+describe("suggestVariationPairings", () => {
+  test("identical wording pairs exactly — the easy majority", () => {
+    const { pairs, unpairedLeft, unpairedRight } = suggestVariationPairings(
+      ["Missing Stars", "Nickname", "Error"],
+      ["Nickname", "Error", "Missing Stars"],
+    );
+    expect(pairs).toHaveLength(3);
+    expect(pairs.every((p) => p.basis === "exact")).toBe(true);
+    expect(unpairedLeft).toEqual([]);
+    expect(unpairedRight).toEqual([]);
   });
 
-  test("covers the six pairs measured against live data", () => {
-    expect(BOOTSTRAP_VARIATION_ALIASES.map((e) => e.canonical)).toEqual([
-      "Action",
-      "Throwback Alternate",
-      "Team Color Swap",
+  test("one side being the other plus a qualifier is suggested, not asserted", () => {
+    // BSC "Action" vs SL "Action Image"; BSC "Alternate" vs SL "Throwback Alternate".
+    const { pairs } = suggestVariationPairings(
+      ["Action", "Alternate"],
+      ["Action Image", "Throwback Alternate"],
+    );
+    expect(pairs).toEqual([
+      { leftIndex: 0, rightIndex: 0, basis: "contains" },
+      { leftIndex: 1, rightIndex: 1, basis: "contains" },
+    ]);
+  });
+
+  test("THE CASE THAT NEEDS A HUMAN: Team Color vs Team Name Color Swap", () => {
+    // Neither contains the other. No string rule makes this a safe automatic
+    // call, so it is reported rather than guessed.
+    const { pairs, unpairedLeft, unpairedRight } = suggestVariationPairings(
+      ["Team Color"],
+      ["Team Name Color Swap"],
+    );
+    expect(pairs).toEqual([]);
+    expect(unpairedLeft).toEqual([0]);
+    expect(unpairedRight).toEqual([0]);
+  });
+
+  test("an exact match is never stolen by a longer containment match", () => {
+    const { pairs } = suggestVariationPairings(
+      ["Error"],
+      ["Error, Missing name on front", "Error"],
+    );
+    expect(pairs).toEqual([{ leftIndex: 0, rightIndex: 1, basis: "exact" }]);
+  });
+
+  test("the tightest containment wins when several could match", () => {
+    const { pairs } = suggestVariationPairings(
+      ["Alternate"],
+      ["Alternate Action Image Variation", "Throwback Alternate"],
+    );
+    expect(pairs).toEqual([{ leftIndex: 0, rightIndex: 1, basis: "contains" }]);
+  });
+
+  test("casing and spacing do not affect pairing", () => {
+    const { pairs } = suggestVariationPairings(
+      ["  MISSING   stars "],
+      ["Missing Stars"],
+    );
+    expect(pairs).toEqual([{ leftIndex: 0, rightIndex: 0, basis: "exact" }]);
+  });
+
+  test("no counterpart at all is reported on both sides", () => {
+    const { pairs, unpairedLeft, unpairedRight } = suggestVariationPairings(
+      ["City / Throwback"],
+      [],
+    );
+    expect(pairs).toEqual([]);
+    expect(unpairedLeft).toEqual([0]);
+    expect(unpairedRight).toEqual([]);
+  });
+
+  test("a full 2021 Heritage card #13: five labels, four auto, one for the admin", () => {
+    const bsc = ["Action", "Missing Stars", "Nickname", "Team Color", "Alternate"];
+    const sl = [
+      "Action Image",
       "Missing Stars",
       "Nickname",
-      "Error",
-    ]);
-    const action = BOOTSTRAP_VARIATION_ALIASES[0];
-    expect(action.bsc).toEqual(["Action"]);
-    expect(action.sportlots).toEqual(["Action Image"]);
-  });
-
-  test("no canonical name is duplicated", () => {
-    const names = BOOTSTRAP_VARIATION_ALIASES.map((e) =>
-      variationLabelKey(e.canonical),
-    );
-    expect(new Set(names).size).toBe(names.length);
+      "Team Name Color Swap",
+      "Throwback Alternate",
+    ];
+    const { pairs, unpairedLeft, unpairedRight } = suggestVariationPairings(bsc, sl);
+    expect(pairs).toHaveLength(4);
+    expect(unpairedLeft.map((i) => bsc[i])).toEqual(["Team Color"]);
+    expect(unpairedRight.map((i) => sl[i])).toEqual(["Team Name Color Swap"]);
   });
 });

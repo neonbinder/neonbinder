@@ -505,18 +505,29 @@ export default defineSchema({
   // "Nickname", "Team Color Swap". A first-class entity for the same reason
   // players, teams and leagues are: it is OUR data, not a marketplace's.
   //
-  // WHY THIS IS A TABLE AND NOT A CONSTANT
+  // WHY THIS IS A TABLE AND NOT A STRING ON THE CARD
   //
-  // BSC and SportLots name the same variation differently, and the product
-  // owner's position (2026-08-27) is that mismatches are *very common*: the
-  // admin building the set decides the canonical name, through a reconciliation
-  // step. A hard-coded alias map would be a guess frozen into code, and it
-  // would silently mis-resolve every set nobody has looked at yet.
+  // The same reason `leagues` is a table: a controlled vocabulary means an
+  // admin picks "Action" from a list instead of forty people typing it forty
+  // ways, and renaming it once fixes every card that uses it.
   //
-  // `lib/cards/variations.ts` carries a BOOTSTRAP seed for the six pairs we
-  // have measured. It seeds rows here at first use and is never consulted at
-  // runtime — the NEO-96 pattern, adopted after display-name-keyed maps
-  // produced two different SKU prefixes for one set.
+  // WHAT IS DELIBERATELY *NOT* HERE
+  //
+  // No marketplace vocabulary. An earlier draft carried a
+  // `variationTypeAliases` table recording that BSC says "Action" where
+  // SportLots says "Action Image"; the product owner removed it (2026-08-27):
+  // *"I don't want to hold their data because it is not relevant to NB."*
+  //
+  // Nothing is lost. Listing a card needs that card's per-platform REF, which
+  // already lives on `cardChecklist.platformData` — not a translation of what
+  // the variation is called. The only thing labels were buying was a hint
+  // while MATCHING a BSC fetch against an SL fetch at import time, and that is
+  // transient: `suggestVariationPairings` computes it per set and the durable
+  // output is the refs. See lib/cards/variations.ts.
+  //
+  // Storing it was also unsound. The mapping was inferred from 11 cards of one
+  // set; a label that means one thing in 2021 Heritage may mean another
+  // elsewhere, and a global alias would mismatch silently.
   variationTypes: defineTable({
     // The canonical NeonBinder name, as the admin chose it. This is what a
     // card row's variation is called, what a listing title says, and what the
@@ -532,38 +543,6 @@ export default defineSchema({
     lastUpdated: v.number(),
   })
     .index("by_name_normalized", ["nameNormalized"]),
-
-  // NEO-189: "this marketplace calls that variation THIS". One row per
-  // (platform, label) the admin has ruled on.
-  //
-  // A junction table rather than an `aliases[]` array on `variationTypes`
-  // because the hot path is the inverse lookup — an adapter holds a raw label
-  // ("Action Image") and needs the canonical name — and Convex cannot index
-  // into an array. This gives that lookup a single exact-match indexed read.
-  //
-  // This is a LINK, in the same sense as selectorOptions.platformData: a
-  // marketplace's spelling recorded at the boundary so we can talk to it. The
-  // domain name lives on `variationTypes` and never carries a marketplace's
-  // wording.
-  //
-  // A label with no row here has not been ruled on yet — that is precisely the
-  // signal the reconciliation step consumes. Absence means "ask the admin",
-  // never "invent a mapping".
-  variationTypeAliases: defineTable({
-    platform: v.union(v.literal("bsc"), v.literal("sportlots")),
-    // The marketplace's raw label, normalized by `variationLabelKey` (casing +
-    // internal whitespace only). Never rewritten beyond that: an unreviewed
-    // label must reach the admin as the marketplace spelled it.
-    labelKey: v.string(),
-    // The label exactly as the marketplace last sent it, for display.
-    labelRaw: v.string(),
-    variationTypeId: v.id("variationTypes"),
-    // Absent on bootstrap-seeded rows; set when an admin ruled on it.
-    decidedByUserId: v.optional(v.string()),
-    lastUpdated: v.number(),
-  })
-    .index("by_platform_and_label", ["platform", "labelKey"])
-    .index("by_variation_type", ["variationTypeId"]),
 
   leagues: defineTable({
     name: v.string(),

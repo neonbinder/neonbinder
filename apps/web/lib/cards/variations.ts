@@ -157,55 +157,6 @@ export function resolveVariationParents(
 }
 
 /**
- * BOOTSTRAP SEED ONLY — **not** the authority on what a variation is called.
- *
- * ## Why this is not a lookup table
- *
- * BSC and SportLots name the same variation differently, and the user's
- * position (2026-08-27) is that this is *very common*: **the admin building the
- * set decides the NeonBinder canonical name, through a reconciliation step.**
- * A hard-coded map is a guess frozen into code, and every set we have not
- * looked at yet will contain names that are not in it.
- *
- * This repo already learned that lesson once. `SPORT_SKU_CODE` and friends were
- * display-name-keyed maps consulted at runtime; two call sites passed different
- * casing, the lookup silently missed, and one set produced two different
- * marketplace-facing SKU prefixes (see `sku.ts` and NEO-96). The fix was to
- * move the authority onto the row and keep the map only as a **bootstrap
- * default applied at creation time, never as a runtime lookup**. Same shape
- * here: the stored `variationTypes` vocabulary is the authority; this seeds it.
- *
- * ## Evidence behind the seed
- *
- * Comparing BSC and SportLots card-by-card for the same set (2021 Topps
- * Heritage) on 2026-08-27, where a card had n variations on both sides the
- * labels lined up in order across 11 cards:
- *
- *   BSC "Action"        ↔ SL "Action Image"            (7 cards)
- *   BSC "Alternate"     ↔ SL "Throwback Alternate"     (3 cards)
- *   BSC "Team Color"    ↔ SL "Team Name Color Swap"    (8 cards)
- *   BSC "Missing Stars" ↔ SL "Missing Stars"           (4 cards)
- *   BSC "Nickname"      ↔ SL "Nickname"                (5 cards)
- *   BSC "Error"         ↔ SL "Error"                   (1 card)
- *
- * Two of the six are worded completely differently. The canonical spellings
- * below are a STARTING PROPOSAL for the admin to accept or override — they are
- * not a product decision that has been made.
- */
-export const BOOTSTRAP_VARIATION_ALIASES: ReadonlyArray<{
-  canonical: string;
-  bsc: string[];
-  sportlots: string[];
-}> = [
-  { canonical: "Action", bsc: ["Action"], sportlots: ["Action Image"] },
-  { canonical: "Throwback Alternate", bsc: ["Alternate"], sportlots: ["Throwback Alternate"] },
-  { canonical: "Team Color Swap", bsc: ["Team Color"], sportlots: ["Team Name Color Swap"] },
-  { canonical: "Missing Stars", bsc: ["Missing Stars"], sportlots: ["Missing Stars"] },
-  { canonical: "Nickname", bsc: ["Nickname"], sportlots: ["Nickname"] },
-  { canonical: "Error", bsc: ["Error"], sportlots: ["Error"] },
-];
-
-/**
  * Normalise a marketplace's variation label for LOOKUP — casing and internal
  * whitespace only.
  *
@@ -227,4 +178,104 @@ export function variationLabelKey(raw: string): string {
  */
 export function displayVariationLabel(raw: string): string {
   return raw.trim().replace(/\s+/g, " ");
+}
+
+/**
+ * Suggest which of one source's variations lines up with which of another's,
+ * for ONE card, at import time.
+ *
+ * ## Why this is a suggestion and not stored knowledge
+ *
+ * Reconciling a BSC fetch against a SportLots fetch has to decide that BSC's
+ * `11b` ("Action") and SL's `#11 [ VAR Action Image ]` are the same NeonBinder
+ * card. That decision's durable output is the two REFS on the card row — which
+ * is all syncing a listing ever needs. Nothing about what either marketplace
+ * *calls* the variation has to survive the import.
+ *
+ * An earlier draft persisted a global label→name alias table. The product owner
+ * removed it: NeonBinder should not hold marketplace data that is not relevant
+ * to NeonBinder. It was also unsound — the mapping was inferred from 11 cards
+ * of one set, and a label meaning one thing in 2021 Heritage may mean another
+ * elsewhere, so a stored alias would mismatch silently instead of asking.
+ *
+ * So this runs per set, returns hints for an admin to confirm, and stores
+ * nothing.
+ *
+ * ## What it does
+ *
+ * Exact label match first (case/whitespace-insensitive) — "Missing Stars",
+ * "Nickname" and "Error" are worded identically on both sides, so those pair
+ * themselves. Then containment, which catches the common shape where one side
+ * is the other plus a qualifier: "Action" ⊂ "Action Image", "Alternate" ⊂
+ * "Throwback Alternate". Measured against 2021 Topps Heritage, those two rules
+ * cover 5 of the 6 label pairs.
+ *
+ * Everything else is left unpaired and reported. "Team Color" / "Team Name
+ * Color Swap" is the case that needs a human: neither contains the other, and
+ * no amount of string cleverness makes that a safe automatic call.
+ */
+export interface VariationPairingSuggestion {
+  leftIndex: number;
+  rightIndex: number;
+  /** How the pair was found. `exact` is safe to auto-apply; `contains` is a
+   *  suggestion an admin should still see. */
+  basis: "exact" | "contains";
+}
+
+export function suggestVariationPairings(
+  leftLabels: string[],
+  rightLabels: string[],
+): {
+  pairs: VariationPairingSuggestion[];
+  unpairedLeft: number[];
+  unpairedRight: number[];
+} {
+  const pairs: VariationPairingSuggestion[] = [];
+  const takenLeft = new Set<number>();
+  const takenRight = new Set<number>();
+
+  const left = leftLabels.map(variationLabelKey);
+  const right = rightLabels.map(variationLabelKey);
+
+  // Exact first, so a weaker containment match can never steal a label that has
+  // an exact counterpart. ("Error" must not be consumed by "Error, Missing
+  // name on front" while a plain "Error" is sitting there.)
+  for (let i = 0; i < left.length; i++) {
+    if (!left[i]) continue;
+    for (let j = 0; j < right.length; j++) {
+      if (takenRight.has(j) || !right[j]) continue;
+      if (left[i] === right[j]) {
+        pairs.push({ leftIndex: i, rightIndex: j, basis: "exact" });
+        takenLeft.add(i);
+        takenRight.add(j);
+        break;
+      }
+    }
+  }
+
+  for (let i = 0; i < left.length; i++) {
+    if (takenLeft.has(i) || !left[i]) continue;
+    let best: { j: number; len: number } | undefined;
+    for (let j = 0; j < right.length; j++) {
+      if (takenRight.has(j) || !right[j]) continue;
+      if (!left[i].includes(right[j]) && !right[j].includes(left[i])) continue;
+      // Prefer the tightest containment — with "Alternate" against both
+      // "Throwback Alternate" and "Alternate Action", the shorter overlap is
+      // the likelier pair.
+      const len = Math.abs(left[i].length - right[j].length);
+      if (!best || len < best.len) best = { j, len };
+    }
+    if (best) {
+      pairs.push({ leftIndex: i, rightIndex: best.j, basis: "contains" });
+      takenLeft.add(i);
+      takenRight.add(best.j);
+    }
+  }
+
+  const unpairedLeft = leftLabels.map((_, i) => i).filter((i) => !takenLeft.has(i));
+  const unpairedRight = rightLabels
+    .map((_, i) => i)
+    .filter((i) => !takenRight.has(i));
+
+  return { pairs, unpairedLeft, unpairedRight };
 }
