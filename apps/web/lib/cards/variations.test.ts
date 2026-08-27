@@ -135,9 +135,7 @@ describe("resolveVariationParents — ambiguity is reported, not guessed", () =>
 });
 
 /**
- * The vocabulary itself is stored data an admin rules on (see
- * convex/variationTypes.ts). These helpers only make the lookup stable and the
- * seed honest — neither decides what a label MEANS.
+ * Label helpers. Normalisation only — neither decides what a label MEANS.
  */
 describe("variationLabelKey", () => {
   test("folds casing and internal whitespace so one label has one key", () => {

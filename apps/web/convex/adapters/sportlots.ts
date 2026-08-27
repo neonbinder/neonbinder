@@ -693,17 +693,17 @@ async function fetchSetNames(
  * Returns SL's RAW label (whitespace-normalised only) plus the description with
  * the marker stripped so `cardName` does not carry it.
  *
- * The label is deliberately NOT translated here. SL's spelling differs from
- * BSC's for the same variation ("Action Image" vs "Action", "Team Name Color
- * Swap" vs "Team Color"), and which NeonBinder name they both mean is the
- * ADMIN's decision, made once in reconciliation and stored in
- * `variationTypeAliases` — see convex/variationTypes.ts. An adapter that
- * guessed would silently merge two different variations, or split one in two,
- * on every set nobody has inspected.
+ * The label is deliberately NOT translated. SL's wording differs from BSC's for
+ * the same variation ("Action Image" vs "Action"), and NeonBinder holds ONE
+ * name per card — settled when the two sources are paired at import, not by an
+ * adapter guessing.
+ *
+ * There is no shared vocabulary to map onto. Variation names are per-card and
+ * very often unique — see lib/cards/variations.ts.
  */
 export function parseSlVariationMarker(desc: string): {
   isVariation: boolean;
-  /** SportLots' own wording, untranslated. Resolve via variationTypes. */
+  /** SportLots' own wording for this card's variation, untranslated. */
   variationLabel?: string;
   residual: string;
 } {

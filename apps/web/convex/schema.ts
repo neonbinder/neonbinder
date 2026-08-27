@@ -353,8 +353,19 @@ export default defineSchema({
     // Autograph signal: presence of autographType implies the card is
     // autographed. Values: "On-Card" / "Sticker" / "Cut".
     autographType: v.optional(v.string()),
-    // BSC variantName: "Gold", "Refractor", "/199", etc. Used as eBay
-    // Parallel/Variety aspect tail and for title generation.
+    // NEO-189: this card's VARIATION name — "Action", "Nickname", "Sliding",
+    // "Standing by bucket". One NeonBinder name per card, settled when the
+    // sources are paired at import; a marketplace's own wording is never
+    // stored.
+    //
+    // A plain string, deliberately, with no vocabulary table behind it:
+    // variation names are per-card and very often have no reuse at all, so a
+    // shared list would be one row per card wearing a join.
+    //
+    // Feeds the eBay Parallel/Variety aspect (via deriveCardFeatures'
+    // `parallelName`) and listing-title generation, which is why only a real
+    // printing variety may reach it — see `parseVariationDescription` in
+    // adapters/buysportscards.ts for the shelf notes that used to leak in here.
     cardVariation: v.optional(v.string()),
     // NEO-25: marketplace-agnostic listing title & description, authored once
     // and reused by every marketplace adapter (eBay/SportLots/BSC/MySlabs/
@@ -501,49 +512,6 @@ export default defineSchema({
   // the abbreviation ("MLB") and `espn.leagueName` the full name ("Major League
   // Baseball") — so neither is invented here. Leagues an operator adds by hand
   // carry whatever they typed.
-  // NEO-189: the NeonBinder VOCABULARY of card-variation names — "Action",
-  // "Nickname", "Team Color Swap". A first-class entity for the same reason
-  // players, teams and leagues are: it is OUR data, not a marketplace's.
-  //
-  // WHY THIS IS A TABLE AND NOT A STRING ON THE CARD
-  //
-  // The same reason `leagues` is a table: a controlled vocabulary means an
-  // admin picks "Action" from a list instead of forty people typing it forty
-  // ways, and renaming it once fixes every card that uses it.
-  //
-  // WHAT IS DELIBERATELY *NOT* HERE
-  //
-  // No marketplace vocabulary. An earlier draft carried a
-  // `variationTypeAliases` table recording that BSC says "Action" where
-  // SportLots says "Action Image"; the product owner removed it (2026-08-27):
-  // *"I don't want to hold their data because it is not relevant to NB."*
-  //
-  // Nothing is lost. Listing a card needs that card's per-platform REF, which
-  // already lives on `cardChecklist.platformData` — not a translation of what
-  // the variation is called. The only thing labels were buying was a hint
-  // while MATCHING a BSC fetch against an SL fetch at import time, and that is
-  // transient: `suggestVariationPairings` computes it per set and the durable
-  // output is the refs. See lib/cards/variations.ts.
-  //
-  // Storing it was also unsound. The mapping was inferred from 11 cards of one
-  // set; a label that means one thing in 2021 Heritage may mean another
-  // elsewhere, and a global alias would mismatch silently.
-  variationTypes: defineTable({
-    // The canonical NeonBinder name, as the admin chose it. This is what a
-    // card row's variation is called, what a listing title says, and what the
-    // set builder shows.
-    name: v.string(),
-    // Lowercased/whitespace-collapsed `name`, so "Team Color Swap" and
-    // "team color  swap" cannot both exist. Same convention as
-    // leagues.nameNormalized.
-    nameNormalized: v.string(),
-    // Set when an admin created this name during reconciliation rather than it
-    // arriving from the bootstrap seed. Audit only.
-    createdByUserId: v.optional(v.string()),
-    lastUpdated: v.number(),
-  })
-    .index("by_name_normalized", ["nameNormalized"]),
-
   leagues: defineTable({
     name: v.string(),
     // Short form for dense UI (a team list showing league beside each name).

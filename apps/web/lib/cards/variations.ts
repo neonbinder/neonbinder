@@ -44,10 +44,10 @@ export interface VariationCandidate {
   cardNumber: string;
   /** Whether the source marked this row as a variation of some other card. */
   isVariation: boolean;
-  /** The marketplace's RAW label for this variation, e.g. "Action Image".
-   *  Untranslated on purpose: which NeonBinder name it maps to is the admin's
-   *  decision, stored in `variationTypeAliases` (see convex/variationTypes.ts).
-   *  Absent when the source marked a variation but named it nothing. */
+  /** The source's RAW label for this variation, e.g. "Action Image" or
+   *  "Standing by bucket". Untranslated: the name NeonBinder keeps is settled
+   *  when the sources are paired at import, and lands on the card row. Absent
+   *  when the source marked a variation but named it nothing. */
   variationLabel?: string;
 }
 
@@ -155,6 +155,28 @@ export function resolveVariationParents(
 
   return { parentByIndex, unresolvedStems };
 }
+
+/**
+ * ## Variation names are per-card, not a vocabulary
+ *
+ * There is deliberately no `variationTypes` table and no shared name list. The
+ * product owner's call (2026-08-27), from industry knowledge rather than from
+ * our sample: **variation names are all over the place and very often have no
+ * reuse at all.** An occasional term recurs; far more often the name describes
+ * one specific card and nothing else.
+ *
+ * So a variation's name lives on the card row (`cardChecklist.cardVariation`)
+ * as a plain string. A vocabulary table would be one row per card wearing a
+ * join, and a picker offering a list that rarely contains what you need.
+ *
+ * Consistent with what we happened to pull on 2026-08-27, though the point does
+ * not rest on it: 2021 Topps used 163 distinct labels for 213 variations
+ * ("Sliding", "Standing by bucket", "Wearing headset"), and of 203 distinct
+ * labels across seven payloads only two appeared in more than one set.
+ *
+ * `suggestVariationPairings` below still helps where the SAME card is described
+ * by two sources — that is a per-card, per-import hint, not a vocabulary.
+ */
 
 /**
  * Normalise a marketplace's variation label for LOOKUP — casing and internal

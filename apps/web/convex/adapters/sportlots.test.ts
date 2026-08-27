@@ -38,9 +38,8 @@ describe("parseSlVariationMarker", () => {
   });
 
   test("SL's own wording is returned UNTRANSLATED — mapping is the admin's call", () => {
-    // Which NeonBinder name "Action Image" and BSC's "Action" both mean is a
-    // reconciliation decision stored in variationTypeAliases, never a guess
-    // made here. See convex/variationTypes.ts.
+    // NeonBinder holds one name per card, settled when the BSC and SL rows are
+    // paired at import. An adapter never guesses a translation.
     expect(
       parseSlVariationMarker("... Alec Bohm [ VAR Throwback Alternate ]").variationLabel,
     ).toBe("Throwback Alternate");
