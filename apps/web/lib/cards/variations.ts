@@ -44,9 +44,11 @@ export interface VariationCandidate {
   cardNumber: string;
   /** Whether the source marked this row as a variation of some other card. */
   isVariation: boolean;
-  /** The variation's canonical name, e.g. "Action". Absent when the source
-   *  marked a variation but gave it no name. */
-  variationName?: string;
+  /** The marketplace's RAW label for this variation, e.g. "Action Image".
+   *  Untranslated on purpose: which NeonBinder name it maps to is the admin's
+   *  decision, stored in `variationTypeAliases` (see convex/variationTypes.ts).
+   *  Absent when the source marked a variation but named it nothing. */
+  variationLabel?: string;
 }
 
 export interface ResolvedVariations {
@@ -155,12 +157,29 @@ export function resolveVariationParents(
 }
 
 /**
- * Canonical NeonBinder names for the variation types both marketplaces carry,
- * with each marketplace's own spelling as an alias.
+ * BOOTSTRAP SEED ONLY — **not** the authority on what a variation is called.
  *
- * Established by comparing BSC and SportLots for the SAME set (2021 Topps
- * Heritage) card by card on 2026-08-27. Where a card had n variations on both
- * sides, the labels lined up in order across 11 cards:
+ * ## Why this is not a lookup table
+ *
+ * BSC and SportLots name the same variation differently, and the user's
+ * position (2026-08-27) is that this is *very common*: **the admin building the
+ * set decides the NeonBinder canonical name, through a reconciliation step.**
+ * A hard-coded map is a guess frozen into code, and every set we have not
+ * looked at yet will contain names that are not in it.
+ *
+ * This repo already learned that lesson once. `SPORT_SKU_CODE` and friends were
+ * display-name-keyed maps consulted at runtime; two call sites passed different
+ * casing, the lookup silently missed, and one set produced two different
+ * marketplace-facing SKU prefixes (see `sku.ts` and NEO-96). The fix was to
+ * move the authority onto the row and keep the map only as a **bootstrap
+ * default applied at creation time, never as a runtime lookup**. Same shape
+ * here: the stored `variationTypes` vocabulary is the authority; this seeds it.
+ *
+ * ## Evidence behind the seed
+ *
+ * Comparing BSC and SportLots card-by-card for the same set (2021 Topps
+ * Heritage) on 2026-08-27, where a card had n variations on both sides the
+ * labels lined up in order across 11 cards:
  *
  *   BSC "Action"        ↔ SL "Action Image"            (7 cards)
  *   BSC "Alternate"     ↔ SL "Throwback Alternate"     (3 cards)
@@ -169,39 +188,43 @@ export function resolveVariationParents(
  *   BSC "Nickname"      ↔ SL "Nickname"                (5 cards)
  *   BSC "Error"         ↔ SL "Error"                   (1 card)
  *
- * Two of the six differ in wording entirely, which is the whole argument for
- * owning a canonical name rather than storing whichever marketplace synced
- * last.
- *
- * Keys are lowercased for lookup. Anything unrecognised passes through
- * unchanged rather than being forced into this list — sets invent new variation
- * types every year, and a name we have not seen is data, not an error.
+ * Two of the six are worded completely differently. The canonical spellings
+ * below are a STARTING PROPOSAL for the admin to accept or override — they are
+ * not a product decision that has been made.
  */
-const VARIATION_NAME_ALIASES: Record<string, string> = {
-  // Action
-  action: "Action",
-  "action image": "Action",
-  // Throwback Alternate
-  alternate: "Throwback Alternate",
-  "throwback alternate": "Throwback Alternate",
-  // Team Color Swap
-  "team color": "Team Color Swap",
-  "team name color swap": "Team Color Swap",
-  "team & name color swap variation": "Team Color Swap",
-  // Same on both sides — listed so the canonical casing is pinned.
-  "missing stars": "Missing Stars",
-  nickname: "Nickname",
-  error: "Error",
-};
+export const BOOTSTRAP_VARIATION_ALIASES: ReadonlyArray<{
+  canonical: string;
+  bsc: string[];
+  sportlots: string[];
+}> = [
+  { canonical: "Action", bsc: ["Action"], sportlots: ["Action Image"] },
+  { canonical: "Throwback Alternate", bsc: ["Alternate"], sportlots: ["Throwback Alternate"] },
+  { canonical: "Team Color Swap", bsc: ["Team Color"], sportlots: ["Team Name Color Swap"] },
+  { canonical: "Missing Stars", bsc: ["Missing Stars"], sportlots: ["Missing Stars"] },
+  { canonical: "Nickname", bsc: ["Nickname"], sportlots: ["Nickname"] },
+  { canonical: "Error", bsc: ["Error"], sportlots: ["Error"] },
+];
 
 /**
- * Map a marketplace's variation label onto the NeonBinder name.
+ * Normalise a marketplace's variation label for LOOKUP — casing and internal
+ * whitespace only.
  *
- * Unknown labels are trimmed and returned as-is: this normalises what we have
- * evidence for and refuses to invent mappings for what we do not.
+ * This is deliberately not a rename: it is the key an alias is stored and found
+ * under, so `"Action Image"`, `"action image"` and `"Action  Image"` all reach
+ * the same stored decision. Choosing what a label *means* is the admin's, via
+ * reconciliation; this only makes the lookup stable.
  */
-export function canonicalVariationName(raw: string): string {
-  const trimmed = raw.trim().replace(/\s+/g, " ");
-  if (!trimmed) return trimmed;
-  return VARIATION_NAME_ALIASES[trimmed.toLowerCase()] ?? trimmed;
+export function variationLabelKey(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * Tidy a raw marketplace label for DISPLAY in the reconciliation step.
+ *
+ * Whitespace-normalised and otherwise untouched — an unreviewed label must
+ * reach the admin exactly as the marketplace spelled it, or they cannot judge
+ * what it maps to.
+ */
+export function displayVariationLabel(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ");
 }

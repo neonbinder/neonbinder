@@ -3,7 +3,7 @@
 import { action, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { primaryId } from "../platformSlots";
-import { canonicalVariationName } from "../../lib/cards/variations";
+import { displayVariationLabel } from "../../lib/cards/variations";
 import { api, internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
 import { Id } from "../_generated/dataModel";
@@ -690,15 +690,21 @@ async function fetchSetNames(
  * note at the `platformRef` assignment says exactly this — SL's variation
  * support was already known here, it just had no domain model behind it.)
  *
- * Returns the variation's name mapped onto the NeonBinder vocabulary, plus the
- * description with the marker stripped so `cardName` does not carry it. SL's
- * spelling differs from BSC's for the same variation ("Action Image" vs
- * "Action", "Team Name Color Swap" vs "Team Color"), which is precisely why
- * neither is stored raw — see `lib/cards/variations.ts`.
+ * Returns SL's RAW label (whitespace-normalised only) plus the description with
+ * the marker stripped so `cardName` does not carry it.
+ *
+ * The label is deliberately NOT translated here. SL's spelling differs from
+ * BSC's for the same variation ("Action Image" vs "Action", "Team Name Color
+ * Swap" vs "Team Color"), and which NeonBinder name they both mean is the
+ * ADMIN's decision, made once in reconciliation and stored in
+ * `variationTypeAliases` — see convex/variationTypes.ts. An adapter that
+ * guessed would silently merge two different variations, or split one in two,
+ * on every set nobody has inspected.
  */
 export function parseSlVariationMarker(desc: string): {
   isVariation: boolean;
-  variationName?: string;
+  /** SportLots' own wording, untranslated. Resolve via variationTypes. */
+  variationLabel?: string;
   residual: string;
 } {
   // Tolerant of internal spacing: "[ VAR Action Image ]" and "[VAR Action]"
@@ -710,7 +716,7 @@ export function parseSlVariationMarker(desc: string): {
     .trim();
   return {
     isVariation: true,
-    variationName: canonicalVariationName(m[1]),
+    variationLabel: displayVariationLabel(m[1]),
     residual,
   };
 }

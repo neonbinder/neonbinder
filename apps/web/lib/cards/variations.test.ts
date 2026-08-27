@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
-  canonicalVariationName,
+  BOOTSTRAP_VARIATION_ALIASES,
   cardNumberStem,
+  displayVariationLabel,
   resolveVariationParents,
+  variationLabelKey,
   type VariationCandidate,
 } from "./variations";
 
@@ -18,8 +20,8 @@ const parent = (cardNumber: string): VariationCandidate => ({
 });
 const variation = (
   cardNumber: string,
-  variationName?: string,
-): VariationCandidate => ({ cardNumber, isVariation: true, variationName });
+  variationLabel?: string,
+): VariationCandidate => ({ cardNumber, isVariation: true, variationLabel });
 
 describe("cardNumberStem", () => {
   test("splits a numeric stem from an alpha suffix", () => {
@@ -133,38 +135,57 @@ describe("resolveVariationParents — ambiguity is reported, not guessed", () =>
 });
 
 /**
- * The alias table was established by comparing BSC and SportLots for the SAME
- * set card by card. Where a card had n variations on both sides the labels
- * lined up in order across 11 cards — and two of the six pairs are worded
- * completely differently, which is the argument for owning a canonical name.
+ * The vocabulary itself is stored data an admin rules on (see
+ * convex/variationTypes.ts). These helpers only make the lookup stable and the
+ * seed honest — neither decides what a label MEANS.
  */
-describe("canonicalVariationName", () => {
-  test("BSC and SportLots spellings converge on one NeonBinder name", () => {
-    expect(canonicalVariationName("Action")).toBe("Action");
-    expect(canonicalVariationName("Action Image")).toBe("Action");
-
-    expect(canonicalVariationName("Alternate")).toBe("Throwback Alternate");
-    expect(canonicalVariationName("Throwback Alternate")).toBe("Throwback Alternate");
-
-    expect(canonicalVariationName("Team Color")).toBe("Team Color Swap");
-    expect(canonicalVariationName("Team Name Color Swap")).toBe("Team Color Swap");
+describe("variationLabelKey", () => {
+  test("folds casing and internal whitespace so one label has one key", () => {
+    expect(variationLabelKey("Action Image")).toBe("action image");
+    expect(variationLabelKey("  action   IMAGE ")).toBe("action image");
   });
 
-  test("names already identical on both sides keep a pinned casing", () => {
-    expect(canonicalVariationName("missing stars")).toBe("Missing Stars");
-    expect(canonicalVariationName("NICKNAME")).toBe("Nickname");
-    expect(canonicalVariationName("error")).toBe("Error");
+  test("an empty label has an empty key, so callers can skip it", () => {
+    expect(variationLabelKey("   ")).toBe("");
   });
+});
 
-  test("an unrecognised name passes through — sets invent new types yearly", () => {
-    expect(canonicalVariationName("City / Throwback")).toBe("City / Throwback");
-    expect(canonicalVariationName("Error, Missing name on front")).toBe(
-      "Error, Missing name on front",
+describe("displayVariationLabel", () => {
+  test("normalises whitespace and otherwise leaves the label exactly as sent", () => {
+    expect(displayVariationLabel("  Team Name  Color Swap ")).toBe(
+      "Team Name Color Swap",
     );
+    expect(displayVariationLabel("City / Throwback")).toBe("City / Throwback");
+  });
+});
+
+describe("BOOTSTRAP_VARIATION_ALIASES", () => {
+  test("is seed data only — every entry names both marketplaces' spelling", () => {
+    for (const e of BOOTSTRAP_VARIATION_ALIASES) {
+      expect(e.canonical.length).toBeGreaterThan(0);
+      expect(e.bsc.length).toBeGreaterThan(0);
+      expect(e.sportlots.length).toBeGreaterThan(0);
+    }
   });
 
-  test("whitespace is normalised, never silently dropped", () => {
-    expect(canonicalVariationName("  Action   Image  ")).toBe("Action");
-    expect(canonicalVariationName("")).toBe("");
+  test("covers the six pairs measured against live data", () => {
+    expect(BOOTSTRAP_VARIATION_ALIASES.map((e) => e.canonical)).toEqual([
+      "Action",
+      "Throwback Alternate",
+      "Team Color Swap",
+      "Missing Stars",
+      "Nickname",
+      "Error",
+    ]);
+    const action = BOOTSTRAP_VARIATION_ALIASES[0];
+    expect(action.bsc).toEqual(["Action"]);
+    expect(action.sportlots).toEqual(["Action Image"]);
+  });
+
+  test("no canonical name is duplicated", () => {
+    const names = BOOTSTRAP_VARIATION_ALIASES.map((e) =>
+      variationLabelKey(e.canonical),
+    );
+    expect(new Set(names).size).toBe(names.length);
   });
 });

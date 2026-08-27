@@ -32,54 +32,47 @@ describe("parseSlVariationMarker", () => {
       parseSlVariationMarker("2021 Topps Heritage #11 Alec Bohm [ VAR Action Image ]"),
     ).toEqual({
       isVariation: true,
-      variationName: "Action",
+      variationLabel: "Action Image",
       residual: "2021 Topps Heritage #11 Alec Bohm",
     });
   });
 
-  test("SL's own spelling is mapped onto the NeonBinder name", () => {
-    // SL "Action Image" and BSC "Action" are the same variation; likewise
-    // "Throwback Alternate"/"Alternate" and "Team Name Color Swap"/"Team Color".
+  test("SL's own wording is returned UNTRANSLATED — mapping is the admin's call", () => {
+    // Which NeonBinder name "Action Image" and BSC's "Action" both mean is a
+    // reconciliation decision stored in variationTypeAliases, never a guess
+    // made here. See convex/variationTypes.ts.
     expect(
-      parseSlVariationMarker("... Alec Bohm [ VAR Throwback Alternate ]").variationName,
+      parseSlVariationMarker("... Alec Bohm [ VAR Throwback Alternate ]").variationLabel,
     ).toBe("Throwback Alternate");
     expect(
       parseSlVariationMarker("... Yadier Molina [ VAR Team Name Color Swap ]")
-        .variationName,
-    ).toBe("Team Color Swap");
+        .variationLabel,
+    ).toBe("Team Name Color Swap");
     expect(
-      parseSlVariationMarker("... Javier Baez [ VAR Missing Stars ]").variationName,
+      parseSlVariationMarker("... Javier Baez [ VAR Missing Stars ]").variationLabel,
     ).toBe("Missing Stars");
-    expect(
-      parseSlVariationMarker("... Javier Baez [ VAR Error ]").variationName,
-    ).toBe("Error");
   });
 
   test("#13 Bryce Harper — five variations all share card number 13", () => {
-    const names = [
+    const labels = [
       "Action Image",
       "Missing Stars",
       "Nickname",
       "Team Name Color Swap",
       "Throwback Alternate",
-    ].map(
+    ];
+    const parsed = labels.map(
       (n) =>
         parseSlVariationMarker(`2021 Topps Heritage #13 Bryce Harper [ VAR ${n} ]`)
-          .variationName,
+          .variationLabel,
     );
-    expect(names).toEqual([
-      "Action",
-      "Missing Stars",
-      "Nickname",
-      "Team Color Swap",
-      "Throwback Alternate",
-    ]);
+    expect(parsed).toEqual(labels);
   });
 
   test("tolerates tighter spacing and lowercase inside the marker", () => {
     expect(parseSlVariationMarker("Pete Alonso [VAR Nickname]")).toEqual({
       isVariation: true,
-      variationName: "Nickname",
+      variationLabel: "Nickname",
       residual: "Pete Alonso",
     });
     expect(parseSlVariationMarker("Pete Alonso [ var Nickname ]").isVariation).toBe(
@@ -87,9 +80,10 @@ describe("parseSlVariationMarker", () => {
     );
   });
 
-  test("an unrecognised variation name passes through rather than being forced", () => {
+  test("a name we have never seen is returned as data, not an error", () => {
+    // It becomes an unresolved label for the admin to rule on, not a guess.
     expect(
-      parseSlVariationMarker("Some Player [ VAR Sombrero Photo ]").variationName,
+      parseSlVariationMarker("Some Player [ VAR Sombrero Photo ]").variationLabel,
     ).toBe("Sombrero Photo");
   });
 
