@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parsePlayersField } from "./buysportscards";
+import { parsePlayersField, parseVariationDescription } from "./buysportscards";
 
 /**
  * Fixtures below are the exact real strings pulled live from BSC's
@@ -94,5 +94,97 @@ describe("parsePlayersField", () => {
   test("empty / whitespace-only input", () => {
     expect(parsePlayersField("")).toEqual({ players: [], teams: [] });
     expect(parsePlayersField("   ")).toEqual({ players: [], teams: [] });
+  });
+});
+
+/**
+ * NEO-189 — every fixture below is an exact `playerAttributeDesc` string
+ * pulled live from BSC's bulk-upload catalog on 2026-08-27 for the 2021 Topps
+ * Heritage baseball base set (908 rows). Distribution of rows carrying text in
+ * that field: VAR: ×183, BASE/BASE: ×21, UER: ×1, no prefix ×29.
+ *
+ * The 51 BASE/unprefixed rows are the regression this suite pins: they used to
+ * land in `cardVariation`, which feeds eBay's Parallel/Variety aspect via
+ * `deriveCardFeatures`' `parallelName`.
+ */
+describe("parseVariationDescription", () => {
+  test("VAR: is a variety — the marker is kept and the label is clean", () => {
+    expect(parseVariationDescription("VAR: Action")).toEqual({
+      marker: "VAR",
+      text: "Action",
+      isVariety: true,
+    });
+    expect(parseVariationDescription("VAR: Alternate")).toEqual({
+      marker: "VAR",
+      text: "Alternate",
+      isVariety: true,
+    });
+    expect(parseVariationDescription("VAR: City / Throwback")).toEqual({
+      marker: "VAR",
+      text: "City / Throwback",
+      isVariety: true,
+    });
+  });
+
+  test("a compound VAR description keeps its whole label", () => {
+    expect(parseVariationDescription("VAR: Error, Missing name on front")).toEqual({
+      marker: "VAR",
+      text: "Error, Missing name on front",
+      isVariety: true,
+    });
+  });
+
+  test("UER: (uncorrected error) is a variety too", () => {
+    expect(parseVariationDescription("UER: Stats reversed")).toEqual({
+      marker: "UER",
+      text: "Stats reversed",
+      isVariety: true,
+    });
+  });
+
+  test("REGRESSION: a bare BASE marker is not a variety (2021 Heritage #17, #45)", () => {
+    expect(parseVariationDescription("BASE")).toEqual({
+      text: "BASE",
+      isVariety: false,
+    });
+  });
+
+  test("REGRESSION: BASE: posed no longer becomes the variety 'posed' (2021 Heritage #99, #121)", () => {
+    const parsed = parseVariationDescription("BASE: posed");
+    expect(parsed).toEqual({ marker: "BASE", text: "posed", isVariety: false });
+    // The specific old bug: the prefix was stripped and "posed" was surfaced
+    // as if it named a parallel.
+    expect(parsed?.isVariety).toBe(false);
+  });
+
+  test("REGRESSION: an unprefixed shelf note is not a variety (2021 Heritage #10, #14, #114)", () => {
+    expect(
+      parseVariationDescription("Puzzle piece B2 on back; see Comments"),
+    ).toEqual({
+      text: "Puzzle piece B2 on back; see Comments",
+      isVariety: false,
+    });
+    expect(
+      parseVariationDescription("Puzzle piece DD3 on back; see Comments"),
+    ).toEqual({
+      text: "Puzzle piece DD3 on back; see Comments",
+      isVariety: false,
+    });
+  });
+
+  test("empty, whitespace and non-string inputs yield undefined", () => {
+    expect(parseVariationDescription("")).toBeUndefined();
+    expect(parseVariationDescription("   ")).toBeUndefined();
+    expect(parseVariationDescription(undefined)).toBeUndefined();
+    expect(parseVariationDescription(null)).toBeUndefined();
+    expect(parseVariationDescription(42)).toBeUndefined();
+  });
+
+  test("a marker with nothing after it is not a variety and never returns empty text", () => {
+    expect(parseVariationDescription("VAR:")).toEqual({
+      marker: "VAR",
+      text: "VAR",
+      isVariety: false,
+    });
   });
 });

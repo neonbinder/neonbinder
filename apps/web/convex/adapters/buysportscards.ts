@@ -560,16 +560,88 @@ function parsePlayerAttributeTokens(raw: unknown): string[] {
 }
 
 /**
- * Pull a card-variation description out of BSC's `playerAttributeDesc`
- * field. Bulk-upload stores variation text here prefixed with markers
- * like "VAR:", "SSP:", etc. — strip the leading marker so the residual
- * is a clean human-readable string. Returns undefined when empty.
+ * NEO-189: markers that mean `playerAttributeDesc` names a genuine printing
+ * VARIETY — something that distinguishes this physical card from another card
+ * carrying the same checklist slot, and therefore something a buyer is
+ * selecting on:
+ *
+ *   VAR — a variation ("VAR: Action", "VAR: Team Color", "VAR: Nickname")
+ *   UER — an uncorrected error, the hobby's own term for a misprint that was
+ *         never fixed mid-run, and which collectors price separately
+ *
+ * Everything else in that field is a NOTE, not a variety. See
+ * `parseVariationDescription` for why the distinction is load-bearing.
  */
-function parseVariationDescription(raw: unknown): string | undefined {
+const BSC_VARIETY_MARKERS = new Set(["VAR", "UER"]);
+
+export interface ParsedVariationDescription {
+  /** The marker BSC prefixed the text with, without the colon — "VAR",
+   *  "BASE", "UER". Undefined when the description carried no prefix. */
+  marker?: string;
+  /** The residual text with the marker stripped. Never empty. */
+  text: string;
+  /** True when `marker` names a real printing variety (see
+   *  `BSC_VARIETY_MARKERS`) — i.e. when `text` is safe to surface as the
+   *  card's variety name. */
+  isVariety: boolean;
+}
+
+/**
+ * Parse BSC's `playerAttributeDesc` into its marker and residual text.
+ *
+ * NEO-189 — WHY THIS RETURNS A MARKER INSTEAD OF A BARE STRING:
+ *
+ * This function used to strip any `^[A-Z]{2,4}:` prefix and return whatever
+ * was left, and the caller fed that straight into `cardVariation`. But BSC
+ * overloads this one field for three unrelated things, and only one of them
+ * is a variety. Measured against the live 2021 Topps Heritage base set (908
+ * rows, pulled 2026-08-27), the descriptions that carry text break down as:
+ *
+ *   VAR: …    183 rows   a real variation — "Action", "Team Color", "Nickname"
+ *   BASE…      21 rows   says only "this is the base card" — "BASE", "BASE: posed"
+ *   UER: …      1 row    an uncorrected error, also a real variety
+ *   (none)     29 rows   a free-text shelf note
+ *
+ * So **51 of 908 rows** (the BASE and unprefixed ones) were populating
+ * `cardVariation` with something that is not a variety name at all. Card #10
+ * got `"Puzzle piece B2 on back; see Comments"`; #17 got the literal
+ * `"BASE"`; and #99's `"BASE: posed"` had its prefix stripped down to a bare
+ * `"posed"`, which reads as a variety name but is not one.
+ *
+ * That mattered because `cardVariation` is not display-only. It flows into
+ * `deriveCardFeatures` as `parallelName` (`features/deriveCardFeatures.ts:243`),
+ * which the marketplace audit maps to **eBay's Parallel/Variety aspect**, and
+ * it is appended to the card's label in the set builder
+ * (`components/SetSelector/CardChecklistItem.tsx:120`). Left alone, building
+ * out production set data would have baked a shelf note into the eBay listing
+ * aspect of roughly one card in eighteen.
+ *
+ * Returning the marker rather than pre-deciding also gives NEO-189's grouping
+ * pass the `VAR` signal it needs without re-parsing the raw field.
+ *
+ * Returns undefined when there is no text at all.
+ */
+export function parseVariationDescription(
+  raw: unknown,
+): ParsedVariationDescription | undefined {
   if (typeof raw !== "string") return undefined;
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
-  return trimmed.replace(/^[A-Z]{2,4}:\s*/, "").trim() || undefined;
+
+  const prefixed = trimmed.match(/^([A-Z]{2,4}):\s*(.*)$/);
+  if (!prefixed) {
+    // No marker — a free-text note. Carried so a caller that wants notes can
+    // have them, but never a variety.
+    return { text: trimmed, isVariety: false };
+  }
+
+  const marker = prefixed[1];
+  const rest = prefixed[2].trim();
+  // A bare marker with nothing after it ("BASE:") carries no information
+  // beyond the marker itself; keep the marker as the text so the result is
+  // never empty.
+  const text = rest || marker;
+  return { marker, text, isVariety: BSC_VARIETY_MARKERS.has(marker) && !!rest };
 }
 
 /**
@@ -915,7 +987,15 @@ export const fetchBscChecklist = action({
           const { players, teams, namePrefix } = parsePlayersField(playersRaw);
 
           const attributes = parsePlayerAttributeTokens(r.playerAttribute);
-          const cardVariation = parseVariationDescription(r.playerAttributeDesc);
+          // NEO-189: only a genuine printing variety reaches `cardVariation`.
+          // BSC reuses `playerAttributeDesc` for shelf notes and for "this is
+          // the base card", neither of which belongs in the eBay
+          // Parallel/Variety aspect this field feeds — see
+          // `parseVariationDescription`.
+          const parsedVariation = parseVariationDescription(r.playerAttributeDesc);
+          const cardVariation = parsedVariation?.isVariety
+            ? parsedVariation.text
+            : undefined;
 
           const cardName = namePrefix
             ? `${namePrefix} (${players.join(" / ")})`
