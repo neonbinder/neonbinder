@@ -35,6 +35,12 @@ Application code lives under `apps/web/`, `services/browser/` and `services/prep
 One repository, one git history. Standard model:
 
 1. **Branch off latest `main`** (`git fetch origin && git pull`), ideally in a worktree named for the ticket.
+   In a fresh worktree, run `apps/web/bootstrap-worktree-env.sh` first — `.env.local`
+   is gitignored, so `git worktree add` cannot bring it and nothing in `apps/web`
+   runs without it (NEO-181). The script copies it from the main checkout, which it
+   resolves from git rather than a hardcoded path, and never overwrites an existing
+   file. Re-point `VITE_CONVEX_URL` afterwards if you mean to run against this PR's
+   own Convex preview.
 2. **One commit captures all changes** across `apps/web` and `services/browser` — they share a history now. No more per-subdirectory commits.
 3. **Feature branch → PR → squash-merge.** Trunk-based; never push directly to `main`.
 4. Terraform lives in the separate `neonbinder_ioc` repo and follows **GitFlow** there (feature → `develop` → `main`).

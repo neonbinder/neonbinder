@@ -61,10 +61,17 @@ E2E_RUN_ID="${E2E_RUN_ID:-}"
 resolve_queue() {
   [ "${PR_WATCH_NO_QUEUE:-0}" = 1 ] && return 1
 
-  # Queue scope == the workflow run id; pull it from a check's details URL.
+  # Queue scope == the workflow run id PLUS the run attempt (NEO-187) — a rerun
+  # gets its own queue, so watching attempt 2 against the bare run id would read
+  # attempt 1's rows and report a stale verdict. The details URL carries only the
+  # id, so the attempt comes from the API.
   if [ -z "$E2E_RUN_ID" ]; then
-    E2E_RUN_ID=$(gh pr view "$PR" --json statusCheckRollup \
+    local run attempt
+    run=$(gh pr view "$PR" --json statusCheckRollup \
       --jq 'first(.statusCheckRollup[]? | (.detailsUrl // .targetUrl // "") | select(test("/actions/runs/[0-9]+")) | capture("/actions/runs/(?<id>[0-9]+)").id) // empty' 2>/dev/null)
+    [ -z "$run" ] && return 1
+    attempt=$(gh api "repos/{owner}/{repo}/actions/runs/$run" --jq '.run_attempt' 2>/dev/null)
+    E2E_RUN_ID="${run}-${attempt:-1}"
   fi
   [ -z "$E2E_RUN_ID" ] && return 1
 

@@ -23,10 +23,14 @@ on:
 # Only a new commit recovers it — only a new SHA forces fresh previews.
 #
 # To re-run CI, in order of preference:
-#   * push a real commit (the E2E work-queue is keyed by E2E_RUN_ID, so a fresh
-#     run id is needed anyway once a queue has been drained);
-#   * `gh run rerun <id> --failed`, valid ONLY when the E2E job never ran, so
-#     there is no work-queue for that run id to collide with.
+#   * `gh run rerun <id>` — since NEO-187 the work-queue is keyed by run id AND
+#     run attempt, so a rerun seeds a genuinely fresh queue and re-executes every
+#     flow. This is now the cheap path for a flaky flow. Note `--failed` reruns
+#     only the aggregate `e2e` gate job (the flow that failed lives in a *runner*
+#     job, which succeeded), so a full rerun is what actually re-runs flows.
+#   * push a real commit — still required when the PREVIEW itself is the problem
+#     (a deleted Convex preview, a stale index.html), since only a new SHA forces
+#     fresh previews. A rerun cannot rebuild those.
 #
 # When a PR closes (merged or not), tear down its per-PR previews:
 #

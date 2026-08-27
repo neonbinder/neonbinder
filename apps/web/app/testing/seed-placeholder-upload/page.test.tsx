@@ -103,6 +103,10 @@ describe("TestingSeedPlaceholderUploadPage", () => {
     });
     mocks.warm = vi.fn();
     vi.stubEnv("VITE_CLERK_TESTING_ENABLED", "true");
+    // NEO-188: the page fetches its fixture manifest on mount, so a test that
+    // only asserts mount behaviour still issues a request. Default every test
+    // to an empty manifest; stubFixtures() overrides it where the body matters.
+    stubFixtures({ files: [] }, []);
   });
 
   it("warms the card processor on mount", () => {

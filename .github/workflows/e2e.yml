@@ -73,6 +73,29 @@ permissions:
 # To scale: extend matrix.runner (e.g. add 8..11) and provision TEST_EMAIL_8.. —
 # the queue auto-distributes; nothing else changes. Requires the E2E_QUEUE_SECRET
 # GitHub secret + the same value set on the Convex preview env.
+
+# ─── Queue scope (NEO-187) ────────────────────────────────────────────────────
+# The run ATTEMPT is part of the key, and that is what makes the rerun button
+# work. `github.run_id` alone is stable across attempts, so a rerun re-entered
+# an already-seeded queue: seedQueue returned `alreadySeeded`, every row was
+# already terminal, `claimNext` found nothing pending, and the gate re-read the
+# same `failed: 1` and exited — in about five seconds, having re-executed
+# nothing. That reads as "the failure is real and reproducible" when it means
+# only "the queue remembers". Adding run_attempt makes each attempt a genuinely
+# fresh queue while preserving the within-attempt idempotency seedQueue exists
+# for (parallel seed steps must not double-insert).
+#
+# Defined ONCE here and inherited by every job: the seed, the runners, and the
+# gate MUST agree on this string, and three step-level copies of it was a
+# standing invitation to drift.
+#
+# Note: queue rows are never purged, so a rerun adds another full set of rows
+# rather than replacing the old attempt's. That is deliberate — the previous
+# attempt's results stay readable — and small next to the accumulation the
+# table already carries per run.
+env:
+  E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -200,7 +223,6 @@ jobs:
         env:
           CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
           E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
-          E2E_RUN_ID: ${{ github.run_id }}
         run: ./run-e2e-queue.sh enqueue
 
       - name: Upload seed report
@@ -259,7 +281,6 @@ jobs:
           RUNNER_INDEX: ${{ matrix.runner }}
           CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
           E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
-          E2E_RUN_ID: ${{ github.run_id }}
           REPORT_DIR: maestro-report
         # Exits 0 once the queue is drained — a FLOW failure is recorded in the
         # queue (not a job failure), so the single `e2e` gate reads queue status
@@ -300,7 +321,6 @@ jobs:
         env:
           CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
           E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
-          E2E_RUN_ID: ${{ github.run_id }}
         run: |
           echo "jobs: setup=${{ needs.setup.result }} seed=${{ needs.seed.result }} runner=${{ needs.runner.result }}"
           if [ "${{ needs.setup.result }}" != "success" ] || [ "${{ needs.seed.result }}" != "success" ]; then
