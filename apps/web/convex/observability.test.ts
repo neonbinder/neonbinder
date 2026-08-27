@@ -66,10 +66,22 @@ beforeEach(() => {
   // PostHog client short-circuits when no key is set. Force a value so the
   // mocked client actually gets invoked.
   process.env.POSTHOG_API_KEY = "test-posthog-key";
+  // NEO-188: the BSC token path pings the browser service (localhost:8080).
+  // Unstubbed, "no token is available" was really "nothing is listening on
+  // 8080" — so the test passed for an environmental reason and would have
+  // changed meaning on a machine running the browser service locally. Stub it
+  // to a hard failure so the no-token condition is the thing under test.
+  vi.stubGlobal(
+    "fetch",
+    (async () => {
+      throw new Error("NEO-188: browser service unavailable (stubbed)");
+    }) as unknown as typeof fetch,
+  );
 });
 
 afterEach(() => {
   delete process.env.POSTHOG_API_KEY;
+  vi.unstubAllGlobals();
 });
 
 // ---------------------------------------------------------------------------

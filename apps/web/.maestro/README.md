@@ -201,6 +201,38 @@ two buckets.
      absorbs taps to elements at y < 64. Always center scroll targets
      mid-viewport, not at the top edge.
 
+## Re-running a red E2E (NEO-187)
+
+**`gh run rerun <id>` works.** The work-queue is keyed by run id **and run
+attempt**, so a rerun seeds a fresh queue and genuinely re-executes every flow.
+
+This was not always true. Before NEO-187 the queue was keyed by `github.run_id`
+alone, which is *stable across attempts* — so a rerun re-entered the queue it
+had already drained: `seedQueue` answered `alreadySeeded`, every row was already
+terminal, no runner could claim anything, and the gate re-read the same
+`failed: 1` and exited. It took about five seconds and re-ran nothing, which
+looks exactly like a real, reproducible failure. If you are on a branch that
+predates this fix, only a fresh push re-runs flows.
+
+Two things worth knowing:
+
+- **Use a full rerun, not `--failed`.** A failing *flow* is recorded in the
+  queue, not in a job's exit code, so the runner job that executed it
+  **succeeded**. `--failed` therefore re-runs only the aggregate `e2e` gate —
+  which re-reads the queue and fails identically.
+- **A rerun cannot fix a broken preview.** If the Convex preview or the Vercel
+  preview is the problem, only a new commit forces fresh ones. See
+  `.github/workflows/preview-cleanup.yml`.
+
+**When the flow is genuinely broken rather than flaky.** A rerun re-executes,
+it does not forgive: the gate still requires every queued flow to have passed
+*and* the queue to be fully drained (`pending == 0`, `running == 0`, and no
+hard-failed runner job). So a real failure just fails again, and a runner that
+died holding a claimed flow still fails the gate rather than passing quietly.
+Reruns are for flakes — if a flow fails twice, fix the flow. Reach for
+`test:e2e:pick` to iterate on it locally (see above) rather than burning
+further CI attempts.
+
 ## Navigation in flows: prefer `openLink` over tapping links
 
 **Tapping an element that triggers a page navigation can crash maestro-web
