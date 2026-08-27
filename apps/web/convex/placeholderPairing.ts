@@ -1741,6 +1741,73 @@ export const manuallyPairPlaceholderImages = mutation({
  *     user's next deliberate action — a manual pair, or an identity edit (which
  *     DOES force) — drives the outcome instead.
  */
+/**
+ * Turn a pair around: the same two images, front and back swapped.
+ *
+ * ONE TRANSACTION, deliberately. The UI used to do this as unpair-then-pair,
+ * two round trips, and that was safe only while review waited for the batch to
+ * finish. Now that correcting a LIVE batch is the whole point, the window
+ * between the two calls is real: the no-force re-pair `unpairPlaceholderImages`
+ * schedules can fire in it and claim one of the freed halves for a different
+ * partner, after which `manuallyPairPlaceholderImages` refuses with "image is
+ * already paired" and the user's swap has silently become a split.
+ *
+ * Composing the two was the wrong shape for a second reason as well: it records
+ * a split in `unpairedFrom` and then immediately clears it, briefly asserting
+ * that the user rejected a pairing they were in fact only reorienting.
+ *
+ * The result is a MANUAL pair, exactly as if it had been forced by hand —
+ * because it was. That makes it sticky, so nothing re-pairs these two, and no
+ * re-pair needs scheduling: no other image's options changed.
+ */
+export const swapPairSides = mutation({
+  args: { jobId: v.string(), frontIndex: v.number(), backIndex: v.number() },
+  returns: v.object({ swapped: v.boolean() }),
+  handler: async (ctx, args) => {
+    const userId = await requireUserId(ctx);
+    const job = await findOwnedJob(ctx, args.jobId, userId);
+    if (!job) throw new Error("Job not found");
+
+    const pairs = await ctx.db
+      .query("placeholderPairs")
+      .withIndex("by_job", (q) => q.eq("jobId", args.jobId))
+      .collect();
+    const pair = pairs.find(
+      (p) => p.frontIndex === args.frontIndex && p.backIndex === args.backIndex,
+    );
+    if (!pair) throw new Error("Pair not found");
+
+    const front = await imageByIndex(ctx, args.jobId, args.frontIndex);
+    const back = await imageByIndex(ctx, args.jobId, args.backIndex);
+    if (!front || !back) throw new Error("Image not found");
+
+    // Re-merge the label with the sides reversed: the identity rules are
+    // front-preferred player/team and back-only card number, so swapping the
+    // images without re-merging would leave a label describing the old
+    // orientation.
+    const identity = mergedRowIdentity(
+      { player: null, team: null, cardNumber: null },
+      { players: back.players, team: back.team, cardNumber: back.cardNumber },
+      { players: front.players, team: front.team, cardNumber: front.cardNumber },
+    );
+
+    await ctx.db.patch(pair._id, {
+      frontIndex: args.backIndex,
+      backIndex: args.frontIndex,
+      player: identity.player,
+      team: identity.team,
+      cardNumber: identity.cardNumber,
+      confidence: "side-only",
+      mechanism: "manual",
+      score: 0,
+    });
+
+    // The images stay paired throughout — neither ever becomes a candidate — so
+    // pairStatus needs no change and the pool never sees them.
+    return { swapped: true };
+  },
+});
+
 export const unpairPlaceholderImages = mutation({
   args: { jobId: v.string(), frontIndex: v.number(), backIndex: v.number() },
   returns: v.object({ unpaired: v.boolean(), wasManual: v.boolean() }),

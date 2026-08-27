@@ -1490,12 +1490,9 @@ describe("computePairingDiff (pure)", () => {
         score: 1,
       },
     ];
-    // `true` — the lock only applies once the batch has finished; mid-batch a
-    // pair is a verdict on partial data and stays revisable.
     const diff = computePairingDiff(
       [griffeyFront(0), griffeyFront(1), griffeyBack(2), griffeyBack(3)],
       stored,
-      true,
     );
 
     // Never a delete candidate, exactly like a manual pair.

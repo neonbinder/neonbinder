@@ -633,3 +633,74 @@ describe("a split is recorded, not just applied", () => {
     expect(second[0].backIndex).not.toBe(rejected);
   });
 });
+
+// ---------------------------------------------------------------------------
+// swapPairSides — one transaction, because review now runs on a LIVE batch
+// ---------------------------------------------------------------------------
+describe("swapPairSides", () => {
+  async function seedSwappable(t: ReturnType<typeof convexTest>, JOB: string) {
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, FRONT(["Ronald Acuña"], "Atlanta Braves"));
+    await seedDone(t, JOB, 1, BACK(["Ronald Acuña"], "Atlanta Braves", "13"));
+    await runAuto(t, JOB);
+  }
+
+  test("reverses the pair in place and marks it manual", async () => {
+    const JOB = "job-swap";
+    const t = convexTest(schema, modules);
+    await seedSwappable(t, JOB);
+    const before = (await getPairs(t, JOB))[0];
+
+    const result = await t.withIdentity(USER_A).mutation(P.swapPairSides, {
+      jobId: JOB,
+      frontIndex: before.frontIndex,
+      backIndex: before.backIndex,
+    });
+    expect(result).toEqual({ swapped: true });
+
+    const after = (await getPairs(t, JOB))[0];
+    expect(after.frontIndex).toBe(before.backIndex);
+    expect(after.backIndex).toBe(before.frontIndex);
+    // The SAME row, edited — not deleted and re-created. A swap is a
+    // reorientation of one pair, and churning the row would read to a
+    // subscribed client as the pair vanishing and a different one appearing.
+    expect(after._id).toBe(before._id);
+    expect(after.mechanism).toBe("manual");
+  });
+
+  test("never records a split — the user reoriented, they did not reject", async () => {
+    // The old unpair-then-pair composition wrote `unpairedFrom` and then
+    // cleared it, briefly asserting a rejection that never happened.
+    const JOB = "job-swap-no-split";
+    const t = convexTest(schema, modules);
+    await seedSwappable(t, JOB);
+    const before = (await getPairs(t, JOB))[0];
+
+    await t.withIdentity(USER_A).mutation(P.swapPairSides, {
+      jobId: JOB,
+      frontIndex: before.frontIndex,
+      backIndex: before.backIndex,
+    });
+
+    const rows = await getImages(t, JOB);
+    expect(rows.every((r) => (r.unpairedFrom ?? []).length === 0)).toBe(true);
+    // And both stay paired throughout — neither is ever a loose candidate the
+    // matcher could grab mid-swap, which is the race this mutation exists for.
+    expect(rows.map((r) => r.pairStatus)).toEqual(["paired", "paired"]);
+  });
+
+  test("refuses another user's job", async () => {
+    const JOB = "job-swap-other";
+    const t = convexTest(schema, modules);
+    await seedSwappable(t, JOB);
+    const before = (await getPairs(t, JOB))[0];
+
+    await expect(
+      t.withIdentity(USER_B).mutation(P.swapPairSides, {
+        jobId: JOB,
+        frontIndex: before.frontIndex,
+        backIndex: before.backIndex,
+      }),
+    ).rejects.toThrow(/Job not found/);
+  });
+});

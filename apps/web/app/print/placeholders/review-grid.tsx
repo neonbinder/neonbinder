@@ -98,6 +98,7 @@ export function ReviewGrid({
   const updateIdentity = useMutation(
     api.placeholderPairing.updatePlaceholderImageIdentity,
   );
+  const swapSidesMutation = useMutation(api.placeholderPairing.swapPairSides);
 
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -174,20 +175,22 @@ export function ReviewGrid({
       }),
     );
 
-  /** Swap = split, then pair the same two the other way round. */
+  /**
+   * Swap in ONE call, not unpair-then-pair.
+   *
+   * Two round trips left a window the matcher could act in: on a live batch the
+   * re-pair that unpair schedules can claim a freed half for a different
+   * partner, and the follow-up pair then fails with "already paired" — the
+   * user's swap having silently become a split. See `swapPairSides`.
+   */
   const swapSides = (pair: ReviewPair) =>
-    run(`swap-${pairKey(pair)}`, async () => {
-      await unpair({
+    run(`swap-${pairKey(pair)}`, () =>
+      swapSidesMutation({
         jobId,
         frontIndex: pair.frontIndex,
         backIndex: pair.backIndex,
-      });
-      await manuallyPair({
-        jobId,
-        frontIndex: pair.backIndex,
-        backIndex: pair.frontIndex,
-      });
-    });
+      }),
+    );
 
   const pairChosen = () =>
     run("pair-chosen", async () => {
