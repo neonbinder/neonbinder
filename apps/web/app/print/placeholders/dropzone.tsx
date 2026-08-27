@@ -94,7 +94,7 @@ export function Dropzone({
         <span className="text-sm text-slate-400">
           or <span className="text-neon-blue underline">browse your files</span>
         </span>
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-slate-400">
           JPEG or PNG, or a single zip. Uploading starts as soon as you choose —
           keep them in scan order (front, back, front, back), because that order
           is what pairs them.
@@ -105,15 +105,32 @@ export function Dropzone({
           accept=".zip,image/jpeg,image/png"
           multiple
           disabled={disabled}
+          // The visible label's full text (title + hint + the instructional
+          // paragraph) would otherwise BE the accessible name — every word in
+          // the <label> counts, so without this a screen reader announces all
+          // three sentences every time focus lands here. Kept short but still
+          // built from the literal visible phrase ("Drag your card photos
+          // here" / "browse your files") so the visible label stays part of
+          // the accessible name (WCAG 2.5.3, Label in Name).
+          aria-label="Drag your card photos here, or browse your files"
           className="sr-only"
           onChange={(e) => setDropped(e.target.files)}
         />
       </label>
 
-      {/* Always mounted so the message is announced when it appears. */}
+      {/* Always mounted so the message is announced when it appears, and keyed
+          so the element remounts when the role itself flips between "status"
+          and "alert" — some AT/browser combinations cache a live region's
+          politeness at insertion time and never notice an attribute-only role
+          change (same fix as the notice region in intake.tsx). `aria-live` is
+          left unset for the alert case: role="alert" already implies assertive
+          live-region semantics, and pairing it with an explicit "polite" here
+          would have downgraded an invalid-file error to a non-interrupting
+          announcement. */}
       <p
+        key={problem ? "problem" : "ok"}
         role={problem ? "alert" : "status"}
-        aria-live="polite"
+        aria-live={problem ? undefined : "polite"}
         className={`text-sm ${problem ? "text-neon-pink" : "text-slate-400"}`}
       >
         {problem

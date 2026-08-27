@@ -88,7 +88,7 @@ function RecentRuns() {
               {run.active && (
                 <span className="text-xs text-neon-green">running</span>
               )}
-              {isOpen && <span className="text-xs text-slate-500">(open)</span>}
+              {isOpen && <span className="text-xs text-slate-400">(open)</span>}
             </li>
           );
         })}

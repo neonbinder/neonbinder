@@ -450,7 +450,7 @@ export default function CardIntake() {
                 {inFlight.map((image) => (
                   <li key={image.entryIndex} className="flex flex-wrap gap-2">
                     <span className="text-slate-300">{image.originalName}</span>
-                    <span className="text-slate-500">{imageSummary(image)}</span>
+                    <span className="text-slate-400">{imageSummary(image)}</span>
                   </li>
                 ))}
               </ul>
@@ -505,7 +505,7 @@ export default function CardIntake() {
                     <li key={image.entryIndex}>{image.originalName}</li>
                   ))}
               </ul>
-              <p className="mt-2 text-xs text-slate-500">
+              <p className="mt-2 text-xs text-slate-400">
                 Usually a blurry or very dark photo. Re-shoot those and add them
                 to a new batch.
               </p>
@@ -514,7 +514,7 @@ export default function CardIntake() {
 
           {/* The id is support information, not a heading. Kept, small and
               selectable, because it is what identifies a run in a bug report. */}
-          <p className="text-xs text-slate-600 font-mono select-all">{jobId}</p>
+          <p className="text-xs text-slate-400 font-mono select-all">{jobId}</p>
         </section>
       )}
 

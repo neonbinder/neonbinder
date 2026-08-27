@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import NeonButton from "@/components/modules/NeonButton";
@@ -102,8 +102,41 @@ export function ReviewGrid({
 
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Confirms a Split / Swap / Pair actually happened. Screen-reader users get
+   * no other signal that one of these succeeded — the visible evidence is a
+   * card moving between the pairs list and the loose pile, which an AT does
+   * not narrate on its own (WCAG 4.1.3, Status Messages).
+   */
+  const [notice, setNotice] = useState<string | null>(null);
   /** Entry indexes ticked for pairing. Two, of opposite sides, makes a pair. */
   const [selected, setSelected] = useState<readonly number[]>([]);
+
+  /**
+   * Focus-recovery target for keyboard users (NEO-152 requires full keyboard
+   * operation).
+   *
+   * Split, Swap sides and Pair these two all remove — or, for Swap, remount
+   * under a new key — the very control the user just activated: a split
+   * empties the pair's <li> out of the list, a completed pairing empties a
+   * card out of the loose pile (and disables "Pair these two" once nothing is
+   * selected), and a swap's pairKey changes so React unmounts the old <li> and
+   * mounts a new one. Losing the focused element drops focus to <body> with no
+   * indication of what happened — see `session-heading` in intake.tsx for the
+   * same problem solved the same way at the page level.
+   */
+  const sectionRef = useRef<HTMLElement | null>(null);
+
+  // The moment ANY action starts, every Split/Swap/Pair control and every
+  // loose-pile checkbox and radio in the grid disables via the shared `busy`
+  // flag below — including the control that was just activated. Browsers blur
+  // a focused element the instant it is disabled, so without this a keyboard
+  // user's focus drops to <body> on every single action, not only the ones
+  // that end up removing an element outright. Same fix, same reason, as the
+  // `busy`-driven focus park in confirm-dialog.tsx.
+  useEffect(() => {
+    if (busy !== null) sectionRef.current?.focus();
+  }, [busy]);
 
   // Loose = processed, but nothing claimed it. Never hidden behind a count:
   // an unmatched front is the single thing on this page a user must act on.
@@ -149,11 +182,18 @@ export function ReviewGrid({
     );
 
   const run = useCallback(
-    async (key: string, action: () => Promise<unknown>) => {
+    async (
+      key: string,
+      action: () => Promise<unknown>,
+      /** Announced on success via the always-mounted status region below. */
+      successMessage?: string,
+    ) => {
       setBusy(key);
       setError(null);
+      setNotice(null);
       try {
         await action();
+        if (successMessage) setNotice(successMessage);
       } catch (caught) {
         // The mutations throw plain messages meant for a person ("image is
         // already paired — unpair it first"), so showing them beats replacing
@@ -167,12 +207,15 @@ export function ReviewGrid({
   );
 
   const split = (pair: ReviewPair) =>
-    run(pairKey(pair), () =>
-      unpair({
-        jobId,
-        frontIndex: pair.frontIndex,
-        backIndex: pair.backIndex,
-      }),
+    run(
+      pairKey(pair),
+      () =>
+        unpair({
+          jobId,
+          frontIndex: pair.frontIndex,
+          backIndex: pair.backIndex,
+        }),
+      "Split — both cards moved to Not paired, below.",
     );
 
   /**
@@ -184,30 +227,44 @@ export function ReviewGrid({
    * user's swap having silently become a split. See `swapPairSides`.
    */
   const swapSides = (pair: ReviewPair) =>
-    run(`swap-${pairKey(pair)}`, () =>
-      swapSidesMutation({
-        jobId,
-        frontIndex: pair.frontIndex,
-        backIndex: pair.backIndex,
-      }),
+    run(
+      `swap-${pairKey(pair)}`,
+      () =>
+        swapSidesMutation({
+          jobId,
+          frontIndex: pair.frontIndex,
+          backIndex: pair.backIndex,
+        }),
+      "Sides swapped.",
     );
 
   const pairChosen = () =>
-    run("pair-chosen", async () => {
-      if (!front || !back) return;
-      await manuallyPair({
-        jobId,
-        frontIndex: front.entryIndex,
-        backIndex: back.entryIndex,
-      });
-      setSelected([]);
-    });
+    run(
+      "pair-chosen",
+      async () => {
+        if (!front || !back) return;
+        await manuallyPair({
+          jobId,
+          frontIndex: front.entryIndex,
+          backIndex: back.entryIndex,
+        });
+        setSelected([]);
+      },
+      "Paired — moved up to Check the pairs.",
+    );
 
   return (
     <section
+      ref={sectionRef}
+      // -1: not in the normal tab order, only a programmatic focus-recovery
+      // target (see the `busy` effect above). Needs its own visible ring —
+      // `outline-none` with nothing to replace it left a keyboard user with no
+      // idea where focus had gone, same reasoning as `session-heading` in
+      // intake.tsx (WCAG 2.4.7).
+      tabIndex={-1}
       aria-label={pairs.length > 0 ? undefined : "Cards not yet paired"}
       aria-labelledby={pairs.length > 0 ? "review-heading" : undefined}
-      className="space-y-6"
+      className="space-y-6 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
     >
       {/* Only once there is something to check. Mid-batch the pile can be all
           backs with no pairs yet, and heading that "Check the pairs" — directly
@@ -228,6 +285,14 @@ export function ReviewGrid({
       {/* Always mounted so a failure is announced rather than appearing silently. */}
       <p role="alert" className="text-sm text-neon-pink">
         {error ?? ""}
+      </p>
+
+      {/* Confirms a Split / Swap / Pair succeeded. Sighted users see a card
+          move between the pile and the list above; a screen-reader user gets
+          nothing else telling them the action actually happened (WCAG 4.1.3).
+          Always mounted for the same reason as the error region above. */}
+      <p role="status" aria-live="polite" className="text-sm text-neon-green">
+        {notice ?? ""}
       </p>
 
       <ul className="space-y-3 list-none p-0">
@@ -260,7 +325,7 @@ export function ReviewGrid({
                       alt={`Front of ${cardName(pair)}`}
                       className="h-28 w-auto rounded border border-slate-700 object-contain"
                     />
-                    <figcaption className="text-[10px] text-slate-500 text-center mt-1">
+                    <figcaption className="text-[10px] text-slate-400 text-center mt-1">
                       Front
                     </figcaption>
                   </figure>
@@ -271,7 +336,7 @@ export function ReviewGrid({
                       alt={`Back of ${cardName(pair)}`}
                       className="h-28 w-auto rounded border border-slate-700 object-contain"
                     />
-                    <figcaption className="text-[10px] text-slate-500 text-center mt-1">
+                    <figcaption className="text-[10px] text-slate-400 text-center mt-1">
                       Back
                     </figcaption>
                   </figure>
@@ -359,7 +424,7 @@ export function ReviewGrid({
                     alt={image.originalName}
                     className="h-32 w-full rounded border border-slate-700 object-contain"
                   />
-                  <p className="truncate text-[10px] text-slate-500">
+                  <p className="truncate text-[10px] text-slate-400">
                     {image.originalName}
                   </p>
 
