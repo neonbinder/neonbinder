@@ -108,7 +108,14 @@ tags:
 # ============================================================
 - scrollUntilVisible:
     element:
-      text: "2 cards on 1 sheet of Letter, printed both sides."
+      # Wrapped in `.*` because Maestro's text selector FULL-matches the
+      # element's text, and this <p> runs on past the phrase: the whole
+      # sentence is "2 cards on 1 sheet of Letter, printed both sides. 9 fit
+      # on a sheet." An unwrapped prefix scrolls to the end of the page and
+      # fails, which is exactly what it did. (The status line asserted earlier,
+      # "2 pairs ready to print.", needs no wrapper because that IS the
+      # element's entire text.)
+      text: ".*2 cards on 1 sheet of Letter, printed both sides.*"
     centerElement: true
 
 # ============================================================
@@ -116,11 +123,18 @@ tags:
 # Without this the preview is bare artwork and there is nothing to read a
 # mirroring off — see the note at the top.
 # ============================================================
+# `.*`-wrapped, unlike "Short edge" below. These two controls nest their helper
+# sentence INSIDE the label's own span ("Show cutting guidesOff for a real run
+# — …"), where the flip-edge radios keep theirs in a sibling, so "Short edge" is
+# an element's whole text and this is not. Whether Maestro's node model splits
+# an element's own text from a child element's is not something this flow should
+# depend on: the wrapper matches under either reading, and for a tap both
+# candidate nodes toggle the same control.
 - scrollUntilVisible:
     element:
-      text: "Show cutting guides"
+      text: ".*Show cutting guides.*"
     centerElement: true
-- tapOn: "Show cutting guides"
+- tapOn: ".*Show cutting guides.*"
 
 # ============================================================
 # Step 5 — ASSERTION 2: by default the back is mirrored for a LONG-edge flip,
@@ -188,12 +202,12 @@ tags:
 # ============================================================
 - scrollUntilVisible:
     element:
-      text: "Print the backs too"
+      text: ".*Print the backs too.*"
     centerElement: true
-- tapOn: "Print the backs too"
+- tapOn: ".*Print the backs too.*"
 - scrollUntilVisible:
     element:
-      text: "2 cards on 1 sheet of Letter, front only."
+      text: ".*2 cards on 1 sheet of Letter, front only.*"
     centerElement: true
 # The front sheet still renders. This SCROLLS rather than asserting in place:
 # the caption sits 636px below the summary sentence on the CI viewport (1024x625,

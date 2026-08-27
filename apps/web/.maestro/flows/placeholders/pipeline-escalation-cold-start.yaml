@@ -3,8 +3,8 @@
 # the fast classical service DECLINES both (there is a card to crop out of a
 # background), so Convex re-enqueues each to the HEAVY BiRefNet service, which
 # cold-loads the ~191s model. The one thing this flow exists to prove is that
-# WHILE that heavy cold start runs, the user is TOLD — the "Warming up the full
-# card processor…" notice is on screen, and each escalating image shows an
+# WHILE that heavy cold start runs, the user is TOLD — the "A few of these need
+# a closer look…" notice is on screen, and each escalating image shows an
 # "Escalating — deeper processing…" badge — rather than staring at a frozen
 # screen. It then proves the batch still finishes correctly through the heavy
 # service — both images resolve and the pair forms.
@@ -146,9 +146,14 @@ tags:
 # fast-service pass. It resolves the instant the notice appears (well within the
 # window above, since the fast instances are pre-warmed and declines are quick), so
 # the 120s ceiling is margin, not time this burns. The regex tolerates the exact
-# copy "…the full card processor…" via `.*` between "the" and "card".
+# The copy is NEO-152's, not the old "Warming up the full card processor…".
+# That string no longer exists anywhere in the app — this flow was still waiting
+# on it, which is why it timed out for 120s while the notice was on screen the
+# whole time. Anchored on the distinctive phrase and wrapped in `.*` because
+# Maestro's text selector is a FULL match against the element's whole text, and
+# this <p> carries a second sentence ("The rest keep coming in below.").
 - extendedWaitUntil:
-    visible: ".*[Ww]arming up the .*card processor.*"
+    visible: ".*A few of these need a closer look.*"
     timeout: 120000
 
 # Step 4: the per-image "Escalating — deeper processing…" badge. While
@@ -174,7 +179,7 @@ tags:
 
 # ── Step 6: the pair finishes through the HEAVY service (~5 min) ───────────────
 # This is the ONE sanctioned multi-minute wait, and it is legitimate ONLY because
-# every second of it is covered by VISIBLE progress: the "Warming up…" notice
+# every second of it is covered by VISIBLE progress: the "closer look" notice
 # (Step 3) is up from the first escalation until the first heavy result, and the
 # per-image "Escalating — deeper processing…" badge (Step 4) sits on each row until
 # it resolves — the user is never left staring at a frozen screen. The wait must

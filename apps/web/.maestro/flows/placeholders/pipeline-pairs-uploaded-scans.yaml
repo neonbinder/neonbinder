@@ -6,7 +6,7 @@
 # scans — and the path the product must keep fast.
 #
 # The HEAVY escalation path (inset-on-noise scans → the ~191s BiRefNet cold start
-# → the "Warming up the full card processor…" notice) is a DIFFERENT user case,
+# → the "A few of these need a closer look…" notice) is a DIFFERENT user case,
 # proved by its own flow, pipeline-escalation-cold-start.yaml. This flow proves
 # the opposite: fast in, no model, no cold-start notice.
 #
@@ -163,7 +163,7 @@ tags:
     timeout: 180000
 
 # Step 3b: the cold-start notice is ABSENT. The fast path escalates nothing, so
-# `heavyWarming` is false and the "Warming up the full card processor…" notice
+# `heavyWarming` is false and the "A few of these need a closer look…" notice
 # never renders. This is what distinguishes the fast path from the heavy one:
 # without it, a run that quietly escalated every card could still reach 6/6 and
 # pass Step 3. The assertion is meaningful here (not a look-somewhere-else
@@ -171,7 +171,14 @@ tags:
 # and the notice, if it existed, would sit in the same session panel right below
 # that line — in view. (The regex tolerates the exact copy "…the full card
 # processor…" via `.*` between "the" and "card".)
-- assertNotVisible: ".*[Ww]arming up the .*card processor.*"
+#
+# The string here is NEO-152's copy. It previously named the old "Warming up the
+# full card processor…" notice, which NEO-152 deleted — so the assertion was
+# passing because nothing in the app could ever render that text, not because
+# the fast path declined to escalate. An assertNotVisible on a string that
+# cannot exist is not a test, and this one sat in the flow's R2 list as one of
+# the three things that make it fail without the feature.
+- assertNotVisible: ".*A few of these need a closer look.*"
 
 # ── Step 4: CLOSE the session so the FINAL pairing run records the count ───────
 # The 6/6 completion above happened while the stream was still "Collecting": the
