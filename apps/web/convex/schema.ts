@@ -367,6 +367,45 @@ export default defineSchema({
     // printing variety may reach it — see `parseVariationDescription` in
     // adapters/buysportscards.ts for the shelf notes that used to leak in here.
     cardVariation: v.optional(v.string()),
+    // NEO-189: when this card is a VARIATION of another card in the same set,
+    // the card it varies. Absent on a normal card and on a parent.
+    //
+    // A variation is the same checklist slot printed a second way — a different
+    // photo, a nickname on the nameplate, an outright error. NOT a parallel: a
+    // parallel is a whole alternate printing of a set and is already its own
+    // `selectorOptions` row with its own checklist. The two axes are
+    // orthogonal; a parallel's checklist can itself contain variations.
+    //
+    // WHY A POINTER, NOT A DERIVED GROUPING
+    //
+    // The obvious alternative is to derive the relationship from the card
+    // number — BSC suffixes a variation (`11` → `11b`), so `11b` "obviously"
+    // belongs to `11`. Three things kill that:
+    //
+    //   1. `updateCard` lets `cardNumber` be patched freely. A derived grouping
+    //      silently breaks the first time an operator corrects a number.
+    //   2. The parent is not always the bare number. 2021 Topps has no card #1
+    //      at all — it ships `1a` (base), `1b`, `1c`. 150 of its 660 stems have
+    //      no bare-numbered row.
+    //   3. SportLots does not suffix at all. It gives every variation of #13
+    //      the number `13` and distinguishes them in the description, so there
+    //      is nothing to derive from on that side.
+    //
+    // The suffix is still how the link is DERIVED at import (see
+    // `resolveVariationParents` in lib/cards/variations.ts) — it just is not
+    // what the link IS.
+    //
+    // A variation is a FULL CARD, not a delta on its parent: `playerIds`,
+    // `cardName`, `teamOnCardIds`, `printRun`, `features`, `sku` and both
+    // platform refs are all independently its own. Do not inherit-and-lock from
+    // the parent — under the hobby's "Legend" convention a variation is
+    // routinely a different player entirely (2021 Topps #52 is Archie Bradley;
+    // 52b/52c/52d are Mickey Mantle).
+    //
+    // Deleting a parent must clear this on its children — see `deleteCard`,
+    // which follows the same discipline `deleteCardCrossListingsFor` already
+    // establishes for junction rows.
+    variationOfCardId: v.optional(v.id("cardChecklist")),
     // NEO-25: marketplace-agnostic listing title & description, authored once
     // and reused by every marketplace adapter (eBay/SportLots/BSC/MySlabs/
     // MyCardPost) so a listing doesn't recompute the title each time. NOT
@@ -422,7 +461,11 @@ export default defineSchema({
     lastUpdated: v.number(),
   })
     .index("by_selector_option", ["selectorOptionId"])
-    .index("by_selector_option_and_number", ["selectorOptionId", "cardNumber"]),
+    .index("by_selector_option_and_number", ["selectorOptionId", "cardNumber"])
+    // NEO-189: "give me this card's variations" as one indexed read rather than
+    // a scan of the set. Also what `deleteCard` uses to find the children whose
+    // pointer it must clear.
+    .index("by_variation_parent", ["variationOfCardId"]),
 
   // NEO-21: cross-release guest appearances. Some cards complete one set's
   // checklist but were physically printed inside a different product (2021

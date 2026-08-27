@@ -1848,12 +1848,44 @@ async function deleteCardCrossListingsFor(
   }
 }
 
+/**
+ * NEO-189 — a deleted card must not leave its VARIATIONS pointing at a row that
+ * no longer exists.
+ *
+ * Same invariant `deleteCardCrossListingsFor` exists for, one table over: every
+ * path that deletes a `cardChecklist` row has to tidy what points at it.
+ *
+ * The children are PROMOTED, not deleted. A variation is a full card in its own
+ * right — its own players, its own SKU, its own platform refs — so losing its
+ * parent must not lose the card. It becomes an ordinary card, and an operator
+ * can re-parent it. Deleting a parent's variations along with it would destroy
+ * real catalog data as a side effect of one click.
+ */
+async function orphanVariationsOf(
+  ctx: { db: { query: any; patch: (id: any, patch: any) => Promise<void> } },
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<void> {
+  const children = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_variation_parent", (q: any) =>
+      q.eq("variationOfCardId", cardChecklistId),
+    )
+    .collect();
+  for (const child of children) {
+    await ctx.db.patch(child._id, {
+      variationOfCardId: undefined,
+      lastUpdated: Date.now(),
+    });
+  }
+}
+
 export const deleteCard = mutation({
   args: { id: v.id("cardChecklist") },
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     await deleteCardCrossListingsFor(ctx, args.id);
+    await orphanVariationsOf(ctx, args.id);
     await ctx.db.delete(args.id);
     return null;
   },
