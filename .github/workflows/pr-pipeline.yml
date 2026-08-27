@@ -940,9 +940,11 @@ jobs:
       && needs.changes.outputs.preprocess == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
-    # Generous relative to the ~2 min measured: a cold preview pays a ~3 min
-    # BiRefNet load on its first request, and each bed scan is a real ONNX pass.
-    timeout-minutes: 20
+    # The matrix itself is ~2 min, but this job may first have to wait out the
+    # ~25 min preview image build (see the stale-revision guard below), so it
+    # carries wire-preprocess-url's 45-minute headroom rather than a budget
+    # sized only for the requests.
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -1009,6 +1011,48 @@ jobs:
           [ -n "$KEY" ] || { echo "::error::internal-api-key came back empty"; exit 1; }
           [ -n "${TARGET:-}" ] || { echo "::error::heavy preview URL is empty"; exit 1; }
           echo "SMOKE_INTERNAL_KEY=$KEY" >> "$GITHUB_ENV"
+
+      # ── Refuse to test a stale revision (NEO-191) ────────────────────
+      # `wire-preprocess-url` waits only for the pr-<N> URL to stop 404ing.
+      # On the FIRST push that means waiting out the ~25 min image build, but
+      # on any later push the URL already answers — serving the PREVIOUS
+      # push's revision — so it returns in ~30s and everything downstream
+      # would assert against the wrong container. Observed on this PR: a green
+      # matrix in 2m against an image built from the prior commit.
+      #
+      # deploy-preview stamps each revision with PREVIEW_SHA, so wait for the
+      # revision behind the tag to actually be THIS commit. On a first push
+      # this passes on the first poll (wire-preprocess-url already waited);
+      # on a later push it absorbs the remaining build time, which is the
+      # cost of the gate meaning what it says.
+      - name: Wait for the pr-<N> revision to be built from this commit
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 120); do   # ~40 min ceiling; build is ~25
+            # `|| true` on both reads: a transient gcloud/API blip must cost
+            # one poll, not the whole job. Same idiom as the wait loops above.
+            REV=$(gcloud run services describe neonbinder-preprocess \
+              --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
+              | jq -r --arg t "pr-$PR" '.status.traffic[]? | select(.tag==$t) | .revisionName' || true)
+            if [ -n "$REV" ] && [ "$REV" != "null" ]; then
+              ACTUAL=$(gcloud run revisions describe "$REV" \
+                --region=us-central1 --project="$DEV_PROJECT" --format=json 2>/dev/null \
+                | jq -r '.spec.containers[0].env[]? | select(.name=="PREVIEW_SHA") | .value' || true)
+              if [ "$ACTUAL" = "$EXPECTED_SHA" ]; then
+                echo "$REV is built from $EXPECTED_SHA"
+                exit 0
+              fi
+              echo "attempt $attempt/120: $REV has PREVIEW_SHA='${ACTUAL:-<unset>}', want $EXPECTED_SHA — retry in 20s"
+            else
+              echo "attempt $attempt/120: no revision serving tag pr-$PR yet — retry in 20s"
+            fi
+            sleep 20
+          done
+          echo "::error::pr-$PR never served a revision built from $EXPECTED_SHA — preprocess.yml deploy-preview may have failed."
+          exit 1
 
       # A cold preview would otherwise spend the first fixture's timeout loading
       # ~930MB of BiRefNet. /warmup is synchronous and idempotent.
