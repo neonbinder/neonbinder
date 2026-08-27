@@ -26,7 +26,11 @@ import {
   generateListingDescription,
 } from "./features/generateListing";
 import { generateSku } from "./sku";
-import { resolveVariationParents } from "../lib/cards/variations";
+import {
+  cardNumberStem,
+  resolveVariationParents,
+  suggestVariationPairings,
+} from "../lib/cards/variations";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
@@ -4549,8 +4553,83 @@ export const fetchCardChecklist = action({
       const slByNumber = new Map<string, typeof slCards[0]>();
       const slByRef = new Map<string, typeof slCards[0]>();
       for (const c of slCards) {
-        slByNumber.set(c.cardNumber, c);
+        // NEO-189: prefer the NON-variation row for a given number.
+        //
+        // SportLots files a card and its variations under ONE number — "#11
+        // Alec Bohm", "#11 Alec Bohm [ VAR Action Image ]", "#11 … [ VAR
+        // Throwback Alternate ]". A plain last-write-wins index therefore
+        // answered `get("11")` with whichever variation happened to be scraped
+        // last, and BSC's base #11 paired with a variation. Wrong, and silent.
+        //
+        // A bare BSC number means the base card, so that is what this index
+        // must return. Variations are paired to variations separately below.
+        const prev = slByNumber.get(c.cardNumber);
+        if (!prev || (prev.isVariation && !c.isVariation)) {
+          slByNumber.set(c.cardNumber, c);
+        }
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
+      }
+
+      // NEO-189 — pair BSC variations to SportLots variations of the same card.
+      //
+      // Neither side's number can do this on its own: BSC suffixes a variation
+      // (`1b`), SportLots reuses the parent's number and tags the description.
+      // So `slByNumber.get("1b")` finds nothing, the fuzzy name fallback cannot
+      // help (the base already claimed that SL row, and a "Legend" variation may
+      // be a different player entirely), and every variation lands in the
+      // BSC-only column. A real 2025 Topps sync put 393 of them there.
+      //
+      // Grouped by card-number STEM — the one thing both sides agree on — and
+      // matched on the variation label via suggestVariationPairings: exact
+      // wording first, then containment ("Action" in "Action Image"). Anything
+      // it will not pair confidently is left for the operator rather than
+      // guessed, which is the same rule the commit-time parent resolution
+      // follows.
+      const slVariationPairByBscRef = new Map<string, typeof slCards[0]>();
+      {
+        const bscVarsByStem = new Map<string, typeof bscCards>();
+        for (const c of bscCards) {
+          if (!c.isVariation) continue;
+          const stem = cardNumberStem(c.cardNumber);
+          const b = bscVarsByStem.get(stem);
+          if (b) b.push(c);
+          else bscVarsByStem.set(stem, [c]);
+        }
+        const slVarsByStem = new Map<string, typeof slCards>();
+        for (const c of slCards) {
+          if (!c.isVariation) continue;
+          const stem = cardNumberStem(c.cardNumber);
+          const b = slVarsByStem.get(stem);
+          if (b) b.push(c);
+          else slVarsByStem.set(stem, [c]);
+        }
+        let paired = 0;
+        for (const [stem, bscVars] of bscVarsByStem) {
+          const slVars = slVarsByStem.get(stem);
+          if (!slVars?.length) continue;
+          const { pairs } = suggestVariationPairings(
+            bscVars.map((c) => c.cardVariation ?? ""),
+            slVars.map((c) => c.cardVariation ?? ""),
+          );
+          for (const pair of pairs) {
+            const bscRef = bscVars[pair.leftIndex]?.platformRef;
+            const slCard = slVars[pair.rightIndex];
+            if (bscRef && slCard) {
+              slVariationPairByBscRef.set(bscRef, slCard);
+              paired++;
+            }
+          }
+        }
+        if (bscVarsByStem.size > 0) {
+          console.log(
+            JSON.stringify({
+              msg: "variation_pairing",
+              bscVariations: [...bscVarsByStem.values()].reduce((n, v) => n + v.length, 0),
+              slVariations: [...slVarsByStem.values()].reduce((n, v) => n + v.length, 0),
+              paired,
+            }),
+          );
+        }
       }
 
       // NEO-137 — STICKY PAIRING. An operator's confirmed pairing must survive
@@ -4634,7 +4713,27 @@ export const fetchCardChecklist = action({
       // `out` stays as the union of everything, purely so the team-lookup and
       // entity-bucketing passes below can walk every candidate once.
       const out: ReconciledCard[] = [];
-      const claimedSlNumbers = new Set<string>();
+      // NEO-189: claims are keyed by SL's REAL identity — its platformRef, the
+      // full row description — not by card number.
+      //
+      // SportLots deliberately reuses a card number across variation rows:
+      // "#11 Alec Bohm" and "#11 Alec Bohm [ VAR Action Image ]" are different
+      // cards sharing the number 11. That is precisely why platformRef is the
+      // description (NEO-91).
+      //
+      // Keying claims by NUMBER meant the first BSC card to claim SL's "#11"
+      // marked every other SL row numbered 11 as taken. Its variations were
+      // then invisible on both sides — not matched, and skipped by the
+      // leftover loop that builds unmatchedSl — so they vanished silently.
+      // A real 2025 Topps sync reported "350 paired, 393 BSC-only, 0 SL-only":
+      // the zero was not "SportLots had nothing extra", it was the variations
+      // being discarded.
+      //
+      // Falls back to the number only when a row has no ref, which is the one
+      // case where nothing better exists.
+      const claimedSlRefs = new Set<string>();
+      const slClaimKey = (c: { platformRef?: string; cardNumber: string }) =>
+        c.platformRef ?? `#${c.cardNumber}`;
 
       // 1. Walk BSC, attach matching SL data
       for (const bsc of bscCards) {
@@ -4649,6 +4748,11 @@ export const fetchCardChecklist = action({
         let sl: typeof slCards[0] | undefined =
           (storedSlRef && slByPlatformRef.get(storedSlRef))
           || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
+          // NEO-189: a variation's counterpart, matched by label above. Ranks
+          // below the operator's stored answer and BSC's own cross-reference,
+          // and above the number lookups — which cannot resolve a suffixed
+          // number against SportLots at all.
+          || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
           || slByNumber.get(bsc.cardNumber)
           || slByNumber.get(stripped);
         const fromStoredPairing =
@@ -4661,7 +4765,7 @@ export const fetchCardChecklist = action({
           const target = normalizeName(bsc.players[0]);
           let best: { card: typeof slCards[0]; score: number } | null = null;
           for (const candidate of slCards) {
-            if (claimedSlNumbers.has(candidate.cardNumber)) continue;
+            if (claimedSlRefs.has(slClaimKey(candidate))) continue;
             const candName = candidate.cardName ? normalizeName(candidate.cardName) : "";
             if (!candName) continue;
             const score = jaroWinkler(target, candName);
@@ -4681,7 +4785,7 @@ export const fetchCardChecklist = action({
         // A previously-confirmed pairing is certain by definition — it is the
         // operator's own answer being replayed, not a guess.
         const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
-        if (sl) claimedSlNumbers.add(sl.cardNumber);
+        if (sl) claimedSlRefs.add(slClaimKey(sl));
 
         const attributes = Array.from(new Set([
           ...(bsc.attributes ?? []),
@@ -4743,7 +4847,7 @@ export const fetchCardChecklist = action({
       //    on their own any more — they are offered for the operator to pair
       //    or deliberately keep.
       for (const sl of slCards) {
-        if (claimedSlNumbers.has(sl.cardNumber)) continue;
+        if (claimedSlRefs.has(slClaimKey(sl))) continue;
         const slOnly: ReconciledCard = {
           cardNumber: sl.cardNumber,
           cardName: sl.cardName || `Card #${sl.cardNumber}`,
