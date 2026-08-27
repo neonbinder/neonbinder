@@ -109,6 +109,37 @@ export function ReviewGrid({
     [images],
   );
 
+  /**
+   * The classifier already decided front or back when it read each card, so the
+   * radios start on its verdict rather than asking for something we have. For
+   * the common case — a split that put exactly one of each back in the pile —
+   * the pair is ready to confirm without touching a radio.
+   *
+   * DERIVED, not stored in an effect. An effect would have to re-sync every
+   * time the pile changes and would fight the user's own click; deriving makes
+   * the rule plain: an explicit choice wins while it is still in the pile, and
+   * the default fills in otherwise.
+   */
+  const present = new Set(loose.map((i) => i.entryIndex));
+  const firstWithSide = (side: "front" | "back") =>
+    loose.find((i) => i.side === side)?.entryIndex ?? null;
+
+  const frontChoice =
+    chosenFront !== null && present.has(chosenFront)
+      ? chosenFront
+      : firstWithSide("front");
+  const backChoice =
+    chosenBack !== null && present.has(chosenBack)
+      ? chosenBack
+      : firstWithSide("back");
+
+  // What the pile can actually offer. All-backs is a normal mid-batch state —
+  // fronts often escalate to the slower path while backs sail through — and
+  // telling someone to "pick one front" when there is no front to pick reads
+  // as the tool being broken.
+  const looseFronts = loose.filter((i) => i.side === "front").length;
+  const looseBacks = loose.filter((i) => i.side === "back").length;
+
   const run = useCallback(
     async (key: string, action: () => Promise<unknown>) => {
       setBusy(key);
@@ -153,27 +184,37 @@ export function ReviewGrid({
 
   const pairChosen = () =>
     run("pair-chosen", async () => {
-      if (chosenFront === null || chosenBack === null) return;
+      if (frontChoice === null || backChoice === null) return;
       await manuallyPair({
         jobId,
-        frontIndex: chosenFront,
-        backIndex: chosenBack,
+        frontIndex: frontChoice,
+        backIndex: backChoice,
       });
       setChosenFront(null);
       setChosenBack(null);
     });
 
   return (
-    <section aria-labelledby="review-heading" className="space-y-6">
-      <div>
-        <h3 id="review-heading" className="text-2xl font-bold mb-1">
-          Check the pairs
-        </h3>
-        <p className="text-slate-400 max-w-2xl">
-          Each card needs its own front and back. Fix anything that looks wrong —
-          nothing prints until you say so.
-        </p>
-      </div>
+    <section
+      aria-label={pairs.length > 0 ? undefined : "Cards not yet paired"}
+      aria-labelledby={pairs.length > 0 ? "review-heading" : undefined}
+      className="space-y-6"
+    >
+      {/* Only once there is something to check. Mid-batch the pile can be all
+          backs with no pairs yet, and heading that "Check the pairs" — directly
+          under the panel already saying "No pairs yet" — reads as a section
+          that failed to load rather than one that has not filled yet. */}
+      {pairs.length > 0 && (
+        <div>
+          <h3 id="review-heading" className="text-2xl font-bold mb-1">
+            Check the pairs
+          </h3>
+          <p className="text-slate-400 max-w-2xl">
+            Each card needs its own front and back. Fix anything that looks
+            wrong — nothing prints until you say so.
+          </p>
+        </div>
+      )}
 
       {/* Always mounted so a failure is announced rather than appearing silently. */}
       <p role="alert" className="text-sm text-neon-pink">
@@ -280,12 +321,16 @@ export function ReviewGrid({
             Not paired ({loose.length})
           </h4>
           <p className="text-sm text-slate-400">
-            Pick one front and one back, then pair them.
+            {looseFronts === 0
+              ? "Only backs here so far — their fronts are still being read. They will pair up as those finish."
+              : looseBacks === 0
+                ? "Only fronts here so far — their backs are still being read. They will pair up as those finish."
+                : "Pick one front and one back, then pair them."}
           </p>
           <ul className="flex flex-wrap gap-3 list-none p-0">
             {loose.map((image) => {
-              const isFront = chosenFront === image.entryIndex;
-              const isBack = chosenBack === image.entryIndex;
+              const isFront = frontChoice === image.entryIndex;
+              const isBack = backChoice === image.entryIndex;
               return (
                 <li key={image.entryIndex} className="w-32 space-y-1">
                   <ScanImage
@@ -296,6 +341,15 @@ export function ReviewGrid({
                   />
                   <p className="truncate text-[10px] text-slate-500">
                     {image.originalName}
+                  </p>
+                  {/* What the classifier read it as. Shown because the radios
+                      below are pre-filled from it — an unexplained default is
+                      worse than none, and a wrong one needs to be visibly
+                      wrong so the user knows to change it. */}
+                  <p className="text-[10px] text-slate-600">
+                    {image.side === "front" || image.side === "back"
+                      ? `Looks like a ${image.side}`
+                      : "Side unclear"}
                   </p>
                   {/* Two radio groups, not a drag target: choosing "which front"
                       and "which back" is exactly what radios express, and they
@@ -329,16 +383,16 @@ export function ReviewGrid({
           <NeonButton
             type="button"
             disabled={
-              chosenFront === null ||
-              chosenBack === null ||
-              chosenFront === chosenBack ||
+              frontChoice === null ||
+              backChoice === null ||
+              frontChoice === backChoice ||
               busy !== null
             }
             onClick={() => void pairChosen()}
           >
             {busy === "pair-chosen" ? "Pairing…" : "Pair these two"}
           </NeonButton>
-          {chosenFront !== null && chosenFront === chosenBack && (
+          {frontChoice !== null && frontChoice === backChoice && (
             <p className="text-sm text-neon-pink">
               A card can&apos;t be its own back — pick a different image for one
               of them.
