@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardChecklistItem from "./CardChecklistItem";
+import { compareCardNumbers } from "@/lib/cards/card-number";
 import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
@@ -18,30 +19,6 @@ import ChecklistSourceFilter, {
 import CrossListingImportModal from "./CrossListingImportModal";
 import { Input } from "../primitives/Input";
 
-/**
- * NEO-21: natural card-number ordering, mirroring `compareCardNumbers` in
- * convex/selectorOptions.ts. Deliberately duplicated rather than imported —
- * convex/ is a separate deploy/typecheck unit and the frontend shouldn't pull
- * server modules in for twelve lines.
- *
- * This replaced a `sortOrder` sort. `sortOrder` is stamped per-checklist, so a
- * cross-listed guest card carries the value it was given in its HOME set,
- * which is meaningless here — sorting by it scattered guest rows to arbitrary
- * positions and undid the merge order the backend query already returns.
- */
-function compareCardNumbers(a: string, b: string): number {
-  const aMatch = a.match(/^(\d+)(.*)/);
-  const bMatch = b.match(/^(\d+)(.*)/);
-  if (aMatch && bMatch) {
-    const aNum = parseInt(aMatch[1], 10);
-    const bNum = parseInt(bMatch[1], 10);
-    if (aNum !== bNum) return aNum - bNum;
-    return aMatch[2].localeCompare(bMatch[2]);
-  }
-  if (aMatch && !bMatch) return -1;
-  if (!aMatch && bMatch) return 1;
-  return a.localeCompare(b);
-}
 
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;

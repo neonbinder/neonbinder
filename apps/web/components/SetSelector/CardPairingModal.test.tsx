@@ -318,3 +318,55 @@ describe("CardPairingModal — nothing left to reconcile", () => {
     ).toBeTruthy();
   });
 });
+
+/**
+ * NEO-195 — a streamed fetch releases candidates as their stems resolve, not in
+ * card order, so the modal has to impose the order itself. A list in arrival
+ * order is not a checklist.
+ */
+describe("CardPairingModal — natural card-number order", () => {
+  // Nested elements repeat a row's text, so collect in DOM order and keep the
+  // first sighting of each number.
+  const numbersIn = (columnLabel: RegExp) => {
+    const region = screen.getByText(columnLabel).closest("div")!.parentElement!;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const el of Array.from(region.querySelectorAll("*"))) {
+      const n = (el.textContent ?? "").match(/^#(\d+[a-z]?)\s/i)?.[1];
+      if (n && !seen.has(n)) {
+        seen.add(n);
+        out.push(n);
+      }
+    }
+    return out;
+  };
+
+  test("out-of-order candidates render in card order, not arrival order", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscCard("351", "Dillon Dingler"),
+        bscCard("2", "Thairo Estrada"),
+        bscCard("40", "Mookie Betts"),
+        bscCard("10", "Connor Wong"),
+      ],
+    });
+    const seen = numbersIn(/BSC only/);
+    expect(seen).toEqual(["2", "10", "40", "351"]);
+  });
+
+  test("#2 sorts before #10 — string ordering would invert them", () => {
+    renderModal({ unmatchedBsc: [bscCard("10", "Ten"), bscCard("2", "Two")] });
+    expect(numbersIn(/BSC only/)).toEqual(["2", "10"]);
+  });
+
+  test("a variation sorts directly after the card it varies", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscCard("20b", "Coby Mayo VAR"),
+        bscCard("21", "Nick Lodolo"),
+        bscCard("20", "Coby Mayo"),
+      ],
+    });
+    expect(numbersIn(/BSC only/)).toEqual(["20", "20b", "21"]);
+  });
+});

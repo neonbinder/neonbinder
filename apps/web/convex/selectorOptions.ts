@@ -31,6 +31,7 @@ import {
   resolveVariationParents,
   suggestVariationPairings,
 } from "../lib/cards/variations";
+import { compareCardNumbers } from "../lib/cards/card-number";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
@@ -1529,19 +1530,6 @@ async function findSetNameValue(
   return undefined;
 }
 
-function compareCardNumbers(a: string, b: string): number {
-  const aMatch = a.match(/^(\d+)(.*)/);
-  const bMatch = b.match(/^(\d+)(.*)/);
-  if (aMatch && bMatch) {
-    const aNum = parseInt(aMatch[1], 10);
-    const bNum = parseInt(bMatch[1], 10);
-    if (aNum !== bNum) return aNum - bNum;
-    return aMatch[2].localeCompare(bMatch[2]);
-  }
-  if (aMatch && !bMatch) return -1;
-  if (!aMatch && bMatch) return 1;
-  return a.localeCompare(b);
-}
 
 /**
  * Re-stamp `sortOrder` on every row in this selectorOption's checklist so

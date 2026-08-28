@@ -11,6 +11,7 @@ import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { compareCardNumbers } from "@/lib/cards/card-number";
 
 /**
  * NEO-137 — card-level pairing, before any NB card exists.
@@ -98,6 +99,38 @@ function candidateKey(c: PairingCard): string {
   );
 }
 
+/**
+ * NEO-195 — keep every column in natural card-number order.
+ *
+ * The fetch streams, and candidates are released as their stems resolve rather
+ * than in numeric order, so ABSORB appends #351 next to #40. The operator reads
+ * a checklist by number; a list in arrival order is not a checklist.
+ *
+ * Applied to EVERY transition rather than at each render site, so a card moved
+ * by LINK, UNLINK, KEEP or UNKEEP lands in its right place too — a card
+ * unlinked back into a column would otherwise reappear at the bottom.
+ *
+ * Sorting state rather than a rendered copy also keeps `UNLINK`'s index valid:
+ * it indexes `state.matched`, which is exactly what the list renders.
+ */
+function ordered(state: State): State {
+  const byNumber = (a: PairingCard, b: PairingCard) =>
+    compareCardNumbers(a.cardNumber, b.cardNumber);
+  return {
+    matched: [...state.matched].sort((a, b) => byNumber(a.card, b.card)),
+    unmatchedBsc: [...state.unmatchedBsc].sort(byNumber),
+    unmatchedSl: [...state.unmatchedSl].sort(byNumber),
+    keptBsc: [...state.keptBsc].sort(byNumber),
+    keptSl: [...state.keptSl].sort(byNumber),
+  };
+}
+
+function reducer(state: State, action: Action): State {
+  const next = baseReducer(state, action);
+  // A no-op action returns the same reference; do not churn the list for it.
+  return next === state ? state : ordered(next);
+}
+
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
 function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
   const attributes = Array.from(
@@ -126,7 +159,7 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
   };
 }
 
-function reducer(state: State, action: Action): State {
+function baseReducer(state: State, action: Action): State {
   switch (action.type) {
     /**
      * NEO-195 — fold newly-ready candidates into a session already in progress.
@@ -318,13 +351,19 @@ export default function CardPairingModal({
   /** Progress for the streaming banner: cards released / cards found so far. */
   streamProgress?: { ready: number; total: number };
 }) {
-  const [state, dispatch] = useReducer(reducer, {
-    matched: initialData.autoMatched,
-    unmatchedBsc: initialData.unmatchedBsc,
-    unmatchedSl: initialData.unmatchedSl,
-    keptBsc: [],
-    keptSl: [],
-  });
+  // NEO-195: `ordered` on the seed too — the first paint is otherwise in
+  // whatever order the fetch produced, which for a streamed batch is arrival
+  // order, not card order.
+  const [state, dispatch] = useReducer(
+    reducer,
+    ordered({
+      matched: initialData.autoMatched,
+      unmatchedBsc: initialData.unmatchedBsc,
+      unmatchedSl: initialData.unmatchedSl,
+      keptBsc: [],
+      keptSl: [],
+    }),
+  );
   const [selectedBsc, setSelectedBsc] = useState<string | null>(null);
   const [bscFilter, setBscFilter] = useState("");
   const [slFilter, setSlFilter] = useState("");
