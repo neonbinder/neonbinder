@@ -241,6 +241,45 @@ export const getReadyCandidates = query({
 });
 
 /**
+ * NEO-195 — reap candidates from a fetch that never finished.
+ *
+ * The normal exits both clean up: confirm promotes then discards, cancel
+ * discards. What neither covers is a fetch that DIED — the browser closed
+ * mid-sync, the action threw somewhere unhandled, the tab was killed. Those
+ * rows have no owner and no one to delete them.
+ *
+ * Left alone they are not merely litter: `getReadyCandidates` reads by
+ * selectorOption, so a half-finished run would surface stale cards next to a
+ * fresh one, and its still-pending stems would withhold groups that have
+ * nothing to do with the current fetch.
+ *
+ * `startCandidateBatch` already clears the row it is about to write, so this is
+ * the backstop for rows nobody comes back to. An hour is far longer than any
+ * real fetch (~80s at the worst measured) while staying well short of a
+ * session an operator might resume.
+ */
+const CANDIDATE_STALE_MS = 60 * 60 * 1000;
+
+export const sweepStaleCandidates = internalMutation({
+  args: {},
+  returns: v.object({ deleted: v.number() }),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - CANDIDATE_STALE_MS;
+    // Bounded: a sweep that tried to delete an unbounded backlog in one
+    // transaction would be the thing that breaks, not the litter it is
+    // clearing. Whatever is left is picked up on the next run.
+    const rows = await ctx.db.query("checklistCandidates").take(2000);
+    let deleted = 0;
+    for (const row of rows) {
+      if (row.lastUpdated >= cutoff) continue;
+      await ctx.db.delete(row._id);
+      deleted++;
+    }
+    return { deleted };
+  },
+});
+
+/**
  * Drop a batch. Called on cancel, and after a confirm has promoted the rows.
  *
  * Candidates are worthless once the operator has decided — keeping them would

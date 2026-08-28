@@ -74,7 +74,29 @@ type Action =
   | { type: "UNLINK"; index: number }
   | { type: "KEEP"; side: "bsc" | "sl"; cardNumber: string }
   | { type: "KEEP_ALL"; side: "bsc" | "sl" }
-  | { type: "UNKEEP"; side: "bsc" | "sl"; cardNumber: string };
+  | { type: "UNKEEP"; side: "bsc" | "sl"; cardNumber: string }
+  // NEO-195: more candidates arrived while the operator is already working.
+  | {
+      type: "ABSORB";
+      autoMatched: MatchedPair[];
+      unmatchedBsc: PairingCard[];
+      unmatchedSl: PairingCard[];
+    };
+
+/**
+ * NEO-195 — stable identity for a candidate across streamed updates.
+ *
+ * The marketplace ref is the real identity; SportLots in particular reuses a
+ * card NUMBER across a card and its variations, so keying on the number would
+ * make three rows look like one and absorb would drop two of them.
+ */
+function candidateKey(c: PairingCard): string {
+  return (
+    c.platformData.bsc?.ref ??
+    c.platformData.sportlots?.ref ??
+    `#${c.cardNumber}`
+  );
+}
 
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
 function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
@@ -106,6 +128,47 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
+    /**
+     * NEO-195 — fold newly-ready candidates into a session already in progress.
+     *
+     * The fetch streams, so the modal opens on the first complete stem group
+     * and keeps receiving more. This must APPEND ONLY: whatever the operator
+     * has already linked, unlinked or kept stays exactly as they left it. A
+     * card is new if no bucket — including the kept shelves — already holds its
+     * ref.
+     */
+    case "ABSORB": {
+      const seen = new Set<string>([
+        ...state.matched.flatMap((m) => [
+          m.card.platformData.bsc?.ref,
+          m.card.platformData.sportlots?.ref,
+        ]),
+        ...state.unmatchedBsc.map(candidateKey),
+        ...state.unmatchedSl.map(candidateKey),
+        ...state.keptBsc.map(candidateKey),
+        ...state.keptSl.map(candidateKey),
+      ].filter(Boolean) as string[]);
+
+      const isNew = (c: PairingCard) => {
+        const bsc = c.platformData.bsc?.ref;
+        const sl = c.platformData.sportlots?.ref;
+        if (bsc && seen.has(bsc)) return false;
+        if (sl && seen.has(sl)) return false;
+        return !seen.has(candidateKey(c));
+      };
+
+      const newMatched = action.autoMatched.filter((m) => isNew(m.card));
+      const newBsc = action.unmatchedBsc.filter(isNew);
+      const newSl = action.unmatchedSl.filter(isNew);
+      if (!newMatched.length && !newBsc.length && !newSl.length) return state;
+
+      return {
+        ...state,
+        matched: [...state.matched, ...newMatched],
+        unmatchedBsc: [...state.unmatchedBsc, ...newBsc],
+        unmatchedSl: [...state.unmatchedSl, ...newSl],
+      };
+    }
     case "LINK": {
       const bi = state.unmatchedBsc.findIndex(
         (c) => c.cardNumber === action.bscNumber,
@@ -231,6 +294,8 @@ export default function CardPairingModal({
   onConfirm,
   setLabel,
   initialData,
+  isStreaming,
+  streamProgress,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -242,6 +307,16 @@ export default function CardPairingModal({
     unmatchedBsc: PairingCard[];
     unmatchedSl: PairingCard[];
   };
+  /**
+   * NEO-195 — the fetch is still running and more candidates are coming.
+   *
+   * Review may begin, but Confirm is BLOCKED while this is true: committing
+   * mid-stream would save a partial checklist and silently discard every card
+   * that had not arrived yet. Early review is the point; early commit is a bug.
+   */
+  isStreaming?: boolean;
+  /** Progress for the streaming banner: cards released / cards found so far. */
+  streamProgress?: { ready: number; total: number };
 }) {
   const [state, dispatch] = useReducer(reducer, {
     matched: initialData.autoMatched,
@@ -262,6 +337,18 @@ export default function CardPairingModal({
     initialData.unmatchedBsc.length > 0 || initialData.unmatchedSl.length > 0,
   );
   const [confirming, setConfirming] = useState(false);
+
+  // NEO-195: fold in candidates that became ready after the modal opened.
+  // Append-only (see the ABSORB case), so nothing the operator has already
+  // decided is disturbed.
+  useEffect(() => {
+    dispatch({
+      type: "ABSORB",
+      autoMatched: initialData.autoMatched,
+      unmatchedBsc: initialData.unmatchedBsc,
+      unmatchedSl: initialData.unmatchedSl,
+    });
+  }, [initialData]);
   // Everything paired and nothing set aside: the columns and keep shelf have
   // nothing to show and only add noise. Derived from CURRENT state, not the
   // initial snapshot, so unlinking a pair brings the columns straight back.
@@ -323,6 +410,9 @@ export default function CardPairingModal({
 
   const handleConfirm = useCallback(async () => {
     if (confirming) return;
+    // NEO-195: never commit a partial checklist. The button is disabled while
+    // streaming; this is the guard for a keyboard or programmatic path.
+    if (isStreaming) return;
     setConfirming(true);
     try {
       // Only confirmed pairs and deliberately-kept singles become NB cards.
@@ -339,7 +429,7 @@ export default function CardPairingModal({
     } finally {
       setConfirming(false);
     }
-  }, [confirming, onConfirm, state]);
+  }, [confirming, isStreaming, onConfirm, state]);
 
   if (!isOpen) return null;
 
@@ -391,6 +481,23 @@ export default function CardPairingModal({
                 ? "Every card paired across both marketplaces. Review and confirm — no cards are saved until you do."
                 : "No cards are saved until you confirm. Anything left in a column below is discarded — keep a card to save it as single-marketplace."}
             </p>
+            {/* NEO-195: cards arrive as they become reviewable, so say so.
+                Without this the list silently grows under the operator and a
+                disabled Confirm looks broken rather than deliberate. */}
+            {isStreaming && (
+              <p
+                className="text-xs text-[#00B7FF] mt-1"
+                role="status"
+                aria-live="polite"
+              >
+                Still loading — a card appears once its variations, players and
+                team are resolved
+                {streamProgress && streamProgress.total > 0
+                  ? ` (${streamProgress.ready} of ${streamProgress.total})`
+                  : ""}
+                . Confirm unlocks when the fetch finishes.
+              </p>
+            )}
           </header>
 
           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
@@ -673,10 +780,19 @@ export default function CardPairingModal({
               <NeonButton
                 size="2"
                 onClick={handleConfirm}
-                disabled={confirming}
+                disabled={confirming || isStreaming}
                 aria-label="Confirm card matches"
+                title={
+                  isStreaming
+                    ? "Still loading cards — confirming now would save only what has arrived"
+                    : undefined
+                }
               >
-                {confirming ? "Saving…" : "Confirm"}
+                {confirming
+                  ? "Saving…"
+                  : isStreaming
+                    ? "Loading…"
+                    : "Confirm"}
               </NeonButton>
             </div>
           </footer>

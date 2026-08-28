@@ -124,6 +124,15 @@ export default function CardChecklist({
   // away, which is why the pickers ended up matching on a display string.
   const ancestorSportId = ancestorChain?.find((c) => c.level === "sport")?._id;
   const fetchChecklist = useAction(api.selectorOptions.fetchCardChecklist);
+  // NEO-195: the fetch publishes candidates as they become reviewable, so the
+  // modal fills in live instead of waiting ~80s for the whole thing.
+  const liveCandidates = useQuery(
+    api.checklistCandidates.getReadyCandidates,
+    { selectorOptionId: variantId },
+  );
+  const discardCandidates = useMutation(
+    api.checklistCandidates.discardCandidates,
+  );
   const commitChecklist = useMutation(api.selectorOptions.commitCardChecklist);
   const resolveEntities = useAction(
     api.selectorOptions.resolveChecklistEntities,
@@ -194,6 +203,9 @@ export default function CardChecklist({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const newCardIdRef = useRef<Id<"cardChecklist"> | null>(null);
   const prevCardCountRef = useRef(0);
+  // NEO-195: true from the moment a sync starts until the action resolves.
+  // Distinct from `syncing`, which also covers the commit phase.
+  const [fetchInFlight, setFetchInFlight] = useState(false);
 
   /**
    * Three-phase pipeline (NEO-137 moved pairing to the front):
@@ -211,11 +223,16 @@ export default function CardChecklist({
    */
   const handleSync = async () => {
     setSyncing(true);
+    // NEO-195: opens the modal on the first ready group, and gates Confirm
+    // until the action resolves — reviewing early is the point, committing a
+    // partial checklist is not.
+    setFetchInFlight(true);
     setSyncMessage(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
       if (!result.success || !result.sportId) {
         setSyncMessage(result.message);
+        await discardCandidates({ selectorOptionId: variantId });
         return;
       }
       const nothingToPair =
@@ -244,6 +261,7 @@ export default function CardChecklist({
       );
     } finally {
       setSyncing(false);
+      setFetchInFlight(false);
     }
   };
 
@@ -305,6 +323,11 @@ export default function CardChecklist({
       // player/team was already enriched during the review wizard, before
       // this commit ran.
       setSyncMessage(`Saved ${result.count} cards.`);
+      // NEO-195: the candidates have been promoted into cardChecklist, so the
+      // staging rows have done their job. Dropping them here rather than
+      // leaving them for the next fetch's clear-stale step keeps the table
+      // empty between syncs.
+      await discardCandidates({ selectorOptionId: variantId });
     } catch (error) {
       setSyncMessage(
         `Commit failed: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -498,6 +521,47 @@ export default function CardChecklist({
     () => (cards ?? []).some((c) => c.isCrossListed),
     [cards],
   );
+  // NEO-195 — the live candidate view, shaped like the modal's initialData.
+  //
+  // Only while a fetch is in flight. Once the action resolves, `pendingPairing`
+  // holds the authoritative result and takes over — the two agree at that
+  // point, but preferring the action's own return keeps the completed path
+  // exactly as it was before streaming existed.
+  //
+  // A candidate carries its bucket, so the three columns come straight off it
+  // rather than being re-derived here.
+  const streamedPairing = useMemo(() => {
+    if (!fetchInFlight || !liveCandidates || liveCandidates.ready === 0) {
+      return null;
+    }
+    const toCard = (c: (typeof liveCandidates.cards)[number]): PairingCard => ({
+      cardNumber: c.cardNumber,
+      cardName: c.cardName,
+      teams: c.teams,
+      players: c.players,
+      attributes: c.attributes,
+      isRookie: c.isRookie,
+      isRelic: c.isRelic,
+      printRun: c.printRun,
+      autographType: c.autographType,
+      cardVariation: c.cardVariation,
+      platformData: c.platformData,
+      unmatched:
+        c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,
+    });
+    return {
+      autoMatched: liveCandidates.cards
+        .filter((c) => c.bucket === "matched")
+        .map((c) => ({ card: toCard(c), confidence: c.confidence ?? 1 })),
+      unmatchedBsc: liveCandidates.cards
+        .filter((c) => c.bucket === "bscOnly")
+        .map(toCard),
+      unmatchedSl: liveCandidates.cards
+        .filter((c) => c.bucket === "slOnly")
+        .map(toCard),
+    };
+  }, [fetchInFlight, liveCandidates]);
+
   const lastSynced = useMemo(() => {
     if (!cards || cards.length === 0) return null;
     return Math.max(
@@ -770,20 +834,29 @@ export default function CardChecklist({
         targetVariantId={variantId}
       />
 
-      {pendingPairing && (
+      {(pendingPairing || streamedPairing) && (
         <CardPairingModal
           isOpen
-          onClose={() => {
+          onClose={async () => {
             setPendingPairing(null);
             setSyncMessage("Sync cancelled — no cards saved.");
+            // NEO-195: candidates are worthless once the operator has walked
+            // away. Leaving them would make the NEXT fetch's clear-stale step
+            // do the work instead, one sync later and less obviously.
+            await discardCandidates({ selectorOptionId: variantId });
           }}
           onConfirm={handlePairingConfirm}
           setLabel={variantRow?.value}
-          initialData={{
-            autoMatched: pendingPairing.autoMatched,
-            unmatchedBsc: pendingPairing.unmatchedBsc,
-            unmatchedSl: pendingPairing.unmatchedSl,
-          }}
+          // While the fetch is still running the modal reads the LIVE
+          // candidates; once it resolves, the action's own result is
+          // authoritative and identical.
+          initialData={pendingPairing ?? streamedPairing!}
+          isStreaming={fetchInFlight}
+          streamProgress={
+            liveCandidates
+              ? { ready: liveCandidates.ready, total: liveCandidates.total }
+              : undefined
+          }
         />
       )}
 

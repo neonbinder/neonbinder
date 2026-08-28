@@ -80,4 +80,18 @@ crons.interval(
   {},
 );
 
+/**
+ * NEO-195 — reap checklist candidates whose fetch never finished.
+ *
+ * Confirm and cancel both clean up after themselves; this covers the run that
+ * simply died — closed tab, unhandled throw. Hourly against a one-hour
+ * staleness threshold, so a live fetch (~80s at worst) is never touched.
+ */
+crons.interval(
+  "reap abandoned checklist candidates",
+  { hours: 1 },
+  internal.checklistCandidates.sweepStaleCandidates,
+  {},
+);
+
 export default crons;

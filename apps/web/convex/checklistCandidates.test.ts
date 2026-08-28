@@ -244,3 +244,44 @@ describe("batch lifecycle", () => {
     expect(res).toEqual({ batchId: undefined, total: 0, ready: 0, cards: [] });
   });
 });
+
+describe("sweepStaleCandidates — the run that never finished", () => {
+  test("reaps rows older than the threshold and leaves fresh ones", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")], true);
+
+    // Age one row past the cutoff; a live fetch is never near it.
+    await t.run(async (ctx) => {
+      const rows = await ctx.db.query("checklistCandidates").collect();
+      await ctx.db.patch(rows[0]._id, {
+        lastUpdated: Date.now() - 2 * 60 * 60 * 1000,
+      });
+    });
+
+    const res = await t.mutation(
+      internal.checklistCandidates.sweepStaleCandidates,
+      {},
+    );
+    expect(res.deleted).toBe(1);
+    expect(
+      (
+        await t.query(api.checklistCandidates.getReadyCandidates, {
+          selectorOptionId: id,
+        })
+      ).total,
+    ).toBe(1);
+  });
+
+  test("a fetch in progress is never touched", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")]);
+
+    const res = await t.mutation(
+      internal.checklistCandidates.sweepStaleCandidates,
+      {},
+    );
+    expect(res.deleted).toBe(0);
+  });
+});
