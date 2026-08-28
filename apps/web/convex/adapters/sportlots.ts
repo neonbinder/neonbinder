@@ -677,46 +677,76 @@ async function fetchSetNames(
 /**
  * NEO-189 — pull a VARIATION marker out of a SportLots card description.
  *
- * SL appends ` [ VAR <name> ]` to the description of a variation and leaves the
- * card number IDENTICAL to its parent's. Confirmed live 2026-08-27 by walking
- * `listcards.tpl` for set 189991 (2021 Topps Heritage) as a logged-in seller:
+ * SportLots appends a bracketed suffix to a variation and leaves the card
+ * number IDENTICAL to its parent's. Confirmed live 2026-08-27/28:
  *
- *   11  2021 Topps Heritage #11 Alec Bohm|Spencer Howard
- *   11  2021 Topps Heritage #11 Alec Bohm [ VAR Action Image ]
- *   11  2021 Topps Heritage #11 Alec Bohm [ VAR Throwback Alternate ]
+ *   2021 Topps Heritage (set 189991)
+ *     11  … #11 Alec Bohm|Spencer Howard
+ *     11  … #11 Alec Bohm [ VAR Action Image ]
  *
- * This is why `platformRef` below is the full description and not the bare
- * number: the number alone cannot tell those three rows apart. (The existing
- * note at the `platformRef` assignment says exactly this — SL's variation
- * support was already known here, it just had no domain model behind it.)
+ *   2021 Topps (set 328996 era)
+ *     1   … #1 Fernando Tatis Jr.
+ *     1   … #1 Fernando Tatis Jr. [ Sliding ]
+ *     1   … #1 Fernando Tatis Jr. [ In Dugout ]
  *
- * Returns SL's RAW label (whitespace-normalised only) plus the description with
- * the marker stripped so `cardName` does not carry it.
+ * THE `VAR` PREFIX IS OPTIONAL. The first version of this required it, so an
+ * entire set written the second way — every 2021 Topps photo variation —
+ * parsed as an ordinary card. BSC flagged its side (`1b`, `1c`), SportLots
+ * did not flag its own, nothing paired, and 524 BSC-only sat opposite 88
+ * SL-only rows that were the very same cards.
  *
- * The label is deliberately NOT translated. SL's wording differs from BSC's for
- * the same variation ("Action Image" vs "Action"), and NeonBinder holds ONE
- * name per card — settled when the two sources are paired at import, not by an
- * adapter guessing.
+ * So the bracket itself is the marker and `VAR` is stripped when present.
  *
- * There is no shared vocabulary to map onto. Variation names are per-card and
- * very often unique — see lib/cards/variations.ts.
+ * ## The one thing a bracket does NOT mean
+ *
+ * A bracket holding nothing but a known attribute token — `[ SP ]`, `[ RC ]` —
+ * is describing the card, not naming a second version of it. Those are left
+ * alone; `tokenizeSlDescription` picks them up as attributes.
+ *
+ * The residual risk is a bracket that is neither: a genuinely new convention
+ * would be read as a variation name. That is the safer direction to fail —
+ * a mislabelled variation is visible in the review modal and fixable, whereas
+ * the previous failure silently dropped whole sets of pairings.
+ *
+ * Returns SL's RAW label. It is not translated: which NeonBinder name it and
+ * BSC's wording both mean is settled when the two are paired, not guessed by
+ * an adapter.
  */
+/**
+ * Bracket contents that describe the card rather than name a variation of it.
+ * Mirrors the tokens `tokenizeSlDescription` already lifts into attributes.
+ */
+const SL_BRACKET_ATTRIBUTE_TOKENS = new Set([
+  "SP",
+  "SSP",
+  "RC",
+  "AU",
+  "RELIC",
+  "MEM",
+  "VAR",
+]);
+
 export function parseSlVariationMarker(desc: string): {
   isVariation: boolean;
   /** SportLots' own wording for this card's variation, untranslated. */
   variationLabel?: string;
   residual: string;
 } {
-  // Tolerant of internal spacing: "[ VAR Action Image ]" and "[VAR Action]"
-  // both appear plausible from a hand-maintained catalog.
-  const m = desc.match(/\s*\[\s*VAR\s+([^\]]+?)\s*\]\s*/i);
+  // `VAR ` is optional — see the note above. Tolerant of internal spacing.
+  const m = desc.match(/\s*\[\s*(?:VAR\s+)?([^\]]+?)\s*\]\s*/i);
   if (!m) return { isVariation: false, residual: desc };
+  const inner = m[1].trim();
+  // A bracket holding only an attribute token describes the card rather than
+  // naming a second version of it.
+  if (SL_BRACKET_ATTRIBUTE_TOKENS.has(inner.toUpperCase())) {
+    return { isVariation: false, residual: desc };
+  }
   const residual = (desc.slice(0, m.index) + desc.slice(m.index! + m[0].length))
     .replace(/\s+/g, " ")
     .trim();
   return {
     isVariation: true,
-    variationLabel: displayVariationLabel(m[1]),
+    variationLabel: displayVariationLabel(inner),
     residual,
   };
 }

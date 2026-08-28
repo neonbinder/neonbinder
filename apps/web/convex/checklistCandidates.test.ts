@@ -58,8 +58,11 @@ async function startBatch(
   });
 }
 
-describe("the gate withholds what is not reviewable", () => {
-  test("nothing is shown while every card is still pending", async () => {
+describe("candidates are visible immediately; teams fill in behind them", () => {
+  test("cards are shown before their teams resolve", async () => {
+    // Pairing does not need a team, and Confirm is separately blocked while
+    // the fetch runs — so withholding rows only cost the operator the head
+    // start the streaming exists to give them.
     const t = convexTest(schema, modules);
     const id = await seedRow(t);
     await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")]);
@@ -68,11 +71,13 @@ describe("the gate withholds what is not reviewable", () => {
       selectorOptionId: id,
     });
     expect(res.total).toBe(2);
+    expect(res.cards).toHaveLength(2);
+    // …but they are marked as still enriching, so the UI can say so.
     expect(res.ready).toBe(0);
-    expect(res.cards).toEqual([]);
+    expect(res.cards.every((c) => c.teamResolved === false)).toBe(true);
   });
 
-  test("a card is released once its team resolves", async () => {
+  test("a resolved team lands on the card that was already visible", async () => {
     const t = convexTest(schema, modules);
     const id = await seedRow(t);
     await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")]);
@@ -86,8 +91,11 @@ describe("the gate withholds what is not reviewable", () => {
       selectorOptionId: id,
     });
     expect(res.ready).toBe(1);
-    expect(res.cards[0].cardNumber).toBe("1");
-    expect(res.cards[0].teams).toEqual(["Phillies"]);
+    const one = res.cards.find((c) => c.cardNumber === "1")!;
+    expect(one.teams).toEqual(["Phillies"]);
+    expect(one.teamResolved).toBe(true);
+    // The other card is still listed, still enriching.
+    expect(res.cards.find((c) => c.cardNumber === "2")!.teamResolved).toBe(false);
   });
 
   test("an EMPTY team result still releases the card", async () => {
@@ -108,6 +116,7 @@ describe("the gate withholds what is not reviewable", () => {
     });
     expect(res.ready).toBe(1);
     expect(res.cards[0].teams).toBeUndefined();
+    expect(res.cards[0].teamResolved).toBe(true);
   });
 
   test("a fetch needing no lookups is reviewable immediately", async () => {
@@ -122,10 +131,9 @@ describe("the gate withholds what is not reviewable", () => {
   });
 });
 
-describe("a parent and its variations are released together", () => {
-  test("the parent is WITHHELD while one of its variations is pending", async () => {
-    // Otherwise the operator reviews #20, moves on, and #20b appears
-    // underneath it afterwards — worse than not streaming at all.
+describe("a parent and its variations arrive together", () => {
+  test("a card and its variations are all present from the first read", async () => {
+    // Pairing #20b sensibly requires seeing #20 and #20c at the same time.
     const t = convexTest(schema, modules);
     const id = await seedRow(t);
     await startBatch(t, id, [
@@ -134,23 +142,21 @@ describe("a parent and its variations are released together", () => {
       cand("21", "b21"),
     ]);
 
-    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
-      batchId: "batch-1",
-      // #20 and #21 resolve; #20b has not.
-      resolved: [
-        { bscRef: "b20", teamName: "Orioles" },
-        { bscRef: "b21", teamName: "Mets" },
-      ],
-    });
-
     const res = await t.query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
-    // Only #21 — a stem of its own — is shown. Stem "20" is held back whole.
-    expect(res.cards.map((c) => c.cardNumber)).toEqual(["21"]);
+    expect(res.cards.map((c) => c.cardNumber).sort()).toEqual([
+      "20",
+      "20b",
+      "21",
+    ]);
+    // They share a stem, which is what keeps them grouped downstream.
+    const stems = new Map(res.cards.map((c) => [c.cardNumber, c.stem]));
+    expect(stems.get("20")).toBe(stems.get("20b"));
+    expect(stems.get("21")).not.toBe(stems.get("20"));
   });
 
-  test("the whole stem appears at once when the last member resolves", async () => {
+  test("teams resolving for one member does not disturb the others", async () => {
     const t = convexTest(schema, modules);
     const id = await seedRow(t);
     await startBatch(t, id, [
@@ -162,22 +168,11 @@ describe("a parent and its variations are released together", () => {
       batchId: "batch-1",
       resolved: [{ bscRef: "b20", teamName: "Orioles" }],
     });
-    expect(
-      (
-        await t.query(api.checklistCandidates.getReadyCandidates, {
-          selectorOptionId: id,
-        })
-      ).ready,
-    ).toBe(0);
-
-    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
-      batchId: "batch-1",
-      resolved: [{ bscRef: "b20b", teamName: "Orioles" }],
-    });
     const res = await t.query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
-    expect(res.cards.map((c) => c.cardNumber).sort()).toEqual(["20", "20b"]);
+    expect(res.cards).toHaveLength(2);
+    expect(res.ready).toBe(1);
   });
 });
 

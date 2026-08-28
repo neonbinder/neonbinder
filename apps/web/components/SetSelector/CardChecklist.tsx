@@ -522,6 +522,9 @@ export default function CardChecklist({
       printRun: c.printRun,
       autographType: c.autographType,
       cardVariation: c.cardVariation,
+      // NEO-189: without this the modal commits every variation as a
+      // standalone card — the flag has to survive the whole path.
+      isVariation: c.isVariation,
       platformData: c.platformData,
       unmatched:
         c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,

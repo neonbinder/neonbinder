@@ -16,20 +16,36 @@ import { cardNumberStem } from "../lib/cards/variations";
  * written as soon as reconciliation produces them, and released to the modal
  * only once they are genuinely reviewable.
  *
- * ## The gate is the feature
+ * ## What the gate actually guards — corrected 2026-08-28
  *
- * The obvious shortcut — open the modal early and let teams trickle in — was
- * proposed and rejected. A card missing its team still LOOKS reviewable, so the
- * operator either waits anyway (no gain) or approves something incomplete. That
- * swaps a visible wait for a silent correctness risk. Releasing a card only
- * when it is complete is what makes streaming safe rather than merely faster.
+ * The first version withheld a card from the modal until its team resolved.
+ * That was too strict, and it blocked the very work the streaming was for:
  *
- * ## Released by GROUP, not by card
+ *   "this is why I want to start seeing the cards stream in so that as a user
+ *    I can work through this while the teams stuff is still being sorted out"
  *
- * A variation and the card it varies share a card-number stem, and the whole
- * stem is released together. Otherwise an operator reviews #20, moves on, and
- * #20b appears underneath it afterwards — worse than not streaming, because now
- * the list changes under them.
+ * Both of the product owner's statements are right, because they are about
+ * different decisions:
+ *
+ *   PAIRING   — "BSC #1b is SportLots #1 [ Sliding ]" — needs card numbers and
+ *               descriptions. It does not need a team, and no pairing decision
+ *               changes when one arrives.
+ *   APPROVING — committing the checklist. Must not happen on incomplete data.
+ *
+ * Teams are consumed AFTER Confirm, by the entity-review wizard. So the honest
+ * gate is on CONFIRM, not on visibility — and that gate already exists in
+ * CardPairingModal (`isStreaming` disables the button). Withholding rows on top
+ * of it bought nothing and cost the operator the head start.
+ *
+ * Candidates are therefore released as soon as they are reconciled. `status`
+ * still tracks whether a row's team has resolved, so the UI can show enrichment
+ * in progress — it just no longer decides what may be seen.
+ *
+ * ## Stems still travel together
+ *
+ * A variation and the card it varies are written in the same batch and released
+ * together, so a parent never appears without its variations. That matters for
+ * pairing: you cannot sensibly link #1b while #1c is missing.
  */
 
 const bucketValidator = v.union(
@@ -70,7 +86,9 @@ export const startCandidateBatch = internalMutation({
     batchId: v.string(),
     userId: v.string(),
     candidates: v.array(candidateInputValidator),
-    // Cards needing no team lookup are reviewable the moment they are written.
+    // Whether every card's team is already known. When false the rows are still
+    // shown — see the note above — and simply carry `pending` until enrichment
+    // reaches them.
     readyImmediately: v.boolean(),
   },
   returns: v.object({ written: v.number(), cleared: v.number() }),
@@ -164,10 +182,12 @@ export const resolveCandidateTeams = internalMutation({
 });
 
 /**
- * The modal's live view: candidates whose whole stem group is reviewable.
+ * The modal's live view.
  *
- * A stem with ANY pending member is withheld entirely, so a parent and its
- * variations always arrive together.
+ * Returns EVERY candidate in the batch, pending teams included — pairing does
+ * not need a team, and Confirm is separately blocked until the fetch finishes.
+ * `ready` counts how many have their team so the UI can show enrichment
+ * progress.
  */
 export const getReadyCandidates = query({
   args: { selectorOptionId: v.id("selectorOptions") },
@@ -193,6 +213,7 @@ export const getReadyCandidates = query({
         bucket: bucketValidator,
         confidence: v.optional(v.number()),
         stem: v.string(),
+        teamResolved: v.boolean(),
       }),
     ),
   }),
@@ -207,11 +228,7 @@ export const getReadyCandidates = query({
       return { batchId: undefined, total: 0, ready: 0, cards: [] };
     }
 
-    const pendingStems = new Set(
-      rows.filter((r) => r.status === "pending").map((r) => r.stem),
-    );
     const cards = rows
-      .filter((r) => !pendingStems.has(r.stem))
       .map((r) => ({
         _id: r._id,
         cardNumber: r.cardNumber,
@@ -229,12 +246,15 @@ export const getReadyCandidates = query({
         bucket: r.bucket,
         confidence: r.confidence,
         stem: r.stem,
+        // Lets the row show "resolving team…" rather than an empty cell that
+        // looks like "this card has no team".
+        teamResolved: r.status === "ready",
       }));
 
     return {
       batchId: rows[0].batchId,
       total: rows.length,
-      ready: cards.length,
+      ready: rows.filter((r) => r.status === "ready").length,
       cards,
     };
   },

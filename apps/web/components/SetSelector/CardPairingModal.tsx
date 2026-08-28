@@ -51,6 +51,17 @@ export type PairingCard = {
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
+  /**
+   * NEO-189 — this card is a second version of another card in the set.
+   *
+   * It was missing here, and that silently broke variations end to end: the
+   * adapters set it, `previewCardValidator` carries it, and
+   * `commitCardChecklist` resolves the parent link from it — but the modal sits
+   * between them and dropped it, so every variation committed as a standalone
+   * card. The commit tests passed because they built cards directly and never
+   * went through this type.
+   */
+  isVariation?: boolean;
   platformData: {
     bsc?: { ref: string; setId?: string };
     sportlots?: { ref: string; setId?: string };
@@ -71,7 +82,10 @@ type State = {
 };
 
 type Action =
-  | { type: "LINK"; bscNumber: string; slNumber: string }
+  // Keyed on candidateKey (the marketplace ref), NOT the card number:
+  // SportLots files "#1 [ Sliding ]" and "#1 [ In Dugout ]" under the same
+  // number, so a number-keyed link silently picks whichever came first.
+  | { type: "LINK"; bscKey: string; slKey: string }
   | { type: "UNLINK"; index: number }
   | { type: "KEEP"; side: "bsc" | "sl"; cardNumber: string }
   | { type: "KEEP_ALL"; side: "bsc" | "sl" }
@@ -149,7 +163,11 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
     isRelic: attributes.includes("RELIC") || undefined,
     printRun: bsc.printRun ?? sl.printRun,
     autographType: bsc.autographType ?? sl.autographType,
-    cardVariation: bsc.cardVariation,
+    cardVariation: bsc.cardVariation ?? sl.cardVariation,
+    // Either side recognising a variation makes it one. BSC suffixes the
+    // number, SportLots brackets the description, and one may have catalogued
+    // a variation the other has not.
+    isVariation: bsc.isVariation || sl.isVariation || undefined,
     platformData: {
       ...(bsc.platformData.bsc ? { bsc: bsc.platformData.bsc } : {}),
       ...(sl.platformData.sportlots
@@ -204,10 +222,10 @@ function baseReducer(state: State, action: Action): State {
     }
     case "LINK": {
       const bi = state.unmatchedBsc.findIndex(
-        (c) => c.cardNumber === action.bscNumber,
+        (c) => candidateKey(c) === action.bscKey,
       );
       const si = state.unmatchedSl.findIndex(
-        (c) => c.cardNumber === action.slNumber,
+        (c) => candidateKey(c) === action.slKey,
       );
       if (bi === -1 || si === -1) return state;
       return {
@@ -529,10 +547,9 @@ export default function CardPairingModal({
                 role="status"
                 aria-live="polite"
               >
-                Still loading — a card appears once its variations, players and
-                team are resolved
+                Pair away — teams are still resolving in the background
                 {streamProgress && streamProgress.total > 0
-                  ? ` (${streamProgress.ready} of ${streamProgress.total})`
+                  ? ` (${streamProgress.ready} of ${streamProgress.total} done)`
                   : ""}
                 . Confirm unlocks when the fetch finishes.
               </p>
@@ -623,19 +640,19 @@ export default function CardPairingModal({
                       <button
                         type="button"
                         className={`flex-1 text-left text-sm rounded px-2 py-1 ${
-                          selectedBsc === c.cardNumber
+                          selectedBsc === candidateKey(c)
                             ? "bg-cyan-900/60 text-cyan-100"
                             : "bg-gray-800/60 text-gray-200"
                         }`}
                         onClick={() =>
                           setSelectedBsc(
-                            selectedBsc === c.cardNumber ? null : c.cardNumber,
+                            selectedBsc === candidateKey(c) ? null : candidateKey(c),
                           )
                         }
                         // Selection was conveyed by background colour alone.
-                        aria-pressed={selectedBsc === c.cardNumber}
+                        aria-pressed={selectedBsc === candidateKey(c)}
                         aria-label={
-                          selectedBsc === c.cardNumber
+                          selectedBsc === candidateKey(c)
                             ? `${label(c)}, selected. Press to deselect.`
                             : `Select BSC card ${label(c)}`
                         }
@@ -701,8 +718,8 @@ export default function CardPairingModal({
                           if (!selectedBsc) return;
                           dispatch({
                             type: "LINK",
-                            bscNumber: selectedBsc,
-                            slNumber: c.cardNumber,
+                            bscKey: selectedBsc,
+                            slKey: candidateKey(c),
                           });
                           setSelectedBsc(null);
                         }}
