@@ -34,10 +34,21 @@ INTERNAL_KEY_ENV = "SMOKE_INTERNAL_KEY"
 # service-wide, so after the allUsers invoker binding is removed (terraform
 # T2) even the health check needs it.
 ID_TOKEN_ENV = "SMOKE_ID_TOKEN"
-# Startup pre-warms BiRefNet, but tiered still runs real ONNX inference per
-# request — 15-60s on 4 vCPU is normal for /process. 240s catches hangs
-# while tolerating an honest slow pass (Cloud Run's own cap is 300s).
-REQUEST_TIMEOUT = 240.0
+# tiered runs real ONNX inference per request — 15-60s on 4 vCPU is normal for
+# /process — and since NEO-194 the request may ALSO pay the ~160-190s model
+# load, because the warm no longer blocks startup.
+#
+# 240 was safe only because it was standing behind a guard whose job was to
+# kill things: a revision that warmed slowly failed Cloud Run's 240s startup
+# probe and was destroyed, so this suite never met a genuinely cold instance.
+# End-to-end latency did not change with NEO-194 (Cloud Run's request timer
+# always included the cold-start wait) — what changed is that a slow warm now
+# produces one slow request instead of a dead revision, so the slow request is
+# something this suite can finally see.
+#
+# 280 sits just under Cloud Run's own 300s request cap, which is the real
+# ceiling: past that the platform kills the request no matter what we set.
+REQUEST_TIMEOUT = 280.0
 
 
 def _require_env(name: str) -> str:
@@ -124,6 +135,66 @@ class TestProcessAuth:
             files={"image": ("smoke.jpg", synthetic_card_image, "image/jpeg")},
         )
         assert response.status_code == 401, response.text
+
+
+# The warm is request-driven since NEO-194, so drive it before timing anything.
+# A cold /process would otherwise pay the model load itself and blow
+# REQUEST_TIMEOUT; /warmup gets its own, longer budget because on a genuinely
+# cold instance it IS the load.
+WARMUP_TIMEOUT = 280.0
+
+# A cold instance can spend longer loading the model than Cloud Run allows for
+# a single request (300s), so the FIRST /warmup on a scale-to-zero service can
+# be killed mid-load. That is recoverable and does not waste the work: the
+# background warm thread lives in the container, so a client disconnect does
+# not stop it, and the next call finds the session already resident. Measured
+# on the pr-195 preview: attempt 1 died at Cloud Run's cap, the immediate
+# retry returned {"status":"warm","was_cold":false} in 0.27s.
+WARMUP_ATTEMPTS = 3
+
+
+@pytest.fixture(scope="session", autouse=True)
+def warm_the_service(client: httpx.Client, auth_headers: dict[str, str], internal_key: str):
+    """Make the model resident before any test asserts on /process latency.
+
+    NEO-194 moved the BiRefNet warm off the blocking startup path so the
+    container can pass Cloud Run's 240s startup probe — it was losing that race
+    7 times in prod and 100+ on dev over two weeks. The consequence is that the
+    warm is now request-driven: Cloud Run throttles CPU while an instance is
+    idle, so the background thread barely progresses until traffic arrives.
+
+    That makes a cold /process pay the full ~160-190s load ON TOP of its own
+    work, which is over this suite's REQUEST_TIMEOUT. It is not a regression in
+    the service — it is this suite having quietly depended on the blocking
+    startup to warm the container for it. `/warmup` (NEO-175) is the actual
+    contract for readiness, and Convex already fans it out at session start, so
+    calling it here is what a real client does.
+
+    Synchronous and idempotent, so on an already-warm instance this returns
+    immediately and costs nothing. A failure here is a genuine smoke failure:
+    if the service cannot warm, nothing below is meaningful.
+
+    This is best-effort, NOT a guarantee, and REQUEST_TIMEOUT still has to
+    absorb a cold load without it. `/warmup` warms only the instance that
+    happens to serve it (NEO-175), and Cloud Run will route a later request to
+    a different instance whenever it feels like scaling out — observed here on
+    the pr-195 preview, where /warmup and /process landed on two different
+    instance ids and the second was cold. Convex handles the real workload by
+    fanning out N warmups for N capacity; one call cannot do the same job.
+    """
+    headers = {**auth_headers, "x-internal-key": internal_key}
+    last = "never attempted"
+    for attempt in range(1, WARMUP_ATTEMPTS + 1):
+        try:
+            response = client.post("/warmup", headers=headers, timeout=WARMUP_TIMEOUT)
+        except httpx.HTTPError as exc:
+            last = f"{type(exc).__name__}: {exc}"
+        else:
+            if response.status_code == 200 and response.json().get("status") == "warm":
+                return
+            last = f"HTTP {response.status_code}: {response.text[:200]}"
+        print(f"  /warmup attempt {attempt}/{WARMUP_ATTEMPTS} failed ({last}) — retrying")
+    raise AssertionError(f"/warmup never reported warm after {WARMUP_ATTEMPTS} attempts: {last}")
 
 
 class TestProcessHappyPath:
