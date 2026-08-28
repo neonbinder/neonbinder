@@ -335,8 +335,22 @@ function baseReducer(state: State, action: Action): State {
   }
 }
 
+/**
+ * NEO-189 — a variation's NAME is part of its label, not decoration.
+ *
+ * Without it a set's variations are indistinguishable in this list: 2021 Topps
+ * shows "#1b Fernando Tatis Jr." and "#1c Fernando Tatis Jr.", and three
+ * "#13x Mookie Betts" rows, with nothing to tell them apart. An operator
+ * pairing by hand has to pick the right one and cannot.
+ *
+ * The name is already on the card — BSC's "Sliding" / "In Dugout", SportLots'
+ * bracketed equivalent — it just was not being shown. Folding it into `label`
+ * rather than a badge means it reaches the aria-labels and the Maestro targets
+ * too, which is where the ambiguity would bite hardest.
+ */
 function label(card: PairingCard): string {
-  return `#${card.cardNumber} ${card.cardName}`.trim();
+  const base = `#${card.cardNumber} ${card.cardName}`.trim();
+  return card.cardVariation ? `${base} · ${card.cardVariation}` : base;
 }
 
 export default function CardPairingModal({

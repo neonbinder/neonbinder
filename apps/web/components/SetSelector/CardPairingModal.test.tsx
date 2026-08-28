@@ -370,3 +370,48 @@ describe("CardPairingModal — natural card-number order", () => {
     expect(numbersIn(/BSC only/)).toEqual(["20", "20b", "21"]);
   });
 });
+
+/**
+ * NEO-189 — a set's variations are otherwise indistinguishable in this list.
+ * 2021 Topps ships three "#13x Mookie Betts" rows; without the variation name
+ * an operator pairing by hand cannot tell which is which.
+ */
+describe("CardPairingModal — variation names are shown", () => {
+  const varCard = (n: string, name: string, variation: string): PairingCard => ({
+    cardNumber: n,
+    cardName: name,
+    cardVariation: variation,
+    isVariation: true,
+    platformData: { bsc: { ref: `bsc-${n}`, setId: "topps-2021" } },
+    unmatched: "sl",
+  });
+
+  test("two variations of one card are told apart by name", () => {
+    renderModal({
+      unmatchedBsc: [
+        varCard("1b", "Fernando Tatis Jr.", "Sliding"),
+        varCard("1c", "Fernando Tatis Jr.", "In Dugout"),
+      ],
+    });
+    expect(screen.getByText(/#1b Fernando Tatis Jr\. · Sliding/)).toBeTruthy();
+    expect(screen.getByText(/#1c Fernando Tatis Jr\. · In Dugout/)).toBeTruthy();
+  });
+
+  test("the name reaches the accessible label, not just the visible text", () => {
+    renderModal({
+      unmatchedBsc: [varCard("13b", "Mookie Betts", "Pointing Up")],
+    });
+    // Scoped to the select button — the text also appears as the button's own
+    // content, and the Keep control carries it too.
+    expect(
+      screen.getByRole("button", {
+        name: "Select BSC card #13b Mookie Betts · Pointing Up",
+      }),
+    ).toBeTruthy();
+  });
+
+  test("a card with no variation name is unchanged", () => {
+    renderModal({ unmatchedBsc: [bscCard("2", "Roberto Osuna")] });
+    expect(screen.getByText("#2 Roberto Osuna")).toBeTruthy();
+  });
+});
