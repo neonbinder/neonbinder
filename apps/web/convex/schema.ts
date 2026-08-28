@@ -735,6 +735,71 @@ export default defineSchema({
     // finds none stale, and stops.
     .index("by_status", ["status"]),
 
+  // NEO-195: candidate cards for ONE checklist fetch, written as reconciliation
+  // produces them so the review modal can fill in live instead of waiting for
+  // the whole fetch.
+  //
+  // WHY A SEPARATE TABLE AND NOT cardChecklist
+  //
+  // The modal promises, in its own subtitle, "No cards are saved until you
+  // confirm." Candidates are exactly the things that are NOT saved yet — the
+  // operator may discard any of them — so they cannot live in the catalog.
+  // Confirm promotes them; cancel drops them.
+  //
+  // WHY status EXISTS
+  //
+  // A fetch is fast (~6s) but the per-card BSC team lookup that follows is not
+  // (~74s on a 743-card set). Showing a card before its team resolves is worse
+  // than making the operator wait: it looks reviewable, so they either wait
+  // anyway and gain nothing, or approve a card that was not ready. `status` is
+  // the gate that makes streaming safe rather than merely faster.
+  //
+  // A row is `ready` only when everything a reviewer needs is on it — its
+  // variation grouping, its players, its team.
+  checklistCandidates: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    // One fetch run. Scopes cleanup and keeps a stale run from bleeding into a
+    // fresh one if an operator re-syncs before cancelling.
+    batchId: v.string(),
+    createdByUserId: v.string(),
+
+    // ── the reconciled card, mirroring previewCardValidator ────────────────
+    cardNumber: v.string(),
+    cardName: v.string(),
+    teams: v.optional(v.array(v.string())),
+    players: v.optional(v.array(v.string())),
+    attributes: v.optional(v.array(v.string())),
+    isRookie: v.optional(v.boolean()),
+    isRelic: v.optional(v.boolean()),
+    printRun: v.optional(v.number()),
+    autographType: v.optional(v.string()),
+    cardVariation: v.optional(v.string()),
+    isVariation: v.optional(v.boolean()),
+    platformData: cardPlatformWireDataValidator,
+
+    // ── which column of the modal this belongs in ──────────────────────────
+    bucket: v.union(
+      v.literal("matched"),
+      v.literal("bscOnly"),
+      v.literal("slOnly"),
+    ),
+    // Pairing confidence for a matched row; the modal surfaces a fuzzy match
+    // differently from an exact one.
+    confidence: v.optional(v.number()),
+
+    // ── streaming ─────────────────────────────────────────────────────────
+    // Card-number stem. A parent and its variations share one, and the whole
+    // group is released together — otherwise an operator reviews #20 and #20b
+    // appears underneath it afterwards.
+    stem: v.string(),
+    status: v.union(v.literal("pending"), v.literal("ready")),
+    lastUpdated: v.number(),
+  })
+    .index("by_batch", ["batchId"])
+    .index("by_batch_and_status", ["batchId", "status"])
+    // Cleanup and the "is a fetch already in flight for this row" check.
+    .index("by_selector_option", ["selectorOptionId"]),
+
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({
     name: v.string(),

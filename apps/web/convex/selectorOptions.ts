@@ -4886,14 +4886,84 @@ export const fetchCardChecklist = action({
       const needsTeamLookup = out.filter(
         (c) => !c.teams?.length && !c.team && c.platformData.bsc,
       );
+
+      // NEO-195 — publish the reconciled candidates NOW, before the team
+      // lookup, so the modal can start filling in at ~6s instead of ~80s.
+      //
+      // Every row goes in as `pending` when a lookup is outstanding; the chunk
+      // loop below releases them as their teams land. A card is withheld until
+      // it is genuinely reviewable, because a card missing its team still looks
+      // reviewable and an operator would either wait anyway or approve
+      // something incomplete.
+      //
+      // The action still returns the full result at the end. That keeps the
+      // existing modal working untouched while the streaming path is wired up
+      // behind it — the two are not meant to coexist for long.
+      const candidateBatchId = crypto.randomUUID();
+      const candidateUserId = (await getCurrentUserId(ctx)) ?? "unknown";
+      const toCandidate = (
+        card: ReconciledCard,
+        bucket: "matched" | "bscOnly" | "slOnly",
+        confidence?: number,
+      ) => ({
+        cardNumber: card.cardNumber,
+        cardName: card.cardName,
+        teams: card.teams,
+        players: card.players,
+        attributes: card.attributes,
+        isRookie: card.isRookie,
+        isRelic: card.isRelic,
+        printRun: card.printRun,
+        autographType: card.autographType,
+        cardVariation: card.cardVariation,
+        isVariation: card.isVariation,
+        platformData: card.platformData,
+        bucket,
+        confidence,
+      });
+      await ctx.runMutation(
+        internal.checklistCandidates.startCandidateBatch,
+        {
+          selectorOptionId: args.selectorOptionId,
+          batchId: candidateBatchId,
+          userId: candidateUserId,
+          candidates: [
+            ...autoMatchedCards.map((m) =>
+              toCandidate(m.card, "matched", m.confidence),
+            ),
+            ...unmatchedBscCards.map((c) => toCandidate(c, "bscOnly")),
+            ...unmatchedSlCards.map((c) => toCandidate(c, "slOnly")),
+          ],
+          readyImmediately: needsTeamLookup.length === 0,
+        },
+      );
+
       if (needsTeamLookup.length > 0) {
-        const teamNames: Record<string, string> = await ctx.runAction(
-          internal.adapters.buysportscards.fetchBscCardTeamNames,
-          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!.ref) },
-        );
-        for (const c of needsTeamLookup) {
-          const name = teamNames[c.platformData.bsc!.ref];
-          if (name) c.teams = [name];
+        // Chunked, so each chunk's results reach the modal as they resolve
+        // rather than all at once when the last card returns. The chunk is
+        // deliberately a multiple of BSC_TEAM_LOOKUP_CONCURRENCY so each round
+        // trip still saturates the fan-out.
+        const TEAM_LOOKUP_CHUNK = 50;
+        for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
+          const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
+          const teamNames: Record<string, string> = await ctx.runAction(
+            internal.adapters.buysportscards.fetchBscCardTeamNames,
+            { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
+          );
+          for (const c of chunk) {
+            const name = teamNames[c.platformData.bsc!.ref];
+            if (name) c.teams = [name];
+          }
+          await ctx.runMutation(
+            internal.checklistCandidates.resolveCandidateTeams,
+            {
+              batchId: candidateBatchId,
+              resolved: chunk.map((c) => ({
+                bscRef: c.platformData.bsc!.ref,
+                teamName: teamNames[c.platformData.bsc!.ref],
+              })),
+            },
+          );
         }
       }
 
