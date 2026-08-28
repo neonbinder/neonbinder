@@ -869,9 +869,31 @@ export const fetchSportLotsChecklist = action({
         };
       }
 
-      // Parse card table rows
-      // Pattern: <td class="smallleft">CARD_NUMBER</td> ... <td class="smallleft">DESCRIPTION</td>
-      const cardRegex = /<td class="smallleft">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
+      // Parse card table rows.
+      //
+      // Pattern: <td class="small(color)?left">CARD_NUMBER</td>
+      //          <td class="smallleft">DESCRIPTION</td>
+      //
+      // NEO-189 — the number cell carries a DIFFERENT class on a variation row.
+      // SportLots tints the card number when a row is a variation of the row
+      // above it, and it does that by swapping the class:
+      //
+      //   base row       <td class="smallleft">20</td>
+      //                  <td class="smallleft">2025 Topps Base Set #20 Coby Mayo</td>
+      //   variation row  <td class="smallcolorleft">20</td>
+      //                  <td class="smallleft">… #20 Coby Mayo [ VAR Factory Set ]</td>
+      //
+      // Verified against the live listcards page for set 328996 on 2026-08-27.
+      //
+      // The old pattern required "smallleft" on BOTH cells, so it matched the
+      // base row and skipped the variation entirely — silently, since a
+      // non-matching row is simply not a row. Every SportLots variation has
+      // therefore been invisible to NeonBinder: a 2025 Topps sync reported
+      // "0 SL-only" and paired 0 variations, and both numbers looked like
+      // "SportLots does not carry these" rather than "we never parsed them".
+      //
+      // Only the number cell varies; the description cell stays "smallleft".
+      const cardRegex = /<td class="small(?:color)?left">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
       const cards: Array<{
         cardNumber: string;
         cardName: string;
