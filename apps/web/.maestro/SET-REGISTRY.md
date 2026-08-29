@@ -75,10 +75,25 @@ per-worker custom set (see below).
 
 ### The one sanctioned read-only visitor
 
-`checklist-pairing-dialog-cancel` (NEO-137) syncs `Insert → Future Stars` on the
-real anchor and then **cancels** the card-pairing dialog. Cancel returns before
-`commitCardChecklist`, so nothing is written and the set is left exactly as
-`setup.yaml` provisioned it — it reads, it does not write.
+`checklist-pairing-dialog-cancel` (NEO-137, extended by NEO-189) syncs
+`Insert → Future Stars` on the real anchor and then **cancels** the card-pairing
+dialog. Cancel returns before `commitCardChecklist`, so nothing is written and
+the set is left exactly as `setup.yaml` provisioned it — it reads, it does not
+write.
+
+Since NEO-189 it also unlinks two of the auto-matched pairs and cross-links
+their halves, to raise the name-conflict warning on a merged row. That is still
+read-only: unlink / link / choose-name are all `CardPairingModal` reducer state,
+and the flow still exits through Cancel, which discards the candidate batch
+without touching `cardChecklist`.
+
+It must stay the ONLY flow that fetches this set. `startCandidateBatch` clears
+every `checklistCandidates` row for a `selectorOptionId` **globally**, and
+`getReadyCandidates` is **not** user-scoped, so two runners streaming Future
+Stars at the same time can empty each other's live candidates — which unmounts
+the other one's dialog mid-review (`streamedPairing` goes null while
+`pendingPairing` is still unset). **Do not add a second Future Stars fetcher;
+extend this flow instead.**
 
 It cannot use a custom set: a custom subtree is short-circuited before any
 marketplace fetch (`isCustomSubtree`, NEO-22), so it produces no candidates, and
