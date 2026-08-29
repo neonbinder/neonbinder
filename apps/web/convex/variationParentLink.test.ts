@@ -169,3 +169,108 @@ describe("deleteCard — the variation cascade", () => {
     expect(rows.b!.variationOfCardId).toBe(parent as Id<"cardChecklist">);
   });
 });
+
+describe("setCardVariationParent — the operator's escape hatch", () => {
+  test("links a card as a variation and marks it manual", async () => {
+    const t = convexTest(schema, modules);
+    const { parent, unrelated } = await seedSetWithVariations(t);
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: unrelated,
+        parentCardId: parent,
+      });
+
+    const row = await t.run(async (ctx) => ctx.db.get(unrelated));
+    expect(row!.variationOfCardId).toBe(parent);
+    // Marked, so the next sync leaves it alone.
+    expect(row!.variationParentManual).toBe(true);
+  });
+
+  test("clearing also counts as a decision and is marked", async () => {
+    // Otherwise the next sync re-derives the very link just removed.
+    const t = convexTest(schema, modules);
+    const { varA } = await seedSetWithVariations(t);
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setCardVariationParent, { cardId: varA });
+
+    const row = await t.run(async (ctx) => ctx.db.get(varA));
+    expect(row!.variationOfCardId).toBeUndefined();
+    expect(row!.variationParentManual).toBe(true);
+  });
+
+  test("requires an admin", async () => {
+    const t = convexTest(schema, modules);
+    const { parent, unrelated } = await seedSetWithVariations(t);
+    await expect(
+      t.mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: unrelated,
+        parentCardId: parent,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("a card cannot be a variation of itself", async () => {
+    const t = convexTest(schema, modules);
+    const { parent } = await seedSetWithVariations(t);
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: parent,
+        parentCardId: parent,
+      }),
+    ).rejects.toThrow(/itself/);
+  });
+
+  test("the parent must be in the same checklist", async () => {
+    const t = convexTest(schema, modules);
+    const { unrelated } = await seedSetWithVariations(t);
+    const otherSetCard = await t.run(async (ctx) => {
+      const other = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        platformData: {},
+        lastUpdated: Date.now(),
+      });
+      return ctx.db.insert("cardChecklist", {
+        selectorOptionId: other,
+        cardNumber: "1",
+        cardName: "Elsewhere",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      });
+    });
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: unrelated,
+        parentCardId: otherSetCard,
+      }),
+    ).rejects.toThrow(/same checklist/);
+  });
+
+  test("variations do not nest — parenting to a variation is refused", async () => {
+    const t = convexTest(schema, modules);
+    const { varA, unrelated } = await seedSetWithVariations(t);
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: unrelated,
+        parentCardId: varA,
+      }),
+    ).rejects.toThrow(/one level deep/);
+  });
+
+  test("a card that already has variations cannot become one", async () => {
+    const t = convexTest(schema, modules);
+    const { parent, unrelated } = await seedSetWithVariations(t);
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: parent,
+        parentCardId: unrelated,
+      }),
+    ).rejects.toThrow(/own variations/);
+  });
+});

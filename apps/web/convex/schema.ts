@@ -406,6 +406,20 @@ export default defineSchema({
     // which follows the same discipline `deleteCardCrossListingsFor` already
     // establishes for junction rows.
     variationOfCardId: v.optional(v.id("cardChecklist")),
+    // NEO-189: the operator set this parent by hand, so automation must leave
+    // it alone.
+    //
+    // Without this a re-sync silently undoes the correction: the commit pass
+    // re-derives every link from the card-number stem and clears any row it
+    // did not derive, so a hand-set parent survives exactly until the next
+    // fetch. That is the same failure NEO-137 fixed for card pairing, and it
+    // is fixed the same way — `placeholderPairs.mechanism: "manual"` marks a
+    // pair the automatic diff must skip, and this marks a parent link the
+    // automatic diff must skip.
+    //
+    // Set only by `setCardVariationParent` and by a custom card created with a
+    // parent. Never set by the marketplace commit path.
+    variationParentManual: v.optional(v.boolean()),
     // NEO-25: marketplace-agnostic listing title & description, authored once
     // and reused by every marketplace adapter (eBay/SportLots/BSC/MySlabs/
     // MyCardPost) so a listing doesn't recompute the title each time. NOT

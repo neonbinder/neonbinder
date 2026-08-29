@@ -71,6 +71,8 @@ type CardDetailCard = {
   isRelic?: boolean;
   printRun?: number;
   cardVariation?: string;
+  // NEO-189: the card this one varies, when it is a variation.
+  variationOfCardId?: Id<"cardChecklist">;
   listingTitle?: string;
   listingDescription?: string;
   imageUrls?: { front?: string; back?: string };
@@ -128,6 +130,58 @@ export default function CardDetailPanel({
 }: CardDetailPanelProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const setCardFeature = useMutation(api.selectorOptions.setCardFeature);
+  const setVariationParent = useMutation(
+    api.selectorOptions.setCardVariationParent,
+  );
+  // NEO-189: the other cards in this checklist, so a variation can be pointed
+  // at the one it varies. Convex dedupes same-arg queries, so this rides along
+  // with the checklist the panel is already open inside.
+  const siblingCards = useQuery(api.selectorOptions.getCardChecklist, {
+    selectorOptionId: card.selectorOptionId,
+  });
+  const [parentError, setParentError] = useState<string | null>(null);
+  const [parentNumber, setParentNumber] = useState("");
+  const parentCard = useMemo(
+    () =>
+      card.variationOfCardId
+        ? (siblingCards ?? []).find((c) => c._id === card.variationOfCardId)
+        : undefined,
+    [card.variationOfCardId, siblingCards],
+  );
+
+  /**
+   * Resolve a typed card number to a sibling and set (or clear) the link.
+   *
+   * An empty value clears. A number that matches nothing is reported rather
+   * than silently ignored — a typo that quietly does nothing is worse than one
+   * that says so.
+   */
+  const applyVariationParent = async (raw: string) => {
+    setParentError(null);
+    const wanted = raw.trim();
+    try {
+      if (!wanted) {
+        await setVariationParent({ cardId: card._id });
+        setParentNumber("");
+        return;
+      }
+      const match = (siblingCards ?? []).find(
+        (c) => c.cardNumber.toLowerCase() === wanted.toLowerCase(),
+      );
+      if (!match) {
+        setParentError(`No card #${wanted} in this checklist.`);
+        return;
+      }
+      await setVariationParent({ cardId: card._id, parentCardId: match._id });
+      setParentNumber("");
+    } catch (err) {
+      // The mutation refuses self-parenting, cross-checklist parents and
+      // nesting. Show why rather than leaving the field looking accepted.
+      setParentError(
+        err instanceof Error ? err.message : "Could not set the parent card",
+      );
+    }
+  };
   // NEO-21: every guest set this card is cross-listed into. A property of the
   // card itself, so it renders whether the panel was opened from the card's
   // home checklist or from one of its guest checklists.
@@ -535,6 +589,69 @@ export default function CardDetailPanel({
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
             />
+          </div>
+
+          {/* NEO-189 — which card this one is a variation OF.
+
+              The import derives this from the card number (BSC suffixes it,
+              SportLots brackets the description), but that cannot cover a
+              variation whose number shares no stem with its parent, or a set
+              being built by hand. This is the escape hatch, and the only way a
+              custom set gets variations at all.
+
+              A CARD NUMBER, not a picker. A checklist runs to hundreds of
+              cards, so a dropdown would be hundreds of options to scroll and
+              toggle pills are not an option at that size. The operator already
+              thinks "this is a variation of #1" — typing 1 is both faster and
+              how they hold the problem. It is also keyboard-first, which this
+              app requires.
+
+              A choice made here is marked manual and the next sync leaves it
+              alone — see setCardVariationParent. */}
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1"
+              htmlFor="variation-of-input"
+            >
+              Variation of
+            </label>
+            {parentCard ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm flex-1 truncate">
+                  #{parentCard.cardNumber} {parentCard.cardName}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void applyVariationParent("")}
+                  className="text-xs px-2 py-1 rounded border border-gray-600 hover:bg-gray-700"
+                  aria-label="Clear variation parent"
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <Input
+                bare
+                type="text"
+                value={parentNumber}
+                onChange={(e) => setParentNumber(e.target.value)}
+                onBlur={() => void applyVariationParent(parentNumber)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void applyVariationParent(parentNumber);
+                  }
+                }}
+                className="w-full p-1.5 text-sm"
+                placeholder="Card number, e.g. 1"
+                aria-label="Card number this one is a variation of"
+              />
+            )}
+            {parentError && (
+              <p className="text-xs text-[#FF2EB3] mt-1" role="alert">
+                {parentError}
+              </p>
+            )}
           </div>
 
           {/* Players */}

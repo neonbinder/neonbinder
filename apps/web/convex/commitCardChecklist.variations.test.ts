@@ -277,3 +277,76 @@ describe("commitCardChecklist — variation linking", () => {
     ).toBeUndefined();
   });
 });
+
+describe("a hand-set variation parent survives re-sync", () => {
+  test("the commit pass does not re-derive over an operator's link", async () => {
+    // Without this the correction lasts exactly until the next fetch — the
+    // same failure NEO-137 fixed for card pairing.
+    const t = convexTest(schema, modules);
+    const { sportId, variantTypeId } = await seedTree(t);
+
+    // #7 and #900 share no stem, so no derivation would ever link them.
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.selectorOptions.commitCardChecklist,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [card("7", "Brandon Belt"), card("900", "Brandon Belt SP")],
+      },
+    );
+
+    const before = await readChecklist(t, variantTypeId);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: before.byNumber.get("900")!._id,
+        parentCardId: before.byNumber.get("7")!._id,
+      });
+
+    // Re-sync the identical payload.
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.selectorOptions.commitCardChecklist,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [card("7", "Brandon Belt"), card("900", "Brandon Belt SP")],
+      },
+    );
+
+    const after = await readChecklist(t, variantTypeId);
+    expect(after.byNumber.get("900")!.variationOfCardId).toBe(
+      after.byNumber.get("7")!._id,
+    );
+  });
+
+  test("a hand-CLEARED link is not re-derived either", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, variantTypeId } = await seedTree(t);
+    const cards = [
+      card("11", "Phillies 2021 Rookie Stars"),
+      card("11b", "Alec Bohm", { isVariation: true, cardVariation: "Action" }),
+    ];
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.selectorOptions.commitCardChecklist,
+      { selectorOptionId: variantTypeId, sportId, cards },
+    );
+    const before = await readChecklist(t, variantTypeId);
+    expect(before.byNumber.get("11b")!.variationOfCardId).toBeDefined();
+
+    // The operator says 11b is NOT a variation of 11.
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.setCardVariationParent, {
+        cardId: before.byNumber.get("11b")!._id,
+      });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(
+      api.selectorOptions.commitCardChecklist,
+      { selectorOptionId: variantTypeId, sportId, cards },
+    );
+
+    const after = await readChecklist(t, variantTypeId);
+    expect(after.byNumber.get("11b")!.variationOfCardId).toBeUndefined();
+  });
+});

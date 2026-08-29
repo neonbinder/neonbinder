@@ -640,6 +640,7 @@ export const getCardChecklist = query({
       // the exact failure `selectorOptionFields` exists to prevent one table
       // over.
       variationOfCardId: v.optional(v.id("cardChecklist")),
+      variationParentManual: v.optional(v.boolean()),
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
       listingTitle: v.optional(v.string()),
       listingDescription: v.optional(v.string()),
@@ -1877,6 +1878,91 @@ async function orphanVariationsOf(
     });
   }
 }
+
+/**
+ * NEO-189 — set or clear a card's variation parent by hand.
+ *
+ * The import derivation handles the common shape (BSC suffixes a number,
+ * SportLots brackets a description), but it cannot cover everything: a
+ * variation whose number shares no stem with its parent, a set the operator is
+ * building by hand, or simply a case the rule got wrong. This is the escape
+ * hatch, and it is the only way a custom set gets variations at all.
+ *
+ * The link is marked `variationParentManual`, which the commit pass skips —
+ * see the note on the schema field. An operator's answer is not re-derived.
+ *
+ * ## What is refused, and why
+ *
+ * A card may not be its own parent, and a parent must live in the SAME
+ * checklist: a variation belongs to the card it varies, and the two are by
+ * definition the same slot in the same set.
+ *
+ * A variation may not parent another variation. Variations are one level deep
+ * — "#1c is a variation of #1b" describes nothing real, and allowing it means
+ * the set builder has to render an arbitrarily deep tree and guard against
+ * cycles. Rejecting it here keeps that impossible rather than merely unlikely.
+ *
+ * Making a card a parent while it is itself someone's variation is refused for
+ * the same reason, from the other direction.
+ */
+export const setCardVariationParent = mutation({
+  args: {
+    cardId: v.id("cardChecklist"),
+    // Absent clears the link, turning the card back into an ordinary one.
+    parentCardId: v.optional(v.id("cardChecklist")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const card = await ctx.db.get(args.cardId);
+    if (!card) throw new Error("setCardVariationParent: no such card");
+
+    if (!args.parentCardId) {
+      await ctx.db.patch(args.cardId, {
+        variationOfCardId: undefined,
+        // Clearing is itself an operator decision: without keeping the marker,
+        // the next sync would re-derive the very link they just removed.
+        variationParentManual: true,
+        lastUpdated: Date.now(),
+      });
+      return null;
+    }
+
+    if (args.parentCardId === args.cardId) {
+      throw new Error("A card cannot be a variation of itself.");
+    }
+    const parent = await ctx.db.get(args.parentCardId);
+    if (!parent) throw new Error("setCardVariationParent: no such parent card");
+    if (parent.selectorOptionId !== card.selectorOptionId) {
+      throw new Error(
+        "A variation must belong to the same checklist as the card it varies.",
+      );
+    }
+    if (parent.variationOfCardId) {
+      throw new Error(
+        "That card is itself a variation. Variations are one level deep — pick the base card instead.",
+      );
+    }
+    const ownChildren = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_variation_parent", (q) =>
+        q.eq("variationOfCardId", args.cardId),
+      )
+      .first();
+    if (ownChildren) {
+      throw new Error(
+        "This card has its own variations. Move them first, or variations would nest.",
+      );
+    }
+
+    await ctx.db.patch(args.cardId, {
+      variationOfCardId: args.parentCardId,
+      variationParentManual: true,
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
 
 export const deleteCard = mutation({
   args: { id: v.id("cardChecklist") },
@@ -5626,10 +5712,23 @@ export const commitCardChecklist = mutation({
         variationLabel: c.cardVariation,
       })),
     );
+    // NEO-189: a hand-set parent is the operator's answer and outranks the
+    // derivation, exactly as a confirmed card pairing does (NEO-137). Without
+    // this the pass below re-derives the link from the stem and clears anything
+    // it did not derive, so a correction would survive only until the next
+    // fetch.
+    const manualParentIds = new Set<string>();
+    for (const id of storedIdByIndex) {
+      if (!id) continue;
+      const row = await ctx.db.get(id);
+      if (row?.variationParentManual) manualParentIds.add(id as string);
+    }
+
     let variationsLinked = 0;
     for (const [childIndex, parentIndex] of variationLinks.parentByIndex) {
       const childId = storedIdByIndex[childIndex];
       const parentId = storedIdByIndex[parentIndex];
+      if (childId && manualParentIds.has(childId as string)) continue;
       // A row the loop skipped (blank card number) has no id; skip rather than
       // write a dangling pointer.
       if (!childId || !parentId || childId === parentId) continue;
@@ -5646,6 +5745,7 @@ export const commitCardChecklist = mutation({
       if (variationLinks.parentByIndex.has(i)) continue;
       const id = storedIdByIndex[i];
       if (!id) continue;
+      if (manualParentIds.has(id as string)) continue;
       const row = await ctx.db.get(id);
       if (row?.variationOfCardId) {
         await ctx.db.patch(id, {
