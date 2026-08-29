@@ -40,6 +40,8 @@ function renderModal(
     unmatchedBsc: PairingCard[];
     unmatchedSl: PairingCard[];
     setLabel: string;
+    isStreaming: boolean;
+    streamProgress: { ready: number; total: number };
   }> = {},
 ) {
   const onConfirm = vi.fn().mockResolvedValue(undefined);
@@ -49,6 +51,8 @@ function renderModal(
       onClose={vi.fn()}
       onConfirm={onConfirm}
       setLabel={overrides.setLabel}
+      isStreaming={overrides.isStreaming}
+      streamProgress={overrides.streamProgress}
       initialData={{
         autoMatched: overrides.autoMatched ?? [],
         unmatchedBsc: overrides.unmatchedBsc ?? [],
@@ -413,5 +417,117 @@ describe("CardPairingModal — variation names are shown", () => {
   test("a card with no variation name is unchanged", () => {
     renderModal({ unmatchedBsc: [bscCard("2", "Roberto Osuna")] });
     expect(screen.getByText("#2 Roberto Osuna")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-195/a11y — the a11y defect this pins: Confirm used to go native
+ * `disabled` while streaming, which pulls a button out of the tab order
+ * entirely. A keyboard user tabbing through the footer would never even land
+ * on Confirm to learn why it wasn't doing anything. The fix keeps it
+ * FOCUSABLE via `aria-disabled` and relies on `handleConfirm`'s own
+ * `isStreaming` guard to make activating it a no-op. Native `disabled` is
+ * reserved for the real terminal state (`confirming`, i.e. already saving).
+ *
+ * An unwitting "simplification" back to a single `disabled={isStreaming ||
+ * confirming}` would reintroduce exactly the defect that was fixed — these
+ * tests exist to catch that regression specifically.
+ */
+describe("CardPairingModal — isStreaming (NEO-195/a11y)", () => {
+  test("Confirm stays focusable (no native disabled) while streaming", () => {
+    renderModal({ isStreaming: true });
+    const confirm = screen.getByLabelText(
+      "Confirm card matches",
+    ) as HTMLButtonElement;
+    // The accessibility-defect regression: native `disabled` removes a
+    // button from the tab order. It must stay false while merely streaming.
+    expect(confirm.disabled).toBe(false);
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  test("Confirm carries aria-describedby pointing at the streaming status region", () => {
+    renderModal({ isStreaming: true });
+    const confirm = screen.getByLabelText("Confirm card matches");
+    expect(confirm.getAttribute("aria-describedby")).toBe(
+      "pairing-streaming-status",
+    );
+    // The id it points at must actually exist and be the status banner.
+    const status = document.getElementById("pairing-streaming-status");
+    expect(status).toBeTruthy();
+    expect(status?.getAttribute("role")).toBe("status");
+  });
+
+  test("Confirm has no aria-describedby when not streaming", () => {
+    renderModal({});
+    const confirm = screen.getByLabelText("Confirm card matches");
+    expect(confirm.hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  test('label reads "Loading…" while streaming', () => {
+    renderModal({ isStreaming: true });
+    expect(
+      screen.getByRole("button", { name: "Confirm card matches" }).textContent,
+    ).toBe("Loading…");
+  });
+
+  test('label reads "Confirm" when neither streaming nor confirming', () => {
+    renderModal({});
+    expect(
+      screen.getByRole("button", { name: "Confirm card matches" }).textContent,
+    ).toBe("Confirm");
+  });
+
+  test('label reads "Saving…" once the terminal confirming state is reached, even though the button IS natively disabled there', async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+    // Hold onConfirm open so the component stays in the `confirming` state
+    // long enough to assert against.
+    let resolveConfirm: () => void = () => {};
+    onConfirm.mockImplementation(
+      () => new Promise<void>((resolve) => (resolveConfirm = resolve)),
+    );
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText("Confirm card matches") as HTMLButtonElement)
+          .disabled,
+      ).toBe(true),
+    );
+    expect(
+      screen.getByRole("button", { name: "Confirm card matches" }).textContent,
+    ).toBe("Saving…");
+
+    resolveConfirm();
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+  });
+
+  test("activating the still-focusable Confirm while streaming is a no-op — onConfirm is NOT called", () => {
+    const { onConfirm } = renderModal({
+      isStreaming: true,
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  test("the streaming banner has role=status and reports N-of-M progress", () => {
+    renderModal({
+      isStreaming: true,
+      streamProgress: { ready: 7, total: 20 },
+    });
+    const status = screen.getByRole("status");
+    expect(status.id).toBe("pairing-streaming-status");
+    expect(status.textContent).toContain("7 of 20 done");
+  });
+
+  test("the streaming banner is absent when not streaming", () => {
+    renderModal({});
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(document.getElementById("pairing-streaming-status")).toBeNull();
   });
 });

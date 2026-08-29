@@ -149,3 +149,121 @@ describe("CardChecklistItem", () => {
     expect(screen.getByLabelText("Confirm delete card 42")).toBeTruthy();
   });
 });
+
+/**
+ * NEO-189 — variation grouping.
+ *
+ * Covers what the click-behaviour tests above never touched: the subtitle
+ * composition (parent "N variations" count, child "Variation of #X", and
+ * cardVariation), the disclosure's aria-expanded + label flip, the
+ * always-present fixed-width disclosure slot (so row width never depends on
+ * whether a given row has variations — that stability is what keeps the
+ * virtualized list from re-measuring), and that the disclosure's click does
+ * NOT also open the card detail panel.
+ */
+describe("CardChecklistItem — variation grouping (NEO-189)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeleteCard.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a parent's subtitle reports its variation count, pluralized", () => {
+    renderItem({ variationCount: 3 });
+    expect(screen.getByText("3 variations")).toBeTruthy();
+  });
+
+  it("a parent's subtitle uses the singular for exactly one variation", () => {
+    renderItem({ variationCount: 1 });
+    expect(screen.getByText("1 variation")).toBeTruthy();
+  });
+
+  it("a variation row's subtitle names its parent by card number", () => {
+    renderItem({ isVariation: true, parentCardNumber: "11" });
+    expect(screen.getByText("Variation of #11")).toBeTruthy();
+  });
+
+  it("cardVariation appears in the subtitle line alongside other parts", () => {
+    const { container } = renderItem({
+      card: makeCard({ cardVariation: "Refractor", printRun: 99 }),
+    });
+    // Composed as "<team> · /99 · Refractor · ..." — assert the whole line
+    // rather than a lone getByText so the join-with-others is exercised too.
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("/99 · Refractor");
+  });
+
+  it("a variation row's subtitle joins 'Variation of #X' with its own cardVariation", () => {
+    renderItem({
+      isVariation: true,
+      parentCardNumber: "13",
+      card: makeCard({ cardVariation: "Pointing Up" }),
+    });
+    expect(
+      screen.getByText("Variation of #13 · Pointing Up"),
+    ).toBeTruthy();
+  });
+
+  it("the disclosure slot is present even on a row with no variations (fixed-width, so row widths never vary by content)", () => {
+    const { container } = renderItem();
+    // No variationCount/onToggleVariations passed — the slot span still
+    // renders, just empty, so this row is exactly as wide as one with
+    // variations.
+    const slot = container.querySelector(".w-6.h-6.shrink-0");
+    expect(slot).toBeTruthy();
+    expect(slot?.querySelector("button")).toBeNull();
+  });
+
+  it("the disclosure slot is present and populated on a parent row with variations", () => {
+    const onToggleVariations = vi.fn();
+    renderItem({ variationCount: 2, onToggleVariations });
+    const slot = document.querySelector(".w-6.h-6.shrink-0");
+    expect(slot?.querySelector("button")).toBeTruthy();
+  });
+
+  it('disclosure aria-expanded is false and labelled "Show" when collapsed', () => {
+    renderItem({
+      variationCount: 2,
+      isExpanded: false,
+      onToggleVariations: vi.fn(),
+    });
+    const disclosure = screen.getByLabelText("Show 2 variations of card 42");
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it('disclosure aria-expanded is true and labelled "Hide" when expanded', () => {
+    renderItem({
+      variationCount: 2,
+      isExpanded: true,
+      onToggleVariations: vi.fn(),
+    });
+    const disclosure = screen.getByLabelText("Hide 2 variations of card 42");
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("the disclosure label uses the singular for exactly one variation", () => {
+    renderItem({
+      variationCount: 1,
+      isExpanded: false,
+      onToggleVariations: vi.fn(),
+    });
+    expect(screen.getByLabelText("Show 1 variation of card 42")).toBeTruthy();
+  });
+
+  it("clicking the disclosure toggles variations and does NOT also open the card detail panel", () => {
+    const onToggleVariations = vi.fn();
+    const { onEdit } = renderItem({
+      variationCount: 2,
+      isExpanded: false,
+      onToggleVariations,
+    });
+
+    fireEvent.click(screen.getByLabelText("Show 2 variations of card 42"));
+
+    expect(onToggleVariations).toHaveBeenCalledWith(CARD_ID);
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+});

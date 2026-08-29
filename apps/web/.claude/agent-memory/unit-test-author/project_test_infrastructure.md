@@ -16,11 +16,17 @@ Both projects resolve `@` to the project root via `resolve.alias`.
 
 ## Running tests
 
-No `npm test` script exists. Invoke vitest directly:
+`npm run test:unit` runs the full suite (`vitest run` + a completeness verifier
+that fails the run if a file was collected-then-dropped or sits outside every
+include glob — see vitest.config.ts's comment on `COMPONENTS_INCLUDE`). This
+IS a required CI gate (`web-unit` job in `pr-pipeline.yml`) — run it locally
+before pushing, per the repo's fast-gate policy.
+
+For a single file during iteration, invoke vitest directly:
 
 ```bash
 # Run a specific file
-npx vitest run convex/credentialLock.test.ts
+npx vitest run components/SetSelector/CardChecklist.test.tsx
 
 # Run all component tests
 npx vitest run --project components
@@ -28,8 +34,6 @@ npx vitest run --project components
 # Run all convex/lib tests
 npx vitest run --project convex-lib
 ```
-
-Tests are NOT in CI — unit tests must be run manually for now.
 
 ## convex-test patterns (internalMutation + getUserProfile)
 
