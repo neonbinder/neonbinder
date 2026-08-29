@@ -8,7 +8,13 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import CardPairingModal, { type PairingCard } from "./CardPairingModal";
 
 const bscCard = (n: string, name: string): PairingCard => ({
@@ -1057,5 +1063,243 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     // the point of this test is only that nothing throws trying to find a
     // conflict radio that was never rendered.
     expect(document.body).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-189 — a card and its variation share a printed number, so the CARD
+ * NUMBER is not an identity anywhere on this screen.
+ *
+ * `LINK` was fixed for this; `KEEP` and `UNKEEP` were not, and they are the
+ * two actions that decide what is committed. A number-keyed lookup moves
+ * whichever same-numbered row sorted first, so the operator watches the row
+ * they clicked leave the column while a DIFFERENT card lands on the keep
+ * shelf and, from there, on the checklist. Every assertion below is on the
+ * payload handed to `onConfirm` — the wrong card reaching the checklist is
+ * the defect; internal state is not.
+ *
+ * Shapes are the ones SportLots really returns: one number, one player, two
+ * bracketed variation descriptions, two distinct refs.
+ */
+describe("CardPairingModal — same number, different cards (NEO-189)", () => {
+  const slVariation = (
+    n: string,
+    name: string,
+    variation: string,
+  ): PairingCard => ({
+    cardNumber: n,
+    cardName: name,
+    cardVariation: variation,
+    isVariation: true,
+    platformData: {
+      sportlots: { ref: `#${n} ${name} [ ${variation} ]`, setId: "884412" },
+    },
+    unmatched: "bsc",
+  });
+
+  const bscVariation = (
+    n: string,
+    name: string,
+    variation: string,
+  ): PairingCard => ({
+    cardNumber: n,
+    cardName: name,
+    cardVariation: variation,
+    isVariation: true,
+    platformData: {
+      bsc: { ref: `bsc-${n}-${variation}`, setId: "topps-2021" },
+    },
+    unmatched: "sl",
+  });
+
+  const sliding = slVariation("1", "Ken Griffey Jr.", "Sliding");
+  const inDugout = slVariation("1", "Ken Griffey Jr.", "In Dugout");
+
+  test("keeping the SECOND of two same-numbered SportLots rows commits THAT row", async () => {
+    const { onConfirm } = renderModal({ unmatchedSl: [sliding, inDugout] });
+
+    fireEvent.click(
+      screen.getByLabelText(
+        "Keep #1 Ken Griffey Jr. · In Dugout as SportLots-only",
+      ),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0].cardVariation).toBe("In Dugout");
+    expect(cards[0].platformData.sportlots.ref).toBe(
+      "#1 Ken Griffey Jr. [ In Dugout ]",
+    );
+  });
+
+  test("keeping the SECOND of two same-numbered BSC rows commits THAT row", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [
+        bscVariation("1", "Ken Griffey Jr.", "Sliding"),
+        bscVariation("1", "Ken Griffey Jr.", "In Dugout"),
+      ],
+    });
+
+    fireEvent.click(
+      screen.getByLabelText("Keep #1 Ken Griffey Jr. · In Dugout as BSC-only"),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0].cardVariation).toBe("In Dugout");
+    expect(cards[0].platformData.bsc.ref).toBe("bsc-1-In Dugout");
+  });
+
+  test("removing one of two same-numbered kept rows removes the one that was clicked", async () => {
+    const { onConfirm } = renderModal({ unmatchedSl: [sliding, inDugout] });
+
+    fireEvent.click(
+      screen.getByLabelText("Keep #1 Ken Griffey Jr. · Sliding as SportLots-only"),
+    );
+    fireEvent.click(
+      screen.getByLabelText(
+        "Keep #1 Ken Griffey Jr. · In Dugout as SportLots-only",
+      ),
+    );
+    fireEvent.click(
+      screen.getByLabelText(
+        "Remove #1 Ken Griffey Jr. · In Dugout from save list",
+      ),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0].cardVariation).toBe("Sliding");
+  });
+
+  /**
+   * The rendered lists have the same identity problem as the reducer: two
+   * same-numbered rows produced two `<li>` with the same React key, and
+   * `ordered()` re-sorts after EVERY dispatch, so this list reconciles
+   * constantly. React only warns; what it does with the duplicate is
+   * undefined, and row state can end up on the wrong row.
+   */
+  test("same-numbered rows do not collide as React keys, in the columns or on the keep shelf", () => {
+    const errors: unknown[][] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args);
+      });
+    try {
+      renderModal({
+        unmatchedSl: [sliding, inDugout],
+        unmatchedBsc: [
+          bscVariation("1", "Ken Griffey Jr.", "Sliding"),
+          bscVariation("1", "Ken Griffey Jr.", "In Dugout"),
+        ],
+      });
+      // The keep shelf renders its own <li> per kept card — same defect, so
+      // move both columns onto it and let it render too.
+      fireEvent.click(screen.getByLabelText("Keep all SportLots-only cards"));
+      fireEvent.click(screen.getByLabelText("Keep all BSC-only cards"));
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(
+      errors.filter((e) => String(e[0]).includes("same key")),
+    ).toHaveLength(0);
+  });
+
+  /**
+   * The name-conflict row hands out a DOM `id` (for `aria-describedby`) and a
+   * `data-name-conflict` handle that `refocusSelectedRadio` re-queries after a
+   * dispatch. Both were built from the card number, so two conflicting pairs
+   * on one number emitted a duplicate id and aimed focus at the first row's
+   * radiogroup no matter which row the operator was in.
+   */
+  describe("two conflicting pairs on one number", () => {
+    const bscSliding = bscVariation("227", "Mike Yastrzemski", "Sliding");
+    const bscDugout = bscVariation("227", "Mike Yastrzemski", "In Dugout");
+    const slCarl: PairingCard = {
+      cardNumber: "227",
+      cardName: "Carl Yastrzemski",
+      cardVariation: "SSSP",
+      isVariation: true,
+      platformData: {
+        sportlots: { ref: "#227 Carl Yastrzemski [ VAR SSSP ]", setId: "884412" },
+      },
+      unmatched: "bsc",
+    };
+    const slMantle: PairingCard = {
+      cardNumber: "227",
+      cardName: "Mickey Mantle",
+      cardVariation: "Legend",
+      isVariation: true,
+      platformData: {
+        sportlots: { ref: "#227 Mickey Mantle [ VAR LEG ]", setId: "884412" },
+      },
+      unmatched: "bsc",
+    };
+
+    /** Link Carl first, then Mantle, so Mantle is the SECOND conflicting row. */
+    const linkBoth = () => {
+      renderModal({
+        unmatchedBsc: [bscSliding, bscDugout],
+        unmatchedSl: [slCarl, slMantle],
+      });
+      fireEvent.click(
+        screen.getByLabelText("Select BSC card #227 Mike Yastrzemski · Sliding"),
+      );
+      fireEvent.click(
+        screen.getByLabelText(
+          "Link selected BSC card to #227 Carl Yastrzemski · SSSP",
+        ),
+      );
+      fireEvent.click(
+        screen.getByLabelText(
+          "Select BSC card #227 Mike Yastrzemski · In Dugout",
+        ),
+      );
+      fireEvent.click(
+        screen.getByLabelText(
+          "Link selected BSC card to #227 Mickey Mantle · Legend",
+        ),
+      );
+    };
+
+    test("each row's warning gets its own id, so aria-describedby resolves to its own row", () => {
+      linkBoth();
+
+      const ids = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '[id^="name-conflict-warning-"]',
+        ),
+      ).map((el) => el.id);
+      expect(ids).toHaveLength(2);
+      expect(new Set(ids).size).toBe(2);
+
+      for (const group of screen.getAllByRole("radiogroup")) {
+        const describedBy = group.getAttribute("aria-describedby")!;
+        expect(
+          group.closest("li")!.querySelector(`#${CSS.escape(describedBy)}`),
+        ).toBeTruthy();
+      }
+    });
+
+    test("linking the second one focuses ITS name choice, not the first row's", async () => {
+      linkBoth();
+
+      const mantleRow = screen
+        .getByRole("radio", { name: /^SportLots: Mickey Mantle/ })
+        .closest('[role="radiogroup"]')!;
+      await waitFor(() =>
+        expect(
+          within(mantleRow as HTMLElement).getByRole("radio", { name: /^BSC:/ }),
+        ).toBe(document.activeElement),
+      );
+    });
   });
 });

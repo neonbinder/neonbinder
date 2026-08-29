@@ -131,9 +131,14 @@ type Action =
   // `state.matched` exactly as UNLINK does — that array is what the list
   // renders, and `ordered` sorts state rather than a rendered copy.
   | { type: "CHOOSE_NAME"; index: number; side: "bsc" | "sportlots" }
-  | { type: "KEEP"; side: "bsc" | "sl"; cardNumber: string }
+  // Keyed on candidateKey for exactly the same reason LINK is: two SportLots
+  // rows filed under one number are two different cards, and a number-keyed
+  // lookup moves whichever of them sorted first. The operator watches the row
+  // they clicked leave the column while a DIFFERENT card is what actually
+  // reaches the keep shelf and, from there, the committed checklist.
+  | { type: "KEEP"; side: "bsc" | "sl"; key: string }
   | { type: "KEEP_ALL"; side: "bsc" | "sl" }
-  | { type: "UNKEEP"; side: "bsc" | "sl"; cardNumber: string }
+  | { type: "UNKEEP"; side: "bsc" | "sl"; key: string }
   // NEO-195: more candidates arrived while the operator is already working.
   | {
       type: "ABSORB";
@@ -155,6 +160,27 @@ function candidateKey(c: PairingCard): string {
     c.platformData.sportlots?.ref ??
     `#${c.cardNumber}`
   );
+}
+
+/**
+ * `candidateKey` reduced to characters that are legal in a DOM id.
+ *
+ * The name-conflict row needs a per-row handle for two things — the `id` its
+ * `aria-describedby` points at, and the `[data-name-conflict=…]` selector
+ * `refocusSelectedRadio` re-queries after a dispatch. Both were keyed on the
+ * card NUMBER, which is not unique here for the same reason it is not unique
+ * anywhere else on this screen: a card and its variation share one. Two
+ * conflicting pairs on the same number therefore emitted a duplicate `id`
+ * (invalid HTML — `aria-describedby` resolves to whichever came first) and
+ * sent the arrow-key focus into the FIRST row's radiogroup no matter which row
+ * the operator was working in.
+ *
+ * A ref can contain spaces and `#` (SportLots refs are whole card titles), and
+ * an id containing a space is not addressable by `aria-describedby` at all,
+ * hence the fold to `[A-Za-z0-9_-]`.
+ */
+function domKey(c: PairingCard): string {
+  return candidateKey(c).replace(/[^A-Za-z0-9_-]+/g, "-");
 }
 
 /**
@@ -422,7 +448,7 @@ function baseReducer(state: State, action: Action): State {
     }
     case "KEEP": {
       const from = action.side === "bsc" ? state.unmatchedBsc : state.unmatchedSl;
-      const idx = from.findIndex((c) => c.cardNumber === action.cardNumber);
+      const idx = from.findIndex((c) => candidateKey(c) === action.key);
       if (idx === -1) return state;
       const card = from[idx];
       if (action.side === "bsc") {
@@ -461,7 +487,7 @@ function baseReducer(state: State, action: Action): State {
     }
     case "UNKEEP": {
       const from = action.side === "bsc" ? state.keptBsc : state.keptSl;
-      const idx = from.findIndex((c) => c.cardNumber === action.cardNumber);
+      const idx = from.findIndex((c) => candidateKey(c) === action.key);
       if (idx === -1) return state;
       const card = from[idx];
       if (action.side === "bsc") {
@@ -619,7 +645,7 @@ export default function CardPairingModal({
 
   /**
    * NEO-189/a11y — focus the now-checked radio in a name-conflict
-   * radiogroup, by card number rather than by ref or array index: the
+   * radiogroup, by `domKey` rather than by array index: the
    * radiogroup's own arrow-key handler dispatches CHOOSE_NAME first, and by
    * the time this runs the DOM has to be re-queried anyway (the CHOSEN radio
    * — the one that must end up focused — only exists post-render), and
@@ -627,11 +653,11 @@ export default function CardPairingModal({
    * captured index or element ref from before the dispatch cannot be trusted
    * to still point at the same row afterward.
    */
-  const refocusSelectedRadio = useCallback((cardNumber: string) => {
+  const refocusSelectedRadio = useCallback((key: string) => {
     requestAnimationFrame(() => {
       dialogRef.current
         ?.querySelector<HTMLElement>(
-          `[data-name-conflict="${cardNumber}"] [role="radio"][tabindex="0"]`,
+          `[data-name-conflict="${key}"] [role="radio"][tabindex="0"]`,
         )
         ?.focus();
     });
@@ -778,7 +804,7 @@ export default function CardPairingModal({
                 <ul className="flex flex-col gap-1">
                   {state.matched.map((m, i) => (
                     <li
-                      key={`${m.card.cardNumber}-${i}`}
+                      key={candidateKey(m.card)}
                       className="flex flex-col gap-1 text-sm text-gray-200 bg-gray-800/60 rounded px-2 py-1"
                     >
                       <div className="flex items-center justify-between">
@@ -813,12 +839,14 @@ export default function CardPairingModal({
                           className="flex flex-wrap items-center gap-2 border-l-2 border-[#FF2EB3] pl-2 py-1"
                           // a11y — lets both the LINK handler (below) and the
                           // radiogroup's own arrow-key handler find this row's
-                          // controls by card number after a dispatch, without
-                          // depending on `i`, which `ordered()` can reshuffle.
-                          data-name-conflict={m.card.cardNumber}
+                          // controls by marketplace ref after a dispatch,
+                          // without depending on `i`, which `ordered()` can
+                          // reshuffle — and without the card number, which a
+                          // variation shares with the card it varies.
+                          data-name-conflict={domKey(m.card)}
                         >
                           <span
-                            id={`name-conflict-warning-${m.card.cardNumber}`}
+                            id={`name-conflict-warning-${domKey(m.card)}`}
                             className="text-xs text-[#FF2EB3]"
                           >
                             {/* Decorative — the sentence itself carries the
@@ -843,7 +871,7 @@ export default function CardPairingModal({
                           <div
                             role="radiogroup"
                             aria-label={`Name for #${m.card.cardNumber}`}
-                            aria-describedby={`name-conflict-warning-${m.card.cardNumber}`}
+                            aria-describedby={`name-conflict-warning-${domKey(m.card)}`}
                             className="flex flex-wrap items-center gap-2"
                             onKeyDown={(e) => {
                               if (
@@ -869,7 +897,7 @@ export default function CardPairingModal({
                                 index: i,
                                 side: other,
                               });
-                              refocusSelectedRadio(m.card.cardNumber);
+                              refocusSelectedRadio(domKey(m.card));
                             }}
                           >
                             <button
@@ -983,7 +1011,7 @@ export default function CardPairingModal({
                 />
                 <ul className="flex flex-col gap-1 mt-2">
                   {visibleBsc.map((c) => (
-                    <li key={c.cardNumber} className="flex items-center gap-2">
+                    <li key={candidateKey(c)} className="flex items-center gap-2">
                       <button
                         type="button"
                         className={`flex-1 text-left text-sm rounded px-2 py-1 ${
@@ -1013,7 +1041,7 @@ export default function CardPairingModal({
                           dispatch({
                             type: "KEEP",
                             side: "bsc",
-                            cardNumber: c.cardNumber,
+                            key: candidateKey(c),
                           });
                           refocus(bscFilterRef.current);
                         }}
@@ -1056,7 +1084,7 @@ export default function CardPairingModal({
                 />
                 <ul className="flex flex-col gap-1 mt-2">
                   {visibleSl.map((c) => (
-                    <li key={c.cardNumber} className="flex items-center gap-2">
+                    <li key={candidateKey(c)} className="flex items-center gap-2">
                       <button
                         type="button"
                         disabled={!selectedBsc}
@@ -1095,7 +1123,7 @@ export default function CardPairingModal({
                           // here rather than filing separately, since the
                           // conflict is what makes the dropped focus consequential.
                           if (createsConflict && bscSide) {
-                            refocusSelectedRadio(bscSide.cardNumber);
+                            refocusSelectedRadio(domKey(bscSide));
                           }
                         }}
                         aria-label={`Link selected BSC card to ${label(c)}`}
@@ -1109,7 +1137,7 @@ export default function CardPairingModal({
                           dispatch({
                             type: "KEEP",
                             side: "sl",
-                            cardNumber: c.cardNumber,
+                            key: candidateKey(c),
                           });
                           refocus(slFilterRef.current);
                         }}
@@ -1141,7 +1169,7 @@ export default function CardPairingModal({
                 <ul className="flex flex-col gap-1">
                   {state.keptBsc.map((c) => (
                     <li
-                      key={`kb-${c.cardNumber}`}
+                      key={`kb-${candidateKey(c)}`}
                       className="flex items-center justify-between text-sm text-gray-200"
                     >
                       <span>BSC: {label(c)}</span>
@@ -1152,7 +1180,7 @@ export default function CardPairingModal({
                           dispatch({
                             type: "UNKEEP",
                             side: "bsc",
-                            cardNumber: c.cardNumber,
+                            key: candidateKey(c),
                           });
                           refocus(bscFilterRef.current);
                         }}
@@ -1164,7 +1192,7 @@ export default function CardPairingModal({
                   ))}
                   {state.keptSl.map((c) => (
                     <li
-                      key={`ks-${c.cardNumber}`}
+                      key={`ks-${candidateKey(c)}`}
                       className="flex items-center justify-between text-sm text-gray-200"
                     >
                       <span>SL: {label(c)}</span>
@@ -1175,7 +1203,7 @@ export default function CardPairingModal({
                           dispatch({
                             type: "UNKEEP",
                             side: "sl",
-                            cardNumber: c.cardNumber,
+                            key: candidateKey(c),
                           });
                           refocus(slFilterRef.current);
                         }}
