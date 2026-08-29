@@ -1,4 +1,4 @@
-import { ConvexError } from "convex/values";
+import { userFacingMessage } from "../errors/user-facing-message";
 
 /**
  * The seller-facing message for a failed postage/credential action.
@@ -12,8 +12,7 @@ import { ConvexError } from "convex/values";
  * send; anything else gets the caller's fallback, never `.message`.
  */
 export function sellerMessage(error: unknown, fallback: string): string {
-  if (error instanceof ConvexError && typeof error.data === "string") {
-    return error.data;
-  }
-  return fallback;
+  // The rule is not postage-specific — see lib/errors/user-facing-message.ts.
+  // This stays as the seller-facing name the shipping code reads better with.
+  return userFacingMessage(error, fallback);
 }

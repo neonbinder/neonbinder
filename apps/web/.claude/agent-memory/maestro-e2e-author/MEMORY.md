@@ -1,5 +1,9 @@
 # Maestro E2E Author — Memory Index
 
+- ⭐ [Local HTTPS dev server hangs Chrome for Testing](feedback_local_https_hangs_chrome.md): never validate against `https://localhost:*` — the app never mounts, Selenium's getCurrentUrl blocks 180s, blank 1024x625 screenshot. Use `./vite-keeper.sh` (plain HTTP) + an `http://` APP_URL. Measured: HTTPS never mounts, HTTP mounts in 2s.
+
+- ⭐ [CardDetailPanel inner scroll needs manual swipes](feedback_card_detail_drawer_inner_scroll.md): `scrollUntilVisible` swipes from viewport centre → lands on the modal backdrop → the drawer never scrolls. Use `swipe: {start: "80%, 80%", end: "80%, 20%"}` x2 (x3 for Players) + `extendedWaitUntil`. Everything from "Card variation" down is below the fold.
+
 - ⭐ [Navigation: openLink, not link taps (maestro-web #2944)](feedback_navigation_openlink_convention.md): tapping a link that triggers navigation intermittently crashes maestro-web (`null→kotlin.Int` / `LinkedHashMap→String` cast in CdpWebDriver's post-tap DOM parse; surfaced as "Unknown error"). Default to `openLink` to navigate; assert href + openLink to verify a link; only `tapOn`-navigate when the click handler has real logic. Watch upstream #2944 for the fix.
 
 - [tapOn does NOT auto-scroll on web headless (2026-06-20)](feedback_tapOn_autoscroll_experiment.md): 0/5 vs 5/5 — direct tapOn on below-fold elements always fails with "Element not found"; scrollUntilVisible is non-negotiable. Taller viewport (1024×900) reduces scroll time ~2.9s but does NOT eliminate the need.

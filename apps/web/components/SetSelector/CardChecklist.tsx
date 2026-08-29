@@ -183,6 +183,20 @@ export default function CardChecklist({
   // NEO-195: true from the moment a sync starts until the action resolves.
   // Distinct from `syncing`, which also covers the commit phase.
   const [fetchInFlight, setFetchInFlight] = useState(false);
+  // NEO-195 — which sync run is current. Bumped whenever the operator cancels,
+  // so a run whose result arrives afterwards knows it was abandoned.
+  //
+  // Streaming made this necessary. Before it, Cancel could only happen AFTER
+  // the action had already resolved, so nothing was in flight to come back.
+  // Now the modal opens on the first ready candidate — seconds in — and Cancel
+  // lands mid-fetch. Without a guard the action resolves ~70s later and
+  // unconditionally re-opens the dialog over the full result, overwriting
+  // "Sync cancelled — no cards saved.": an operator who declined a sync and
+  // walked away returns to an open Confirm on a checklist they had refused.
+  //
+  // A ref, not state: the check runs inside an async closure that captured its
+  // own render's values, which is exactly where a state read would be stale.
+  const syncGenerationRef = useRef(0);
 
   /**
    * Three-phase pipeline (NEO-137 moved pairing to the front):
@@ -199,6 +213,8 @@ export default function CardChecklist({
    * data for cards that never exist.
    */
   const handleSync = async () => {
+    const generation = ++syncGenerationRef.current;
+    const abandoned = () => syncGenerationRef.current !== generation;
     setSyncing(true);
     // NEO-195: opens the modal on the first ready group, and gates Confirm
     // until the action resolves — reviewing early is the point, committing a
@@ -207,6 +223,9 @@ export default function CardChecklist({
     setSyncMessage(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
+      // Cancelled while the fetch was still running: leave the operator's own
+      // message standing and drop the result on the floor.
+      if (abandoned()) return;
       if (!result.success || !result.sportId) {
         setSyncMessage(result.message);
         await discardCandidates({ selectorOptionId: variantId });
@@ -237,8 +256,12 @@ export default function CardChecklist({
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     } finally {
-      setSyncing(false);
-      setFetchInFlight(false);
+      // Only the CURRENT run may clear these — a superseded run finishing later
+      // would otherwise unlock Confirm on whatever is open now.
+      if (!abandoned()) {
+        setSyncing(false);
+        setFetchInFlight(false);
+      }
     }
   };
 
@@ -864,7 +887,12 @@ export default function CardChecklist({
         <CardPairingModal
           isOpen
           onClose={async () => {
+            // Supersede any in-flight fetch so its result cannot reopen this
+            // dialog behind the operator (see syncGenerationRef).
+            syncGenerationRef.current++;
             setPendingPairing(null);
+            setFetchInFlight(false);
+            setSyncing(false);
             setSyncMessage("Sync cancelled — no cards saved.");
             // NEO-195: candidates are worthless once the operator has walked
             // away. Leaving them would make the NEXT fetch's clear-stale step

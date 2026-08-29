@@ -7,7 +7,7 @@ import {
   internalQuery,
   ActionCtx,
 } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
@@ -1904,6 +1904,14 @@ async function orphanVariationsOf(
  *
  * Making a card a parent while it is itself someone's variation is refused for
  * the same reason, from the other direction.
+ *
+ * Those refusals throw ConvexError, not Error. Production Convex REDACTS a
+ * thrown Error's message to "Server Error" while dev and preview pass it
+ * through — so an operator-facing explanation written as an Error reads
+ * perfectly in testing and flattens to nothing on prod. `convex/postage.ts`
+ * documents the same trap, found live on a real purchase attempt. Every
+ * message here is meant for the person using the panel, so every one of them
+ * is a ConvexError.
  */
 export const setCardVariationParent = mutation({
   args: {
@@ -1929,17 +1937,17 @@ export const setCardVariationParent = mutation({
     }
 
     if (args.parentCardId === args.cardId) {
-      throw new Error("A card cannot be a variation of itself.");
+      throw new ConvexError("A card cannot be a variation of itself.");
     }
     const parent = await ctx.db.get(args.parentCardId);
     if (!parent) throw new Error("setCardVariationParent: no such parent card");
     if (parent.selectorOptionId !== card.selectorOptionId) {
-      throw new Error(
+      throw new ConvexError(
         "A variation must belong to the same checklist as the card it varies.",
       );
     }
     if (parent.variationOfCardId) {
-      throw new Error(
+      throw new ConvexError(
         "That card is itself a variation. Variations are one level deep — pick the base card instead.",
       );
     }
@@ -1950,7 +1958,7 @@ export const setCardVariationParent = mutation({
       )
       .first();
     if (ownChildren) {
-      throw new Error(
+      throw new ConvexError(
         "This card has its own variations. Move them first, or variations would nest.",
       );
     }

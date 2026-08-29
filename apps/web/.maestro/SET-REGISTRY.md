@@ -137,6 +137,7 @@ a retry must not observe its own prior debris.
 | `cft-` | `card-features-editor-toggle.yaml` |
 | `clt-` | `custom-card-row-opens-panel-with-autotitle.yaml` |
 | `cte-` | `checklist-fetch-wizard-add-career-team.yaml` |
+| `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fcd-` | `checklist-fetch-cancel-dialog.yaml` |
 | `fp-` | `features-propagation.yaml` |
 | `kod-` | `checklist-keyboard-only-dialog.yaml` |

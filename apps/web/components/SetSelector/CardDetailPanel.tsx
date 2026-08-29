@@ -5,6 +5,7 @@ import { Textarea } from "../primitives/Textarea";
 import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker from "./PlayerPicker";
@@ -220,9 +221,12 @@ export default function CardDetailPanel({
       setParentNumber("");
     } catch (err) {
       // The mutation refuses self-parenting, cross-checklist parents and
-      // nesting. Show why rather than leaving the field looking accepted.
+      // nesting, and each refusal is a ConvexError carrying the reason. Read
+      // `data`, never `.message`: production redacts a plain Error to "Server
+      // Error", and even a surviving message arrives wrapped in
+      // "[CONVEX M(...)] [Request ID: ...]" noise.
       setParentError(
-        err instanceof Error ? err.message : "Could not set the parent card",
+        userFacingMessage(err, "Could not set the parent card"),
       );
     }
   };
