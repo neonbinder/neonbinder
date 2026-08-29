@@ -71,7 +71,47 @@ export type PairingCard = {
 
 export type PairingResult = { cards: PairingCard[] };
 
-type MatchedPair = { card: PairingCard; confidence: number };
+/**
+ * NEO-189 — the two marketplaces disagree about WHO IS ON the card.
+ *
+ * Found in live 2021 Topps data: SportLots has "Mike Yastrzemski|Carl
+ * Yastrzemski · SSSP" where BSC has a bare "#227c Mike Yastrzemski". The card
+ * is Carl — a "Legend" short print whose variation pictures a different player
+ * than the base card, which is a standard modern convention (2021 Topps #52 is
+ * Archie Bradley; 52b/c/d are Mickey Mantle). Merging those rows used to hand
+ * the pair BSC's less-informative name and drop the fact that it is Carl, and
+ * the first anyone hears of it is a returned listing.
+ *
+ * We do not guess which name is right — that is the rule this whole feature
+ * runs on (`resolveVariationParents` reports `unresolvedStems` rather than
+ * picking a parent; `suggestVariationPairings` leaves un-confident pairs
+ * alone). So both names are kept, the row says so, and the operator decides.
+ *
+ * This lives on the PAIR, not on the card: `previewCardValidator` is a strict
+ * `v.object`, so an extra field on a confirmed card would be rejected by
+ * `resolveEntities` on the way to commit. Nothing here crosses that boundary —
+ * only `m.card` is handed to `onConfirm`.
+ */
+type NameConflict = {
+  /** BSC's name for the card, exactly as that marketplace spelled it. */
+  bsc: string;
+  /** SportLots' name for the same card, likewise verbatim. */
+  sportlots: string;
+  /** Whose name the merged card is carrying right now. */
+  chosen: "bsc" | "sportlots";
+};
+
+type MatchedPair = {
+  card: PairingCard;
+  confidence: number;
+  /**
+   * Set only for pairs merged HERE, by `LINK`. An auto-matched pair arrives
+   * from `fetchCardChecklist` already merged, with the losing name discarded
+   * server-side, so there is nothing left for this to compare — see the note
+   * on `nameConflictOf`.
+   */
+  nameConflict?: NameConflict;
+};
 
 type State = {
   matched: MatchedPair[];
@@ -87,6 +127,10 @@ type Action =
   // number, so a number-keyed link silently picks whichever came first.
   | { type: "LINK"; bscKey: string; slKey: string }
   | { type: "UNLINK"; index: number }
+  // NEO-189: which marketplace's name the merged card keeps. Indexes
+  // `state.matched` exactly as UNLINK does — that array is what the list
+  // renders, and `ordered` sorts state rather than a rendered copy.
+  | { type: "CHOOSE_NAME"; index: number; side: "bsc" | "sportlots" }
   | { type: "KEEP"; side: "bsc" | "sl"; cardNumber: string }
   | { type: "KEEP_ALL"; side: "bsc" | "sl" }
   | { type: "UNKEEP"; side: "bsc" | "sl"; cardNumber: string }
@@ -143,6 +187,68 @@ function reducer(state: State, action: Action): State {
   const next = baseReducer(state, action);
   // A no-op action returns the same reference; do not churn the list for it.
   return next === state ? state : ordered(next);
+}
+
+/**
+ * Compare two marketplace names for MEANING rather than spelling.
+ *
+ * BSC joins multiple players with " / " and SportLots with "|"; one prints
+ * "Ken Griffey Jr." and the other "Ken Griffey Jr"; BSC routinely strips the
+ * accents SportLots keeps ("Jose"/"Jos\u00e9 Ram\u00edrez"). Flagging any of those as a
+ * disagreement would bury the real ones under noise, and a warning nobody
+ * reads is the same as no warning. Diacritics are folded, then everything that
+ * is not a letter or digit collapses to a single space, so only the words
+ * themselves are compared.
+ *
+ * Word ORDER is deliberately still significant: two sources listing the same
+ * players in a different order on a multi-player card is worth a glance, and
+ * this control costs a glance, not a click.
+ */
+function nameKey(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Do these two candidates disagree about the card's name?
+ *
+ * Applies to EVERY merged pair, not only `isVariation` ones. Two reasons the
+ * narrower variation-only scope was rejected:
+ *
+ *  1. The wrong-player-on-a-listing failure is not exclusive to variations. A
+ *     fuzzy 0.92 Jaro-Winkler auto-match, or an operator clicking one row off
+ *     in a 660-row column, merges two genuinely different players into one
+ *     card — and the name disagreement is the ONLY signal that the mis-click
+ *     happened. Suppressing it there throws away the cheapest mis-pair
+ *     detector this screen has.
+ *  2. `isVariation` is exactly the field that is unreliable on the row that
+ *     motivated this. BSC filed #227c with an EMPTY variation description;
+ *     gating on a flag the defect report shows to be under-populated risks the
+ *     fix not firing on its own motivating example.
+ *
+ * The cost of the wider scope is bounded because this is not a gate: a correct
+ * pairing agrees on the name almost always, and a false positive costs one
+ * glance.
+ *
+ * A side with no name at all is not a disagreement — there is nothing to
+ * decide, and `mergePair` already falls through to whichever side has one.
+ */
+function nameConflictOf(
+  bsc: PairingCard,
+  sl: PairingCard,
+): NameConflict | undefined {
+  const b = (bsc.cardName ?? "").trim();
+  const s = (sl.cardName ?? "").trim();
+  if (!b || !s) return undefined;
+  if (nameKey(b) === nameKey(s)) return undefined;
+  // `chosen` starts on BSC because that is what `mergePair` produces when both
+  // sides have a name. It is a DEFAULT, not a decision — which is the whole
+  // reason the row has to say so out loud.
+  return { bsc: b, sportlots: s, chosen: "bsc" };
 }
 
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
@@ -228,15 +334,20 @@ function baseReducer(state: State, action: Action): State {
         (c) => candidateKey(c) === action.slKey,
       );
       if (bi === -1 || si === -1) return state;
+      const bscSide = state.unmatchedBsc[bi];
+      const slSide = state.unmatchedSl[si];
+      // NEO-189: recorded BEFORE the merge throws one of the two names away.
+      const nameConflict = nameConflictOf(bscSide, slSide);
       return {
         ...state,
         matched: [
           ...state.matched,
           {
-            card: mergePair(state.unmatchedBsc[bi], state.unmatchedSl[si]),
+            card: mergePair(bscSide, slSide),
             // Operator-made pairing: shown as manual rather than scored, so a
             // hand-linked row is never mistaken for a high-confidence guess.
             confidence: 0,
+            ...(nameConflict ? { nameConflict } : {}),
           },
         ],
         unmatchedBsc: state.unmatchedBsc.filter((_, i) => i !== bi),
@@ -250,6 +361,12 @@ function baseReducer(state: State, action: Action): State {
       // re-paired or kept independently.
       const bscSide: PairingCard = {
         ...pair.card,
+        // NEO-189: give each half its OWN name back. The merged row carries
+        // one side's name, so spreading it onto both would stamp BSC's "Mike
+        // Yastrzemski" over SportLots' "Mike Yastrzemski|Carl Yastrzemski" —
+        // an unlink that does not undo the merge, and a conflict that could
+        // never be detected again on a re-link because both rows now agree.
+        cardName: pair.nameConflict?.bsc ?? pair.card.cardName,
         platformData: pair.card.platformData.bsc
           ? { bsc: pair.card.platformData.bsc }
           : {},
@@ -257,6 +374,7 @@ function baseReducer(state: State, action: Action): State {
       };
       const slSide: PairingCard = {
         ...pair.card,
+        cardName: pair.nameConflict?.sportlots ?? pair.card.cardName,
         platformData: pair.card.platformData.sportlots
           ? { sportlots: pair.card.platformData.sportlots }
           : {},
@@ -271,6 +389,35 @@ function baseReducer(state: State, action: Action): State {
         unmatchedSl: pair.card.platformData.sportlots
           ? [...state.unmatchedSl, slSide]
           : state.unmatchedSl,
+      };
+    }
+    /**
+     * NEO-189 — the operator settles a name disagreement.
+     *
+     * Both names are retained on the pair either way, so this is reversible
+     * right up to Confirm, and after Confirm the name is editable in
+     * CardDetailPanel. Nothing here blocks Confirm: a conflict is recoverable,
+     * and blocking would mean one flagged row in a streamed 660-card set holds
+     * the entire commit hostage.
+     */
+    case "CHOOSE_NAME": {
+      const pair = state.matched[action.index];
+      if (!pair?.nameConflict) return state;
+      if (pair.nameConflict.chosen === action.side) return state;
+      const conflict = pair.nameConflict;
+      const cardName =
+        action.side === "bsc" ? conflict.bsc : conflict.sportlots;
+      return {
+        ...state,
+        matched: state.matched.map((m, i) =>
+          i === action.index
+            ? {
+                ...pair,
+                card: { ...pair.card, cardName },
+                nameConflict: { ...conflict, chosen: action.side },
+              }
+            : m,
+        ),
       };
     }
     case "KEEP": {
@@ -428,6 +575,12 @@ export default function CardPairingModal({
     state.unmatchedSl.length === 0 &&
     state.keptBsc.length === 0 &&
     state.keptSl.length === 0;
+  // NEO-189: how many merged rows the marketplaces disagree about the name on.
+  // Surfaced on the section header too, because the Matched list is COLLAPSED
+  // by default whenever there is unmatched work — which is exactly the state
+  // manual pairing happens in — and a warning inside a closed section is not a
+  // warning.
+  const nameConflictCount = state.matched.filter((m) => m.nameConflict).length;
   const bscFieldClass = useFieldTestClass();
   const slFieldClass = useFieldTestClass();
 
@@ -579,36 +732,106 @@ export default function CardPairingModal({
                 ref={matchedToggleRef}
                 className="text-sm font-semibold text-gray-200 mb-2 px-2 py-1.5"
                 onClick={() => setMatchedCollapsed((v) => !v)}
-                aria-label={`${matchedCollapsed ? "Expand" : "Collapse"} matched cards`}
+                // The count is appended ONLY when there is a conflict: an
+                // aria-label overrides the button's own text for assistive
+                // tech, so a silent label would hide the very thing the
+                // visible badge exists to announce.
+                aria-label={
+                  nameConflictCount > 0
+                    ? `${matchedCollapsed ? "Expand" : "Collapse"} matched cards, ${nameConflictCount} with a name conflict`
+                    : `${matchedCollapsed ? "Expand" : "Collapse"} matched cards`
+                }
               >
                 {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
+                {nameConflictCount > 0 && (
+                  <span className="text-[#FF2EB3] ml-2">
+                    ⚠ {nameConflictCount} name conflict
+                    {nameConflictCount === 1 ? "" : "s"}
+                  </span>
+                )}
               </button>
               {!matchedCollapsed && (
                 <ul className="flex flex-col gap-1">
                   {state.matched.map((m, i) => (
                     <li
                       key={`${m.card.cardNumber}-${i}`}
-                      className="flex items-center justify-between text-sm text-gray-200 bg-gray-800/60 rounded px-2 py-1"
+                      className="flex flex-col gap-1 text-sm text-gray-200 bg-gray-800/60 rounded px-2 py-1"
                     >
-                      <span>
-                        {label(m.card)}
-                        {m.confidence > 0 && m.confidence < 1 && (
-                          <span className="text-xs text-amber-400 ml-2">
-                            {Math.round(m.confidence * 100)}%
+                      <div className="flex items-center justify-between">
+                        <span>
+                          {label(m.card)}
+                          {m.confidence > 0 && m.confidence < 1 && (
+                            <span className="text-xs text-amber-400 ml-2">
+                              {Math.round(m.confidence * 100)}%
+                            </span>
+                          )}
+                        </span>
+                        <button
+                          type="button"
+                          className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
+                          onClick={() => {
+                            dispatch({ type: "UNLINK", index: i });
+                            refocus(matchedToggleRef.current);
+                          }}
+                          aria-label={`Unlink ${label(m.card)}`}
+                        >
+                          Unlink
+                        </button>
+                      </div>
+                      {/* NEO-189: the marketplaces name this card differently.
+                          Show BOTH, say which one is currently winning, and
+                          let the operator switch — the ambiguity is reported,
+                          never resolved by heuristic. */}
+                      {m.nameConflict && (
+                        <div
+                          role="group"
+                          aria-label={`Name conflict on #${m.card.cardNumber}`}
+                          className="flex flex-wrap items-center gap-2 border-l-2 border-[#FF2EB3] pl-2 py-1"
+                        >
+                          <span className="text-xs text-[#FF2EB3]">
+                            ⚠ These marketplaces name this card differently —
+                            pick the right one before it is listed.
                           </span>
-                        )}
-                      </span>
-                      <button
-                        type="button"
-                        className="text-xs text-gray-400 hover:text-red-400 px-2 py-1.5"
-                        onClick={() => {
-                          dispatch({ type: "UNLINK", index: i });
-                          refocus(matchedToggleRef.current);
-                        }}
-                        aria-label={`Unlink ${label(m.card)}`}
-                      >
-                        Unlink
-                      </button>
+                          <button
+                            type="button"
+                            aria-pressed={m.nameConflict.chosen === "bsc"}
+                            aria-label={`Use the BSC name "${m.nameConflict.bsc}" for #${m.card.cardNumber}`}
+                            onClick={() =>
+                              dispatch({
+                                type: "CHOOSE_NAME",
+                                index: i,
+                                side: "bsc",
+                              })
+                            }
+                            className={`text-xs rounded px-2 py-1.5 ${
+                              m.nameConflict.chosen === "bsc"
+                                ? "bg-cyan-900/60 text-cyan-100"
+                                : "bg-gray-700/60 text-gray-300"
+                            }`}
+                          >
+                            BSC: {m.nameConflict.bsc}
+                          </button>
+                          <button
+                            type="button"
+                            aria-pressed={m.nameConflict.chosen === "sportlots"}
+                            aria-label={`Use the SportLots name "${m.nameConflict.sportlots}" for #${m.card.cardNumber}`}
+                            onClick={() =>
+                              dispatch({
+                                type: "CHOOSE_NAME",
+                                index: i,
+                                side: "sportlots",
+                              })
+                            }
+                            className={`text-xs rounded px-2 py-1.5 ${
+                              m.nameConflict.chosen === "sportlots"
+                                ? "bg-cyan-900/60 text-cyan-100"
+                                : "bg-gray-700/60 text-gray-300"
+                            }`}
+                          >
+                            SportLots: {m.nameConflict.sportlots}
+                          </button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -731,6 +954,20 @@ export default function CardPairingModal({
                         className="flex-1 text-left text-sm rounded px-2 py-1 bg-gray-800/60 text-gray-200 disabled:opacity-60"
                         onClick={() => {
                           if (!selectedBsc) return;
+                          // NEO-189: a conflict the operator cannot see is the
+                          // defect itself. Manual pairing always happens with
+                          // the Matched section collapsed (it collapses by
+                          // default whenever a column has anything in it,
+                          // which is necessarily true while linking), so open
+                          // it the moment a link creates a disagreement.
+                          // Only ever opens — never closes a section the
+                          // operator deliberately expanded.
+                          const bscSide = state.unmatchedBsc.find(
+                            (x) => candidateKey(x) === selectedBsc,
+                          );
+                          if (bscSide && nameConflictOf(bscSide, c)) {
+                            setMatchedCollapsed(false);
+                          }
                           dispatch({
                             type: "LINK",
                             bscKey: selectedBsc,

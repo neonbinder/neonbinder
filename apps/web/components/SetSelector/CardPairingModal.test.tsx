@@ -531,3 +531,350 @@ describe("CardPairingModal — isStreaming (NEO-195/a11y)", () => {
     expect(document.getElementById("pairing-streaming-status")).toBeNull();
   });
 });
+
+/**
+ * NEO-189 — the marketplaces disagree about WHO IS ON the card.
+ *
+ * The live case, from 2021 Topps: SportLots carries
+ * "Mike Yastrzemski|Carl Yastrzemski · SSSP" where BSC carries a bare
+ * "#227c Mike Yastrzemski" with an EMPTY variation description. The card is
+ * actually CARL — a "Legend" short print whose variation pictures a different
+ * player than the base card (2021 Topps #52 is Archie Bradley; 52b/c/d are
+ * Mickey Mantle). Merging took BSC's name unconditionally, so the fact that it
+ * is Carl was silently lost, and the first anyone hears about it is a returned
+ * listing and seller feedback.
+ *
+ * The rule this feature runs on is that ambiguity is REPORTED, never resolved
+ * by heuristic — `resolveVariationParents` returns `unresolvedStems` rather
+ * than picking a parent, and `suggestVariationPairings` leaves un-confident
+ * pairs alone. These tests pin that same rule here: both names survive the
+ * merge, the row says the sources disagree, and the operator chooses.
+ */
+describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
+  // The real row shapes. BSC suffixes the number and named the variation
+  // NOTHING; SportLots keeps the parent's number and names both players.
+  const yastrzemskiBsc: PairingCard = {
+    cardNumber: "227c",
+    cardName: "Mike Yastrzemski",
+    isVariation: true,
+    platformData: { bsc: { ref: "bsc-227c", setId: "topps-2021" } },
+    unmatched: "sl",
+  };
+  const yastrzemskiSl: PairingCard = {
+    cardNumber: "227",
+    cardName: "Mike Yastrzemski|Carl Yastrzemski",
+    cardVariation: "SSSP",
+    isVariation: true,
+    platformData: {
+      sportlots: {
+        ref: "#227 Mike Yastrzemski|Carl Yastrzemski [ VAR SSSP ]",
+        setId: "884412",
+      },
+    },
+    unmatched: "bsc",
+  };
+
+  /** Select the BSC row, then link it to the SL row, by accessible name. */
+  const linkByLabel = (bscLabel: string, slLabel: string) => {
+    fireEvent.click(screen.getByLabelText(`Select BSC card ${bscLabel}`));
+    fireEvent.click(
+      screen.getByLabelText(`Link selected BSC card to ${slLabel}`),
+    );
+  };
+
+  const linkYastrzemski = () =>
+    linkByLabel("#227c Mike Yastrzemski", "#227 Mike Yastrzemski|Carl Yastrzemski · SSSP");
+
+  test("the Yastrzemski merge surfaces BOTH names instead of silently keeping BSC's", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+
+    linkYastrzemski();
+
+    // The disagreement is announced as its own labelled region on the row.
+    expect(screen.getByRole("group", { name: "Name conflict on #227c" })).toBeTruthy();
+    // Both names are on screen — "Carl" is no longer thrown away by the merge.
+    expect(screen.getByText(/BSC: Mike Yastrzemski/)).toBeTruthy();
+    expect(
+      screen.getByText(/SportLots: Mike Yastrzemski\|Carl Yastrzemski/),
+    ).toBeTruthy();
+  });
+
+  test("neither name is pre-resolved as correct — BSC is marked as the current default, SportLots is one click away", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    const bscChoice = screen.getByRole("button", {
+      name: 'Use the BSC name "Mike Yastrzemski" for #227c',
+    });
+    const slChoice = screen.getByRole("button", {
+      name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+    });
+    expect(bscChoice.getAttribute("aria-pressed")).toBe("true");
+    expect(slChoice.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  test("choosing SportLots commits Carl's name, not Mike's", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+      }),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0].cardName).toBe("Mike Yastrzemski|Carl Yastrzemski");
+    // Everything else still follows the merge rules: BSC owns the number, and
+    // SportLots' variation name survives BSC's empty one.
+    expect(cards[0].cardNumber).toBe("227c");
+    expect(cards[0].cardVariation).toBe("SSSP");
+  });
+
+  test("the row's own label follows the choice, so the list shows what will be saved", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    expect(screen.getByLabelText("Unlink #227c Mike Yastrzemski · SSSP")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+      }),
+    );
+    expect(
+      screen.getByLabelText(
+        "Unlink #227c Mike Yastrzemski|Carl Yastrzemski · SSSP",
+      ),
+    ).toBeTruthy();
+  });
+
+  test("switching back to BSC restores its name — the choice is reversible before Confirm", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: 'Use the BSC name "Mike Yastrzemski" for #227c',
+      }),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Mike Yastrzemski");
+  });
+
+  /**
+   * Deliberately NOT a gate. The name is editable in CardDetailPanel after
+   * Confirm, so a conflict is recoverable; blocking would let one flagged row
+   * in a streamed 660-card set hold the whole commit hostage. The default is
+   * unchanged behaviour — what changed is that it is no longer silent.
+   */
+  test("an unresolved conflict does NOT block Confirm, and still defaults to BSC", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    const confirm = screen.getByLabelText(
+      "Confirm card matches",
+    ) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    expect(confirm.hasAttribute("aria-disabled")).toBe(false);
+
+    fireEvent.click(confirm);
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Mike Yastrzemski");
+  });
+
+  /**
+   * The Matched section collapses by default whenever a column has anything in
+   * it — which is necessarily true while the operator is linking by hand. A
+   * warning inside a closed section is not a warning.
+   */
+  test("linking a conflicting pair opens the collapsed Matched section", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc, bscCard("5", "Roberto Osuna")],
+      unmatchedSl: [yastrzemskiSl, slCard("5", "Roberto Osuna")],
+    });
+    // Unmatched work exists, so it opens collapsed.
+    expect(screen.getByLabelText(/^Expand matched cards/)).toBeTruthy();
+
+    linkYastrzemski();
+
+    expect(screen.getByRole("group", { name: "Name conflict on #227c" })).toBeTruthy();
+  });
+
+  test("a clean link leaves the section as the operator had it", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc, bscCard("5", "Roberto Osuna")],
+      unmatchedSl: [yastrzemskiSl, slCard("5", "Roberto Osuna")],
+    });
+
+    linkByLabel("#5 Roberto Osuna", "#5 Roberto Osuna");
+
+    // No conflict, so no reason to seize the operator's attention.
+    expect(screen.getByLabelText("Expand matched cards")).toBeTruthy();
+  });
+
+  test("the collapsed header still reports the conflict count, in text and to assistive tech", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc, bscCard("5", "Roberto Osuna")],
+      unmatchedSl: [yastrzemskiSl, slCard("5", "Roberto Osuna")],
+    });
+    linkYastrzemski();
+
+    // Re-collapse: the signal must survive the operator closing the section.
+    fireEvent.click(
+      screen.getByLabelText("Collapse matched cards, 1 with a name conflict"),
+    );
+    expect(screen.getByText(/1 name conflict/)).toBeTruthy();
+    expect(
+      screen.getByLabelText("Expand matched cards, 1 with a name conflict"),
+    ).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Name conflict on #227c" })).toBeNull();
+  });
+
+  test("the header label is untouched when nothing conflicts", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+    expect(screen.getByLabelText("Collapse matched cards")).toBeTruthy();
+    expect(screen.queryByText(/name conflict/)).toBeNull();
+  });
+
+  /**
+   * Unlink has to actually undo the merge. Spreading the merged card onto both
+   * halves stamped BSC's "Mike Yastrzemski" over SportLots' row, so the SL
+   * column lost Carl permanently and a re-link could never detect the conflict
+   * again — the two rows now agreed, wrongly.
+   */
+  test("unlinking gives each side its OWN name back", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+    fireEvent.click(screen.getByLabelText(/^Unlink /));
+
+    expect(
+      screen.getByLabelText(/^Select BSC card #227c Mike Yastrzemski ·/),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText(
+        /^Link selected BSC card to #227c Mike Yastrzemski\|Carl Yastrzemski ·/,
+      ),
+    ).toBeTruthy();
+  });
+
+  test("re-linking after an unlink detects the conflict again", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+    fireEvent.click(screen.getByLabelText(/^Unlink /));
+
+    linkByLabel(
+      "#227c Mike Yastrzemski · SSSP",
+      "#227c Mike Yastrzemski|Carl Yastrzemski · SSSP",
+    );
+
+    expect(screen.getByRole("group", { name: "Name conflict on #227c" })).toBeTruthy();
+    expect(
+      screen.getByText(/SportLots: Mike Yastrzemski\|Carl Yastrzemski/),
+    ).toBeTruthy();
+  });
+
+  /**
+   * Scope: EVERY merged pair, not only `isVariation` ones. A mis-click one row
+   * off in a 660-row column merges two different players, and the name
+   * disagreement is the only signal that it happened. Restricting the check to
+   * variations would also risk missing the motivating row itself, since BSC
+   * filed #227c with an empty variation description.
+   */
+  test("a non-variation pair whose names disagree is flagged too", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("40", "Mookie Betts")],
+      unmatchedSl: [slCard("40", "Corey Seager")],
+    });
+
+    linkByLabel("#40 Mookie Betts", "#40 Corey Seager");
+
+    expect(screen.getByRole("group", { name: "Name conflict on #40" })).toBeTruthy();
+  });
+
+  describe("differences that are spelling, not disagreement, stay quiet", () => {
+    const noConflict = (bscName: string, slName: string) => {
+      renderModal({
+        unmatchedBsc: [bscCard("9", bscName)],
+        unmatchedSl: [slCard("9", slName)],
+      });
+      linkByLabel(`#9 ${bscName}`, `#9 ${slName}`);
+      expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+      expect(screen.queryByText(/name conflict/)).toBeNull();
+    };
+
+    test("identical names", () => noConflict("Ken Griffey Jr.", "Ken Griffey Jr."));
+    test("trailing punctuation", () => noConflict("Ken Griffey Jr.", "Ken Griffey Jr"));
+    test("casing", () => noConflict("Ken Griffey Jr.", "KEN GRIFFEY JR."));
+    // BSC routinely strips the accents SportLots keeps.
+    test("accents", () => noConflict("Jose Ramirez", "José Ramírez"));
+    // BSC joins co-subjects with " / ", SportLots with "|".
+    test("multi-player separators", () =>
+      noConflict("Mike Trout / Shohei Ohtani", "Mike Trout|Shohei Ohtani"));
+  });
+
+  test("a side with no name at all is not a disagreement — the other side simply wins", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [bscCard("60", "")],
+      unmatchedSl: [slCard("60", "Wander Franco")],
+    });
+
+    fireEvent.click(screen.getByLabelText("Select BSC card #60"));
+    fireEvent.click(
+      screen.getByLabelText("Link selected BSC card to #60 Wander Franco"),
+    );
+
+    expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Wander Franco");
+  });
+
+  /**
+   * The boundary of this fix, pinned deliberately. An auto-matched pair is
+   * merged server-side in `fetchCardChecklist`, which discards the losing name
+   * before the modal ever sees it — there is nothing here left to compare. The
+   * modal must not invent a marker it cannot substantiate.
+   */
+  test("an auto-matched pair carries no conflict marker", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 }],
+    });
+    expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+  });
+});
