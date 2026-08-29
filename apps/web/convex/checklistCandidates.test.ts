@@ -17,6 +17,10 @@ const modules = (import.meta as unknown as {
 }).glob("./**/*.*s");
 
 const ADMIN = { subject: "admin_195", role: "admin" };
+// A second operator on the same shared set — the whole point of the isolation
+// suite below. Two admins syncing one selectorOption is the real workflow, not
+// a contrived one: the sets are shared and the fetch takes ~80s.
+const OTHER_ADMIN = { subject: "admin_other", role: "admin" };
 
 async function seedRow(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) =>
@@ -48,14 +52,26 @@ async function startBatch(
   selectorOptionId: Id<"selectorOptions">,
   candidates: ReturnType<typeof cand>[],
   readyImmediately = false,
+  opts: { userId?: string; batchId?: string } = {},
 ) {
   return t.mutation(internal.checklistCandidates.startCandidateBatch, {
     selectorOptionId,
-    batchId: "batch-1",
-    userId: "admin_195",
+    batchId: opts.batchId ?? "batch-1",
+    userId: opts.userId ?? ADMIN.subject,
     candidates,
     readyImmediately,
   });
+}
+
+/** The modal's read, as a given operator. */
+async function readAs(
+  t: ReturnType<typeof convexTest>,
+  identity: { subject: string; role: string },
+  selectorOptionId: Id<"selectorOptions">,
+) {
+  return t
+    .withIdentity(identity)
+    .query(api.checklistCandidates.getReadyCandidates, { selectorOptionId });
 }
 
 describe("candidates are visible immediately; teams fill in behind them", () => {
@@ -67,7 +83,7 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
     const id = await seedRow(t);
     await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")]);
 
-    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(res.total).toBe(2);
@@ -87,7 +103,7 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
       resolved: [{ bscRef: "b1", teamName: "Phillies" }],
     });
 
-    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(res.ready).toBe(1);
@@ -111,7 +127,7 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
       resolved: [{ bscRef: "b1", teamName: undefined }],
     });
 
-    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(res.ready).toBe(1);
@@ -124,7 +140,7 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
     const id = await seedRow(t);
     await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")], true);
 
-    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(res.ready).toBe(2);
@@ -142,7 +158,7 @@ describe("a parent and its variations arrive together", () => {
       cand("21", "b21"),
     ]);
 
-    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(res.cards.map((c) => c.cardNumber).sort()).toEqual([
@@ -168,7 +184,7 @@ describe("a parent and its variations arrive together", () => {
       batchId: "batch-1",
       resolved: [{ bscRef: "b20", teamName: "Orioles" }],
     });
-    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(res.cards).toHaveLength(2);
@@ -196,7 +212,7 @@ describe("batch lifecycle", () => {
     );
     expect(res.cleared).toBe(2);
 
-    const view = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const view = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(view.total).toBe(1);
@@ -223,7 +239,7 @@ describe("batch lifecycle", () => {
     expect(res.deleted).toBe(1);
     expect(
       (
-        await t.query(api.checklistCandidates.getReadyCandidates, {
+        await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
           selectorOptionId: id,
         })
       ).total,
@@ -233,7 +249,7 @@ describe("batch lifecycle", () => {
   test("an untouched row reports nothing rather than erroring", async () => {
     const t = convexTest(schema, modules);
     const id = await seedRow(t);
-    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
     });
     expect(res).toEqual({ batchId: undefined, total: 0, ready: 0, cards: [] });
@@ -261,7 +277,7 @@ describe("sweepStaleCandidates — the run that never finished", () => {
     expect(res.deleted).toBe(1);
     expect(
       (
-        await t.query(api.checklistCandidates.getReadyCandidates, {
+        await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
           selectorOptionId: id,
         })
       ).total,
@@ -278,5 +294,100 @@ describe("sweepStaleCandidates — the run that never finished", () => {
       {},
     );
     expect(res.deleted).toBe(0);
+  });
+});
+
+
+describe("two operators on the same set do not destroy each other's work", () => {
+  // The bug this pins: `startCandidateBatch` cleared every row for the
+  // selectorOption regardless of who wrote it, and `getReadyCandidates` read
+  // the same way. So the second operator to hit Sync deleted the first one's
+  // in-flight candidates, and the first one's modal — subscribed to this very
+  // query — emptied mid-review. No error, just a lost 900-card reconciliation.
+
+  test("B's fetch neither clears nor surfaces A's candidates", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+
+    await startBatch(t, id, [cand("1", "b1"), cand("2", "b2"), cand("3", "b3")],
+      true, { userId: ADMIN.subject, batchId: "batch-a" });
+    const b = await startBatch(t, id, [cand("7", "b7"), cand("8", "b8")], true, {
+      userId: OTHER_ADMIN.subject,
+      batchId: "batch-b",
+    });
+
+    // Nothing of A's was in scope for B's clear.
+    expect(b.cleared).toBe(0);
+
+    const aView = await readAs(t, ADMIN, id);
+    expect(aView.total).toBe(3);
+    expect(aView.batchId).toBe("batch-a");
+    expect(aView.cards.map((c) => c.cardNumber).sort()).toEqual(["1", "2", "3"]);
+
+    const bView = await readAs(t, OTHER_ADMIN, id);
+    expect(bView.total).toBe(2);
+    expect(bView.batchId).toBe("batch-b");
+    expect(bView.cards.map((c) => c.cardNumber).sort()).toEqual(["7", "8"]);
+  });
+
+  test("a re-run by the SAME operator still replaces only their own batch", async () => {
+    // The original intent survives the scoping: interleaving two of your own
+    // runs is still the thing being prevented.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+
+    await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")], true, {
+      userId: ADMIN.subject,
+      batchId: "batch-a1",
+    });
+    await startBatch(t, id, [cand("7", "b7")], true, {
+      userId: OTHER_ADMIN.subject,
+      batchId: "batch-b",
+    });
+
+    const again = await startBatch(t, id, [cand("9", "b9")], true, {
+      userId: ADMIN.subject,
+      batchId: "batch-a2",
+    });
+    expect(again.cleared).toBe(2); // A's own two rows, and only those.
+
+    const aView = await readAs(t, ADMIN, id);
+    expect(aView.total).toBe(1);
+    expect(aView.cards[0].cardNumber).toBe("9");
+    expect((await readAs(t, OTHER_ADMIN, id)).total).toBe(1);
+  });
+
+  test("A cancelling does not empty B's open modal", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1"), cand("2", "b2")], true, {
+      userId: ADMIN.subject,
+      batchId: "batch-a",
+    });
+    await startBatch(t, id, [cand("7", "b7")], true, {
+      userId: OTHER_ADMIN.subject,
+      batchId: "batch-b",
+    });
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.checklistCandidates.discardCandidates, {
+        selectorOptionId: id,
+      });
+    expect(res.deleted).toBe(2);
+
+    expect((await readAs(t, ADMIN, id)).total).toBe(0);
+    expect((await readAs(t, OTHER_ADMIN, id)).total).toBe(1);
+  });
+
+  test("an unauthenticated read sees nothing rather than everything", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1")], true);
+
+    const res = await t.query(api.checklistCandidates.getReadyCandidates, {
+      selectorOptionId: id,
+    });
+    expect(res).toEqual({ batchId: undefined, total: 0, ready: 0, cards: [] });
   });
 });

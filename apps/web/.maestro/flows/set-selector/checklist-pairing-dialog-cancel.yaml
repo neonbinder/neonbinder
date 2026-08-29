@@ -211,13 +211,16 @@ tags:
 #   reachable from a real marketplace fetch (a custom subtree short-circuits
 #   BSC/SL — isCustomSubtree, NEO-22 — and CardChecklist skips the dialog when
 #   all three buckets are empty). A second flow would therefore have to fetch
-#   THIS SAME shared real set a second time, and that is not merely a wasted
-#   ~90s: startCandidateBatch clears every checklistCandidates row for the
-#   selectorOption globally, and getReadyCandidates is not user-scoped, so two
-#   runners streaming Future Stars at once can empty each other's live
-#   candidate set — which unmounts the other one's dialog mid-review
-#   (streamedPairing returns null while pendingPairing is still unset). One
-#   fetch, one flow, no new contention on a shared real set.
+#   THIS SAME shared real set a second time, at ~90s a go. One fetch, one flow.
+#
+#   NOTE (NEO-195 follow-up): the sharper hazard this note used to describe —
+#   startCandidateBatch clearing every checklistCandidates row for the
+#   selectorOption globally, and an unscoped getReadyCandidates, so two runners
+#   streaming Future Stars at once emptied each other's live candidate set and
+#   unmounted the other's dialog mid-review — has been FIXED. Both the clear
+#   and the read are now scoped to the operator (createdByUserId), and each
+#   runner signs in as its own dev+e2e-<N> user, so concurrent runners are
+#   isolated. The ~90s argument for keeping this in one flow still stands.
 #
 # WHY THIS IS STILL READ-ONLY (R7a):
 #   Every step below is modal-local reducer state. Nothing is written until

@@ -811,8 +811,21 @@ export default defineSchema({
   })
     .index("by_batch", ["batchId"])
     .index("by_batch_and_status", ["batchId", "status"])
-    // Cleanup and the "is a fetch already in flight for this row" check.
-    .index("by_selector_option", ["selectorOptionId"]),
+    // Cleanup, and the modal's live read. Both are per-OPERATOR, not per-row:
+    // two admins syncing the same selectorOption at once each own their own
+    // candidate set, so one operator's fetch must neither clear nor surface
+    // the other's rows (NEO-195). `createdByUserId` therefore has to be part
+    // of the index rather than an in-memory filter, and it comes second
+    // because every caller fixes the selectorOption first.
+    //
+    // This REPLACED a bare ["selectorOptionId"] index. That index is a prefix
+    // of this one, so a future genuinely-global per-row query is still served
+    // here and a second index would only add write cost — a batch is ~900
+    // inserts.
+    .index("by_selector_option_and_user", [
+      "selectorOptionId",
+      "createdByUserId",
+    ]),
 
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({

@@ -73,12 +73,25 @@ const candidateInputValidator = v.object({
 });
 
 /**
- * Open a batch: drop anything left from a previous run on this row, then write
- * every candidate as `pending`.
+ * Open a batch: drop anything left from THIS OPERATOR's previous run on this
+ * row, then write every candidate as `pending`.
  *
  * Clearing first is deliberate. A re-sync before the operator cancelled would
  * otherwise leave two runs' candidates interleaved in the modal, and the older
  * ones would reference marketplace state that no longer exists.
+ *
+ * ## Why the clear is scoped to the caller — NEO-195 follow-up
+ *
+ * "A run" belongs to an operator, not to a selectorOption. The first version
+ * cleared every row for the selectorOption regardless of who wrote it, so two
+ * admins syncing the same set concurrently destroyed each other's work: A's
+ * fetch deleted B's in-flight rows, B's modal emptied mid-review, and B lost a
+ * 900-card reconciliation with no error to explain it. `createdByUserId` was
+ * already written on every row and never read — the scoping was intended and
+ * missed.
+ *
+ * Scoping keeps the original intent intact (a second run by the SAME operator
+ * still replaces their own previous batch) and drops only the collateral.
  */
 export const startCandidateBatch = internalMutation({
   args: {
@@ -93,10 +106,14 @@ export const startCandidateBatch = internalMutation({
   },
   returns: v.object({ written: v.number(), cleared: v.number() }),
   handler: async (ctx, args) => {
+    // Scoped to the caller: another operator's in-flight batch on this same
+    // row is not stale, it is someone else's live review.
     const stale = await ctx.db
       .query("checklistCandidates")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId),
+      .withIndex("by_selector_option_and_user", (q) =>
+        q
+          .eq("selectorOptionId", args.selectorOptionId)
+          .eq("createdByUserId", args.userId),
       )
       .collect();
     for (const row of stale) await ctx.db.delete(row._id);
@@ -182,15 +199,24 @@ export const resolveCandidateTeams = internalMutation({
 });
 
 /**
- * The modal's live view.
+ * The modal's live view, scoped to the signed-in operator.
  *
- * Returns EVERY candidate in the batch, pending teams included — pairing does
+ * Scoping matters as much here as it does in `startCandidateBatch`: this query
+ * is what the modal subscribes to, so an unscoped read let one operator's
+ * fetch repopulate — or empty — another operator's open dialog. A caller with
+ * no identity sees nothing rather than erroring; the query is reactive and the
+ * modal mounts before auth necessarily resolves, so an empty batch is the
+ * honest answer and a throw would only surface as a broken subscription.
+ *
+ * Returns EVERY candidate in the operator's batch, pending teams included — pairing does
  * not need a team, and Confirm is separately blocked until the fetch finishes.
  * `ready` counts how many have their team so the UI can show enrichment
  * progress.
  */
 export const getReadyCandidates = query({
   args: { selectorOptionId: v.id("selectorOptions") },
+  // Deliberately public-by-shape but self-scoping: the handler reads the
+  // caller's identity and can only ever return rows that caller wrote.
   returns: v.object({
     batchId: v.optional(v.string()),
     total: v.number(),
@@ -218,10 +244,16 @@ export const getReadyCandidates = query({
     ),
   }),
   handler: async (ctx, args) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      return { batchId: undefined, total: 0, ready: 0, cards: [] };
+    }
     const rows = await ctx.db
       .query("checklistCandidates")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId),
+      .withIndex("by_selector_option_and_user", (q) =>
+        q
+          .eq("selectorOptionId", args.selectorOptionId)
+          .eq("createdByUserId", userId),
       )
       .collect();
     if (rows.length === 0) {
@@ -269,9 +301,14 @@ export const getReadyCandidates = query({
  * rows have no owner and no one to delete them.
  *
  * Left alone they are not merely litter: `getReadyCandidates` reads by
- * selectorOption, so a half-finished run would surface stale cards next to a
- * fresh one, and its still-pending stems would withhold groups that have
- * nothing to do with the current fetch.
+ * selectorOption AND operator, so a half-finished run of that operator's own
+ * would surface stale cards next to a fresh one, and its still-pending stems
+ * would withhold groups that have nothing to do with the current fetch.
+ *
+ * This sweep stays GLOBAL on purpose — it is an hourly cron with no caller to
+ * scope to, and abandoned rows belong to operators who are, by definition, not
+ * coming back. It is the one function in this file that should not be
+ * user-scoped.
  *
  * `startCandidateBatch` already clears the row it is about to write, so this is
  * the backstop for rows nobody comes back to. An hour is far longer than any
@@ -300,21 +337,29 @@ export const sweepStaleCandidates = internalMutation({
 });
 
 /**
- * Drop a batch. Called on cancel, and after a confirm has promoted the rows.
+ * Drop the CALLER's batch. Called on cancel, and after a confirm has promoted
+ * the rows.
  *
  * Candidates are worthless once the operator has decided — keeping them would
  * make the next fetch's "clear stale rows" step do the work instead, one sync
  * later and less obviously.
+ *
+ * Scoped to the caller for the same reason `startCandidateBatch` is: cancelling
+ * your own review must not delete a second operator's live candidates out from
+ * under their open modal. `requireAdmin` hands back the caller's id, so the
+ * scope costs no second identity lookup.
  */
 export const discardCandidates = mutation({
   args: { selectorOptionId: v.id("selectorOptions") },
   returns: v.object({ deleted: v.number() }),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const userId = await requireAdmin(ctx);
     const rows = await ctx.db
       .query("checklistCandidates")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId),
+      .withIndex("by_selector_option_and_user", (q) =>
+        q
+          .eq("selectorOptionId", args.selectorOptionId)
+          .eq("createdByUserId", userId),
       )
       .collect();
     for (const row of rows) await ctx.db.delete(row._id);
