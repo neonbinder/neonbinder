@@ -4,3 +4,4 @@
 - [NeonButton contrast defect (pre-existing, site-wide)](neonbutton-contrast-defect.md) — `secondary` and `cancel` variants fail 1.4.3; affects every page that uses them, not just the one being audited
 - [Focus-park pattern already established in this codebase](focus-park-pattern.md) — where it's used correctly, and the gap it had in review-grid.tsx before NEO-152's audit fix
 - [role/aria-live consistency for always-mounted live regions](live-region-role-pattern.md) — the one correct way and the one bug found doing it wrong
+- [Nested opacity contrast math + aria-pressed-pair→radiogroup pattern](nested-opacity-contrast-and-radiogroup.md) — how to compute contrast through chained `bg-*/NN` layers, and the mutually-exclusive-toggle fix from CardPairingModal (NEO-189)

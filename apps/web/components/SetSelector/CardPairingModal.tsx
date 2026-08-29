@@ -617,6 +617,26 @@ export default function CardPairingModal({
     requestAnimationFrame(() => el?.focus());
   }, []);
 
+  /**
+   * NEO-189/a11y — focus the now-checked radio in a name-conflict
+   * radiogroup, by card number rather than by ref or array index: the
+   * radiogroup's own arrow-key handler dispatches CHOOSE_NAME first, and by
+   * the time this runs the DOM has to be re-queried anyway (the CHOSEN radio
+   * — the one that must end up focused — only exists post-render), and
+   * `state.matched` is re-sorted by `ordered()` after every dispatch, so a
+   * captured index or element ref from before the dispatch cannot be trusted
+   * to still point at the same row afterward.
+   */
+  const refocusSelectedRadio = useCallback((cardNumber: string) => {
+    requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLElement>(
+          `[data-name-conflict="${cardNumber}"] [role="radio"][tabindex="0"]`,
+        )
+        ?.focus();
+    });
+  }, []);
+
   const visibleBsc = useMemo(
     () =>
       state.unmatchedBsc.filter((c) =>
@@ -745,7 +765,11 @@ export default function CardPairingModal({
                 {matchedCollapsed ? "▶" : "▼"} Matched ({state.matched.length})
                 {nameConflictCount > 0 && (
                   <span className="text-[#FF2EB3] ml-2">
-                    ⚠ {nameConflictCount} name conflict
+                    {/* The glyph is decorative — "name conflict(s)" already
+                        carries the meaning in words, so AT shouldn't also be
+                        made to announce "warning sign" on top of that. */}
+                    <span aria-hidden="true">⚠</span> {nameConflictCount} name
+                    conflict
                     {nameConflictCount === 1 ? "" : "s"}
                   </span>
                 )}
@@ -787,49 +811,134 @@ export default function CardPairingModal({
                           role="group"
                           aria-label={`Name conflict on #${m.card.cardNumber}`}
                           className="flex flex-wrap items-center gap-2 border-l-2 border-[#FF2EB3] pl-2 py-1"
+                          // a11y — lets both the LINK handler (below) and the
+                          // radiogroup's own arrow-key handler find this row's
+                          // controls by card number after a dispatch, without
+                          // depending on `i`, which `ordered()` can reshuffle.
+                          data-name-conflict={m.card.cardNumber}
                         >
-                          <span className="text-xs text-[#FF2EB3]">
-                            ⚠ These marketplaces name this card differently —
-                            pick the right one before it is listed.
+                          <span
+                            id={`name-conflict-warning-${m.card.cardNumber}`}
+                            className="text-xs text-[#FF2EB3]"
+                          >
+                            {/* Decorative — the sentence itself carries the
+                                meaning, so the glyph shouldn't make AT
+                                announce a redundant "warning sign" first. */}
+                            <span aria-hidden="true">⚠</span> These
+                            marketplaces name this card differently — pick the
+                            right one before it is listed.
                           </span>
-                          <button
-                            type="button"
-                            aria-pressed={m.nameConflict.chosen === "bsc"}
-                            aria-label={`Use the BSC name "${m.nameConflict.bsc}" for #${m.card.cardNumber}`}
-                            onClick={() =>
+                          {/*
+                            a11y (NEO-189 audit) — this is a mutually exclusive,
+                            always-exactly-one-chosen pair, i.e. exactly the
+                            case the WAI-ARIA APG radio-group pattern is for,
+                            not two independent aria-pressed toggles (which
+                            carry no guarantee, semantic or enforced, that
+                            they're mutually exclusive, and give a keyboard
+                            user no arrow-key way to move between them as a
+                            set). Kept visually as a pair of pill buttons per
+                            the design — only the semantics and keyboard
+                            handling changed.
+                          */}
+                          <div
+                            role="radiogroup"
+                            aria-label={`Name for #${m.card.cardNumber}`}
+                            aria-describedby={`name-conflict-warning-${m.card.cardNumber}`}
+                            className="flex flex-wrap items-center gap-2"
+                            onKeyDown={(e) => {
+                              if (
+                                ![
+                                  "ArrowLeft",
+                                  "ArrowRight",
+                                  "ArrowUp",
+                                  "ArrowDown",
+                                ].includes(e.key)
+                              ) {
+                                return;
+                              }
+                              // Only two options, so either arrow direction
+                              // just toggles — the APG pattern moves focus
+                              // WITH selection on a single-select radio group.
+                              e.preventDefault();
+                              const other =
+                                m.nameConflict!.chosen === "bsc"
+                                  ? "sportlots"
+                                  : "bsc";
                               dispatch({
                                 type: "CHOOSE_NAME",
                                 index: i,
-                                side: "bsc",
-                              })
-                            }
-                            className={`text-xs rounded px-2 py-1.5 ${
-                              m.nameConflict.chosen === "bsc"
-                                ? "bg-cyan-900/60 text-cyan-100"
-                                : "bg-gray-700/60 text-gray-300"
-                            }`}
+                                side: other,
+                              });
+                              refocusSelectedRadio(m.card.cardNumber);
+                            }}
                           >
-                            BSC: {m.nameConflict.bsc}
-                          </button>
-                          <button
-                            type="button"
-                            aria-pressed={m.nameConflict.chosen === "sportlots"}
-                            aria-label={`Use the SportLots name "${m.nameConflict.sportlots}" for #${m.card.cardNumber}`}
-                            onClick={() =>
-                              dispatch({
-                                type: "CHOOSE_NAME",
-                                index: i,
-                                side: "sportlots",
-                              })
-                            }
-                            className={`text-xs rounded px-2 py-1.5 ${
-                              m.nameConflict.chosen === "sportlots"
-                                ? "bg-cyan-900/60 text-cyan-100"
-                                : "bg-gray-700/60 text-gray-300"
-                            }`}
-                          >
-                            SportLots: {m.nameConflict.sportlots}
-                          </button>
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={m.nameConflict.chosen === "bsc"}
+                              // Roving tabindex: only the checked radio is a
+                              // Tab stop, matching native radio-group
+                              // behaviour and the APG pattern.
+                              tabIndex={m.nameConflict.chosen === "bsc" ? 0 : -1}
+                              // The accessible name STARTS WITH the visible
+                              // label ("BSC: <name>") so it satisfies WCAG
+                              // 2.5.3 Label in Name — a speech-input user
+                              // saying "click BSC: <name>" has to match what
+                              // is actually announced.
+                              aria-label={`BSC: ${m.nameConflict.bsc} — use this name for #${m.card.cardNumber}`}
+                              onClick={() =>
+                                dispatch({
+                                  type: "CHOOSE_NAME",
+                                  index: i,
+                                  side: "bsc",
+                                })
+                              }
+                              className={`text-xs rounded px-2 py-1.5 ${
+                                m.nameConflict.chosen === "bsc"
+                                  ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
+                                  : "bg-gray-700/60 text-gray-300"
+                              }`}
+                            >
+                              {/* 1.4.1 Use of Color — the cyan/gray fill pair
+                                  differs by hue only (~1:1 lightness
+                                  contrast), indistinguishable to a
+                                  colour-blind operator deciding which name
+                                  wins. The checkmark + ring give a non-colour
+                                  cue for the state colour alone was carrying. */}
+                              {m.nameConflict.chosen === "bsc" && (
+                                <span aria-hidden="true">✓ </span>
+                              )}
+                              BSC: {m.nameConflict.bsc}
+                            </button>
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={
+                                m.nameConflict.chosen === "sportlots"
+                              }
+                              tabIndex={
+                                m.nameConflict.chosen === "sportlots" ? 0 : -1
+                              }
+                              aria-label={`SportLots: ${m.nameConflict.sportlots} — use this name for #${m.card.cardNumber}`}
+                              onClick={() =>
+                                dispatch({
+                                  type: "CHOOSE_NAME",
+                                  index: i,
+                                  side: "sportlots",
+                                })
+                              }
+                              className={`text-xs rounded px-2 py-1.5 ${
+                                m.nameConflict.chosen === "sportlots"
+                                  ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
+                                  : "bg-gray-700/60 text-gray-300"
+                              }`}
+                            >
+                              {m.nameConflict.chosen === "sportlots" && (
+                                <span aria-hidden="true">✓ </span>
+                              )}
+                              SportLots: {m.nameConflict.sportlots}
+                            </button>
+                          </div>
                         </div>
                       )}
                     </li>
@@ -965,7 +1074,9 @@ export default function CardPairingModal({
                           const bscSide = state.unmatchedBsc.find(
                             (x) => candidateKey(x) === selectedBsc,
                           );
-                          if (bscSide && nameConflictOf(bscSide, c)) {
+                          const createsConflict =
+                            bscSide && nameConflictOf(bscSide, c);
+                          if (createsConflict) {
                             setMatchedCollapsed(false);
                           }
                           dispatch({
@@ -974,6 +1085,18 @@ export default function CardPairingModal({
                             slKey: candidateKey(c),
                           });
                           setSelectedBsc(null);
+                          // a11y (NEO-189 audit) — this button (and the whole
+                          // <li> it lives in) is about to unmount: it just
+                          // moved from unmatchedSl into matched. Left alone,
+                          // that drops focus to <body> at the exact moment a
+                          // brand-new decision (which name to keep) appears
+                          // for the operator to make — worse than the
+                          // ordinary silent-focus-loss case, and worth fixing
+                          // here rather than filing separately, since the
+                          // conflict is what makes the dropped focus consequential.
+                          if (createsConflict && bscSide) {
+                            refocusSelectedRadio(bscSide.cardNumber);
+                          }
                         }}
                         aria-label={`Link selected BSC card to ${label(c)}`}
                       >

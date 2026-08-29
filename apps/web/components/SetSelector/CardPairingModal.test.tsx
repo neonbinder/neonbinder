@@ -609,14 +609,14 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     });
     linkYastrzemski();
 
-    const bscChoice = screen.getByRole("button", {
-      name: 'Use the BSC name "Mike Yastrzemski" for #227c',
+    const bscChoice = screen.getByRole("radio", {
+      name: 'BSC: Mike Yastrzemski — use this name for #227c',
     });
-    const slChoice = screen.getByRole("button", {
-      name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+    const slChoice = screen.getByRole("radio", {
+      name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
     });
-    expect(bscChoice.getAttribute("aria-pressed")).toBe("true");
-    expect(slChoice.getAttribute("aria-pressed")).toBe("false");
+    expect(bscChoice.getAttribute("aria-checked")).toBe("true");
+    expect(slChoice.getAttribute("aria-checked")).toBe("false");
   });
 
   test("choosing SportLots commits Carl's name, not Mike's", async () => {
@@ -627,8 +627,8 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     linkYastrzemski();
 
     fireEvent.click(
-      screen.getByRole("button", {
-        name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+      screen.getByRole("radio", {
+        name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
       }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -652,8 +652,8 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     expect(screen.getByLabelText("Unlink #227c Mike Yastrzemski · SSSP")).toBeTruthy();
     fireEvent.click(
-      screen.getByRole("button", {
-        name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+      screen.getByRole("radio", {
+        name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
       }),
     );
     expect(
@@ -671,13 +671,13 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     linkYastrzemski();
 
     fireEvent.click(
-      screen.getByRole("button", {
-        name: 'Use the SportLots name "Mike Yastrzemski|Carl Yastrzemski" for #227c',
+      screen.getByRole("radio", {
+        name: 'SportLots: Mike Yastrzemski|Carl Yastrzemski — use this name for #227c',
       }),
     );
     fireEvent.click(
-      screen.getByRole("button", {
-        name: 'Use the BSC name "Mike Yastrzemski" for #227c',
+      screen.getByRole("radio", {
+        name: 'BSC: Mike Yastrzemski — use this name for #227c',
       }),
     );
     fireEvent.click(screen.getByLabelText("Confirm card matches"));
@@ -876,5 +876,186 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       autoMatched: [{ card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 }],
     });
     expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+  });
+
+  /**
+   * a11y audit (NEO-189) — the two name choices are mutually exclusive
+   * (exactly one is always chosen), which is what the WAI-ARIA radio-group
+   * pattern is for, not a pair of independent aria-pressed toggles. Kept as a
+   * pair of pill BUTTONS visually — only the semantics changed.
+   */
+  describe("a11y — the name choice is a radiogroup, not two independent toggles", () => {
+    test("exposes role=radiogroup with an accessible name, and each option as role=radio", () => {
+      renderModal({
+        unmatchedBsc: [yastrzemskiBsc],
+        unmatchedSl: [yastrzemskiSl],
+      });
+      linkYastrzemski();
+
+      expect(
+        screen.getByRole("radiogroup", { name: "Name for #227c" }),
+      ).toBeTruthy();
+      expect(screen.getByRole("radio", { name: /^BSC:/ })).toBeTruthy();
+      expect(screen.getByRole("radio", { name: /^SportLots:/ })).toBeTruthy();
+    });
+
+    test("the radiogroup is described by the warning explaining WHY there is a choice", () => {
+      renderModal({
+        unmatchedBsc: [yastrzemskiBsc],
+        unmatchedSl: [yastrzemskiSl],
+      });
+      linkYastrzemski();
+
+      const group = screen.getByRole("radiogroup", { name: "Name for #227c" });
+      const describedBy = group.getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toMatch(
+        /marketplaces name this card differently/,
+      );
+    });
+
+    test("only the checked option is a Tab stop (roving tabindex)", () => {
+      renderModal({
+        unmatchedBsc: [yastrzemskiBsc],
+        unmatchedSl: [yastrzemskiSl],
+      });
+      linkYastrzemski();
+
+      const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
+      const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+      expect(bscChoice.tabIndex).toBe(0);
+      expect(slChoice.tabIndex).toBe(-1);
+    });
+
+    test("arrow keys move BOTH the selection and keyboard focus, per the APG radio-group pattern", async () => {
+      renderModal({
+        unmatchedBsc: [yastrzemskiBsc],
+        unmatchedSl: [yastrzemskiSl],
+      });
+      linkYastrzemski();
+
+      const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
+      const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+      bscChoice.focus();
+
+      fireEvent.keyDown(bscChoice, { key: "ArrowRight" });
+
+      expect(bscChoice.getAttribute("aria-checked")).toBe("false");
+      expect(slChoice.getAttribute("aria-checked")).toBe("true");
+      await waitFor(() => expect(document.activeElement).toBe(slChoice));
+      expect(slChoice.tabIndex).toBe(0);
+      expect(bscChoice.tabIndex).toBe(-1);
+    });
+  });
+
+  /**
+   * a11y audit (NEO-189) — WCAG 2.5.3 Label in Name: the accessible name of a
+   * control has to CONTAIN the control's own visible text, or a speech-input
+   * user saying what they see on screen ("click SportLots: ...") cannot match
+   * what assistive tech announces. `Use the SportLots name "..." for #N` does
+   * not contain the visible label `SportLots: ...` anywhere in it.
+   */
+  test("each name choice's accessible name starts with its own visible label (WCAG 2.5.3)", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    // SportLots starts UNCHECKED, so its visible text carries no checkmark —
+    // this isolates the label-in-name check from the colour-blind fix below.
+    const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+    expect(slChoice.textContent).toBe(
+      "SportLots: Mike Yastrzemski|Carl Yastrzemski",
+    );
+    expect(slChoice.getAttribute("aria-label")).toMatch(
+      /^SportLots: Mike Yastrzemski\|Carl Yastrzemski\b/,
+    );
+  });
+
+  /**
+   * a11y audit (NEO-189) — WCAG 1.4.1 Use of Color: the chosen/unchosen fills
+   * (cyan-900/60 vs gray-700/60) differ in relative luminance by ~1.06:1 —
+   * effectively identical lightness, distinguished only by hue. An operator
+   * with a color-vision deficiency has no way to tell which name is about to
+   * be saved without a non-colour cue.
+   */
+  test("the chosen name carries a non-colour cue, not colour alone (WCAG 1.4.1)", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    // BSC is the default choice straight after LINK.
+    const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
+    const slChoice = screen.getByRole("radio", { name: /^SportLots:/ });
+    expect(bscChoice.textContent?.startsWith("✓")).toBe(true);
+    expect(slChoice.textContent?.startsWith("✓")).toBe(false);
+
+    fireEvent.click(slChoice);
+    expect(slChoice.textContent?.startsWith("✓")).toBe(true);
+    expect(bscChoice.textContent?.startsWith("✓")).toBe(false);
+  });
+
+  /**
+   * a11y audit (NEO-189) — the warning glyph is decorative: "These
+   * marketplaces name this card differently" already says everything the
+   * glyph would, in words. Without aria-hidden, some screen readers announce
+   * U+26A0 by its Unicode name ("warning sign") ahead of that sentence — a
+   * redundant announcement, not a wrong one, but worth not shipping twice.
+   */
+  test("the warning glyphs are decorative, not literal announced content", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+
+    const warning = screen.getByText(
+      /These marketplaces name this card differently/,
+    );
+    expect(warning.querySelector('[aria-hidden="true"]')?.textContent).toBe(
+      "⚠",
+    );
+
+    const badge = screen.getByText(/1 name conflict/);
+    expect(badge.querySelector('[aria-hidden="true"]')?.textContent).toBe(
+      "⚠",
+    );
+  });
+
+  /**
+   * a11y audit (NEO-189) — linking a conflicting pair unmounts the very
+   * button the operator just clicked (it moves from unmatchedSl into
+   * matched) AND opens a brand-new decision (which name to keep). Left
+   * alone, focus falls to <body> at exactly the moment there is something
+   * the keyboard operator needs to act on.
+   */
+  test("linking a conflicting pair sends focus to the name choice, not <body>", async () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+
+    linkYastrzemski();
+
+    const bscChoice = screen.getByRole("radio", { name: /^BSC:/ });
+    await waitFor(() => expect(document.activeElement).toBe(bscChoice));
+  });
+
+  test("linking a NON-conflicting pair does not steal focus onto a radio that doesn't exist", async () => {
+    renderModal({
+      unmatchedBsc: [bscCard("5", "Roberto Osuna")],
+      unmatchedSl: [slCard("5", "Roberto Osuna")],
+    });
+
+    linkByLabel("#5 Roberto Osuna", "#5 Roberto Osuna");
+
+    expect(screen.queryByRole("radio")).toBeNull();
+    // Focus is simply wherever it already was (jsdom defaults to <body>);
+    // the point of this test is only that nothing throws trying to find a
+    // conflict radio that was never rendered.
+    expect(document.body).toBeTruthy();
   });
 });
