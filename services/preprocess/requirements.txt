@@ -17,7 +17,7 @@ Pillow==12.3.0
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.5.1+cpu
 transformers==4.47.1
-accelerate==1.2.1
+accelerate==1.14.0
 opencv-python-headless==4.10.0.84
 numpy==2.5.2
 # Tiered crop's BiRefNet model (NEO-161) — hot path, not a rare fallback:
@@ -27,5 +27,5 @@ numpy==2.5.2
 # deliberately omits it — that's what the rembg[cpu] extra would pin, but we
 # pin it explicitly to match this file's style). Weights are baked into the
 # image at build time via U2NET_HOME, same rationale as SAM above.
-rembg==2.0.78
+rembg==2.0.81
 onnxruntime==1.29.0
