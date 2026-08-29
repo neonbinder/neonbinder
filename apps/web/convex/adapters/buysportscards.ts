@@ -552,7 +552,7 @@ function asStringArray(raw: unknown): string[] {
  * "RC", "SP, VAR", or "AU, RC") into a normalized de-duped token array
  * we treat as card attributes.
  */
-function parsePlayerAttributeTokens(raw: unknown): string[] {
+export function parsePlayerAttributeTokens(raw: unknown): string[] {
   if (!raw) return [];
   const flatString = Array.isArray(raw) ? raw.join(",") : String(raw);
   const tokens = flatString

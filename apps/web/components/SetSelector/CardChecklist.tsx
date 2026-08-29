@@ -465,10 +465,26 @@ export default function CardChecklist({
 
   const displayRows = useMemo(() => {
     const presentIds = new Set(sortedCards.map((c) => c._id as string));
+    // NEO-189: the open card's parent counts as expanded, whatever the toggle
+    // says.
+    //
+    // Setting "Variation of" from the detail panel moves that card under its
+    // parent, and a collapsed parent would hide it — the panel would blink shut
+    // the moment the operator made the link, reading as the app losing their
+    // work rather than filing it. Derived rather than pushed into
+    // `expandedParents` so this never fights the operator's own toggle: close
+    // the parent and it stays closed once the selection moves on.
+    const selectedParentId = selectedCardId
+      ? (sortedCards.find((c) => c._id === selectedCardId)
+          ?.variationOfCardId as string | undefined)
+      : undefined;
+    const isExpanded = (id: string) =>
+      expandedParents.has(id) || id === selectedParentId;
     const rows: Array<{
       card: (typeof sortedCards)[number];
       isVariation: boolean;
       variationCount: number;
+      expanded: boolean;
     }> = [];
     for (const card of sortedCards) {
       // Rendered under its parent below, unless that parent is filtered out.
@@ -480,15 +496,21 @@ export default function CardChecklist({
         card,
         isVariation: !!card.variationOfCardId,
         variationCount: children.length,
+        expanded: children.length > 0 && isExpanded(card._id as string),
       });
-      if (children.length > 0 && expandedParents.has(card._id as string)) {
+      if (children.length > 0 && isExpanded(card._id as string)) {
         for (const child of children) {
-          rows.push({ card: child, isVariation: true, variationCount: 0 });
+          rows.push({
+            card: child,
+            isVariation: true,
+            variationCount: 0,
+            expanded: false,
+          });
         }
       }
     }
     return rows;
-  }, [sortedCards, variationsByParent, expandedParents]);
+  }, [sortedCards, variationsByParent, expandedParents, selectedCardId]);
 
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
@@ -766,7 +788,7 @@ export default function CardChecklist({
                   onEdit={(id) => setSelectedCardId(id)}
                   variationCount={row.variationCount}
                   isVariation={row.isVariation}
-                  isExpanded={expandedParents.has(row.card._id as string)}
+                  isExpanded={row.expanded}
                   onToggleVariations={
                     row.variationCount > 0 ? toggleVariations : undefined
                   }
