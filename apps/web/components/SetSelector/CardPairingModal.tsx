@@ -557,6 +557,7 @@ export default function CardPairingModal({
                 disabled Confirm looks broken rather than deliberate. */}
             {isStreaming && (
               <p
+                id="pairing-streaming-status"
                 className="text-xs text-[#00B7FF] mt-1"
                 role="status"
                 aria-live="polite"
@@ -850,7 +851,25 @@ export default function CardPairingModal({
               <NeonButton
                 size="2"
                 onClick={handleConfirm}
-                disabled={confirming || isStreaming}
+                // NEO-189/a11y: `disabled` only for the real terminal state
+                // (already saving). While merely streaming, the button stays
+                // FOCUSABLE — a native `disabled` button is pulled out of the
+                // tab order entirely, so a keyboard user tabbing through the
+                // footer would never even land on Confirm to learn why it
+                // isn't doing anything, and `title` tooltips aren't reliably
+                // announced by screen readers and can't be triggered by
+                // keyboard on an unfocusable control either way. aria-disabled
+                // keeps it reachable; handleConfirm's own isStreaming guard
+                // (above) makes activating it a no-op, so this is safe.
+                disabled={confirming}
+                aria-disabled={isStreaming || undefined}
+                // Ties the reason to the control itself so it's available the
+                // moment Confirm receives focus, rather than depending on the
+                // operator having caught the aria-live banner when it first
+                // appeared (or on every re-announcement as progress ticks).
+                aria-describedby={
+                  isStreaming ? "pairing-streaming-status" : undefined
+                }
                 aria-label="Confirm card matches"
                 title={
                   isStreaming

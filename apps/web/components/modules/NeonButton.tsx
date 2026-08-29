@@ -35,7 +35,15 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
           // styling, so without this a disabled button renders at full neon
           // and reads as clickable — you press it and nothing happens, with
           // no clue why. Dim it and switch the cursor so the state is visible.
-          ...(props.disabled
+          //
+          // Also keys off `aria-disabled`, not just `disabled`: a caller that
+          // needs the button to stay in the tab order (e.g. CardPairingModal's
+          // Confirm while a background fetch streams) uses aria-disabled
+          // instead of the native attribute — native `disabled` removes a
+          // button from the tab order entirely, which would make the reason
+          // for the disablement unreachable by keyboard. That button still
+          // needs the same "this isn't live" visual treatment.
+          ...(props.disabled || props["aria-disabled"]
             ? { opacity: 0.45, cursor: "not-allowed" }
             : null),
           ...props.style,

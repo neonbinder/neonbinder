@@ -451,6 +451,18 @@ export default function CardChecklist({
   // remove a parent while keeping its children, and a row you cannot see is a
   // row you cannot fix — the same reason commitCardChecklist reports ambiguous
   // groups instead of dropping them.
+  // a11y (NEO-189): id → card number over the FULL unfiltered `cards`, used to
+  // label a variation row with its parent's number even when that parent has
+  // been filtered out of `sortedCards` (an orphaned variation, rendered at top
+  // level below) or lives outside the current virtualized viewport.
+  const cardNumberById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const card of cards ?? []) {
+      map.set(card._id as string, card.cardNumber);
+    }
+    return map;
+  }, [cards]);
+
   const variationsByParent = useMemo(() => {
     const map = new Map<string, typeof sortedCards>();
     for (const card of sortedCards) {
@@ -485,6 +497,13 @@ export default function CardChecklist({
       isVariation: boolean;
       variationCount: number;
       expanded: boolean;
+      // a11y (NEO-189): the parent's card number, so CardChecklistItem can say
+      // "Variation of #11" in text rather than relying on indentation + a
+      // border colour alone — see the prop's own doc comment. Looked up from
+      // the FULL `cards` list, not `sortedCards`, so an orphaned variation
+      // (its parent filtered out, see below) still gets a correct number
+      // instead of `undefined`.
+      parentCardNumber?: string;
     }> = [];
     for (const card of sortedCards) {
       // Rendered under its parent below, unless that parent is filtered out.
@@ -497,6 +516,9 @@ export default function CardChecklist({
         isVariation: !!card.variationOfCardId,
         variationCount: children.length,
         expanded: children.length > 0 && isExpanded(card._id as string),
+        parentCardNumber: card.variationOfCardId
+          ? cardNumberById.get(card.variationOfCardId as string)
+          : undefined,
       });
       if (children.length > 0 && isExpanded(card._id as string)) {
         for (const child of children) {
@@ -505,12 +527,13 @@ export default function CardChecklist({
             isVariation: true,
             variationCount: 0,
             expanded: false,
+            parentCardNumber: card.cardNumber,
           });
         }
       }
     }
     return rows;
-  }, [sortedCards, variationsByParent, expandedParents, selectedCardId]);
+  }, [sortedCards, variationsByParent, expandedParents, selectedCardId, cardNumberById]);
 
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
@@ -789,6 +812,7 @@ export default function CardChecklist({
                   variationCount={row.variationCount}
                   isVariation={row.isVariation}
                   isExpanded={row.expanded}
+                  parentCardNumber={row.parentCardNumber}
                   onToggleVariations={
                     row.variationCount > 0 ? toggleVariations : undefined
                   }

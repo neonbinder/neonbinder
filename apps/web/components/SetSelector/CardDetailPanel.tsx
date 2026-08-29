@@ -141,6 +141,11 @@ export default function CardDetailPanel({
   });
   const [parentError, setParentError] = useState<string | null>(null);
   const [parentNumber, setParentNumber] = useState("");
+  // a11y: announced once a link/clear actually commits — see the effect below.
+  // This is the ONLY feedback a screen reader gets for either action: there is
+  // no Save step for this field (it writes immediately), and the visual swap
+  // from input → static text (or back) is silent otherwise.
+  const [parentStatus, setParentStatus] = useState<string | null>(null);
   const parentCard = useMemo(
     () =>
       card.variationOfCardId
@@ -148,6 +153,45 @@ export default function CardDetailPanel({
         : undefined,
     [card.variationOfCardId, siblingCards],
   );
+
+  // a11y: focus targets either side of the input ↔ static-text swap below.
+  // Whichever element had focus when a link/clear commits gets removed from
+  // the DOM (input unmounts on link, the Clear button unmounts on clear), and
+  // an unmounted focused element drops focus to <body> with no further
+  // warning — costly in a tool built around long keyboard-driven review
+  // sessions. The effect below moves focus to the element that replaces it.
+  const parentInputRef = useRef<HTMLInputElement | null>(null);
+  const clearButtonRef = useRef<HTMLButtonElement | null>(null);
+  // Tracks the previous linked state so the focus/announce effect only fires
+  // on a real transition, not on this component's initial mount (every
+  // remount — e.g. arrow-key nav to the next card — would otherwise steal
+  // focus and announce a link that isn't new).
+  const prevVariationOfIdRef = useRef(card.variationOfCardId);
+  useEffect(() => {
+    const prev = prevVariationOfIdRef.current;
+    const curr = card.variationOfCardId;
+    if (prev === curr) return;
+    prevVariationOfIdRef.current = curr;
+    if (curr) {
+      requestAnimationFrame(() => clearButtonRef.current?.focus());
+      // Reacting to an external system (the setVariationParent mutation
+      // committing and this card's reactive query updating), not deriving
+      // render state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setParentStatus(
+        parentCard
+          ? `Linked as a variation of #${parentCard.cardNumber}.`
+          : "Linked.",
+      );
+    } else if (prev) {
+      requestAnimationFrame(() => parentInputRef.current?.focus());
+      setParentStatus("Variation link cleared.");
+    }
+    // parentCard intentionally omitted: it derives from curr + siblingCards,
+    // and re-running this on every siblingCards tick would re-focus/re-announce
+    // on unrelated reactive updates, not just on curr actually changing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card.variationOfCardId]);
 
   /**
    * Resolve a typed card number to a sibling and set (or clear) the link.
@@ -609,10 +653,17 @@ export default function CardDetailPanel({
               A choice made here is marked manual and the next sync leaves it
               alone — see setCardVariationParent. */}
           <div>
-            <label
-              className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1"
-              htmlFor="variation-of-input"
-            >
+            {/* a11y: no `htmlFor` here — the Input primitive deliberately
+                never emits its own `id` (see components/primitives/Input.tsx)
+                because Maestro's resource-id falls back to aria-label when no
+                id is set, and `.maestro/flows/set-selector/
+                variation-link-group-and-unlink.yaml` targets this exact field
+                by its aria-label text. Adding an id to satisfy `htmlFor` would
+                switch Maestro's resource-id to that id and break the flow, so
+                this label stays a purely visual caption — same pattern every
+                other field in this panel already uses — and the input's own
+                `aria-label` below carries the accessible name instead. */}
+            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Variation of
             </label>
             {parentCard ? (
@@ -621,6 +672,7 @@ export default function CardDetailPanel({
                   #{parentCard.cardNumber} {parentCard.cardName}
                 </span>
                 <button
+                  ref={clearButtonRef}
                   type="button"
                   onClick={() => void applyVariationParent("")}
                   className="text-xs px-2 py-1 rounded border border-gray-600 hover:bg-gray-700"
@@ -632,6 +684,7 @@ export default function CardDetailPanel({
             ) : (
               <Input
                 bare
+                ref={parentInputRef}
                 type="text"
                 value={parentNumber}
                 onChange={(e) => setParentNumber(e.target.value)}
@@ -648,8 +701,33 @@ export default function CardDetailPanel({
               />
             )}
             {parentError && (
-              <p className="text-xs text-[#FF2EB3] mt-1" role="alert">
+              // a11y: NOT the brand `#FF2EB3` used for errors/destructive
+              // actions elsewhere in this file (e.g. the Cancel/Discard
+              // buttons) — measured contrast for that hex against this
+              // panel's own background is 3.34:1 on white and 4.4:1 on
+              // dark:bg-gray-800, both under WCAG 1.4.3's 4.5:1 minimum for
+              // normal-size text. This is a systemic app-wide issue (the same
+              // hex is used as text-on-light elsewhere already), out of scope
+              // to fix everywhere here, but an *error message* specifically
+              // has to be legible, so this instance uses a darkened/lightened
+              // variant in the same hue: 5.55:1 on white, 5.87:1 on
+              // dark:bg-gray-800.
+              <p className="text-xs text-[#C2178A] dark:text-[#FF6FCB] mt-1" role="alert">
                 {parentError}
+              </p>
+            )}
+            {/* a11y: the only feedback a screen reader gets that the link
+                (or clear) actually committed — see the effect that sets this
+                and moves focus, above. `aria-live="polite"` rather than
+                `role="alert"` because this is a success confirmation, not
+                something demanding interruption. */}
+            {parentStatus && !parentError && (
+              <p
+                className="text-xs text-gray-600 dark:text-gray-300 mt-1"
+                role="status"
+                aria-live="polite"
+              >
+                {parentStatus}
               </p>
             )}
           </div>

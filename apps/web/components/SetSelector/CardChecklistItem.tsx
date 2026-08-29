@@ -60,6 +60,16 @@ type CardChecklistItemProps = {
   isExpanded?: boolean;
   // Toggle this parent open/closed. Absent when the row has no variations.
   onToggleVariations?: (id: Id<"cardChecklist">) => void;
+  // a11y: the parent's card number, present only on a variation row. The
+  // ml-8 + left-border nesting that shows this row belongs to another card is
+  // entirely visual — a screen reader (and a keyboard user tabbing straight to
+  // this row's Edit/Delete button without reading the row first) gets none of
+  // it otherwise, especially once virtualization has unmounted the parent row
+  // this one is indented under. Folded into the subtitle text and the
+  // Edit/Delete labels below so the relationship travels with the row itself
+  // rather than depending on a DOM relationship to a node that may not be
+  // mounted.
+  parentCardNumber?: string;
 };
 
 /**
@@ -97,6 +107,7 @@ export default function CardChecklistItem({
   isVariation,
   isExpanded,
   onToggleVariations,
+  parentCardNumber,
 }: CardChecklistItemProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -135,6 +146,11 @@ export default function CardChecklistItem({
 
   // Build the secondary line: "<team(s)> · /99 · Refractor · On-Card auto"
   const subParts: string[] = [];
+  // NEO-189/a11y: said in words, not just in indentation — see the
+  // `parentCardNumber` prop note above.
+  if (isVariation && parentCardNumber) {
+    subParts.push(`Variation of #${parentCardNumber}`);
+  }
   if (teamLabel) subParts.push(teamLabel);
   if (card.printRun) subParts.push(`/${card.printRun}`);
   if (card.cardVariation) subParts.push(card.cardVariation);
@@ -163,8 +179,16 @@ export default function CardChecklistItem({
       {/* NEO-189: the disclosure sits in a fixed-width slot on EVERY row, not
           just parents. An element that appears only on some rows would change
           their width and re-measure the virtualized list — the same reflow the
-          reserved subtitle line below exists to avoid. */}
-      <span className="w-5 shrink-0 flex items-center justify-center">
+          reserved subtitle line below exists to avoid.
+
+          a11y: the slot is w-6/h-6 (24px), not w-5 — WCAG 2.2 SC 2.5.8 Target
+          Size (Minimum) requires a 24×24 CSS-pixel hit area for a control like
+          this, and the glyph alone (a 12px caret with no padding) was well
+          under half that. The button fills the slot so the whole 24×24 box is
+          clickable/tappable, not just the visible caret — same reasoning as
+          the always-reserved slot itself: uniform across every row, so this
+          never changes row width based on whether a given row has variations. */}
+      <span className="w-6 h-6 shrink-0 flex items-center justify-center">
         {hasVariations && onToggleVariations && (
           <button
             type="button"
@@ -180,7 +204,7 @@ export default function CardChecklistItem({
                 ? `Hide ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${card.cardNumber}`
                 : `Show ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${card.cardNumber}`
             }
-            className="text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+            className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
           >
             <span aria-hidden="true" className="text-xs">
               {isExpanded ? "▾" : "▸"}
