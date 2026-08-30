@@ -126,8 +126,9 @@ type NameConflict = NameDisagreement & {
 };
 
 /**
- * A pair as it ARRIVES — from the action's return or the streamed
- * `checklistCandidates` query, both of which produce the same shape.
+ * A pair as it ARRIVES — off the streamed `checklistCandidates` query, which
+ * is the only wire the cards travel now that `fetchCardChecklist` returns just
+ * a count and a message.
  *
  * Distinct from `MatchedPair` on purpose: an incoming pair has no `chosen`,
  * because nobody has chosen yet. `seedMatched` turns one into the other.
@@ -402,11 +403,35 @@ function baseReducer(state: State, action: Action): State {
     /**
      * NEO-195 — fold newly-ready candidates into a session already in progress.
      *
-     * The fetch streams, so the modal opens on the first complete stem group
-     * and keeps receiving more. This must APPEND ONLY: whatever the operator
-     * has already linked, unlinked or kept stays exactly as they left it. A
-     * card is new if no bucket — including the kept shelves — already holds its
-     * ref.
+     * The fetch streams, so the modal opens on the first candidates and keeps
+     * receiving more. Two different things arrive on that stream and they are
+     * handled differently:
+     *
+     *  NEW ROWS are APPENDED. Whatever the operator has already linked,
+     *  unlinked or kept stays exactly as they left it. A card is new if no
+     *  bucket — including the kept shelves — already holds its ref.
+     *
+     *  ENRICHMENT of rows already here is MERGED, field by field, and today
+     *  that is exactly one field: `teams`. A checklist fetch publishes every
+     *  candidate at ~6s and then spends ~74s resolving one team per card
+     *  against BSC, patching them onto the streamed rows as they land. Those
+     *  patches arrive long after the row itself.
+     *
+     * The merge is not cosmetic — the modal never displays a team. `teams` is
+     * carried on `PairingCard` through `onConfirm` into
+     * `resolveChecklistEntities` (which surfaces the new ones in the review
+     * wizard) and `commitCardChecklist` (which resolves them to
+     * `teamOnCardIds`). Append-only, this reducer dropped every team that
+     * resolved after the dialog opened — which is nearly all of them — so the
+     * enrichment was silently discarded and the operator was never asked to
+     * confirm those teams. It went unnoticed because the background
+     * `processBscTeamEnrichmentQueue` re-resolves the same cards after the
+     * commit, one 300ms HTTP call at a time: the data eventually appears,
+     * having been fetched twice and reviewed never.
+     *
+     * ONLY `teams` is merged. `cardName` in particular must not be: it is what
+     * `CHOOSE_NAME` rewrites when an operator settles a name conflict, and a
+     * later stream update would silently undo their choice.
      */
     case "ABSORB": {
       const seen = new Set<string>([
@@ -431,13 +456,59 @@ function baseReducer(state: State, action: Action): State {
       const newMatched = action.autoMatched.filter((m) => isNew(m.card));
       const newBsc = action.unmatchedBsc.filter(isNew);
       const newSl = action.unmatchedSl.filter(isNew);
-      if (!newMatched.length && !newBsc.length && !newSl.length) return state;
+
+      // Every incoming row, reachable by either of its refs — a pair the
+      // operator linked by hand carries both, and the enrichment that resolved
+      // its team came in on the BSC side alone.
+      const incomingByRef = new Map<string, PairingCard>();
+      for (const c of [
+        ...action.autoMatched.map((m) => m.card),
+        ...action.unmatchedBsc,
+        ...action.unmatchedSl,
+      ]) {
+        const bsc = c.platformData.bsc?.ref;
+        const sl = c.platformData.sportlots?.ref;
+        if (bsc) incomingByRef.set(bsc, c);
+        if (sl) incomingByRef.set(sl, c);
+      }
+
+      let enriched = false;
+      /** Adopt a team that resolved after this row was absorbed. Nothing else. */
+      const enrich = (c: PairingCard): PairingCard => {
+        if (c.teams?.length) return c;
+        const bscRef = c.platformData.bsc?.ref;
+        const slRef = c.platformData.sportlots?.ref;
+        const fresh =
+          (bscRef ? incomingByRef.get(bscRef) : undefined) ??
+          (slRef ? incomingByRef.get(slRef) : undefined);
+        if (!fresh?.teams?.length) return c;
+        enriched = true;
+        return { ...c, teams: fresh.teams };
+      };
+
+      const matched = state.matched.map((m) => {
+        const card = enrich(m.card);
+        return card === m.card ? m : { ...m, card };
+      });
+      const unmatchedBsc = state.unmatchedBsc.map(enrich);
+      const unmatchedSl = state.unmatchedSl.map(enrich);
+      const keptBsc = state.keptBsc.map(enrich);
+      const keptSl = state.keptSl.map(enrich);
+
+      // Nothing arrived and nothing changed — return the SAME state object so
+      // the render this dispatch would otherwise cause does not happen. The
+      // stream fires this on every reactive update of a 900-row batch.
+      if (!newMatched.length && !newBsc.length && !newSl.length && !enriched) {
+        return state;
+      }
 
       return {
         ...state,
-        matched: [...state.matched, ...newMatched],
-        unmatchedBsc: [...state.unmatchedBsc, ...newBsc],
-        unmatchedSl: [...state.unmatchedSl, ...newSl],
+        matched: [...matched, ...newMatched],
+        unmatchedBsc: [...unmatchedBsc, ...newBsc],
+        unmatchedSl: [...unmatchedSl, ...newSl],
+        keptBsc,
+        keptSl,
       };
     }
     case "LINK": {

@@ -138,6 +138,29 @@ const SERIES_1 = "2024-topps-series-1";
 const SERIES_2 = "2024-topps-series-2";
 
 /**
+ * The candidate rows as the pairing dialog receives them.
+ *
+ * `fetchCardChecklist` returns a count and a message; every card reaches the
+ * client through `getReadyCandidates`, so that is where "did the fan-out
+ * actually produce these cards" has to be asserted.
+ */
+async function buckets(
+  t: ReturnType<typeof convexTest>,
+  id: Id<"selectorOptions">,
+) {
+  const live = await t
+    .withIdentity(ADMIN)
+    .query(api.checklistCandidates.getReadyCandidates, {
+      selectorOptionId: id,
+    });
+  return {
+    matched: live.cards.filter((c) => c.bucket === "matched"),
+    bscOnly: live.cards.filter((c) => c.bucket === "bscOnly"),
+    slOnly: live.cards.filter((c) => c.bucket === "slOnly"),
+  };
+}
+
+/**
  * sport → year → manufacturer → setName → variantType(Base).
  *
  * `baseSlots` / `baseFacets` are what the Base row carries, which is the whole
@@ -244,11 +267,11 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
       expect(f.variant).toEqual(["base"]);
     }
 
-    // All three cards, from both sets, in one checklist.
-    const numbers = [
-      ...result.autoMatched.map((m) => m.card.cardNumber),
-      ...result.unmatchedBsc.map((c) => c.cardNumber),
-    ].sort();
+    // All three cards, from both sets, in one checklist. Read off the
+    // streamed candidates: the action returns a count and a message, and the
+    // cards themselves only ever reach the client through this query.
+    const { matched, bscOnly } = await buckets(t, baseId);
+    const numbers = [...matched, ...bscOnly].map((c) => c.cardNumber).sort();
     expect(numbers).toEqual(["1", "2", "351"]);
   });
 
@@ -268,17 +291,13 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
       { b1: "setName", b2: "setName" },
     );
 
-    const result = await t
-      .withIdentity(ADMIN)
-      .action(api.selectorOptions.fetchCardChecklist, {
-        selectorOptionId: baseId,
-      });
+    await t.withIdentity(ADMIN).action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: baseId,
+    });
 
+    const { bscOnly } = await buckets(t, baseId);
     const bySetId = new Map(
-      result.unmatchedBsc.map((c) => [
-        c.cardNumber,
-        c.platformData.bsc?.setId,
-      ]),
+      bscOnly.map((c) => [c.cardNumber, c.platformData.bsc?.setId]),
     );
     expect(bySetId.get("1")).toBe(SERIES_1);
     expect(bySetId.get("351")).toBe(SERIES_2);

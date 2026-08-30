@@ -19,6 +19,20 @@
  * survives that fetch resolving afterwards — the dialog does not reopen and
  * the cancelled message stands.
  *
+ * It also pins the three things the fetch action's RETURN used to be
+ * responsible for, now that it returns only `{ success, message,
+ * candidateCount }` and the cards travel solely on the streamed
+ * `getReadyCandidates` subscription:
+ *
+ *   - the dialog SURVIVES the action resolving (it used to hand over to
+ *     `pendingPairing`, a second complete copy of the same rows; nothing
+ *     hands over any more, so the stream has to keep it open by itself);
+ *   - a run that produces no candidates still skips the dialog and goes
+ *     straight to entity resolution, keyed on the sport row read off the
+ *     ancestor chain rather than off the action's return;
+ *   - a failed run closes the dialog rather than leaving a partial batch
+ *     sitting there confirmable.
+ *
  * --- Mocking strategy ---
  * convex/react's useQuery/useMutation/useAction are module-mocked and routed
  * by the (string-mocked) query/mutation/action reference, mirroring
@@ -105,6 +119,7 @@ vi.mock("convex/react", () => ({
 import CardChecklist from "./CardChecklist";
 
 const VARIANT_ID = "variant-1" as unknown as Id<"selectorOptions">;
+const SPORT_ID = "sport-1" as unknown as Id<"selectorOptions">;
 
 function renderChecklist() {
   return render(
@@ -135,7 +150,11 @@ describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
     vi.clearAllMocks();
     state.cards = [];
     state.variantRow = { value: "Test Set" };
-    state.ancestorChain = [];
+    // The sport row the commit path keys on. It used to ride back on
+    // `fetchCardChecklist`'s return; the client reads it off the ancestor
+    // chain it already subscribes to, so without one here Sync refuses to run
+    // at all.
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
     // Ready candidates from the very first render, so once `fetchInFlight`
     // flips true the modal has something to stream in immediately — this is
     // what makes the dialog open "seconds in" rather than only once the
@@ -178,28 +197,9 @@ describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
     });
 
     // The abandoned fetch NOW resolves with a result that, if it were still
-    // live, would reopen the dialog on a fresh (unrelated) pairing set.
+    // live, would reopen the dialog and put its own message on screen.
     await act(async () => {
-      resolveFetch({
-        success: true,
-        sportId: "sport-1" as unknown as Id<"selectorOptions">,
-        message: "Fetched 1 card",
-        autoMatched: [
-          {
-            card: {
-              cardNumber: "1",
-              cardName: "Late-arriving Player",
-              platformData: {
-                bsc: { ref: "bsc-1" },
-                sportlots: { ref: "sl-1" },
-              },
-            },
-            confidence: 1,
-          },
-        ],
-        unmatchedBsc: [],
-        unmatchedSl: [],
-      });
+      resolveFetch({ success: true, message: "Fetched 1 card", candidateCount: 1 });
     });
 
     // The dialog must NOT reopen, and the operator's own cancelled message
@@ -212,5 +212,134 @@ describe("CardChecklist — cancel during an in-flight fetch (NEO-189)", () => {
     // commit anything — it returned as soon as it saw it was stale.
     expect(mockResolveEntities).not.toHaveBeenCalled();
     expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The half of the pairing session the action's return used to own.
+ *
+ * `streamedPairing` was gated on `fetchInFlight` and went null the instant the
+ * fetch resolved; `pendingPairing` — the whole result, sent a second time —
+ * took over from there and kept the dialog on screen. With that second copy
+ * gone the stream is the only source, so the session flag has to outlive the
+ * fetch on its own.
+ */
+describe("CardChecklist — the pairing session outlives the fetch", () => {
+  let resolveFetch: (value: unknown) => void;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = { ready: 1, total: 1, cards: [streamedCandidate] };
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 0 });
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+  });
+
+  it("keeps the dialog open once the fetch resolves, and unlocks Confirm", async () => {
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    // Open mid-fetch on the streamed candidate, Confirm still gated.
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Loading…",
+    );
+
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "1 matched, 0 BSC-only, 0 SL-only",
+        candidateCount: 1,
+      });
+    });
+
+    // Still open — this is the assertion that fails the moment the dialog is
+    // gated on the fetch rather than on the review session.
+    expect(screen.queryByText(/Match Cards/)).toBeTruthy();
+    // And the streaming gate lifted, which is the E2E flow's sync point.
+    expect(screen.getByLabelText("Confirm card matches").textContent).toBe(
+      "Confirm",
+    );
+    expect(
+      screen.getByText("1 matched, 0 BSC-only, 0 SL-only"),
+    ).toBeTruthy();
+    // Nothing was written by merely finishing the fetch.
+    expect(mockResolveEntities).not.toHaveBeenCalled();
+    expect(mockDiscardCandidates).not.toHaveBeenCalled();
+  });
+
+  it("skips the dialog entirely when the run produced no candidates, using the ancestor chain's sport", async () => {
+    // The custom-subtree path: `fetchCardChecklist` short-circuits before
+    // publishing anything. `candidateCount` is the whole signal — the client
+    // cannot read it off the subscription, whose value at that instant may
+    // still predate the batch write.
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "Custom selector subtree — no marketplace data available.",
+        candidateCount: 0,
+      });
+    });
+
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    // The sport id came off `getAncestorChain`, which the client already
+    // subscribes to for its pickers — not off the fetch's return.
+    expect(mockResolveEntities).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+      sportId: SPORT_ID,
+      cards: [],
+    });
+  });
+
+  it("closes the dialog and discards the batch when the fetch reports failure", async () => {
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    await act(async () => {
+      resolveFetch({
+        success: false,
+        message: "Failed to fetch checklist: BSC timed out",
+        candidateCount: 0,
+      });
+    });
+
+    // A half-published batch must not stay on screen offering Confirm.
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(
+      screen.getByText("Failed to fetch checklist: BSC timed out"),
+    ).toBeTruthy();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+  });
+
+  it("refuses to sync a row with no sport ancestor, before spending a marketplace round-trip", async () => {
+    // The action used to answer with `sportId: undefined` and the client
+    // silently showed the card counts of a sync it could not finish. Reading
+    // the sport off the chain lets it fail before the fetch, not after.
+    state.ancestorChain = [{ _id: VARIANT_ID, level: "variantType", value: "Base" }];
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+
+    await waitFor(() =>
+      expect(screen.getByText(/no sport ancestor/)).toBeTruthy(),
+    );
+    expect(mockFetchChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
   });
 });

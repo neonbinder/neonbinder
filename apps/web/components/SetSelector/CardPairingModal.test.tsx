@@ -1962,3 +1962,140 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
     expect(accessibleNames("group")).toEqual(before);
   });
 });
+
+/**
+ * NEO-90/NEO-195 — team names that resolve AFTER the dialog opened.
+ *
+ * A checklist fetch publishes every candidate at ~6s and then spends ~74s
+ * resolving one team per card against BSC, patching each onto the streamed row
+ * as it lands. `ABSORB` was append-only, so those patches hit rows the modal
+ * already held and were dropped: only the cards whose team happened to resolve
+ * before the first paint kept one.
+ *
+ * Nothing on screen showed it — the modal never displays a team. `teams` is
+ * carried through `onConfirm` into `resolveChecklistEntities` (which puts new
+ * ones in front of the operator in the review wizard) and
+ * `commitCardChecklist` (which resolves them to `teamOnCardIds`), so the
+ * symptom was cards committed with no team, teams never reviewed, and the
+ * background enrichment queue quietly fetching the same names a second time
+ * after the commit.
+ *
+ * These pin the merge and its limit: `teams` is adopted, and nothing else is.
+ */
+describe("CardPairingModal — enrichment that lands after the dialog opened", () => {
+  /** The same card, before and after its BSC team lookup came back. */
+  const withoutTeam = pairedCard("50", "Elly De La Cruz");
+  const withTeam: PairingCard = {
+    ...withoutTeam,
+    teams: ["Cincinnati Reds"],
+  };
+
+  function renderThenStream(
+    first: PairingCard,
+    second: PairingCard,
+    opts: { keep?: boolean } = {},
+  ) {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const props = (card: PairingCard) => ({
+      autoMatched: opts.keep ? [] : [{ card, confidence: 1 }],
+      unmatchedBsc: opts.keep ? [card] : [],
+      unmatchedSl: [],
+    });
+    const { rerender } = render(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        initialData={props(first)}
+      />,
+    );
+    return {
+      onConfirm,
+      stream: () =>
+        rerender(
+          <CardPairingModal
+            isOpen
+            onClose={vi.fn()}
+            onConfirm={onConfirm}
+            initialData={props(second)}
+          />,
+        ),
+    };
+  }
+
+  test("a team resolved mid-session reaches onConfirm", async () => {
+    const { onConfirm, stream } = renderThenStream(withoutTeam, withTeam);
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].teams).toEqual([
+      "Cincinnati Reds",
+    ]);
+  });
+
+  test("it reaches a card the operator has already moved to the keep shelf", async () => {
+    // The shelf is the case append-only handling missed most obviously: the
+    // row is no longer in any column the stream writes to, so a late team had
+    // nowhere to land at all.
+    const { onConfirm, stream } = renderThenStream(withoutTeam, withTeam, {
+      keep: true,
+    });
+
+    fireEvent.click(
+      screen.getByLabelText("Keep #50 Elly De La Cruz as BSC-only"),
+    );
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].teams).toEqual([
+      "Cincinnati Reds",
+    ]);
+  });
+
+  test("a name the operator chose is NOT overwritten by a later update", async () => {
+    // `cardName` is the one field CHOOSE_NAME rewrites. Merging it would undo
+    // the operator's decision the next time the stream ticked — which, during
+    // a 900-row enrichment, is seconds later.
+    const conflicted = autoConflict("227c", "Mike Yastrzemski", "Carl Yastrzemski");
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const data = (card: PairingCard) => ({
+      autoMatched: [{ card, confidence: 1 }],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+    });
+    const { rerender } = render(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        initialData={data(conflicted.card)}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^SportLots: Carl Yastrzemski —/ }),
+    );
+    // The stream ticks again — same row, still carrying BSC's name, now with
+    // its team resolved.
+    rerender(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        initialData={data({
+          ...conflicted.card,
+          teams: ["Boston Red Sox"],
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const saved = onConfirm.mock.calls[0][0].cards[0];
+    expect(saved.cardName).toBe("Carl Yastrzemski");
+    expect(saved.teams).toEqual(["Boston Red Sox"]);
+  });
+});

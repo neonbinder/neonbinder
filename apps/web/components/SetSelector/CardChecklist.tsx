@@ -35,13 +35,17 @@ type CardChecklistProps = {
 };
 
 /**
- * Preview shape returned by fetchCardChecklist. We hold this in component
- * state between fetch (action) and commit (mutation) so the user can
- * review new players/teams in EntityReviewWizard before the entities are
- * persisted. `batchId` is present whenever there are unknowns — it's what
- * the wizard subscribes to (entityReviewQueue.getBatch) and what
- * commitCardChecklist reads back to resolve each name's create/link
- * decision.
+ * The CONFIRMED card set, held between `resolveChecklistEntities` (action) and
+ * `commitCardChecklist` (mutation) so the operator can review new
+ * players/teams in EntityReviewWizard before the entities are persisted.
+ *
+ * These are the cards the operator paired and kept, handed over by
+ * `CardPairingModal` — not the fetch's output. (It used to be the fetch's
+ * output, hence the name; the fetch no longer returns cards at all.)
+ *
+ * `batchId` is present whenever there are unknowns — it's what the wizard
+ * subscribes to (entityReviewQueue.getBatch) and what commitCardChecklist
+ * reads back to resolve each name's create/link decision.
  */
 type FetchPreview = {
   sportId: Id<"selectorOptions">;
@@ -139,14 +143,20 @@ export default function CardChecklist({
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
   const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(null);
-  // NEO-137: the fetched candidate buckets, held between fetch and the
-  // operator's pairing confirmation. Nothing is written while this is set.
-  const [pendingPairing, setPendingPairing] = useState<{
-    sportId: Id<"selectorOptions">;
-    autoMatched: Array<{ card: PairingCard; confidence: number }>;
-    unmatchedBsc: PairingCard[];
-    unmatchedSl: PairingCard[];
-  } | null>(null);
+  /**
+   * NEO-137/NEO-195 — is a pairing review open?
+   *
+   * The CARDS are not held here. They live in `checklistCandidates` and arrive
+   * on the `getReadyCandidates` subscription; this is only the session flag
+   * that says the operator is reviewing them. It replaces the `pendingPairing`
+   * state that used to hold a whole second copy of the fetch result — see the
+   * note on `streamedPairing` below.
+   *
+   * Distinct from `fetchInFlight`, which ends when the action resolves. This
+   * one outlives the fetch: the dialog stays open until the operator confirms
+   * or cancels.
+   */
+  const [pairingOpen, setPairingOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -168,7 +178,7 @@ export default function CardChecklist({
     setSourceFilter({ bsc: null, sportlots: null });
     setSelectedCardId(null);
     setHideCrossListed(false);
-    setPendingPairing(null);
+    setPairingOpen(false);
   }, [variantId]);
 
   // Virtuoso scroll handle + a one-shot flag so when the user adds a card
@@ -200,7 +210,11 @@ export default function CardChecklist({
 
   /**
    * Three-phase pipeline (NEO-137 moved pairing to the front):
-   *   1. fetchChecklist → three buckets of CANDIDATES. No NB card exists yet.
+   *   1. fetchChecklist → publishes three buckets of CANDIDATES to
+   *      `checklistCandidates` as it reconciles them, and answers with a
+   *      count and a status message. No NB card exists yet, and the cards
+   *      themselves arrive on the `getReadyCandidates` subscription rather
+   *      than in this promise (NEO-195).
    *   2. CardPairingModal → operator confirms pairs and keeps any deliberate
    *      single-marketplace card. Everything else is discarded, which is what
    *      keeps a shared SportLots set's sibling-owned cards from being
@@ -213,45 +227,63 @@ export default function CardChecklist({
    * data for cards that never exist.
    */
   const handleSync = async () => {
+    // NEO-96: the sport row every downstream step keys on. It used to ride
+    // back on the fetch action's return; the client walks the same ancestor
+    // chain for its own pickers, so reading it here removes a third copy of
+    // one fact rather than adding a lookup. Checked BEFORE the fetch: an
+    // orphaned chain used to burn two live marketplace round-trips and then
+    // report the card counts of a sync that could not proceed.
+    if (!ancestorSportId) {
+      setSyncMessage(
+        "Cannot sync — this row has no sport ancestor, so cards cannot be attributed to a sport.",
+      );
+      return;
+    }
     const generation = ++syncGenerationRef.current;
     const abandoned = () => syncGenerationRef.current !== generation;
     setSyncing(true);
-    // NEO-195: opens the modal on the first ready group, and gates Confirm
-    // until the action resolves — reviewing early is the point, committing a
-    // partial checklist is not.
+    // NEO-195: opens the modal on the first streamed candidates, and gates
+    // Confirm until the action resolves — reviewing early is the point,
+    // committing a partial checklist is not.
     setFetchInFlight(true);
+    setPairingOpen(true);
     setSyncMessage(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
       // Cancelled while the fetch was still running: leave the operator's own
       // message standing and drop the result on the floor.
       if (abandoned()) return;
-      if (!result.success || !result.sportId) {
+      if (!result.success) {
+        setPairingOpen(false);
         setSyncMessage(result.message);
         await discardCandidates({ selectorOptionId: variantId });
         return;
       }
-      const nothingToPair =
-        result.autoMatched.length === 0 &&
-        result.unmatchedBsc.length === 0 &&
-        result.unmatchedSl.length === 0;
-      if (nothingToPair) {
+      if (result.candidateCount === 0) {
         // A custom subtree has no marketplace cards at all, so there is
         // nothing to pair. Showing an empty pairing dialog would be a step
         // the operator can only click through — go straight to entity
         // resolution, which is where a custom card's own pendingPlayerNames
         // surface.
-        await handlePairingConfirm({ cards: [] }, result.sportId);
+        //
+        // Read off the action's own count, NOT off `liveCandidates`: the
+        // subscription's value at this instant may still predate the batch
+        // write, and mistaking a not-yet-delivered batch for an empty one
+        // would commit an empty checklist over a real set.
+        setPairingOpen(false);
+        await handlePairingConfirm({ cards: [] });
         return;
       }
-      setPendingPairing({
-        sportId: result.sportId,
-        autoMatched: result.autoMatched,
-        unmatchedBsc: result.unmatchedBsc,
-        unmatchedSl: result.unmatchedSl,
-      });
       setSyncMessage(result.message);
     } catch (error) {
+      // Same abandonment rule as the resolved path: a cancelled run that
+      // rejects afterwards must not overwrite "Sync cancelled — no cards
+      // saved." with its own failure. The action converts its own errors into
+      // `{ success: false }`, so reaching here means the CALL failed (network,
+      // auth) and whatever it had published is a partial batch nobody should
+      // be offered — close the review rather than leaving it confirmable.
+      if (abandoned()) return;
+      setPairingOpen(false);
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
@@ -269,15 +301,20 @@ export default function CardChecklist({
    * Operator confirmed the pairing. Only now do the confirmed cards become
    * candidates for entity resolution and commit.
    */
-  const handlePairingConfirm = async (
-    result: { cards: PairingCard[] },
-    // Passed explicitly on the nothing-to-pair path, where the modal never
-    // opened and `pendingPairing` was never set.
-    sportIdOverride?: Id<"selectorOptions">,
-  ) => {
-    const sportId = sportIdOverride ?? pendingPairing?.sportId;
-    if (!sportId) return;
-    setPendingPairing(null);
+  const handlePairingConfirm = async (result: { cards: PairingCard[] }) => {
+    // Guarded again rather than trusted from `handleSync`: this is also the
+    // modal's own onConfirm, which can fire minutes later — long enough for
+    // the ancestor-chain subscription to have changed under it. Says so out
+    // loud, because the operator has just pressed Confirm and a bare `return`
+    // would read as the button doing nothing.
+    if (!ancestorSportId) {
+      setSyncMessage(
+        "Cannot save — this row has no sport ancestor, so cards cannot be attributed to a sport.",
+      );
+      return;
+    }
+    const sportId = ancestorSportId;
+    setPairingOpen(false);
     setCommitting(true);
     try {
       const { unknownPlayers, unknownTeams, batchId } = await resolveEntities({
@@ -566,17 +603,32 @@ export default function CardChecklist({
     () => (cards ?? []).some((c) => c.isCrossListed),
     [cards],
   );
-  // NEO-195 — the live candidate view, shaped like the modal's initialData.
-  //
-  // Only while a fetch is in flight. Once the action resolves, `pendingPairing`
-  // holds the authoritative result and takes over — the two agree at that
-  // point, but preferring the action's own return keeps the completed path
-  // exactly as it was before streaming existed.
-  //
-  // A candidate carries its bucket, so the three columns come straight off it
-  // rather than being re-derived here.
+  /**
+   * NEO-195 — the live candidate view, shaped like the modal's initialData.
+   *
+   * This is now the ONLY source for the dialog. It used to hand over to
+   * `pendingPairing` — a second, complete copy of the same rows returned by
+   * the action ~70s later — the moment the fetch resolved. That copy was pure
+   * cost: `CardPairingModal` absorbs `initialData` append-only, so every row
+   * in it was already known and its contents were dropped, and keeping the two
+   * in step meant widening two wires for every field the screen learned to
+   * show (NEO-199 did exactly that).
+   *
+   * Gated on `pairingOpen`, NOT on `fetchInFlight`: the review outlives the
+   * fetch, and gating on the fetch is what made a second source necessary in
+   * the first place.
+   *
+   * Gated on `total`, not `ready`. `ready` counts rows whose TEAM has
+   * resolved, and teams gate Confirm, not visibility (see
+   * convex/checklistCandidates.ts) — waiting on it here would hold the dialog
+   * shut for the first enrichment chunk and, worse, make "did the dialog open
+   * at all" depend on whether team enrichment got anywhere.
+   *
+   * A candidate carries its bucket, so the three columns come straight off it
+   * rather than being re-derived here.
+   */
   const streamedPairing = useMemo(() => {
-    if (!fetchInFlight || !liveCandidates || liveCandidates.ready === 0) {
+    if (!pairingOpen || !liveCandidates || liveCandidates.total === 0) {
       return null;
     }
     const toCard = (c: (typeof liveCandidates.cards)[number]): PairingCard => ({
@@ -612,7 +664,7 @@ export default function CardChecklist({
         .filter((c) => c.bucket === "slOnly")
         .map(toCard),
     };
-  }, [fetchInFlight, liveCandidates]);
+  }, [pairingOpen, liveCandidates]);
 
   const lastSynced = useMemo(() => {
     if (!cards || cards.length === 0) return null;
@@ -887,14 +939,14 @@ export default function CardChecklist({
         targetVariantId={variantId}
       />
 
-      {(pendingPairing || streamedPairing) && (
+      {streamedPairing && (
         <CardPairingModal
           isOpen
           onClose={async () => {
             // Supersede any in-flight fetch so its result cannot reopen this
             // dialog behind the operator (see syncGenerationRef).
             syncGenerationRef.current++;
-            setPendingPairing(null);
+            setPairingOpen(false);
             setFetchInFlight(false);
             setSyncing(false);
             setSyncMessage("Sync cancelled — no cards saved.");
@@ -905,10 +957,10 @@ export default function CardChecklist({
           }}
           onConfirm={handlePairingConfirm}
           setLabel={variantRow?.value}
-          // While the fetch is still running the modal reads the LIVE
-          // candidates; once it resolves, the action's own result is
-          // authoritative and identical.
-          initialData={pendingPairing ?? streamedPairing!}
+          // One source, live for the whole review — during the fetch and after
+          // it. The modal absorbs updates append-only, so rows that arrive
+          // late join without disturbing a decision already made.
+          initialData={streamedPairing}
           isStreaming={fetchInFlight}
           streamProgress={
             liveCandidates

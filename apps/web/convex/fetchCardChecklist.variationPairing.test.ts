@@ -102,6 +102,29 @@ const ADMIN = {
   role: "admin",
 };
 
+/**
+ * The candidate rows as the pairing dialog receives them.
+ *
+ * `fetchCardChecklist` returns a count and a message; every card reaches the
+ * client through `getReadyCandidates`, so a variation lost in reconciliation
+ * has to be caught on this query — it is the only wire the cards travel.
+ */
+async function buckets(
+  t: ReturnType<typeof convexTest>,
+  id: Id<"selectorOptions">,
+) {
+  const live = await t
+    .withIdentity(ADMIN)
+    .query(api.checklistCandidates.getReadyCandidates, {
+      selectorOptionId: id,
+    });
+  return {
+    matched: live.cards.filter((c) => c.bucket === "matched"),
+    bscOnly: live.cards.filter((c) => c.bucket === "bscOnly"),
+    slOnly: live.cards.filter((c) => c.bucket === "slOnly"),
+  };
+}
+
 async function seedTree(
   t: ReturnType<typeof convexTest>,
 ): Promise<Id<"selectorOptions">> {
@@ -219,21 +242,18 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     const insertId = await seedTree(t);
     heritage11();
 
-    const res = await t.withIdentity(ADMIN).action(
+    await t.withIdentity(ADMIN).action(
       api.selectorOptions.fetchCardChecklist,
       { selectorOptionId: insertId },
     );
+    const res = await buckets(t, insertId);
 
     // The discriminating assertion: every SL ROW must be reachable somewhere.
     // Counting NB cards would not catch this — on the old code the totals still
     // came to 3 (1 matched + 2 BSC-only), because the two SL variation rows
     // simply ceased to exist rather than showing up anywhere.
     const seenSlRefs = new Set(
-      [
-        ...res.autoMatched.map((m) => m.card),
-        ...res.unmatchedBsc,
-        ...res.unmatchedSl,
-      ]
+      [...res.matched, ...res.bscOnly, ...res.slOnly]
         .map((c) => c.platformData.sportlots?.ref)
         .filter(Boolean),
     );
@@ -247,13 +267,14 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     const insertId = await seedTree(t);
     heritage11();
 
-    const res = await t.withIdentity(ADMIN).action(
+    await t.withIdentity(ADMIN).action(
       api.selectorOptions.fetchCardChecklist,
       { selectorOptionId: insertId },
     );
+    const res = await buckets(t, insertId);
 
     const byBscRef = new Map(
-      res.autoMatched.map((m) => [m.card.platformData.bsc?.ref, m.card]),
+      res.matched.map((c) => [c.platformData.bsc?.ref, c]),
     );
     // "Action" ⊂ "Action Image", "Alternate" ⊂ "Throwback Alternate".
     expect(byBscRef.get("bsc-11b")?.platformData.sportlots?.ref).toBe(
@@ -262,8 +283,8 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     expect(byBscRef.get("bsc-11c")?.platformData.sportlots?.ref).toBe(
       "2021 Topps Heritage #11 Alec Bohm [ VAR Throwback Alternate ]",
     );
-    expect(res.unmatchedBsc).toHaveLength(0);
-    expect(res.unmatchedSl).toHaveLength(0);
+    expect(res.bscOnly).toHaveLength(0);
+    expect(res.slOnly).toHaveLength(0);
   });
 
   test("the BASE card pairs with SL's base row, never with one of its variations", async () => {
@@ -273,15 +294,16 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     const insertId = await seedTree(t);
     heritage11();
 
-    const res = await t.withIdentity(ADMIN).action(
+    await t.withIdentity(ADMIN).action(
       api.selectorOptions.fetchCardChecklist,
       { selectorOptionId: insertId },
     );
+    const res = await buckets(t, insertId);
 
-    const base = res.autoMatched.find(
-      (m) => m.card.platformData.bsc?.ref === "bsc-11",
+    const base = res.matched.find(
+      (c) => c.platformData.bsc?.ref === "bsc-11",
     );
-    expect(base?.card.platformData.sportlots?.ref).toBe(
+    expect(base?.platformData.sportlots?.ref).toBe(
       "2021 Topps Heritage #11 Alec Bohm|Spencer Howard",
     );
   });
@@ -295,13 +317,14 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
       (c) => !c.cardVariation?.includes("Throwback"),
     );
 
-    const res = await t.withIdentity(ADMIN).action(
+    await t.withIdentity(ADMIN).action(
       api.selectorOptions.fetchCardChecklist,
       { selectorOptionId: insertId },
     );
+    const res = await buckets(t, insertId);
 
-    expect(res.unmatchedBsc.map((c) => c.cardNumber)).toEqual(["11c"]);
-    expect(res.unmatchedSl).toHaveLength(0);
+    expect(res.bscOnly.map((c) => c.cardNumber)).toEqual(["11c"]);
+    expect(res.slOnly).toHaveLength(0);
   });
 
   test("a set with no variations reconciles exactly as before", async () => {
@@ -316,13 +339,14 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
       { cardNumber: "2", cardName: "B", platformRef: "#2 B", sportlotsRef: "2", sourceSlSetId: "189991" },
     ];
 
-    const res = await t.withIdentity(ADMIN).action(
+    await t.withIdentity(ADMIN).action(
       api.selectorOptions.fetchCardChecklist,
       { selectorOptionId: insertId },
     );
-    expect(res.autoMatched).toHaveLength(2);
-    expect(res.unmatchedBsc).toHaveLength(0);
-    expect(res.unmatchedSl).toHaveLength(0);
+    const res = await buckets(t, insertId);
+    expect(res.matched).toHaveLength(2);
+    expect(res.bscOnly).toHaveLength(0);
+    expect(res.slOnly).toHaveLength(0);
   });
 
   test("SL variations with no BSC counterpart are OFFERED, not discarded", async () => {
@@ -332,15 +356,16 @@ describe("fetchCardChecklist — SportLots reuses card numbers (NEO-189)", () =>
     // BSC knows only the base; SL carries both variations.
     mockState.bscCards = mockState.bscCards.filter((c) => !c.isVariation);
 
-    const res = await t.withIdentity(ADMIN).action(
+    await t.withIdentity(ADMIN).action(
       api.selectorOptions.fetchCardChecklist,
       { selectorOptionId: insertId },
     );
+    const res = await buckets(t, insertId);
 
-    expect(res.autoMatched).toHaveLength(1);
-    expect(res.unmatchedSl).toHaveLength(2);
+    expect(res.matched).toHaveLength(1);
+    expect(res.slOnly).toHaveLength(2);
     expect(
-      res.unmatchedSl.map((c) => c.platformData.sportlots?.ref).sort(),
+      res.slOnly.map((c) => c.platformData.sportlots?.ref).sort(),
     ).toEqual([
       "2021 Topps Heritage #11 Alec Bohm [ VAR Action Image ]",
       "2021 Topps Heritage #11 Alec Bohm [ VAR Throwback Alternate ]",

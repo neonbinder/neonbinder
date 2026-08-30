@@ -104,6 +104,29 @@ const ADMIN = {
   role: "admin",
 };
 
+/**
+ * The candidate rows as the pairing dialog receives them.
+ *
+ * `fetchCardChecklist` returns a count and a message; every card reaches the
+ * client through `getReadyCandidates`, so a sticky pairing that failed to
+ * survive would have to be caught here.
+ */
+async function buckets(
+  t: ReturnType<typeof convexTest>,
+  id: Id<"selectorOptions">,
+) {
+  const live = await t
+    .withIdentity(ADMIN)
+    .query(api.checklistCandidates.getReadyCandidates, {
+      selectorOptionId: id,
+    });
+  return {
+    matched: live.cards.filter((c) => c.bucket === "matched"),
+    bscOnly: live.cards.filter((c) => c.bucket === "bscOnly"),
+    slOnly: live.cards.filter((c) => c.bucket === "slOnly"),
+  };
+}
+
 async function seedTree(
   t: ReturnType<typeof convexTest>,
 ): Promise<Id<"selectorOptions">> {
@@ -194,11 +217,15 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
 
     // FIRST sync — the number heuristic grabs the WRONG SL card (#1), which is
     // exactly why this needs an operator.
-    const first = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: insertId,
     });
-    expect(first.autoMatched).toHaveLength(1);
-    expect(first.autoMatched[0].card.platformData.sportlots?.ref).toBe(
+    // Read off the streamed candidates: the action returns a count and a
+    // message, and the pairing itself only reaches the operator through this
+    // query.
+    const first = await buckets(t, insertId);
+    expect(first.matched).toHaveLength(1);
+    expect(first.matched[0].platformData.sportlots?.ref).toBe(
       "#1 Ken Griffey Jr.",
     );
 
@@ -223,20 +250,21 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
 
     // RE-SYNC — the heuristic would still say "#1", but the operator's answer
     // must win.
-    const second = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: insertId,
     });
+    const second = await buckets(t, insertId);
 
-    expect(second.autoMatched).toHaveLength(1);
-    expect(second.autoMatched[0].card.platformData.sportlots?.ref).toBe(
+    expect(second.matched).toHaveLength(1);
+    expect(second.matched[0].platformData.sportlots?.ref).toBe(
       "#B1 Cal Ripken Jr.",
     );
     // A replayed operator decision is certain — it is not a fresh guess.
-    expect(second.autoMatched[0].confidence).toBe(1);
+    expect(second.matched[0].confidence).toBe(1);
     // The sibling series' card is left unassigned, not silently absorbed.
-    expect(
-      second.unmatchedSl.map((c) => c.platformData.sportlots?.ref),
-    ).toEqual(["#1 Ken Griffey Jr."]);
+    expect(second.slOnly.map((c) => c.platformData.sportlots?.ref)).toEqual([
+      "#1 Ken Griffey Jr.",
+    ]);
   });
 
   /**

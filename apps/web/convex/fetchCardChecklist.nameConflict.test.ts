@@ -11,9 +11,10 @@
  *
  * The two halves pinned here are the two ways this can go wrong:
  *
- *   1. A real disagreement reaching the client at all, on BOTH wires (the
- *      action's return AND the streamed `checklistCandidates` query, which is
- *      what the modal actually opens on).
+ *   1. A real disagreement reaching the client at all. That used to mean two
+ *      assertions, because the cards travelled on two wires — the action's
+ *      return and the streamed `checklistCandidates` query. The return no
+ *      longer carries cards, so there is one wire and one assertion.
  *   2. Everything else staying silent. The two marketplaces spell the same name
  *      differently as a matter of routine — BSC strips accents SportLots keeps,
  *      and they join co-subjects with " / " vs "|" — so a raw compare would
@@ -176,6 +177,29 @@ async function fetch(t: ReturnType<typeof convexTest>, id: Id<"selectorOptions">
   });
 }
 
+/**
+ * The candidate rows as the MODAL receives them.
+ *
+ * There is one wire now. `fetchCardChecklist` returns counts and a message;
+ * every card reaches `CardPairingModal` through `getReadyCandidates`, which is
+ * therefore the only place a missing `nameConflict` can be caught.
+ */
+async function buckets(
+  t: ReturnType<typeof convexTest>,
+  id: Id<"selectorOptions">,
+) {
+  const live = await t
+    .withIdentity(ADMIN)
+    .query(api.checklistCandidates.getReadyCandidates, {
+      selectorOptionId: id,
+    });
+  return {
+    matched: live.cards.filter((c) => c.bucket === "matched"),
+    bscOnly: live.cards.filter((c) => c.bucket === "bscOnly"),
+    slOnly: live.cards.filter((c) => c.bucket === "slOnly"),
+  };
+}
+
 beforeEach(() => {
   mockState.bscCards = [];
   mockState.slCards = [];
@@ -193,43 +217,17 @@ describe("fetchCardChecklist — auto-matched name disagreements (NEO-199)", () 
     const insertId = await seedTree(t);
     pairOn("227c", "Mike Yastrzemski", "Mike Yastrzemski|Carl Yastrzemski");
 
-    const res = await fetch(t, insertId);
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
 
-    expect(res.autoMatched).toHaveLength(1);
-    const card = res.autoMatched[0].card;
-    expect(card.nameConflict).toEqual({
+    expect(matched).toHaveLength(1);
+    expect(matched[0].nameConflict).toEqual({
       bsc: "Mike Yastrzemski",
       sportlots: "Mike Yastrzemski|Carl Yastrzemski",
     });
     // The committed default is unchanged: BSC still wins unless an operator
     // says otherwise. This field ADDS the loser, it does not swap the winner.
-    expect(card.cardName).toBe("Mike Yastrzemski");
-  });
-
-  /**
-   * The modal opens on the STREAMED candidates seconds into a fetch and stays
-   * on them for the ~70s of team enrichment that follows — the action's own
-   * return only takes over at the end. A conflict that travelled on one wire
-   * and not the other would show up late, on a row already reviewed.
-   */
-  test("the streamed candidate row carries it too, not just the action's return", async () => {
-    const t = convexTest(schema, modules);
-    const insertId = await seedTree(t);
-    pairOn("227c", "Mike Yastrzemski", "Mike Yastrzemski|Carl Yastrzemski");
-
-    await fetch(t, insertId);
-    const live = await t
-      .withIdentity(ADMIN)
-      .query(api.checklistCandidates.getReadyCandidates, {
-        selectorOptionId: insertId,
-      });
-
-    const streamed = live.cards.find((c) => c.cardNumber === "227c");
-    expect(streamed?.bucket).toBe("matched");
-    expect(streamed?.nameConflict).toEqual({
-      bsc: "Mike Yastrzemski",
-      sportlots: "Mike Yastrzemski|Carl Yastrzemski",
-    });
+    expect(matched[0].cardName).toBe("Mike Yastrzemski");
   });
 
   /**
@@ -247,13 +245,14 @@ describe("fetchCardChecklist — auto-matched name disagreements (NEO-199)", () 
     pairOn("4", "Jose Ramirez", "José Ramírez");           // BSC strips accents
     pairOn("5", "Mike Trout / Shohei Ohtani", "Mike Trout|Shohei Ohtani");
 
-    const res = await fetch(t, insertId);
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
 
-    expect(res.autoMatched).toHaveLength(5);
-    for (const m of res.autoMatched) {
+    expect(matched).toHaveLength(5);
+    for (const m of matched) {
       // `not.toHaveProperty`, not `toBeUndefined`: the point is that the key is
       // ABSENT from the wire object, which is what keeps the payload flat.
-      expect(m.card).not.toHaveProperty("nameConflict");
+      expect(m).not.toHaveProperty("nameConflict");
     }
   });
 
@@ -273,11 +272,12 @@ describe("fetchCardChecklist — auto-matched name disagreements (NEO-199)", () 
       sourceSlSetId: "189991",
     });
 
-    const res = await fetch(t, insertId);
+    await fetch(t, insertId);
+    const { matched, bscOnly, slOnly } = await buckets(t, insertId);
 
-    expect(res.autoMatched).toHaveLength(0);
-    expect(res.unmatchedBsc[0]).not.toHaveProperty("nameConflict");
-    expect(res.unmatchedSl[0]).not.toHaveProperty("nameConflict");
+    expect(matched).toHaveLength(0);
+    expect(bscOnly[0]).not.toHaveProperty("nameConflict");
+    expect(slOnly[0]).not.toHaveProperty("nameConflict");
   });
 
   /**
@@ -290,9 +290,10 @@ describe("fetchCardChecklist — auto-matched name disagreements (NEO-199)", () 
     const insertId = await seedTree(t);
     pairOn("60", "", "Wander Franco");
 
-    const res = await fetch(t, insertId);
+    await fetch(t, insertId);
+    const { matched } = await buckets(t, insertId);
 
-    expect(res.autoMatched[0].card).not.toHaveProperty("nameConflict");
-    expect(res.autoMatched[0].card.cardName).toBe("Wander Franco");
+    expect(matched[0]).not.toHaveProperty("nameConflict");
+    expect(matched[0].cardName).toBe("Wander Franco");
   });
 });

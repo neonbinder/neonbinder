@@ -4470,7 +4470,8 @@ const previewCardValidator = v.object({
 });
 
 /**
- * Action — fetch reconciled checklist preview without persisting.
+ * Action — fetch and reconcile a checklist into pairing CANDIDATES, without
+ * persisting a single NB card.
  *
  * Pipeline:
  *   1. Resolve ancestor chain → sport, year, set/variant filters
@@ -4478,40 +4479,71 @@ const previewCardValidator = v.object({
  *   3. Reconcile by cardNumber (with cardNumberPrefix from selectorOption
  *      metadata applied), then BSC→SL cross-ref via BSC.sportlotsRef,
  *      then Jaro-Winkler ≥ 0.92 fuzzy match on player names
- *   4. Bucket player/team names against existing players/teams tables
- *      → return `unknownPlayers` / `unknownTeams` for the dialog
+ *   4. PUBLISH the three buckets to `checklistCandidates` (NEO-195), then
+ *      enrich them with per-card BSC team names in chunks, releasing each
+ *      chunk as it lands
  *
- * Persistence happens in commitCardChecklist after the user confirms
- * unknowns. Splitting fetch/commit lets the dialog gate entity creation
- * — per the explicit requirement that the user confirm new players/
- * teams before they hit the database.
+ * The candidates table is the ONLY way the cards reach the client — see the
+ * `returns` note below. Entity resolution runs later, on the pairs the
+ * operator confirmed (`resolveChecklistEntities`), and persistence later still
+ * (`commitCardChecklist`), so nothing is created for a candidate that is about
+ * to be discarded.
  */
 export const fetchCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
   },
-  // NEO-137: three buckets rather than a flat card list. Nothing here is an
-  // NB card yet — these are candidates for the operator to pair, keep, or
-  // discard, mirroring set reconciliation's vocabulary exactly.
+  /**
+   * The cards do NOT come back this way. They are published to
+   * `checklistCandidates` as they are reconciled (NEO-195) and the modal reads
+   * them from `getReadyCandidates`; this return carries only what the STREAM
+   * cannot say.
+   *
+   * ## Why the payload went away
+   *
+   * Until now this also returned the whole `{ autoMatched, unmatchedBsc,
+   * unmatchedSl }` set at the end, and `CardChecklist` held it as
+   * `pendingPairing`. Every row therefore crossed the wire twice — once
+   * streamed, once here — and the screen had two sources for one thing.
+   *
+   * They did not merely cost twice; they DIVERGED. `CardPairingModal` absorbs
+   * `initialData` append-only (keyed on marketplace ref, so a decision the
+   * operator has already made cannot be disturbed), which means the late
+   * payload's rows were all already known and its contents were dropped on the
+   * floor — including the team names this action spends ~74s resolving. The
+   * second wire was not a safety net, it was a second shape to keep in step:
+   * NEO-199 had to widen both, with a test pinning each.
+   *
+   * ## What is left, and why each piece has to be here
+   *
+   * `success` / `message` — the sync-status line under the button, including
+   * NEO-196's cross-source collision report. Nothing else knows about them.
+   *
+   * `candidateCount` — the "nothing to pair" signal. A custom subtree
+   * short-circuits before any candidate is written, and the client goes
+   * straight to entity resolution rather than showing an empty dialog. It
+   * cannot read that off the subscription instead: the query's value at the
+   * moment this promise resolves may predate the batch write.
+   *
+   * `sportId` is deliberately NOT here. The client walks the same ancestor
+   * chain for its own pickers already (`getAncestorChain`), so returning it
+   * was a third copy of a fact the caller can see. Dropping it also makes the
+   * Convex-then-SPA deploy window safe: a cached OLD bundle running against
+   * this function bails at its own `if (!result.sportId)` guard — message
+   * shown, candidates discarded, nothing written — instead of reaching the
+   * `nothingToPair` branch with empty arrays, which would commit an empty
+   * checklist over a real set.
+   */
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
-    sportId: v.optional(v.id("selectorOptions")),
-    autoMatched: v.array(
-      v.object({ card: previewCardValidator, confidence: v.number() }),
-    ),
-    unmatchedBsc: v.array(previewCardValidator),
-    unmatchedSl: v.array(previewCardValidator),
+    /** Rows published to `checklistCandidates` by this run. 0 = nothing to pair. */
+    candidateCount: v.number(),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
     message: string;
-    sportId?: Id<"selectorOptions">;
-    // Structural duplicate of ReconciledCard removed (NEO-137) — it drifted
-    // from the interface it mirrors the moment platformData changed shape.
-    autoMatched: Array<{ card: ReconciledCard; confidence: number }>;
-    unmatchedBsc: ReconciledCard[];
-    unmatchedSl: ReconciledCard[];
+    candidateCount: number;
   }> => {
     // NEO-202: this was the one function in this file with no identity check.
     // It is not merely a read: it performs authenticated fetches against BSC
@@ -4542,18 +4574,16 @@ export const fetchCardChecklist = action({
       // arrays here and fan out / pass through downstream.
       const slPlatformFilters: Record<string, string[]> = {};
       // NEO-96: `sport` used to be `ancestor.value.toLowerCase()` — a BSC wire
-      // format — and that string was returned to the client and persisted onto
-      // teams/players by commitCardChecklist. It is now the sport ROW's id.
-      // The marketplace filters below still derive their own wire values from
-      // `platformData`, which is where they belong.
-      let sportId: Id<"selectorOptions"> | undefined;
+      // format — and that string was persisted onto teams/players by
+      // commitCardChecklist. It is now the sport ROW's id, which the CLIENT
+      // resolves off this same chain (see the `returns` note above); all this
+      // handler still needs from the sport row is a label for the log line.
       let sportLabel: string | undefined;
       let cardNumberPrefix: string | undefined;
 
       for (const ancestor of chain) {
         filters[ancestor.level] = ancestor.value;
         if (ancestor.level === "sport") {
-          sportId = ancestor._id;
           sportLabel = ancestor.value;
         }
         if (ancestor.metadata?.cardNumberPrefix) {
@@ -4587,10 +4617,9 @@ export const fetchCardChecklist = action({
           success: true,
           message:
             "Custom selector subtree — no marketplace data available; add custom cards.",
-          sportId,
-          autoMatched: [],
-          unmatchedBsc: [],
-          unmatchedSl: [],
+          // No candidates written at all — the client reads this as "nothing to
+          // pair" and goes straight to entity resolution.
+          candidateCount: 0,
         };
       }
 
@@ -4635,14 +4664,7 @@ export const fetchCardChecklist = action({
           `not write the BSC slugs we need (this is a bug in our sync pipeline, ` +
           `not a marketplace issue).`;
         console.error(`[fetchCardChecklist] precondition failed: ${msg}`);
-        return {
-          success: false,
-          message: msg,
-          sportId,
-          autoMatched: [],
-          unmatchedBsc: [],
-          unmatchedSl: [],
-        };
+        return { success: false, message: msg, candidateCount: 0 };
       }
 
       // NEO-189 — bucket the chain's BSC ids by the FACET each one belongs to
@@ -5212,14 +5234,14 @@ export const fetchCardChecklist = action({
       // lookup, so the modal can start filling in at ~6s instead of ~80s.
       //
       // Every row goes in as `pending` when a lookup is outstanding; the chunk
-      // loop below releases them as their teams land. A card is withheld until
-      // it is genuinely reviewable, because a card missing its team still looks
-      // reviewable and an operator would either wait anyway or approve
-      // something incomplete.
+      // loop below flips each to `ready` as its team lands. `status` reports
+      // enrichment progress, it does not gate visibility — pairing needs card
+      // numbers and descriptions, not teams, and Confirm is separately blocked
+      // until the whole fetch finishes (see checklistCandidates.ts).
       //
-      // The action still returns the full result at the end. That keeps the
-      // existing modal working untouched while the streaming path is wired up
-      // behind it — the two are not meant to coexist for long.
+      // This is the ONLY copy that reaches the client. The action used to
+      // return the same three buckets again at the end; that second wire is
+      // gone (see the `returns` note at the top of this action).
       const candidateBatchId = crypto.randomUUID();
       // NEO-202: was `(await getCurrentUserId(ctx)) ?? "unknown"`. The fallback
       // only made sense while the action was anonymous-callable — and it was
@@ -5244,10 +5266,8 @@ export const fetchCardChecklist = action({
         cardVariation: card.cardVariation,
         isVariation: card.isVariation,
         platformData: card.platformData,
-        // NEO-199: the streamed path is the one the operator actually sees
-        // first — the modal opens on it seconds in and only swaps to the
-        // action's own return ~70s later. A conflict missing here would mean
-        // the guard appeared late, on a row the operator had already read.
+        // NEO-199: the streamed path is the only path. A conflict missing here
+        // is a conflict the operator never sees.
         nameConflict: card.nameConflict,
         bucket,
         confidence,
@@ -5331,19 +5351,22 @@ export const fetchCardChecklist = action({
           `${autoMatchedCards.length} matched, ` +
           `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
           collisionNote,
-        sportId,
-        autoMatched: autoMatchedCards,
-        unmatchedBsc: unmatchedBscCards,
-        unmatchedSl: unmatchedSlCards,
+        // The cards themselves are already in `checklistCandidates` — this is
+        // the count of what was published there, not a second copy of it.
+        candidateCount:
+          autoMatchedCards.length +
+          unmatchedBscCards.length +
+          unmatchedSlCards.length,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
       return {
         success: false,
         message: `Failed to fetch checklist: ${error instanceof Error ? error.message : "Unknown error"}`,
-        autoMatched: [],
-        unmatchedBsc: [],
-        unmatchedSl: [],
+        // A throw can land after `startCandidateBatch` has written rows. The
+        // count is what THIS call is handing the operator, and a failed call
+        // hands them nothing — the client discards the batch on `!success`.
+        candidateCount: 0,
       };
     }
   },
