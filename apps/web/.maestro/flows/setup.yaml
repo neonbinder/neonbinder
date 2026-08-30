@@ -358,6 +358,19 @@ tags:
     when:
       visible: "Match Cards.*"
     commands:
+      # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
+      # The dialog now opens on the FIRST streamed candidates (~6s), not on the
+      # action's return (~80s), so "Match Cards" being visible no longer means
+      # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
+      # returns early while it is true, so tapping it without this wait is a
+      # SILENT no-op: the modal stays open and the `notVisible` below times out
+      # blaming the wrong thing. The button's own text is the signal — "Loading…"
+      # while streaming, "Confirm" once the action resolves. Same sync point
+      # checklist-pairing-dialog-cancel.yaml uses.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
       - runFlow:
           when:
             visible:
@@ -584,6 +597,19 @@ tags:
     when:
       visible: "Match Cards.*"
     commands:
+      # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
+      # The dialog now opens on the FIRST streamed candidates (~6s), not on the
+      # action's return (~80s), so "Match Cards" being visible no longer means
+      # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
+      # returns early while it is true, so tapping it without this wait is a
+      # SILENT no-op: the modal stays open and the `notVisible` below times out
+      # blaming the wrong thing. The button's own text is the signal — "Loading…"
+      # while streaming, "Confirm" once the action resolves. Same sync point
+      # checklist-pairing-dialog-cancel.yaml uses.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
       - runFlow:
           when:
             visible:
@@ -762,6 +788,19 @@ tags:
     when:
       visible: "Match Cards.*"
     commands:
+      # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
+      # The dialog now opens on the FIRST streamed candidates (~6s), not on the
+      # action's return (~80s), so "Match Cards" being visible no longer means
+      # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
+      # returns early while it is true, so tapping it without this wait is a
+      # SILENT no-op: the modal stays open and the `notVisible` below times out
+      # blaming the wrong thing. The button's own text is the signal — "Loading…"
+      # while streaming, "Confirm" once the action resolves. Same sync point
+      # checklist-pairing-dialog-cancel.yaml uses.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
       - runFlow:
           when:
             visible:
