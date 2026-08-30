@@ -12,6 +12,14 @@ import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { compareCardNumbers } from "@/lib/cards/card-number";
+// NEO-199: the wrong-player check is SHARED with the server. `fetchCardChecklist`
+// runs this exact function over an auto-matched pair before it discards the
+// losing name, so an auto-matched disagreement and a hand-linked one are
+// definitionally the same thing. See lib/cards/card-name.ts.
+import {
+  conflictingNames,
+  type NameDisagreement,
+} from "@/lib/cards/card-name";
 
 /**
  * NEO-137 — card-level pairing, before any NB card exists.
@@ -62,6 +70,22 @@ export type PairingCard = {
    * went through this type.
    */
   isVariation?: boolean;
+  /**
+   * NEO-199 — WIRE-ONLY. Both marketplaces' names for this card, sent by
+   * `fetchCardChecklist` when they disagree about who is on it.
+   *
+   * It exists because the auto-matched merge happens server-side, before this
+   * modal is mounted: `cardName: bsc.cardName || sl?.cardName` picks a winner
+   * and the loser is gone, so the screen could not flag what it was never sent.
+   * That is the COMMON path — most of a 660-row set auto-matches, and manual
+   * linking is the leftovers.
+   *
+   * It is lifted off the card and onto the PAIR by `seedMatched` the moment it
+   * arrives, and never reaches `onConfirm`: `MatchedPair.nameConflict` is where
+   * this screen reasons about a disagreement, from either path. Do not read it
+   * anywhere else.
+   */
+  nameConflict?: NameDisagreement;
   platformData: {
     bsc?: { ref: string; setId?: string };
     sportlots?: { ref: string; setId?: string };
@@ -87,28 +111,42 @@ export type PairingResult = { cards: PairingCard[] };
  * picking a parent; `suggestVariationPairings` leaves un-confident pairs
  * alone). So both names are kept, the row says so, and the operator decides.
  *
- * This lives on the PAIR, not on the card: `previewCardValidator` is a strict
- * `v.object`, so an extra field on a confirmed card would be rejected by
- * `resolveEntities` on the way to commit. Nothing here crosses that boundary —
- * only `m.card` is handed to `onConfirm`.
+ * The two names plus WHICH ONE IS WINNING. The pair of names is the wire type
+ * (`NameDisagreement`); `chosen` is this screen's own state and is never sent
+ * or received — the server reports the disagreement, an operator settles it.
+ *
+ * This lives on the PAIR, not on the card. `PairingCard` is what `onConfirm`
+ * hands on to `resolveEntities` and `commitCardChecklist`, and a card that has
+ * reached that point has one name, not a choice still open — so the choice is
+ * kept off it deliberately rather than incidentally.
  */
-type NameConflict = {
-  /** BSC's name for the card, exactly as that marketplace spelled it. */
-  bsc: string;
-  /** SportLots' name for the same card, likewise verbatim. */
-  sportlots: string;
+type NameConflict = NameDisagreement & {
   /** Whose name the merged card is carrying right now. */
   chosen: "bsc" | "sportlots";
 };
+
+/**
+ * A pair as it ARRIVES — from the action's return or the streamed
+ * `checklistCandidates` query, both of which produce the same shape.
+ *
+ * Distinct from `MatchedPair` on purpose: an incoming pair has no `chosen`,
+ * because nobody has chosen yet. `seedMatched` turns one into the other.
+ */
+type IncomingPair = { card: PairingCard; confidence: number };
 
 type MatchedPair = {
   card: PairingCard;
   confidence: number;
   /**
-   * Set only for pairs merged HERE, by `LINK`. An auto-matched pair arrives
-   * from `fetchCardChecklist` already merged, with the losing name discarded
-   * server-side, so there is nothing left for this to compare — see the note
-   * on `nameConflictOf`.
+   * Set on ANY merged pair whose two sides name the card differently —
+   * hand-linked here by `LINK`, or auto-matched server-side and carried over on
+   * `PairingCard.nameConflict` (NEO-199).
+   *
+   * Both paths run the same `conflictingNames`, so "these two marketplaces
+   * disagree" means one thing on this screen regardless of who did the merging.
+   * That matters more for the auto path than the manual one: most of a 660-row
+   * set auto-matches, so a guard that only covered the leftovers would have
+   * been a screen that looks like it is protecting you and mostly is not.
    */
   nameConflict?: NameConflict;
 };
@@ -142,7 +180,7 @@ type Action =
   // NEO-195: more candidates arrived while the operator is already working.
   | {
       type: "ABSORB";
-      autoMatched: MatchedPair[];
+      autoMatched: MatchedPair[]; // already through `seedMatched`
       unmatchedBsc: PairingCard[];
       unmatchedSl: PairingCard[];
     };
@@ -263,65 +301,68 @@ function reducer(state: State, action: Action): State {
 }
 
 /**
- * Compare two marketplace names for MEANING rather than spelling.
- *
- * BSC joins multiple players with " / " and SportLots with "|"; one prints
- * "Ken Griffey Jr." and the other "Ken Griffey Jr"; BSC routinely strips the
- * accents SportLots keeps ("Jose"/"Jos\u00e9 Ram\u00edrez"). Flagging any of those as a
- * disagreement would bury the real ones under noise, and a warning nobody
- * reads is the same as no warning. Diacritics are folded, then everything that
- * is not a letter or digit collapses to a single space, so only the words
- * themselves are compared.
- *
- * Word ORDER is deliberately still significant: two sources listing the same
- * players in a different order on a multi-player card is worth a glance, and
- * this control costs a glance, not a click.
- */
-function nameKey(name: string): string {
-  return name
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-/**
  * Do these two candidates disagree about the card's name?
  *
- * Applies to EVERY merged pair, not only `isVariation` ones. Two reasons the
- * narrower variation-only scope was rejected:
- *
- *  1. The wrong-player-on-a-listing failure is not exclusive to variations. A
- *     fuzzy 0.92 Jaro-Winkler auto-match, or an operator clicking one row off
- *     in a 660-row column, merges two genuinely different players into one
- *     card — and the name disagreement is the ONLY signal that the mis-click
- *     happened. Suppressing it there throws away the cheapest mis-pair
- *     detector this screen has.
- *  2. `isVariation` is exactly the field that is unreliable on the row that
- *     motivated this. BSC filed #227c with an EMPTY variation description;
- *     gating on a flag the defect report shows to be under-populated risks the
- *     fix not firing on its own motivating example.
- *
- * The cost of the wider scope is bounded because this is not a gate: a correct
- * pairing agrees on the name almost always, and a false positive costs one
- * glance.
- *
- * A side with no name at all is not a disagreement — there is nothing to
- * decide, and `mergePair` already falls through to whichever side has one.
+ * The comparison itself is `conflictingNames` in lib/cards/card-name.ts, shared
+ * verbatim with `fetchCardChecklist` — an auto-matched conflict and a
+ * hand-linked one must be the same predicate or the screen is telling the
+ * operator two different stories. All this adds is the default choice.
  */
 function nameConflictOf(
   bsc: PairingCard,
   sl: PairingCard,
 ): NameConflict | undefined {
-  const b = (bsc.cardName ?? "").trim();
-  const s = (sl.cardName ?? "").trim();
-  if (!b || !s) return undefined;
-  if (nameKey(b) === nameKey(s)) return undefined;
+  const conflict = conflictingNames(bsc.cardName, sl.cardName);
   // `chosen` starts on BSC because that is what `mergePair` produces when both
-  // sides have a name. It is a DEFAULT, not a decision — which is the whole
+  // sides have a name — and what the server's merge produces on the auto path,
+  // for the same reason. It is a DEFAULT, not a decision, which is the whole
   // reason the row has to say so out loud.
-  return { bsc: b, sportlots: s, chosen: "bsc" };
+  return conflict ? { ...conflict, chosen: "bsc" } : undefined;
+}
+
+/**
+ * NEO-199 — turn pairs as they ARRIVE into pairs this screen can reason about.
+ *
+ * Two jobs, and the second is the one that matters:
+ *
+ *  1. LIFT. A server-merged pair carries the disagreement on the card
+ *     (`PairingCard.nameConflict`); this screen wants it on the PAIR, next to
+ *     `chosen`, exactly where `LINK` puts a hand-made one. After this, every
+ *     downstream reader — the render, the header count, `CHOOSE_NAME`,
+ *     `UNLINK` — is path-agnostic and needed no change at all.
+ *  2. STRIP. The field comes off the card, so the object handed to `onConfirm`
+ *     is byte-identical to what it was before this field existed. Widening
+ *     `previewCardValidator` made carrying it legal, not mandatory, and a card
+ *     on its way to `commitCardChecklist` has one name rather than an open
+ *     question.
+ *
+ * The comparison is RE-RUN rather than trusted. It is the same function the
+ * server used, so on a healthy payload it is a no-op — but it costs a string
+ * compare on the fraction of rows that are flagged at all, and it means a
+ * degenerate pair (two spellings of one name, an empty side) cannot render a
+ * radiogroup asking the operator to choose between two identical options.
+ *
+ * An agreeing pair is returned BY REFERENCE. This runs on every `ABSORB`, which
+ * on a streamed 908-card set is every tick of the candidates subscription; the
+ * common row must not allocate.
+ */
+function seedMatched(incoming: IncomingPair[]): MatchedPair[] {
+  return incoming.map((pair) => {
+    const wire = pair.card.nameConflict;
+    if (!wire) return pair;
+    const card: PairingCard = { ...pair.card };
+    delete card.nameConflict;
+    const conflict = conflictingNames(wire.bsc, wire.sportlots);
+    if (!conflict) return { card, confidence: pair.confidence };
+    // BSC by default: the server's merge took `bsc.cardName || sl.cardName`,
+    // and a conflict requires both sides to be non-empty, so `card.cardName` is
+    // necessarily BSC's. Same invariant `nameConflictOf` relies on above.
+    return {
+      card,
+      confidence: pair.confidence,
+      nameConflict: { ...conflict, chosen: "bsc" },
+    };
+  });
 }
 
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
@@ -666,7 +707,11 @@ export default function CardPairingModal({
   /** e.g. "Dugout Collection Artist's Proofs Series 1" — for the heading. */
   setLabel?: string;
   initialData: {
-    autoMatched: MatchedPair[];
+    /**
+     * Pairs the server already merged. Typed as INCOMING — no `chosen`, because
+     * nobody has chosen yet; `seedMatched` derives that here (NEO-199).
+     */
+    autoMatched: IncomingPair[];
     unmatchedBsc: PairingCard[];
     unmatchedSl: PairingCard[];
   };
@@ -687,7 +732,11 @@ export default function CardPairingModal({
   const [state, dispatch] = useReducer(
     reducer,
     ordered({
-      matched: initialData.autoMatched,
+      // NEO-199: `seedMatched`, not the raw array — an auto-matched pair the
+      // marketplaces name differently has to arrive already flagged, on the
+      // very first paint. That is the common path; waiting for the operator to
+      // hand-link something before the guard exists is the defect.
+      matched: seedMatched(initialData.autoMatched),
       unmatchedBsc: initialData.unmatchedBsc,
       unmatchedSl: initialData.unmatchedSl,
       keptBsc: [],
@@ -713,7 +762,9 @@ export default function CardPairingModal({
   useEffect(() => {
     dispatch({
       type: "ABSORB",
-      autoMatched: initialData.autoMatched,
+      // Same normalisation as the seed — a conflict on a card that streamed in
+      // late is no less a conflict (NEO-199).
+      autoMatched: seedMatched(initialData.autoMatched),
       unmatchedBsc: initialData.unmatchedBsc,
       unmatchedSl: initialData.unmatchedSl,
     });

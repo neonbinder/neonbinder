@@ -32,6 +32,10 @@ import {
   suggestVariationPairings,
 } from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
+// NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
+// An auto-matched disagreement and a manual one have to be the same thing —
+// see the note in lib/cards/card-name.ts.
+import { conflictingNames } from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
@@ -4397,6 +4401,19 @@ interface ReconciledCard {
   // to a slot on the card's own parent row.
   platformData: WirePlatformData;
   /**
+   * NEO-199 — the two marketplaces disagree about WHO IS ON this card.
+   *
+   * Present only on an auto-matched row whose two sides failed
+   * `conflictingNames`, which is a fraction of a percent of a set. `cardName`
+   * above still carries BSC's answer, exactly as before; this is what the merge
+   * used to throw away, kept so the modal can offer the choice instead of
+   * presenting a silent winner.
+   *
+   * Deliberately NOT set on an unmatched row: there is only one name there, and
+   * nothing to disagree with.
+   */
+  nameConflict?: { bsc: string; sportlots: string };
+  /**
    * Reconciliation marker for cards that landed on only one side. UI
    * surfaces these as needing human review; reconciled cards (from both
    * sides) carry no such tag.
@@ -4432,6 +4449,23 @@ const previewCardValidator = v.object({
   // `sourcePlatformIds`, which carried the full set id on every card. This is
   // the WIRE shape — commit resolves `setId` to a slot on the parent row.
   platformData: cardPlatformWireDataValidator,
+  // NEO-199 — the losing name from an auto-matched merge, so the modal can flag
+  // a disagreement it did not itself create.
+  //
+  // Widening a strict `v.object` is the point of the change: this validator is
+  // what `resolveEntities` and `commitCardChecklist` check on the way to
+  // commit, so without it there is no legal way for the second name to reach
+  // the client at all. It is OPTIONAL and absent on every agreeing row —
+  // roughly 99% of a 908-card set — so the wire cost is paid only where there
+  // is something to say.
+  //
+  // A confirmed card does not carry it: CardPairingModal lifts it onto the PAIR
+  // and strips it from the card, so the committed payload is byte-identical to
+  // what it was before this field existed. The optionality is what makes that
+  // stripping legal rather than a second shape.
+  nameConflict: v.optional(
+    v.object({ bsc: v.string(), sportlots: v.string() }),
+  ),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
 });
 
@@ -5065,6 +5099,19 @@ export const fetchCardChecklist = action({
         const players = bsc.players ?? (sl?.players ?? undefined);
         const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
 
+        // NEO-199 — recorded BEFORE the merge below throws one of the two
+        // names away.
+        //
+        // This is the COMMON path: most of a 660-row set auto-matches here and
+        // never reaches the operator's hands, so a wrong-player guard that only
+        // fires on the manual leftovers is a guard that mostly does not fire —
+        // worse than none, because the screen then looks like it is protecting
+        // you. `cardName` below still resolves to BSC exactly as before; the
+        // only change is that the loser survives the trip.
+        const nameConflict = sl
+          ? conflictingNames(bsc.cardName, sl.cardName)
+          : undefined;
+
         const candidate: ReconciledCard = {
           cardNumber: bsc.cardNumber,
           cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
@@ -5106,6 +5153,10 @@ export const fetchCardChecklist = action({
                 }
               : {}),
           },
+          // Spread rather than always-present-and-undefined: `previewCardValidator`
+          // is strict, and an explicit `undefined` is not the same as an absent
+          // optional on the wire.
+          ...(nameConflict ? { nameConflict } : {}),
           ...(sl ? {} : { unmatched: "sl" as const }),
         };
         out.push(candidate);
@@ -5193,6 +5244,11 @@ export const fetchCardChecklist = action({
         cardVariation: card.cardVariation,
         isVariation: card.isVariation,
         platformData: card.platformData,
+        // NEO-199: the streamed path is the one the operator actually sees
+        // first — the modal opens on it seconds in and only swaps to the
+        // action's own return ~70s later. A conflict missing here would mean
+        // the guard appeared late, on a row the operator had already read.
+        nameConflict: card.nameConflict,
         bucket,
         confidence,
       });

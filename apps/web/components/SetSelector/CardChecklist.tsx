@@ -594,6 +594,10 @@ export default function CardChecklist({
       // standalone card — the flag has to survive the whole path.
       isVariation: c.isVariation,
       platformData: c.platformData,
+      // NEO-199: the losing name from a server-side merge. Absent on every row
+      // the two marketplaces agree about, which is nearly all of them; where it
+      // is present the modal raises the same choice a hand-linked conflict gets.
+      nameConflict: c.nameConflict,
       unmatched:
         c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,
     });

@@ -87,13 +87,17 @@ read-only: unlink / link / choose-name are all `CardPairingModal` reducer state,
 and the flow still exits through Cancel, which discards the candidate batch
 without touching `cardChecklist`.
 
-It must stay the ONLY flow that fetches this set. `startCandidateBatch` clears
-every `checklistCandidates` row for a `selectorOptionId` **globally**, and
-`getReadyCandidates` is **not** user-scoped, so two runners streaming Future
-Stars at the same time can empty each other's live candidates — which unmounts
-the other one's dialog mid-review (`streamedPairing` goes null while
-`pendingPairing` is still unset). **Do not add a second Future Stars fetcher;
-extend this flow instead.**
+It should stay the ONLY flow that fetches this set. **Do not add a second Future
+Stars fetcher; extend this flow instead.**
+
+The reason is now cost, not corruption. This paragraph used to say that
+`startCandidateBatch` cleared every `checklistCandidates` row for a
+`selectorOptionId` globally and that `getReadyCandidates` was not user-scoped, so
+two runners could empty each other's live candidates mid-review. Both were true
+when this was written and both were fixed in the same branch (`d553bc8`) — the
+clear and the read are now scoped to the operator who fetched, and each runner
+signs in as its own `dev+e2e-<N>` user. What remains is ~90s of live BSC/SL
+round-trip per fetch, which is reason enough not to pay for it twice.
 
 It cannot use a custom set: a custom subtree is short-circuited before any
 marketplace fetch (`isCustomSubtree`, NEO-22), so it produces no candidates, and

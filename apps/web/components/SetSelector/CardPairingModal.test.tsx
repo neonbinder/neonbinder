@@ -40,6 +40,22 @@ const pairedCard = (n: string, name: string): PairingCard => ({
   },
 });
 
+/**
+ * NEO-199 — an auto-matched pair as `fetchCardChecklist` now hands it over when
+ * the two marketplaces disagree about who is on the card.
+ *
+ * `cardName` is BSC's, exactly as the server's merge leaves it; `nameConflict`
+ * is the loser that merge used to throw away. Both names travel, so the modal
+ * can raise the same choice a hand-linked conflict gets.
+ */
+const autoConflict = (n: string, bscName: string, slName: string) => ({
+  card: {
+    ...pairedCard(n, bscName),
+    nameConflict: { bsc: bscName, sportlots: slName },
+  } satisfies PairingCard,
+  confidence: 1,
+});
+
 function renderModal(
   overrides: Partial<{
     autoMatched: Array<{ card: PairingCard; confidence: number }>;
@@ -872,16 +888,177 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
   });
 
   /**
-   * The boundary of this fix, pinned deliberately. An auto-matched pair is
-   * merged server-side in `fetchCardChecklist`, which discards the losing name
-   * before the modal ever sees it — there is nothing here left to compare. The
-   * modal must not invent a marker it cannot substantiate.
+   * NEO-199 — the auto-matched path, which is where most rows actually come
+   * from: a 660-card set auto-matches nearly all of it and manual linking is
+   * the leftovers.
+   *
+   * This block replaces a pin that read "an auto-matched pair carries no
+   * conflict marker". That pin was RIGHT about the rule it enforced — the modal
+   * must not invent a marker it cannot substantiate — and WRONG about why it
+   * could not: the reason was that `fetchCardChecklist` discarded the losing
+   * name server-side, so the client had nothing to compare. The server now
+   * sends both names when they disagree, so the marker IS substantiated, and
+   * the rule survives here in its exact original form — a pair the server did
+   * not flag still gets nothing.
    */
-  test("an auto-matched pair carries no conflict marker", () => {
-    renderModal({
-      autoMatched: [{ card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 }],
+  describe("a conflict the SERVER found is surfaced like one found here", () => {
+    const yaz = () =>
+      autoConflict("227c", "Mike Yastrzemski", "Mike Yastrzemski|Carl Yastrzemski");
+
+    test("the choice is offered on arrival, with both names, before any operator action", () => {
+      renderModal({ autoMatched: [yaz()] });
+
+      expect(
+        screen.getByRole("radiogroup", { name: "Name for #227c" }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("radio", { name: /^BSC: Mike Yastrzemski —/ }),
+      ).toBeTruthy();
+      expect(
+        screen.getByRole("radio", {
+          name: /^SportLots: Mike Yastrzemski\|Carl Yastrzemski —/,
+        }),
+      ).toBeTruthy();
     });
-    expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+
+    /**
+     * The Matched section collapses by default whenever a column has anything
+     * in it, and an auto-matched conflict is there from the first paint — so on
+     * a real sync the header badge is the ONLY thing standing between the
+     * operator and a silently mis-named card.
+     */
+    test("it is counted on the header, which is all that shows while Matched is collapsed", () => {
+      renderModal({
+        autoMatched: [yaz()],
+        unmatchedSl: [slCard("B1", "Cal Ripken Jr.")],
+      });
+
+      expect(
+        screen.getByLabelText("Expand matched cards, 1 with a name conflict"),
+      ).toBeTruthy();
+      expect(screen.getByText(/1 name conflict/)).toBeTruthy();
+    });
+
+    /**
+     * The assertion that matters: what gets SAVED. Internal state proving the
+     * radio moved would pass just as well with a card that still commits Mike.
+     */
+    test("choosing SportLots changes the name the card is COMMITTED with", async () => {
+      const { onConfirm } = renderModal({ autoMatched: [yaz()] });
+
+      fireEvent.click(
+        screen.getByRole("radio", {
+          name: /^SportLots: Mike Yastrzemski\|Carl Yastrzemski —/,
+        }),
+      );
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(
+        "Mike Yastrzemski|Carl Yastrzemski",
+      );
+    });
+
+    /** Non-blocking, and BSC still wins by default: doing nothing commits what
+     *  it committed before this feature existed. */
+    test("doing nothing commits BSC's name, exactly as before", async () => {
+      const { onConfirm } = renderModal({ autoMatched: [yaz()] });
+
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(
+        "Mike Yastrzemski",
+      );
+    });
+
+    /**
+     * `previewCardValidator` was widened so the second name could reach the
+     * client — not so it could travel onwards. `resolveEntities` and
+     * `commitCardChecklist` receive the same card shape they always did.
+     */
+    test("the wire field is lifted onto the pair and never reaches onConfirm", async () => {
+      const { onConfirm } = renderModal({ autoMatched: [yaz()] });
+
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+      await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+      expect(onConfirm.mock.calls[0][0].cards[0]).not.toHaveProperty(
+        "nameConflict",
+      );
+    });
+
+    /**
+     * The original pin, intact. An agreeing pair carries no extra field on the
+     * wire — that is what keeps a 908-row payload flat — and the modal invents
+     * nothing on top of it.
+     */
+    test("a pair the server did not flag carries no marker", () => {
+      renderModal({
+        autoMatched: [
+          { card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 },
+        ],
+      });
+      expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+    });
+
+    /**
+     * Proof the two paths share ONE predicate rather than agreeing by
+     * coincidence: the client re-runs `conflictingNames` over what it was sent.
+     * Two spellings of one name cannot produce a radiogroup asking the operator
+     * to choose between two identical options, however the flag got set.
+     */
+    test("a flagged pair whose names only differ in spelling is still quiet", () => {
+      renderModal({
+        autoMatched: [autoConflict("4", "Jose Ramirez", "José Ramírez")],
+      });
+      expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+      expect(screen.queryByText(/name conflict/)).toBeNull();
+    });
+
+    /**
+     * The streamed path. The modal opens on the first ready stem and absorbs
+     * the rest over the next ~70 seconds, so a conflict on a late-arriving row
+     * has to be flagged on arrival too — not only on rows present at mount.
+     */
+    test("a conflict on a row that streams in later is flagged when it lands", () => {
+      const onConfirm = vi.fn().mockResolvedValue(undefined);
+      const { rerender } = render(
+        <CardPairingModal
+          isOpen
+          onClose={vi.fn()}
+          onConfirm={onConfirm}
+          initialData={{
+            autoMatched: [
+              { card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 },
+            ],
+            unmatchedBsc: [],
+            unmatchedSl: [],
+          }}
+        />,
+      );
+      expect(screen.queryByRole("group", { name: /^Name conflict/ })).toBeNull();
+
+      rerender(
+        <CardPairingModal
+          isOpen
+          onClose={vi.fn()}
+          onConfirm={onConfirm}
+          initialData={{
+            autoMatched: [
+              { card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 },
+              yaz(),
+            ],
+            unmatchedBsc: [],
+            unmatchedSl: [],
+          }}
+        />,
+      );
+
+      expect(
+        screen.getByRole("group", { name: "Name conflict on #227c" }),
+      ).toBeTruthy();
+    });
   });
 
   /**

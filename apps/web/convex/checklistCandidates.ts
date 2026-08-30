@@ -68,6 +68,11 @@ const candidateInputValidator = v.object({
   cardVariation: v.optional(v.string()),
   isVariation: v.optional(v.boolean()),
   platformData: cardPlatformWireDataValidator,
+  // NEO-199 — set only when BSC and SportLots name this card differently, which
+  // on a real set is a handful of rows out of ~900.
+  nameConflict: v.optional(
+    v.object({ bsc: v.string(), sportlots: v.string() }),
+  ),
   bucket: bucketValidator,
   confidence: v.optional(v.number()),
 });
@@ -236,6 +241,9 @@ export const getReadyCandidates = query({
         cardVariation: v.optional(v.string()),
         isVariation: v.optional(v.boolean()),
         platformData: cardPlatformWireDataValidator,
+        nameConflict: v.optional(
+          v.object({ bsc: v.string(), sportlots: v.string() }),
+        ),
         bucket: bucketValidator,
         confidence: v.optional(v.number()),
         stem: v.string(),
@@ -275,6 +283,11 @@ export const getReadyCandidates = query({
         cardVariation: r.cardVariation,
         isVariation: r.isVariation,
         platformData: r.platformData,
+        // NEO-199: the wrong-player guard fires on the STREAMED view too. The
+        // modal opens on this query seconds into a fetch and lives on it for
+        // the ~70s of team enrichment that follows, so a conflict withheld here
+        // is a conflict the operator reviews the row without.
+        nameConflict: r.nameConflict,
         bucket: r.bucket,
         confidence: r.confidence,
         stem: r.stem,

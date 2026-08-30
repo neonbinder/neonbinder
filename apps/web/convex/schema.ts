@@ -824,6 +824,14 @@ export default defineSchema({
     cardVariation: v.optional(v.string()),
     isVariation: v.optional(v.boolean()),
     platformData: cardPlatformWireDataValidator,
+    // NEO-199 — BSC and SportLots name this card differently. Written only on a
+    // `matched` row whose two sides disagreed (see lib/cards/card-name.ts), so
+    // a set where the marketplaces agree stores nothing extra on any of its
+    // ~900 rows. `cardName` above is still BSC's answer; this is the one the
+    // merge used to discard, kept so the review modal can offer the choice.
+    nameConflict: v.optional(
+      v.object({ bsc: v.string(), sportlots: v.string() }),
+    ),
 
     // ── which column of the modal this belongs in ──────────────────────────
     bucket: v.union(

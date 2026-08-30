@@ -269,12 +269,20 @@ tags:
 # a SportLots ref, so every one auto-matches and the columns are empty.
 - assertVisible:
     text: ".*Matched [(]20[)].*"
+#
+# NEO-199: the auto-matched pairs are now name-checked server-side too, so the
+# header may already read "N name conflicts" before this flow touches anything —
+# that would mean BSC and SportLots genuinely disagree about a Future Stars card,
+# which is a fact about live marketplace data and not this flow's business. That
+# is why nothing below asserts an ABSOLUTE conflict count: the flow proves the
+# conflict IT MANUFACTURES is surfaced, by name, on the row it put it on.
 
 # ── UNLINK TWO PAIRS SO THERE IS SOMETHING TO MIS-PAIR ──────────────────────
 # Unlink splits a merged row back into its two halves and returns them to the
-# columns. The two halves of ONE pair agree about the name (an auto-matched
-# pair carries no conflict, so both halves get the same name back), which is
-# why two pairs are needed: the disagreement comes from crossing them.
+# columns, each with its OWN name back. Re-linking the same two halves would
+# therefore reproduce whatever the pair already said — which for a Future Stars
+# card is agreement — so two pairs are needed: the disagreement comes from
+# CROSSING them, which is the mis-click case the feature covers.
 #
 # The Matched count is the settle signal for each tap — it is the number the
 # next step depends on, so waiting on anything else would be waiting on a
@@ -301,11 +309,17 @@ tags:
 # start, which is also the real-world one: the section collapses by default
 # whenever a column has anything in it, i.e. exactly when manual pairing
 # happens.
+#
+# NEO-199: `.*`-terminated, because the toggle's accessible name grows a
+# ", N with a name conflict" suffix whenever the matched list holds one — and
+# since the server now flags auto-matched disagreements, that can be true here
+# before this flow has linked anything. An exact-match id would then find no
+# element and the flow would fail on a tap, blaming the wrong thing.
 - tapOn:
-    id: "Collapse matched cards"
+    id: "Collapse matched cards.*"
 - extendedWaitUntil:
     visible:
-      id: "Expand matched cards"
+      id: "Expand matched cards.*"
     timeout: 7000
 - assertVisible:
     text: ".*BSC only [(]2[)].*"
@@ -325,15 +339,24 @@ tags:
 # ── THE WARNING IS SURFACED, AND THE SECTION OPENED ITSELF TO SHOW IT ───────
 # This one assertion carries both halves: the toggle's accessible name says
 # "Collapse", which it only does while the section is EXPANDED — so the link
-# re-opened the section the previous step closed — and it states the count.
+# re-opened the section the previous step closed — and it states a count.
 # A warning inside a closed section is not a warning.
+#
+# The count itself is matched loosely (NEO-199). It used to be pinned at exactly
+# 1, which was safe only while the modal could not detect an auto-matched
+# disagreement; now that it can, a hardcoded 1 would be an assertion about
+# whether BSC and SportLots happen to agree on all 20 Future Stars cards — live
+# data this flow deliberately does not depend on anywhere else (see the note at
+# the baseline). What the flow actually needs to prove is that ITS conflict was
+# surfaced on the row it made, and the row-scoped assertions immediately below
+# prove exactly that, by card number.
 - extendedWaitUntil:
     visible:
-      id: "Collapse matched cards, 1 with a name conflict"
+      id: "Collapse matched cards, .* with a name conflict"
     timeout: 7000
-# The same count, in the words a sighted operator reads on the header.
+# The same warning, in the words a sighted operator reads on the header.
 - assertVisible:
-    text: ".*1 name conflict.*"
+    text: ".*name conflict.*"
 
 # The row itself: the warning region, the sentence explaining WHY there is a
 # choice, and the two names as a single-select group.
