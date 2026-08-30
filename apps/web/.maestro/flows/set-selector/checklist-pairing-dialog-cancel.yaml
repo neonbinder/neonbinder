@@ -236,15 +236,16 @@ tags:
 #
 # WHY IT DOES NOT DEPEND ON LIVE MARKETPLACE DATA:
 #   The conflict is MANUFACTURED here, not found. Two auto-matched pairs are
-#   unlinked and then CROSS-linked (BSC's #FS-1 to SportLots' #FS-10) — the
+#   unlinked and then CROSS-linked (BSC's #FS-1 to SportLots' #FS-2) — the
 #   mis-click case the feature deliberately covers ("applies to EVERY merged
 #   pair, not only isVariation ones"). Every selector keys on the PRINTED CARD
 #   NUMBER, never on a player name, and the two names are read off the screen
 #   at runtime rather than hardcoded, so nothing here goes red if BSC edits a
-#   card title. #FS-1 and #FS-10 are chosen because compareCardNumbers falls
-#   back to localeCompare for non-numeric codes, which orders this set
-#   FS-1, FS-10, FS-11 … FS-19, FS-2, FS-20, FS-3 … — so those two are rows 1
-#   and 2 and stay inside the dialog's inner scroller, which Maestro cannot
+#   card title. #FS-1 and #FS-2 are chosen because NEO-200 fixed
+#   compareCardNumbers to sort prefixed codes naturally, so the matched list
+#   now reads FS-1, FS-2, FS-3 … FS-9, FS-10, FS-11 … FS-20 — #FS-1 and #FS-2
+#   are simply rows 1 and 2 in that order (no comparator quirk to lean on any
+#   more), and stay inside the dialog's inner scroller, which Maestro cannot
 #   drive (see the keep-shelf note above).
 #
 # NOT COVERED HERE — arrow-key operation of the radiogroup. Maestro's web
@@ -285,7 +286,7 @@ tags:
       text: ".*Matched [(]19[)].*"
     timeout: 7000
 - tapOn:
-    id: "Unlink #FS-10 .*"
+    id: "Unlink #FS-2 .*"
 - extendedWaitUntil:
     visible:
       text: ".*Matched [(]18[)].*"
@@ -309,7 +310,7 @@ tags:
 - assertVisible:
     text: ".*BSC only [(]2[)].*"
 
-# ── CROSS-LINK: BSC's #FS-1 to SportLots' #FS-10 ────────────────────────────
+# ── CROSS-LINK: BSC's #FS-1 to SportLots' #FS-2 ─────────────────────────────
 # The SportLots row is not clickable until a BSC row is selected, so the
 # selected-state label is the settle signal before the link.
 - tapOn:
@@ -319,7 +320,7 @@ tags:
       id: "#FS-1 .*, selected. Press to deselect."
     timeout: 7000
 - tapOn:
-    id: "Link selected BSC card to #FS-10 .*"
+    id: "Link selected BSC card to #FS-2 .*"
 
 # ── THE WARNING IS SURFACED, AND THE SECTION OPENED ITSELF TO SHOW IT ───────
 # This one assertion carries both halves: the toggle's accessible name says
@@ -354,7 +355,7 @@ tags:
 - copyTextFrom:
     id: "SportLots: .* — use this name for #FS-1"
 - evalScript: '${output.slName = maestro.copiedText.replace("SportLots: ", "").trim()}'
-# States the flow's one data precondition out loud: #FS-1 and #FS-10 have to be
+# States the flow's one data precondition out loud: #FS-1 and #FS-2 have to be
 # different players for there to be a disagreement at all. If a future printing
 # ever put the same player on both, this fails HERE, naming the reason, rather
 # than looking like the feature stopped working.
