@@ -184,6 +184,52 @@ function domKey(c: PairingCard): string {
 }
 
 /**
+ * NEO-201 — total, arrival-order-independent ordering for one column.
+ *
+ * `compareCardNumbers` alone is not a total order on this screen, and that is
+ * the whole point of this branch: SportLots files a card and its variations
+ * under ONE number ("#1 [ Sliding ]", "#1 [ In Dugout ]"), so same-numbered
+ * rows tie and `Array.prototype.sort` falls back to the order they happened to
+ * be in. During a streamed fetch that is ARRIVAL order, and `ABSORB` appends —
+ * so a card and its variation can trade places between renders while the
+ * operator is part-way through reviewing 900 of them.
+ *
+ * Not a correctness bug since `65d8352`: nothing on this screen is selected,
+ * kept or linked by position any more. It is a legibility one, and ordering
+ * instability on this screen has already been reported once.
+ *
+ * The tiebreak is chosen to be USEFUL, not merely deterministic:
+ *
+ *  1. A parent sorts before its own variations. That is how a checklist is
+ *     printed and how the operator reads one — the base card, then the things
+ *     that vary from it.
+ *  2. Then the printed variation description, so a card's variations read in a
+ *     fixed, nameable order rather than an opaque one.
+ *  3. Then `candidateKey` — the marketplace ref — purely to make the order
+ *     TOTAL. Two rows can only reach here by sharing a number, a variation
+ *     flag and a variation description, and the ref is the one thing that is
+ *     guaranteed to differ (it is what makes them two rows at all).
+ *
+ * `cardName` is deliberately NOT a key anywhere in here. It is the one field
+ * `CHOOSE_NAME` rewrites, so sorting on it would make a matched row jump to a
+ * different position the moment the operator resolved a name conflict on it —
+ * reintroducing the exact instability this function exists to remove, at the
+ * worst possible moment.
+ */
+function compareCards(a: PairingCard, b: PairingCard): number {
+  const byNumber = compareCardNumbers(a.cardNumber, b.cardNumber);
+  if (byNumber !== 0) return byNumber;
+  const aIsVariation = a.isVariation ? 1 : 0;
+  const bIsVariation = b.isVariation ? 1 : 0;
+  if (aIsVariation !== bIsVariation) return aIsVariation - bIsVariation;
+  const byVariation = (a.cardVariation ?? "").localeCompare(
+    b.cardVariation ?? "",
+  );
+  if (byVariation !== 0) return byVariation;
+  return candidateKey(a).localeCompare(candidateKey(b));
+}
+
+/**
  * NEO-195 — keep every column in natural card-number order.
  *
  * The fetch streams, and candidates are released as their stems resolve rather
@@ -196,16 +242,17 @@ function domKey(c: PairingCard): string {
  *
  * Sorting state rather than a rendered copy also keeps `UNLINK`'s index valid:
  * it indexes `state.matched`, which is exactly what the list renders.
+ *
+ * The comparator is `compareCards`, not the bare card-number compare: a number
+ * is not unique here, and a tie left to `sort` is a tie left to arrival order.
  */
 function ordered(state: State): State {
-  const byNumber = (a: PairingCard, b: PairingCard) =>
-    compareCardNumbers(a.cardNumber, b.cardNumber);
   return {
-    matched: [...state.matched].sort((a, b) => byNumber(a.card, b.card)),
-    unmatchedBsc: [...state.unmatchedBsc].sort(byNumber),
-    unmatchedSl: [...state.unmatchedSl].sort(byNumber),
-    keptBsc: [...state.keptBsc].sort(byNumber),
-    keptSl: [...state.keptSl].sort(byNumber),
+    matched: [...state.matched].sort((a, b) => compareCards(a.card, b.card)),
+    unmatchedBsc: [...state.unmatchedBsc].sort(compareCards),
+    unmatchedSl: [...state.unmatchedSl].sort(compareCards),
+    keptBsc: [...state.keptBsc].sort(compareCards),
+    keptSl: [...state.keptSl].sort(compareCards),
   };
 }
 
@@ -526,6 +573,84 @@ function label(card: PairingCard): string {
   return card.cardVariation ? `${base} · ${card.cardVariation}` : base;
 }
 
+/**
+ * NEO-201 — what to call a name-conflict row out loud, when the card number
+ * cannot do the job on its own.
+ *
+ * The conflict region and its radiogroup were named `#227c` alone. Two
+ * conflicting pairs on one number therefore announced two identically-named
+ * regions and two identically-named radiogroups — precisely the ambiguity
+ * `label()` exists to kill in the unmatched columns, left standing in the one
+ * place on this screen where the operator is being asked to make a decision.
+ *
+ * The obvious fix — reuse `label()` — is wrong. `label()` reads `cardName`,
+ * and `cardName` is the exact thing this control CHANGES: the region would
+ * rename itself under the operator the instant they picked the other name. A
+ * region whose accessible name mutates while you are using it is worse than
+ * one that is merely ambiguous, because a screen reader re-announces it and
+ * the thing you were just in appears to have become something else.
+ *
+ * So the disambiguator has to be stable across the choice, which rules out
+ * every name-derived candidate. What is left:
+ *
+ *  - `cardVariation` — stable, and the only candidate that MEANS anything
+ *    ("#227 · Sliding" / "#227 · In Dugout" is how the two rows differ on the
+ *    printed card). Not always available: the row that motivated this had BSC
+ *    filing #227c with an empty variation description, and two rows can also
+ *    share one.
+ *  - an ordinal — always available, stable now that `compareCards` gives the
+ *    list a total order, but says nothing about WHICH card.
+ *  - the marketplace ref — unique and stable, and unusable: SportLots refs are
+ *    whole card titles ("#227 Carl Yastrzemski [ VAR SSSP ]"), so it reads as
+ *    machine noise and re-announces the name that is under dispute.
+ *
+ * Hence: prefer the variation, fall back to an ordinal. The fallback is
+ * decided PER NUMBER, not per row, so a group never mixes "· Sliding" with
+ * "(2 of 2)" — a half-meaningful naming scheme is harder to follow than a
+ * uniformly dull one, and "#227" versus "#227 · Sliding" distinguishes the two
+ * rows only by an absence, which is not something you can hear.
+ *
+ * A number with a single conflict on it is not ambiguous and gets NO suffix:
+ * "(1 of 1)" is noise on every ordinary row, and leaving the common case
+ * byte-identical is also what keeps the existing Maestro selectors valid.
+ *
+ * Returned keyed by `candidateKey` because that is the row's identity;
+ * `state.matched` is re-sorted after every dispatch, so an index would not
+ * survive the trip to the render.
+ */
+function conflictScopeLabels(matched: MatchedPair[]): Map<string, string> {
+  const byNumber = new Map<string, MatchedPair[]>();
+  for (const m of matched) {
+    if (!m.nameConflict) continue;
+    const rows = byNumber.get(m.card.cardNumber);
+    if (rows) rows.push(m);
+    else byNumber.set(m.card.cardNumber, [m]);
+  }
+
+  const labels = new Map<string, string>();
+  for (const [cardNumber, rows] of byNumber) {
+    if (rows.length === 1) {
+      labels.set(candidateKey(rows[0].card), `#${cardNumber}`);
+      continue;
+    }
+    const variations = rows.map((m) => (m.card.cardVariation ?? "").trim());
+    // Usable only if it actually separates every row in the group — an empty
+    // one, or two rows sharing a description, and the whole group falls back.
+    const useVariation =
+      variations.every((v) => v.length > 0) &&
+      new Set(variations).size === rows.length;
+    rows.forEach((m, i) => {
+      labels.set(
+        candidateKey(m.card),
+        useVariation
+          ? `#${cardNumber} · ${variations[i]}`
+          : `#${cardNumber} (${i + 1} of ${rows.length})`,
+      );
+    });
+  }
+  return labels;
+}
+
 export default function CardPairingModal({
   isOpen,
   onClose,
@@ -607,6 +732,13 @@ export default function CardPairingModal({
   // manual pairing happens in — and a warning inside a closed section is not a
   // warning.
   const nameConflictCount = state.matched.filter((m) => m.nameConflict).length;
+  // NEO-201: how each conflict row is named to assistive tech. Derived from
+  // the WHOLE matched list rather than per row, because whether a row needs a
+  // disambiguator at all is a property of its number's group, not of the row.
+  const conflictScopes = useMemo(
+    () => conflictScopeLabels(state.matched),
+    [state.matched],
+  );
   const bscFieldClass = useFieldTestClass();
   const slFieldClass = useFieldTestClass();
 
@@ -835,7 +967,13 @@ export default function CardPairingModal({
                       {m.nameConflict && (
                         <div
                           role="group"
-                          aria-label={`Name conflict on #${m.card.cardNumber}`}
+                          // Named by the row's SCOPE, not by `label(m.card)`:
+                          // see `conflictScopeLabels`. The name has to hold
+                          // still while the operator uses the control it names.
+                          aria-label={`Name conflict on ${
+                            conflictScopes.get(candidateKey(m.card)) ??
+                            `#${m.card.cardNumber}`
+                          }`}
                           className="flex flex-wrap items-center gap-2 border-l-2 border-[#FF2EB3] pl-2 py-1"
                           // a11y — lets both the LINK handler (below) and the
                           // radiogroup's own arrow-key handler find this row's
@@ -870,7 +1008,10 @@ export default function CardPairingModal({
                           */}
                           <div
                             role="radiogroup"
-                            aria-label={`Name for #${m.card.cardNumber}`}
+                            aria-label={`Name for ${
+                              conflictScopes.get(candidateKey(m.card)) ??
+                              `#${m.card.cardNumber}`
+                            }`}
                             aria-describedby={`name-conflict-warning-${domKey(m.card)}`}
                             className="flex flex-wrap items-center gap-2"
                             onKeyDown={(e) => {

@@ -1303,3 +1303,485 @@ describe("CardPairingModal — same number, different cards (NEO-189)", () => {
     });
   });
 });
+
+/**
+ * NEO-201 — the rendered order must not depend on the order candidates
+ * ARRIVED in.
+ *
+ * `ordered()` sorted on the card number alone, and the card number is not
+ * unique on this screen — that is the fact the whole branch turns on. Two rows
+ * sharing a number tied, and a tie in `Array.prototype.sort` falls through to
+ * the order the array was already in. During a streamed fetch that is arrival
+ * order, and `ABSORB` appends, so a card and its variation could trade places
+ * between renders while the operator was part-way through reviewing them.
+ *
+ * Not a correctness bug since `65d8352` — nothing here is selected, kept or
+ * linked by position any more. It is a legibility one, and rows moving under
+ * someone reviewing 900 of them is its own kind of wrong.
+ *
+ * Every test below renders the SAME cards in DIFFERENT arrival orders and
+ * asserts one rendering. That is the assertion that actually pins it: an
+ * expected-list test would still pass on a comparator that merely happened to
+ * agree with the fixture's declaration order.
+ */
+describe("CardPairingModal — order does not depend on arrival order (NEO-201)", () => {
+  const slRow = (n: string, name: string, variation?: string): PairingCard => ({
+    cardNumber: n,
+    cardName: name,
+    ...(variation ? { cardVariation: variation, isVariation: true } : {}),
+    platformData: {
+      sportlots: {
+        ref: variation ? `#${n} ${name} [ ${variation} ]` : `#${n} ${name}`,
+        setId: "884412",
+      },
+    },
+    unmatched: "bsc",
+  });
+
+  const bscRow = (n: string, name: string, variation?: string): PairingCard => ({
+    cardNumber: n,
+    cardName: name,
+    ...(variation ? { cardVariation: variation, isVariation: true } : {}),
+    platformData: {
+      bsc: { ref: `bsc-${n}${variation ? `-${variation}` : ""}`, setId: "t21" },
+    },
+    unmatched: "sl",
+  });
+
+  /** The shapes SportLots really returns: one number, three different cards. */
+  const griffeyBase = slRow("1", "Ken Griffey Jr.");
+  const griffeySliding = slRow("1", "Ken Griffey Jr.", "Sliding");
+  const griffeyDugout = slRow("1", "Ken Griffey Jr.", "In Dugout");
+  const bonds = slRow("2", "Barry Bonds");
+  const ripken = slRow("10", "Cal Ripken Jr.");
+
+  /**
+   * Rotations plus the reverse — deliberately enumerated rather than randomly
+   * shuffled, so a failure names a specific arrival order and reproduces.
+   */
+  function arrivalOrders<T>(xs: T[]): T[][] {
+    const orders = xs.map((_, k) => [...xs.slice(k), ...xs.slice(0, k)]);
+    orders.push([...xs].reverse());
+    return orders;
+  }
+
+  const namesMatching = (re: RegExp) =>
+    screen.queryAllByLabelText(re).map((el) => el.getAttribute("aria-label"));
+
+  function renderOnce(initialData: {
+    autoMatched?: Array<{ card: PairingCard; confidence: number }>;
+    unmatchedBsc?: PairingCard[];
+    unmatchedSl?: PairingCard[];
+  }) {
+    return render(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(undefined)}
+        initialData={{
+          autoMatched: initialData.autoMatched ?? [],
+          unmatchedBsc: initialData.unmatchedBsc ?? [],
+          unmatchedSl: initialData.unmatchedSl ?? [],
+        }}
+      />,
+    );
+  }
+
+  const link227 = (bscLabel: string, slLabel: string) => {
+    fireEvent.click(screen.getByLabelText(`Select BSC card ${bscLabel}`));
+    fireEvent.click(
+      screen.getByLabelText(`Link selected BSC card to ${slLabel}`),
+    );
+  };
+
+  test("the SportLots column renders identically whatever order the fetch produced", () => {
+    const cards = [griffeyBase, griffeySliding, griffeyDugout, bonds, ripken];
+    const renderings = new Set<string>();
+
+    for (const arrival of arrivalOrders(cards)) {
+      const { unmount } = renderOnce({ unmatchedSl: arrival });
+      renderings.add(
+        JSON.stringify(namesMatching(/ as SportLots-only$/)),
+      );
+      unmount();
+    }
+
+    expect(renderings.size).toBe(1);
+  });
+
+  test("the BSC column renders identically whatever order the fetch produced", () => {
+    const cards = [
+      bscRow("1", "Ken Griffey Jr."),
+      bscRow("1", "Ken Griffey Jr.", "Sliding"),
+      bscRow("1", "Ken Griffey Jr.", "In Dugout"),
+      bscRow("2", "Barry Bonds"),
+      bscRow("10", "Cal Ripken Jr."),
+    ];
+    const renderings = new Set<string>();
+
+    for (const arrival of arrivalOrders(cards)) {
+      const { unmount } = renderOnce({ unmatchedBsc: arrival });
+      renderings.add(JSON.stringify(namesMatching(/ as BSC-only$/)));
+      unmount();
+    }
+
+    expect(renderings.size).toBe(1);
+  });
+
+  test("the matched list renders identically whatever order the fetch produced", () => {
+    const pairs = [
+      { card: pairedCard("1", "Ken Griffey Jr."), confidence: 1 },
+      {
+        card: {
+          ...pairedCard("1", "Ken Griffey Jr."),
+          cardVariation: "Sliding",
+          isVariation: true,
+          platformData: {
+            bsc: { ref: "bsc-1-sliding", setId: "t21" },
+            sportlots: { ref: "#1 Griffey [ Sliding ]", setId: "884412" },
+          },
+        },
+        confidence: 1,
+      },
+      {
+        card: {
+          ...pairedCard("1", "Ken Griffey Jr."),
+          cardVariation: "In Dugout",
+          isVariation: true,
+          platformData: {
+            bsc: { ref: "bsc-1-dugout", setId: "t21" },
+            sportlots: { ref: "#1 Griffey [ In Dugout ]", setId: "884412" },
+          },
+        },
+        confidence: 1,
+      },
+      { card: pairedCard("10", "Cal Ripken Jr."), confidence: 1 },
+    ];
+    const renderings = new Set<string>();
+
+    for (const arrival of arrivalOrders(pairs)) {
+      const { unmount } = renderOnce({ autoMatched: arrival });
+      renderings.add(JSON.stringify(namesMatching(/^Unlink /)));
+      unmount();
+    }
+
+    expect(renderings.size).toBe(1);
+  });
+
+  /**
+   * The tiebreak is not just deterministic, it is the order a checklist is
+   * printed in: the base card, then the things that vary from it, in a fixed
+   * and nameable order rather than an opaque one.
+   */
+  test("a parent sorts ahead of its own variations, and #2 still precedes #10", () => {
+    renderOnce({
+      unmatchedSl: [ripken, griffeySliding, bonds, griffeyDugout, griffeyBase],
+    });
+
+    expect(namesMatching(/ as SportLots-only$/)).toEqual([
+      "Keep #1 Ken Griffey Jr. as SportLots-only",
+      "Keep #1 Ken Griffey Jr. · In Dugout as SportLots-only",
+      "Keep #1 Ken Griffey Jr. · Sliding as SportLots-only",
+      "Keep #2 Barry Bonds as SportLots-only",
+      "Keep #10 Cal Ripken Jr. as SportLots-only",
+    ]);
+  });
+
+  /**
+   * The streamed case specifically: `ABSORB` appends, so a variation that
+   * became ready after the modal opened arrives at the bottom of the array.
+   * It must render in its printed place, indistinguishably from a session
+   * where everything arrived at once.
+   */
+  test("a candidate that arrives mid-session lands in its printed place, not at the bottom", () => {
+    const everything = renderOnce({
+      unmatchedSl: [griffeyBase, griffeySliding, griffeyDugout, bonds, ripken],
+    });
+    const allAtOnce = namesMatching(/ as SportLots-only$/);
+    everything.unmount();
+
+    const streamed = renderOnce({ unmatchedSl: [ripken, griffeyBase] });
+    streamed.rerender(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(undefined)}
+        initialData={{
+          autoMatched: [],
+          unmatchedBsc: [],
+          // A second batch, itself out of order — exactly what a stem-by-stem
+          // release produces.
+          // Note the two #1 variations arrive in the OPPOSITE relative order
+          // to the all-at-once fixture: with no secondary key, a stable sort
+          // preserves that and the two renderings diverge.
+          unmatchedSl: [ripken, griffeyBase, bonds, griffeyDugout, griffeySliding],
+        }}
+      />,
+    );
+
+    expect(namesMatching(/ as SportLots-only$/)).toEqual(allAtOnce);
+  });
+
+  /**
+   * `cardName` is deliberately not a sort key. It is the one field
+   * CHOOSE_NAME rewrites, so sorting on it would make the row the operator is
+   * working in jump somewhere else the instant they resolved its conflict.
+   */
+  test("resolving a name conflict does not move the row it is on", () => {
+    // Both rows on ONE number, so the tiebreak is the only thing deciding
+    // their order — and the names are picked so that a `cardName` tiebreak
+    // would put them in one order before the choice ("Aaron" < "Mookie") and
+    // the OTHER order after it ("Zack" > "Mookie").
+    const bscA: PairingCard = {
+      cardNumber: "227",
+      cardName: "Aaron Nola",
+      platformData: { bsc: { ref: "bsc-227-a", setId: "t21" } },
+      unmatched: "sl",
+    };
+    const bscB: PairingCard = {
+      cardNumber: "227",
+      cardName: "Mookie Betts",
+      platformData: { bsc: { ref: "bsc-227-b", setId: "t21" } },
+      unmatched: "sl",
+    };
+    renderOnce({
+      unmatchedBsc: [bscA, bscB],
+      unmatchedSl: [slRow("227", "Zack Wheeler"), slRow("227", "Mookie Betts")],
+    });
+
+    link227("#227 Aaron Nola", "#227 Zack Wheeler");
+    link227("#227 Mookie Betts", "#227 Mookie Betts");
+
+    expect(namesMatching(/^Unlink /)).toEqual([
+      "Unlink #227 Aaron Nola",
+      "Unlink #227 Mookie Betts",
+    ]);
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^SportLots: Zack Wheeler/ }),
+    );
+
+    // The name changed — and the row stayed exactly where it was.
+    expect(namesMatching(/^Unlink /)).toEqual([
+      "Unlink #227 Zack Wheeler",
+      "Unlink #227 Mookie Betts",
+    ]);
+  });
+});
+
+/**
+ * NEO-201 — naming the name-conflict controls when one card number carries
+ * two of them.
+ *
+ * `65d8352` fixed the machine-readable half of this: `data-name-conflict`, the
+ * warning `id` and the `aria-describedby` that resolves to it all key on the
+ * marketplace ref. The human-readable half was left on the card number alone,
+ * so a screen-reader user met two identically-named regions and two
+ * identically-named radiogroups with nothing to tell them apart — the exact
+ * ambiguity `label()` exists to kill in the unmatched columns.
+ *
+ * `label(m.card)` is NOT the fix: it reads `cardName`, and `cardName` is what
+ * these controls change. A region that renames itself under the operator is
+ * worse than an ambiguous one. Everything asserted below is therefore about a
+ * disambiguator that holds still while the choice is made.
+ */
+describe("CardPairingModal — naming two conflicts on one number (NEO-201)", () => {
+  const bscOn227 = (name: string, ref: string, variation?: string): PairingCard => ({
+    cardNumber: "227",
+    cardName: name,
+    ...(variation ? { cardVariation: variation, isVariation: true } : {}),
+    platformData: { bsc: { ref, setId: "topps-2021" } },
+    unmatched: "sl",
+  });
+  const slOn227 = (name: string, variation?: string): PairingCard => ({
+    cardNumber: "227",
+    cardName: name,
+    ...(variation ? { cardVariation: variation, isVariation: true } : {}),
+    platformData: {
+      sportlots: { ref: `#227 ${name}`, setId: "884412" },
+    },
+    unmatched: "bsc",
+  });
+
+  const link = (bscLabel: string, slLabel: string) => {
+    fireEvent.click(screen.getByLabelText(`Select BSC card ${bscLabel}`));
+    fireEvent.click(
+      screen.getByLabelText(`Link selected BSC card to ${slLabel}`),
+    );
+  };
+
+  const accessibleNames = (role: string) =>
+    screen.getAllByRole(role).map((el) => el.getAttribute("aria-label"));
+
+  /**
+   * The variation description is the disambiguator that MEANS something:
+   * "Sliding" and "In Dugout" is how the two rows differ on the printed card.
+   */
+  test("the variation description separates the two regions and the two radiogroups", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscOn227("Mike Yastrzemski", "bsc-227-sliding", "Sliding"),
+        bscOn227("Mike Yastrzemski", "bsc-227-dugout", "In Dugout"),
+      ],
+      unmatchedSl: [slOn227("Carl Yastrzemski"), slOn227("Mickey Mantle")],
+    });
+
+    link("#227 Mike Yastrzemski · In Dugout", "#227 Carl Yastrzemski");
+    link("#227 Mike Yastrzemski · Sliding", "#227 Mickey Mantle");
+
+    expect(accessibleNames("group")).toEqual([
+      "Name conflict on #227 · In Dugout",
+      "Name conflict on #227 · Sliding",
+    ]);
+    expect(accessibleNames("radiogroup")).toEqual([
+      "Name for #227 · In Dugout",
+      "Name for #227 · Sliding",
+    ]);
+  });
+
+  /**
+   * The motivating row had BSC filing #227c with an EMPTY variation
+   * description, so the meaningful disambiguator is exactly the one that can
+   * be missing. An ordinal is always available; it is the fallback, not the
+   * default, and it is applied to the WHOLE group so a group never mixes
+   * "· Sliding" with "(2 of 2)".
+   */
+  test("falls back to an ordinal when no variation is recorded on either row", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscOn227("Mike Yastrzemski", "bsc-227-a"),
+        bscOn227("Roberto Osuna", "bsc-227-b"),
+      ],
+      unmatchedSl: [slOn227("Carl Yastrzemski"), slOn227("Mickey Mantle")],
+    });
+
+    link("#227 Mike Yastrzemski", "#227 Carl Yastrzemski");
+    link("#227 Roberto Osuna", "#227 Mickey Mantle");
+
+    expect(accessibleNames("group")).toEqual([
+      "Name conflict on #227 (1 of 2)",
+      "Name conflict on #227 (2 of 2)",
+    ]);
+    expect(accessibleNames("radiogroup")).toEqual([
+      "Name for #227 (1 of 2)",
+      "Name for #227 (2 of 2)",
+    ]);
+  });
+
+  /** A variation that both rows share separates nothing, so it is not used. */
+  test("falls back to an ordinal when both rows carry the SAME variation", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscOn227("Mike Yastrzemski", "bsc-227-a", "SSSP"),
+        bscOn227("Roberto Osuna", "bsc-227-b", "SSSP"),
+      ],
+      unmatchedSl: [slOn227("Carl Yastrzemski"), slOn227("Mickey Mantle")],
+    });
+
+    link("#227 Mike Yastrzemski · SSSP", "#227 Carl Yastrzemski");
+    link("#227 Roberto Osuna · SSSP", "#227 Mickey Mantle");
+
+    expect(accessibleNames("group")).toEqual([
+      "Name conflict on #227 (1 of 2)",
+      "Name conflict on #227 (2 of 2)",
+    ]);
+  });
+
+  /**
+   * The degrade case. One conflict on a number is not ambiguous, so it gets no
+   * suffix at all — "(1 of 1)" would be noise on every ordinary row, and this
+   * is also what keeps the existing Maestro selectors byte-valid.
+   */
+  test("a lone conflict on a number is named by the number alone — never '1 of 1'", () => {
+    renderModal({
+      unmatchedBsc: [bscOn227("Mike Yastrzemski", "bsc-227-a")],
+      unmatchedSl: [slOn227("Carl Yastrzemski")],
+    });
+
+    link("#227 Mike Yastrzemski", "#227 Carl Yastrzemski");
+
+    expect(accessibleNames("group")).toEqual(["Name conflict on #227"]);
+    expect(accessibleNames("radiogroup")).toEqual(["Name for #227"]);
+  });
+
+  /**
+   * Two conflicts on one number, on DIFFERENT numbers, still each named by
+   * their own number alone — the suffix is decided per number, not globally.
+   */
+  test("conflicts on different numbers are each named by their number alone", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("40", "Mookie Betts"), bscCard("41", "Zack Wheeler")],
+      unmatchedSl: [slCard("40", "Corey Seager"), slCard("41", "Aaron Nola")],
+    });
+
+    link("#40 Mookie Betts", "#40 Corey Seager");
+    link("#41 Zack Wheeler", "#41 Aaron Nola");
+
+    expect(accessibleNames("group")).toEqual([
+      "Name conflict on #40",
+      "Name conflict on #41",
+    ]);
+  });
+
+  /**
+   * THE constraint. `label(m.card)` would satisfy every test above and fail
+   * this one: the region and radiogroup name the control the operator is
+   * currently using, and a name that mutates mid-use is worse than an
+   * ambiguous one.
+   */
+  test("the region and radiogroup names hold still while the operator switches names", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscOn227("Mike Yastrzemski", "bsc-227-sliding", "Sliding"),
+        bscOn227("Mike Yastrzemski", "bsc-227-dugout", "In Dugout"),
+      ],
+      unmatchedSl: [slOn227("Carl Yastrzemski"), slOn227("Mickey Mantle")],
+    });
+
+    link("#227 Mike Yastrzemski · In Dugout", "#227 Carl Yastrzemski");
+    link("#227 Mike Yastrzemski · Sliding", "#227 Mickey Mantle");
+
+    const groupsBefore = accessibleNames("group");
+    const radiogroupsBefore = accessibleNames("radiogroup");
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^SportLots: Carl Yastrzemski/ }),
+    );
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^SportLots: Mickey Mantle/ }),
+    );
+
+    // The choice took effect — both rows now carry SportLots' name…
+    expect(
+      screen.getByLabelText("Unlink #227 Carl Yastrzemski · In Dugout"),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("Unlink #227 Mickey Mantle · Sliding"),
+    ).toBeTruthy();
+    // …and the things naming the controls that did it did not budge.
+    expect(accessibleNames("group")).toEqual(groupsBefore);
+    expect(accessibleNames("radiogroup")).toEqual(radiogroupsBefore);
+  });
+
+  /** Same guarantee on the ordinal path, where there is no variation to lean on. */
+  test("the ordinal names hold still while the operator switches names", () => {
+    renderModal({
+      unmatchedBsc: [
+        bscOn227("Mike Yastrzemski", "bsc-227-a"),
+        bscOn227("Roberto Osuna", "bsc-227-b"),
+      ],
+      unmatchedSl: [slOn227("Carl Yastrzemski"), slOn227("Mickey Mantle")],
+    });
+
+    link("#227 Mike Yastrzemski", "#227 Carl Yastrzemski");
+    link("#227 Roberto Osuna", "#227 Mickey Mantle");
+
+    const before = accessibleNames("group");
+    fireEvent.click(
+      screen.getByRole("radio", { name: /^SportLots: Carl Yastrzemski/ }),
+    );
+
+    expect(screen.getByLabelText("Unlink #227 Carl Yastrzemski")).toBeTruthy();
+    expect(accessibleNames("group")).toEqual(before);
+  });
+});
