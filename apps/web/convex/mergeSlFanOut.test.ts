@@ -149,7 +149,11 @@ describe("summarizeCollisions — what the operator actually reads", () => {
       { side: "BSC", cardNumber: "2", keptSource: "s1", skippedSource: "s2" },
       { side: "SL", cardNumber: "9", keptSource: "a", skippedSource: "b" },
     ]);
-    expect(note).toContain("kept the first source");
+    // Not "kept the first source" — nothing is dropped on either side, and a
+    // message claiming otherwise misdescribes the checklist the operator is
+    // about to approve.
+    expect(note).toContain("all rows kept");
+    expect(note).not.toContain("kept the first source");
     expect(note).toContain("BSC: 1 card number(s)");
     expect(note).toContain("#2");
     expect(note).toContain("SL: 1 card number(s)");

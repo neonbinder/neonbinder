@@ -4450,6 +4450,14 @@ export function mergeSlFanOut<
  * and decide whether they should both be attached), so the count carries the
  * signal and the examples make it actionable without swamping the counts the
  * message exists to show.
+ *
+ * **It says "all rows kept", because that is now true on both sides.** This
+ * used to read "kept the first source for …", which was false for SportLots
+ * from the day it was written (`mergeSlFanOut` has always reported without
+ * dropping) and became false for BSC when its fetch-time dedup came out. A
+ * message telling an operator their data was narrowed when it was not is the
+ * same defect as narrowing it silently, pointed the other way: either one
+ * leaves them with a wrong picture of what is in the checklist.
  */
 export function summarizeCollisions(
   collisions: Array<{
@@ -4471,7 +4479,7 @@ export function summarizeCollisions(
         `(${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`,
     );
   }
-  return ` — kept the first source for ${parts.join("; ")}`;
+  return ` — all rows kept; ${parts.join("; ")}`;
 }
 
 interface ReconciledCard {
@@ -4834,7 +4842,8 @@ export const fetchCardChecklist = action({
       // NEO-189 — card numbers seen from more than one source set, on either
       // marketplace. Surfaced to the operator in the result message, because
       // two attached sets legitimately overlapping is a fact about the mapping
-      // they just built and only the first source's card survives.
+      // they just built and only they can say whether it was intended. Every
+      // row is kept on both sides; this is a report, not a drop.
       const slCollisions: Array<{
         cardNumber: string;
         keptSource: string;
@@ -4895,8 +4904,8 @@ export const fetchCardChecklist = action({
         for (const col of merged.collisions) {
           slCollisions.push(col);
           console.warn(
-            `[fetchCardChecklist] SL cardNumber collision: ${col.cardNumber} ` +
-              `keptSource=${col.keptSource} skippedSource=${col.skippedSource}`,
+            `[fetchCardChecklist] SL cardNumber in two source sets: ${col.cardNumber} ` +
+              `(${col.keptSource} and ${col.skippedSource}) — both rows kept`,
           );
         }
         return merged.cards;
@@ -5430,10 +5439,16 @@ export const fetchCardChecklist = action({
       // probably misconfigured". Now that a row can deliberately draw from two
       // sets on either marketplace, an overlap is a legitimate outcome the
       // operator chose — and the one thing they cannot see from the checklist
-      // itself is that a second set's card #11 was dropped in favour of the
-      // first's. `message` already renders under the Sync button, so this
-      // needs no new surface; it is capped so a badly overlapping pair cannot
-      // push the counts off the screen.
+      // itself is that #11 arrived from BOTH attached sets and now appears
+      // twice. `message` already renders under the Sync button, so this needs
+      // no new surface; it is capped so a badly overlapping pair cannot push
+      // the counts off the screen.
+      //
+      // SURFACING, NOT NARROWING. Neither marketplace drops a row to make the
+      // numbers unique. A checklist quietly halved because two attached series
+      // both start at #1 looks exactly like a correct one — that is how the
+      // BSC dedup reached production, and reverting it is why 1996 Score
+      // reconciles to 220 again rather than 110.
       const collisionNote = summarizeCollisions([
         ...bscCollisions.map((c) => ({ ...c, side: "BSC" as const })),
         ...slCollisions.map((c) => ({ ...c, side: "SL" as const })),

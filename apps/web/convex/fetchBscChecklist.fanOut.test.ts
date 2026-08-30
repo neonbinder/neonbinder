@@ -78,12 +78,23 @@ type Recorded = {
  * from the map returns []. `multiValueReturnsEmpty` reproduces the real API's
  * behaviour: any request carrying more than one variantName yields zero rows.
  *
- * `startAt` sets the first card number a slug returns, default 1. Two series of
- * one insert CONTINUE the numbering rather than restarting it — Series 1 is
- * #1-110 and Series 2 picks up at #111 — so a fixture where both start at 1 is
- * modelling an overlap, not a split. Tests that mean "two different source
- * sets" say so with `startAt`; the one test that means "these two sets overlap"
- * leaves it at the default and asserts the collision handling (NEO-189).
+ * `startAt` sets the first card number a slug returns, DEFAULT 1 FOR EVERY
+ * SLUG — which is what the set this fixture models actually looks like.
+ *
+ * 1996 Score Dugout Collection Artist's Proofs is split by BSC into Series 1
+ * and Series 2, and BOTH series are numbered #1-110. They do not continue one
+ * another's numbering. So the default here — every slug starting at 1 — IS the
+ * realistic case: 220 distinct cards wearing 110 card numbers twice over.
+ *
+ * A previous revision of this file gave Series 2 `startAt: 111` so the union
+ * still came to 220 while a cross-source dedup silently discarded half of it.
+ * That fixture described no real set and hid a production regression: CI's
+ * `inserts-1996-score-one-nb-set-two-bsc-sources.yaml` saw 110 where it demands
+ * 220. Do NOT renumber these fixtures to make a merge rule look correct.
+ *
+ * `startAt` is kept for the genuinely different shape — sets whose numbering
+ * DOES continue (2024 Topps Series 1 #1-350, Series 2 #351-700) — where the
+ * union must be reported with no collisions at all.
  */
 function stubBsc(opts: {
   perSlug: Record<string, number>;
@@ -146,11 +157,7 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
     const recorded: Recorded[] = [];
     vi.stubGlobal(
       "fetch",
-      stubBsc({
-        perSlug: { [S1]: 110, [S2]: 110 },
-        startAt: { [S1]: 1, [S2]: 111 },
-        recorded,
-      }),
+      stubBsc({ perSlug: { [S1]: 110, [S2]: 110 }, recorded }),
     );
     const t = convexTest(schema, modules);
 
@@ -168,6 +175,93 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
 
     expect(result.success).toBe(true);
     expect(result.cards).toHaveLength(220);
+  });
+
+  test("REAL 1996 Score: both series are #1-110, and ALL 220 survive", async () => {
+    // THE FIXTURE THAT MATTERS. Both BSC series number from 1, so every one of
+    // the 110 numbers arrives from two source sets. A cross-source dedup by
+    // card number therefore discards an entire series — 220 becomes 110 — and
+    // that is precisely the production regression CI's
+    // `inserts-1996-score-one-nb-set-two-bsc-sources.yaml` catches ("110 means
+    // one source"). This test fails the moment such a drop is reintroduced.
+    //
+    // Reporting the overlap is right; NARROWING the data to report it is not.
+    // The operator is the only one who can say whether two attached sets
+    // sharing numbers is intended, and they cannot judge what they cannot see.
+    // SportLots' own fan-out (`mergeSlFanOut`) has always reported without
+    // dropping; this is BSC brought in line with it.
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      stubBsc({ perSlug: { [S1]: 110, [S2]: 110 }, recorded }),
+    );
+    const t = convexTest(schema, modules);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: PARENT,
+        platformFilters: { insert: [S2, S1] },
+      });
+
+    expect(result.success).toBe(true);
+    expect(result.cards).toHaveLength(220);
+
+    // Every number really is present TWICE — 220 rows over 110 numbers, not
+    // 220 distinct numbers. A `toHaveLength(220)` alone would also pass on a
+    // fixture that renumbered the second series out of the way.
+    const byNumber = new Map<string, number>();
+    for (const c of result.cards) {
+      byNumber.set(c.cardNumber, (byNumber.get(c.cardNumber) ?? 0) + 1);
+    }
+    expect(byNumber.size).toBe(110);
+    expect([...byNumber.values()].every((n) => n === 2)).toBe(true);
+
+    // Both sides keep their own attribution, so the operator can still tell
+    // which series a surviving row came from.
+    const bySlug = new Map<string, number>();
+    for (const c of result.cards) {
+      const slug = c.sourceBscSetSlug ?? "(none)";
+      bySlug.set(slug, (bySlug.get(slug) ?? 0) + 1);
+    }
+    expect(bySlug.get(S1)).toBe(110);
+    expect(bySlug.get(S2)).toBe(110);
+
+    // Surfaced, not silently swallowed: all 110 overlaps are reported.
+    expect(result.collisions).toHaveLength(110);
+    expect(result.collisions?.[0]).toMatchObject({
+      keptSource: S2,
+      skippedSource: S1,
+    });
+  });
+
+  test("sets whose numbering CONTINUES report no collisions at all", async () => {
+    // The other real shape, and why `startAt` still exists: 2024 Topps splits
+    // #1-350 / #351-700 across two BSC sets, so nothing overlaps. The collision
+    // report must stay quiet here — a note that fires on every split set is a
+    // note the operator learns to ignore.
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      stubBsc({
+        perSlug: { [S1]: 110, [S2]: 110 },
+        startAt: { [S1]: 1, [S2]: 111 },
+        recorded,
+      }),
+    );
+    const t = convexTest(schema, modules);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: PARENT,
+        platformFilters: { insert: [S2, S1] },
+      });
+
+    expect(result.success).toBe(true);
+    expect(result.cards).toHaveLength(220);
+    expect(new Set(result.cards.map((c) => c.cardNumber)).size).toBe(220);
+    expect(result.collisions).toBeUndefined();
   });
 
   test("batching both slugs into one request would return NOTHING — the bug", async () => {
@@ -194,11 +288,9 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
     const recorded: Recorded[] = [];
     vi.stubGlobal(
       "fetch",
-      stubBsc({
-        perSlug: { [S1]: 2, [S2]: 3 },
-        startAt: { [S1]: 1, [S2]: 11 },
-        recorded,
-      }),
+      // Overlapping numbers on purpose: attribution has to survive the very
+      // case a number-keyed merge would have collapsed.
+      stubBsc({ perSlug: { [S1]: 2, [S2]: 3 }, recorded }),
     );
     const t = convexTest(schema, modules);
 
@@ -459,7 +551,12 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
     expect(bySlug.get(SET2)).toBe(1);
   });
 
-  test("a card number in BOTH source sets keeps the first and REPORTS it", async () => {
+  test("a card number in BOTH source sets keeps BOTH rows and REPORTS it", async () => {
+    // Report, do not narrow. Both #2s are real cards on real BSC sets the
+    // operator deliberately attached; discarding one at FETCH time destroys the
+    // evidence before anyone can look at it, and the checklist that results is
+    // indistinguishable from a correct one. `mergeSlFanOut` already made this
+    // call for SportLots — same rule, both marketplaces now.
     const recorded: Recorded[] = [];
     vi.stubGlobal(
       "fetch",
@@ -478,17 +575,29 @@ describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
         sourceFacet: "setName",
       });
 
-    expect(result.cards.map((c) => c.cardNumber).sort()).toEqual(["1", "2", "3"]);
+    expect(result.cards.map((c) => c.cardNumber).sort()).toEqual([
+      "1",
+      "2",
+      "2",
+      "3",
+    ]);
+    // The two #2s stay distinguishable by the set each came from.
+    expect(
+      result.cards
+        .filter((c) => c.cardNumber === "2")
+        .map((c) => c.sourceBscSetSlug)
+        .sort(),
+    ).toEqual([SET1, SET2]);
     expect(result.collisions).toEqual([
       { cardNumber: "2", keptSource: SET1, skippedSource: SET2 },
     ]);
   });
 
-  test("a SINGLE request never applies the cross-source number dedup", async () => {
-    // Two rows sharing a number inside one BSC set would be a marketplace data
-    // error, and dropping one on the single-source path — nearly every fetch —
-    // is far worse than the overlap it would guard against. There are no "two
-    // source sets" to collide when there is one request.
+  test("a SINGLE request reports no cross-source collision", async () => {
+    // Two rows sharing a number inside ONE BSC set is a marketplace data error,
+    // not an overlap between attached sets — and there are no "two source sets"
+    // to name when only one request went out. Reporting it as one would send
+    // the operator off to inspect a second set that does not exist.
     const recorded: Recorded[] = [];
     vi.stubGlobal(
       "fetch",

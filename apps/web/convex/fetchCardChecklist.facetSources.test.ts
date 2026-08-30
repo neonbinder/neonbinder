@@ -303,7 +303,7 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
     expect(bySetId.get("351")).toBe(SERIES_2);
   });
 
-  test("a card number in BOTH BSC sets is reported to the operator", async () => {
+  test("a card number in BOTH BSC sets is reported AND both rows reach the operator", async () => {
     const recorded: Recorded[] = [];
     vi.stubGlobal(
       "fetch",
@@ -324,9 +324,24 @@ describe("fetchCardChecklist — BSC splits, NeonBinder does not (NEO-189)", () 
 
     // The operator picked these two sets; only they can decide whether an
     // overlap is intended. The console warning alone never reaches them.
-    expect(result.message).toContain("kept the first source");
     expect(result.message).toContain("BSC: 1 card number(s)");
     expect(result.message).toContain("#2");
+
+    // AND the decision is still theirs to make, because both #2s are in front
+    // of them. A fetch-time dedup made this bucket 2 cards and left the
+    // message as the only trace of the third — the operator could read that
+    // something overlapped but could not see, keep, or pair the row that was
+    // taken away. Reporting is not a substitute for the data.
+    const { bscOnly } = await buckets(t, baseId);
+    expect(bscOnly.map((c) => c.cardNumber).sort()).toEqual(["1", "2", "2"]);
+    expect(
+      bscOnly
+        .filter((c) => c.cardNumber === "2")
+        .map((c) => c.platformData.bsc?.setId)
+        .sort(),
+    ).toEqual([SERIES_1, SERIES_2]);
+    expect(result.message).toContain("3 BSC-only");
+    expect(result.message).toContain("all rows kept");
   });
 
   test("a Parallel row attached to a BSC setName set is no longer discarded", async () => {

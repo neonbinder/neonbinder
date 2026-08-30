@@ -819,7 +819,18 @@ export const fetchBscChecklist = action({
     // NEO-189 — card numbers that arrived from more than one source set.
     // Omitted when there are none. Reported rather than merely logged: two
     // attached sets genuinely overlapping is a real, operator-relevant fact
-    // about the mapping they just built, and the only card kept is the first.
+    // about the mapping they just built, and only they can say whether it was
+    // intended.
+    //
+    // NOTHING IS DROPPED. Every row in `cards` above survives an overlap —
+    // see the report site at the end of this handler for why narrowing here
+    // was a regression. `keptSource`/`skippedSource` are therefore misnomers
+    // held over from the revision that did drop: they mean "the source that
+    // contributed this number FIRST" and "the source that also contributed
+    // it". Renaming them means changing this action's public `returns`
+    // validator plus the identically-shaped SL side in `mergeSlFanOut`, which
+    // does not belong in a regression fix — the names are inaccurate on both
+    // marketplaces and should be corrected together.
     collisions: v.optional(
       v.array(
         v.object({
@@ -1181,52 +1192,78 @@ export const fetchBscChecklist = action({
           return true;
         });
 
-      // NEO-189 — CARD NUMBER collisions ACROSS source sets.
+      // NEO-189 — CARD NUMBER collisions ACROSS source sets. REPORT THEM; DO
+      // NOT DROP.
       //
-      // Two attached sets can legitimately contain a card #11. Only one can
-      // survive: everything downstream of here — the BSC↔SL reconciler's
-      // number index, the committed checklist, the variation stem grouping —
-      // treats a card number as unique within one NB row, so two #11s would
-      // produce two indistinguishable NB cards. First source wins, matching
-      // the SportLots fan-out.
+      // Two attached sets legitimately share card numbers, and for the set this
+      // whole feature exists for they share ALL of them: BSC splits 1996 Score
+      // Dugout Collection Artist's Proofs into Series 1 and Series 2 and numbers
+      // BOTH #1-110. 220 distinct cards over 110 numbers.
       //
-      // Scoped to cross-source ONLY, and gated on an actual fan-out. Two rows
-      // sharing a number inside one BSC set would be a marketplace data error,
-      // and dropping one of them on the single-request path — which is nearly
-      // every fetch — is a much worse failure than the one being fixed. With
-      // one request there are no "two source sets" to collide, so that path is
-      // left byte-for-byte as it was.
+      // An earlier revision deduped here, first-source-wins, on the reasoning
+      // that "a duplicate-numbered checklist is not representable, because
+      // commitCardChecklist upserts by cardNumber". That reasoning was wrong on
+      // both halves:
+      //
+      //   IT IS REPRESENTABLE. `commitCardChecklist` keys its upsert against
+      //   rows ALREADY IN THE DATABASE (`existingByNumber`, built from a
+      //   by_selector_option query before the write loop). Rows written by the
+      //   same batch are never added to that map, so a fresh commit inserts one
+      //   `cardChecklist` row per incoming card — 220 of them — and Convex
+      //   indexes carry no uniqueness constraint. `.maestro/flows/set-selector/
+      //   inserts-1996-score-one-nb-set-two-bsc-sources.yaml` asserts exactly
+      //   that end to end ("Saved 220 cards").
+      //
+      //   AND DROPPING HERE IS THE WRONG PLACE REGARDLESS. Even where something
+      //   downstream cannot hold two rows, narrowing at FETCH time destroys the
+      //   conflict before the operator can see it. They chose to attach these
+      //   two sets; they are the only one who can say whether the overlap is
+      //   intended. A silently halved checklist is indistinguishable from a
+      //   correct one — which is how this shipped: the fan-out fixture had been
+      //   renumbered so the union still came to 220, and only CI's real-data
+      //   flow caught the 110.
+      //
+      // So this mirrors `mergeSlFanOut` exactly: dedup on the marketplace's own
+      // IDENTITY (BSC's card id, already done above via `seenRefs`), and report
+      // number overlaps without touching the rows.
+      //
+      // Still scoped to cross-source ONLY and gated on an actual fan-out. Two
+      // rows sharing a number inside ONE BSC set is a marketplace data error,
+      // not an overlap between attached sets — with a single request there are
+      // no "two source sets" to name, and saying otherwise sends the operator
+      // to inspect a set that does not exist.
       const collisions: Array<{
         cardNumber: string;
         keptSource: string;
         skippedSource: string;
       }> = [];
-      const sourceByNumber = new Map<string, string | undefined>();
-      const deduped = fanOut.length < 2 ? cards : cards.filter((c) => {
-        if (!sourceByNumber.has(c.cardNumber)) {
-          sourceByNumber.set(c.cardNumber, c.sourceBscSetSlug);
-          return true;
+      if (fanOut.length >= 2) {
+        const sourceByNumber = new Map<string, string | undefined>();
+        for (const c of cards) {
+          if (!sourceByNumber.has(c.cardNumber)) {
+            sourceByNumber.set(c.cardNumber, c.sourceBscSetSlug);
+            continue;
+          }
+          const firstSource = sourceByNumber.get(c.cardNumber);
+          if (firstSource === c.sourceBscSetSlug) continue; // same set — not cross-source
+          collisions.push({
+            cardNumber: c.cardNumber,
+            keptSource: firstSource ?? "(unattributed)",
+            skippedSource: c.sourceBscSetSlug ?? "(unattributed)",
+          });
         }
-        const keptSource = sourceByNumber.get(c.cardNumber);
-        if (keptSource === c.sourceBscSetSlug) return true; // same set — not a collision
-        collisions.push({
-          cardNumber: c.cardNumber,
-          keptSource: keptSource ?? "(unattributed)",
-          skippedSource: c.sourceBscSetSlug ?? "(unattributed)",
-        });
-        return false;
-      });
+      }
       for (const col of collisions.slice(0, 10)) {
         console.warn(
-          `[fetchBscChecklist] BSC cardNumber collision: ${col.cardNumber} ` +
-            `keptSource=${col.keptSource} skippedSource=${col.skippedSource}`,
+          `[fetchBscChecklist] BSC cardNumber in two source sets: ${col.cardNumber} ` +
+            `(${col.keptSource} and ${col.skippedSource}) — both rows kept`,
         );
       }
 
       return {
         success: true,
-        cards: deduped,
-        message: `Found ${deduped.length} cards from BSC catalog`,
+        cards,
+        message: `Found ${cards.length} cards from BSC catalog`,
         ...(collisions.length > 0 ? { collisions } : {}),
       };
     } catch (error) {
