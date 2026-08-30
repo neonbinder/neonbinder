@@ -19,17 +19,23 @@
  *   2. The BSC browse control actually changes the pool: up to the year's set
  *      list, then back down into a SIBLING set's variants. This is the
  *      reported bug, expressed as an assertion.
- *   3. A BSC set in the set list is a browse target, never an attachable id —
- *      a setName slug is a filter, not a source of cards.
- *   4. Already-attached ids are excluded from both panes.
- *   5. Search filters each pane independently.
- *   6. Confirm batches everything selected — across both marketplaces AND
+ *   3. A BSC set in the set list is BOTH attachable and browsable (NEO-189),
+ *      and a set already attached stays listed as a browse route but cannot be
+ *      attached twice.
+ *   4. Every BSC selection carries the FACET it was picked from — `setName`
+ *      from the set list, `variantName` from a set's variant list (NEO-189).
+ *      Without it the checklist fetch cannot tell a set slug from a variant
+ *      slug and buckets it on the row's NB level instead, which is what
+ *      discarded setName ids attached to Base and Parallel rows.
+ *   5. Already-attached ids are excluded from both panes.
+ *   6. Search filters each pane independently.
+ *   7. Confirm batches everything selected — across both marketplaces AND
  *      across BSC sets reached by browsing — into ONE attachPlatformIds call.
- *   7. An adapter failure is reported in the pane that failed and does not
+ *   8. An adapter failure is reported in the pane that failed and does not
  *      blank the other. Before NEO-196 the dialog ignored `errors[]` entirely,
  *      so an outage and an empty marketplace both read "No unattached
  *      candidates."
- *   8. Enter on a browse button browses; it does not attach.
+ *   9. Enter on a browse button browses; it does not attach.
  *
  * --- Mocking strategy (mirrors BaseMappingForm.test.tsx) ---
  * convex/react's useAction/useMutation are module-mocked and routed by the
@@ -267,7 +273,13 @@ describe("AttachSetsDialog — the BSC browse control changes the pool", () => {
     expect(bscDown.queryByLabelText("Toggle Gold Foil")).toBeNull();
   });
 
-  test("a BSC set in the set list is a browse target, never an attachable id", async () => {
+  test("a BSC set in the set list is BOTH attachable and browsable (NEO-189)", async () => {
+    // It used to be browse-only, because `fetchBscChecklist` read every BSC id
+    // on a row as a variantName and a setName slug therefore sourced nothing.
+    // NEO-189 records the facet on the slot, so a setName slug plus the row's
+    // own variant IS a source of cards — and it is the only way to express the
+    // split this whole feature exists for (BSC files Topps Series 1 and
+    // Series 2 as two sets where SportLots files one).
     renderDialog();
     await waitFor(() =>
       expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
@@ -280,12 +292,106 @@ describe("AttachSetsDialog — the BSC browse control changes the pool", () => {
       ).toBeTruthy(),
     );
 
-    // A BSC setName slug is a FILTER, not a source of cards: fetchBscChecklist
-    // reads a row's BSC ids as variantName slugs. Offering a checkbox here
-    // would let the operator attach an id that silently sources nothing.
+    const bsc = within(bscPane());
+    expect(bsc.getByLabelText("Toggle Topps Heritage")).toBeTruthy();
+    expect(bsc.getByLabelText("Toggle Bowman")).toBeTruthy();
+    // Select and browse stay separate controls: attaching a set and stepping
+    // into it are different intents and must not share a click target.
+    expect(bsc.getByLabelText("Browse BSC set Bowman")).toBeTruthy();
+  });
+
+  test("a BSC set already attached stays browsable but cannot be attached twice", async () => {
+    // Filtering it out of the list instead would make its variants
+    // unreachable the moment the operator attached the set itself — the set
+    // list is the ONLY route down into a sibling set.
+    renderDialog({
+      alreadyAttached: {
+        bsc: new Set(["topps-heritage"]),
+        sportlots: new Set<string>(),
+      },
+    });
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Browse BSC set Topps Heritage"),
+      ).toBeTruthy(),
+    );
+
     const bsc = within(bscPane());
     expect(bsc.queryByLabelText("Toggle Topps Heritage")).toBeNull();
-    expect(bsc.queryByLabelText("Toggle Bowman")).toBeNull();
+    expect(
+      bsc.getByLabelText("Topps Heritage is already attached"),
+    ).toBeTruthy();
+    // Still listed, still a route down.
+    expect(bsc.getByLabelText("Browse BSC set Topps Heritage")).toBeTruthy();
+    // Unattached siblings are unaffected.
+    expect(bsc.getByLabelText("Toggle Bowman")).toBeTruthy();
+  });
+
+  test("a selected BSC set carries facet setName; a selected variant carries variantName", async () => {
+    // THE BUG THIS PINS: a BSC slug is not self-describing. Sent without a
+    // facet, `topps-heritage` is bucketed by the row's NB level — dropped
+    // outright on a Base or Parallel row — and the operator gets a checklist
+    // that silently sources nothing from the set they just attached.
+    renderDialog();
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+
+    // …a variant, from the variants rung
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Gold Foil"));
+
+    // …and a SET, from the set-list rung
+    fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Toggle Topps Heritage"),
+      ).toBeTruthy(),
+    );
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Topps Heritage"));
+
+    fireEvent.click(screen.getByLabelText("Confirm attach sets"));
+    await waitFor(() => expect(mockAttach).toHaveBeenCalledTimes(1));
+
+    expect(mockAttach.mock.calls[0][0].additions.bsc).toEqual([
+      { id: "gold-foil", label: "Gold Foil", facet: "variantName" },
+      { id: "topps-heritage", label: "Topps Heritage", facet: "setName" },
+    ]);
+    // SportLots has one unit of attachment, so it never carries a facet.
+    expect(mockAttach.mock.calls[0][0].additions.sportlots).toEqual([]);
+  });
+
+  test("two BSC sets on one row — the N:M case — attach as two setName ids", async () => {
+    // The product owner's example: BSC files 2024 Topps as Series 1 and
+    // Series 2 while SportLots files one set, so one NB Base row has to draw
+    // from two BSC setName sets. Before NEO-189 neither could be attached at
+    // all, and had they been, `fetchBscChecklist` would have sent both slugs
+    // as one multi-value facet — which BSC answers 200 OK with an empty body.
+    renderDialog();
+    await waitFor(() =>
+      expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
+    await waitFor(() =>
+      expect(
+        within(bscPane()).getByLabelText("Toggle Topps Chrome"),
+      ).toBeTruthy(),
+    );
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Topps Chrome"));
+    fireEvent.click(within(bscPane()).getByLabelText("Toggle Topps Heritage"));
+
+    fireEvent.click(screen.getByLabelText("Confirm attach sets"));
+    await waitFor(() => expect(mockAttach).toHaveBeenCalledTimes(1));
+
+    expect(mockAttach.mock.calls[0][0].additions.bsc).toEqual([
+      { id: "topps-chrome", label: "Topps Chrome", facet: "setName" },
+      { id: "topps-heritage", label: "Topps Heritage", facet: "setName" },
+    ]);
   });
 
   test("browsing BSC does not re-run the SportLots fetch", async () => {
@@ -459,8 +565,12 @@ describe("AttachSetsDialog — confirming", () => {
       selectorOptionId: ROW_ID,
       additions: {
         bsc: [
-          { id: "gold-foil", label: "Gold Foil" },
-          { id: "heritage-chrome-ref", label: "Heritage Chrome Refractor" },
+          { id: "gold-foil", label: "Gold Foil", facet: "variantName" },
+          {
+            id: "heritage-chrome-ref",
+            label: "Heritage Chrome Refractor",
+            facet: "variantName",
+          },
         ],
         sportlots: [{ id: "889001", label: "Topps Heritage" }],
       },

@@ -44,6 +44,10 @@ import {
   selectorOptionLevelValidator,
 } from "./schema";
 import {
+  bscFacetValidator,
+  resolveBscFacetFilters,
+} from "./bscFacets";
+import {
   allocateSlots,
   detachSlot,
   idForSlot,
@@ -402,6 +406,11 @@ export const getAncestorChain = query({
       value: v.string(),
       platformData: selectorOptionFields.platformData,
       platformLabels: selectorOptionFields.platformLabels,
+      // NEO-189: without this the checklist fetch cannot tell a BSC setName
+      // slug from a variantName slug and falls back to guessing from the NB
+      // level — which is the bug. Derived from the schema, not re-listed, so
+      // it cannot drift from the table.
+      platformFacets: selectorOptionFields.platformFacets,
       metadata: metadataValidator,
       // NEO-24: surface ancestor features so callers (commitCardChecklist
       // inheritance merge, SetFeaturesPanel) can resolve effective values
@@ -424,6 +433,7 @@ export const getAncestorChain = query({
         bsc?: Record<string, string>;
         sportlots?: Record<string, string>;
       };
+      platformFacets?: { bsc?: Record<string, "setName" | "variantName"> };
       metadata?: { cardNumberPrefix?: string; isInsert?: boolean; isParallel?: boolean };
       features?: Record<string, string>;
       isCustom?: boolean;
@@ -439,6 +449,7 @@ export const getAncestorChain = query({
         value: option.value,
         platformData: option.platformData || {},
         platformLabels: option.platformLabels,
+        platformFacets: option.platformFacets,
         metadata: option.metadata,
         features: option.features,
         isCustom: option.isCustom,
@@ -1104,9 +1115,27 @@ export const attachPlatformIds = mutation({
     selectorOptionId: v.id("selectorOptions"),
     additions: v.object({
       bsc: v.optional(
-        v.array(v.object({ id: v.string(), label: v.string() })),
+        v.array(
+          v.object({
+            id: v.string(),
+            label: v.string(),
+            // NEO-189 — which BSC facet this slug is a value of.
+            //
+            // OPTIONAL, and absent means "store no tag", never "guess". A BSC
+            // slug is not self-describing, so an attach that does not say
+            // which facet it belongs to gets the pre-NEO-189 behaviour: the
+            // checklist fetch derives the facet from the row's NB level, which
+            // for a Base or Parallel row means the id sources nothing. That is
+            // exactly what an older client's attach did, so an older client
+            // keeps working identically instead of silently creating a slot
+            // tagged with a facet it never chose.
+            facet: v.optional(bscFacetValidator),
+          }),
+        ),
       ),
       sportlots: v.optional(
+        // No facet: SportLots has one unit of attachment (a set id), so there
+        // is nothing to disambiguate.
         v.array(v.object({ id: v.string(), label: v.string() })),
       ),
     }),
@@ -1183,13 +1212,18 @@ export const attachPlatformIds = mutation({
     const alloc = allocateSlots(row, {
       bsc: (args.additions.bsc ?? [])
         .filter(({ id }) => id)
-        .map(({ id, label }) => ({ id, label: label.trim() })),
+        .map(({ id, label, facet }) => ({
+          id,
+          label: label.trim(),
+          ...(facet ? { facet } : {}),
+        })),
       sportlots: (args.additions.sportlots ?? [])
         .filter(({ id }) => id)
         .map(({ id, label }) => ({ id, label: label.trim() })),
     });
     const mergedPD = alloc.platformData;
     const mergedLabels = alloc.platformLabels;
+    const mergedFacets = pruneEmptySides({ ...alloc.platformFacets });
     const attached = alloc.attachedCount;
 
     // Strip empty label objects so we don't write `{ bsc: {} }`.
@@ -1208,6 +1242,8 @@ export const attachPlatformIds = mutation({
       platformData: mergedPD,
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      platformFacets:
+        Object.keys(mergedFacets).length > 0 ? mergedFacets : undefined,
       // The counter moves in the SAME patch as the map it guards. Splitting
       // them would let a crash in between hand the next allocation a slot key
       // that is already in use.
@@ -1285,6 +1321,8 @@ export const detachPlatformId = mutation({
 
     const detached = detachSlot(row, args.side, args.slot);
     const labelsPatch = pruneEmptySides({ ...detached.platformLabels });
+    // NEO-189: the facet tag is slot-scoped, so it goes with the slot.
+    const facetsPatch = pruneEmptySides({ ...detached.platformFacets });
 
     let primaryPatch: { bsc?: string; sportlots?: string } | undefined;
     if (isPrimary) {
@@ -1297,6 +1335,8 @@ export const detachPlatformId = mutation({
       platformData: pruneEmptySides({ ...detached.platformData }),
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      platformFacets:
+        Object.keys(facetsPatch).length > 0 ? facetsPatch : undefined,
       // platformSlotSeq is deliberately NOT patched — the counter never
       // rewinds, so this slot key is retired for good. Any card still pointing
       // at it now resolves to nothing and surfaces as an orphaned ref, which
@@ -4231,6 +4271,111 @@ function jaroWinkler(a: string, b: string): number {
   return jaro + prefix * 0.1 * (1 - jaro);
 }
 
+/**
+ * NEO-189 — merge the SportLots fan-out's per-set results.
+ *
+ * Two jobs, deliberately separated, because conflating them is the defect this
+ * replaces.
+ *
+ * **Dedup on SportLots' own IDENTITY.** This used to key on `cardNumber`, and
+ * SportLots deliberately reuses a card number across variation rows: "#11 Alec
+ * Bohm" and "#11 Alec Bohm [ VAR Action Image ]" are different cards sharing
+ * the number 11. That is exactly why `platformRef` is the full description
+ * (NEO-91) and why `slClaimKey` keys claims on the ref rather than the number.
+ * Keying the merge on the number therefore ate every variation on a
+ * multi-source row — silently, and only on multi-source rows, because a
+ * single-source row never reaches this merge at all. It also starved NEO-189's
+ * BSC↔SL variation pairing of its SL side for precisely the split sets this
+ * ticket exists for.
+ *
+ * **Report number collisions without dropping.** A number arriving from two
+ * different SL sets is a fact about the mapping the operator built, and they
+ * should see it. But the two rows are distinguishable — SportLots gave them
+ * different descriptions — so both are kept and offered; the pairing modal is
+ * where an operator decides, and dropping one here would pre-empt that with a
+ * guess.
+ *
+ * Extracted as a pure function so it can be tested exhaustively: the fan-out
+ * fires its `ctx.runAction` calls concurrently, which convex-test cannot mock
+ * reliably (a concurrent first-call races module resolution and one call
+ * reaches the unmocked adapter).
+ */
+export function mergeSlFanOut<
+  T extends { cardNumber: string; platformRef?: string; sourceSlSetId?: string },
+>(
+  perSetResults: T[][],
+): {
+  cards: T[];
+  collisions: Array<{
+    cardNumber: string;
+    keptSource: string;
+    skippedSource: string;
+  }>;
+} {
+  const identity = (c: T) => c.platformRef ?? `#${c.cardNumber}`;
+  const dedup = new Map<string, T>();
+  const sourceByNumber = new Map<string, string | undefined>();
+  const collisions: Array<{
+    cardNumber: string;
+    keptSource: string;
+    skippedSource: string;
+  }> = [];
+
+  for (const cards of perSetResults) {
+    for (const c of cards) {
+      const key = identity(c);
+      if (!dedup.has(key)) dedup.set(key, c);
+      if (!sourceByNumber.has(c.cardNumber)) {
+        sourceByNumber.set(c.cardNumber, c.sourceSlSetId);
+        continue;
+      }
+      const keptSource = sourceByNumber.get(c.cardNumber);
+      if (keptSource !== c.sourceSlSetId) {
+        collisions.push({
+          cardNumber: c.cardNumber,
+          keptSource: keptSource ?? "(unattributed)",
+          skippedSource: c.sourceSlSetId ?? "(unattributed)",
+        });
+      }
+    }
+  }
+
+  return { cards: Array.from(dedup.values()), collisions };
+}
+
+/**
+ * NEO-189 — one operator-readable sentence for cross-source card-number
+ * collisions, or "" when there are none.
+ *
+ * Names at most three numbers per marketplace. The operator's next action is
+ * the same whether two numbers collided or two hundred (look at the two sets
+ * and decide whether they should both be attached), so the count carries the
+ * signal and the examples make it actionable without swamping the counts the
+ * message exists to show.
+ */
+export function summarizeCollisions(
+  collisions: Array<{
+    side: "BSC" | "SL";
+    cardNumber: string;
+    keptSource: string;
+    skippedSource: string;
+  }>,
+): string {
+  if (collisions.length === 0) return "";
+  const parts: string[] = [];
+  for (const side of ["BSC", "SL"] as const) {
+    const forSide = collisions.filter((c) => c.side === side);
+    if (forSide.length === 0) continue;
+    const shown = forSide.slice(0, 3).map((c) => `#${c.cardNumber}`);
+    const more = forSide.length - shown.length;
+    parts.push(
+      `${side}: ${forSide.length} card number(s) in more than one source set ` +
+        `(${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`,
+    );
+  }
+  return ` — kept the first source for ${parts.join("; ")}`;
+}
+
 interface ReconciledCard {
   cardNumber: string;
   cardName: string;
@@ -4362,7 +4507,6 @@ export const fetchCardChecklist = action({
       // NEO-6: both sides may now be arrays at any level. We keep the
       // arrays here and fan out / pass through downstream.
       const slPlatformFilters: Record<string, string[]> = {};
-      const bscPlatformFilters: Record<string, string[]> = {};
       // NEO-96: `sport` used to be `ancestor.value.toLowerCase()` — a BSC wire
       // format — and that string was returned to the client and persisted onto
       // teams/players by commitCardChecklist. It is now the sport ROW's id.
@@ -4383,13 +4527,10 @@ export const fetchCardChecklist = action({
         }
         // NEO-137: adapters filter on marketplace IDs; slots are internal.
         const ancestorSlIds = slotIds(ancestor, "sportlots");
-        const ancestorBscIds = slotIds(ancestor, "bsc");
         if (ancestorSlIds.length > 0) {
           slPlatformFilters[ancestor.level] = ancestorSlIds;
         }
-        if (ancestorBscIds.length > 0) {
-          bscPlatformFilters[ancestor.level] = ancestorBscIds;
-        }
+        // BSC is bucketed by FACET, not by level — see `bscFacetPlan` below.
       }
 
       // Custom-subtree gate (NEO-22). If any node in the chain (including the
@@ -4470,9 +4611,23 @@ export const fetchCardChecklist = action({
         };
       }
 
+      // NEO-189 — bucket the chain's BSC ids by the FACET each one belongs to
+      // rather than by the NB level of the row holding it.
+      //
+      // This is the whole point of the ticket. BSC splits Topps into Series 1
+      // and Series 2 at `setName` while SportLots has one set, so a **setName**
+      // id has to hang off the NB Base (`variantType`) row — and the old
+      // level-keyed bucketing threw those away (`variantType` was skipped,
+      // `parallel` had no facet at all). An id now follows what it IS.
+      //
+      // Untagged slots keep the level rule, so a row attached before this
+      // change queries exactly what it queried before.
+      const bscFacetPlan = resolveBscFacetFilters(chain);
+
       console.log(
         `[fetchCardChecklist] sport=${sportLabel} prefix=${cardNumberPrefix}`,
         `filters:`, filters,
+        `bscFacets:`, bscFacetPlan.filters,
       );
 
       // NEO-6: SL adapter takes one set ID at a time. When the active
@@ -4526,6 +4681,16 @@ export const fetchCardChecklist = action({
         return null;
       })();
 
+      // NEO-189 — card numbers seen from more than one source set, on either
+      // marketplace. Surfaced to the operator in the result message, because
+      // two attached sets legitimately overlapping is a fact about the mapping
+      // they just built and only the first source's card survives.
+      const slCollisions: Array<{
+        cardNumber: string;
+        keptSource: string;
+        skippedSource: string;
+      }> = [];
+
       const callSl = async (
         perCallFilters: Record<string, string>,
         sourceId: string | undefined,
@@ -4576,39 +4741,44 @@ export const fetchCardChecklist = action({
             return callSl(perCall, slId);
           }),
         );
-        // Dedup by cardNumber — first occurrence wins.
-        const dedup = new Map<string, SlCard>();
-        for (const cards of perIdResults) {
-          for (const c of cards) {
-            const existing = dedup.get(c.cardNumber);
-            if (!existing) {
-              dedup.set(c.cardNumber, c);
-            } else if (existing.sourceSlSetId !== c.sourceSlSetId) {
-              console.warn(
-                `[fetchCardChecklist] SL cardNumber collision: ${c.cardNumber} ` +
-                  `keptSource=${existing.sourceSlSetId} skippedSource=${c.sourceSlSetId}`,
-              );
-            }
-          }
+        const merged = mergeSlFanOut(perIdResults);
+        for (const col of merged.collisions) {
+          slCollisions.push(col);
+          console.warn(
+            `[fetchCardChecklist] SL cardNumber collision: ${col.cardNumber} ` +
+              `keptSource=${col.keptSource} skippedSource=${col.skippedSource}`,
+          );
         }
-        return Array.from(dedup.values());
+        return merged.cards;
       };
 
       type BscFetchResult = {
         success: boolean;
         cards: any[];
         message?: string;
+        collisions?: Array<{
+          cardNumber: string;
+          keptSource: string;
+          skippedSource: string;
+        }>;
       };
       const fetchBsc = async (): Promise<BscFetchResult> => {
         // The adapter fans out internally — one request per BSC source set.
-        // BSC does NOT OR multi-value facets: two variantName values return
+        // BSC does NOT OR multi-value facets: two values on one facet return
         // 200 OK with zero rows (measured on dev 2026-08-12, 1996 Score).
         // The comment that used to be here asserted the opposite.
+        //
+        // NEO-189: `facetFilters`, not `platformFilters`. The level-keyed form
+        // cannot express a setName id attached to a Base row, which is the
+        // split this feature exists for.
         return await ctx.runAction(
           api.adapters.buysportscards.fetchBscChecklist,
           {
             parentFilters: filters,
-            platformFilters: bscPlatformFilters,
+            facetFilters: bscFacetPlan.filters,
+            ...(bscFacetPlan.sourceFacet
+              ? { sourceFacet: bscFacetPlan.sourceFacet }
+              : {}),
           },
         ).catch((err) => {
           console.error(`[fetchCardChecklist] BSC error:`, err);
@@ -4628,6 +4798,7 @@ export const fetchCardChecklist = action({
           ? bscSettled.value
           : { success: false, cards: [] };
 
+      const bscCollisions = bscResult.collisions ?? [];
       const bscCards = (bscResult.success ? bscResult.cards : []) as Array<{
         cardNumber: string;
         cardName: string;
@@ -5082,11 +5253,28 @@ export const fetchCardChecklist = action({
           `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
       );
 
+      // NEO-189 — tell the OPERATOR about cross-source card-number collisions,
+      // not just the server log.
+      //
+      // The console warning was enough while a collision meant "our fan-out is
+      // probably misconfigured". Now that a row can deliberately draw from two
+      // sets on either marketplace, an overlap is a legitimate outcome the
+      // operator chose — and the one thing they cannot see from the checklist
+      // itself is that a second set's card #11 was dropped in favour of the
+      // first's. `message` already renders under the Sync button, so this
+      // needs no new surface; it is capped so a badly overlapping pair cannot
+      // push the counts off the screen.
+      const collisionNote = summarizeCollisions([
+        ...bscCollisions.map((c) => ({ ...c, side: "BSC" as const })),
+        ...slCollisions.map((c) => ({ ...c, side: "SL" as const })),
+      ]);
+
       return {
         success: true,
         message:
           `${autoMatchedCards.length} matched, ` +
-          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
+          collisionNote,
         sportId,
         autoMatched: autoMatchedCards,
         unmatchedBsc: unmatchedBscCards,

@@ -121,6 +121,40 @@ export const selectorOptionFields = {
     bsc: v.optional(v.record(v.string(), v.string())),
     sportlots: v.optional(v.record(v.string(), v.string())),
   })),
+  // NEO-189 — slot → which BSC FACET that slot's id belongs to.
+  //
+  // A BSC id is not self-describing: `topps-series-1` is a value of the
+  // `setName` facet, `dugout-collection-artists-proofs` is a value of the
+  // `variantName` facet. The checklist fetch used to guess from the NB LEVEL
+  // of the row holding the id, which is wrong for the case this feature
+  // exists for — BSC files Topps Series 1 and Series 2 as two `setName` sets
+  // while SportLots has one set, so a **setName** id has to hang off a Base
+  // (`variantType`) row. Level-guessing discarded those ids silently.
+  //
+  // Keyed by SLOT, in a map parallel to `platformLabels`, rather than encoded
+  // into the slot key or the id:
+  //   • the slot key is already stored on every card as `platformData.*.src`,
+  //     so re-namespacing it would mean rewriting card pointers — the exact
+  //     silent-repointing hazard slots were introduced to avoid;
+  //   • folding it into the id would corrupt the value adapters filter on and
+  //     every equality check that compares ids;
+  //   • a parallel slot-keyed map inherits the allocation and detach
+  //     lifecycle that already works, and gets the right default for free.
+  //
+  // ABSENT = written before NEO-189. That is inert, not unknown: the fetch
+  // falls back to the old level rule and nothing infers a facet, because a
+  // wrong guess changes which marketplace sets a live checklist sources.
+  //
+  // BSC only — SportLots has one unit of attachment, so there is nothing to
+  // disambiguate. See convex/bscFacets.ts.
+  platformFacets: v.optional(v.object({
+    bsc: v.optional(
+      v.record(
+        v.string(),
+        v.union(v.literal("setName"), v.literal("variantName")),
+      ),
+    ),
+  })),
   // The SLOT that storeReconciledOptions matched against. Used during
   // re-reconciliation to refresh that one entry without clobbering
   // operator-attached extras. Absent → treat the lowest-numbered slot as

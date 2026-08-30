@@ -65,7 +65,11 @@ vi.mock("./credentials", async (importOriginal) => {
   };
 });
 
-type Recorded = { variantName?: string[]; filters: Record<string, string[]> };
+type Recorded = {
+  variantName?: string[];
+  setName?: string[];
+  filters: Record<string, string[]>;
+};
 
 /**
  * Stub BSC's bulk-upload endpoint.
@@ -73,9 +77,17 @@ type Recorded = { variantName?: string[]; filters: Record<string, string[]> };
  * `perSlug` maps a variantName slug -> how many cards to return. A slug absent
  * from the map returns []. `multiValueReturnsEmpty` reproduces the real API's
  * behaviour: any request carrying more than one variantName yields zero rows.
+ *
+ * `startAt` sets the first card number a slug returns, default 1. Two series of
+ * one insert CONTINUE the numbering rather than restarting it — Series 1 is
+ * #1-110 and Series 2 picks up at #111 — so a fixture where both start at 1 is
+ * modelling an overlap, not a split. Tests that mean "two different source
+ * sets" say so with `startAt`; the one test that means "these two sets overlap"
+ * leaves it at the default and asserts the collision handling (NEO-189).
  */
 function stubBsc(opts: {
   perSlug: Record<string, number>;
+  startAt?: Record<string, number>;
   recorded: Recorded[];
   multiValueReturnsEmpty?: boolean;
   status?: number;
@@ -85,7 +97,7 @@ function stubBsc(opts: {
     const body = JSON.parse(String(init?.body ?? "{}"));
     const filters = (body.filters ?? {}) as Record<string, string[]>;
     const variantName = filters.variantName;
-    opts.recorded.push({ variantName, filters });
+    opts.recorded.push({ variantName, setName: filters.setName, filters });
 
     if (opts.failSlug && variantName?.includes(opts.failSlug)) {
       return new Response("boom", { status: opts.status ?? 500 });
@@ -101,10 +113,11 @@ function stubBsc(opts: {
 
     const slug = variantName?.[0];
     const count = slug ? (opts.perSlug[slug] ?? 0) : 0;
+    const base = (slug ? opts.startAt?.[slug] : undefined) ?? 1;
     const rows = Array.from({ length: count }, (_, i) => ({
-      id: `${slug}-card-${i + 1}`,
-      cardNo: String(i + 1),
-      players: `Player ${i + 1}`,
+      id: `${slug}-card-${base + i}`,
+      cardNo: String(base + i),
+      players: `Player ${base + i}`,
       // BSC returns the PARENT set here for an insert query — never the
       // insert's own slug. This is why source attribution had to stop
       // trusting it.
@@ -133,7 +146,11 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
     const recorded: Recorded[] = [];
     vi.stubGlobal(
       "fetch",
-      stubBsc({ perSlug: { [S1]: 110, [S2]: 110 }, recorded }),
+      stubBsc({
+        perSlug: { [S1]: 110, [S2]: 110 },
+        startAt: { [S1]: 1, [S2]: 111 },
+        recorded,
+      }),
     );
     const t = convexTest(schema, modules);
 
@@ -175,7 +192,14 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
     // made every card claim the same source, so the BSC SOURCE chips could not
     // tell two attached sets apart.
     const recorded: Recorded[] = [];
-    vi.stubGlobal("fetch", stubBsc({ perSlug: { [S1]: 2, [S2]: 3 }, recorded }));
+    vi.stubGlobal(
+      "fetch",
+      stubBsc({
+        perSlug: { [S1]: 2, [S2]: 3 },
+        startAt: { [S1]: 1, [S2]: 11 },
+        recorded,
+      }),
+    );
     const t = convexTest(schema, modules);
 
     const result = await t
@@ -266,5 +290,257 @@ describe("fetchBscChecklist — per-source-set fan-out (NEO-137)", () => {
 
     expect(recorded).toHaveLength(2);
     expect(result.cards).toHaveLength(2);
+  });
+});
+
+/**
+ * NEO-189 — the fan-out generalised off the `variantName` axis.
+ *
+ * BSC splits Topps into Series 1 and Series 2 at **setName** while SportLots
+ * files one set, so one NB Base row must draw from two BSC setName sets. The
+ * fan-out was written for the insert case and keyed on `variantName` alone:
+ * two setName slugs went out as ONE multi-value facet, which BSC answers 200
+ * OK with an empty body. Zero cards, no error, and a UI reporting "0 BSC
+ * cards" as though BSC had nothing — the same silent failure NEO-137 fixed on
+ * the other axis.
+ */
+
+/**
+ * Stub that models a setName-split set. `perSet` maps a setName slug -> the
+ * card numbers it contains. A multi-value facet on EITHER axis returns nothing,
+ * which is the behaviour being defended against.
+ */
+function stubBscBySet(opts: {
+  perSet: Record<string, string[]>;
+  recorded: Recorded[];
+}): typeof fetch {
+  return (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    const filters = (body.filters ?? {}) as Record<string, string[]>;
+    opts.recorded.push({
+      variantName: filters.variantName,
+      setName: filters.setName,
+      filters,
+    });
+
+    const multiValued = Object.values(filters).some((val) => val.length > 1);
+    if (multiValued) {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const slug = filters.setName?.[0];
+    const numbers = slug ? (opts.perSet[slug] ?? []) : [];
+    const rows = numbers.map((cardNo) => ({
+      id: `${slug}-${cardNo}`,
+      cardNo,
+      players: `Player ${cardNo}`,
+      setName: slug,
+    }));
+    return new Response(JSON.stringify(rows), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+}
+
+const SET1 = "topps-series-1";
+const SET2 = "topps-series-2";
+
+const BASE_PARENT = {
+  sport: "Baseball",
+  year: "2024",
+  setName: "Topps",
+  variantType: "Base",
+};
+
+describe("fetchBscChecklist — setName fan-out (NEO-189)", () => {
+  test("two setName slugs produce TWO requests, one slug each — THE BUG", async () => {
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      stubBscBySet({
+        perSet: { [SET1]: ["1", "2", "3"], [SET2]: ["351", "352"] },
+        recorded,
+      }),
+    );
+    const t = convexTest(schema, modules);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: BASE_PARENT,
+        facetFilters: {
+          sport: ["baseball"],
+          year: ["2024"],
+          setName: [SET1, SET2],
+        },
+        sourceFacet: "setName",
+      });
+
+    expect(recorded).toHaveLength(2);
+    expect(recorded.map((r) => r.setName)).toEqual([[SET1], [SET2]]);
+    expect(recorded.every((r) => (r.setName?.length ?? 0) === 1)).toBe(true);
+
+    expect(result.success).toBe(true);
+    expect(result.cards).toHaveLength(5);
+  });
+
+  test("the row's `variant` is applied to EVERY request in the fan-out", async () => {
+    // Without it a setName-only query returns the set's whole catalogue —
+    // base, inserts and parallels together — under an NB Base row.
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      stubBscBySet({ perSet: { [SET1]: ["1"], [SET2]: ["2"] }, recorded }),
+    );
+    const t = convexTest(schema, modules);
+
+    await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: BASE_PARENT,
+        facetFilters: { sport: ["baseball"], setName: [SET1, SET2] },
+        sourceFacet: "setName",
+      });
+
+    expect(recorded).toHaveLength(2);
+    for (const r of recorded) {
+      expect(r.filters.variant).toEqual(["base"]);
+      expect(r.filters.sport).toEqual(["baseball"]);
+    }
+  });
+
+  test("batching both setName slugs into one request returns NOTHING", async () => {
+    // Proves the stub models the real API, so the assertion above is not
+    // tautological. This is exactly what the pre-NEO-189 code sent.
+    const recorded: Recorded[] = [];
+    const fetchStub = stubBscBySet({
+      perSet: { [SET1]: ["1"], [SET2]: ["2"] },
+      recorded,
+    });
+    const res = await fetchStub("https://example.test/search/bulk-upload/results", {
+      method: "POST",
+      body: JSON.stringify({ filters: { setName: [SET1, SET2] } }),
+    } as RequestInit);
+    await expect(res.json()).resolves.toEqual([]);
+  });
+
+  test("each card is attributed to the setName WE queried, so it binds to a slot", async () => {
+    // `sourceBscSetSlug` is resolved against the row's attached slots at
+    // commit. Tagging with anything the operator did not attach leaves the
+    // card unattributed and it drops out of source filtering entirely.
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      stubBscBySet({
+        perSet: { [SET1]: ["1", "2"], [SET2]: ["351"] },
+        recorded,
+      }),
+    );
+    const t = convexTest(schema, modules);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: BASE_PARENT,
+        facetFilters: { sport: ["baseball"], setName: [SET1, SET2] },
+        sourceFacet: "setName",
+      });
+
+    const bySlug = new Map<string, number>();
+    for (const c of result.cards) {
+      const slug = c.sourceBscSetSlug ?? "(none)";
+      bySlug.set(slug, (bySlug.get(slug) ?? 0) + 1);
+    }
+    expect(bySlug.get(SET1)).toBe(2);
+    expect(bySlug.get(SET2)).toBe(1);
+  });
+
+  test("a card number in BOTH source sets keeps the first and REPORTS it", async () => {
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      stubBscBySet({
+        perSet: { [SET1]: ["1", "2"], [SET2]: ["2", "3"] },
+        recorded,
+      }),
+    );
+    const t = convexTest(schema, modules);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: BASE_PARENT,
+        facetFilters: { sport: ["baseball"], setName: [SET1, SET2] },
+        sourceFacet: "setName",
+      });
+
+    expect(result.cards.map((c) => c.cardNumber).sort()).toEqual(["1", "2", "3"]);
+    expect(result.collisions).toEqual([
+      { cardNumber: "2", keptSource: SET1, skippedSource: SET2 },
+    ]);
+  });
+
+  test("a SINGLE request never applies the cross-source number dedup", async () => {
+    // Two rows sharing a number inside one BSC set would be a marketplace data
+    // error, and dropping one on the single-source path — nearly every fetch —
+    // is far worse than the overlap it would guard against. There are no "two
+    // source sets" to collide when there is one request.
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (async (_url: string, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        recorded.push({ variantName: undefined, filters: body.filters });
+        return new Response(
+          JSON.stringify([
+            { id: "dup-a", cardNo: "1", players: "A", setName: SET1 },
+            { id: "dup-b", cardNo: "1", players: "B", setName: SET1 },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as unknown as typeof fetch,
+    );
+    const t = convexTest(schema, modules);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: BASE_PARENT,
+        facetFilters: { sport: ["baseball"], setName: [SET1] },
+        sourceFacet: "setName",
+      });
+
+    expect(recorded).toHaveLength(1);
+    expect(result.cards).toHaveLength(2);
+    expect(result.collisions).toBeUndefined();
+  });
+
+  test("facetFilters wins over platformFilters in full", async () => {
+    // Merging them would resurrect the NB-level guess for whichever facet the
+    // caller happened to leave out of facetFilters, which is the guess this
+    // ticket removes.
+    const recorded: Recorded[] = [];
+    vi.stubGlobal(
+      "fetch",
+      stubBscBySet({ perSet: { [SET2]: ["1"] }, recorded }),
+    );
+    const t = convexTest(schema, modules);
+
+    await t
+      .withIdentity(ADMIN)
+      .action(api.adapters.buysportscards.fetchBscChecklist, {
+        parentFilters: BASE_PARENT,
+        platformFilters: { setName: ["topps"], insert: ["legacy-variant"] },
+        facetFilters: { setName: [SET2] },
+        sourceFacet: "setName",
+      });
+
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].setName).toEqual([SET2]);
+    expect(recorded[0].filters.variantName).toBeUndefined();
   });
 });

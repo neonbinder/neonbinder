@@ -85,11 +85,17 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       args: {
         parentFilters: v.record(v.string(), v.string()),
         platformFilters: v.optional(v.record(v.string(), v.array(v.string()))),
+        // NEO-189: fetchCardChecklist now sends facet-keyed filters.
+        facetFilters: v.optional(v.record(v.string(), v.array(v.string()))),
+        sourceFacet: v.optional(
+          v.union(v.literal("setName"), v.literal("variantName")),
+        ),
       },
       returns: v.object({
         success: v.boolean(),
         cards: v.array(v.any()),
         message: v.optional(v.string()),
+        collisions: v.optional(v.array(v.any())),
       }),
       handler: async (): Promise<{ success: boolean; cards: BscCard[] }> => ({
         success: true,

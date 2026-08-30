@@ -5,7 +5,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import AttachSetsDialog from "./AttachSetsDialog";
-import { slotEntries, slotLabel } from "../../convex/platformSlots";
+import { slotEntries, slotFacet, slotLabel } from "../../convex/platformSlots";
 
 /**
  * Per-row attached-sets panel (NEO-6 phase 1). Renders chip stacks for the
@@ -35,6 +35,17 @@ type SlotChip = {
   id: string;
   label: string;
   isPrimary: boolean;
+  /**
+   * NEO-189 — which BSC facet this slot's id filters on, when it has one.
+   *
+   * Shown because it changes what the row SOURCES, not as decoration: a slug
+   * tagged `setName` pulls the whole set at this row's variant, a slug tagged
+   * `variantName` pulls one named variant, and the two are indistinguishable
+   * from the label. Absent on every slot attached before NEO-189 and on every
+   * slot the reconciler writes — those are the untagged ones the fetch handles
+   * by NB level, so "no tag" is a real, visible state rather than a gap.
+   */
+  facet?: "setName" | "variantName";
 };
 
 export default function MultiSourcePanel({
@@ -111,6 +122,9 @@ export default function MultiSourcePanel({
       id: e.id,
       label: slotLabel(row, side, e.slot),
       isPrimary: e.slot === primary,
+      ...(slotFacet(row, side, e.slot)
+        ? { facet: slotFacet(row, side, e.slot) }
+        : {}),
     }));
 
   // Hide only for genuinely custom user-created rows, which have no
@@ -374,6 +388,18 @@ function Chip({
       <span className="text-[10px] text-gray-500 break-all" aria-hidden>
         {chip.id}
       </span>
+      {chip.facet && (
+        // Not a control — a read-only note on what this slot filters on. Grey,
+        // so it cannot be mistaken for the green select/commit affordance.
+        <span
+          className="text-[10px] uppercase tracking-wide text-gray-500 shrink-0"
+          aria-label={`${chip.label} is attached as a BSC ${
+            chip.facet === "setName" ? "set" : "variant"
+          }`}
+        >
+          {chip.facet === "setName" ? "set" : "variant"}
+        </span>
+      )}
       </div>
       {chip.isPrimary ? (
         <button

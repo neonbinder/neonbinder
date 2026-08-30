@@ -9,6 +9,13 @@ import {
   newRequestId,
   classifyAdapterError,
 } from "../observability";
+import {
+  LEVEL_TO_BSC_FACET,
+  MAX_BSC_FAN_OUT,
+  bscFacetValidator,
+  legacyBscFacetForLevel,
+  planBscFanOut,
+} from "../bscFacets";
 
 // Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
 // The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
@@ -52,19 +59,13 @@ function sleep(ms: number): Promise<void> {
 }
 
 // Map our levels to BSC API aggregation keys. BSC does NOT expose a
-// NeonBinder → BSC facet mapping. NB's hierarchy differs from BSC's:
+// NeonBinder → BSC facet mapping lives in ../bscFacets.ts, shared with
+// `fetchCardChecklist`'s chain bucketing so the two cannot drift:
 //   NB manufacturer  → SL only (no BSC facet)
 //   NB setName       → BSC "setName" (e.g. "Topps")
 //   NB variantType   → BSC "variant" (Base/Insert/Parallel)
 //   NB insert        → BSC "variantName" (specific variant names)
 //   NB parallel      → NB only (no BSC facet)
-const LEVEL_TO_BSC_FACET: Record<string, string> = {
-  sport: "sport",
-  year: "year",
-  setName: "setName",
-  variantType: "variant",
-  insert: "variantName",
-};
 
 // Browser-mimicking headers required by the BSC API (without these CloudFront
 // rejects requests as bot traffic). `assumedrole: sellers` is mandatory and
@@ -775,15 +776,40 @@ export function parsePlayersField(raw: string): {
 export const fetchBscChecklist = action({
   args: {
     parentFilters: v.record(v.string(), v.string()),
-    // Pre-resolved BSC slugs keyed by level (e.g., { sport: ["basketball"] }).
+    // Pre-resolved BSC slugs keyed by NB LEVEL (e.g., { sport: ["basketball"] }).
+    // The facet each level maps to is guessed via LEVEL_TO_BSC_FACET, which is
+    // only correct while every id sits on the row whose level implies its
+    // facet. Kept for direct callers; `fetchCardChecklist` sends `facetFilters`.
     platformFilters: v.optional(v.record(v.string(), v.array(v.string()))),
+    // NEO-189 — BSC slugs keyed by the FACET they belong to, already resolved
+    // from the row's slot tags. Takes precedence over `platformFilters` in
+    // full: a caller that knows the facets knows all of them, and merging the
+    // two would resurrect the level guess for whichever facet was omitted.
+    facetFilters: v.optional(v.record(v.string(), v.array(v.string()))),
+    // Which facet identifies a SOURCE SET for the row being fetched, so each
+    // card can be attributed to the slot it came from. Omitted → the legacy
+    // rule (the queried variantName, else the response's own setName).
+    sourceFacet: v.optional(bscFacetValidator),
   },
   returns: v.object({
     success: v.boolean(),
     cards: v.array(checklistCardValidator),
     message: v.optional(v.string()),
+    // NEO-189 — card numbers that arrived from more than one source set.
+    // Omitted when there are none. Reported rather than merely logged: two
+    // attached sets genuinely overlapping is a real, operator-relevant fact
+    // about the mapping they just built, and the only card kept is the first.
+    collisions: v.optional(
+      v.array(
+        v.object({
+          cardNumber: v.string(),
+          keptSource: v.string(),
+          skippedSource: v.string(),
+        }),
+      ),
+    ),
   }),
-  handler: async (ctx, args): Promise<{ success: boolean; cards: Array<{ cardNumber: string; cardName: string; team?: string; teams?: string[]; players?: string[]; attributes?: string[]; printRun?: number; autographType?: string; cardVariation?: string; isVariation?: boolean; platformRef?: string; sportlotsRef?: string; sourceBscSetSlug?: string }>; message?: string }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; cards: Array<{ cardNumber: string; cardName: string; team?: string; teams?: string[]; players?: string[]; attributes?: string[]; printRun?: number; autographType?: string; cardVariation?: string; isVariation?: boolean; platformRef?: string; sportlotsRef?: string; sourceBscSetSlug?: string }>; message?: string; collisions?: Array<{ cardNumber: string; keptSource: string; skippedSource: string }> }> => {
     await requireAdmin(ctx);
     try {
       const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
@@ -800,21 +826,32 @@ export const fetchBscChecklist = action({
       }
 
       // Build nested `filters: { sport: [...], year: [...], ... }`.
-      // For most levels (sport/year/setName) we trust the pre-resolved BSC
-      // slugs from `platformFilters`. variantType is a tiny enum
-      // (base/insert/parallel) where the BSC slug always equals the
-      // lowercased display value, so we derive it directly from
-      // `parentFilters.variantType`. This avoids a class of bug where the
-      // variant entity's `platformData.bsc` got corrupted by an earlier
-      // mis-saved BaseSetPicker mapping (the slug ended up pointing at
-      // the parent setName instead of the variant) — confirmed live in
-      // dev. Sourcing variant from the display value is robust regardless
-      // of what's on the variant entity.
+      //
+      // Three sources, in precedence order:
+      //
+      //   facetFilters    (NEO-189) — already bucketed by BSC facet from the
+      //                   row's slot tags. Authoritative and complete.
+      //   platformFilters — bucketed by NB level; the facet is guessed via
+      //                   LEVEL_TO_BSC_FACET. variantType is skipped and
+      //                   parallel has no facet, so an untagged id on either
+      //                   contributes nothing — see legacyBscFacetForLevel.
+      //   parentFilters   — display labels, top-level sync only.
+      //
+      // `variant` is ALWAYS re-derived from `parentFilters.variantType` below,
+      // never taken from a slug. It is a tiny enum (base/insert/parallel)
+      // whose BSC slug is just the lowercased display value, and a mis-saved
+      // BaseSetPicker mapping once corrupted the variant entity's
+      // `platformData.bsc` so the slug pointed at the parent setName —
+      // confirmed live in dev. The display value is robust regardless.
       const filters: Record<string, string[]> = {};
-      if (args.platformFilters) {
+      if (args.facetFilters) {
+        for (const [facet, values] of Object.entries(args.facetFilters)) {
+          if (facet === "variant") continue; // see comment above
+          if (values.length > 0) filters[facet] = values;
+        }
+      } else if (args.platformFilters) {
         for (const [lvl, values] of Object.entries(args.platformFilters)) {
-          if (lvl === "variantType") continue; // see comment above
-          const facet = LEVEL_TO_BSC_FACET[lvl];
+          const facet = legacyBscFacetForLevel(lvl);
           if (facet) {
             filters[facet] = values;
           }
@@ -835,7 +872,7 @@ export const fetchBscChecklist = action({
         filters.variant = [args.parentFilters.variantType.toLowerCase()];
       }
 
-      // FAN OUT — one request per variantName slug. Do NOT batch them.
+      // FAN OUT — one request per SOURCE SET. Do NOT batch them.
       //
       // Measured live on dev 2026-08-12, 1996 Score inserts:
       //   filters.variantName = ["…series-2"]                  -> returned=110
@@ -850,12 +887,33 @@ export const fetchBscChecklist = action({
       // empty checklist, and a UI that reports "0 BSC cards" as though the
       // marketplace simply had nothing.
       //
+      // NEO-189 generalises the axis. The fan-out used to key on `variantName`
+      // alone, which was the insert case it was written for; a row drawing from
+      // two BSC **setName** sets (Topps Series 1 + Series 2 under one NB Base
+      // row) sent both slugs as one multi-value facet and hit exactly the
+      // failure above. `planBscFanOut` now fans out over every multi-valued
+      // facet, so no outgoing request can carry two values for one facet
+      // regardless of which axis the operator split on.
+      //
       // Sequential, not parallel: the 401 path refreshes `activeToken` and the
       // refreshed value has to be visible to the requests that follow.
       const MAX_CARDS = 5000;
-      const variantNames = filters.variantName ?? [];
-      const fanOut: Array<string | undefined> =
-        variantNames.length > 0 ? variantNames : [undefined];
+      const plan = planBscFanOut(filters, MAX_BSC_FAN_OUT);
+      if (plan.multiFacets.length > 1) {
+        console.warn(
+          `[fetchBscChecklist] ${plan.multiFacets.length} facets are multi-valued ` +
+            `(${plan.multiFacets.join(", ")}) — fanning out over their cross ` +
+            `product (${plan.totalBeforeCap} request(s)). Combinations that do ` +
+            `not exist on BSC simply return no rows.`,
+        );
+      }
+      if (plan.capped) {
+        console.warn(
+          `[fetchBscChecklist] BSC fan-out capped at ${MAX_BSC_FAN_OUT} ` +
+            `(plan needed ${plan.totalBeforeCap}) — some source sets were not queried.`,
+        );
+      }
+      const fanOut = plan.combos;
 
       let activeToken = tokenResult.token;
 
@@ -863,10 +921,29 @@ export const fetchBscChecklist = action({
         | { ok: true; raw: Record<string, unknown>[] }
         | { ok: false; message: string };
 
-      const runOne = async (slug: string | undefined): Promise<OneResult> => {
-        const callFilters: Record<string, string[]> = slug
-          ? { ...filters, variantName: [slug] }
-          : filters;
+      /** The facet value this request should attribute its cards to. */
+      const sourceOf = (combo: Record<string, string>): string | undefined => {
+        if (args.sourceFacet) {
+          return combo[args.sourceFacet] ?? filters[args.sourceFacet]?.[0];
+        }
+        // Legacy attribution, unchanged: the variantName we queried, and
+        // nothing when there is none (the caller then falls back to the
+        // response row's own `setName`).
+        return combo.variantName ?? filters.variantName?.[0];
+      };
+
+      const describe = (combo: Record<string, string>): string => {
+        const parts = Object.entries(combo).map(([k, val]) => `${k}=${val}`);
+        return parts.length > 0 ? parts.join(" ") : "(no fan-out)";
+      };
+
+      const runOne = async (
+        combo: Record<string, string>,
+      ): Promise<OneResult> => {
+        const callFilters: Record<string, string[]> = { ...filters };
+        for (const [facet, value] of Object.entries(combo)) {
+          callFilters[facet] = [value];
+        }
         // BSC's /search/bulk-upload/results ignores `size`/`page` and returns
         // the full filtered set in one response — confirmed live. `size` is
         // passed as a defense in case that changes.
@@ -950,7 +1027,7 @@ export const fetchBscChecklist = action({
           if (raw.length >= MAX_CARDS) break;
         }
         console.log(
-          `[fetchBscChecklist] variantName=${slug ?? "(none)"} returned=${results.length} kept=${raw.length}`,
+          `[fetchBscChecklist] ${describe(combo)} returned=${results.length} kept=${raw.length}`,
         );
         if (results.length >= MAX_CARDS) {
           console.warn(
@@ -965,13 +1042,14 @@ export const fetchBscChecklist = action({
         queriedSlug?: string;
       }> = [];
       const failures: string[] = [];
-      for (const slug of fanOut) {
-        const res = await runOne(slug);
+      for (const combo of fanOut) {
+        const res = await runOne(combo);
         if (!res.ok) {
-          failures.push(`${slug ?? "(no variant)"}: ${res.message}`);
+          failures.push(`${describe(combo)}: ${res.message}`);
           continue;
         }
-        for (const raw of res.raw) tagged.push({ raw, queriedSlug: slug });
+        const queriedSlug = sourceOf(combo);
+        for (const raw of res.raw) tagged.push({ raw, queriedSlug });
       }
 
       // Fail the whole fetch if ANY request failed. A partial checklist is
@@ -1082,10 +1160,53 @@ export const fetchBscChecklist = action({
           return true;
         });
 
+      // NEO-189 — CARD NUMBER collisions ACROSS source sets.
+      //
+      // Two attached sets can legitimately contain a card #11. Only one can
+      // survive: everything downstream of here — the BSC↔SL reconciler's
+      // number index, the committed checklist, the variation stem grouping —
+      // treats a card number as unique within one NB row, so two #11s would
+      // produce two indistinguishable NB cards. First source wins, matching
+      // the SportLots fan-out.
+      //
+      // Scoped to cross-source ONLY, and gated on an actual fan-out. Two rows
+      // sharing a number inside one BSC set would be a marketplace data error,
+      // and dropping one of them on the single-request path — which is nearly
+      // every fetch — is a much worse failure than the one being fixed. With
+      // one request there are no "two source sets" to collide, so that path is
+      // left byte-for-byte as it was.
+      const collisions: Array<{
+        cardNumber: string;
+        keptSource: string;
+        skippedSource: string;
+      }> = [];
+      const sourceByNumber = new Map<string, string | undefined>();
+      const deduped = fanOut.length < 2 ? cards : cards.filter((c) => {
+        if (!sourceByNumber.has(c.cardNumber)) {
+          sourceByNumber.set(c.cardNumber, c.sourceBscSetSlug);
+          return true;
+        }
+        const keptSource = sourceByNumber.get(c.cardNumber);
+        if (keptSource === c.sourceBscSetSlug) return true; // same set — not a collision
+        collisions.push({
+          cardNumber: c.cardNumber,
+          keptSource: keptSource ?? "(unattributed)",
+          skippedSource: c.sourceBscSetSlug ?? "(unattributed)",
+        });
+        return false;
+      });
+      for (const col of collisions.slice(0, 10)) {
+        console.warn(
+          `[fetchBscChecklist] BSC cardNumber collision: ${col.cardNumber} ` +
+            `keptSource=${col.keptSource} skippedSource=${col.skippedSource}`,
+        );
+      }
+
       return {
         success: true,
-        cards,
-        message: `Found ${cards.length} cards from BSC catalog`,
+        cards: deduped,
+        message: `Found ${deduped.length} cards from BSC catalog`,
+        ...(collisions.length > 0 ? { collisions } : {}),
       };
     } catch (error) {
       console.error("[fetchBscChecklist] Error:", error);

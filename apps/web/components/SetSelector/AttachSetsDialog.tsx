@@ -50,10 +50,22 @@ import { Input } from "../primitives/Input";
  *   year's set list, then back down into one set's variants. It opens on the
  *   row's own set, which is the pool the operator had before.
  *
+ * ## What NEO-189 changed
+ *
+ * A BSC set in the set list is now attachable, not just browsable, and every
+ * BSC selection carries the FACET it came from (`setName` from the set list,
+ * `variantName` from a set's variant list). That facet travels to the slot and
+ * the checklist fetch buckets on it.
+ *
+ * It had to: BSC files Topps Series 1 and Series 2 as two `setName` sets while
+ * SportLots files them as one, so an NB Base row must be able to draw from two
+ * BSC sets — and a set was the one thing this dialog could not attach.
+ *
  * Keyboard model:
  *   Tab     — cycle breadcrumb, search inputs, candidate rows, footer buttons
  *   Space   — toggle the focused candidate's checkbox
  *   Enter   — activate the focused button; confirm when focus owns no control
+ *             (Enter on a set row's Browse steps into it, it does not attach)
  *   Escape  — cancel
  */
 type Side = "bsc" | "sportlots";
@@ -63,9 +75,24 @@ type Candidate = {
   platformValue: string;
 };
 
+/**
+ * NEO-189 — which BSC facet a selected id is a value of.
+ *
+ * A BSC slug is not self-describing: `topps-series-1` is a `setName` value and
+ * `gold-foil` is a `variantName` value, and the checklist fetch has to filter
+ * on the right facet or it returns nothing. The pane's current rung IS the
+ * answer — anything in the set list is a setName, anything in a set's variant
+ * list is a variantName — so this is recorded at toggle time rather than
+ * guessed later from the row's NB level, which is what used to happen and what
+ * silently discarded any setName id attached to a Base or Parallel row.
+ */
+type BscFacet = "setName" | "variantName";
+
 type Selection = {
   id: string;
   label: string;
+  /** BSC only; SportLots has a single unit of attachment. */
+  facet?: BscFacet;
 };
 
 /** Which rung of the BSC ladder the BSC pane is on. */
@@ -227,8 +254,12 @@ export default function AttachSetsDialog({
           setBscCandidates([]);
           return;
         }
-        // The set list is a browse surface, not an attach surface, so the
-        // already-attached filter applies only to the variants view.
+        // The variants view drops what is already attached; the set list does
+        // NOT. NEO-189 made a set attachable, but it is still the only way to
+        // reach a sibling set's variants — filtering an attached set out of
+        // the list would make its variants unreachable the moment the operator
+        // attached the set itself. Attached sets render with their checkbox
+        // replaced by an "attached" marker instead (see `CandidateRow`).
         const options =
           bscView === "variants"
             ? result.options.filter(
@@ -277,8 +308,19 @@ export default function AttachSetsDialog({
       await attachPlatformIds({
         selectorOptionId,
         additions: {
-          bsc: Array.from(bscSelected.values()),
-          sportlots: Array.from(slSelected.values()),
+          // NEO-189: each BSC id goes over with the facet it was selected
+          // from. `facet` is optional on the mutation so an older client keeps
+          // working, but this one always knows — the pane's rung IS the facet.
+          bsc: Array.from(bscSelected.values()).map((sel) => ({
+            id: sel.id,
+            label: sel.label,
+            ...(sel.facet ? { facet: sel.facet } : {}),
+          })),
+          // SportLots has one unit of attachment, so no facet.
+          sportlots: Array.from(slSelected.values()).map((sel) => ({
+            id: sel.id,
+            label: sel.label,
+          })),
         },
       });
       onClose();
@@ -330,7 +372,7 @@ export default function AttachSetsDialog({
     [slCandidates, slSearch],
   );
 
-  const toggle = (side: Side, candidate: Candidate) => {
+  const toggle = (side: Side, candidate: Candidate, facet?: BscFacet) => {
     const setter = side === "bsc" ? setBscSelected : setSlSelected;
     setter((prev) => {
       const next = new Map(prev);
@@ -340,6 +382,7 @@ export default function AttachSetsDialog({
         next.set(candidate.platformValue, {
           id: candidate.platformValue,
           label: candidate.value,
+          ...(facet ? { facet } : {}),
         });
       }
       return next;
@@ -446,16 +489,23 @@ export default function AttachSetsDialog({
           >
             {bscView === "sets"
               ? filteredBsc.map((c) => (
-                  <BrowseRow
+                  <CandidateRow
                     key={c.platformValue}
+                    side="bsc"
+                    facet="setName"
                     candidate={c}
-                    onOpen={browseSet}
+                    selection={bscSelected.get(c.platformValue)}
+                    attached={alreadyAttached.bsc.has(c.platformValue)}
+                    onToggle={toggle}
+                    onLabel={updateLabel}
+                    onBrowse={browseSet}
                   />
                 ))
               : filteredBsc.map((c) => (
                   <CandidateRow
                     key={c.platformValue}
                     side="bsc"
+                    facet="variantName"
                     candidate={c}
                     selection={bscSelected.get(c.platformValue)}
                     onToggle={toggle}
@@ -664,73 +714,88 @@ function BreadcrumbButton({
 }
 
 /**
- * A BSC set in the set-list view. Not attachable: a BSC setName slug is a
- * FILTER, not a source of cards — `fetchBscChecklist` reads a row's BSC ids as
- * variantName slugs. Picking one drills into its variants, which are.
+ * An attachable marketplace set / variant, with its inline label editor and —
+ * in the BSC set list — a Browse control to step into that set's variants.
+ *
+ * ## Why a BSC set now has a checkbox (NEO-189)
+ *
+ * It used to be a browse target only, on the reasoning that a `setName` slug
+ * is a FILTER rather than a source of cards: `fetchBscChecklist` read every
+ * BSC id on a row as a `variantName`, so attaching a set handed back an id
+ * that silently sourced nothing.
+ *
+ * That is no longer true. A slot now records the facet its id belongs to and
+ * the fetch buckets on the facet, so `setName` + the row's own variant
+ * (base / insert / parallel) is a perfectly good query — and it is the ONLY
+ * way to express the split this feature exists for: BSC files Topps Series 1
+ * and Series 2 as two sets where SportLots has one, so an NB Base row has to
+ * draw from two BSC **setName** sets.
+ *
+ * ## Select and browse are separate controls, deliberately
+ *
+ * A set row means two different things now, and one click target cannot serve
+ * both. The checkbox (green, the select/commit colour) attaches the set; the
+ * Browse button (blue ring, the navigation colour) steps down a rung. Merging
+ * them would make "I want this set's cards" and "show me what is inside" the
+ * same gesture, which is how an operator ends up attaching a whole set when
+ * they meant to pick one parallel out of it.
  */
-function BrowseRow({
-  candidate,
-  onOpen,
-}: {
-  candidate: Candidate;
-  onOpen: (c: Candidate) => void;
-}) {
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={() => onOpen(candidate)}
-        aria-label={`Browse BSC set ${candidate.value}`}
-        className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-sm text-left bg-gray-800/40 text-gray-300 hover:bg-gray-800 hover:text-gray-100 focus:bg-gray-800 focus:text-gray-100 focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
-      >
-        <div className="flex-1 min-w-0">
-          <div className="truncate font-medium">{candidate.value}</div>
-          <div className="text-[10px] text-gray-500 truncate">
-            id: {candidate.platformValue}
-          </div>
-        </div>
-        <span className="text-gray-500 shrink-0" aria-hidden>
-          ›
-        </span>
-      </button>
-    </li>
-  );
-}
-
-/** An attachable marketplace set / variant, with its inline label editor. */
 function CandidateRow({
   side,
+  facet,
   candidate,
   selection,
+  attached,
   onToggle,
   onLabel,
+  onBrowse,
 }: {
   side: Side;
+  /** BSC only — the facet this rung's ids belong to. */
+  facet?: BscFacet;
   candidate: Candidate;
   selection: Selection | undefined;
-  onToggle: (side: Side, candidate: Candidate) => void;
+  /**
+   * Already attached to this row. Set rows stay listed when attached — the set
+   * list is still the only route to a sibling set's variants — but they cannot
+   * be attached twice.
+   */
+  attached?: boolean;
+  onToggle: (side: Side, candidate: Candidate, facet?: BscFacet) => void;
   onLabel: (side: Side, id: string, label: string) => void;
+  onBrowse?: (c: Candidate) => void;
 }) {
   // One class per ROW instance (useId), so Maestro's activeElement→XPath round
   // trip lands in the label field of the row that was tapped.
   const fieldClass = useFieldTestClass();
   const isSelected = !!selection;
   return (
-    <li>
+    <li
+      className={`flex items-start gap-1 rounded ${
+        isSelected ? "bg-gray-800 text-gray-100" : "bg-gray-800/40 text-gray-300"
+      }`}
+    >
       <label
-        className={`flex items-start gap-2 px-2 py-1.5 rounded cursor-pointer text-sm ${
-          isSelected
-            ? "bg-gray-800 text-gray-100"
-            : "bg-gray-800/40 text-gray-300"
+        className={`flex-1 min-w-0 flex items-start gap-2 px-2 py-1.5 text-sm ${
+          attached ? "cursor-default" : "cursor-pointer"
         }`}
       >
-        <input
-          type="checkbox"
-          checked={isSelected}
-          onChange={() => onToggle(side, candidate)}
-          className="accent-[#00D558] mt-1"
-          aria-label={`Toggle ${candidate.value}`}
-        />
+        {attached ? (
+          <span
+            className="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide text-gray-500"
+            aria-label={`${candidate.value} is already attached`}
+          >
+            attached
+          </span>
+        ) : (
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => onToggle(side, candidate, facet)}
+            className="accent-[#00D558] mt-1"
+            aria-label={`Toggle ${candidate.value}`}
+          />
+        )}
         <div className="flex-1 min-w-0">
           <div className="truncate font-medium">{candidate.value}</div>
           <div className="text-[10px] text-gray-500 truncate">
@@ -749,6 +814,16 @@ function CandidateRow({
           )}
         </div>
       </label>
+      {onBrowse && (
+        <button
+          type="button"
+          onClick={() => onBrowse(candidate)}
+          aria-label={`Browse BSC set ${candidate.value}`}
+          className="shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-gray-700 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+        >
+          Browse ›
+        </button>
+      )}
     </li>
   );
 }

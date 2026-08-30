@@ -18,8 +18,15 @@
  *
  *   platformData:      { sportlots: { s0: "884412" } }   slot → marketplace set id
  *   platformLabels:    { sportlots: { s0: "Dugout Collection Artists Proofs" } }
+ *   platformFacets:    { bsc: { b0: "setName" } }        which BSC facet b0's id is
  *   primaryPlatformId: { sportlots: "s0" }               which slot the reconciler owns
  *   platformSlotSeq:   { sportlots: 1 }                  next slot number to issue
+ *
+ * NEO-189 added `platformFacets`. A BSC id is not self-describing —
+ * `topps-series-1` is a `setName` value and `dugout-collection` is a
+ * `variantName` value — and the checklist fetch used to guess from the NB
+ * level of the row holding it. A slot written before NEO-189 carries no tag
+ * and MUST keep the old level-derived behaviour; see `convex/bscFacets.ts`.
  *
  * And on each card (convex/schema.ts, `cardChecklist.platformData`):
  *
@@ -29,6 +36,8 @@
  * exactly the M-NB-rows-to-1-marketplace-set mapping this ticket adds. Nothing
  * here enforces uniqueness of ids across rows, deliberately.
  */
+
+import type { BscFacet } from "./bscFacets";
 
 export type PlatformSide = "bsc" | "sportlots";
 
@@ -40,6 +49,20 @@ export type PlatformDataShape = {
   sportlots?: SlotMap;
 };
 
+/**
+ * NEO-189 — slot key → the BSC facet that slot's id belongs to.
+ *
+ * BSC only. SportLots has a single unit of attachment (a set id reached by
+ * one radio button), so there is no facet to disambiguate and a `sportlots`
+ * key here would be a field that could only ever hold one value. Adding it
+ * later is a pure schema addition if SL ever grows a second axis.
+ *
+ * ABSENT means legacy, never "unknown-so-guess". See `convex/bscFacets.ts`.
+ */
+export type PlatformFacetShape = {
+  bsc?: Record<string, BscFacet>;
+};
+
 export type SlotSeqShape = {
   bsc?: number;
   sportlots?: number;
@@ -49,6 +72,7 @@ export type SlotSeqShape = {
 export type SlotBearingRow = {
   platformData: PlatformDataShape;
   platformLabels?: { bsc?: Record<string, string>; sportlots?: Record<string, string> };
+  platformFacets?: PlatformFacetShape;
   primaryPlatformId?: { bsc?: string; sportlots?: string };
   platformSlotSeq?: SlotSeqShape;
 };
@@ -199,6 +223,27 @@ export function slotLabel(
 }
 
 /**
+ * NEO-189 — the BSC facet a slot's id belongs to, or `undefined` for a slot
+ * written before facets existed.
+ *
+ * `undefined` is NOT "unknown, go figure it out". It means the slot predates
+ * the tag and must keep behaving exactly as it does today — the checklist
+ * fetch falls back to the NB-level rule (`legacyBscFacetForLevel`), which for
+ * a Base or Parallel row means the id contributes nothing at all. Inferring a
+ * facet instead would change which marketplace sets an existing production
+ * checklist draws from, which is the exact mis-sourcing this feature exists
+ * to prevent.
+ */
+export function slotFacet(
+  row: Pick<SlotBearingRow, "platformFacets">,
+  side: PlatformSide,
+  slot: string,
+): BscFacet | undefined {
+  if (side !== "bsc") return undefined;
+  return row.platformFacets?.bsc?.[slot];
+}
+
+/**
  * Result of allocating slots: the new maps plus the bumped counter.
  *
  * Returned rather than applied so callers can fold it into one `ctx.db.patch`
@@ -208,6 +253,13 @@ export function slotLabel(
 export type SlotAllocation = {
   platformData: PlatformDataShape;
   platformLabels: { bsc?: Record<string, string>; sportlots?: Record<string, string> };
+  /**
+   * NEO-189. Carries forward whatever the row already had and records a facet
+   * for each addition that supplied one. An addition WITHOUT a facet writes no
+   * entry, so a caller that does not know the facet cannot accidentally
+   * fabricate one.
+   */
+  platformFacets: PlatformFacetShape;
   platformSlotSeq: SlotSeqShape;
   /** Slot key per attached marketplace set id, including ids already present. */
   slotByIdBySide: Record<PlatformSide, Record<string, string>>;
@@ -226,7 +278,9 @@ export type SlotAllocation = {
  */
 export function allocateSlots(
   row: SlotBearingRow,
-  additions: Partial<Record<PlatformSide, Array<{ id: string; label?: string }>>>,
+  additions: Partial<
+    Record<PlatformSide, Array<{ id: string; label?: string; facet?: BscFacet }>>
+  >,
 ): SlotAllocation {
   const platformData: PlatformDataShape = {
     ...(row.platformData?.bsc ? { bsc: { ...row.platformData.bsc } } : {}),
@@ -242,6 +296,9 @@ export function allocateSlots(
     ...(row.platformLabels?.sportlots
       ? { sportlots: { ...row.platformLabels.sportlots } }
       : {}),
+  };
+  const platformFacets: PlatformFacetShape = {
+    ...(row.platformFacets?.bsc ? { bsc: { ...row.platformFacets.bsc } } : {}),
   };
   const platformSlotSeq: SlotSeqShape = { ...(row.platformSlotSeq ?? {}) };
   const slotByIdBySide: Record<PlatformSide, Record<string, string>> = {
@@ -270,7 +327,7 @@ export function allocateSlots(
         0,
       );
 
-    for (const { id, label } of sideAdditions) {
+    for (const { id, label, facet } of sideAdditions) {
       if (!id) continue;
       let slot = slotByIdBySide[side][id];
       if (!slot) {
@@ -279,6 +336,13 @@ export function allocateSlots(
         platformData[side] = { ...(platformData[side] ?? {}), [slot]: id };
         slotByIdBySide[side][id] = slot;
         attachedCount += 1;
+      }
+      // Facet is BSC-only and is written only when the caller supplied one.
+      // Re-attaching an id that already has a slot refreshes the facet the
+      // same way it refreshes the label — an operator who re-attaches a slug
+      // from the set list is telling us it is a setName.
+      if (side === "bsc" && facet !== undefined) {
+        platformFacets.bsc = { ...(platformFacets.bsc ?? {}), [slot]: facet };
       }
       if (label !== undefined) {
         assertValidSlotLabel(label, `allocateSlots(${side}=${id})`);
@@ -295,6 +359,7 @@ export function allocateSlots(
   return {
     platformData,
     platformLabels,
+    platformFacets,
     platformSlotSeq,
     slotByIdBySide,
     attachedCount,
@@ -309,7 +374,11 @@ export function detachSlot(
   row: SlotBearingRow,
   side: PlatformSide,
   slot: string,
-): { platformData: PlatformDataShape; platformLabels: { bsc?: Record<string, string>; sportlots?: Record<string, string> } } {
+): {
+  platformData: PlatformDataShape;
+  platformLabels: { bsc?: Record<string, string>; sportlots?: Record<string, string> };
+  platformFacets: PlatformFacetShape;
+} {
   const platformData: PlatformDataShape = {
     ...(row.platformData?.bsc ? { bsc: { ...row.platformData.bsc } } : {}),
     ...(row.platformData?.sportlots
@@ -339,7 +408,20 @@ export function detachSlot(
     else delete platformLabels[side];
   }
 
-  return { platformData, platformLabels };
+  // NEO-189: the facet tag goes with the slot. Slot keys are never recycled,
+  // so a stale tag could not be mis-applied — but leaving one behind would
+  // make `platformFacets` grow without bound and lie about what is attached.
+  const platformFacets: PlatformFacetShape = {
+    ...(row.platformFacets?.bsc ? { bsc: { ...row.platformFacets.bsc } } : {}),
+  };
+  if (side === "bsc" && platformFacets.bsc) {
+    const next = { ...platformFacets.bsc };
+    delete next[slot];
+    if (Object.keys(next).length > 0) platformFacets.bsc = next;
+    else delete platformFacets.bsc;
+  }
+
+  return { platformData, platformLabels, platformFacets };
 }
 
 /**
@@ -363,6 +445,14 @@ export function setPrimarySlotId(
 ): {
   platformData: PlatformDataShape;
   platformLabels: { bsc?: Record<string, string>; sportlots?: Record<string, string> };
+  /**
+   * NEO-189: passed through UNCHANGED. The reconciler knows the NB level it is
+   * writing, so it could tag — but tagging a variantType row's primary as
+   * `setName` would make an id the checklist fetch has always ignored start
+   * sourcing cards, on every reconciled row in production, without an operator
+   * ever asking for it. Facets are attached deliberately or not at all.
+   */
+  platformFacets: PlatformFacetShape;
   platformSlotSeq: SlotSeqShape;
   /** The slot now holding `id`, or undefined when the side was cleared. */
   slot: string | undefined;
@@ -374,6 +464,7 @@ export function setPrimarySlotId(
       return {
         platformData: { ...row.platformData },
         platformLabels: { ...(row.platformLabels ?? {}) },
+        platformFacets: { ...(row.platformFacets ?? {}) },
         platformSlotSeq: { ...(row.platformSlotSeq ?? {}) },
         slot: undefined,
       };
@@ -420,6 +511,7 @@ export function setPrimarySlotId(
     return {
       platformData,
       platformLabels,
+      platformFacets: { ...(row.platformFacets ?? {}) },
       platformSlotSeq: { ...(row.platformSlotSeq ?? {}) },
       slot: existingPrimary,
     };
@@ -431,6 +523,7 @@ export function setPrimarySlotId(
   return {
     platformData: alloc.platformData,
     platformLabels: alloc.platformLabels,
+    platformFacets: alloc.platformFacets,
     platformSlotSeq: alloc.platformSlotSeq,
     slot: alloc.slotByIdBySide[side][id],
   };
