@@ -174,11 +174,14 @@ export default function MultiSourcePanel({
         />
       </div>
 
+      {/* NEO-196: the dialog no longer takes `level` / `parentId`. Scoping the
+          candidate pool to the row's own level under its own parent is what
+          made a sibling set unreachable; the pools are now resolved
+          server-side from `selectorOptionId`. `parentFilters` stays, but only
+          as display text for the pane headings and the BSC breadcrumb. */}
       <AttachSetsDialog
         isOpen={dialogOpen}
-        level={row.level as "variantType" | "insert" | "parallel"}
         parentFilters={parentFilters}
-        parentId={row.parentId}
         selectorOptionId={selectorOptionId}
         alreadyAttached={alreadyAttached}
         onClose={() => setDialogOpen(false)}
