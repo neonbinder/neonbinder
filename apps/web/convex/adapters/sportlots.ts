@@ -9,9 +9,15 @@ import { getCurrentUserId, requireAdmin } from "../auth";
 import { Id } from "../_generated/dataModel";
 import {
   recordAdapterCall,
+  recordAdapterPhase,
   newRequestId,
   classifyAdapterError,
 } from "../observability";
+// NEO-198: this adapter's retry policy and the aggregator's per-child deadline
+// are the same fact and now have one definition. Importing a plain (non-node)
+// module from a "use node" one is fine; the reverse is not, which is why the
+// numbers live there rather than here.
+import { SL_SELECTOR_BUDGET } from "./selectorBudgets";
 
 type Level = "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert" | "parallel";
 
@@ -28,8 +34,18 @@ const SL_FETCH_TIMEOUT_MS = 30_000;
 // the column. So the selector fetch uses a tight per-attempt budget and retries
 // a few times (logging each miss) before surfacing a fetch error. Heavier calls
 // (card checklists, set lists) keep the 30s default.
-const SL_SELECTOR_FETCH_TIMEOUT_MS = 3_000;
-const SL_SELECTOR_FETCH_MAX_ATTEMPTS = 3;
+//
+// NEO-198: these are local aliases of SL_SELECTOR_BUDGET rather than
+// literals. The aggregator's SL_CHILD_DEADLINE_MS is derived from the same
+// object, so bumping a retry here automatically widens the deadline that has to
+// contain it — which is the drift that produced a 12s deadline over a 16s
+// ceiling. `convex/adapters/selectorBudgets.test.ts` fails if they part ways.
+const SL_SELECTOR_FETCH_TIMEOUT_MS = SL_SELECTOR_BUDGET.perAttemptTimeoutMs;
+const SL_SELECTOR_FETCH_MAX_ATTEMPTS = SL_SELECTOR_BUDGET.maxAttempts;
+// Settle-in sleep between a forced re-auth and the re-POST in the empty-result
+// recovery loop below. Named because it is part of the exported ceiling.
+const SL_SELECTOR_EMPTY_RETRY_BACKOFF_MS =
+  SL_SELECTOR_BUDGET.emptyRetryBackoffMs;
 
 async function slFetch(
   url: string,
@@ -239,6 +255,23 @@ export const fetchSportLotsSelectorOptions = action({
         };
       }
 
+      // NEO-198 — publish progress BEFORE anything downstream can hang.
+      // fetchAggregatedOptions abandons this action at SL_CHILD_DEADLINE_MS and
+      // then has no return value to read `tokenMs` off, so it cannot tell an
+      // auth stall from a marketplace stall. This breadcrumb is the only thing
+      // that survives the abandonment: joined by requestId, its presence means
+      // the token resolved and the hang is downstream; its absence means we
+      // never got out of getSiteToken. Emitted only once the cookie is in hand
+      // — the no-cookie path above already records a real call with stage:"auth".
+      recordAdapterPhase(ctx, {
+        requestId,
+        operation: "fetchSportLotsSelectorOptions",
+        platform: "sportlots",
+        level: args.level,
+        phase: "token_ready",
+        elapsed_ms: tokenMs,
+      });
+
       // setName and variantType: BSC-only levels in NB's hierarchy.
       // SL doesn't have separate set or variant-type concepts.
       if (args.level === "setName" || args.level === "variantType") {
@@ -428,7 +461,9 @@ export const fetchSportLotsSelectorOptions = action({
           .catch(() => {});
         sessionCookie = (await getSportLotsCookie(ctx)) ?? sessionCookie;
         // Brief backoff so the fresh session settles before the re-POST.
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) =>
+          setTimeout(resolve, SL_SELECTOR_EMPTY_RETRY_BACKOFF_MS),
+        );
         try {
           const retryResp = await slFetch(
             NEWINVEN_URL,

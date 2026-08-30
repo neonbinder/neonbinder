@@ -43,6 +43,21 @@
  *     bsc_success?: boolean     // aggregator-only
  *     error_class?: string      // when success=false, a short stable error tag
  *
+ * Second event — used to attribute a child that never came back (NEO-198):
+ *
+ *   event: "adapter_phase"
+ *   properties:
+ *     requestId: string         // SAME correlation id as adapter_sync_call — the join key
+ *     operation: string         // the child action that emitted it
+ *     platform: string          // "bsc" | "sportlots"
+ *     level?: string
+ *     phase: "token_ready"      // the boundary the child just crossed
+ *     elapsed_ms: number        // time spent in the phase that just completed
+ *
+ * A child abandoned at its deadline emits NO adapter_sync_call, so the only
+ * evidence of where the budget went is whichever adapter_phase breadcrumbs
+ * landed first. See recordAdapterPhase below.
+ *
  * NEVER include: user emails, credentials, tokens, response bodies, set-level
  * identifiers tied to a specific seller (BSC sellerId etc.). Taxonomy strings
  * only — sport/year/setName display labels and adapter status codes.
@@ -154,6 +169,96 @@ export async function recordAdapterCall(
       err instanceof Error ? err.message : String(err),
     );
   }
+}
+
+/**
+ * Phases a child adapter can announce before the next phase gets a chance to
+ * hang. Currently one: the auth→marketplace boundary.
+ */
+export type AdapterPhase = "token_ready";
+
+export type AdapterPhaseProperties = {
+  /** Same correlation id as the aggregator's adapter_sync_call. The join key. */
+  requestId: string;
+  operation: string;
+  platform: AdapterPlatform;
+  level?: string;
+  phase: AdapterPhase;
+  /** Wall-clock spent in the phase that just COMPLETED (here: token resolution). */
+  elapsed_ms: number;
+};
+
+/**
+ * NEO-198 — breadcrumb dropped by a child adapter as it crosses an internal
+ * phase boundary, so a hang after that boundary is still attributable.
+ *
+ * Why this exists. `fetchAggregatedOptions` races each child against a hard
+ * deadline (see convex/adapters/selectorBudgets.ts). A deadline that fires gets
+ * NO return value, so the aggregator cannot see the child's `token_ms` and
+ * genuinely cannot know whether the budget went into auth or into the
+ * marketplace fetch — its own timeout record can only say "sportlots did not
+ * come back". The old wording claimed more than that and was wrong to.
+ *
+ * The only way to know is for the child to publish progress BEFORE it can be
+ * abandoned, which is what this is. On a timeout, join by `requestId`:
+ *
+ *   adapter_phase(token_ready) present  → the token resolved; the hang is in
+ *                                          the marketplace fetch (and the
+ *                                          breadcrumb's elapsed_ms says how
+ *                                          much of the budget auth had already
+ *                                          eaten).
+ *   adapter_phase(token_ready) absent   → the child never got past
+ *                                          getSiteToken / the browser service.
+ *                                          That is the credential path, which
+ *                                          NEO-198 deliberately does not bound.
+ *
+ * Two deliberate differences from `recordAdapterCall`:
+ *
+ *  1. A SEPARATE event name (`adapter_phase`, not `adapter_sync_call`). A
+ *     breadcrumb is not a call outcome; folding it in would inflate the
+ *     dashboard's success counts with records that describe nothing finishing.
+ *  2. The PostHog capture is NOT awaited. `recordAdapterCall` awaits it, and
+ *     `posthog.captureEvent`'s `client.shutdown()` carries no timeout — awaiting
+ *     one more of those inside a bounded budget would add exactly the kind of
+ *     unbounded nested wait this ticket is about. The synchronous console line
+ *     is therefore the guaranteed channel (Convex logs; already the documented
+ *     fallback for `recordAdapterCall`), and PostHog is best-effort on top. The
+ *     floating promise resolves well before the handler returns on every path
+ *     that matters, because the whole point is that the caller is about to
+ *     spend seconds in a fetch.
+ *
+ * Never throws. Returns void, not a promise — callers must not await it.
+ */
+export function recordAdapterPhase(
+  ctx: ActionCtx,
+  props: AdapterPhaseProperties,
+): void {
+  const deployment = deploymentName();
+  try {
+    console.log(JSON.stringify({ msg: "adapter_phase", ...props, deployment }));
+  } catch {
+    // unreachable but defensive — never let a breadcrumb break the caller
+  }
+  void (async () => {
+    let distinctId = "anonymous";
+    try {
+      distinctId = (await getCurrentUserId(ctx)) || "anonymous";
+    } catch {
+      // auth context may not be available (internal callers, cron jobs)
+    }
+    try {
+      await ctx.runAction(internal.posthog.captureEvent, {
+        distinctId,
+        event: "adapter_phase",
+        properties: { ...props, deployment },
+      });
+    } catch (err) {
+      console.error(
+        "[observability.recordAdapterPhase] PostHog capture failed:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  })();
 }
 
 /**

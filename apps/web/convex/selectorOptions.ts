@@ -16,6 +16,15 @@ import {
   newRequestId,
   classifyAdapterError,
 } from "./observability";
+// NEO-198: the per-child deadlines below are derived from the adapters' own
+// retry policies rather than hand-written next to them. selectorBudgets.ts is
+// deliberately a plain module (no "use node") so both this isolate file and the
+// two Node adapters can import the same numbers.
+import {
+  SL_SELECTOR_BUDGET,
+  BSC_SELECTOR_BUDGET,
+  CHILD_DEADLINE_MARGIN_MS,
+} from "./adapters/selectorBudgets";
 import {
   deriveCardObservedFeatures,
   deriveOwnLevelFeatures,
@@ -3332,16 +3341,81 @@ export const wipeLegacyBaseChildren = mutation({
 // ===== ACTIONS (Orchestrators) =====
 
 // Per-child hard deadlines for the aggregator. The child adapters bound their
-// own marketplace fetches (SL: 3s × 3; BSC: 10s × 3), but if a child hangs
-// *upstream* of the fetch — e.g. a stuck cold-login in getSiteToken — its
-// promise can never settle, and a bare Promise.allSettled would wait forever,
-// so fetchAggregatedOptions would never reach recordAdapterCall and the FE
-// column would spin "Syncing…" with NOTHING logged. These deadlines guarantee
-// each branch resolves; whichever blows its budget is attributed via
-// timed_out_platform on the aggregator's adapter_sync_call. Budgets = the
-// child's own retry ceiling + margin (SL ≈ 9s, BSC ≈ 30s).
-const SL_CHILD_DEADLINE_MS = 12_000;
-const BSC_CHILD_DEADLINE_MS = 35_000;
+// own marketplace fetches, but if a child hangs *upstream* of the fetch — e.g. a
+// stuck cold-login in getSiteToken — its promise can never settle, and a bare
+// Promise.allSettled would wait forever, so fetchAggregatedOptions would never
+// reach recordAdapterCall and the FE column would spin "Syncing…" with NOTHING
+// logged. These deadlines guarantee each branch resolves; whichever blows its
+// budget is attributed via timed_out_platform on the aggregator's
+// adapter_sync_call, and by the child's own adapter_phase breadcrumb (joined on
+// requestId) for which phase of the child ate the budget.
+//
+// NEO-198 — DERIVED, not written down. Each is the adapter's OWN ceiling plus an
+// explicit margin, both imported from convex/adapters/selectorBudgets.ts. The
+// previous SL value was the literal 12_000 justified by a comment reading "the
+// child's own retry ceiling + margin (SL ≈ 9s)". That 9s counted only
+// SL_SELECTOR_FETCH_TIMEOUT_MS × SL_SELECTOR_FETCH_MAX_ATTEMPTS and silently
+// omitted the empty-result recovery loop (2 more rounds of 500ms + 3s) that runs
+// inside the same budget — so the real SL ceiling was 16s under a 12s deadline,
+// and the aggregator could abandon an adapter that was still working correctly
+// and log it as a hang. The bug was never the number 12; it was that the number
+// and the policy lived in different files with nothing tying them together.
+//
+// BEHAVIOUR CHANGE: SL_CHILD_DEADLINE_MS moves 12_000 → 19_500. A genuinely
+// hung SportLots child is now abandoned ~7.5s later than before. That costs
+// nothing when BSC also hangs (Promise.all already waits out BSC's 35s) and it
+// cannot reach the FE backstop (SELECTOR_SYNC_FE_TIMEOUT_MS = 38_000, still
+// above max(SL, BSC)). What it buys is that the deadline can no longer fire on
+// an adapter that is inside its own documented retry policy.
+//
+// BSC_CHILD_DEADLINE_MS is unchanged at 35_000 — 31.5s ceiling + the same
+// 3.5s margin it has always effectively run with. The derivation was applied to
+// it too, but it reproduces the existing value exactly.
+const SL_CHILD_DEADLINE_MS =
+  SL_SELECTOR_BUDGET.ceilingMs + CHILD_DEADLINE_MARGIN_MS;
+const BSC_CHILD_DEADLINE_MS =
+  BSC_SELECTOR_BUDGET.ceilingMs + CHILD_DEADLINE_MARGIN_MS;
+
+// Exported ONLY so convex/adapters/selectorBudgets.test.ts can assert the
+// invariant that produced NEO-198: a child deadline must never sit below the
+// ceiling of the adapter it is supposed to contain. Not a Convex function.
+export const CHILD_DEADLINES_MS = {
+  sportlots: SL_CHILD_DEADLINE_MS,
+  bsc: BSC_CHILD_DEADLINE_MS,
+} as const;
+
+/**
+ * NEO-198 — the message recorded when a child blows its deadline.
+ *
+ * Extracted so it can be asserted directly: the timeout path itself can only be
+ * exercised by hanging a "use node" adapter for 20 seconds, which is not a unit
+ * test, but the *claim the message makes* is exactly the thing that was wrong.
+ *
+ * What it must NOT say. The previous wording was
+ *
+ *   "<platform> adapter exceeded Ns deadline
+ *    (no response — stalled before/within the marketplace fetch)"
+ *
+ * and the parenthetical is unknowable here. `withChildDeadline` resolves with
+ * `{kind:"timeout"}` precisely because the child produced no value, so the
+ * aggregator has no token_ms, no filters_call_ms and no status code — it cannot
+ * distinguish a stall in getSiteToken (the credential path, which NEO-198
+ * deliberately leaves unbounded) from a stall in the marketplace fetch. Naming a
+ * location we cannot observe sends the next reader to the wrong file.
+ *
+ * What it does say: the fact (no return inside the budget), and where the answer
+ * actually lives (the child's adapter_phase breadcrumb, joined on requestId).
+ */
+export function childDeadlineMessage(
+  platformLabel: string,
+  ms: number,
+  requestId: string,
+): string {
+  return (
+    `${platformLabel} adapter did not return within its ${ms / 1000}s deadline; ` +
+    `which phase consumed it is not visible from here (requestId ${requestId})`
+  );
+}
 
 type ChildOutcome<T> =
   | { kind: "settled"; value: T }
@@ -3811,8 +3885,21 @@ export const fetchAggregatedOptions = action({
         }
       } else if (slOutcome.kind === "timeout") {
         timedOutPlatform = "sportlots";
-        platformErrors.sportlots = `SportLots adapter exceeded ${slOutcome.ms / 1000}s deadline (no response — stalled before/within the marketplace fetch)`;
-        console.error(`[fetchAggregatedOptions] SportLots child exceeded ${slOutcome.ms}ms deadline`);
+        // NEO-198: say only what a fired deadline actually knows. A deadline
+        // that wins the race gets NO return value from the child, so the
+        // aggregator never sees its token_ms / filters_call_ms and cannot tell
+        // an auth stall from a marketplace stall — the old wording asserted
+        // "stalled before/within the marketplace fetch" and was guessing. The
+        // child's adapter_phase(token_ready) breadcrumb, joined on requestId,
+        // is what answers that; see recordAdapterPhase in observability.ts.
+        platformErrors.sportlots = childDeadlineMessage(
+          "SportLots",
+          slOutcome.ms,
+          requestId,
+        );
+        console.error(
+          `[fetchAggregatedOptions] SportLots child did not return within ${slOutcome.ms}ms deadline (requestId=${requestId}); join adapter_phase on this requestId to attribute auth vs fetch`,
+        );
       } else {
         const msg = slOutcome.reason instanceof Error ? slOutcome.reason.message : "Unknown error";
         platformErrors.sportlots = msg;
@@ -3834,8 +3921,15 @@ export const fetchAggregatedOptions = action({
         }
       } else if (bscOutcome.kind === "timeout") {
         timedOutPlatform = timedOutPlatform ? "both" : "bsc";
-        platformErrors.bsc = `BSC adapter exceeded ${bscOutcome.ms / 1000}s deadline (no response — stalled before/within the marketplace fetch)`;
-        console.error(`[fetchAggregatedOptions] BSC child exceeded ${bscOutcome.ms}ms deadline`);
+        // Same correction as the SportLots branch above — see the note there.
+        platformErrors.bsc = childDeadlineMessage(
+          "BSC",
+          bscOutcome.ms,
+          requestId,
+        );
+        console.error(
+          `[fetchAggregatedOptions] BSC child did not return within ${bscOutcome.ms}ms deadline (requestId=${requestId}); join adapter_phase on this requestId to attribute auth vs fetch`,
+        );
       } else {
         const msg = bscOutcome.reason instanceof Error ? bscOutcome.reason.message : "Unknown error";
         platformErrors.bsc = msg;

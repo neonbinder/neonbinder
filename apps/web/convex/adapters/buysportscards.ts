@@ -6,9 +6,13 @@ import { api, internal } from "../_generated/api";
 import { requireAdmin } from "../auth";
 import {
   recordAdapterCall,
+  recordAdapterPhase,
   newRequestId,
   classifyAdapterError,
 } from "../observability";
+// NEO-198: this adapter's retry policy and the aggregator's per-child deadline
+// are the same fact and now have one definition. See the header of that module.
+import { BSC_SELECTOR_BUDGET } from "./selectorBudgets";
 import {
   LEVEL_TO_BSC_FACET,
   MAX_BSC_FAN_OUT,
@@ -25,12 +29,15 @@ const BSC_FILTERS_PATH = "/search/bulk-upload/filters";
 // Per-attempt timeout for a single BSC marketplace fetch. The product owner
 // caps any one shot at 10s (30s in one blocking call was too long to attribute
 // a hang). We instead retry up to BSC_FETCH_MAX_ATTEMPTS within a ~30s ceiling.
-const BSC_FETCH_TIMEOUT_MS = 10_000;
+// NEO-198: local aliases of BSC_SELECTOR_BUDGET, not literals, so the
+// aggregator's BSC_CHILD_DEADLINE_MS is derived from the same numbers this loop
+// enforces and cannot silently fall below them.
+const BSC_FETCH_TIMEOUT_MS = BSC_SELECTOR_BUDGET.perAttemptTimeoutMs;
 // Total attempts for the selector-filters fetch (1 initial + 2 retries).
-const BSC_FETCH_MAX_ATTEMPTS = 3;
+const BSC_FETCH_MAX_ATTEMPTS = BSC_SELECTOR_BUDGET.maxAttempts;
 // Backoff between attempts: [attempt1→2, attempt2→3]. Length is
 // BSC_FETCH_MAX_ATTEMPTS - 1.
-const BSC_FETCH_BACKOFF_MS = [500, 1000];
+const BSC_FETCH_BACKOFF_MS = BSC_SELECTOR_BUDGET.backoffMs;
 // The card-checklist bulk-upload fetch is a single large request (up to 5000
 // cards) that legitimately runs longer than a selector facet call, and it has
 // its own 401-refresh-and-retry path rather than the 10s×3 selector loop. Keep
@@ -228,6 +235,20 @@ export const fetchBscSelectorOptions = action({
           message: tokenResult.error || "No BSC token available",
         };
       }
+
+      // NEO-198 — publish progress BEFORE the marketplace fetch can hang. See
+      // the SportLots twin and recordAdapterPhase's docs: when
+      // fetchAggregatedOptions abandons this action at BSC_CHILD_DEADLINE_MS it
+      // gets no return value, so this breadcrumb is the only signal that
+      // separates "stuck getting a token" from "stuck talking to BSC".
+      recordAdapterPhase(ctx, {
+        requestId,
+        operation: "fetchBscSelectorOptions",
+        platform: "bsc",
+        level: args.level,
+        phase: "token_ready",
+        elapsed_ms: tokenMs,
+      });
 
       // Build nested filters matching the BSC bulk-upload/filters shape.
       // NB levels are mapped to BSC facets via LEVEL_TO_BSC_FACET.
