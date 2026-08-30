@@ -4334,6 +4334,23 @@ export const fetchCardChecklist = action({
     unmatchedBsc: ReconciledCard[];
     unmatchedSl: ReconciledCard[];
   }> => {
+    // NEO-202: this was the one function in this file with no identity check.
+    // It is not merely a read: it performs authenticated fetches against BSC
+    // and SportLots with OUR stored credentials from OUR egress IP, and since
+    // NEO-195 it also writes ~900 `checklistCandidates` rows per call. Public
+    // and unauthenticated, that is a marketplace-credential abuse primitive
+    // and a write amplifier behind one document id.
+    //
+    // `requireAdmin`, not `requireSignedIn`: `selectorOptions` is the global
+    // admin-managed taxonomy and every other entry point onto it — including
+    // `commitCardChecklist`, `resolveChecklistEntities` and the
+    // `discardCandidates` that reaps this action's own rows — is admin-gated.
+    // A signed-in non-admin has no flow that reaches this button.
+    //
+    // Outside the `try` on purpose: the catch below converts throws into
+    // `{ success: false, message }`, which would render an authorization
+    // failure as a marketplace outage.
+    const adminUserId = await requireAdmin(ctx);
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
       const chain = await ctx.runQuery(
@@ -4982,7 +4999,12 @@ export const fetchCardChecklist = action({
       // existing modal working untouched while the streaming path is wired up
       // behind it — the two are not meant to coexist for long.
       const candidateBatchId = crypto.randomUUID();
-      const candidateUserId = (await getCurrentUserId(ctx)) ?? "unknown";
+      // NEO-202: was `(await getCurrentUserId(ctx)) ?? "unknown"`. The fallback
+      // only made sense while the action was anonymous-callable — and it was
+      // actively harmful: every anonymous run shared the literal owner
+      // "unknown", so `startCandidateBatch`'s per-operator clear made those
+      // runs delete each other's rows. `requireAdmin` above already returned
+      // the caller's id; there is no unowned batch any more.
       const toCandidate = (
         card: ReconciledCard,
         bucket: "matched" | "bscOnly" | "slOnly",
@@ -5008,7 +5030,7 @@ export const fetchCardChecklist = action({
         {
           selectorOptionId: args.selectorOptionId,
           batchId: candidateBatchId,
-          userId: candidateUserId,
+          userId: adminUserId,
           candidates: [
             ...autoMatchedCards.map((m) =>
               toCandidate(m.card, "matched", m.confidence),

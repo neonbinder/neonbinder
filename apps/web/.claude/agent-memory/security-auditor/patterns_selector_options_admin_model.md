@@ -22,8 +22,17 @@ metadata:
 ## getSiteToken contains its own errors
 `internal.credentials.getSiteToken` swallows inner errors (incl. getIdTokenClient throws that contain NEONBINDER_BROWSER_URL / "GOOGLE_APPLICATION_CREDENTIALS_B64 not set") and returns null — does NOT propagate infra detail to callers. credentials.ts enforces https:// for non-loopback browser-service URLs (refuses unauthenticated remote sends).
 
-## KEY FINDING CLASS — getSelectorSyncStatus is an UN-GATED public query that surfaces raw error text
-`getSelectorSyncStatus` (query, selectorOptions.ts ~2306) has NO requireAdmin. Returns `{status, message}` from the `selectorSyncStatus` table. `message` is populated by `ensureSelectorOptions`:
-  - failure-path: `res.message` (e.g. precondition_missing_slug → leaks internal taxonomy/hydration detail)
-  - catch-path: raw `e.message` (arbitrary downstream Error text)
-EntityColumn.tsx (~line 325) renders `syncStatus.message` RAW into the UI. Two issues: (1) any AUTHENTICATED non-admin can read it directly (missing requireAdmin — inconsistent with every sibling query) and (2) raw error text is unsanitized. Fix: add `requireAdmin` to `getSelectorSyncStatus`, and sanitize what gets WRITTEN into `selectorSyncStatus.message` (store a user-safe string; keep raw detail in console/PostHog only). Same sanitize-on-write principle applies to any future reactive-status surface.
+## RESOLVED (verified 2026-08-29) — getSelectorSyncStatus is now admin-gated
+
+This file previously recorded `getSelectorSyncStatus` (query, selectorOptions.ts)
+as an UN-GATED public query. **That is no longer true** — it calls `requireAdmin`
+like every sibling, with a comment saying so. Re-verified by a full sweep of all
+129 public exports in `convex/` (see
+[[patterns-public-function-guard-sweep]]).
+
+The residual, still worth watching: `selectorSyncStatus.message` is populated
+from `res.message` on the failure path and raw `e.message` on the catch path,
+and `EntityColumn.tsx` renders it verbatim. Admin-only now, so the disclosure
+boundary is admins rather than any signed-in user — but the sanitize-on-write
+principle still applies to any new reactive-status surface: store a user-safe
+string, keep raw error detail in console/PostHog.
