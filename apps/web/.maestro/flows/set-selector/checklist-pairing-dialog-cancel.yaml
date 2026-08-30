@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Checklist — the card-pairing dialog: it opens instead of committing, it flags a marketplace name disagreement on a manual link, and cancelling writes nothing"
+name: "Checklist — the card-pairing dialog opens instead of committing, flags a marketplace name disagreement on a manual link, and cancelling writes nothing"
 tags:
   - set-selector
 ---
