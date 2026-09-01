@@ -1,1 +1,0 @@
-- [Convex write budgets](reference_convex_write_budgets.md) — the ~2k-op per-mutation ceiling, the OCC trap that phasing makes worse, and prod's Error redaction

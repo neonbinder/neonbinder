@@ -2741,3 +2741,137 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
     ).toContain("flex-wrap");
   });
 });
+
+/**
+ * NEO-189 operator feedback — the unmatched columns are drag-and-drop, and say
+ * so.
+ *
+ * Two halves, and only one of them is testable here:
+ *
+ *  1. THE GESTURE. Simulating a dnd-kit pointer drag in jsdom is not worth
+ *     trusting: every element measures 0×0 at (0,0), so `pointerWithin` is
+ *     deciding collisions between degenerate rects and a passing test would be
+ *     evidence about jsdom's layout engine, not about the feature. It is not
+ *     covered by Maestro either — Maestro's web driver drags flakily, and
+ *     converting the existing flow would have traded a reliable end-to-end
+ *     assertion about LINKING for an unreliable one about dragging.
+ *
+ *  2. WHAT THE GESTURE COSTS. That is what these tests pin. Adding drag
+ *     listeners to a row is only safe if the row's existing controls are
+ *     untouched — the click path is the keyboard/assistive-tech path and the
+ *     one the Maestro flow drives — and if the wrapper does not quietly join
+ *     the dialog's focus trap or hide its own children from AT.
+ *
+ * The linking behaviour the drag path performs is not re-asserted here because
+ * it is not a second implementation: both paths call one `performLink`, so
+ * every existing test that links by clicking (the merge, the name-conflict
+ * auto-expand, the refocus) is already a test of the code the drop runs.
+ */
+describe("CardPairingModal — drag-and-drop linking (NEO-189 follow-up)", () => {
+  const rowFor = (labelText: string) =>
+    screen.getByLabelText(labelText).closest("li") as HTMLLIElement;
+
+  test("the hint names BOTH gestures, above the columns", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("1", "Griffey")],
+      unmatchedSl: [slCard("A1", "Griffey")],
+    });
+
+    const hint = screen.getByText(/Drag a card onto its match/);
+    expect(hint.textContent).toContain("click one, then click its match");
+    // Above the lists, not below them: on any set with real unmatched counts
+    // the columns are taller than the dialog's inner scroller, and Maestro
+    // cannot drive that overflow — nor can an operator find an instruction
+    // they have to scroll past the problem to reach.
+    expect(
+      hint.compareDocumentPosition(screen.getByLabelText("Filter BSC cards")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  /**
+   * A single lonely unmatched card is exactly when an operator is most likely
+   * to be stuck, so the hint is keyed on "the columns are showing", not on
+   * "a link is currently possible".
+   */
+  test("the hint shows with only one column populated, either side", () => {
+    const { unmount } = render(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(undefined)}
+        initialData={{
+          autoMatched: [],
+          unmatchedBsc: [bscCard("5", "BSC Only")],
+          unmatchedSl: [],
+        }}
+      />,
+    );
+    expect(screen.getByText(/Drag a card onto its match/)).toBeTruthy();
+    unmount();
+
+    renderModal({ unmatchedSl: [slCard("77", "SL Only")] });
+    expect(screen.getByText(/Drag a card onto its match/)).toBeTruthy();
+  });
+
+  test("the hint is absent when there is nothing left to reconcile", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("1", "Griffey"), confidence: 1 }],
+    });
+    expect(screen.queryByText(/Drag a card onto its match/)).toBeNull();
+  });
+
+  /**
+   * dnd-kit's `useDraggable` hands back `attributes` carrying `role="button"`
+   * and `tabIndex=0`. Spreading them onto this row would do two things this
+   * change must not do, so they are deliberately left off — pinned here
+   * because a later "just spread the attributes like the other modals do"
+   * would look like a tidy-up and silently break both.
+   */
+  test("the drag wrapper does not become a widget, and does not join the focus trap", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("1", "Griffey")],
+      unmatchedSl: [slCard("A1", "Griffey")],
+    });
+
+    for (const row of [
+      rowFor("Select BSC card #1 Griffey"),
+      rowFor("Link selected BSC card to #A1 Griffey"),
+    ]) {
+      // role="button" on the wrapper would make its own <button> children
+      // presentational to assistive tech — taking select / link / keep off the
+      // AT path, which is the path this feature is an addition to.
+      expect(row.getAttribute("role")).toBeNull();
+      // tabIndex=0 would add one dead tab stop per row to the dialog's Tab
+      // handler, which queries `[tabindex]:not([tabindex="-1"])`. A 900-row
+      // set would grow 900 stops that do nothing when activated.
+      expect(row.getAttribute("tabindex")).toBeNull();
+    }
+  });
+
+  /**
+   * The 5px activation constraint is what makes this true: a stationary press
+   * never starts a drag, so the row's listeners cannot swallow the button's
+   * click. Without it the Maestro flow's `tapOn "Select BSC card …"` stops
+   * working the moment the listeners go on.
+   */
+  test("click-to-select still works with drag listeners attached", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("1", "Griffey")],
+      unmatchedSl: [slCard("A1", "Griffey")],
+    });
+
+    fireEvent.click(screen.getByLabelText("Select BSC card #1 Griffey"));
+
+    expect(
+      screen.getByLabelText("#1 Griffey, selected. Press to deselect."),
+    ).toBeTruthy();
+    expect(
+      (
+        screen.getByLabelText(
+          "Link selected BSC card to #A1 Griffey",
+        ) as HTMLButtonElement
+      ).disabled,
+    ).toBe(false);
+  });
+});

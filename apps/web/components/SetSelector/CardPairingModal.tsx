@@ -8,6 +8,19 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
+import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  pointerWithin,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
@@ -266,6 +279,113 @@ function candidateKey(c: PairingCard): string {
  */
 function domKey(c: PairingCard): string {
   return candidateKey(c).replace(/[^A-Za-z0-9_-]+/g, "-");
+}
+
+/**
+ * NEO-189 operator feedback — the two unmatched columns are drag-and-drop.
+ *
+ * Click-to-select-then-click was the only way to link a BSC-only card to a
+ * SportLots-only one, and nothing on screen said so: a row highlighted cyan
+ * with no other affordance, in an app that uses drag-and-drop for exactly this
+ * "these two lists describe the same thing" gesture everywhere else
+ * (ReconciliationModal pairs marketplace SETS by drag; ParallelGroupingModal
+ * groups parallels by drag). This column pair is the same gesture one level
+ * down, so it now behaves the same way.
+ *
+ * The click path is NOT replaced. It is the keyboard/assistive-tech path —
+ * dnd-kit's pointer drag has no keyboard equivalent that survives this
+ * dialog's focus trap — and it is what the Maestro flow drives. Drag is an
+ * addition on top of it.
+ */
+type DragSide = "bsc" | "sl";
+
+/**
+ * A drag id is `side:candidateKey`. The SIDE has to travel with the key
+ * because a drop is only a link when the two ends are on OPPOSITE sides, and
+ * `candidateKey` alone cannot say which column a row came from — a SportLots
+ * ref is a whole card title and a BSC ref is an opaque id, with no shared
+ * shape to test.
+ *
+ * Split on the FIRST colon only: a SportLots ref can contain one
+ * ("#227 Carl Yastrzemski [ VAR: SSSP ]"), the two side prefixes cannot.
+ */
+function dragId(side: DragSide, key: string): string {
+  return `${side}:${key}`;
+}
+
+function parseDragId(
+  id: string,
+): { side: DragSide; key: string } | undefined {
+  const i = id.indexOf(":");
+  if (i < 0) return undefined;
+  const side = id.slice(0, i);
+  if (side !== "bsc" && side !== "sl") return undefined;
+  return { side, key: id.slice(i + 1) };
+}
+
+/**
+ * One unmatched row: draggable, and a drop target for the other column.
+ *
+ * Both hooks share one id and one node, which is what makes linking work in
+ * either direction for the price of one component — a BSC row dropped on a
+ * SportLots row and a SportLots row dropped on a BSC row are the same link,
+ * and `handleDragEnd` sorts out which end is which.
+ *
+ * `attributes` from `useDraggable` are deliberately NOT spread. They carry
+ * `role="button"` and `tabIndex=0`, and this row is an <li> that already
+ * contains two real <button>s:
+ *   - `role="button"` on the wrapper makes those children presentational to
+ *     assistive tech (ARIA hides nested widgets inside a widget), which would
+ *     take the select/link/keep controls off the AT path entirely — the exact
+ *     path this change is supposed to leave untouched.
+ *   - `tabIndex=0` would add one dead tab stop per row to the dialog's focus
+ *     trap (its Tab handler queries `[tabindex]:not([tabindex="-1"])`), so a
+ *     900-row set would grow 900 stops that do nothing when activated.
+ * The listeners alone are what the PointerSensor needs; the accessible
+ * affordance for the same action is the click path, which is untouched.
+ *
+ * Plain clicks on the inner buttons still work because the PointerSensor's
+ * 5px activation constraint means a drag never starts from a stationary press
+ * (same reasoning as ParallelGroupingModal).
+ */
+function PairableRow({
+  side,
+  cardKey,
+  children,
+}: {
+  side: DragSide;
+  cardKey: string;
+  children: React.ReactNode;
+}) {
+  const id = dragId(side, cardKey);
+  const { listeners, setNodeRef: setDragRef, isDragging } = useDraggable({ id });
+  const { setNodeRef: setDropRef, isOver, active } = useDroppable({ id });
+  const setRef = useCallback(
+    (node: HTMLLIElement | null) => {
+      setDragRef(node);
+      setDropRef(node);
+    },
+    [setDragRef, setDropRef],
+  );
+  // Highlight only for a drop that would actually DO something. A row is its
+  // own droppable, and same-column drops are no-ops, so an unconditional
+  // `isOver` would promise a link that `handleDragEnd` then declines to make.
+  const isLinkTarget =
+    isOver &&
+    typeof active?.id === "string" &&
+    parseDragId(active.id)?.side !== side;
+
+  return (
+    <li
+      ref={setRef}
+      {...listeners}
+      className={`flex items-center gap-2 rounded cursor-grab active:cursor-grabbing ${
+        isDragging ? "opacity-40" : ""
+      } ${isLinkTarget ? "ring-2 ring-[#00B7FF] bg-[#00B7FF]/10" : ""}`}
+    >
+      {children}
+    </li>
+  );
 }
 
 /**
@@ -1124,6 +1244,96 @@ export default function CardPairingModal({
     [state.unmatchedSl, slFilter],
   );
 
+  /**
+   * Link one BSC-only card to one SportLots-only card.
+   *
+   * Extracted so the two ways an operator can ask for a link — click-to-select
+   * then click, and drag one row onto the other — are the SAME operation
+   * rather than two implementations that can drift. The conflict handling in
+   * particular is not incidental: NEO-189's rule is that a link whose two
+   * sides name the card differently must be visible the moment it is made, and
+   * manual pairing always happens with the Matched section collapsed, so the
+   * auto-expand is what makes the warning a warning. A drag path that dropped
+   * it would silently reintroduce the defect that feature exists to fix.
+   *
+   * `slSide` is looked up rather than passed because the drag path has only a
+   * key; the click path's `c` is the same object out of the same array.
+   */
+  const performLink = useCallback(
+    (bscKey: string, slKey: string) => {
+      const bscSide = state.unmatchedBsc.find(
+        (x) => candidateKey(x) === bscKey,
+      );
+      const slSide = state.unmatchedSl.find((x) => candidateKey(x) === slKey);
+      const createsConflict = !!(
+        bscSide &&
+        slSide &&
+        nameConflictOf(bscSide, slSide)
+      );
+      // Only ever opens — never closes a section the operator deliberately
+      // expanded.
+      if (createsConflict) {
+        setMatchedCollapsed(false);
+      }
+      dispatch({ type: "LINK", bscKey, slKey });
+      setSelectedBsc(null);
+      // a11y (NEO-189 audit) — the <li> holding the control that was just
+      // activated is about to unmount: it moved from a column into matched.
+      // Left alone that drops focus to <body> at the exact moment a brand-new
+      // decision (which name to keep) appears for the operator to make.
+      if (createsConflict && bscSide) {
+        refocusSelectedRadio(domKey(bscSide));
+      }
+    },
+    [state.unmatchedBsc, state.unmatchedSl, refocusSelectedRadio],
+  );
+
+  // ── Drag-and-drop linking ────────────────────────────────────────────────
+  // The 5px activation constraint is load-bearing, not cosmetic: without it a
+  // stationary press on a row's inner <button> starts a drag and the button's
+  // onClick never fires, which would break the click-to-select path (and the
+  // Maestro flow that drives it) the moment the listeners went on.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor),
+  );
+  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+
+  const handleDragStart = useCallback((event: DragStartEvent) => {
+    setActiveDragId(String(event.active.id));
+  }, []);
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      setActiveDragId(null);
+      const { active, over } = event;
+      if (!over) return;
+      const from = parseDragId(String(active.id));
+      const to = parseDragId(String(over.id));
+      if (!from || !to) return;
+      // A row is its own drop target, and two rows in the same column are not
+      // a pair — only a cross-column drop is a link.
+      if (from.side === to.side) return;
+      const bscKey = from.side === "bsc" ? from.key : to.key;
+      const slKey = from.side === "sl" ? from.key : to.key;
+      performLink(bscKey, slKey);
+    },
+    [performLink],
+  );
+
+  const handleDragCancel = useCallback(() => setActiveDragId(null), []);
+
+  /** What the drag overlay shows: the dragged card's own row label. */
+  const activeDragLabel = useMemo(() => {
+    if (!activeDragId) return null;
+    const parsed = parseDragId(activeDragId);
+    if (!parsed) return null;
+    const pool =
+      parsed.side === "bsc" ? state.unmatchedBsc : state.unmatchedSl;
+    const card = pool.find((c) => candidateKey(c) === parsed.key);
+    return card ? label(card) : null;
+  }, [activeDragId, state.unmatchedBsc, state.unmatchedSl]);
+
   const handleConfirm = useCallback(async () => {
     if (confirming) return;
     // NEO-195: never commit a partial checklist. The button is disabled while
@@ -1162,6 +1372,14 @@ export default function CardPairingModal({
         ref={dialogRef}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
+            // Escape during a drag CANCELS THE DRAG (dnd-kit's own document
+            // listener), so it must not also close the modal — one keypress
+            // that both aborts the gesture and throws away every unsaved
+            // pairing is the worst possible reading of "cancel". `activeDragId`
+            // is still set here whichever listener runs first: dnd-kit's cancel
+            // only clears it via a React state update, which cannot land
+            // mid-event.
+            if (activeDragId) return;
             onClose();
             return;
           }
@@ -1643,7 +1861,34 @@ export default function CardPairingModal({
                 information; it just buries the matched list the operator
                 actually came to review. */}
             {!nothingToReconcile && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <DndContext
+              sensors={sensors}
+              collisionDetection={pointerWithin}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={handleDragCancel}
+            >
+              {/* The affordance has to be SAID. Operator feedback on NEO-189:
+                  a row that highlights on click, with nothing on screen naming
+                  the gesture, is not discoverable — and the app's other
+                  two-column pairing screens are drag-and-drop, so the missing
+                  instruction was also the surprising one. Placed ABOVE the
+                  columns rather than under them: below the lists it is past
+                  the fold on any set with real unmatched counts, which is
+                  every set where it matters.
+
+                  Shown whenever either column has a card, not only when both
+                  do. One lonely unmatched card is exactly when an operator is
+                  most likely to be stuck, and the sentence still describes the
+                  screen — the columns are what "the other column" means. */}
+              {(state.unmatchedBsc.length > 0 ||
+                state.unmatchedSl.length > 0) && (
+                <p className="text-xs text-gray-500 mb-2">
+                  Drag a card onto its match in the other column to link them
+                  (or click one, then click its match).
+                </p>
+              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <section>
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-sm font-semibold text-gray-200">
@@ -1674,7 +1919,11 @@ export default function CardPairingModal({
                 />
                 <ul className="flex flex-col gap-1 mt-2">
                   {visibleBsc.map((c) => (
-                    <li key={candidateKey(c)} className="flex items-center gap-2">
+                    <PairableRow
+                      key={candidateKey(c)}
+                      side="bsc"
+                      cardKey={candidateKey(c)}
+                    >
                       <button
                         type="button"
                         className={`flex-1 text-left text-sm rounded px-2 py-1 ${
@@ -1712,7 +1961,7 @@ export default function CardPairingModal({
                       >
                         Keep
                       </button>
-                    </li>
+                    </PairableRow>
                   ))}
                 </ul>
               </section>
@@ -1747,47 +1996,22 @@ export default function CardPairingModal({
                 />
                 <ul className="flex flex-col gap-1 mt-2">
                   {visibleSl.map((c) => (
-                    <li key={candidateKey(c)} className="flex items-center gap-2">
+                    <PairableRow
+                      key={candidateKey(c)}
+                      side="sl"
+                      cardKey={candidateKey(c)}
+                    >
                       <button
                         type="button"
                         disabled={!selectedBsc}
                         className="flex-1 text-left text-sm rounded px-2 py-1 bg-gray-800/60 text-gray-200 disabled:opacity-60"
                         onClick={() => {
                           if (!selectedBsc) return;
-                          // NEO-189: a conflict the operator cannot see is the
-                          // defect itself. Manual pairing always happens with
-                          // the Matched section collapsed (it collapses by
-                          // default whenever a column has anything in it,
-                          // which is necessarily true while linking), so open
-                          // it the moment a link creates a disagreement.
-                          // Only ever opens — never closes a section the
-                          // operator deliberately expanded.
-                          const bscSide = state.unmatchedBsc.find(
-                            (x) => candidateKey(x) === selectedBsc,
-                          );
-                          const createsConflict =
-                            bscSide && nameConflictOf(bscSide, c);
-                          if (createsConflict) {
-                            setMatchedCollapsed(false);
-                          }
-                          dispatch({
-                            type: "LINK",
-                            bscKey: selectedBsc,
-                            slKey: candidateKey(c),
-                          });
-                          setSelectedBsc(null);
-                          // a11y (NEO-189 audit) — this button (and the whole
-                          // <li> it lives in) is about to unmount: it just
-                          // moved from unmatchedSl into matched. Left alone,
-                          // that drops focus to <body> at the exact moment a
-                          // brand-new decision (which name to keep) appears
-                          // for the operator to make — worse than the
-                          // ordinary silent-focus-loss case, and worth fixing
-                          // here rather than filing separately, since the
-                          // conflict is what makes the dropped focus consequential.
-                          if (createsConflict && bscSide) {
-                            refocusSelectedRadio(domKey(bscSide));
-                          }
+                          // Same operation the drag path performs — including
+                          // NEO-189's auto-expand of the Matched section when
+                          // the link creates a name disagreement. See
+                          // `performLink`.
+                          performLink(selectedBsc, candidateKey(c));
                         }}
                         aria-label={`Link selected BSC card to ${label(c)}`}
                       >
@@ -1808,11 +2032,22 @@ export default function CardPairingModal({
                       >
                         Keep
                       </button>
-                    </li>
+                    </PairableRow>
                   ))}
                 </ul>
               </section>
-            </div>
+              </div>
+
+              {/* Matches ReconciliationModal / ParallelGroupingModal exactly —
+                  the same card, following the cursor. */}
+              <DragOverlay>
+                {activeDragLabel && (
+                  <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
+                    <span className="text-gray-200">{activeDragLabel}</span>
+                  </div>
+                )}
+              </DragOverlay>
+            </DndContext>
             )}
 
             {/* Keep shelf — same affordance the set-level dialog has. Hidden

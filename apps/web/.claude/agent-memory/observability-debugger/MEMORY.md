@@ -1,1 +1,0 @@
-- [Observability stack truth](project_observability_stack_truth.md) — Sentry is React-client-only; server-side observability is PostHog + console.log JSON, no `@sentry/node`
