@@ -102,12 +102,14 @@ vi.mock("convex/react", () => ({
   },
   useMutation: (ref: string) => {
     if (ref === "discardCandidates") return mockDiscardCandidates;
-    if (ref === "commitCardChecklist") return mockCommitChecklist;
     return vi.fn();
   },
   useAction: (ref: string) => {
     if (ref === "fetchCardChecklist") return mockFetchChecklist;
     if (ref === "resolveChecklistEntities") return mockResolveEntities;
+    // NEO-189: commitCardChecklist became an ACTION when the commit was
+    // chunked server-side. Same call shape, different hook.
+    if (ref === "commitCardChecklist") return mockCommitChecklist;
     return vi.fn();
   },
 }));

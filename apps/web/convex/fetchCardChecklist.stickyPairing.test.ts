@@ -230,7 +230,7 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
     );
 
     // The operator overrides it and commits the correct pairing.
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: insertId,
       sportId: (await t.run(async (ctx) => {
         const rows = await ctx.db.query("selectorOptions").collect();
@@ -294,7 +294,7 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
 
     const before = await t.run(async (ctx) => ctx.db.get(insertId));
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: insertId,
       sportId,
       cards: [
@@ -334,7 +334,7 @@ describe("fetchCardChecklist — stored pairing survives a re-sync (NEO-137)", (
       return rows.find((r) => r.level === "sport")!._id;
     })) as Id<"selectorOptions">;
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: insertId,
       sportId,
       cards: [

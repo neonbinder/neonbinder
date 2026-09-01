@@ -293,7 +293,7 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     // auto: copies league="MLB-Flagship", subsetLabel="Flagship",
     // isReprint="false" down from setName + own cardType="Base"
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [
@@ -413,7 +413,7 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     await asAdmin.mutation(api.players.findOrCreate, { name: "Mike Trout", sportId: subtreeIds.sportId });
     await asAdmin.mutation(api.players.findOrCreate, { name: "Aaron Judge", sportId: subtreeIds.sportId });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: subtreeIds.variantTypeId,
       sportId: subtreeIds.sportId,
       cards: [
@@ -518,7 +518,7 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       return { sportId, setNameId };
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: subtreeIds.setNameId,
       sportId: subtreeIds.sportId,
       cards: [
@@ -646,7 +646,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     // review-decision path.
     await asAdmin.mutation(api.players.findOrCreate, { name: "Elly De La Cruz", sportId });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [
@@ -700,7 +700,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const commitCard = () =>
-      asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: variantTypeId,
         sportId,
         cards: [
@@ -812,7 +812,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
       }) as unknown as typeof fetch,
     );
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [
@@ -877,7 +877,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
 
     await asAdmin.mutation(api.teams.findOrCreate, { name: "Kansas City Royals", sportId });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [
@@ -934,7 +934,7 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
       }) as unknown as typeof fetch,
     );
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [

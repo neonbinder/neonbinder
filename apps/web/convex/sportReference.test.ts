@@ -136,7 +136,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       kind: "player",
       name: "Mike Trout",
     });
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       batchId: "b1",
@@ -163,7 +163,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       kind: "team",
       name: "Los Angeles Angels",
     });
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       batchId: "b2",
@@ -188,7 +188,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
     // Now the commit path resolves the SAME name. No review row is needed —
     // the name already resolves to an existing entity, which is the behaviour
     // under test: it must find the picker's row rather than mint a second one.
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [card("3", [], ["Los Angeles Angels"])],
@@ -221,7 +221,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       kind: "player",
       name: "Mike Trout",
     });
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       batchId: "b4",
@@ -246,7 +246,7 @@ describe("NEO-96 SKU parity between the two card-creation paths", () => {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [card("50")],
@@ -364,7 +364,7 @@ describe("NEO-96 renameSelectorOption", () => {
       selectorOptionId: variantTypeId, sportId, batchId: "r1",
       kind: "team", name: "Los Angeles Angels",
     });
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       batchId: "r1",

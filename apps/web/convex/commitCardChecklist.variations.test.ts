@@ -103,7 +103,7 @@ describe("commitCardChecklist — variation linking", () => {
     const t = convexTest(schema, modules);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -132,7 +132,7 @@ describe("commitCardChecklist — variation linking", () => {
     const t = convexTest(schema, modules);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -155,7 +155,7 @@ describe("commitCardChecklist — variation linking", () => {
     const t = convexTest(schema, modules);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -179,7 +179,7 @@ describe("commitCardChecklist — variation linking", () => {
     const t = convexTest(schema, modules);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -200,7 +200,7 @@ describe("commitCardChecklist — variation linking", () => {
     const t = convexTest(schema, modules);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -222,13 +222,13 @@ describe("commitCardChecklist — variation linking", () => {
       card("11b", "Alec Bohm", { isVariation: true, cardVariation: "Action" }),
     ];
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       { selectorOptionId: variantTypeId, sportId, cards },
     );
     const first = await readChecklist(t, variantTypeId);
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       { selectorOptionId: variantTypeId, sportId, cards },
     );
@@ -246,7 +246,7 @@ describe("commitCardChecklist — variation linking", () => {
     const t = convexTest(schema, modules);
     const { sportId, variantTypeId } = await seedTree(t);
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -262,7 +262,7 @@ describe("commitCardChecklist — variation linking", () => {
         .variationOfCardId,
     ).toBeDefined();
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -286,7 +286,7 @@ describe("a hand-set variation parent survives re-sync", () => {
     const { sportId, variantTypeId } = await seedTree(t);
 
     // #7 and #900 share no stem, so no derivation would ever link them.
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -304,7 +304,7 @@ describe("a hand-set variation parent survives re-sync", () => {
       });
 
     // Re-sync the identical payload.
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       {
         selectorOptionId: variantTypeId,
@@ -327,7 +327,7 @@ describe("a hand-set variation parent survives re-sync", () => {
       card("11b", "Alec Bohm", { isVariation: true, cardVariation: "Action" }),
     ];
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       { selectorOptionId: variantTypeId, sportId, cards },
     );
@@ -341,7 +341,7 @@ describe("a hand-set variation parent survives re-sync", () => {
         cardId: before.byNumber.get("11b")!._id,
       });
 
-    await t.withIdentity(ADMIN_IDENTITY).mutation(
+    await t.withIdentity(ADMIN_IDENTITY).action(
       api.selectorOptions.commitCardChecklist,
       { selectorOptionId: variantTypeId, sportId, cards },
     );

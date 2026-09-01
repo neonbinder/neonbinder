@@ -114,7 +114,12 @@ export default function CardChecklist({
   const discardCandidates = useMutation(
     api.checklistCandidates.discardCandidates,
   );
-  const commitChecklist = useMutation(api.selectorOptions.commitCardChecklist);
+  // NEO-189: an ACTION, not a mutation. The commit is chunked server-side
+  // (prelude → N chunk mutations → finalize) because a 712-card checklist blew
+  // Convex's per-mutation system-operation budget; see the header comment on
+  // `commitCardChecklist` in convex/selectorOptions.ts. Call shape is
+  // unchanged.
+  const commitChecklist = useAction(api.selectorOptions.commitCardChecklist);
   const resolveEntities = useAction(
     api.selectorOptions.resolveChecklistEntities,
   );

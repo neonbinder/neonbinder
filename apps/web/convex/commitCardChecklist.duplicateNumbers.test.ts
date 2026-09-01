@@ -138,7 +138,7 @@ describe("commitCardChecklist — two source sets sharing card numbers", () => {
 
     const result = await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.selectorOptions.commitCardChecklist, {
+      .action(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: insertId,
         sportId,
         cards: [
@@ -193,7 +193,7 @@ describe("commitCardChecklist — two source sets sharing card numbers", () => {
 
     const result = await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.selectorOptions.commitCardChecklist, {
+      .action(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: insertId,
         sportId,
         cards,
