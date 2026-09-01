@@ -62,10 +62,20 @@ const OTHER_USER = {
 
 beforeEach(() => {
   process.env.TESTING_RESET_SECRET = "test-enabled";
+  // NEO-188: seeding/cancelling a stream fires the preprocess /warmup ping on
+  // a real timer, so it can land after the test that started it — this file
+  // leaked ~9 requests per full-suite run while passing in isolation. Same
+  // stub as placeholderStream.test.ts; the warmup contract is asserted in
+  // adapters.preprocess.test.ts.
+  vi.stubGlobal(
+    "fetch",
+    (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+  );
 });
 
 afterEach(() => {
   delete process.env.TESTING_RESET_SECRET;
+  vi.unstubAllGlobals();
 });
 
 // ---------------------------------------------------------------------------

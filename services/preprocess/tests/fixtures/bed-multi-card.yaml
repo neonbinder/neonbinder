@@ -1,0 +1,12 @@
+crop:
+  category: bed-scan / several cards on the black bed
+  source: tiered
+  identity: false
+  aspect: 0.714
+  aspect_tolerance: 0.04
+  min_area_fraction: 0.10
+  max_area_fraction: 0.45
+
+# Several cards on one 3540x1916 bed pass. The cascade returns exactly one card
+# rather than the sheet, which is the contract downstream pairing depends on.
+# Measured: tiered -> 1000x1400, aspect 0.7143, 20.6% of source, ~41s.

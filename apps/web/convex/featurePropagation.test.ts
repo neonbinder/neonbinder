@@ -29,6 +29,40 @@ const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
 }).glob("./**/*.*s");
 
+/**
+ * NEO-188: several tests in this file commit cards carrying a BSC ref, which
+ * schedules the per-card team-enrichment action. Any test that does not drain
+ * that chain used to let a REAL request to BSC's production API escape and
+ * land after teardown — surfacing only as `Errors 1 error` in the summary.
+ *
+ * This is the file-level backstop: a benign stub that keeps a forgotten drain
+ * from ever becoming network traffic. It is NOT a substitute for draining —
+ * tests below still await their scheduled functions so nothing lands after
+ * the test that started it. Tests that assert on the request install their
+ * own `vi.stubGlobal("fetch", ...)`, which takes precedence.
+ */
+beforeEach(() => {
+  // Fake timers file-wide: `processBscTeamEnrichmentQueue` walks the card list
+  // by RESCHEDULING ITSELF after BSC_TEAM_ENRICH_DELAY_MS (300ms) per card. On
+  // real timers only the head runs inside the test — every remaining card is a
+  // pending timeout that fires during whichever test happens to be running
+  // next. That, not the head call, is what made this leak cross-test and
+  // intermittent. Fake timers let a test drain the WHOLE chain.
+  vi.useFakeTimers();
+  vi.stubGlobal(
+    "fetch",
+    (async () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
 // ---------------------------------------------------------------------------
 // Auth identities
 // ---------------------------------------------------------------------------
@@ -330,6 +364,11 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       ],
     });
 
+    // NEO-188: these refs queue BSC team enrichment. This test asserts nothing
+    // about it, but the chain must finish HERE — left running, it resolved
+    // after teardown and hit BSC's prod API from inside a later test.
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
     const cards = await t.run(async (ctx) =>
       ctx.db
         .query("cardChecklist")
@@ -451,6 +490,9 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
         },
       ],
     });
+
+    // NEO-188: drain the BSC enrichment chain these refs queue (see above).
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const cards = await t.run(async (ctx) =>
       ctx.db
@@ -801,10 +843,16 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantType(t);
 
+    // NEO-188: RECORD the URLs and assert after the drain, rather than calling
+    // expect() inside the stub. `fetchBscCardTeamNameRaw` wraps its fetch in a
+    // try/catch, so an assertion that throws in here is swallowed by the code
+    // under test — the failure then reappears as a confusing downstream
+    // expectation miss, or is lost entirely.
+    const fetchedUrls: string[] = [];
     vi.stubGlobal(
       "fetch",
       (async (url: string | URL | Request) => {
-        expect(String(url)).toContain("/marketplace/card/bsc-50/card-listing");
+        fetchedUrls.push(String(url));
         return new Response(JSON.stringify({ teamName: "Cincinnati Reds" }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -836,6 +884,13 @@ describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", (
 
     // Drain the scheduled processBscTeamEnrichmentQueue chain.
     await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    // The enrichment called BSC for THIS card and nothing else. Asserting the
+    // exact call list (not just "contains") is what makes a stray request from
+    // another test visible here instead of silently satisfying the match.
+    expect(fetchedUrls).toEqual([
+      "https://api-prod.buysportscards.com/marketplace/card/bsc-50/card-listing",
+    ]);
 
     const cards = await t.run(async (ctx) =>
       ctx.db

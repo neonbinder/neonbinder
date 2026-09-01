@@ -1,0 +1,12 @@
+orient:
+  rotation_degrees: 0
+
+crop:
+  category: pre-cropped-scan / chrome mojo refractor, dark border, front
+  source: scan_metadata
+  identity: true
+
+# Shiny. A refractor scatters the scanner light, so the border reads as a
+# gradient rather than a flat colour and classical edge-finding has no clean
+# step to lock onto. Measured: escalate(margin) at topArea 0.769 — it survives
+# today only because BiRefNet overrules it after a ~40s pass.

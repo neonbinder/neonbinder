@@ -73,9 +73,19 @@ const USER_B = { subject: "user_streamBBBB2222" };
 beforeEach(() => {
   enqueueCalls.length = 0;
   vi.useFakeTimers();
+  // NEO-188: closing/cancelling a stream fires the preprocess /warmup ping.
+  // Unstubbed, that was a real request to localhost:8081 from every run — a
+  // no-op on a clean machine, but live traffic to whatever answers that port
+  // on a developer's box. Stub it; adapters.preprocess.test.ts is where the
+  // warmup contract itself is asserted.
+  vi.stubGlobal(
+    "fetch",
+    (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch,
+  );
 });
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 // ---------------------------------------------------------------------------

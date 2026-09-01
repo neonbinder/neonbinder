@@ -5,6 +5,12 @@ import {
   CONVEX_LIB_INCLUDE,
 } from "./vitest.include.mjs";
 
+// NEO-188: both projects install a fetch guard that turns any real outbound
+// request into a failed run. It goes on EVERY project deliberately — the
+// original leak was a scheduled Convex function calling BSC's prod API, and
+// a guard only one project honors leaves that class open on the other.
+const NETWORK_GUARD = path.resolve(__dirname, "./vitest.setup.network-guard.ts");
+
 // `environmentMatchGlobs` is the field convex-test docs recommend but it's
 // not in the current Vitest types. Cast so tsc stays clean — runtime
 // behavior is unaffected.
@@ -18,6 +24,7 @@ export default defineConfig({
           environment: "node",
           globals: true,
           include: CONVEX_LIB_INCLUDE,
+          setupFiles: [NETWORK_GUARD],
           ...({ environmentMatchGlobs: [["convex/**", "edge-runtime"]] } as Record<string, unknown>),
         },
         resolve: {
@@ -45,6 +52,7 @@ export default defineConfig({
           environment: "happy-dom",
           globals: true,
           include: COMPONENTS_INCLUDE,
+          setupFiles: [NETWORK_GUARD],
         },
         resolve: {
           alias: {

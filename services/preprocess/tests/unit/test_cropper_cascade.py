@@ -19,7 +19,7 @@ from PIL import Image
 
 from app import cropper
 from app.classify import ClassifyResult
-from app.cropper import CropDeclined, CropRejected, CropResult, crop
+from app.cropper import CropDeclined, CropRejected, CropResult, crop, scan_meta
 from app.orient import OrientationResult
 
 
@@ -595,6 +595,203 @@ class TestCropResultShape:
         assert result.orientation.rotation_degrees == 90
         assert result.classification.players == ["Jeter"]
         assert result.classification.card_number == "2"
+
+
+class TestScanMetadataIdentity:
+    """NEO-191: a frame the scanner says measures one card has nothing to crop.
+
+    This sits ahead of the NEO-173 classical fast path in "fast" mode, so the
+    assertions below are mostly about ORDER — which stages must not run once
+    the metadata has settled it, and that a silent metadata verdict changes
+    nothing about the stages that follow.
+
+    `_card_jpeg` writes no resolution, so every other test in this file takes
+    the `is_card_sized_scan → None` branch and is unaffected; the tests here
+    stub the check directly rather than hand-building DPI fixtures, which
+    `test_cropper_scan_meta.py` covers on its own.
+    """
+
+    def test_a_card_sized_scan_wins_before_any_pixel_work(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(500, 700))
+        monkeypatch.setattr(
+            "app.cropper.scan_meta.is_card_sized_scan",
+            lambda _b: scan_meta.ScanSize(width_in=2.48, height_in=3.46, dpi=400.0),
+        )
+
+        def _boom(_b):
+            raise AssertionError("a pixel pass ran despite a scan-metadata identity")
+
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _boom)
+        disable_server_strategies()
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", _boom)
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="fast")
+
+        assert result.source == "scan_metadata"
+        assert result.image_bytes == image
+        assert result.returned_bytes_differ is False
+
+    def test_it_reads_the_bytes_as_they_arrived(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """Resolution does not survive a re-encode, so the check has to see the
+        original upload — not a candidate produced by some earlier stage."""
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(500, 700))
+        seen: list[bytes] = []
+        monkeypatch.setattr(
+            "app.cropper.scan_meta.is_card_sized_scan",
+            lambda b: seen.append(b) or None,
+        )
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        disable_server_strategies(tiered_crop=_card_jpeg(size=(400, 560)))
+
+        crop(image_bytes=image, precropped_bytes=None, crop_quality="fast")
+
+        assert seen == [image]
+
+    def test_no_verdict_leaves_the_rest_of_the_cascade_untouched(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(1200, 1600))
+        crop_bytes = _card_jpeg(size=(500, 700))
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        disable_server_strategies(tiered_crop=crop_bytes)
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="fast")
+
+        assert result.source == "tiered"
+        assert result.image_bytes == crop_bytes
+
+    def test_strong_mode_skips_it(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """A human asking for a strong re-crop is explicitly overriding the
+        "nothing to crop" judgement, so the metadata must not pre-empt them."""
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(500, 700))
+
+        def _boom(_b):
+            raise AssertionError("scan-metadata check ran in strong mode")
+
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _boom)
+        disable_server_strategies(tiered_crop=image)
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="strong")
+
+        assert result.source == "tiered"
+
+    def test_a_winning_precropped_upload_pre_empts_it(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """The client's own crop is still stage 1 — it is a stronger statement
+        than "the frame is card-sized"."""
+        stub_orient()
+        stub_classify(_classify())
+
+        def _boom(_b):
+            raise AssertionError("scan-metadata check ran though precropped should win")
+
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _boom)
+        disable_server_strategies()
+
+        result = crop(
+            image_bytes=_card_jpeg(size=(1200, 1600)),
+            precropped_bytes=_card_jpeg(size=(500, 700)),
+            crop_quality="fast",
+        )
+
+        assert result.source == "precropped"
+
+    def test_crop_only_mode_never_reaches_it(self, monkeypatch, stub_orient, stub_classify):
+        """Crop-only has no original to measure; the check must not be
+        consulted about the crop itself."""
+        stub_orient()
+        stub_classify(_classify())
+
+        def _boom(_b):
+            raise AssertionError("scan-metadata check ran in crop-only mode")
+
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _boom)
+
+        result = crop(image_bytes=None, precropped_bytes=_card_jpeg(size=(500, 700)))
+
+        assert isinstance(result, CropResult)
+        assert result.source == "precropped"
+
+    def test_a_rejected_identity_falls_through_rather_than_failing(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """The metadata verdict still passes through `_try_stage`. If those
+        gates reject it — the image is blank, Vision finds no text — the
+        cascade must carry on, not surface a dead end."""
+        stub_orient(_orient(text_count=0))
+        stub_classify(_classify())
+        image = _card_jpeg(size=(500, 700))
+        monkeypatch.setattr(
+            "app.cropper.scan_meta.is_card_sized_scan",
+            lambda _b: scan_meta.ScanSize(width_in=2.48, height_in=3.46, dpi=400.0),
+        )
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        disable_server_strategies()
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="fast")
+
+        assert result.source == "passthrough"
+
+    def test_the_fast_role_settles_scans_without_escalating(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        """The NEO-175 FAST service loads no model. The whole point of reading
+        metadata is that it can now settle the scanner majority itself instead
+        of declining and paying a round trip to the HEAVY service."""
+        stub_orient()
+        stub_classify(_classify())
+        image = _card_jpeg(size=(500, 700))
+        monkeypatch.setattr(
+            "app.cropper.scan_meta.is_card_sized_scan",
+            lambda _b: scan_meta.ScanSize(width_in=2.48, height_in=3.46, dpi=400.0),
+        )
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        disable_server_strategies()
+
+        result = crop(
+            image_bytes=image,
+            precropped_bytes=None,
+            crop_quality="fast",
+            escalate_only=True,
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.source == "scan_metadata"
+
+    def test_the_fast_role_still_declines_when_metadata_says_nothing(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify(_classify())
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        disable_server_strategies()
+
+        result = crop(
+            image_bytes=_card_jpeg(size=(1200, 1600)),
+            precropped_bytes=None,
+            crop_quality="fast",
+            escalate_only=True,
+        )
+
+        assert isinstance(result, CropDeclined)
+        assert result.reason == "fast_path_declined"
 
 
 class TestCropQuality:

@@ -16,6 +16,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
+from app.cropper.scan_meta import is_card_sized_scan
 from app.exif import (
     EXIF_ORIENTATION_AS_STORED,
     EXIF_ORIENTATION_TAG,
@@ -152,3 +153,120 @@ class TestApplyExifOrientation:
         assert reported == 6
         assert _format_of(result) == "JPEG"
         assert _size_of(result) == (40, 60)
+
+
+class TestResolutionSurvivesTheReEncode:
+    """NEO-191: an upright-transpose must not strip the physical resolution.
+
+    `app.cropper.scan_meta` reads the JFIF/EXIF density to decide whether a
+    frame already measures one 2.5x3.5in card and therefore has no background
+    to crop. A `save()` without `dpi=` drops that field silently, so before
+    this an image that merely needed rotating reached the crop cascade stripped
+    of the metadata protecting its printed border — the failure would look like
+    a bad crop, with nothing in the logs pointing back to the transpose.
+    """
+
+    def _dpi_of(self, image_bytes: bytes) -> tuple | None:
+        with Image.open(BytesIO(image_bytes)) as img:
+            return img.info.get("dpi")
+
+    def _jpeg_with_dpi(
+        self,
+        orientation: int,
+        dpi: tuple[int, int],
+        size: tuple[int, int] = (60, 40),
+    ) -> bytes:
+        img = _asymmetric_image(size)
+        exif = img.getexif()
+        exif[EXIF_ORIENTATION_TAG] = orientation
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=95, exif=exif, dpi=dpi)
+        return out.getvalue()
+
+    def test_a_flip_preserves_the_resolution(self):
+        """Orientation 2 mirrors without swapping axes."""
+        result, reported = apply_exif_orientation(self._jpeg_with_dpi(2, (400, 400)))
+
+        assert reported == 2
+        assert self._dpi_of(result) == (400, 400)
+
+    def test_a_90_degree_rotation_swaps_the_resolution_with_the_axes(self):
+        """Orientation 6 swaps width and height, so the horizontal and vertical
+        resolutions swap too — rotating a page cannot change its physical size."""
+        source = self._jpeg_with_dpi(6, (400, 200), size=(60, 40))
+        assert _size_of(source) == (60, 40)
+
+        result, _ = apply_exif_orientation(source)
+
+        assert _size_of(result) == (40, 60)
+        assert self._dpi_of(result) == (200, 400)
+
+    def test_physical_size_is_unchanged_by_the_transpose(self):
+        """The property the swap exists to protect, asserted directly."""
+        source = self._jpeg_with_dpi(6, (400, 200), size=(60, 40))
+        result, _ = apply_exif_orientation(source)
+
+        w, h = _size_of(result)
+        x_dpi, y_dpi = self._dpi_of(result)
+        assert (w / x_dpi, h / y_dpi) == (40 / 200, 60 / 400)
+
+    def test_png_keeps_its_resolution_too(self):
+        """PNG stores pixels-per-metre, so 400dpi round-trips as 399.9992 —
+        approximate equality is the honest assertion, and the 0.0002% drift is
+        four orders of magnitude inside `scan_meta.SIZE_TOLERANCE`."""
+        img = _asymmetric_image()
+        exif = img.getexif()
+        exif[EXIF_ORIENTATION_TAG] = 6
+        out = BytesIO()
+        img.save(out, format="PNG", exif=exif, dpi=(400, 400))
+
+        result, _ = apply_exif_orientation(out.getvalue())
+
+        assert _format_of(result) == "PNG"
+        x_dpi, y_dpi = self._dpi_of(result)
+        assert x_dpi == pytest.approx(400, rel=1e-4)
+        assert y_dpi == pytest.approx(400, rel=1e-4)
+
+    def test_a_default_72dpi_exif_stamp_is_carried_but_never_trusted(self):
+        """An image with no meaningful resolution still gets one: PIL writes
+        XResolution/YResolution = 72 into any EXIF block it emits. Carrying it
+        through is correct — it is what the source said — and harmless, because
+        72 is below `scan_meta.MIN_SCANNER_DPI` and the crop pre-check rejects
+        it on provenance. Preserving metadata and trusting it are separate
+        jobs, and only the second one is allowed to be opinionated."""
+        result, reported = apply_exif_orientation(_jpeg(6))
+
+        assert reported == 6
+        assert _size_of(result) == (40, 60)
+        assert self._dpi_of(result) == (72, 72)
+        assert is_card_sized_scan(result) is None
+
+    def test_the_untouched_path_is_still_byte_identical(self):
+        """Orientation 1 returns the ORIGINAL object — the density is intact
+        because nothing was rewritten at all. This is the path production
+        actually takes, so it is the one that must not regress."""
+        source = self._jpeg_with_dpi(1, (400, 400))
+
+        result, reported = apply_exif_orientation(source)
+
+        assert reported == 1
+        assert result is source
+        assert self._dpi_of(result) == (400, 400)
+
+    def test_a_square_image_still_swaps_its_resolution_pair(self):
+        """The size heuristic this deliberately avoids: a square image
+        transposes without changing dimensions, so "did width and height
+        change?" would wrongly report no swap and leave an anisotropic pair
+        the wrong way round."""
+        source = self._jpeg_with_dpi(6, (400, 200), size=(40, 40))
+
+        result, _ = apply_exif_orientation(source)
+
+        assert _size_of(result) == (40, 40)
+        assert self._dpi_of(result) == (200, 400)
+
+    @pytest.mark.parametrize("orientation", IN_PLACE_ORIENTATIONS[1:])
+    def test_in_place_orientations_never_swap_the_pair(self, orientation):
+        result, _ = apply_exif_orientation(self._jpeg_with_dpi(orientation, (400, 200)))
+
+        assert self._dpi_of(result) == (400, 200)

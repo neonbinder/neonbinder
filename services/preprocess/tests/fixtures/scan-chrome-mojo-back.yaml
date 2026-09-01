@@ -1,0 +1,7 @@
+orient:
+  rotation_degrees: 0
+
+crop:
+  category: pre-cropped-scan / chrome mojo refractor, back
+  source: scan_metadata
+  identity: true

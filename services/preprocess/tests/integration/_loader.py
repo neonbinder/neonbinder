@@ -22,6 +22,21 @@ Sidecar shape:
         equals: Mariners
       card_number:
         equals: "24"
+
+    crop:                          # NEO-191 — consumed by tests/functional
+      category: pre-cropped-scan   # free-text grouping, for readability
+      source: scan_metadata        # expected `cropped_source`
+      identity: true               # server must return the input untouched
+      # when identity is false, the crop's geometry is asserted instead:
+      # aspect: 0.714
+      # aspect_tolerance: 0.04
+      # min_area_fraction: 0.02    # crop area / source area
+      # max_area_fraction: 0.60
+
+A sidecar declaring `crop:` is picked up by the deployed-target functional
+suite; one without it is invisible there. The two suites deliberately read the
+same sidecars — an image's identity ("this is the shiny dark-bordered front")
+should be stated once, not duplicated per test layer.
 """
 
 from __future__ import annotations
@@ -85,6 +100,39 @@ class StringMatcher:
 
 
 @dataclass(frozen=True)
+class CropExpectation:
+    """What the crop cascade must do with one fixture (NEO-191).
+
+    `identity` is the load-bearing field. True asserts the server returned the
+    upload untouched — which for an already-tight scan is the *only* correct
+    outcome, and the assertion that would have caught the border shaving in
+    production. False switches to geometry assertions on the returned crop.
+    """
+
+    category: str
+    source: str
+    identity: bool
+    aspect: float | None = None
+    aspect_tolerance: float = 0.04
+    min_area_fraction: float | None = None
+    max_area_fraction: float | None = None
+
+    @classmethod
+    def from_value(cls, value: Any) -> CropExpectation | None:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError(f"crop: must be a mapping, got {value!r}")
+        missing = {"category", "source", "identity"} - set(value)
+        if missing:
+            raise ValueError(f"crop: missing required key(s) {sorted(missing)}")
+        unknown = set(value) - set(cls.__dataclass_fields__)
+        if unknown:
+            raise ValueError(f"crop: unknown key(s) {sorted(unknown)}")
+        return cls(**value)
+
+
+@dataclass(frozen=True)
 class FixtureCase:
     name: str
     image_path: Path
@@ -95,6 +143,7 @@ class FixtureCase:
     player: StringMatcher | None = None
     team: StringMatcher | None = None
     card_number: StringMatcher | None = None
+    crop: CropExpectation | None = None
 
     @property
     def has_expectations(self) -> bool:
@@ -107,6 +156,7 @@ class FixtureCase:
                 self.player,
                 self.team,
                 self.card_number,
+                self.crop,
             )
         )
 
@@ -121,6 +171,7 @@ def _parse_sidecar(data: dict) -> dict[str, Any]:
         "player": StringMatcher.from_value(classify.get("player")),
         "team": StringMatcher.from_value(classify.get("team")),
         "card_number": StringMatcher.from_value(classify.get("card_number")),
+        "crop": CropExpectation.from_value(data.get("crop")),
     }
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app.cropper import SOURCE_SCAN_METADATA, STRATEGY_NAMES
 from app.main import MAX_IMAGE_BYTES, app
 
 from ._loader import FixtureCase, load_fixtures
@@ -29,6 +30,11 @@ if not _FIXTURES:
 client = TestClient(app)
 
 INTERNAL_KEY = "integration-test-key"
+
+# Every label `cropped_source` can legitimately carry, assembled from the
+# cascade itself so a new stage cannot desynchronise it. "precropped" and
+# "passthrough" are the two bookends that are not strategies.
+KNOWN_CROP_SOURCES = frozenset({"precropped", SOURCE_SCAN_METADATA, *STRATEGY_NAMES, "passthrough"})
 
 
 @pytest.fixture(autouse=True)
@@ -75,20 +81,16 @@ def test_fixture_end_to_end(case: FixtureCase):
     }, f"{case.name}: bad rotation {body['rotation_degrees']!r}"
     assert 0.0 <= body["orient_confidence"] <= 1.0
     assert body["text_count"] >= 0
-    # The committed fixtures are phone-camera photos (16:9 aspect) of cards,
-    # not already-tight card crops, so the cascade usually falls through to
-    # passthrough in slice 2a (no SAM yet). Just verify the source is a
-    # known label and the b64 field is consistent with it.
-    # Keep in sync with cropper.STRATEGY_NAMES.
-    assert body["cropped_source"] in {
-        "precropped",
-        "tiered",
-        "pil_trim_dark",
-        "pil_trim_light",
-        "sam",
-        "haiku_bbox",
-        "passthrough",
-    }, f"{case.name}: unexpected cropped_source {body['cropped_source']!r}"
+    # Verify the source is a known label and the b64 field is consistent with
+    # it. DERIVED from the cascade rather than restated: this used to be a
+    # hand-maintained literal set with a "keep in sync" comment, and NEO-191's
+    # `scan_metadata` label duly desynchronised it — invisibly, because the
+    # suite skips itself when no fixture images are present, so the break would
+    # have surfaced only once someone finally populated the bucket.
+    assert body["cropped_source"] in KNOWN_CROP_SOURCES, (
+        f"{case.name}: unexpected cropped_source {body['cropped_source']!r} "
+        f"(known: {sorted(KNOWN_CROP_SOURCES)})"
+    )
     if body["cropped_source"] == "precropped":
         assert body["cropped_image_b64"] is None, (
             f"{case.name}: cropped_image_b64 should be null when source==precropped"

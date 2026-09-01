@@ -1,0 +1,14 @@
+orient:
+  rotation_degrees: 0
+
+crop:
+  category: pre-cropped-scan / white border, front
+  source: scan_metadata
+  identity: true
+
+# The card from the 2026-08-27 production report. Its white printed border sits
+# on a white-ish field once the scanner has cropped the black bed away, so the
+# classical detector locks onto the inner orange panel and shaves to 91% per
+# side at a clean 0.714 aspect. Measured before NEO-191: escalate(crop), then a
+# ~40s BiRefNet pass that could not overturn it (NEO-192). This fixture exists
+# to fail loudly if that ever comes back.

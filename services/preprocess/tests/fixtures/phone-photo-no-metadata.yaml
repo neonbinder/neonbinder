@@ -1,0 +1,14 @@
+crop:
+  category: phone photo / no trustworthy resolution
+  source: tiered
+  identity: false
+  aspect: 0.714
+  aspect_tolerance: 0.05
+  min_area_fraction: 0.30
+  max_area_fraction: 0.85
+
+# The negative case for NEO-191. A 3072x4080 Pixel shot stamped 72dpi, which
+# would measure 42x57in if the resolution were believed — so scan_metadata must
+# decline on provenance and the pixel cascade must handle it exactly as before.
+# A `source: scan_metadata` here would mean the dpi floor had been breached.
+# Measured: tiered -> 2248x3147, aspect 0.714, 56.4% of source, ~44s.
