@@ -361,15 +361,42 @@ export default function CardChecklist({
         cards: preview.cards,
         batchId: preview.batchId,
       });
-      // NEO-92: no more "enriching in background" note — every created
-      // player/team was already enriched during the review wizard, before
-      // this commit ran.
-      setSyncMessage(`Saved ${result.count} cards.`);
       // NEO-195: the candidates have been promoted into cardChecklist, so the
       // staging rows have done their job. Dropping them here rather than
       // leaving them for the next fetch's clear-stale step keeps the table
       // empty between syncs.
-      await discardCandidates({ selectorOptionId: variantId });
+      //
+      // NEO-189: this await must stay BEFORE the "Saved" message. Now that
+      // `commitCardChecklist` is an action, `useAction`'s promise resolves as
+      // soon as the server returns — unlike `useMutation`, it carries no
+      // guarantee that the client's subscribed queries have caught up. But
+      // `discardCandidates` IS a mutation, and a mutation's resolution does
+      // guarantee the client reflects every write that preceded it on the
+      // server — which includes all of the action's internal commit
+      // mutations. So awaiting the discard first restores, for free, the
+      // repaint guarantee the mutation used to give us. .maestro/flows/
+      // setup.yaml waits for "Saved N cards" and then immediately asserts a
+      // "#NNN" card row is visible; painting the message any earlier races
+      // that assertion against the `getCardChecklist` subscription.
+      let discardError: unknown;
+      try {
+        await discardCandidates({ selectorOptionId: variantId });
+      } catch (error) {
+        // The cards ARE saved — the commit already succeeded. A failed
+        // discard leaves stale staging rows (the next fetch's clear-stale
+        // step sweeps them), so it must never be reported as "Commit
+        // failed".
+        discardError = error;
+        console.warn("Failed to discard checklist candidates:", error);
+      }
+      // NEO-92: no more "enriching in background" note — every created
+      // player/team was already enriched during the review wizard, before
+      // this commit ran.
+      setSyncMessage(
+        discardError
+          ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
+          : `Saved ${result.count} cards.`,
+      );
     } catch (error) {
       setSyncMessage(
         `Commit failed: ${error instanceof Error ? error.message : "Unknown error"}`,

@@ -345,3 +345,110 @@ describe("CardChecklist — the pairing session outlives the fetch", () => {
     expect(screen.queryByText(/Match Cards/)).toBeNull();
   });
 });
+
+/**
+ * NEO-189 — the "Saved N cards" message must not paint before the client's
+ * queries have caught up with the commit.
+ *
+ * `commitCardChecklist` became an ACTION when the commit was chunked
+ * server-side. `useAction`'s promise resolves the moment the server returns;
+ * `useMutation`'s only resolves once the client's subscribed queries reflect
+ * the mutation's writes. So the message that used to be safe to paint right
+ * after the commit now races `getCardChecklist`'s repaint — and
+ * .maestro/flows/setup.yaml waits for "Saved 335 cards" and then IMMEDIATELY
+ * asserts a "#NNN" card row is visible.
+ *
+ * The fix is ordering, not a new sync primitive: `discardCandidates` is still
+ * a mutation, and its resolution guarantees the client reflects every write
+ * that preceded it — including the action's internal commit mutations. These
+ * tests pin that ordering, and pin that a discard failure after a SUCCESSFUL
+ * commit still reports the cards as saved.
+ */
+describe("CardChecklist — commit paints 'Saved' only after the queries catch up", () => {
+  let resolveFetch: (value: unknown) => void;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    // The no-candidates path: the fetch short-circuits, the client skips the
+    // pairing dialog and runs straight through resolveEntities → runCommit.
+    // Shortest route to the commit under test.
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 335 });
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+  });
+
+  /** Drive the fetch → resolve → commit path to the point of the discard. */
+  async function runToCommit() {
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "Custom selector subtree — no marketplace data available.",
+        candidateCount: 0,
+      });
+    });
+  }
+
+  it("withholds 'Saved N cards' until discardCandidates — the mutation carrying the repaint guarantee — has resolved", async () => {
+    let resolveDiscard!: () => void;
+    mockDiscardCandidates.mockImplementation(
+      () => new Promise<void>((resolve) => (resolveDiscard = resolve)),
+    );
+
+    await runToCommit();
+
+    // The action has returned, but the mutation behind it has not. If the
+    // message were set here the E2E flow's "#NNN" assertion would be racing
+    // the checklist subscription.
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockDiscardCandidates).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/Saved 335 cards/)).toBeNull();
+
+    await act(async () => {
+      resolveDiscard();
+    });
+
+    expect(screen.getByText("Saved 335 cards.")).toBeTruthy();
+  });
+
+  it("still reports the cards as saved when the post-commit discard fails", async () => {
+    // The commit succeeded — the rows are in cardChecklist. Reporting
+    // "Commit failed" here would tell the operator to re-run a sync that
+    // already worked.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockDiscardCandidates.mockRejectedValue(new Error("discard blew up"));
+
+    await runToCommit();
+
+    await waitFor(() =>
+      expect(screen.getByText(/^Saved 335 cards\./)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Commit failed/)).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("reports 'Commit failed' when the commit action itself throws, and never claims a save", async () => {
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 3 timed out"));
+
+    await runToCommit();
+
+    await waitFor(() =>
+      expect(screen.getByText("Commit failed: chunk 3 timed out")).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Saved/)).toBeNull();
+    expect(mockDiscardCandidates).not.toHaveBeenCalled();
+  });
+});
