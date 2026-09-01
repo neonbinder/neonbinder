@@ -26,6 +26,9 @@ tags:
 #     name-conflict choice on the merged row, opens the Matched section to show
 #     it, defaults to BSC, changes the name the row will be saved with when the
 #     operator picks SportLots, and does NOT block Confirm.
+#   - NEO-189 follow-up: when NEITHER marketplace has the name right, clicking
+#     the row's title opens a field, and the typed name becomes a third checked
+#     option in the same group — the name the row would be saved with.
 #   - Cancel writes nothing: the status message says so and the card count on
 #     the set is unchanged.
 #
@@ -248,6 +251,12 @@ tags:
 #   more), and stay inside the dialog's inner scroller, which Maestro cannot
 #   drive (see the keep-shelf note above).
 #
+# NOT COVERED HERE — Escape cancelling a rename. Escape must be swallowed by
+#   the name field so it does not reach the dialog root and close the whole
+#   modal, and Maestro's web driver cannot send it at all (see the key-mapping
+#   note below). CardPairingModal.test.tsx asserts both halves — the edit is
+#   abandoned AND onClose is not called.
+#
 # NOT COVERED HERE — arrow-key operation of the radiogroup. Maestro's web
 #   driver maps only ENTER and BACKSPACE (maestro.drivers.WebDriver
 #   .mapToSeleniumKey); every other KeyCode throws "not supported on web", so
@@ -403,6 +412,82 @@ tags:
 # adding to it.
 - assertNotVisible:
     id: "Unlink #FS-1 ${output.bscName}"
+
+# ── NEITHER MARKETPLACE IS RIGHT: THE OPERATOR TYPES THE NAME ───────────────
+# The conflict control only ever offered a choice BETWEEN two transcriptions,
+# and both can be wrong — the operator is the only party in the loop actually
+# holding the card. Renaming here rather than in CardDetailPanel is the whole
+# point: after Confirm the wrong name is a real NB card that anything reading
+# the checklist reads.
+#
+# The typed name joins the SAME radiogroup as a third option rather than
+# silently overwriting the row, so the group keeps saying which of the names on
+# offer is the one that will be saved.
+#
+# Still read-only (R7a): this is modal-local reducer state like every other
+# step in STEP 3, and the flow still ends at Cancel.
+#
+# Cheap by construction — no extra fetch, no extra dialog, and it reuses the
+# conflict this flow already manufactured. A separate flow would have to re-sync
+# this same shared real set at ~90s a go (see the note at the top of STEP 3).
+
+# The title of a matched row is a button that swaps in a text field. Matched
+# loosely — the row's visible label carries whichever name is currently chosen,
+# which at this point is SportLots' and is read from live data.
+- tapOn:
+    id: "Edit name for #FS-1 .*"
+# The field names itself by NUMBER alone ("Edit name for #FS-1"), never by the
+# card's name: the name is the thing this control changes, and a field that
+# renames itself as you type is re-announced mid-edit. It is also why it is not
+# called "Name for #FS-1" — that is the radiogroup, asserted above, and two
+# controls on one row cannot share an accessible name (this selector would then
+# match both).
+- extendedWaitUntil:
+    visible:
+      id: "Edit name for #FS-1"
+    timeout: 7000
+# The field opens focused with its text SELECTED, so it is NOT tapped (and a
+# tap would only collapse the selection). eraseText runs anyway: it costs one
+# step and makes the result independent of whether the web driver's sendKeys
+# replaces a selection or types at a caret.
+- eraseText: 60
+- inputText: "NB Operator Name"
+# ENTER commits. Maestro's web driver maps only ENTER and BACKSPACE
+# (maestro.drivers.WebDriver.mapToSeleniumKey) — checklist-keyboard-only-dialog
+# documents that even `pressKey: Escape` never reaches a div-level keydown
+# handler on web. That is exactly why the commit key is Enter here, and why the
+# cancel key (Escape, which MUST be swallowed by the field rather than reaching
+# the dialog root and closing the whole modal) is covered in
+# CardPairingModal.test.tsx instead.
+- pressKey: Enter
+
+# The typed name is now a THIRD option in the same group…
+#
+# Every assertion on the typed value is PREFIX-matched with a trailing `.*`,
+# for the reason card-detail-panel.yaml documents at its own rename step:
+# Maestro web can place the cursor one position before the end of a React
+# controlled input, so eraseText may leave a single trailing character of the
+# original value behind. "NB Operator Name" is unique enough to prove the
+# rename landed; a residual character is harmless to what is being tested and
+# is not worth a brittle exact match.
+- extendedWaitUntil:
+    visible:
+      id: "Custom: NB Operator Name.* — use this name for #FS-1"
+    timeout: 7000
+# …and it is the CHECKED one. Asserted the way this flow asserts every other
+# choice: on the name the row will actually be saved with, not on the pill's
+# styling. The SportLots name is gone from the row, so the typed name replaced
+# the choice rather than being added alongside it.
+- assertVisible:
+    id: "Unlink #FS-1 NB Operator Name.*"
+- assertNotVisible:
+    id: "Unlink #FS-1 ${output.slName}"
+# Both marketplace names stay on offer, so the rename is as reversible as the
+# original two-way choice was.
+- assertVisible:
+    id: "BSC: .* — use this name for #FS-1"
+- assertVisible:
+    id: "SportLots: .* — use this name for #FS-1"
 
 # ── A CONFLICT DOES NOT BLOCK CONFIRM ───────────────────────────────────────
 # Deliberately not a gate: blocking would let one flagged row hold a streamed

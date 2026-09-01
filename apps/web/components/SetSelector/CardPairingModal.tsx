@@ -122,7 +122,29 @@ export type PairingResult = { cards: PairingCard[] };
  */
 type NameConflict = NameDisagreement & {
   /** Whose name the merged card is carrying right now. */
-  chosen: "bsc" | "sportlots";
+  chosen: "bsc" | "sportlots" | "custom";
+  /**
+   * A name the OPERATOR typed, when neither marketplace had it right.
+   *
+   * Both marketplaces getting a card wrong is not hypothetical — that is the
+   * same class of error the whole conflict control exists for, one step
+   * further along, and the operator is the only party on this screen who can
+   * see the card. So `RENAME` on a conflicted row does not simply overwrite
+   * `card.cardName` and leave a radiogroup claiming BSC's name is winning: it
+   * becomes a THIRD option in the same group, checked, with the two
+   * marketplace names still one click away.
+   *
+   * Defined only once the operator has typed something that is neither
+   * marketplace's name, and `custom !== undefined` is exactly the condition
+   * under which the third radio renders. That keeps the group's invariant —
+   * every option is reachable, exactly one is checked — a property of the
+   * data rather than of the render.
+   *
+   * It is deliberately NOT cleared when the operator switches back to BSC or
+   * SportLots: their typed name stays on offer, so the choice is as reversible
+   * as the original two-way one already was.
+   */
+  custom?: string;
 };
 
 /**
@@ -169,7 +191,31 @@ type Action =
   // NEO-189: which marketplace's name the merged card keeps. Indexes
   // `state.matched` exactly as UNLINK does — that array is what the list
   // renders, and `ordered` sorts state rather than a rendered copy.
-  | { type: "CHOOSE_NAME"; index: number; side: "bsc" | "sportlots" }
+  //
+  // `custom` is the operator's own name, and is only a legal side once
+  // `nameConflict.custom` exists — the reducer guards it rather than trusting
+  // the render, since the render is not the only caller (the radiogroup's
+  // arrow-key handler dispatches this too).
+  | { type: "CHOOSE_NAME"; index: number; side: "bsc" | "sportlots" | "custom" }
+  /**
+   * NEO-189 follow-up — the operator retypes a card's name.
+   *
+   * Marketplaces get names wrong, and both can be wrong at once; the operator
+   * holding the card is the only one who can settle it, and after Confirm the
+   * name is a committed NB card. So the name is editable HERE, before anything
+   * is written, rather than in CardDetailPanel one commit later.
+   *
+   * No backend change: this rewrites `card.cardName`, the same field
+   * CHOOSE_NAME already rewrites, and that field already flows through
+   * `onConfirm` into `commitCardChecklist`.
+   *
+   * Indexes `state.matched` exactly as UNLINK and CHOOSE_NAME do. Note what it
+   * must NOT touch: `cardNumber`, `cardVariation` and `platformData` are what
+   * `candidateKey`, `domKey` and `compareCards` are derived from, so a rename
+   * cannot move a row, break a React key, or invalidate the `data-` handles
+   * the focus helpers re-query after a dispatch.
+   */
+  | { type: "RENAME"; index: number; cardName: string }
   // Keyed on candidateKey for exactly the same reason LINK is: two SportLots
   // rows filed under one number are two different cards, and a number-keyed
   // lookup moves whichever of them sorted first. The operator watches the row
@@ -551,6 +597,11 @@ function baseReducer(state: State, action: Action): State {
         // Yastrzemski" over SportLots' "Mike Yastrzemski|Carl Yastrzemski" —
         // an unlink that does not undo the merge, and a conflict that could
         // never be detected again on a re-link because both rows now agree.
+        //
+        // This reads the CONFLICT, not `card.cardName`, so it is already right
+        // for a row the operator renamed: a typed name belongs to the merged
+        // card, not to either marketplace's row, and stamping it onto both
+        // halves would destroy the disagreement the operator was correcting.
         cardName: pair.nameConflict?.bsc ?? pair.card.cardName,
         platformData: pair.card.platformData.bsc
           ? { bsc: pair.card.platformData.bsc }
@@ -591,7 +642,16 @@ function baseReducer(state: State, action: Action): State {
       if (pair.nameConflict.chosen === action.side) return state;
       const conflict = pair.nameConflict;
       const cardName =
-        action.side === "bsc" ? conflict.bsc : conflict.sportlots;
+        action.side === "bsc"
+          ? conflict.bsc
+          : action.side === "sportlots"
+            ? conflict.sportlots
+            : conflict.custom;
+      // "custom" is only selectable once the operator has typed one. Guarded
+      // here rather than at the call sites so the radiogroup's invariant —
+      // exactly one of the rendered options is checked — cannot be broken by a
+      // dispatch for an option that is not on screen.
+      if (cardName === undefined) return state;
       return {
         ...state,
         matched: state.matched.map((m, i) =>
@@ -601,6 +661,71 @@ function baseReducer(state: State, action: Action): State {
                 card: { ...pair.card, cardName },
                 nameConflict: { ...conflict, chosen: action.side },
               }
+            : m,
+        ),
+      };
+    }
+    /**
+     * NEO-189 follow-up — the operator types the card's real name.
+     *
+     * Three outcomes, and the interesting one is the third:
+     *
+     *  1. On an ordinary row: `card.cardName` is rewritten and that is all.
+     *  2. On a CONFLICTED row where the typed name is exactly one of the two
+     *     marketplace names: this is indistinguishable from having clicked
+     *     that pill, so it IS that — same `chosen`, same result. Anything else
+     *     would leave the radiogroup showing "Custom: <BSC's name>" checked
+     *     alongside an unchecked, identical "BSC: <BSC's name>", which is a
+     *     control asking the operator to choose between two spellings of the
+     *     same decision. Matched on the exact trimmed string rather than
+     *     `nameKey`, deliberately: `nameKey` folds accents and punctuation, so
+     *     "José Ramírez" typed over BSC's "Jose Ramirez" would be swallowed as
+     *     "you picked BSC" and the operator's correction silently discarded.
+     *  3. On a conflicted row where it matches neither: it becomes a third
+     *     option in the same radiogroup, checked. See `NameConflict.custom`.
+     *
+     * A no-op — blank, or the name the row already carries — returns the same
+     * state object, so it does not re-render or re-sort the list. That is what
+     * makes "commit on blur" safe to wire up: leaving the field without typing
+     * anything is genuinely nothing, not a rename to the same value.
+     */
+    case "RENAME": {
+      const pair = state.matched[action.index];
+      if (!pair) return state;
+      const cardName = action.cardName.trim();
+      if (!cardName) return state;
+      const conflict = pair.nameConflict;
+      if (!conflict) {
+        if (cardName === pair.card.cardName) return state;
+        return {
+          ...state,
+          matched: state.matched.map((m, i) =>
+            i === action.index ? { ...pair, card: { ...pair.card, cardName } } : m,
+          ),
+        };
+      }
+      const chosen: NameConflict["chosen"] =
+        cardName === conflict.bsc
+          ? "bsc"
+          : cardName === conflict.sportlots
+            ? "sportlots"
+            : "custom";
+      const nameConflict: NameConflict =
+        chosen === "custom"
+          ? { ...conflict, chosen, custom: cardName }
+          : { ...conflict, chosen };
+      if (
+        cardName === pair.card.cardName &&
+        conflict.chosen === nameConflict.chosen &&
+        conflict.custom === nameConflict.custom
+      ) {
+        return state;
+      }
+      return {
+        ...state,
+        matched: state.matched.map((m, i) =>
+          i === action.index
+            ? { ...pair, card: { ...pair.card, cardName }, nameConflict }
             : m,
         ),
       };
@@ -815,6 +940,50 @@ export default function CardPairingModal({
     }),
   );
   const [selectedBsc, setSelectedBsc] = useState<string | null>(null);
+  /**
+   * NEO-189 follow-up — which matched row's title is open for editing, keyed
+   * on `candidateKey`.
+   *
+   * NOT the array index, for the reason `LINK`, `KEEP` and `refocusSelectedRadio`
+   * all avoid indexes: `ordered()` re-sorts `state.matched` after every
+   * dispatch, and `ABSORB` inserts rows into it while the operator works. A
+   * held index would silently come to mean a DIFFERENT row — so an `UNLINK`
+   * or a streamed arrival elsewhere in the list would leave an open text field
+   * sitting on someone else's card, which is the same class of bug as
+   * number-keyed KEEP moving the wrong row to the shelf.
+   *
+   * A key that no longer matches any row (its row was unlinked out of
+   * `matched`) simply matches nothing and no editor renders — the state is
+   * self-cancelling rather than dangling.
+   */
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  /** The in-progress text. Only meaningful while `editingKey` is set. */
+  const [editDraft, setEditDraft] = useState("");
+  /**
+   * Has the OPEN edit session already been settled?
+   *
+   * `finishEdit` has two triggers that a real browser fires as a PAIR, not as
+   * alternatives: a browser dispatches `blur` when the focused element is
+   * removed from the DOM, and settling an edit removes the field. So Escape
+   * produces keydown → unmount → blur, and the blur arrives at a handler that
+   * commits — resurrecting the draft the operator just cancelled. Enter has
+   * the same shape; it is merely harmless there because both calls commit the
+   * same text.
+   *
+   * A ref rather than state on purpose: it has to be readable and writable
+   * synchronously WITHIN one browser event sequence, before React has
+   * re-rendered anything. A state flag would still be stale when the blur
+   * lands, which is exactly the window this closes.
+   *
+   * Reset when a new edit opens, not when one closes, so the flag's meaning is
+   * "this session is spoken for" rather than "no edit is open" — the stray
+   * blur arrives after `editingKey` is already null, so the latter could not
+   * distinguish it from anything else.
+   *
+   * jsdom does not model removal-blur, so this is pinned by a test that
+   * dispatches the two events explicitly inside one `act()`.
+   */
+  const editSessionDoneRef = useRef(false);
   const [bscFilter, setBscFilter] = useState("");
   const [slFilter, setSlFilter] = useState("");
   // Collapsed by default ONLY when there is unmatched work to do — the point
@@ -913,6 +1082,29 @@ export default function CardPairingModal({
         ?.querySelector<HTMLElement>(
           `[data-name-conflict="${key}"] [role="radio"][tabindex="0"]`,
         )
+        ?.focus();
+    });
+  }, []);
+
+  /**
+   * NEO-189 follow-up — put focus back on the title button a rename just
+   * closed.
+   *
+   * Same shape and same reasoning as `refocusSelectedRadio`: the button the
+   * operator activated to open the editor does not exist while the editor is
+   * open, so there is no element ref to keep — it has to be re-queried after
+   * the render that swaps the input back out. Keyed by `domKey`, which a
+   * rename cannot change (it is derived from the marketplace ref), so the
+   * lookup still finds the row it was called for.
+   *
+   * Without it, committing or cancelling an edit drops focus to <body>, which
+   * for a keyboard operator part-way down a 220-row list means losing their
+   * place entirely.
+   */
+  const refocusCardTitle = useCallback((key: string) => {
+    requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLElement>(`[data-card-title="${key}"]`)
         ?.focus();
     });
   }, []);
@@ -1056,16 +1248,158 @@ export default function CardPairingModal({
               </button>
               {!matchedCollapsed && (
                 <ul className="flex flex-col gap-1">
-                  {state.matched.map((m, i) => (
+                  {state.matched.map((m, i) => {
+                    const rowKey = candidateKey(m.card);
+                    const editing = editingKey === rowKey;
+                    /**
+                     * Close the editor, optionally committing what was typed.
+                     *
+                     * `commit` is true for Enter and for blur, false for
+                     * Escape. The reducer decides whether the typed name is
+                     * actually a change (see RENAME): blank, whitespace-only
+                     * and unchanged all return the same state object, so
+                     * "commit" on a field the operator only tabbed through is
+                     * genuinely a no-op rather than a rename to the same value.
+                     *
+                     * Focus goes back to the title button either way. It does
+                     * not exist yet at this point — it is re-rendered by the
+                     * state change on the next line — so the helper re-queries
+                     * it by `domKey` after the paint.
+                     */
+                    const finishEdit = (commit: boolean) => {
+                      // First call wins. See `editSessionDoneRef`: the browser
+                      // fires a blur at the field this call is about to
+                      // unmount, so without this an Escape would be followed
+                      // by a commit of the very draft it cancelled.
+                      if (editSessionDoneRef.current) return;
+                      editSessionDoneRef.current = true;
+                      if (commit) {
+                        dispatch({
+                          type: "RENAME",
+                          index: i,
+                          cardName: editDraft,
+                        });
+                      }
+                      setEditingKey(null);
+                      refocusCardTitle(domKey(m.card));
+                    };
+                    return (
                     <li
                       key={candidateKey(m.card)}
                       className="flex flex-col gap-1 text-sm text-gray-200 bg-gray-800/60 rounded px-2 py-1"
                     >
-                      <div className="flex items-center justify-between">
-                        <span>
-                          {label(m.card)}
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="flex min-w-0 items-center gap-2">
+                          {editing ? (
+                            <>
+                              {/* The number is rendered STATICALLY beside the
+                                  field rather than being part of it. It is the
+                                  one thing on the row that says which card is
+                                  being renamed — a card and its variation share
+                                  a name far more often than they share nothing —
+                                  and it is not the operator's to edit: it is
+                                  BSC's number, and `candidateKey`, `domKey` and
+                                  `compareCards` are all derived from it. */}
+                              <span className="text-gray-400 shrink-0">
+                                #{m.card.cardNumber}
+                              </span>
+                              <Input
+                                bare
+                                ref={(el) => {
+                                  // Autofocus with the text selected: the
+                                  // common edit is replacing a wrong name
+                                  // outright, not amending it, so typing
+                                  // should overwrite. Done on the ref rather
+                                  // than with `autoFocus` because `autoFocus`
+                                  // gives no selection.
+                                  if (el && document.activeElement !== el) {
+                                    el.focus();
+                                    el.select();
+                                  }
+                                }}
+                                className="min-w-0 flex-1 text-sm px-1.5 py-0.5"
+                                type="text"
+                                value={editDraft}
+                                onChange={(e) => setEditDraft(e.target.value)}
+                                // Named by the NUMBER, not by `label(m.card)`:
+                                // the name is what this control changes, and a
+                                // field that renames itself as you type is
+                                // re-announced mid-edit. Same reasoning as
+                                // `conflictScopeLabels`.
+                                //
+                                // "EDIT name for", not "Name for": the
+                                // radiogroup below is already `Name for
+                                // #<scope>`, and on a single-conflict row that
+                                // scope IS the bare number — so the obvious
+                                // label would put two differently-roled
+                                // controls with one accessible name on the
+                                // same row, which is the ambiguity
+                                // `conflictScopeLabels` exists to remove. It
+                                // would also make the Maestro selector
+                                // `id: "Name for #FS-1"` (already used
+                                // against the radiogroup in
+                                // checklist-pairing-dialog-cancel.yaml) match
+                                // two elements.
+                                aria-label={`Edit name for #${m.card.cardNumber}`}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    finishEdit(true);
+                                    return;
+                                  }
+                                  if (e.key === "Escape") {
+                                    // MUST stop here. The dialog root's own
+                                    // onKeyDown closes the whole modal on
+                                    // Escape, so without this, abandoning a
+                                    // rename would throw away every pairing
+                                    // decision on the screen.
+                                    e.stopPropagation();
+                                    finishEdit(false);
+                                  }
+                                  // Everything else — arrows included — is
+                                  // left alone. The radiogroup's arrow handler
+                                  // is on a sibling subtree, not an ancestor
+                                  // of this field, so it never sees these
+                                  // keys; the dialog's Tab trap is the only
+                                  // other handler above us and Tab out of a
+                                  // field is exactly what it should do.
+                                }}
+                                onBlur={() => finishEdit(true)}
+                              />
+                              {m.card.cardVariation && (
+                                <span className="text-gray-400 shrink-0">
+                                  · {m.card.cardVariation}
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              // Re-queried by `refocusCardTitle` after the
+                              // editor closes; keyed like `data-name-conflict`
+                              // and for the same reason.
+                              data-card-title={domKey(m.card)}
+                              className="text-left border-b border-dotted border-gray-600 hover:border-[#00B7FF] hover:text-white"
+                              onClick={() => {
+                                // Prefilled with `cardName` ALONE — not
+                                // `label()`. The number and the variation
+                                // description are separate fields on the card;
+                                // a field prefilled with "#461 Noah Cameron"
+                                // invites an operator to retype the number into
+                                // the name, and the commit would take it.
+                                setEditDraft(m.card.cardName);
+                                setEditingKey(rowKey);
+                                // A fresh session is unsettled, whatever the
+                                // last one did.
+                                editSessionDoneRef.current = false;
+                              }}
+                              aria-label={`Edit name for ${label(m.card)}`}
+                            >
+                              {label(m.card)}
+                            </button>
+                          )}
                           {m.confidence > 0 && m.confidence < 1 && (
-                            <span className="text-xs text-amber-400 ml-2">
+                            <span className="text-xs text-amber-400 shrink-0">
                               {Math.round(m.confidence * 100)}%
                             </span>
                           )}
@@ -1096,7 +1430,19 @@ export default function CardPairingModal({
                             conflictScopes.get(candidateKey(m.card)) ??
                             `#${m.card.cardNumber}`
                           }`}
-                          className="flex flex-wrap items-center gap-2 border-l-2 border-[#FF2EB3] pl-2 py-1"
+                          // COLUMN, not a wrapping row. As `flex flex-wrap`
+                          // the warning sentence and the pills sat side by
+                          // side when they happened to fit and dropped below
+                          // when they did not, so the same control was laid
+                          // out differently on adjacent rows purely as a
+                          // function of how long the two names were — the
+                          // operator has to re-find the pills on every row.
+                          // The sentence is the explanation and the pills are
+                          // the decision; they read top-to-bottom, always.
+                          // (The pills themselves still wrap — see the
+                          // radiogroup's own `flex flex-wrap` below, which is
+                          // what keeps two long names from overflowing.)
+                          className="flex flex-col items-start gap-1.5 border-l-2 border-[#FF2EB3] pl-2 py-1"
                           // a11y — lets both the LINK handler (below) and the
                           // radiogroup's own arrow-key handler find this row's
                           // controls by marketplace ref after a dispatch,
@@ -1147,18 +1493,33 @@ export default function CardPairingModal({
                               ) {
                                 return;
                               }
-                              // Only two options, so either arrow direction
-                              // just toggles — the APG pattern moves focus
-                              // WITH selection on a single-select radio group.
+                              // The APG pattern moves focus WITH selection on
+                              // a single-select radio group, and wraps at both
+                              // ends. This used to be a toggle, which was only
+                              // correct while there were exactly two options —
+                              // an operator-typed name makes a third, and a
+                              // toggle would have made it unreachable by
+                              // keyboard while leaving it clickable by mouse.
+                              // The order matches the rendered order, so
+                              // "next" means the pill to the right.
                               e.preventDefault();
-                              const other =
-                                m.nameConflict!.chosen === "bsc"
-                                  ? "sportlots"
-                                  : "bsc";
+                              const options: NameConflict["chosen"][] =
+                                m.nameConflict!.custom !== undefined
+                                  ? ["bsc", "sportlots", "custom"]
+                                  : ["bsc", "sportlots"];
+                              const step =
+                                e.key === "ArrowLeft" || e.key === "ArrowUp"
+                                  ? -1
+                                  : 1;
+                              const at = options.indexOf(m.nameConflict!.chosen);
+                              const next =
+                                options[
+                                  (at + step + options.length) % options.length
+                                ];
                               dispatch({
                                 type: "CHOOSE_NAME",
                                 index: i,
-                                side: other,
+                                side: next,
                               });
                               refocusSelectedRadio(domKey(m.card));
                             }}
@@ -1229,11 +1590,50 @@ export default function CardPairingModal({
                               )}
                               SportLots: {m.nameConflict.sportlots}
                             </button>
+                            {/* The operator's own name, once they have typed
+                                one that is neither marketplace's. Rendered on
+                                the SAME `custom !== undefined` condition the
+                                reducer guards `CHOOSE_NAME side:"custom"` and
+                                the arrow-key cycle on, so "every option in the
+                                group is reachable and exactly one is checked"
+                                holds by construction rather than by three
+                                places agreeing. Identical semantics to the two
+                                above — role, roving tabindex, label-in-name
+                                aria-label, non-colour ✓ cue. */}
+                            {m.nameConflict.custom !== undefined && (
+                              <button
+                                type="button"
+                                role="radio"
+                                aria-checked={m.nameConflict.chosen === "custom"}
+                                tabIndex={
+                                  m.nameConflict.chosen === "custom" ? 0 : -1
+                                }
+                                aria-label={`Custom: ${m.nameConflict.custom} — use this name for #${m.card.cardNumber}`}
+                                onClick={() =>
+                                  dispatch({
+                                    type: "CHOOSE_NAME",
+                                    index: i,
+                                    side: "custom",
+                                  })
+                                }
+                                className={`text-xs rounded px-2 py-1.5 ${
+                                  m.nameConflict.chosen === "custom"
+                                    ? "bg-cyan-900/60 text-cyan-100 ring-2 ring-[#00B7FF]"
+                                    : "bg-gray-700/60 text-gray-300"
+                                }`}
+                              >
+                                {m.nameConflict.chosen === "custom" && (
+                                  <span aria-hidden="true">✓ </span>
+                                )}
+                                Custom: {m.nameConflict.custom}
+                              </button>
+                            )}
                           </div>
                         </div>
                       )}
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
               )}
             </section>

@@ -9,6 +9,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -2097,5 +2098,646 @@ describe("CardPairingModal — enrichment that lands after the dialog opened", (
     const saved = onConfirm.mock.calls[0][0].cards[0];
     expect(saved.cardName).toBe("Carl Yastrzemski");
     expect(saved.teams).toEqual(["Boston Red Sox"]);
+  });
+});
+
+/**
+ * NEO-189 follow-up — the operator retypes a matched card's name.
+ *
+ * The gap this closes: the name-conflict control lets the operator pick
+ * BETWEEN the two marketplaces, and it is very often the case that neither of
+ * them is right. Both sources are transcriptions of a printed card; the
+ * operator is the only party in the loop actually holding it. Before this, a
+ * name known to be wrong had to be committed and then fixed in
+ * CardDetailPanel — which means a wrong name existed as a real NB card, and
+ * anything that read it in between (a listing, an entity resolution) read the
+ * wrong one.
+ *
+ * No backend change is involved and that is the point: this rewrites
+ * `card.cardName`, exactly the field CHOOSE_NAME already rewrote, and that
+ * field already travels through `onConfirm` into `commitCardChecklist`. So
+ * every assertion about what is SAVED is an assertion on the `onConfirm`
+ * payload, as everywhere else in this file.
+ */
+describe("CardPairingModal — editing a matched card's name", () => {
+  /** Open the editor on a matched row, by the title button's accessible name. */
+  const openEditor = (rowLabel: string) =>
+    fireEvent.click(screen.getByLabelText(`Edit name for ${rowLabel}`));
+
+  const editorFor = (cardNumber: string) =>
+    screen.getByLabelText(`Edit name for #${cardNumber}`) as HTMLInputElement;
+
+  /** Type into the open editor without committing. */
+  const typeInto = (input: HTMLInputElement, value: string) =>
+    fireEvent.change(input, { target: { value } });
+
+  test("the title is a control that says what activating it does", () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    const title = screen.getByRole("button", {
+      name: "Edit name for #461 Noah Cameron",
+    });
+    // WCAG 2.5.3 Label in Name — the accessible name contains the visible
+    // text verbatim, so a speech-input operator saying what they can see
+    // matches. The hover affordance is CSS only, deliberately: a glyph inside
+    // the button would land in its textContent and stop the visible label
+    // being the row label.
+    expect(title.textContent).toBe("#461 Noah Cameron");
+  });
+
+  test("Enter commits, and the new name is what reaches onConfirm", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    typeInto(editorFor("461"), "Noah Cameron Jr.");
+    fireEvent.keyDown(editorFor("461"), { key: "Enter" });
+
+    // The row itself now reads what will be saved.
+    expect(screen.getByLabelText("Unlink #461 Noah Cameron Jr.")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(
+      "Noah Cameron Jr.",
+    );
+    // The number is not the operator's to edit and was never in the field.
+    expect(onConfirm.mock.calls[0][0].cards[0].cardNumber).toBe("461");
+  });
+
+  test("blur commits too — clicking away is not a way to lose the edit", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    typeInto(editorFor("461"), "Nolan Cameron");
+    fireEvent.blur(editorFor("461"));
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Nolan Cameron");
+  });
+
+  /**
+   * The dialog root's own onKeyDown closes the WHOLE modal on Escape. Without
+   * stopPropagation on the field, abandoning a rename would throw away every
+   * pairing decision on the screen — a far worse outcome than the edit the
+   * operator meant to abandon.
+   */
+  test("Escape cancels the edit and does NOT close the modal", () => {
+    const onClose = vi.fn();
+    render(
+      <CardPairingModal
+        isOpen
+        onClose={onClose}
+        onConfirm={vi.fn().mockResolvedValue(undefined)}
+        initialData={{
+          autoMatched: [
+            { card: pairedCard("461", "Noah Cameron"), confidence: 1 },
+          ],
+          unmatchedBsc: [],
+          unmatchedSl: [],
+        }}
+      />,
+    );
+
+    openEditor("#461 Noah Cameron");
+    typeInto(editorFor("461"), "Something Else");
+    fireEvent.keyDown(editorFor("461"), { key: "Escape" });
+
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText(/Match Cards/)).toBeTruthy();
+    // The name is untouched and the editor is closed.
+    expect(screen.getByLabelText("Unlink #461 Noah Cameron")).toBeTruthy();
+    expect(screen.queryByLabelText("Edit name for #461")).toBeNull();
+  });
+
+  /**
+   * The commit-on-blur path must not be able to resurrect an edit that Escape
+   * (or Enter) has already settled.
+   *
+   * Browsers dispatch `blur`/`focusout` when the focused element is REMOVED
+   * from the DOM, and closing the editor removes it — so in a real browser
+   * Escape produces keydown → (unmount) → blur, and a blur handler that
+   * commits unconditionally would save the draft the operator just abandoned.
+   * The keystroke and the commit-on-blur are individually correct; it is the
+   * pair that is wrong, which is why neither of their own tests can catch it.
+   *
+   * jsdom does not model that removal-blur at all, so the sequence is driven
+   * explicitly. Both events are dispatched inside ONE `act()` so React has not
+   * yet flushed the unmount when the blur lands — that ordering is the point,
+   * and a `fireEvent.blur` on the already-detached node would be vacuous
+   * (React's delegated listener is on the container, so a detached node
+   * reaches no handler and the test would pass against the bug).
+   */
+  test("a blur delivered after Escape does not commit the abandoned draft", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    const field = editorFor("461");
+    // Deliberately DIFFERENT from the current name: RENAME no-ops on an
+    // unchanged name, so an unchanged draft would pass whether or not the
+    // guard exists.
+    typeInto(field, "Wrong Name");
+
+    act(() => {
+      field.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Escape",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      // React's onBlur is delegated from the native `focusout`, which bubbles.
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    expect(screen.getByLabelText("Unlink #461 Noah Cameron")).toBeTruthy();
+    expect(screen.queryByLabelText("Unlink #461 Wrong Name")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Noah Cameron");
+  });
+
+  test("the field is prefilled with the NAME only — not the number, not the variation", () => {
+    renderModal({
+      autoMatched: [
+        {
+          card: {
+            ...pairedCard("1b", "Fernando Tatis Jr."),
+            cardVariation: "Sliding",
+            isVariation: true,
+          },
+          confidence: 1,
+        },
+      ],
+    });
+
+    openEditor("#1b Fernando Tatis Jr. · Sliding");
+    expect(editorFor("1b").value).toBe("Fernando Tatis Jr.");
+    // Both are still on screen as context — they are separate fields on the
+    // card, and losing sight of the number is losing sight of which row you
+    // are in.
+    expect(screen.getByText("#1b")).toBeTruthy();
+    expect(screen.getByText("· Sliding")).toBeTruthy();
+  });
+
+  test("an empty or whitespace-only name is a cancel, not a rename to nothing", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    typeInto(editorFor("461"), "   ");
+    fireEvent.keyDown(editorFor("461"), { key: "Enter" });
+
+    expect(screen.getByLabelText("Unlink #461 Noah Cameron")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Noah Cameron");
+  });
+
+  test("committing the name it already had changes nothing", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    // Straight blur, nothing typed — the ordinary "opened it by mistake" path.
+    fireEvent.blur(editorFor("461"));
+
+    expect(screen.getByLabelText("Unlink #461 Noah Cameron")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe("Noah Cameron");
+  });
+
+  test("the surrounding name is trimmed", async () => {
+    const { onConfirm } = renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    typeInto(editorFor("461"), "  Noah Cameron Sr.  ");
+    fireEvent.keyDown(editorFor("461"), { key: "Enter" });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(
+      "Noah Cameron Sr.",
+    );
+  });
+
+  /**
+   * a11y — the title button is the element the operator activated, and it does
+   * not exist while the editor is open. Left alone, closing the editor drops
+   * focus to <body>, which for a keyboard operator part-way down a 220-row
+   * list loses their place entirely. Same defect and same fix as
+   * `refocusSelectedRadio`.
+   */
+  test("focus returns to the title after a commit", async () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    typeInto(editorFor("461"), "Noah C.");
+    fireEvent.keyDown(editorFor("461"), { key: "Enter" });
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Edit name for #461 Noah C."),
+      ),
+    );
+  });
+
+  test("focus returns to the title after a cancel", async () => {
+    renderModal({
+      autoMatched: [{ card: pairedCard("461", "Noah Cameron"), confidence: 1 }],
+    });
+
+    openEditor("#461 Noah Cameron");
+    fireEvent.keyDown(editorFor("461"), { key: "Escape" });
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Edit name for #461 Noah Cameron"),
+      ),
+    );
+  });
+
+  /**
+   * The editor's identity is `candidateKey` — the marketplace ref — NOT the
+   * array index, for the same reason `KEEP` and `refocusSelectedRadio` avoid
+   * indexes: `ordered()` re-sorts `state.matched` after every dispatch and
+   * `ABSORB` inserts into it while the operator works, so a held index comes
+   * to mean a different row. An open field that silently retargets is the same
+   * class of defect as number-keyed KEEP moving the wrong card to the shelf,
+   * and worse in effect: the operator is looking straight at it.
+   */
+  test("a row streaming in above the one being edited does not steal the editor", async () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const dataWith = (
+      pairs: Array<{ card: PairingCard; confidence: number }>,
+    ) => ({ autoMatched: pairs, unmatchedBsc: [], unmatchedSl: [] });
+    const ripken = { card: pairedCard("10", "Cal Ripken Jr."), confidence: 1 };
+    const griffey = { card: pairedCard("2", "Ken Griffey Jr."), confidence: 1 };
+
+    const { rerender } = render(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        initialData={dataWith([ripken])}
+      />,
+    );
+
+    openEditor("#10 Cal Ripken Jr.");
+    // #2 sorts ahead of #10, so absorbing it moves Ripken from index 0 to 1.
+    rerender(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        initialData={dataWith([ripken, griffey])}
+      />,
+    );
+
+    // Still Ripken's field, and still Ripken who gets renamed.
+    const field = editorFor("10");
+    typeInto(field, "Cal Ripken");
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const byNumber = Object.fromEntries(
+      onConfirm.mock.calls[0][0].cards.map((c: PairingCard) => [
+        c.cardNumber,
+        c.cardName,
+      ]),
+    );
+    expect(byNumber).toEqual({ "10": "Cal Ripken", "2": "Ken Griffey Jr." });
+  });
+
+  test("only matched rows are editable — the unmatched columns are untouched", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("5", "Roberto Osuna")],
+      unmatchedSl: [slCard("6", "Someone Else")],
+    });
+
+    expect(screen.queryByLabelText(/^Edit name for /)).toBeNull();
+  });
+});
+
+/**
+ * NEO-189 follow-up — a rename on a row the marketplaces already disagree
+ * about.
+ *
+ * The two features have to compose, not sit next to each other. A rename that
+ * merely overwrote `card.cardName` would leave a radiogroup underneath still
+ * claiming BSC's name was the one winning, while the row displayed a third
+ * name that appeared in neither option — the control would be lying about the
+ * card it governs.
+ *
+ * So the typed name joins the group as a third option. Which keeps the
+ * property the group was built for in the first place: exactly one of the
+ * names on offer is checked, and it is the one that will be saved.
+ */
+describe("CardPairingModal — renaming a row that already has a name conflict", () => {
+  const conflicted = () =>
+    autoConflict("227c", "Mike Yastrzemski", "Carl Yastrzemski");
+
+  const openEditor = (rowLabel: string) =>
+    fireEvent.click(screen.getByLabelText(`Edit name for ${rowLabel}`));
+  const editor = () =>
+    screen.getByLabelText("Edit name for #227c") as HTMLInputElement;
+
+  const rename = (from: string, to: string) => {
+    openEditor(from);
+    fireEvent.change(editor(), { target: { value: to } });
+    fireEvent.keyDown(editor(), { key: "Enter" });
+  };
+
+  const radios = () => screen.getAllByRole("radio");
+  const checkedNames = () =>
+    radios()
+      .filter((r) => r.getAttribute("aria-checked") === "true")
+      .map((r) => r.getAttribute("aria-label"));
+
+  test("a name matching NEITHER marketplace becomes a third, checked option", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+
+    const custom = screen.getByRole("radio", {
+      name: "Custom: Carl Yastrzemski (Legend SP) — use this name for #227c",
+    });
+    expect(custom.getAttribute("aria-checked")).toBe("true");
+    // Visible label plus the non-colour ✓ cue the other two pills carry.
+    expect(custom.textContent).toBe("✓ Custom: Carl Yastrzemski (Legend SP)");
+    // Both marketplace names are still one click away — the choice stays as
+    // reversible as the original two-way one.
+    expect(screen.getByRole("radio", { name: /^BSC:/ })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: /^SportLots:/ })).toBeTruthy();
+  });
+
+  test("the radiogroup still exposes exactly one checked option, with three of them", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+
+    expect(radios()).toHaveLength(3);
+    expect(checkedNames()).toEqual([
+      "Custom: Carl Yastrzemski (Legend SP) — use this name for #227c",
+    ]);
+
+    // …and it stays exactly one as the operator moves between them.
+    fireEvent.click(screen.getByRole("radio", { name: /^BSC:/ }));
+    expect(checkedNames()).toEqual([
+      "BSC: Mike Yastrzemski — use this name for #227c",
+    ]);
+    expect(radios()).toHaveLength(3);
+  });
+
+  test("the operator's name is what gets committed", async () => {
+    const { onConfirm } = renderModal({ autoMatched: [conflicted()] });
+
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].cardName).toBe(
+      "Carl Yastrzemski (Legend SP)",
+    );
+  });
+
+  /**
+   * Typing a marketplace's name verbatim IS clicking its pill — anything else
+   * would render "Custom: Mike Yastrzemski" checked beside an unchecked,
+   * identical "BSC: Mike Yastrzemski", i.e. a control asking the operator to
+   * choose between two spellings of the same decision.
+   */
+  test("typing BSC's name exactly is the same as choosing BSC — no third option appears", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    // Move off BSC first, so landing back on it is a real transition.
+    fireEvent.click(screen.getByRole("radio", { name: /^SportLots:/ }));
+    rename("#227c Carl Yastrzemski", "Mike Yastrzemski");
+
+    expect(radios()).toHaveLength(2);
+    expect(checkedNames()).toEqual([
+      "BSC: Mike Yastrzemski — use this name for #227c",
+    ]);
+  });
+
+  test("typing SportLots' name exactly is the same as choosing SportLots", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski");
+
+    expect(radios()).toHaveLength(2);
+    expect(checkedNames()).toEqual([
+      "SportLots: Carl Yastrzemski — use this name for #227c",
+    ]);
+  });
+
+  /**
+   * `conflictingNames` folds accents and punctuation so that spelling
+   * differences are not reported as disagreements. That folding must NOT be
+   * reused here: an operator typing "José Ramírez" over BSC's "Jose Ramirez"
+   * is making a correction, and treating it as "you picked BSC" would discard
+   * it silently — the one failure mode this whole control exists to prevent.
+   */
+  test("a name that differs from BSC's only in accents is a real correction, not a pick", () => {
+    renderModal({
+      autoMatched: [autoConflict("30", "Jose Ramirez", "J. Ramirez|Andres Gimenez")],
+    });
+
+    fireEvent.click(screen.getByLabelText("Edit name for #30 Jose Ramirez"));
+    const field = screen.getByLabelText("Edit name for #30");
+    fireEvent.change(field, { target: { value: "José Ramírez" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+
+    expect(
+      screen
+        .getByRole("radio", { name: /^Custom:/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(screen.getByLabelText("Unlink #30 José Ramírez")).toBeTruthy();
+  });
+
+  test("choosing a marketplace name afterwards keeps the typed one on offer", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+    fireEvent.click(screen.getByRole("radio", { name: /^SportLots:/ }));
+
+    expect(screen.getByLabelText("Unlink #227c Carl Yastrzemski")).toBeTruthy();
+    const custom = screen.getByRole("radio", { name: /^Custom:/ });
+    expect(custom.getAttribute("aria-checked")).toBe("false");
+
+    // And it is still selectable, which is what makes the rename reversible.
+    fireEvent.click(custom);
+    expect(
+      screen.getByLabelText("Unlink #227c Carl Yastrzemski (Legend SP)"),
+    ).toBeTruthy();
+  });
+
+  test("re-typing replaces the custom option rather than adding a fourth", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    rename("#227c Mike Yastrzemski", "Carl Y.");
+    rename("#227c Carl Y.", "Carl Yastrzemski (Legend SP)");
+
+    expect(radios()).toHaveLength(3);
+    expect(checkedNames()).toEqual([
+      "Custom: Carl Yastrzemski (Legend SP) — use this name for #227c",
+    ]);
+  });
+
+  /**
+   * Unlink splits the pair back into its two halves, each with its OWN
+   * marketplace name. A typed name belongs to the MERGED card and to neither
+   * half, so stamping it onto both would destroy the disagreement the operator
+   * was in the middle of correcting — and a re-link could never detect it
+   * again, because both rows would now agree.
+   */
+  test("unlinking a renamed row still gives each side its own marketplace name back", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+    fireEvent.click(
+      screen.getByLabelText("Unlink #227c Carl Yastrzemski (Legend SP)"),
+    );
+
+    expect(
+      screen.getByLabelText("Select BSC card #227c Mike Yastrzemski"),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText(
+        "Link selected BSC card to #227c Carl Yastrzemski",
+      ),
+    ).toBeTruthy();
+  });
+
+  /**
+   * `nameConflictCount` counts rows the MARKETPLACES disagree about. A rename
+   * does not settle that disagreement — it replaces the answer, and the row is
+   * still one where two sources said different things. Deliberately unchanged.
+   */
+  test("the header conflict count is unaffected by a rename", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    expect(screen.getByText(/1 name conflict/)).toBeTruthy();
+    rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+    expect(screen.getByText(/1 name conflict/)).toBeTruthy();
+  });
+
+  describe("a11y — three options in the radiogroup", () => {
+    test("arrow keys cycle through all three and wrap, moving focus with selection", async () => {
+      renderModal({ autoMatched: [conflicted()] });
+      rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+
+      const bsc = () => screen.getByRole("radio", { name: /^BSC:/ });
+      const sl = () => screen.getByRole("radio", { name: /^SportLots:/ });
+      const custom = () => screen.getByRole("radio", { name: /^Custom:/ });
+
+      // Starting on the custom option, which the rename checked.
+      fireEvent.keyDown(custom(), { key: "ArrowRight" });
+      expect(checkedNames()).toEqual([bsc().getAttribute("aria-label")]);
+      await waitFor(() => expect(document.activeElement).toBe(bsc()));
+
+      fireEvent.keyDown(bsc(), { key: "ArrowRight" });
+      expect(checkedNames()).toEqual([sl().getAttribute("aria-label")]);
+      await waitFor(() => expect(document.activeElement).toBe(sl()));
+
+      fireEvent.keyDown(sl(), { key: "ArrowRight" });
+      expect(checkedNames()).toEqual([custom().getAttribute("aria-label")]);
+      await waitFor(() => expect(document.activeElement).toBe(custom()));
+    });
+
+    test("arrow keys go backwards too, so the third option is not a one-way trip", async () => {
+      renderModal({ autoMatched: [conflicted()] });
+      rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+
+      const sl = () => screen.getByRole("radio", { name: /^SportLots:/ });
+      const custom = () => screen.getByRole("radio", { name: /^Custom:/ });
+
+      fireEvent.keyDown(custom(), { key: "ArrowLeft" });
+      expect(checkedNames()).toEqual([sl().getAttribute("aria-label")]);
+      await waitFor(() => expect(document.activeElement).toBe(sl()));
+    });
+
+    test("roving tabindex still puts exactly one Tab stop in the group", () => {
+      renderModal({ autoMatched: [conflicted()] });
+      rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+
+      expect(radios().map((r) => r.tabIndex)).toEqual([-1, -1, 0]);
+    });
+
+    test("the custom option carries the same non-colour ✓ cue (WCAG 1.4.1)", () => {
+      renderModal({ autoMatched: [conflicted()] });
+      rename("#227c Mike Yastrzemski", "Carl Yastrzemski (Legend SP)");
+
+      const custom = screen.getByRole("radio", { name: /^Custom:/ });
+      expect(custom.textContent?.startsWith("✓")).toBe(true);
+      fireEvent.click(screen.getByRole("radio", { name: /^BSC:/ }));
+      expect(custom.textContent?.startsWith("✓")).toBe(false);
+      // …and its accessible name still STARTS with its visible label
+      // (WCAG 2.5.3), unchecked, exactly like the other two.
+      expect(custom.getAttribute("aria-label")).toMatch(
+        /^Custom: Carl Yastrzemski \(Legend SP\) —/,
+      );
+    });
+
+    /**
+     * The editor and the radiogroup are both on the row at once and both are
+     * about the same question, so they must not share an accessible name — a
+     * screen-reader user would meet "Name for #227c" twice on one row, which
+     * is the ambiguity `conflictScopeLabels` exists to remove. It would also
+     * make the Maestro selector `id: "Name for #FS-1"` — already used against
+     * the radiogroup in checklist-pairing-dialog-cancel.yaml — match two
+     * elements.
+     */
+    test("the editor and the radiogroup do not share an accessible name", () => {
+      renderModal({ autoMatched: [conflicted()] });
+      fireEvent.click(screen.getByLabelText("Edit name for #227c Mike Yastrzemski"));
+
+      expect(screen.getByLabelText("Name for #227c").getAttribute("role")).toBe(
+        "radiogroup",
+      );
+      expect(screen.getByLabelText("Edit name for #227c").tagName).toBe(
+        "INPUT",
+      );
+    });
+  });
+
+  /**
+   * Layout, requested after operator testing: the warning sentence and the
+   * pills were `flex flex-wrap`, so they sat side by side when the two names
+   * happened to be short and dropped below when they were not — the same
+   * control laid out two different ways on adjacent rows, purely as a function
+   * of name length. Pinned as a class assertion because there is no other way
+   * to observe layout in jsdom; the pills' own wrapping is what keeps two long
+   * names from overflowing and must survive.
+   */
+  test("the warning sits on its own line above the pills, always", () => {
+    renderModal({ autoMatched: [conflicted()] });
+
+    const group = screen.getByRole("group", {
+      name: "Name conflict on #227c",
+    });
+    expect(group.className).toContain("flex-col");
+    expect(group.className).not.toContain("flex-wrap");
+    expect(
+      screen.getByRole("radiogroup", { name: "Name for #227c" }).className,
+    ).toContain("flex-wrap");
   });
 });
