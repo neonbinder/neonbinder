@@ -468,7 +468,38 @@ export const getInternal = internalQuery({
   handler: async (ctx, args) => await ctx.db.get(args.id),
 });
 
-/** Internal — the pool's lookup work item patches status/enrichment as each lookup completes. */
+/**
+ * Internal — the pool's lookup work item patches status/enrichment as each
+ * lookup completes.
+ *
+ * ## Why this reads before it writes (NEO-189)
+ *
+ * A row that already carries a `decision` is LEFT ALONE. This used to patch
+ * unconditionally, and that is what turned a seed job red: the operator's
+ * "mark everything as create" fast path (`recordAllRemainingAsCreate`)
+ * deliberately decides rows whose lookup is still `pending`, the operator hits
+ * Confirm, and `commitCardChecklist`'s prelude then reads the whole batch
+ * through `by_selector_option_and_batch`. Every straggler lookup landing here
+ * during that read invalidated the prelude's read set, and with a lookup storm
+ * in flight (CI hit an ESPN 403 retry loop) it lost on Convex's every internal
+ * retry too:
+ *
+ *   Documents read from or written to the "entityReviewQueue" table changed
+ *   while this mutation was being run and on every subsequent retry. A call to
+ *   "entityReviewQueue.js:applyLookupResult" changed the document…
+ *
+ * The write was pointless as well as harmful. `enrichment` has exactly two
+ * consumers: the commit prelude, which reads it to seed a newly created
+ * player/team, and the review wizard's detail panel — and the wizard only ever
+ * renders a row that is NOT decided (`EntityReviewWizard`'s `current` filters
+ * on `!r.decision`). So once a decision exists, nothing will ever read the
+ * enrichment this patch would store: commit has either already read the row or
+ * is about to, and either way it finishes by deleting the batch.
+ *
+ * This does NOT weaken the "a row is never stranded on pending" invariant —
+ * see `backstopEntityReviewRowImpl`, which carries the same guard and the
+ * argument for why.
+ */
 export const applyLookupResult = internalMutation({
   args: {
     id: v.id("entityReviewQueue"),
@@ -477,6 +508,13 @@ export const applyLookupResult = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.id);
+    // Gone — a Cancel or a completed commit deleted the batch while this item
+    // was still draining. Nothing to resolve.
+    if (!row) return null;
+    // Decided: the operator has ruled and commit is imminent or done. Writing
+    // here would only contend with the commit's read of this same row.
+    if (row.decision) return null;
     await ctx.db.patch(args.id, {
       status: args.status,
       enrichment: args.enrichment,
@@ -508,6 +546,21 @@ export const applyLookupResult = internalMutation({
  * the action set it (a real "ready" with enrichment is never downgraded).
  * `decision` is never touched, so a row bulk-decided while its lookup was in
  * flight keeps its decision.
+ *
+ * ## NEO-189: a DECIDED row is skipped, and that does not weaken the invariant
+ *
+ * Same guard, same reason as `applyLookupResult` above — a write here on a row
+ * the commit prelude is reading is what made the seed job's commit lose an
+ * optimistic-concurrency race on every retry.
+ *
+ * The invariant this function exists for is about rows the operator has NOT
+ * ruled on: those are the ones the wizard blocks on, and they still get aged
+ * exactly as before. A DECIDED row left sitting on `pending` is inert — the
+ * wizard's `current` skips decided rows entirely, its "N of M" counts
+ * decisions rather than statuses, so nothing blocks on the status — and it does
+ * not survive: `commitCardChecklist` deletes the whole batch when it finishes,
+ * `cancelBatch` deletes it on Cancel, and `sweepStalePendingRows` ages whatever
+ * an abandoned wizard leaves behind after ENTITY_REVIEW_STALE_MS.
  */
 export async function backstopEntityReviewRowImpl(
   ctx: MutationCtx,
@@ -519,6 +572,9 @@ export async function backstopEntityReviewRowImpl(
   if (!row) return null;
   // Already resolved by the action itself — the common path. Leave it be.
   if (row.status !== "pending") return null;
+  // NEO-189: decided by the operator — commit is imminent or done, and this
+  // write would only contend with the commit's read of this row. See above.
+  if (row.decision) return null;
 
   // rowId is an opaque document id, never PII (see the no-PII rule in
   // observability.ts). `result.kind` tells triage HOW the work item ended

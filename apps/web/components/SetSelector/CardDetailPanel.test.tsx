@@ -61,20 +61,32 @@ vi.mock("../../convex/_generated/api", () => ({
     selectorOptions: {
       updateCard: "updateCard",
       setCardFeature: "setCardFeature",
+      // NEO-189: the "Variation of" control's mutation + the sibling lookup it
+      // resolves a typed card number against.
+      setCardVariationParent: "setCardVariationParent",
+      getCardChecklist: "getCardChecklist",
     },
   },
 }));
 
 const mockUpdateCard = vi.fn();
 const mockSetCardFeature = vi.fn();
+const mockSetVariationParent = vi.fn();
+// The checklist the panel resolves a typed card number against.
+const mockSiblingCards = [
+  { _id: "card-1", cardNumber: "1", cardName: "Fernando Tatis Jr." },
+  { _id: "card-2", cardNumber: "2", cardName: "Roberto Osuna" },
+];
 
 vi.mock("convex/react", () => ({
   useMutation: (ref: string) => {
     if (ref === "updateCard") return mockUpdateCard;
     if (ref === "setCardFeature") return mockSetCardFeature;
+    if (ref === "setCardVariationParent") return mockSetVariationParent;
     return vi.fn();
   },
-  useQuery: () => undefined,
+  useQuery: (ref: string) =>
+    ref === "getCardChecklist" ? mockSiblingCards : undefined,
 }));
 
 vi.mock("./TeamPicker", () => ({
@@ -343,5 +355,46 @@ describe("CardDetailPanel", () => {
     expect(screen.getByText("Variation")).toBeTruthy();
     expect(screen.queryByText("Variation / parallel")).toBeNull();
     expect(screen.queryByText(/variation\s*\/\s*parallel/i)).toBeNull();
+  });
+});
+
+
+/**
+ * NEO-189 — the escape hatch for a variation the import could not derive, and
+ * the only way a custom set gets variations at all.
+ */
+describe("CardDetailPanel — Variation of", () => {
+  // The suite's other clearAllMocks lives inside the first describe block, so
+  // this one needs its own or calls leak between tests.
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves a typed card number to a sibling and links it", async () => {
+    renderPanel({ card: makeCard() });
+    const input = screen.getByLabelText(
+      "Card number this one is a variation of",
+    );
+    fireEvent.change(input, { target: { value: "1" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(mockSetVariationParent).toHaveBeenCalledWith(
+        expect.objectContaining({ parentCardId: "card-1" }),
+      ),
+    );
+  });
+
+  it("reports a number that matches nothing rather than doing nothing", async () => {
+    // A typo that silently no-ops is worse than one that says so.
+    renderPanel({ card: makeCard() });
+    const input = screen.getByLabelText(
+      "Card number this one is a variation of",
+    );
+    fireEvent.change(input, { target: { value: "99999" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toMatch(/No card #99999/),
+    );
+    expect(mockSetVariationParent).not.toHaveBeenCalled();
   });
 });

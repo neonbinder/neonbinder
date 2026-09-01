@@ -7,7 +7,7 @@ import {
   internalQuery,
   ActionCtx,
 } from "./_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
@@ -16,6 +16,15 @@ import {
   newRequestId,
   classifyAdapterError,
 } from "./observability";
+// NEO-198: the per-child deadlines below are derived from the adapters' own
+// retry policies rather than hand-written next to them. selectorBudgets.ts is
+// deliberately a plain module (no "use node") so both this isolate file and the
+// two Node adapters can import the same numbers.
+import {
+  SL_SELECTOR_BUDGET,
+  BSC_SELECTOR_BUDGET,
+  CHILD_DEADLINE_MARGIN_MS,
+} from "./adapters/selectorBudgets";
 import {
   deriveCardObservedFeatures,
   deriveOwnLevelFeatures,
@@ -26,6 +35,19 @@ import {
   generateListingDescription,
 } from "./features/generateListing";
 import { generateSku } from "./sku";
+import {
+  cardNumberStem,
+  resolveVariationParents,
+  suggestVariationPairings,
+} from "../lib/cards/variations";
+import { compareCardNumbers } from "../lib/cards/card-number";
+// NEO-189: bounded retry for Convex's optimistic-concurrency conflict, used
+// by every phase of the chunked commit below.
+import { runWithOccRetry } from "../lib/errors/occ-retry";
+// NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
+// An auto-matched disagreement and a manual one have to be the same thing —
+// see the note in lib/cards/card-name.ts.
+import { conflictingNames } from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
@@ -37,6 +59,10 @@ import {
   selectorOptionFields,
   selectorOptionLevelValidator,
 } from "./schema";
+import {
+  bscFacetValidator,
+  resolveBscFacetFilters,
+} from "./bscFacets";
 import {
   allocateSlots,
   detachSlot,
@@ -396,6 +422,11 @@ export const getAncestorChain = query({
       value: v.string(),
       platformData: selectorOptionFields.platformData,
       platformLabels: selectorOptionFields.platformLabels,
+      // NEO-189: without this the checklist fetch cannot tell a BSC setName
+      // slug from a variantName slug and falls back to guessing from the NB
+      // level — which is the bug. Derived from the schema, not re-listed, so
+      // it cannot drift from the table.
+      platformFacets: selectorOptionFields.platformFacets,
       metadata: metadataValidator,
       // NEO-24: surface ancestor features so callers (commitCardChecklist
       // inheritance merge, SetFeaturesPanel) can resolve effective values
@@ -418,6 +449,7 @@ export const getAncestorChain = query({
         bsc?: Record<string, string>;
         sportlots?: Record<string, string>;
       };
+      platformFacets?: { bsc?: Record<string, "setName" | "variantName"> };
       metadata?: { cardNumberPrefix?: string; isInsert?: boolean; isParallel?: boolean };
       features?: Record<string, string>;
       isCustom?: boolean;
@@ -433,6 +465,7 @@ export const getAncestorChain = query({
         value: option.value,
         platformData: option.platformData || {},
         platformLabels: option.platformLabels,
+        platformFacets: option.platformFacets,
         metadata: option.metadata,
         features: option.features,
         isCustom: option.isCustom,
@@ -628,6 +661,13 @@ export const getCardChecklist = query({
       printRun: v.optional(v.number()),
       autographType: v.optional(v.string()),
       cardVariation: v.optional(v.string()),
+      // NEO-189: the card this one is a variation OF. Convex validates
+      // `returns` STRICTLY, so omitting a field the table carries throws
+      // `Object contains extra field` at runtime for every row that has it —
+      // the exact failure `selectorOptionFields` exists to prevent one table
+      // over.
+      variationOfCardId: v.optional(v.id("cardChecklist")),
+      variationParentManual: v.optional(v.boolean()),
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
       listingTitle: v.optional(v.string()),
       listingDescription: v.optional(v.string()),
@@ -1091,9 +1131,27 @@ export const attachPlatformIds = mutation({
     selectorOptionId: v.id("selectorOptions"),
     additions: v.object({
       bsc: v.optional(
-        v.array(v.object({ id: v.string(), label: v.string() })),
+        v.array(
+          v.object({
+            id: v.string(),
+            label: v.string(),
+            // NEO-189 — which BSC facet this slug is a value of.
+            //
+            // OPTIONAL, and absent means "store no tag", never "guess". A BSC
+            // slug is not self-describing, so an attach that does not say
+            // which facet it belongs to gets the pre-NEO-189 behaviour: the
+            // checklist fetch derives the facet from the row's NB level, which
+            // for a Base or Parallel row means the id sources nothing. That is
+            // exactly what an older client's attach did, so an older client
+            // keeps working identically instead of silently creating a slot
+            // tagged with a facet it never chose.
+            facet: v.optional(bscFacetValidator),
+          }),
+        ),
       ),
       sportlots: v.optional(
+        // No facet: SportLots has one unit of attachment (a set id), so there
+        // is nothing to disambiguate.
         v.array(v.object({ id: v.string(), label: v.string() })),
       ),
     }),
@@ -1170,13 +1228,18 @@ export const attachPlatformIds = mutation({
     const alloc = allocateSlots(row, {
       bsc: (args.additions.bsc ?? [])
         .filter(({ id }) => id)
-        .map(({ id, label }) => ({ id, label: label.trim() })),
+        .map(({ id, label, facet }) => ({
+          id,
+          label: label.trim(),
+          ...(facet ? { facet } : {}),
+        })),
       sportlots: (args.additions.sportlots ?? [])
         .filter(({ id }) => id)
         .map(({ id, label }) => ({ id, label: label.trim() })),
     });
     const mergedPD = alloc.platformData;
     const mergedLabels = alloc.platformLabels;
+    const mergedFacets = pruneEmptySides({ ...alloc.platformFacets });
     const attached = alloc.attachedCount;
 
     // Strip empty label objects so we don't write `{ bsc: {} }`.
@@ -1195,6 +1258,8 @@ export const attachPlatformIds = mutation({
       platformData: mergedPD,
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      platformFacets:
+        Object.keys(mergedFacets).length > 0 ? mergedFacets : undefined,
       // The counter moves in the SAME patch as the map it guards. Splitting
       // them would let a crash in between hand the next allocation a slot key
       // that is already in use.
@@ -1272,6 +1337,8 @@ export const detachPlatformId = mutation({
 
     const detached = detachSlot(row, args.side, args.slot);
     const labelsPatch = pruneEmptySides({ ...detached.platformLabels });
+    // NEO-189: the facet tag is slot-scoped, so it goes with the slot.
+    const facetsPatch = pruneEmptySides({ ...detached.platformFacets });
 
     let primaryPatch: { bsc?: string; sportlots?: string } | undefined;
     if (isPrimary) {
@@ -1284,6 +1351,8 @@ export const detachPlatformId = mutation({
       platformData: pruneEmptySides({ ...detached.platformData }),
       platformLabels:
         Object.keys(labelsPatch).length > 0 ? labelsPatch : undefined,
+      platformFacets:
+        Object.keys(facetsPatch).length > 0 ? facetsPatch : undefined,
       // platformSlotSeq is deliberately NOT patched — the counter never
       // rewinds, so this slot key is retired for good. Any card still pointing
       // at it now resolves to nothing and surfaces as an orphaned ref, which
@@ -1518,19 +1587,6 @@ async function findSetNameValue(
   return undefined;
 }
 
-function compareCardNumbers(a: string, b: string): number {
-  const aMatch = a.match(/^(\d+)(.*)/);
-  const bMatch = b.match(/^(\d+)(.*)/);
-  if (aMatch && bMatch) {
-    const aNum = parseInt(aMatch[1], 10);
-    const bNum = parseInt(bMatch[1], 10);
-    if (aNum !== bNum) return aNum - bNum;
-    return aMatch[2].localeCompare(bMatch[2]);
-  }
-  if (aMatch && !bMatch) return -1;
-  if (!aMatch && bMatch) return 1;
-  return a.localeCompare(b);
-}
 
 /**
  * Re-stamp `sortOrder` on every row in this selectorOption's checklist so
@@ -1848,12 +1904,137 @@ async function deleteCardCrossListingsFor(
   }
 }
 
+/**
+ * NEO-189 — a deleted card must not leave its VARIATIONS pointing at a row that
+ * no longer exists.
+ *
+ * Same invariant `deleteCardCrossListingsFor` exists for, one table over: every
+ * path that deletes a `cardChecklist` row has to tidy what points at it.
+ *
+ * The children are PROMOTED, not deleted. A variation is a full card in its own
+ * right — its own players, its own SKU, its own platform refs — so losing its
+ * parent must not lose the card. It becomes an ordinary card, and an operator
+ * can re-parent it. Deleting a parent's variations along with it would destroy
+ * real catalog data as a side effect of one click.
+ */
+async function orphanVariationsOf(
+  ctx: { db: { query: any; patch: (id: any, patch: any) => Promise<void> } },
+  cardChecklistId: Id<"cardChecklist">,
+): Promise<void> {
+  const children = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_variation_parent", (q: any) =>
+      q.eq("variationOfCardId", cardChecklistId),
+    )
+    .collect();
+  for (const child of children) {
+    await ctx.db.patch(child._id, {
+      variationOfCardId: undefined,
+      lastUpdated: Date.now(),
+    });
+  }
+}
+
+/**
+ * NEO-189 — set or clear a card's variation parent by hand.
+ *
+ * The import derivation handles the common shape (BSC suffixes a number,
+ * SportLots brackets a description), but it cannot cover everything: a
+ * variation whose number shares no stem with its parent, a set the operator is
+ * building by hand, or simply a case the rule got wrong. This is the escape
+ * hatch, and it is the only way a custom set gets variations at all.
+ *
+ * The link is marked `variationParentManual`, which the commit pass skips —
+ * see the note on the schema field. An operator's answer is not re-derived.
+ *
+ * ## What is refused, and why
+ *
+ * A card may not be its own parent, and a parent must live in the SAME
+ * checklist: a variation belongs to the card it varies, and the two are by
+ * definition the same slot in the same set.
+ *
+ * A variation may not parent another variation. Variations are one level deep
+ * — "#1c is a variation of #1b" describes nothing real, and allowing it means
+ * the set builder has to render an arbitrarily deep tree and guard against
+ * cycles. Rejecting it here keeps that impossible rather than merely unlikely.
+ *
+ * Making a card a parent while it is itself someone's variation is refused for
+ * the same reason, from the other direction.
+ *
+ * Those refusals throw ConvexError, not Error. Production Convex REDACTS a
+ * thrown Error's message to "Server Error" while dev and preview pass it
+ * through — so an operator-facing explanation written as an Error reads
+ * perfectly in testing and flattens to nothing on prod. `convex/postage.ts`
+ * documents the same trap, found live on a real purchase attempt. Every
+ * message here is meant for the person using the panel, so every one of them
+ * is a ConvexError.
+ */
+export const setCardVariationParent = mutation({
+  args: {
+    cardId: v.id("cardChecklist"),
+    // Absent clears the link, turning the card back into an ordinary one.
+    parentCardId: v.optional(v.id("cardChecklist")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const card = await ctx.db.get(args.cardId);
+    if (!card) throw new Error("setCardVariationParent: no such card");
+
+    if (!args.parentCardId) {
+      await ctx.db.patch(args.cardId, {
+        variationOfCardId: undefined,
+        // Clearing is itself an operator decision: without keeping the marker,
+        // the next sync would re-derive the very link they just removed.
+        variationParentManual: true,
+        lastUpdated: Date.now(),
+      });
+      return null;
+    }
+
+    if (args.parentCardId === args.cardId) {
+      throw new ConvexError("A card cannot be a variation of itself.");
+    }
+    const parent = await ctx.db.get(args.parentCardId);
+    if (!parent) throw new Error("setCardVariationParent: no such parent card");
+    if (parent.selectorOptionId !== card.selectorOptionId) {
+      throw new ConvexError(
+        "A variation must belong to the same checklist as the card it varies.",
+      );
+    }
+    if (parent.variationOfCardId) {
+      throw new ConvexError(
+        "That card is itself a variation. Variations are one level deep — pick the base card instead.",
+      );
+    }
+    const ownChildren = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_variation_parent", (q) =>
+        q.eq("variationOfCardId", args.cardId),
+      )
+      .first();
+    if (ownChildren) {
+      throw new ConvexError(
+        "This card has its own variations. Move them first, or variations would nest.",
+      );
+    }
+
+    await ctx.db.patch(args.cardId, {
+      variationOfCardId: args.parentCardId,
+      variationParentManual: true,
+      lastUpdated: Date.now(),
+    });
+    return null;
+  },
+});
+
 export const deleteCard = mutation({
   args: { id: v.id("cardChecklist") },
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     await deleteCardCrossListingsFor(ctx, args.id);
+    await orphanVariationsOf(ctx, args.id);
     await ctx.db.delete(args.id);
     return null;
   },
@@ -3163,16 +3344,81 @@ export const wipeLegacyBaseChildren = mutation({
 // ===== ACTIONS (Orchestrators) =====
 
 // Per-child hard deadlines for the aggregator. The child adapters bound their
-// own marketplace fetches (SL: 3s × 3; BSC: 10s × 3), but if a child hangs
-// *upstream* of the fetch — e.g. a stuck cold-login in getSiteToken — its
-// promise can never settle, and a bare Promise.allSettled would wait forever,
-// so fetchAggregatedOptions would never reach recordAdapterCall and the FE
-// column would spin "Syncing…" with NOTHING logged. These deadlines guarantee
-// each branch resolves; whichever blows its budget is attributed via
-// timed_out_platform on the aggregator's adapter_sync_call. Budgets = the
-// child's own retry ceiling + margin (SL ≈ 9s, BSC ≈ 30s).
-const SL_CHILD_DEADLINE_MS = 12_000;
-const BSC_CHILD_DEADLINE_MS = 35_000;
+// own marketplace fetches, but if a child hangs *upstream* of the fetch — e.g. a
+// stuck cold-login in getSiteToken — its promise can never settle, and a bare
+// Promise.allSettled would wait forever, so fetchAggregatedOptions would never
+// reach recordAdapterCall and the FE column would spin "Syncing…" with NOTHING
+// logged. These deadlines guarantee each branch resolves; whichever blows its
+// budget is attributed via timed_out_platform on the aggregator's
+// adapter_sync_call, and by the child's own adapter_phase breadcrumb (joined on
+// requestId) for which phase of the child ate the budget.
+//
+// NEO-198 — DERIVED, not written down. Each is the adapter's OWN ceiling plus an
+// explicit margin, both imported from convex/adapters/selectorBudgets.ts. The
+// previous SL value was the literal 12_000 justified by a comment reading "the
+// child's own retry ceiling + margin (SL ≈ 9s)". That 9s counted only
+// SL_SELECTOR_FETCH_TIMEOUT_MS × SL_SELECTOR_FETCH_MAX_ATTEMPTS and silently
+// omitted the empty-result recovery loop (2 more rounds of 500ms + 3s) that runs
+// inside the same budget — so the real SL ceiling was 16s under a 12s deadline,
+// and the aggregator could abandon an adapter that was still working correctly
+// and log it as a hang. The bug was never the number 12; it was that the number
+// and the policy lived in different files with nothing tying them together.
+//
+// BEHAVIOUR CHANGE: SL_CHILD_DEADLINE_MS moves 12_000 → 19_500. A genuinely
+// hung SportLots child is now abandoned ~7.5s later than before. That costs
+// nothing when BSC also hangs (Promise.all already waits out BSC's 35s) and it
+// cannot reach the FE backstop (SELECTOR_SYNC_FE_TIMEOUT_MS = 38_000, still
+// above max(SL, BSC)). What it buys is that the deadline can no longer fire on
+// an adapter that is inside its own documented retry policy.
+//
+// BSC_CHILD_DEADLINE_MS is unchanged at 35_000 — 31.5s ceiling + the same
+// 3.5s margin it has always effectively run with. The derivation was applied to
+// it too, but it reproduces the existing value exactly.
+const SL_CHILD_DEADLINE_MS =
+  SL_SELECTOR_BUDGET.ceilingMs + CHILD_DEADLINE_MARGIN_MS;
+const BSC_CHILD_DEADLINE_MS =
+  BSC_SELECTOR_BUDGET.ceilingMs + CHILD_DEADLINE_MARGIN_MS;
+
+// Exported ONLY so convex/adapters/selectorBudgets.test.ts can assert the
+// invariant that produced NEO-198: a child deadline must never sit below the
+// ceiling of the adapter it is supposed to contain. Not a Convex function.
+export const CHILD_DEADLINES_MS = {
+  sportlots: SL_CHILD_DEADLINE_MS,
+  bsc: BSC_CHILD_DEADLINE_MS,
+} as const;
+
+/**
+ * NEO-198 — the message recorded when a child blows its deadline.
+ *
+ * Extracted so it can be asserted directly: the timeout path itself can only be
+ * exercised by hanging a "use node" adapter for 20 seconds, which is not a unit
+ * test, but the *claim the message makes* is exactly the thing that was wrong.
+ *
+ * What it must NOT say. The previous wording was
+ *
+ *   "<platform> adapter exceeded Ns deadline
+ *    (no response — stalled before/within the marketplace fetch)"
+ *
+ * and the parenthetical is unknowable here. `withChildDeadline` resolves with
+ * `{kind:"timeout"}` precisely because the child produced no value, so the
+ * aggregator has no token_ms, no filters_call_ms and no status code — it cannot
+ * distinguish a stall in getSiteToken (the credential path, which NEO-198
+ * deliberately leaves unbounded) from a stall in the marketplace fetch. Naming a
+ * location we cannot observe sends the next reader to the wrong file.
+ *
+ * What it does say: the fact (no return inside the budget), and where the answer
+ * actually lives (the child's adapter_phase breadcrumb, joined on requestId).
+ */
+export function childDeadlineMessage(
+  platformLabel: string,
+  ms: number,
+  requestId: string,
+): string {
+  return (
+    `${platformLabel} adapter did not return within its ${ms / 1000}s deadline; ` +
+    `which phase consumed it is not visible from here (requestId ${requestId})`
+  );
+}
 
 type ChildOutcome<T> =
   | { kind: "settled"; value: T }
@@ -3642,8 +3888,21 @@ export const fetchAggregatedOptions = action({
         }
       } else if (slOutcome.kind === "timeout") {
         timedOutPlatform = "sportlots";
-        platformErrors.sportlots = `SportLots adapter exceeded ${slOutcome.ms / 1000}s deadline (no response — stalled before/within the marketplace fetch)`;
-        console.error(`[fetchAggregatedOptions] SportLots child exceeded ${slOutcome.ms}ms deadline`);
+        // NEO-198: say only what a fired deadline actually knows. A deadline
+        // that wins the race gets NO return value from the child, so the
+        // aggregator never sees its token_ms / filters_call_ms and cannot tell
+        // an auth stall from a marketplace stall — the old wording asserted
+        // "stalled before/within the marketplace fetch" and was guessing. The
+        // child's adapter_phase(token_ready) breadcrumb, joined on requestId,
+        // is what answers that; see recordAdapterPhase in observability.ts.
+        platformErrors.sportlots = childDeadlineMessage(
+          "SportLots",
+          slOutcome.ms,
+          requestId,
+        );
+        console.error(
+          `[fetchAggregatedOptions] SportLots child did not return within ${slOutcome.ms}ms deadline (requestId=${requestId}); join adapter_phase on this requestId to attribute auth vs fetch`,
+        );
       } else {
         const msg = slOutcome.reason instanceof Error ? slOutcome.reason.message : "Unknown error";
         platformErrors.sportlots = msg;
@@ -3665,8 +3924,15 @@ export const fetchAggregatedOptions = action({
         }
       } else if (bscOutcome.kind === "timeout") {
         timedOutPlatform = timedOutPlatform ? "both" : "bsc";
-        platformErrors.bsc = `BSC adapter exceeded ${bscOutcome.ms / 1000}s deadline (no response — stalled before/within the marketplace fetch)`;
-        console.error(`[fetchAggregatedOptions] BSC child exceeded ${bscOutcome.ms}ms deadline`);
+        // Same correction as the SportLots branch above — see the note there.
+        platformErrors.bsc = childDeadlineMessage(
+          "BSC",
+          bscOutcome.ms,
+          requestId,
+        );
+        console.error(
+          `[fetchAggregatedOptions] BSC child did not return within ${bscOutcome.ms}ms deadline (requestId=${requestId}); join adapter_phase on this requestId to attribute auth vs fetch`,
+        );
       } else {
         const msg = bscOutcome.reason instanceof Error ? bscOutcome.reason.message : "Unknown error";
         platformErrors.bsc = msg;
@@ -4106,6 +4372,119 @@ function jaroWinkler(a: string, b: string): number {
   return jaro + prefix * 0.1 * (1 - jaro);
 }
 
+/**
+ * NEO-189 — merge the SportLots fan-out's per-set results.
+ *
+ * Two jobs, deliberately separated, because conflating them is the defect this
+ * replaces.
+ *
+ * **Dedup on SportLots' own IDENTITY.** This used to key on `cardNumber`, and
+ * SportLots deliberately reuses a card number across variation rows: "#11 Alec
+ * Bohm" and "#11 Alec Bohm [ VAR Action Image ]" are different cards sharing
+ * the number 11. That is exactly why `platformRef` is the full description
+ * (NEO-91) and why `slClaimKey` keys claims on the ref rather than the number.
+ * Keying the merge on the number therefore ate every variation on a
+ * multi-source row — silently, and only on multi-source rows, because a
+ * single-source row never reaches this merge at all. It also starved NEO-189's
+ * BSC↔SL variation pairing of its SL side for precisely the split sets this
+ * ticket exists for.
+ *
+ * **Report number collisions without dropping.** A number arriving from two
+ * different SL sets is a fact about the mapping the operator built, and they
+ * should see it. But the two rows are distinguishable — SportLots gave them
+ * different descriptions — so both are kept and offered; the pairing modal is
+ * where an operator decides, and dropping one here would pre-empt that with a
+ * guess.
+ *
+ * Extracted as a pure function so it can be tested exhaustively: the fan-out
+ * fires its `ctx.runAction` calls concurrently, which convex-test cannot mock
+ * reliably (a concurrent first-call races module resolution and one call
+ * reaches the unmocked adapter).
+ */
+export function mergeSlFanOut<
+  T extends { cardNumber: string; platformRef?: string; sourceSlSetId?: string },
+>(
+  perSetResults: T[][],
+): {
+  cards: T[];
+  collisions: Array<{
+    cardNumber: string;
+    keptSource: string;
+    skippedSource: string;
+  }>;
+} {
+  const identity = (c: T) => c.platformRef ?? `#${c.cardNumber}`;
+  const dedup = new Map<string, T>();
+  const sourceByNumber = new Map<string, string | undefined>();
+  const collisions: Array<{
+    cardNumber: string;
+    keptSource: string;
+    skippedSource: string;
+  }> = [];
+
+  for (const cards of perSetResults) {
+    for (const c of cards) {
+      const key = identity(c);
+      if (!dedup.has(key)) dedup.set(key, c);
+      if (!sourceByNumber.has(c.cardNumber)) {
+        sourceByNumber.set(c.cardNumber, c.sourceSlSetId);
+        continue;
+      }
+      const keptSource = sourceByNumber.get(c.cardNumber);
+      if (keptSource !== c.sourceSlSetId) {
+        collisions.push({
+          cardNumber: c.cardNumber,
+          keptSource: keptSource ?? "(unattributed)",
+          skippedSource: c.sourceSlSetId ?? "(unattributed)",
+        });
+      }
+    }
+  }
+
+  return { cards: Array.from(dedup.values()), collisions };
+}
+
+/**
+ * NEO-189 — one operator-readable sentence for cross-source card-number
+ * collisions, or "" when there are none.
+ *
+ * Names at most three numbers per marketplace. The operator's next action is
+ * the same whether two numbers collided or two hundred (look at the two sets
+ * and decide whether they should both be attached), so the count carries the
+ * signal and the examples make it actionable without swamping the counts the
+ * message exists to show.
+ *
+ * **It says "all rows kept", because that is now true on both sides.** This
+ * used to read "kept the first source for …", which was false for SportLots
+ * from the day it was written (`mergeSlFanOut` has always reported without
+ * dropping) and became false for BSC when its fetch-time dedup came out. A
+ * message telling an operator their data was narrowed when it was not is the
+ * same defect as narrowing it silently, pointed the other way: either one
+ * leaves them with a wrong picture of what is in the checklist.
+ */
+export function summarizeCollisions(
+  collisions: Array<{
+    side: "BSC" | "SL";
+    cardNumber: string;
+    keptSource: string;
+    skippedSource: string;
+  }>,
+): string {
+  if (collisions.length === 0) return "";
+  const parts: string[] = [];
+  for (const side of ["BSC", "SL"] as const) {
+    const forSide = collisions.filter((c) => c.side === side);
+    if (forSide.length === 0) continue;
+    const shown = forSide.slice(0, 3).map((c) => `#${c.cardNumber}`);
+    const more = forSide.length - shown.length;
+    parts.push(
+      `${side}: ${forSide.length} card number(s) in more than one source set ` +
+        `(${shown.join(", ")}${more > 0 ? `, +${more} more` : ""})`,
+    );
+  }
+  return ` — all rows kept; ${parts.join("; ")}`;
+}
+
 interface ReconciledCard {
   cardNumber: string;
   cardName: string;
@@ -4118,11 +4497,27 @@ interface ReconciledCard {
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
+  /** NEO-189: this row is a second version of another card in the same set.
+   *  Which one is resolved at commit, not here. */
+  isVariation?: boolean;
   // NEO-137: WIRE shape — each ref carries the marketplace SET it came from,
   // so the source travels with the ref instead of in a parallel
   // `sourcePlatformIds` that could drift out of step. Commit resolves `setId`
   // to a slot on the card's own parent row.
   platformData: WirePlatformData;
+  /**
+   * NEO-199 — the two marketplaces disagree about WHO IS ON this card.
+   *
+   * Present only on an auto-matched row whose two sides failed
+   * `conflictingNames`, which is a fraction of a percent of a set. `cardName`
+   * above still carries BSC's answer, exactly as before; this is what the merge
+   * used to throw away, kept so the modal can offer the choice instead of
+   * presenting a silent winner.
+   *
+   * Deliberately NOT set on an unmatched row: there is only one name there, and
+   * nothing to disagree with.
+   */
+  nameConflict?: { bsc: string; sportlots: string };
   /**
    * Reconciliation marker for cards that landed on only one side. UI
    * surfaces these as needing human review; reconciled cards (from both
@@ -4143,15 +4538,45 @@ const previewCardValidator = v.object({
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
+  // NEO-189: the adapter's answer to a DOMAIN question — "is this row a second
+  // version of another card in this set?" Each adapter derives it from its own
+  // signals (BSC from its `VAR` token / `cardNo` suffix, SportLots from its
+  // ` [ VAR … ]` description marker); nothing downstream of here knows or cares
+  // which marketplace it came from.
+  //
+  // The PARENT is not on the wire. It is resolved at commit by
+  // `resolveVariationParents`, which groups on the card-number stem and takes
+  // the one non-variation row in each group. Sending a parent pointer instead
+  // would mean trusting the client to preserve array order or ids it has no
+  // reason to preserve.
+  isVariation: v.optional(v.boolean()),
   // NEO-137: ref + the marketplace set it came from. Replaces the separate
   // `sourcePlatformIds`, which carried the full set id on every card. This is
   // the WIRE shape — commit resolves `setId` to a slot on the parent row.
   platformData: cardPlatformWireDataValidator,
+  // NEO-199 — the losing name from an auto-matched merge, so the modal can flag
+  // a disagreement it did not itself create.
+  //
+  // Widening a strict `v.object` is the point of the change: this validator is
+  // what `resolveEntities` and `commitCardChecklist` check on the way to
+  // commit, so without it there is no legal way for the second name to reach
+  // the client at all. It is OPTIONAL and absent on every agreeing row —
+  // roughly 99% of a 908-card set — so the wire cost is paid only where there
+  // is something to say.
+  //
+  // A confirmed card does not carry it: CardPairingModal lifts it onto the PAIR
+  // and strips it from the card, so the committed payload is byte-identical to
+  // what it was before this field existed. The optionality is what makes that
+  // stripping legal rather than a second shape.
+  nameConflict: v.optional(
+    v.object({ bsc: v.string(), sportlots: v.string() }),
+  ),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
 });
 
 /**
- * Action — fetch reconciled checklist preview without persisting.
+ * Action — fetch and reconcile a checklist into pairing CANDIDATES, without
+ * persisting a single NB card.
  *
  * Pipeline:
  *   1. Resolve ancestor chain → sport, year, set/variant filters
@@ -4159,41 +4584,89 @@ const previewCardValidator = v.object({
  *   3. Reconcile by cardNumber (with cardNumberPrefix from selectorOption
  *      metadata applied), then BSC→SL cross-ref via BSC.sportlotsRef,
  *      then Jaro-Winkler ≥ 0.92 fuzzy match on player names
- *   4. Bucket player/team names against existing players/teams tables
- *      → return `unknownPlayers` / `unknownTeams` for the dialog
+ *   4. PUBLISH the three buckets to `checklistCandidates` (NEO-195), then
+ *      enrich them with per-card BSC team names in chunks, releasing each
+ *      chunk as it lands
  *
- * Persistence happens in commitCardChecklist after the user confirms
- * unknowns. Splitting fetch/commit lets the dialog gate entity creation
- * — per the explicit requirement that the user confirm new players/
- * teams before they hit the database.
+ * The candidates table is the ONLY way the cards reach the client — see the
+ * `returns` note below. Entity resolution runs later, on the pairs the
+ * operator confirmed (`resolveChecklistEntities`), and persistence later still
+ * (`commitCardChecklist`), so nothing is created for a candidate that is about
+ * to be discarded.
  */
 export const fetchCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
   },
-  // NEO-137: three buckets rather than a flat card list. Nothing here is an
-  // NB card yet — these are candidates for the operator to pair, keep, or
-  // discard, mirroring set reconciliation's vocabulary exactly.
+  /**
+   * The cards do NOT come back this way. They are published to
+   * `checklistCandidates` as they are reconciled (NEO-195) and the modal reads
+   * them from `getReadyCandidates`; this return carries only what the STREAM
+   * cannot say.
+   *
+   * ## Why the payload went away
+   *
+   * Until now this also returned the whole `{ autoMatched, unmatchedBsc,
+   * unmatchedSl }` set at the end, and `CardChecklist` held it as
+   * `pendingPairing`. Every row therefore crossed the wire twice — once
+   * streamed, once here — and the screen had two sources for one thing.
+   *
+   * They did not merely cost twice; they DIVERGED. `CardPairingModal` absorbs
+   * `initialData` append-only (keyed on marketplace ref, so a decision the
+   * operator has already made cannot be disturbed), which means the late
+   * payload's rows were all already known and its contents were dropped on the
+   * floor — including the team names this action spends ~74s resolving. The
+   * second wire was not a safety net, it was a second shape to keep in step:
+   * NEO-199 had to widen both, with a test pinning each.
+   *
+   * ## What is left, and why each piece has to be here
+   *
+   * `success` / `message` — the sync-status line under the button, including
+   * NEO-196's cross-source collision report. Nothing else knows about them.
+   *
+   * `candidateCount` — the "nothing to pair" signal. A custom subtree
+   * short-circuits before any candidate is written, and the client goes
+   * straight to entity resolution rather than showing an empty dialog. It
+   * cannot read that off the subscription instead: the query's value at the
+   * moment this promise resolves may predate the batch write.
+   *
+   * `sportId` is deliberately NOT here. The client walks the same ancestor
+   * chain for its own pickers already (`getAncestorChain`), so returning it
+   * was a third copy of a fact the caller can see. Dropping it also makes the
+   * Convex-then-SPA deploy window safe: a cached OLD bundle running against
+   * this function bails at its own `if (!result.sportId)` guard — message
+   * shown, candidates discarded, nothing written — instead of reaching the
+   * `nothingToPair` branch with empty arrays, which would commit an empty
+   * checklist over a real set.
+   */
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
-    sportId: v.optional(v.id("selectorOptions")),
-    autoMatched: v.array(
-      v.object({ card: previewCardValidator, confidence: v.number() }),
-    ),
-    unmatchedBsc: v.array(previewCardValidator),
-    unmatchedSl: v.array(previewCardValidator),
+    /** Rows published to `checklistCandidates` by this run. 0 = nothing to pair. */
+    candidateCount: v.number(),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
     message: string;
-    sportId?: Id<"selectorOptions">;
-    // Structural duplicate of ReconciledCard removed (NEO-137) — it drifted
-    // from the interface it mirrors the moment platformData changed shape.
-    autoMatched: Array<{ card: ReconciledCard; confidence: number }>;
-    unmatchedBsc: ReconciledCard[];
-    unmatchedSl: ReconciledCard[];
+    candidateCount: number;
   }> => {
+    // NEO-202: this was the one function in this file with no identity check.
+    // It is not merely a read: it performs authenticated fetches against BSC
+    // and SportLots with OUR stored credentials from OUR egress IP, and since
+    // NEO-195 it also writes ~900 `checklistCandidates` rows per call. Public
+    // and unauthenticated, that is a marketplace-credential abuse primitive
+    // and a write amplifier behind one document id.
+    //
+    // `requireAdmin`, not `requireSignedIn`: `selectorOptions` is the global
+    // admin-managed taxonomy and every other entry point onto it — including
+    // `commitCardChecklist`, `resolveChecklistEntities` and the
+    // `discardCandidates` that reaps this action's own rows — is admin-gated.
+    // A signed-in non-admin has no flow that reaches this button.
+    //
+    // Outside the `try` on purpose: the catch below converts throws into
+    // `{ success: false, message }`, which would render an authorization
+    // failure as a marketplace outage.
+    const adminUserId = await requireAdmin(ctx);
     try {
       // Resolve ancestor chain → filter map + sport + cardNumberPrefix
       const chain = await ctx.runQuery(
@@ -4205,20 +4678,17 @@ export const fetchCardChecklist = action({
       // NEO-6: both sides may now be arrays at any level. We keep the
       // arrays here and fan out / pass through downstream.
       const slPlatformFilters: Record<string, string[]> = {};
-      const bscPlatformFilters: Record<string, string[]> = {};
       // NEO-96: `sport` used to be `ancestor.value.toLowerCase()` — a BSC wire
-      // format — and that string was returned to the client and persisted onto
-      // teams/players by commitCardChecklist. It is now the sport ROW's id.
-      // The marketplace filters below still derive their own wire values from
-      // `platformData`, which is where they belong.
-      let sportId: Id<"selectorOptions"> | undefined;
+      // format — and that string was persisted onto teams/players by
+      // commitCardChecklist. It is now the sport ROW's id, which the CLIENT
+      // resolves off this same chain (see the `returns` note above); all this
+      // handler still needs from the sport row is a label for the log line.
       let sportLabel: string | undefined;
       let cardNumberPrefix: string | undefined;
 
       for (const ancestor of chain) {
         filters[ancestor.level] = ancestor.value;
         if (ancestor.level === "sport") {
-          sportId = ancestor._id;
           sportLabel = ancestor.value;
         }
         if (ancestor.metadata?.cardNumberPrefix) {
@@ -4226,13 +4696,10 @@ export const fetchCardChecklist = action({
         }
         // NEO-137: adapters filter on marketplace IDs; slots are internal.
         const ancestorSlIds = slotIds(ancestor, "sportlots");
-        const ancestorBscIds = slotIds(ancestor, "bsc");
         if (ancestorSlIds.length > 0) {
           slPlatformFilters[ancestor.level] = ancestorSlIds;
         }
-        if (ancestorBscIds.length > 0) {
-          bscPlatformFilters[ancestor.level] = ancestorBscIds;
-        }
+        // BSC is bucketed by FACET, not by level — see `bscFacetPlan` below.
       }
 
       // Custom-subtree gate (NEO-22). If any node in the chain (including the
@@ -4255,10 +4722,9 @@ export const fetchCardChecklist = action({
           success: true,
           message:
             "Custom selector subtree — no marketplace data available; add custom cards.",
-          sportId,
-          autoMatched: [],
-          unmatchedBsc: [],
-          unmatchedSl: [],
+          // No candidates written at all — the client reads this as "nothing to
+          // pair" and goes straight to entity resolution.
+          candidateCount: 0,
         };
       }
 
@@ -4303,19 +4769,26 @@ export const fetchCardChecklist = action({
           `not write the BSC slugs we need (this is a bug in our sync pipeline, ` +
           `not a marketplace issue).`;
         console.error(`[fetchCardChecklist] precondition failed: ${msg}`);
-        return {
-          success: false,
-          message: msg,
-          sportId,
-          autoMatched: [],
-          unmatchedBsc: [],
-          unmatchedSl: [],
-        };
+        return { success: false, message: msg, candidateCount: 0 };
       }
+
+      // NEO-189 — bucket the chain's BSC ids by the FACET each one belongs to
+      // rather than by the NB level of the row holding it.
+      //
+      // This is the whole point of the ticket. BSC splits Topps into Series 1
+      // and Series 2 at `setName` while SportLots has one set, so a **setName**
+      // id has to hang off the NB Base (`variantType`) row — and the old
+      // level-keyed bucketing threw those away (`variantType` was skipped,
+      // `parallel` had no facet at all). An id now follows what it IS.
+      //
+      // Untagged slots keep the level rule, so a row attached before this
+      // change queries exactly what it queried before.
+      const bscFacetPlan = resolveBscFacetFilters(chain);
 
       console.log(
         `[fetchCardChecklist] sport=${sportLabel} prefix=${cardNumberPrefix}`,
         `filters:`, filters,
+        `bscFacets:`, bscFacetPlan.filters,
       );
 
       // NEO-6: SL adapter takes one set ID at a time. When the active
@@ -4333,6 +4806,9 @@ export const fetchCardChecklist = action({
         printRun?: number;
         autographType?: string;
         cardVariation?: string;
+        /** NEO-189 — SL tags a variation in the description and reuses the
+         *  parent's card number. */
+        isVariation?: boolean;
         platformRef?: string;
         sportlotsRef?: string;
         sourceSlSetId?: string;
@@ -4365,6 +4841,17 @@ export const fetchCardChecklist = action({
         }
         return null;
       })();
+
+      // NEO-189 — card numbers seen from more than one source set, on either
+      // marketplace. Surfaced to the operator in the result message, because
+      // two attached sets legitimately overlapping is a fact about the mapping
+      // they just built and only they can say whether it was intended. Every
+      // row is kept on both sides; this is a report, not a drop.
+      const slCollisions: Array<{
+        cardNumber: string;
+        keptSource: string;
+        skippedSource: string;
+      }> = [];
 
       const callSl = async (
         perCallFilters: Record<string, string>,
@@ -4416,39 +4903,44 @@ export const fetchCardChecklist = action({
             return callSl(perCall, slId);
           }),
         );
-        // Dedup by cardNumber — first occurrence wins.
-        const dedup = new Map<string, SlCard>();
-        for (const cards of perIdResults) {
-          for (const c of cards) {
-            const existing = dedup.get(c.cardNumber);
-            if (!existing) {
-              dedup.set(c.cardNumber, c);
-            } else if (existing.sourceSlSetId !== c.sourceSlSetId) {
-              console.warn(
-                `[fetchCardChecklist] SL cardNumber collision: ${c.cardNumber} ` +
-                  `keptSource=${existing.sourceSlSetId} skippedSource=${c.sourceSlSetId}`,
-              );
-            }
-          }
+        const merged = mergeSlFanOut(perIdResults);
+        for (const col of merged.collisions) {
+          slCollisions.push(col);
+          console.warn(
+            `[fetchCardChecklist] SL cardNumber in two source sets: ${col.cardNumber} ` +
+              `(${col.keptSource} and ${col.skippedSource}) — both rows kept`,
+          );
         }
-        return Array.from(dedup.values());
+        return merged.cards;
       };
 
       type BscFetchResult = {
         success: boolean;
         cards: any[];
         message?: string;
+        collisions?: Array<{
+          cardNumber: string;
+          keptSource: string;
+          skippedSource: string;
+        }>;
       };
       const fetchBsc = async (): Promise<BscFetchResult> => {
         // The adapter fans out internally — one request per BSC source set.
-        // BSC does NOT OR multi-value facets: two variantName values return
+        // BSC does NOT OR multi-value facets: two values on one facet return
         // 200 OK with zero rows (measured on dev 2026-08-12, 1996 Score).
         // The comment that used to be here asserted the opposite.
+        //
+        // NEO-189: `facetFilters`, not `platformFilters`. The level-keyed form
+        // cannot express a setName id attached to a Base row, which is the
+        // split this feature exists for.
         return await ctx.runAction(
           api.adapters.buysportscards.fetchBscChecklist,
           {
             parentFilters: filters,
-            platformFilters: bscPlatformFilters,
+            facetFilters: bscFacetPlan.filters,
+            ...(bscFacetPlan.sourceFacet
+              ? { sourceFacet: bscFacetPlan.sourceFacet }
+              : {}),
           },
         ).catch((err) => {
           console.error(`[fetchCardChecklist] BSC error:`, err);
@@ -4468,6 +4960,7 @@ export const fetchCardChecklist = action({
           ? bscSettled.value
           : { success: false, cards: [] };
 
+      const bscCollisions = bscResult.collisions ?? [];
       const bscCards = (bscResult.success ? bscResult.cards : []) as Array<{
         cardNumber: string;
         cardName: string;
@@ -4478,6 +4971,9 @@ export const fetchCardChecklist = action({
         printRun?: number;
         autographType?: string;
         cardVariation?: string;
+        /** NEO-189 — BSC marks a variation with a VAR token and/or a `VAR:`
+         *  description, and suffixes the card number. */
+        isVariation?: boolean;
         platformRef?: string;
         sportlotsRef?: string;
         sourceBscSetSlug?: string;
@@ -4489,8 +4985,83 @@ export const fetchCardChecklist = action({
       const slByNumber = new Map<string, typeof slCards[0]>();
       const slByRef = new Map<string, typeof slCards[0]>();
       for (const c of slCards) {
-        slByNumber.set(c.cardNumber, c);
+        // NEO-189: prefer the NON-variation row for a given number.
+        //
+        // SportLots files a card and its variations under ONE number — "#11
+        // Alec Bohm", "#11 Alec Bohm [ VAR Action Image ]", "#11 … [ VAR
+        // Throwback Alternate ]". A plain last-write-wins index therefore
+        // answered `get("11")` with whichever variation happened to be scraped
+        // last, and BSC's base #11 paired with a variation. Wrong, and silent.
+        //
+        // A bare BSC number means the base card, so that is what this index
+        // must return. Variations are paired to variations separately below.
+        const prev = slByNumber.get(c.cardNumber);
+        if (!prev || (prev.isVariation && !c.isVariation)) {
+          slByNumber.set(c.cardNumber, c);
+        }
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
+      }
+
+      // NEO-189 — pair BSC variations to SportLots variations of the same card.
+      //
+      // Neither side's number can do this on its own: BSC suffixes a variation
+      // (`1b`), SportLots reuses the parent's number and tags the description.
+      // So `slByNumber.get("1b")` finds nothing, the fuzzy name fallback cannot
+      // help (the base already claimed that SL row, and a "Legend" variation may
+      // be a different player entirely), and every variation lands in the
+      // BSC-only column. A real 2025 Topps sync put 393 of them there.
+      //
+      // Grouped by card-number STEM — the one thing both sides agree on — and
+      // matched on the variation label via suggestVariationPairings: exact
+      // wording first, then containment ("Action" in "Action Image"). Anything
+      // it will not pair confidently is left for the operator rather than
+      // guessed, which is the same rule the commit-time parent resolution
+      // follows.
+      const slVariationPairByBscRef = new Map<string, typeof slCards[0]>();
+      {
+        const bscVarsByStem = new Map<string, typeof bscCards>();
+        for (const c of bscCards) {
+          if (!c.isVariation) continue;
+          const stem = cardNumberStem(c.cardNumber);
+          const b = bscVarsByStem.get(stem);
+          if (b) b.push(c);
+          else bscVarsByStem.set(stem, [c]);
+        }
+        const slVarsByStem = new Map<string, typeof slCards>();
+        for (const c of slCards) {
+          if (!c.isVariation) continue;
+          const stem = cardNumberStem(c.cardNumber);
+          const b = slVarsByStem.get(stem);
+          if (b) b.push(c);
+          else slVarsByStem.set(stem, [c]);
+        }
+        let paired = 0;
+        for (const [stem, bscVars] of bscVarsByStem) {
+          const slVars = slVarsByStem.get(stem);
+          if (!slVars?.length) continue;
+          const { pairs } = suggestVariationPairings(
+            bscVars.map((c) => c.cardVariation ?? ""),
+            slVars.map((c) => c.cardVariation ?? ""),
+          );
+          for (const pair of pairs) {
+            const bscRef = bscVars[pair.leftIndex]?.platformRef;
+            const slCard = slVars[pair.rightIndex];
+            if (bscRef && slCard) {
+              slVariationPairByBscRef.set(bscRef, slCard);
+              paired++;
+            }
+          }
+        }
+        if (bscVarsByStem.size > 0) {
+          console.log(
+            JSON.stringify({
+              msg: "variation_pairing",
+              bscVariations: [...bscVarsByStem.values()].reduce((n, v) => n + v.length, 0),
+              slVariations: [...slVarsByStem.values()].reduce((n, v) => n + v.length, 0),
+              paired,
+            }),
+          );
+        }
       }
 
       // NEO-137 — STICKY PAIRING. An operator's confirmed pairing must survive
@@ -4574,7 +5145,27 @@ export const fetchCardChecklist = action({
       // `out` stays as the union of everything, purely so the team-lookup and
       // entity-bucketing passes below can walk every candidate once.
       const out: ReconciledCard[] = [];
-      const claimedSlNumbers = new Set<string>();
+      // NEO-189: claims are keyed by SL's REAL identity — its platformRef, the
+      // full row description — not by card number.
+      //
+      // SportLots deliberately reuses a card number across variation rows:
+      // "#11 Alec Bohm" and "#11 Alec Bohm [ VAR Action Image ]" are different
+      // cards sharing the number 11. That is precisely why platformRef is the
+      // description (NEO-91).
+      //
+      // Keying claims by NUMBER meant the first BSC card to claim SL's "#11"
+      // marked every other SL row numbered 11 as taken. Its variations were
+      // then invisible on both sides — not matched, and skipped by the
+      // leftover loop that builds unmatchedSl — so they vanished silently.
+      // A real 2025 Topps sync reported "350 paired, 393 BSC-only, 0 SL-only":
+      // the zero was not "SportLots had nothing extra", it was the variations
+      // being discarded.
+      //
+      // Falls back to the number only when a row has no ref, which is the one
+      // case where nothing better exists.
+      const claimedSlRefs = new Set<string>();
+      const slClaimKey = (c: { platformRef?: string; cardNumber: string }) =>
+        c.platformRef ?? `#${c.cardNumber}`;
 
       // 1. Walk BSC, attach matching SL data
       for (const bsc of bscCards) {
@@ -4589,6 +5180,11 @@ export const fetchCardChecklist = action({
         let sl: typeof slCards[0] | undefined =
           (storedSlRef && slByPlatformRef.get(storedSlRef))
           || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
+          // NEO-189: a variation's counterpart, matched by label above. Ranks
+          // below the operator's stored answer and BSC's own cross-reference,
+          // and above the number lookups — which cannot resolve a suffixed
+          // number against SportLots at all.
+          || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
           || slByNumber.get(bsc.cardNumber)
           || slByNumber.get(stripped);
         const fromStoredPairing =
@@ -4601,7 +5197,7 @@ export const fetchCardChecklist = action({
           const target = normalizeName(bsc.players[0]);
           let best: { card: typeof slCards[0]; score: number } | null = null;
           for (const candidate of slCards) {
-            if (claimedSlNumbers.has(candidate.cardNumber)) continue;
+            if (claimedSlRefs.has(slClaimKey(candidate))) continue;
             const candName = candidate.cardName ? normalizeName(candidate.cardName) : "";
             if (!candName) continue;
             const score = jaroWinkler(target, candName);
@@ -4621,7 +5217,7 @@ export const fetchCardChecklist = action({
         // A previously-confirmed pairing is certain by definition — it is the
         // operator's own answer being replayed, not a guess.
         const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
-        if (sl) claimedSlNumbers.add(sl.cardNumber);
+        if (sl) claimedSlRefs.add(slClaimKey(sl));
 
         const attributes = Array.from(new Set([
           ...(bsc.attributes ?? []),
@@ -4630,6 +5226,19 @@ export const fetchCardChecklist = action({
         const printRun = bsc.printRun ?? sl?.printRun;
         const players = bsc.players ?? (sl?.players ?? undefined);
         const teamsArr = bsc.teams ?? (sl?.teams ?? undefined);
+
+        // NEO-199 — recorded BEFORE the merge below throws one of the two
+        // names away.
+        //
+        // This is the COMMON path: most of a 660-row set auto-matches here and
+        // never reaches the operator's hands, so a wrong-player guard that only
+        // fires on the manual leftovers is a guard that mostly does not fire —
+        // worse than none, because the screen then looks like it is protecting
+        // you. `cardName` below still resolves to BSC exactly as before; the
+        // only change is that the loser survives the trip.
+        const nameConflict = sl
+          ? conflictingNames(bsc.cardName, sl.cardName)
+          : undefined;
 
         const candidate: ReconciledCard = {
           cardNumber: bsc.cardNumber,
@@ -4642,7 +5251,12 @@ export const fetchCardChecklist = action({
           isRelic: attributes.includes("RELIC") || undefined,
           printRun,
           autographType: bsc.autographType ?? sl?.autographType,
-          cardVariation: bsc.cardVariation,
+          cardVariation: bsc.cardVariation ?? sl?.cardVariation,
+          // NEO-189: EITHER source recognising a variation makes it one. They
+          // mark it differently (BSC suffixes the number, SL tags the
+          // description) and one may carry a variation the other has not
+          // catalogued, so this is a union rather than a preference.
+          isVariation: bsc.isVariation || sl?.isVariation || undefined,
           // NEO-137: each ref carries the marketplace SET it came from, so
           // the source travels with the ref rather than in a parallel
           // `sourcePlatformIds` object that could fall out of step with it.
@@ -4667,6 +5281,10 @@ export const fetchCardChecklist = action({
                 }
               : {}),
           },
+          // Spread rather than always-present-and-undefined: `previewCardValidator`
+          // is strict, and an explicit `undefined` is not the same as an absent
+          // optional on the wire.
+          ...(nameConflict ? { nameConflict } : {}),
           ...(sl ? {} : { unmatched: "sl" as const }),
         };
         out.push(candidate);
@@ -4678,7 +5296,7 @@ export const fetchCardChecklist = action({
       //    on their own any more — they are offered for the operator to pair
       //    or deliberately keep.
       for (const sl of slCards) {
-        if (claimedSlNumbers.has(sl.cardNumber)) continue;
+        if (claimedSlRefs.has(slClaimKey(sl))) continue;
         const slOnly: ReconciledCard = {
           cardNumber: sl.cardNumber,
           cardName: sl.cardName || `Card #${sl.cardNumber}`,
@@ -4690,6 +5308,8 @@ export const fetchCardChecklist = action({
           isRelic: sl.attributes?.includes("RELIC") || undefined,
           printRun: sl.printRun,
           autographType: sl.autographType,
+          cardVariation: sl.cardVariation,
+          isVariation: sl.isVariation,
           platformData: sl.platformRef
             ? {
                 sportlots: {
@@ -4715,14 +5335,92 @@ export const fetchCardChecklist = action({
       const needsTeamLookup = out.filter(
         (c) => !c.teams?.length && !c.team && c.platformData.bsc,
       );
+
+      // NEO-195 — publish the reconciled candidates NOW, before the team
+      // lookup, so the modal can start filling in at ~6s instead of ~80s.
+      //
+      // Every row goes in as `pending` when a lookup is outstanding; the chunk
+      // loop below flips each to `ready` as its team lands. `status` reports
+      // enrichment progress, it does not gate visibility — pairing needs card
+      // numbers and descriptions, not teams, and Confirm is separately blocked
+      // until the whole fetch finishes (see checklistCandidates.ts).
+      //
+      // This is the ONLY copy that reaches the client. The action used to
+      // return the same three buckets again at the end; that second wire is
+      // gone (see the `returns` note at the top of this action).
+      const candidateBatchId = crypto.randomUUID();
+      // NEO-202: was `(await getCurrentUserId(ctx)) ?? "unknown"`. The fallback
+      // only made sense while the action was anonymous-callable — and it was
+      // actively harmful: every anonymous run shared the literal owner
+      // "unknown", so `startCandidateBatch`'s per-operator clear made those
+      // runs delete each other's rows. `requireAdmin` above already returned
+      // the caller's id; there is no unowned batch any more.
+      const toCandidate = (
+        card: ReconciledCard,
+        bucket: "matched" | "bscOnly" | "slOnly",
+        confidence?: number,
+      ) => ({
+        cardNumber: card.cardNumber,
+        cardName: card.cardName,
+        teams: card.teams,
+        players: card.players,
+        attributes: card.attributes,
+        isRookie: card.isRookie,
+        isRelic: card.isRelic,
+        printRun: card.printRun,
+        autographType: card.autographType,
+        cardVariation: card.cardVariation,
+        isVariation: card.isVariation,
+        platformData: card.platformData,
+        // NEO-199: the streamed path is the only path. A conflict missing here
+        // is a conflict the operator never sees.
+        nameConflict: card.nameConflict,
+        bucket,
+        confidence,
+      });
+      await ctx.runMutation(
+        internal.checklistCandidates.startCandidateBatch,
+        {
+          selectorOptionId: args.selectorOptionId,
+          batchId: candidateBatchId,
+          userId: adminUserId,
+          candidates: [
+            ...autoMatchedCards.map((m) =>
+              toCandidate(m.card, "matched", m.confidence),
+            ),
+            ...unmatchedBscCards.map((c) => toCandidate(c, "bscOnly")),
+            ...unmatchedSlCards.map((c) => toCandidate(c, "slOnly")),
+          ],
+          readyImmediately: needsTeamLookup.length === 0,
+        },
+      );
+
       if (needsTeamLookup.length > 0) {
-        const teamNames: Record<string, string> = await ctx.runAction(
-          internal.adapters.buysportscards.fetchBscCardTeamNames,
-          { bscCardIds: needsTeamLookup.map((c) => c.platformData.bsc!.ref) },
-        );
-        for (const c of needsTeamLookup) {
-          const name = teamNames[c.platformData.bsc!.ref];
-          if (name) c.teams = [name];
+        // Chunked, so each chunk's results reach the modal as they resolve
+        // rather than all at once when the last card returns. The chunk is
+        // deliberately a multiple of BSC_TEAM_LOOKUP_CONCURRENCY so each round
+        // trip still saturates the fan-out.
+        const TEAM_LOOKUP_CHUNK = 50;
+        for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
+          const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
+          const teamNames: Record<string, string> = await ctx.runAction(
+            internal.adapters.buysportscards.fetchBscCardTeamNames,
+            { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
+          );
+          for (const c of chunk) {
+            const name = teamNames[c.platformData.bsc!.ref];
+            if (name) c.teams = [name];
+          }
+          await ctx.runMutation(
+            internal.checklistCandidates.resolveCandidateTeams,
+            {
+              batchId: candidateBatchId,
+              resolved: chunk.map((c) => ({
+                bscRef: c.platformData.bsc!.ref,
+                teamName: teamNames[c.platformData.bsc!.ref],
+              })),
+            },
+          );
         }
       }
 
@@ -4737,24 +5435,50 @@ export const fetchCardChecklist = action({
           `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
       );
 
+      // NEO-189 — tell the OPERATOR about cross-source card-number collisions,
+      // not just the server log.
+      //
+      // The console warning was enough while a collision meant "our fan-out is
+      // probably misconfigured". Now that a row can deliberately draw from two
+      // sets on either marketplace, an overlap is a legitimate outcome the
+      // operator chose — and the one thing they cannot see from the checklist
+      // itself is that #11 arrived from BOTH attached sets and now appears
+      // twice. `message` already renders under the Sync button, so this needs
+      // no new surface; it is capped so a badly overlapping pair cannot push
+      // the counts off the screen.
+      //
+      // SURFACING, NOT NARROWING. Neither marketplace drops a row to make the
+      // numbers unique. A checklist quietly halved because two attached series
+      // both start at #1 looks exactly like a correct one — that is how the
+      // BSC dedup reached production, and reverting it is why 1996 Score
+      // reconciles to 220 again rather than 110.
+      const collisionNote = summarizeCollisions([
+        ...bscCollisions.map((c) => ({ ...c, side: "BSC" as const })),
+        ...slCollisions.map((c) => ({ ...c, side: "SL" as const })),
+      ]);
+
       return {
         success: true,
         message:
           `${autoMatchedCards.length} matched, ` +
-          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only`,
-        sportId,
-        autoMatched: autoMatchedCards,
-        unmatchedBsc: unmatchedBscCards,
-        unmatchedSl: unmatchedSlCards,
+          `${unmatchedBscCards.length} BSC-only, ${unmatchedSlCards.length} SL-only` +
+          collisionNote,
+        // The cards themselves are already in `checklistCandidates` — this is
+        // the count of what was published there, not a second copy of it.
+        candidateCount:
+          autoMatchedCards.length +
+          unmatchedBscCards.length +
+          unmatchedSlCards.length,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);
       return {
         success: false,
         message: `Failed to fetch checklist: ${error instanceof Error ? error.message : "Unknown error"}`,
-        autoMatched: [],
-        unmatchedBsc: [],
-        unmatchedSl: [],
+        // A throw can land after `startCandidateBatch` has written rows. The
+        // count is what THIS call is handing the operator, and a failed call
+        // hands them nothing — the client discards the batch on `!success`.
+        candidateCount: 0,
       };
     }
   },
@@ -4836,40 +5560,80 @@ export const resolveChecklistEntities = action({
     });
   },
 });
+/**
+ * NEO-189 — how many cards one `commitCardChecklistChunk` transaction upserts.
+ *
+ * Measured, not guessed. The single-mutation version of this commit passed at
+ * 335 cards (the E2E `setup.yaml` save — and already sat near its 120s wait)
+ * and FAILED at 712 with Convex's `Your request timed out performing too many
+ * system operations.` (PR #205 preview, request af06962bc3db7994). Each card
+ * costs ~5-6 database operations in the chunk below, so 150 cards is ~900
+ * operations per transaction — well inside the budget that 335 cards (~1800)
+ * was straining, leaving room for the chunk's fixed cost (one parent-row read
+ * plus at most one checklist read).
+ *
+ * Exported so tests can commit a deliberately multi-chunk batch without
+ * hard-coding the number.
+ */
+export const CARDS_PER_COMMIT_CHUNK = 150;
 
 /**
- * Mutation — commit a fetched checklist preview. Every player/team name
- * that isn't already in our tables was reviewed one-at-a-time in the
- * NEO-92 review wizard (batchId → entityReviewQueue), which recorded a
- * `decision` of "create" (seeded from the wizard's own Wikidata preview
- * lookup) or "link" (an existing player/team the user picked instead —
- * no new row). There is no skip: every name resolves to one or the other.
- * Card playerIds/teamOnCardIds are resolved from those decisions, the
- * checklist is persisted, and the batch's review rows are cleaned up.
+ * NEO-92/NEO-189 — the once-per-commit half of `commitCardChecklist`.
+ *
+ * Everything here is per-COMMIT, not per-card, so it runs exactly once no
+ * matter how many chunks follow: the admin check, the sport row, the
+ * player/team creation driven by the review-queue decisions, the leaf node's
+ * feature snapshot, the setName ancestor walk, and the pre-commit snapshot of
+ * the checklist that the upsert keys against.
+ *
+ * COST NOTE: this phase is O(distinct player names + distinct team names) index
+ * reads, not O(cards) — one `by_name_normalized_and_sport_id` lookup per
+ * distinct name. At 712 cards that is ~1400 reads, comfortably inside the 4096
+ * index-range limit. It is the next thing that would need chunking if
+ * `MAX_CARDS_PER_COMMIT` were ever actually approached; see the note there.
  */
-export const commitCardChecklist = mutation({
+export const commitCardChecklistPrelude = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     sportId: v.id("selectorOptions"),
-    cards: v.array(previewCardValidator),
-    // Present whenever the fetch surfaced unknown names (and the wizard
-    // ran); absent on the zero-unknowns fast path.
+    // Just the NAMES off the incoming cards — the prelude never needs the
+    // cards themselves, and shipping 700 full card objects into a phase that
+    // only reads names off them is pure wire cost.
+    playerNames: v.array(v.string()),
+    teamNames: v.array(v.string()),
     batchId: v.optional(v.string()),
   },
   returns: v.object({
-    success: v.boolean(),
-    count: v.number(),
+    userId: v.string(),
+    sportSkuCode: v.optional(v.string()),
+    sportValue: v.string(),
+    playerIdByName: v.array(
+      v.object({ name: v.string(), id: v.id("players") }),
+    ),
+    teamIdByName: v.array(v.object({ name: v.string(), id: v.id("teams") })),
+    // Canonical stored name per resolved player id. The old single mutation
+    // re-read every player with a `db.get` inside the per-card write loop just
+    // to spell its name for the listing title / signedBy default; resolving it
+    // once here removes one database operation per player per card.
+    playerNameById: v.array(
+      v.object({ id: v.id("players"), name: v.string() }),
+    ),
     createdPlayerIds: v.array(v.id("players")),
     createdTeamIds: v.array(v.id("teams")),
+    enrichmentTeamIds: v.array(v.id("teams")),
+    reviewRowIds: v.array(v.id("entityReviewQueue")),
+    inheritedFeatures: v.optional(v.record(v.string(), v.string())),
+    setNameAncestorId: v.optional(v.id("selectorOptions")),
+    setNameValue: v.optional(v.string()),
+    existingCustomCardNumbers: v.array(v.string()),
+    // The upsert key, resolved ONCE against the pre-commit state of the
+    // checklist. See the long note in `commitCardChecklistChunk`.
+    existingIdByNumber: v.array(
+      v.object({ cardNumber: v.string(), id: v.id("cardChecklist") }),
+    ),
   }),
-  handler: async (ctx, args): Promise<{
-    success: boolean;
-    count: number;
-    createdPlayerIds: Array<Id<"players">>;
-    createdTeamIds: Array<Id<"teams">>;
-  }> => {
+  handler: async (ctx, args): Promise<CommitPrelude> => {
     await requireAdmin(ctx);
-    assertCardBatchWithinLimits(args.cards, "commitCardChecklist");
     const userId = await getCurrentUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
@@ -4895,27 +5659,28 @@ export const commitCardChecklist = mutation({
         .join(" ");
 
     // Resolve every player/team name appearing on any card to an Id where
-    // possible. Build name → Id maps so the per-card resolution below is
-    // O(1) instead of repeated DB lookups.
+    // possible. Build name → Id maps so the per-card resolution in the chunks
+    // below is O(1) instead of repeated DB lookups.
     const allPlayerNames = new Set<string>();
     const allTeamNames = new Set<string>();
-    for (const c of args.cards) {
-      for (const p of c.players ?? []) if (p.trim()) allPlayerNames.add(p.trim());
-      for (const t of c.teams ?? []) if (t.trim()) allTeamNames.add(t.trim());
-      if (c.team && c.team.trim() && !c.teams?.length) allTeamNames.add(c.team.trim());
-    }
+    for (const p of args.playerNames) if (p.trim()) allPlayerNames.add(p.trim());
+    for (const t of args.teamNames) if (t.trim()) allTeamNames.add(t.trim());
 
-    // Fold in pending* names from custom cards on this variant. Those rows
-    // aren't in args.cards (which is the BSC/SL fetch preview), so without
-    // this pass a reviewed custom-card pending player would never get
-    // inserted into the players table.
-    const existingForPending = await ctx.db
+    // The pre-commit snapshot of this checklist, read ONCE. Three separate
+    // things are derived from it (pending* names, preserved custom-card
+    // numbers, and the upsert key) — the old single mutation read the table
+    // twice for the first and third of those.
+    const existingCards = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) =>
         q.eq("selectorOptionId", args.selectorOptionId),
       )
       .collect();
-    for (const r of existingForPending) {
+
+    // Fold in pending* names from custom cards on this variant. Those rows
+    // aren't in the fetch preview, so without this pass a reviewed custom-card
+    // pending player would never get inserted into the players table.
+    for (const r of existingCards) {
       if (!r.isCustom) continue;
       for (const p of r.pendingPlayerNames ?? []) {
         if (p.trim()) allPlayerNames.add(p.trim());
@@ -4960,9 +5725,9 @@ export const commitCardChecklist = mutation({
     // callers, so these rows stayed bare forever. Spine labels read
     // teams.colors, so "bare forever" is now user-visible.
     //
-    // Collect them and enqueue after the writes land (see the scheduler call
-    // at the end of this mutation) rather than enriching inline: enrichment
-    // is a network round-trip per team and this is a mutation.
+    // Collected and returned to the action, which hands them to the finalize
+    // phase to enqueue after the writes land, rather than enriching inline:
+    // enrichment is a network round-trip per team and this is a mutation.
     const enrichmentTeamIds: Array<Id<"teams">> = [];
     const resolveTeamIdByName = async (rawName: string): Promise<Id<"teams">> => {
       const normalized = norm(rawName);
@@ -4986,6 +5751,9 @@ export const commitCardChecklist = mutation({
     };
 
     const playerIdByName = new Map<string, Id<"players">>();
+    // id → canonical stored name, so the chunk phase never has to re-read a
+    // player row it did not write.
+    const playerNameById = new Map<Id<"players">, string>();
     const createdPlayerIds: Array<Id<"players">> = [];
     for (const name of allPlayerNames) {
       const normalized = norm(name);
@@ -4999,12 +5767,22 @@ export const commitCardChecklist = mutation({
         .first();
       if (existing) {
         playerIdByName.set(name, existing._id);
+        playerNameById.set(existing._id, existing.name);
         continue;
       }
       const decision = reviewByKey.get(`player:${normalized}`)?.decision;
       if (!decision) continue; // not reviewed — shouldn't happen; card keeps this name unresolved
       if (decision.action === "link") {
-        if (decision.linkedPlayerId) playerIdByName.set(name, decision.linkedPlayerId);
+        if (decision.linkedPlayerId) {
+          playerIdByName.set(name, decision.linkedPlayerId);
+          // The LINKED row's own spelling is what the old write loop's
+          // `db.get(...).name` produced, so read it here (once) rather than
+          // assuming the reviewed name matches it.
+          if (!playerNameById.has(decision.linkedPlayerId)) {
+            const linked = await ctx.db.get(decision.linkedPlayerId);
+            if (linked) playerNameById.set(decision.linkedPlayerId, linked.name);
+          }
+        }
         continue;
       }
       // decision.action === "create" — seed directly from the wizard's own
@@ -5057,6 +5835,7 @@ export const commitCardChecklist = mutation({
           : {}),
       });
       playerIdByName.set(name, id);
+      playerNameById.set(id, name.trim());
       createdPlayerIds.push(id);
     }
 
@@ -5113,9 +5892,742 @@ export const commitCardChecklist = mutation({
       createdTeamIds.push(id);
     }
 
+    // NEO-71-74: every selectorOptions row is a complete, self-contained
+    // `features` snapshot at all times (copy-down happens once, at each
+    // row's own creation — see storeSelectorOptions/addCustomSelectorOption/
+    // storeReconciledOptions in this file and convex/setReconciliation.ts).
+    // No ancestor walk or commit-time seeding needed for inheritance
+    // anymore: the leaf node IS the fully resolved snapshot. (This replaces
+    // the old NEO-38 commit-time seed, which also had a real, independent
+    // cost — cascading from an ancestor as high as the sport node touched
+    // that sport's entire catalog subtree on every single checklist commit.)
+    const leafNode = await ctx.db.get(args.selectorOptionId);
+    const inheritedFeaturesOrUndefined: Record<string, string> | undefined =
+      leafNode?.features && Object.keys(leafNode.features).length > 0
+        ? leafNode.features
+        : undefined;
+
+    // Still need the nearest setName ancestor id (unrelated to features — used
+    // only for the totalCardCount/lastSyncedAt patch in the finalize phase).
+    let setNameAncestorId: Id<"selectorOptions"> | undefined =
+      leafNode?.level === "setName" ? leafNode._id : undefined;
+    if (!setNameAncestorId) {
+      let cursorId: Id<"selectorOptions"> | undefined = leafNode?.parentId;
+      while (cursorId && !setNameAncestorId) {
+        const node: Doc<"selectorOptions"> | null = await ctx.db.get(cursorId);
+        if (!node) break;
+        if (node.level === "setName") setNameAncestorId = node._id;
+        cursorId = node.parentId;
+      }
+    }
+    // Fetched once for the whole batch (not per-card) — used only for
+    // listing-title/description generation on newly-inserted rows.
+    const setNameValue = setNameAncestorId
+      ? (await ctx.db.get(setNameAncestorId))?.value
+      : undefined;
+
+    // The upsert key. Built exactly as the old single mutation built it —
+    // iterate the pre-commit rows in index order and let a later row with the
+    // same number win — so re-sync semantics are byte-identical, NEO-203
+    // included (see the chunk phase for why that matters here).
+    const existingIdByNumber = new Map<string, Id<"cardChecklist">>();
+    for (const card of existingCards) {
+      existingIdByNumber.set(card.cardNumber, card._id);
+    }
+
+    return {
+      userId,
+      sportSkuCode: commitSportRow.sportConfig?.skuCode,
+      sportValue: commitSportRow.value ?? "",
+      playerIdByName: Array.from(playerIdByName, ([name, id]) => ({ name, id })),
+      teamIdByName: Array.from(teamIdByName, ([name, id]) => ({ name, id })),
+      playerNameById: Array.from(playerNameById, ([id, name]) => ({ id, name })),
+      createdPlayerIds,
+      createdTeamIds,
+      enrichmentTeamIds,
+      reviewRowIds: reviewRows.map((r) => r._id),
+      inheritedFeatures: inheritedFeaturesOrUndefined,
+      setNameAncestorId,
+      setNameValue,
+      existingCustomCardNumbers: existingCards
+        .filter((c) => c.isCustom)
+        .map((c) => c.cardNumber),
+      existingIdByNumber: Array.from(existingIdByNumber, ([cardNumber, id]) => ({
+        cardNumber,
+        id,
+      })),
+    };
+  },
+});
+
+type CommitPrelude = {
+  userId: string;
+  sportSkuCode?: string;
+  sportValue: string;
+  playerIdByName: Array<{ name: string; id: Id<"players"> }>;
+  teamIdByName: Array<{ name: string; id: Id<"teams"> }>;
+  playerNameById: Array<{ id: Id<"players">; name: string }>;
+  createdPlayerIds: Array<Id<"players">>;
+  createdTeamIds: Array<Id<"teams">>;
+  enrichmentTeamIds: Array<Id<"teams">>;
+  reviewRowIds: Array<Id<"entityReviewQueue">>;
+  inheritedFeatures?: Record<string, string>;
+  setNameAncestorId?: Id<"selectorOptions">;
+  setNameValue?: string;
+  existingCustomCardNumbers: string[];
+  existingIdByNumber: Array<{ cardNumber: string; id: Id<"cardChecklist"> }>;
+};
+
+/**
+ * One card as the chunk phase sees it: names already resolved to ids by the
+ * action, sortOrder already computed across the WHOLE commit, and the row this
+ * card upserts into already decided against the pre-commit snapshot.
+ *
+ * Nothing here is re-derived per chunk, which is the point: a chunk is a dumb
+ * writer, so two chunks of the same commit cannot disagree about anything.
+ */
+const commitChunkCardValidator = v.object({
+  cardNumber: v.string(),
+  cardName: v.string(),
+  playerIds: v.optional(v.array(v.id("players"))),
+  teamOnCardIds: v.optional(v.array(v.id("teams"))),
+  attributes: v.optional(v.array(v.string())),
+  isRookie: v.optional(v.boolean()),
+  isRelic: v.optional(v.boolean()),
+  printRun: v.optional(v.number()),
+  autographType: v.optional(v.string()),
+  cardVariation: v.optional(v.string()),
+  // NEO-137: still the WIRE shape (marketplace set ids); the chunk resolves it
+  // to slots on the parent row, which is a per-chunk read of a single doc.
+  platformData: cardPlatformWireDataValidator,
+  sortOrder: v.number(),
+  // Canonical names of `playerIds`, resolved once in the prelude.
+  playerNames: v.array(v.string()),
+  // The pre-commit row this card upserts into, or absent to insert a new row.
+  existingId: v.optional(v.id("cardChecklist")),
+});
+
+/**
+ * NEO-189 — upsert one slice of the checklist. Called once per
+ * CARDS_PER_COMMIT_CHUNK cards by the `commitCardChecklist` action.
+ *
+ * ## Why the upsert key is passed in rather than recomputed
+ *
+ * The old single mutation snapshotted `cardChecklist` before its write loop and
+ * keyed the upsert on `existingByNumber` built from that snapshot — so rows the
+ * loop itself inserted were never candidates, and a checklist carrying the same
+ * card number twice (BSC splits 1996 Score Dugout Collection Artist's Proofs
+ * into Series 1 and Series 2, both numbered #1-110) inserted two rows. See
+ * convex/commitCardChecklist.duplicateNumbers.test.ts.
+ *
+ * A chunk re-reading the table would see the PREVIOUS chunk's inserts and
+ * collapse those duplicates into one patched row — a silent data loss that
+ * chunking would have introduced on its own. So the action resolves each card's
+ * target row once, from the prelude's pre-commit snapshot, and hands it down.
+ *
+ * NEO-203 (the `existingByNumber` keying that corrupts re-syncs when two
+ * sources share card numbers) is deliberately NOT fixed here: the key is
+ * cardNumber, last row wins, exactly as before. The one visible difference is
+ * that when two incoming cards resolve to the SAME stored row across a chunk
+ * boundary, the second one's `platformData` merge sees the first one's write
+ * rather than the pre-commit value. That is reachable only in the re-sync case
+ * NEO-203 already describes as broken, and it merges onto fresher data.
+ */
+export const commitCardChecklistChunk = internalMutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    cards: v.array(commitChunkCardValidator),
+    sportSkuCode: v.optional(v.string()),
+    sportValue: v.string(),
+    setNameValue: v.optional(v.string()),
+    inheritedFeatures: v.optional(v.record(v.string(), v.string())),
+  },
+  returns: v.object({
+    storedIds: v.array(v.id("cardChecklist")),
+    bscTeamEnrichmentIds: v.array(v.id("cardChecklist")),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    storedIds: Array<Id<"cardChecklist">>;
+    bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
+  }> => {
+    const toStoredPlatformData = await resolveCardSlots(
+      ctx,
+      args.selectorOptionId,
+    );
+
+    // One indexed read for the whole chunk instead of a `db.get` per card:
+    // the rows this chunk patches are looked up by id in this map. Skipped
+    // entirely when every card in the chunk is an insert (the first sync of a
+    // set), which is the common case.
+    const rowsById = new Map<string, Doc<"cardChecklist">>();
+    if (args.cards.some((c) => c.existingId)) {
+      const rows = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", args.selectorOptionId),
+        )
+        .collect();
+      for (const row of rows) rowsById.set(row._id, row);
+    }
+
+    const storedIds: Array<Id<"cardChecklist">> = [];
+    // NEO-90: cards touched by this chunk that have a BSC platform ref but no
+    // team resolved yet. Returned to the action, which unions every chunk's
+    // list and hands it to the finalize phase to schedule.
+    const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
+
+    for (const card of args.cards) {
+      const existing = card.existingId ? rowsById.get(card.existingId) : undefined;
+      if (existing) {
+        storedIds.push(existing._id);
+        // Merge per side so a sync that resolves only one marketplace does not
+        // wipe the other side's confirmed ref.
+        const mergedPlatformData = {
+          ...existing.platformData,
+          ...toStoredPlatformData(card.platformData, existing.platformData),
+        };
+        await ctx.db.patch(existing._id, {
+          cardName: card.cardName,
+          // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
+          playerIds: card.playerIds,
+          teamOnCardIds: card.teamOnCardIds,
+          attributes: card.attributes,
+          isRookie: card.isRookie,
+          isRelic: card.isRelic,
+          printRun: card.printRun,
+          autographType: card.autographType,
+          cardVariation: card.cardVariation,
+          platformData: mergedPlatformData,
+          sortOrder: card.sortOrder,
+          lastUpdated: Date.now(),
+        });
+        if (
+          mergedPlatformData.bsc &&
+          (!card.teamOnCardIds || card.teamOnCardIds.length === 0) &&
+          !existing.teamCheckDoneAt
+        ) {
+          bscTeamEnrichmentIds.push(existing._id);
+        }
+      } else {
+        // NEO-71-74: precedence = the leaf node's complete features snapshot
+        // (already resolved at that node's own creation time) < card-observed
+        // facts. A fact seen on THIS card (e.g. it's a rookie) beats the
+        // inherited values.
+        const mergedFeatures: Record<string, string> = {
+          ...(args.inheritedFeatures ?? {}),
+          ...deriveCardObservedFeatures(card),
+        };
+        // A card arriving already-autographed (marketplace data carried an
+        // autographType) gets the same "just became non-None -> default
+        // Signed By from the roster" treatment `setCardFeature` applies for
+        // a manual operator edit — the roster is already resolved as real
+        // IDs at this point (see the player/team findOrCreate pass in the
+        // prelude).
+        const wasBlank = (args.inheritedFeatures?.autographed ?? "None") === "None";
+        const isNowSet =
+          !!mergedFeatures.autographed && mergedFeatures.autographed !== "None";
+
+        // Resolved in the prelude, once per player rather than once per card:
+        // used for the signedBy default below (only when autographed just
+        // turned on) AND unconditionally for listing generation further down.
+        const playerNames = card.playerNames;
+        if (wasBlank && isNowSet && !mergedFeatures.signedBy && playerNames.length > 0) {
+          mergedFeatures.signedBy = playerNames.join(", ");
+        }
+        const featuresOrUndefined =
+          Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
+
+        // NEO-24/71-74: write-once listing title/description, generated
+        // once here at creation time, then freely editable afterward (same
+        // model as every other default this session).
+        const listingInputs = {
+          cardNumber: card.cardNumber,
+          playerNames,
+          year: mergedFeatures.season,
+          manufacturer: mergedFeatures.manufacturer,
+          setName: args.setNameValue,
+          parallelName: mergedFeatures.parallelName,
+          isRookie: card.isRookie,
+          isRelic: card.isRelic,
+          autographed: mergedFeatures.autographed,
+          shortPrint: mergedFeatures.shortPrint,
+        };
+
+        const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
+          selectorOptionId: args.selectorOptionId,
+          cardNumber: card.cardNumber,
+          cardName: card.cardName,
+          // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
+          playerIds: card.playerIds,
+          teamOnCardIds: card.teamOnCardIds,
+          attributes: card.attributes,
+          isRookie: card.isRookie,
+          isRelic: card.isRelic,
+          printRun: card.printRun,
+          autographType: card.autographType,
+          cardVariation: card.cardVariation,
+          platformData: toStoredPlatformData(card.platformData),
+          // NEO-24: inherit ancestor + derive per-card on insert. Existing
+          // rows are owned by the propagation engine; never clobbered here.
+          ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
+          listingTitle: generateListingTitle(listingInputs),
+          listingDescription: generateListingDescription(listingInputs),
+          sortOrder: card.sortOrder,
+          lastUpdated: Date.now(),
+        });
+        // NEO-91: SKU can only be generated once the row exists (the random
+        // suffix — not the id — is what guarantees uniqueness, but the id
+        // has to exist before we can patch it in). Cheap, well-precedented
+        // insert-then-patch pattern already used elsewhere in this file.
+        storedIds.push(newCardId);
+        await ctx.db.patch(newCardId, {
+          sku: generateSku({
+            skuCode: args.sportSkuCode,
+            sportFallbackLabel: args.sportValue,
+            year: mergedFeatures.season ?? "",
+            setName: args.setNameValue ?? "",
+            cardNumber: card.cardNumber,
+            uniqueSuffix: crypto.randomUUID(),
+          }),
+        });
+        if (
+          card.platformData?.bsc &&
+          (!card.teamOnCardIds || card.teamOnCardIds.length === 0)
+        ) {
+          bscTeamEnrichmentIds.push(newCardId);
+        }
+      }
+    }
+
+    return { storedIds, bscTeamEnrichmentIds };
+  },
+});
+
+/**
+ * NEO-189 — the once-per-commit tail of `commitCardChecklist`, run after every
+ * chunk has written.
+ *
+ * Everything here needs the WHOLE commit in view, which is exactly why it
+ * cannot live in a chunk:
+ *
+ *  - variation links, whose parent may have been written by a different chunk;
+ *  - the stale-card sweep, which must be told the union of every chunk's
+ *    committed ids/numbers or it would delete the other chunks' cards;
+ *  - the preserved-custom-card sortOrder pass, computed across all cards;
+ *  - review-row cleanup, the enrichment schedules, and the setName ancestor's
+ *    totalCardCount.
+ *
+ * Reads the checklist ONCE and works from that map. The old single mutation did
+ * a `db.get` per stored id here — twice — which was a large share of the
+ * per-commit system-operation budget it eventually blew.
+ */
+export const commitCardChecklistFinalize = internalMutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    // Union of every chunk's stored ids, and every incoming card number. The
+    // sweep below spares a row matching EITHER: ids are what the brief for this
+    // change asks for (they cannot mistake one chunk's rows for stale ones),
+    // numbers are what the pre-chunking sweep actually keyed on, and keeping
+    // both means a duplicate-numbered row that today survives a re-sync still
+    // survives one. See NEO-203.
+    committedIds: v.array(v.id("cardChecklist")),
+    committedNumbers: v.array(v.string()),
+    variationLinks: v.array(
+      v.object({
+        childId: v.id("cardChecklist"),
+        parentId: v.id("cardChecklist"),
+      }),
+    ),
+    variationClearIds: v.array(v.id("cardChecklist")),
+    customSortOrders: v.array(
+      v.object({ cardNumber: v.string(), sortOrder: v.number() }),
+    ),
+    resolvedPlayerNames: v.array(v.string()),
+    resolvedTeamNames: v.array(v.string()),
+    reviewRowIds: v.array(v.id("entityReviewQueue")),
+    enrichmentTeamIds: v.array(v.id("teams")),
+    bscTeamEnrichmentIds: v.array(v.id("cardChecklist")),
+    setNameAncestorId: v.optional(v.id("selectorOptions")),
+    cardCount: v.number(),
+  },
+  returns: v.object({
+    variationsLinked: v.number(),
+    staleDeleted: v.number(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ variationsLinked: number; staleDeleted: number }> => {
+    const rows = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.selectorOptionId),
+      )
+      .collect();
+    const rowsById = new Map<string, Doc<"cardChecklist">>();
+    for (const row of rows) rowsById.set(row._id, row);
+
+    // ── NEO-189: link each variation to the card it varies ──────────────────
+    //
+    // The pairs were resolved by the action, which is the only place that can
+    // see both a child in chunk 3 and its parent in chunk 1. The grouping rule
+    // itself lives in lib/cards/variations.ts and is deliberately not "a
+    // suffixed number belongs to the bare one" — 2021 Topps has no card #1 at
+    // all, only 1a/1b/1c, and SportLots gives every variation of #13 the number
+    // 13. What holds is: group by card-number stem, and the single row in the
+    // group that is NOT a variation is the parent.
+    //
+    // NEO-189: a hand-set parent is the operator's answer and outranks the
+    // derivation, exactly as a confirmed card pairing does (NEO-137). Without
+    // the `variationParentManual` check the pass below would re-derive the link
+    // from the stem and clear anything it did not derive, so a correction would
+    // survive only until the next fetch.
+    let variationsLinked = 0;
+    for (const { childId, parentId } of args.variationLinks) {
+      const child = rowsById.get(childId);
+      if (!child || child.variationParentManual) continue;
+      await ctx.db.patch(childId, {
+        variationOfCardId: parentId,
+        lastUpdated: Date.now(),
+      });
+      variationsLinked++;
+    }
+    // A row that USED to be a variation and no longer is must lose its pointer,
+    // or a re-sync after an upstream correction leaves it parented to the wrong
+    // card forever.
+    for (const id of args.variationClearIds) {
+      const row = rowsById.get(id);
+      if (!row || row.variationParentManual) continue;
+      if (row.variationOfCardId) {
+        await ctx.db.patch(id, {
+          variationOfCardId: undefined,
+          lastUpdated: Date.now(),
+        });
+      }
+    }
+
+    const committedIds = new Set<string>(args.committedIds);
+    const committedNumbers = new Set(args.committedNumbers);
+    let staleDeleted = 0;
+    for (const existing of rows) {
+      if (existing.isCustom) continue;
+      if (committedIds.has(existing._id)) continue;
+      if (committedNumbers.has(existing.cardNumber)) continue;
+      // NEO-21: drop this card's cross-listing rows before the card itself.
+      await deleteCardCrossListingsFor(ctx, existing._id);
+      await ctx.db.delete(existing._id);
+      staleDeleted++;
+    }
+
+    // Patch preserved custom cards whose sortOrder shifted because of the
+    // marketplace upsert. The targets were computed by the action across the
+    // whole commit; no reads here beyond the single collect above.
+    const customSortOrder = new Map<string, number>();
+    for (const { cardNumber, sortOrder } of args.customSortOrders) {
+      customSortOrder.set(cardNumber, sortOrder);
+    }
+    for (const existing of rows) {
+      if (!existing.isCustom) continue;
+      if (committedNumbers.has(existing.cardNumber)) continue; // not preserved; replaced
+      const target = customSortOrder.get(existing.cardNumber);
+      if (target !== undefined && existing.sortOrder !== target) {
+        await ctx.db.patch(existing._id, { sortOrder: target });
+      }
+    }
+
+    // Clear pendingPlayerNames / pendingTeamNames entries on custom cards
+    // for names that are now resolved (either pre-existing in players/teams
+    // or just created via the confirmed-new lists). Without this, every
+    // subsequent fetchCardChecklist would keep re-prompting for the same
+    // custom-card player names because they'd stay in pending* forever.
+    const resolvedPlayerNames = new Set(args.resolvedPlayerNames);
+    const resolvedTeamNames = new Set(args.resolvedTeamNames);
+    for (const existing of rows) {
+      if (!existing.isCustom) continue;
+      const patch: {
+        pendingPlayerNames?: string[];
+        pendingTeamNames?: string[];
+      } = {};
+      if (existing.pendingPlayerNames && existing.pendingPlayerNames.length > 0) {
+        const stillPending = existing.pendingPlayerNames.filter(
+          (n) => !resolvedPlayerNames.has(n.trim()),
+        );
+        if (stillPending.length !== existing.pendingPlayerNames.length) {
+          patch.pendingPlayerNames =
+            stillPending.length > 0 ? stillPending : undefined;
+        }
+      }
+      if (existing.pendingTeamNames && existing.pendingTeamNames.length > 0) {
+        const stillPending = existing.pendingTeamNames.filter(
+          (n) => !resolvedTeamNames.has(n.trim()),
+        );
+        if (stillPending.length !== existing.pendingTeamNames.length) {
+          patch.pendingTeamNames =
+            stillPending.length > 0 ? stillPending : undefined;
+        }
+      }
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(existing._id, patch);
+      }
+    }
+
+    // NEO-92: no post-commit Wikidata scheduling needed anymore — every
+    // created player/team was already enriched during the review wizard
+    // (reviewByKey's `enrichment`, seeded in the prelude). Delete this batch's
+    // now-consumed entityReviewQueue rows here, in the same transaction that
+    // finishes the commit — the ids were read in the prelude to resolve
+    // decisions, so this adds writes only, no extra reads. Deliberately NOT
+    // scheduled async (the original design): a scheduled cleanup left a real
+    // race — a re-fetch of the same selectorOptionId landing in the gap
+    // between this returning and the scheduled delete actually running would
+    // find every row already decided and wrongly resume the dead batch
+    // (startBatch) instead of starting fresh. Deleting inline closes that
+    // window: by the time the commit returns, the batch's rows are gone.
+    for (const id of args.reviewRowIds) {
+      await ctx.db.delete(id);
+    }
+
+    // NEO-147: enrich the career teams created by resolveTeamIdByName in the
+    // prelude. Deliberately NOT the reviewed teams in `createdTeamIds` — those
+    // already carry whatever processEntityReviewQueue's lookupTeamEnrichment
+    // found before they were inserted, so re-running it here would be a second
+    // identical network round-trip per team for the same answer. Only the rows
+    // that had no enrichment path at all are enqueued.
+    //
+    // NEO-99 routed this through the shared Wikidata pool
+    // (convex/wikidataPool.ts), which replaced the self-paced
+    // processEnrichmentQueue: the pool's deployment-wide 5-parallel SPARQL
+    // budget is what keeps a fetch that creates fifty career teams from
+    // producing fifty concurrent requests. No `playerIds` because players
+    // created there were already enriched from the wizard's own preview.
+    if (args.enrichmentTeamIds.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.wikidataPool.enqueueEnrichment,
+        { teamIds: args.enrichmentTeamIds },
+      );
+    }
+
+    // NEO-90: same chained-queue shape, for BSC per-card team resolution.
+    // Cards whose team wasn't already recoverable from the bulk `players`
+    // string (parsePlayersField's TC/parenthetical handling) get resolved
+    // one at a time via BSC's per-card detail endpoint in the background.
+    if (args.bscTeamEnrichmentIds.length > 0) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
+        { cardChecklistIds: args.bscTeamEnrichmentIds },
+      );
+    }
+
+    // NEO-24/38: harvest the locally-observable card-count from the BSC/SL
+    // checklist fetch onto the setName ancestor's `totalCardCount` feature.
+    // Only when this commit is itself happening AT the setName level —
+    // otherwise this is a variant/insert/parallel fetch and our card count is
+    // a subset, not the set total. releaseDate/block are purely manual (no
+    // auto-harvest) and live in the same features map, independently editable
+    // at every level via setSelectorOptionFeature.
+    if (
+      args.setNameAncestorId &&
+      args.selectorOptionId === args.setNameAncestorId
+    ) {
+      const setNameRow = await ctx.db.get(args.setNameAncestorId);
+      if (setNameRow) {
+        const newCount = String(args.cardCount);
+        if (setNameRow.features?.totalCardCount !== newCount) {
+          await ctx.db.patch(args.setNameAncestorId, {
+            features: { ...(setNameRow.features ?? {}), totalCardCount: newCount },
+            lastUpdated: Date.now(),
+          });
+        }
+      }
+    }
+
+    return { variationsLinked, staleDeleted };
+  },
+});
+
+/**
+ * Commit a fetched checklist preview. Every player/team name that isn't
+ * already in our tables was reviewed one-at-a-time in the NEO-92 review wizard
+ * (batchId → entityReviewQueue), which recorded a `decision` of "create"
+ * (seeded from the wizard's own Wikidata preview lookup) or "link" (an
+ * existing player/team the user picked instead — no new row). There is no
+ * skip: every name resolves to one or the other. Card playerIds/teamOnCardIds
+ * are resolved from those decisions, the checklist is persisted, and the
+ * batch's review rows are cleaned up.
+ *
+ * ## Why this is an ACTION and not a mutation (NEO-189)
+ *
+ * It was a single mutation, and it died on real data. A 712-card commit failed
+ * on the PR #205 Convex preview with `Your request timed out performing too
+ * many system operations.` (request af06962bc3db7994); a 335-card commit passed
+ * but already sat near its wait budget. NEO-189 attaches several marketplace
+ * sets to one variant (SportLots "Base Set" + "Base Set Series 2" + BSC), which
+ * is precisely what doubles a checklist — so the ceiling is not hypothetical,
+ * it is the feature.
+ *
+ * The cost was structural: per card the handler did an insert plus a SKU patch,
+ * a `db.get` per playerId, then two more full passes doing `db.get`/`patch` per
+ * stored id — ~5-6 database operations per card, ~4000 in one transaction.
+ * Convex bounds a single mutation at 1s execution, 4096 index ranges read, 32k
+ * documents scanned and 16k written, plus the system-operation time budget that
+ * actually tripped. Tightening the loop does not buy another 2x; the
+ * transaction has to be split.
+ *
+ * Same shape as `resetSetBuilderData` above — a public entry point looping
+ * internal mutations, each its own transaction:
+ *
+ *   prelude  → once. Admin check, sport row, player/team creation from the
+ *              review decisions, leaf features, setName ancestor, and the
+ *              pre-commit snapshot the upsert keys against.
+ *   chunk    → once per CARDS_PER_COMMIT_CHUNK cards. Pure writer.
+ *   finalize → once, over the union of every chunk's ids: variation links,
+ *              the stale sweep, sortOrder, review cleanup, schedules.
+ *
+ * ## ATOMICITY IS LOST — read this before adding a phase
+ *
+ * A mutation was all-or-nothing. This is not. A failure during chunk N leaves
+ * chunks 1..N-1 written, chunk N+1.. unwritten, and the finalize phase (stale
+ * delete, variation links, sortOrder fixups, review-row cleanup, background
+ * enrichment) NOT run. The checklist is then a partial, unswept copy of the
+ * preview.
+ *
+ * Re-running the same commit is the recovery, and it is safe: cards upsert by
+ * number, so the already-written rows are patched rather than duplicated, and
+ * the finalize phase sweeps whatever the interrupted run left behind. The
+ * errors this action throws name the phase that failed for exactly that reason
+ * — "which cards made it" is answerable from the phase and chunk index.
+ *
+ * What must NOT be added to a chunk: anything that deletes, anything that reads
+ * the commit as a whole, anything whose partial application is worse than not
+ * running. Those belong in finalize, which is one transaction and therefore
+ * still atomic in itself.
+ */
+export const commitCardChecklist = action({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    sportId: v.id("selectorOptions"),
+    cards: v.array(previewCardValidator),
+    // Present whenever the fetch surfaced unknown names (and the wizard
+    // ran); absent on the zero-unknowns fast path.
+    batchId: v.optional(v.string()),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    count: v.number(),
+    createdPlayerIds: v.array(v.id("players")),
+    createdTeamIds: v.array(v.id("teams")),
+  }),
+  handler: async (ctx, args): Promise<{
+    success: boolean;
+    count: number;
+    createdPlayerIds: Array<Id<"players">>;
+    createdTeamIds: Array<Id<"teams">>;
+  }> => {
+    // Enforced HERE, before any phase runs, so a non-admin call writes
+    // nothing at all — the phases below re-check, but this is the boundary.
+    await requireAdmin(ctx);
+    // Still the cap on the TOTAL commit, not on a chunk. Chunking raises the
+    // per-transaction ceiling, not the per-commit one: the prelude is still
+    // O(distinct names) in a single transaction.
+    assertCardBatchWithinLimits(args.cards, "commitCardChecklist");
+
+    // Run one phase: retry an optimistic-concurrency conflict a bounded number
+    // of times, then rethrow labelled with the phase that failed.
+    //
+    // WHY THE RETRY (NEO-189). The prelude reads a whole `entityReviewQueue`
+    // batch, and the Wikidata pool's lookups were still landing on those rows
+    // while it read — so the commit lost the OCC race on Convex's every
+    // internal retry and the seed job went red. The real fix is upstream:
+    // `applyLookupResult` and the completion backstop now no-op on a row that
+    // already carries a decision, so the contending write does not happen at
+    // all. This is the belt-and-braces behind it, for a straggler that was
+    // already in flight before its own guard could see the decision. An
+    // OCC-failed mutation rolled back completely, so re-running a phase starts
+    // from the state it started from the first time — see lib/errors/occ-retry.
+    //
+    // Every phase gets it, chunks included. A chunk is the phase where a
+    // conflict hurts MOST: a prelude failure writes nothing, but a chunk
+    // failure leaves a partial commit with the finalize sweep unrun (see the
+    // atomicity note above). `cardChecklist` rows have their own background
+    // writer — `processBscTeamEnrichmentQueue` from a previous sync — so this
+    // is not hypothetical there either.
+    //
+    // WHY ConvexError AND NOT Error. Production redacts a plain `Error` thrown
+    // from a Convex function down to "Server Error"; only a ConvexError's
+    // string `data` crosses to the client intact. A phase label the operator
+    // cannot read on prod is not a phase label. See
+    // lib/errors/user-facing-message.ts, which is what the client reads it
+    // back with.
+    const phase = async <T>(label: string, run: () => Promise<T>): Promise<T> => {
+      try {
+        return await runWithOccRetry(run);
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        throw new ConvexError(
+          `commitCardChecklist: ${label} failed — ${detail}`,
+        );
+      }
+    };
+
+    const playerNames: string[] = [];
+    const teamNames: string[] = [];
+    for (const c of args.cards) {
+      for (const p of c.players ?? []) if (p.trim()) playerNames.push(p.trim());
+      for (const t of c.teams ?? []) if (t.trim()) teamNames.push(t.trim());
+      if (c.team && c.team.trim() && !c.teams?.length) teamNames.push(c.team.trim());
+    }
+
+    const prelude: CommitPrelude = await phase("prelude", () =>
+      ctx.runMutation(internal.selectorOptions.commitCardChecklistPrelude, {
+        selectorOptionId: args.selectorOptionId,
+        sportId: args.sportId,
+        playerNames: Array.from(new Set(playerNames)),
+        teamNames: Array.from(new Set(teamNames)),
+        batchId: args.batchId,
+      }),
+    );
+
+    const playerIdByName = new Map(
+      prelude.playerIdByName.map(({ name, id }) => [name, id] as const),
+    );
+    const teamIdByName = new Map(
+      prelude.teamIdByName.map(({ name, id }) => [name, id] as const),
+    );
+    const playerNameById = new Map(
+      prelude.playerNameById.map(({ id, name }) => [id as string, name] as const),
+    );
+    const existingIdByNumber = new Map(
+      prelude.existingIdByNumber.map(({ cardNumber, id }) => [cardNumber, id] as const),
+    );
+
+    // Pre-compute the target sortOrder for every card that will be in this
+    // selectorOption after the upsert: incoming cards (marketplace) PLUS
+    // preserved custom cards (existing rows with isCustom=true that are not
+    // being overwritten by a new marketplace card with the same cardNumber).
+    // Sort by natural cardNumber so custom cards like "9001" land after
+    // marketplace cards "1".."335". Done in-memory in the action — every chunk
+    // and the finalize phase are handed the answer, so no phase has to re-read
+    // the table to agree with the others about ordering.
+    const incomingNumbers = new Set(args.cards.map((c) => c.cardNumber));
+    const preservedCustomNumbers = prelude.existingCustomCardNumbers.filter(
+      (cn) => !incomingNumbers.has(cn),
+    );
+    const allFinalNumbers: string[] = [
+      ...args.cards.map((c) => c.cardNumber),
+      ...preservedCustomNumbers,
+    ];
+    allFinalNumbers.sort(compareCardNumbers);
+    const targetSortOrder = new Map<string, number>();
+    allFinalNumbers.forEach((cn, idx) => targetSortOrder.set(cn, idx));
+
     // Resolve per-card playerIds / teamOnCardIds. Cards whose names are
-    // all skipped end up with empty arrays (left undefined).
-    const richCards = args.cards.map((c) => {
+    // all unresolved end up with empty arrays (left undefined).
+    const chunkCards = args.cards.map((c, i) => {
       const playerIds: Array<Id<"players">> = [];
       for (const p of c.players ?? []) {
         const id = playerIdByName.get(p.trim());
@@ -5143,361 +6655,124 @@ export const commitCardChecklist = mutation({
         printRun: c.printRun,
         autographType: c.autographType,
         cardVariation: c.cardVariation,
-        // NEO-137: WIRE shape here (marketplace set ids); resolved to slots
-        // just below so a stored card's `src` always names a slot on its own
+        // NEO-137: WIRE shape here (marketplace set ids); the chunk resolves it
+        // to slots so a stored card's `src` always names a slot on its own
         // parent row.
         platformData: c.platformData,
+        sortOrder: targetSortOrder.get(c.cardNumber) ?? i,
+        playerNames: playerIds
+          .map((id) => playerNameById.get(id as string))
+          .filter((n): n is string => n !== undefined),
+        existingId: existingIdByNumber.get(c.cardNumber),
       };
     });
 
-    const toStoredPlatformData = await resolveCardSlots(
-      ctx,
-      args.selectorOptionId,
+    // NEO-189: card index → the row's stored id. Filled chunk by chunk, and
+    // consumed below to resolve variation parents — which is the whole reason
+    // the links are computed HERE rather than inside a chunk: a child in chunk
+    // 3 can have its parent in chunk 1, and neither chunk can see the other.
+    const storedIdByIndex: Array<Id<"cardChecklist">> = [];
+    const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
+    const chunkCount = Math.ceil(chunkCards.length / CARDS_PER_COMMIT_CHUNK);
+    for (let start = 0; start < chunkCards.length; start += CARDS_PER_COMMIT_CHUNK) {
+      const slice = chunkCards.slice(start, start + CARDS_PER_COMMIT_CHUNK);
+      const index = Math.floor(start / CARDS_PER_COMMIT_CHUNK) + 1;
+      const result: {
+        storedIds: Array<Id<"cardChecklist">>;
+        bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
+      } = await phase(
+        `chunk ${index}/${chunkCount} (cards ${start + 1}-${start + slice.length} of ${chunkCards.length})`,
+        () =>
+          ctx.runMutation(internal.selectorOptions.commitCardChecklistChunk, {
+            selectorOptionId: args.selectorOptionId,
+            cards: slice,
+            sportSkuCode: prelude.sportSkuCode,
+            sportValue: prelude.sportValue,
+            setNameValue: prelude.setNameValue,
+            inheritedFeatures: prelude.inheritedFeatures,
+          }),
+      );
+      storedIdByIndex.push(...result.storedIds);
+      bscTeamEnrichmentIds.push(...result.bscTeamEnrichmentIds);
+    }
+
+    // ── NEO-189: which card varies which ────────────────────────────────────
+    //
+    // The grouping rule lives in lib/cards/variations.ts and is deliberately
+    // not "a suffixed number belongs to the bare one" — 2021 Topps has no card
+    // #1 at all, only 1a/1b/1c, and SportLots gives every variation of #13 the
+    // number 13. What holds is: group by card-number stem, and the single row
+    // in the group that is NOT a variation is the parent.
+    //
+    // `unresolvedStems` are groups where that fails — a stem with no
+    // non-variation row (2021 Heritage inserts #251/#378, two checklist print
+    // variations and no base card) or more than one. Those rows are left
+    // unlinked rather than guessed at, and reported so the set builder can
+    // surface them. Guessing here would silently marry two unrelated cards.
+    const variationLinks = resolveVariationParents(
+      args.cards.map((c) => ({
+        cardNumber: c.cardNumber,
+        isVariation: !!c.isVariation,
+        variationLabel: c.cardVariation,
+      })),
+    );
+    const links: Array<{
+      childId: Id<"cardChecklist">;
+      parentId: Id<"cardChecklist">;
+    }> = [];
+    for (const [childIndex, parentIndex] of variationLinks.parentByIndex) {
+      const childId = storedIdByIndex[childIndex];
+      const parentId = storedIdByIndex[parentIndex];
+      // A row no chunk stored has no id; skip rather than write a dangling
+      // pointer.
+      if (!childId || !parentId || childId === parentId) continue;
+      links.push({ childId, parentId });
+    }
+    const variationClearIds: Array<Id<"cardChecklist">> = [];
+    for (let i = 0; i < chunkCards.length; i++) {
+      if (variationLinks.parentByIndex.has(i)) continue;
+      const id = storedIdByIndex[i];
+      if (id) variationClearIds.push(id);
+    }
+
+    const { variationsLinked } = await phase("finalize", () =>
+      ctx.runMutation(internal.selectorOptions.commitCardChecklistFinalize, {
+        selectorOptionId: args.selectorOptionId,
+        committedIds: storedIdByIndex,
+        committedNumbers: Array.from(incomingNumbers),
+        variationLinks: links,
+        variationClearIds,
+        customSortOrders: preservedCustomNumbers.map((cardNumber) => ({
+          cardNumber,
+          sortOrder: targetSortOrder.get(cardNumber) ?? 0,
+        })),
+        resolvedPlayerNames: Array.from(playerIdByName.keys()),
+        resolvedTeamNames: Array.from(teamIdByName.keys()),
+        reviewRowIds: args.batchId ? prelude.reviewRowIds : [],
+        enrichmentTeamIds: prelude.enrichmentTeamIds,
+        bscTeamEnrichmentIds,
+        setNameAncestorId: prelude.setNameAncestorId,
+        cardCount: args.cards.length,
+      }),
     );
 
-    // Same delete-stale-rows behavior as before, inlined here so we can
-    // keep the rich-card persistence path under a single mutation entry.
-    const existingCards = await ctx.db
-      .query("cardChecklist")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId),
-      )
-      .collect();
-    const existingByNumber = new Map<string, typeof existingCards[0]>();
-    for (const card of existingCards) existingByNumber.set(card.cardNumber, card);
-    const processedNumbers = new Set<string>();
-
-    // NEO-71-74: every selectorOptions row is a complete, self-contained
-    // `features` snapshot at all times (copy-down happens once, at each
-    // row's own creation — see storeSelectorOptions/addCustomSelectorOption/
-    // storeReconciledOptions in this file and convex/setReconciliation.ts).
-    // No ancestor walk or commit-time seeding needed for inheritance
-    // anymore: the leaf node IS the fully resolved snapshot. (This replaces
-    // the old NEO-38 commit-time seed, which also had a real, independent
-    // cost — cascading from an ancestor as high as the sport node touched
-    // that sport's entire catalog subtree on every single checklist commit.)
-    const leafNode = await ctx.db.get(args.selectorOptionId);
-    const inheritedFeaturesOrUndefined: Record<string, string> | undefined =
-      leafNode?.features && Object.keys(leafNode.features).length > 0
-        ? leafNode.features
-        : undefined;
-
-    // Still need the nearest setName ancestor id below (unrelated to
-    // features — used only for the totalCardCount/lastSyncedAt patch).
-    let setNameAncestorId: Id<"selectorOptions"> | undefined =
-      leafNode?.level === "setName" ? leafNode._id : undefined;
-    if (!setNameAncestorId) {
-      let cursorId: Id<"selectorOptions"> | undefined = leafNode?.parentId;
-      while (cursorId && !setNameAncestorId) {
-        const node: any = await ctx.db.get(cursorId);
-        if (!node) break;
-        if (node.level === "setName") setNameAncestorId = node._id;
-        cursorId = node.parentId;
-      }
-    }
-    // Fetched once for the whole batch (not per-card) — used only for
-    // listing-title/description generation on newly-inserted rows below.
-    const setNameValue = setNameAncestorId
-      ? (await ctx.db.get(setNameAncestorId))?.value
-      : undefined;
-
-    // NEO-71-74: per-card features come from the leaf node's already-complete
-    // `features` snapshot (`inheritedFeaturesOrUndefined`, read above) merged
-    // with the shared `deriveCardObservedFeatures` helper (isRookie/isRelic/
-    // signedBy/parallelName — observed on this card only). The result is
-    // written only for NEW card rows; existing rows are owned by
-    // `setCardFeature` (operator overrides must not be clobbered here).
-
-    // Pre-compute the target sortOrder for every card that will be in this
-    // selectorOption after the upsert: incoming richCards (marketplace) PLUS
-    // preserved custom cards (existing rows with isCustom=true that are not
-    // being overwritten by a new marketplace card with the same cardNumber).
-    // Sort by natural cardNumber so custom cards like "9001" land after
-    // marketplace cards "1".."335". Done in-memory from data we already
-    // hold — re-querying would push past Convex's 4096-read mutation limit
-    // on sets with thousands of cross-set custom cards in the table.
-    const incomingNumbers = new Set(richCards.map((c) => c.cardNumber));
-    const allFinalNumbers: string[] = [
-      ...richCards.map((c) => c.cardNumber),
-      ...existingCards
-        .filter((c) => c.isCustom && !incomingNumbers.has(c.cardNumber))
-        .map((c) => c.cardNumber),
-    ];
-    allFinalNumbers.sort(compareCardNumbers);
-    const targetSortOrder = new Map<string, number>();
-    allFinalNumbers.forEach((cn, idx) => targetSortOrder.set(cn, idx));
-
-    // NEO-90: cards touched by this commit that have a BSC platform ref
-    // but no team resolved yet get queued for the throttled per-card BSC
-    // team lookup below (see processBscTeamEnrichmentQueue).
-    const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
-
-    for (let i = 0; i < richCards.length; i++) {
-      const card = richCards[i];
-      processedNumbers.add(card.cardNumber);
-      const newSortOrder = targetSortOrder.get(card.cardNumber) ?? i;
-      const existing = existingByNumber.get(card.cardNumber);
-      if (existing) {
-        // Merge per side so a sync that resolves only one marketplace does not
-        // wipe the other side's confirmed ref.
-        const mergedPlatformData = {
-          ...existing.platformData,
-          ...toStoredPlatformData(card.platformData, existing.platformData),
-        };
-        await ctx.db.patch(existing._id, {
-          cardName: card.cardName,
-          // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
-          playerIds: card.playerIds,
-          teamOnCardIds: card.teamOnCardIds,
-          attributes: card.attributes,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          printRun: card.printRun,
-          autographType: card.autographType,
-          cardVariation: card.cardVariation,
-          platformData: mergedPlatformData,
-          sortOrder: newSortOrder,
-          lastUpdated: Date.now(),
-        });
-        if (
-          mergedPlatformData.bsc &&
-          (!card.teamOnCardIds || card.teamOnCardIds.length === 0) &&
-          !existing.teamCheckDoneAt
-        ) {
-          bscTeamEnrichmentIds.push(existing._id);
-        }
-      } else {
-        // NEO-71-74: precedence = the leaf node's complete features snapshot
-        // (already resolved at that node's own creation time) < card-observed
-        // facts. A fact seen on THIS card (e.g. it's a rookie) beats the
-        // inherited values.
-        const mergedFeatures: Record<string, string> = {
-          ...(inheritedFeaturesOrUndefined ?? {}),
-          ...deriveCardObservedFeatures(card),
-        };
-        // A card arriving already-autographed (marketplace data carried an
-        // autographType) gets the same "just became non-None -> default
-        // Signed By from the roster" treatment `setCardFeature` applies for
-        // a manual operator edit — the roster is already resolved as real
-        // IDs at this point (see the player/team findOrCreate pass above).
-        const wasBlank =
-          (inheritedFeaturesOrUndefined?.autographed ?? "None") === "None";
-        const isNowSet =
-          !!mergedFeatures.autographed && mergedFeatures.autographed !== "None";
-
-        // Resolved once, unconditionally — used for the signedBy default
-        // below (only when autographed just turned on) AND unconditionally
-        // for listing-title/description generation further down.
-        let playerNames: string[] = [];
-        if (card.playerIds && card.playerIds.length > 0) {
-          const players = await Promise.all(
-            card.playerIds.map((id) => ctx.db.get(id)),
-          );
-          playerNames = players
-            .filter((p): p is NonNullable<typeof p> => p !== null)
-            .map((p) => p.name);
-        }
-        if (wasBlank && isNowSet && !mergedFeatures.signedBy && playerNames.length > 0) {
-          mergedFeatures.signedBy = playerNames.join(", ");
-        }
-        const featuresOrUndefined =
-          Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
-
-        // NEO-24/71-74: write-once listing title/description, generated
-        // once here at creation time, then freely editable afterward (same
-        // model as every other default this session).
-        const listingInputs = {
-          cardNumber: card.cardNumber,
-          playerNames,
-          year: mergedFeatures.season,
-          manufacturer: mergedFeatures.manufacturer,
-          setName: setNameValue,
-          parallelName: mergedFeatures.parallelName,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          autographed: mergedFeatures.autographed,
-          shortPrint: mergedFeatures.shortPrint,
-        };
-
-        const newCardId = await ctx.db.insert("cardChecklist", {
+    if (variationsLinked > 0 || variationLinks.unresolvedStems.length > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "commit_card_variations",
           selectorOptionId: args.selectorOptionId,
-          cardNumber: card.cardNumber,
-          cardName: card.cardName,
-          // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
-          playerIds: card.playerIds,
-          teamOnCardIds: card.teamOnCardIds,
-          attributes: card.attributes,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          printRun: card.printRun,
-          autographType: card.autographType,
-          cardVariation: card.cardVariation,
-          platformData: toStoredPlatformData(card.platformData),
-          // NEO-24: inherit ancestor + derive per-card on insert. Existing
-          // rows are owned by the propagation engine; never clobbered here.
-          ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-          listingTitle: generateListingTitle(listingInputs),
-          listingDescription: generateListingDescription(listingInputs),
-          sortOrder: newSortOrder,
-          lastUpdated: Date.now(),
-        });
-        // NEO-91: SKU can only be generated once the row exists (the random
-        // suffix — not the id — is what guarantees uniqueness, but the id
-        // has to exist before we can patch it in). Cheap, well-precedented
-        // insert-then-patch pattern already used elsewhere in this file.
-        await ctx.db.patch(newCardId, {
-          sku: generateSku({
-            skuCode: commitSportRow?.sportConfig?.skuCode,
-            sportFallbackLabel: commitSportRow?.value ?? "",
-            year: mergedFeatures.season ?? "",
-            setName: setNameValue ?? "",
-            cardNumber: card.cardNumber,
-            uniqueSuffix: crypto.randomUUID(),
-          }),
-        });
-        if (
-          card.platformData?.bsc &&
-          (!card.teamOnCardIds || card.teamOnCardIds.length === 0)
-        ) {
-          bscTeamEnrichmentIds.push(newCardId);
-        }
-      }
-    }
-
-    for (const existing of existingCards) {
-      if (!processedNumbers.has(existing.cardNumber) && !existing.isCustom) {
-        // NEO-21: drop this card's cross-listing rows before the card itself.
-        await deleteCardCrossListingsFor(ctx, existing._id);
-        await ctx.db.delete(existing._id);
-      }
-    }
-
-    // Patch preserved custom cards whose sortOrder shifted because of the
-    // marketplace upsert above. No reads here — works from data already
-    // loaded into `existingCards`.
-    for (const existing of existingCards) {
-      if (!existing.isCustom) continue;
-      if (incomingNumbers.has(existing.cardNumber)) continue; // not preserved; replaced
-      const target = targetSortOrder.get(existing.cardNumber);
-      if (target !== undefined && existing.sortOrder !== target) {
-        await ctx.db.patch(existing._id, { sortOrder: target });
-      }
-    }
-
-    // Clear pendingPlayerNames / pendingTeamNames entries on custom cards
-    // for names that are now resolved (either pre-existing in players/teams
-    // or just created via the confirmed-new lists). Without this, every
-    // subsequent fetchCardChecklist would keep re-prompting for the same
-    // custom-card player names because they'd stay in pending* forever.
-    for (const existing of existingCards) {
-      if (!existing.isCustom) continue;
-      const patch: {
-        pendingPlayerNames?: string[];
-        pendingTeamNames?: string[];
-      } = {};
-      if (existing.pendingPlayerNames && existing.pendingPlayerNames.length > 0) {
-        const stillPending = existing.pendingPlayerNames.filter(
-          (n) => !playerIdByName.has(n.trim()),
-        );
-        if (stillPending.length !== existing.pendingPlayerNames.length) {
-          patch.pendingPlayerNames =
-            stillPending.length > 0 ? stillPending : undefined;
-        }
-      }
-      if (existing.pendingTeamNames && existing.pendingTeamNames.length > 0) {
-        const stillPending = existing.pendingTeamNames.filter(
-          (n) => !teamIdByName.has(n.trim()),
-        );
-        if (stillPending.length !== existing.pendingTeamNames.length) {
-          patch.pendingTeamNames =
-            stillPending.length > 0 ? stillPending : undefined;
-        }
-      }
-      if (Object.keys(patch).length > 0) {
-        await ctx.db.patch(existing._id, patch);
-      }
-    }
-
-    // NEO-92: no post-commit Wikidata scheduling needed anymore — every
-    // created player/team was already enriched during the review wizard
-    // (reviewByKey's `enrichment`, seeded above at insert time). Delete this
-    // batch's now-consumed entityReviewQueue rows SYNCHRONOUSLY, in this same
-    // transaction — using `reviewRows`, already read above to resolve
-    // decisions, so this adds writes only, no extra reads. Deliberately NOT
-    // scheduled async (the original design): a scheduled cleanup left a real
-    // race — a re-fetch of the same selectorOptionId landing in the gap
-    // between this mutation returning and the scheduled delete actually
-    // running would find every row already decided and wrongly resume the
-    // dead batch (startBatch) instead of starting fresh. Deleting inline
-    // closes that window entirely: by the time this mutation returns, the
-    // batch's rows are gone, so a subsequent fetch can never observe them.
-    if (args.batchId) {
-      for (const row of reviewRows) {
-        await ctx.db.delete(row._id);
-      }
-    }
-
-    // NEO-147: enrich the career teams created by resolveTeamIdByName above.
-    // Deliberately NOT the reviewed teams in `createdTeamIds` — those already
-    // carry whatever processEntityReviewQueue's lookupTeamEnrichment found
-    // before they were inserted, so re-running it here would be a second
-    // identical network round-trip per team for the same answer. Only the
-    // rows that had no enrichment path at all are enqueued.
-    //
-    // NEO-99 routed this through the shared Wikidata pool
-    // (convex/wikidataPool.ts), which replaced the self-paced
-    // processEnrichmentQueue: the pool's deployment-wide 5-parallel SPARQL
-    // budget is what keeps a fetch that creates fifty career teams from
-    // producing fifty concurrent requests. No `playerIds` because players
-    // created here were already enriched from the wizard's own preview (see
-    // the NEO-92 note above).
-    if (enrichmentTeamIds.length > 0) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.wikidataPool.enqueueEnrichment,
-        { teamIds: enrichmentTeamIds },
+          variationsLinked,
+          unresolvedStems: variationLinks.unresolvedStems.slice(0, 20),
+          unresolvedStemCount: variationLinks.unresolvedStems.length,
+        }),
       );
-    }
-
-    // NEO-90: same chained-queue shape, for BSC per-card team resolution.
-    // Cards whose team wasn't already recoverable from the bulk `players`
-    // string (parsePlayersField's TC/parenthetical handling) get resolved
-    // one at a time via BSC's per-card detail endpoint in the background.
-    if (bscTeamEnrichmentIds.length > 0) {
-      await ctx.scheduler.runAfter(
-        0,
-        internal.adapters.buysportscards.processBscTeamEnrichmentQueue,
-        { cardChecklistIds: bscTeamEnrichmentIds },
-      );
-    }
-
-    // NEO-24/38: harvest the locally-observable card-count from the BSC/SL
-    // checklist fetch onto the setName ancestor's `totalCardCount` feature.
-    // Only when this commit is itself happening AT the setName level —
-    // otherwise this is a variant/insert/parallel fetch and our card count is
-    // a subset, not the set total. releaseDate/block are purely manual (no
-    // auto-harvest) and live in the same features map, independently editable
-    // at every level via setSelectorOptionFeature (see the comment on that
-    // mutation above for why these were folded out of the old, setName-only
-    // `setMetadata` object).
-    if (setNameAncestorId && args.selectorOptionId === setNameAncestorId) {
-      const setNameRow = await ctx.db.get(setNameAncestorId);
-      if (setNameRow) {
-        const newCount = String(richCards.length);
-        if (setNameRow.features?.totalCardCount !== newCount) {
-          await ctx.db.patch(setNameAncestorId, {
-            features: { ...(setNameRow.features ?? {}), totalCardCount: newCount },
-            lastUpdated: Date.now(),
-          });
-        }
-      }
     }
 
     return {
       success: true,
-      count: richCards.length,
-      createdPlayerIds,
-      createdTeamIds,
+      count: args.cards.length,
+      createdPlayerIds: prelude.createdPlayerIds,
+      createdTeamIds: prelude.createdTeamIds,
     };
   },
 });

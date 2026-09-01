@@ -224,7 +224,11 @@ describe("fetchSportLotsChecklist platformRef carries the full per-row descripti
     const html = `
       <table>
         <tr><td class="smallleft">10</td><td class="smallleft">Aaron Judge</td></tr>
-        <tr><td class="smallleft">10</td><td class="smallleft">Aaron Judge [ VAR All-Star Logo ]</td></tr>
+        <!-- NEO-189: a variation row's NUMBER cell is "smallcolorleft", not
+             "smallleft" — SportLots tints it. This fixture said "smallleft",
+             which is why the parser's matching bug survived: the test data did
+             not look like the site. Verified against live set 328996. -->
+        <tr><td class="smallcolorleft">10</td><td class="smallleft">Aaron Judge [ VAR All-Star Logo ]</td></tr>
       </table>
     `;
     vi.stubGlobal("fetch", makeListcardsFetch({ html, calls }));

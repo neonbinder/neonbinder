@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useAction, useMutation } from "convex/react";
+import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardChecklistItem from "./CardChecklistItem";
+import { compareCardNumbers } from "@/lib/cards/card-number";
 import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
@@ -18,30 +20,6 @@ import ChecklistSourceFilter, {
 import CrossListingImportModal from "./CrossListingImportModal";
 import { Input } from "../primitives/Input";
 
-/**
- * NEO-21: natural card-number ordering, mirroring `compareCardNumbers` in
- * convex/selectorOptions.ts. Deliberately duplicated rather than imported —
- * convex/ is a separate deploy/typecheck unit and the frontend shouldn't pull
- * server modules in for twelve lines.
- *
- * This replaced a `sortOrder` sort. `sortOrder` is stamped per-checklist, so a
- * cross-listed guest card carries the value it was given in its HOME set,
- * which is meaningless here — sorting by it scattered guest rows to arbitrary
- * positions and undid the merge order the backend query already returns.
- */
-function compareCardNumbers(a: string, b: string): number {
-  const aMatch = a.match(/^(\d+)(.*)/);
-  const bMatch = b.match(/^(\d+)(.*)/);
-  if (aMatch && bMatch) {
-    const aNum = parseInt(aMatch[1], 10);
-    const bNum = parseInt(bMatch[1], 10);
-    if (aNum !== bNum) return aNum - bNum;
-    return aMatch[2].localeCompare(bMatch[2]);
-  }
-  if (aMatch && !bMatch) return -1;
-  if (!aMatch && bMatch) return 1;
-  return a.localeCompare(b);
-}
 
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;
@@ -58,13 +36,17 @@ type CardChecklistProps = {
 };
 
 /**
- * Preview shape returned by fetchCardChecklist. We hold this in component
- * state between fetch (action) and commit (mutation) so the user can
- * review new players/teams in EntityReviewWizard before the entities are
- * persisted. `batchId` is present whenever there are unknowns — it's what
- * the wizard subscribes to (entityReviewQueue.getBatch) and what
- * commitCardChecklist reads back to resolve each name's create/link
- * decision.
+ * The CONFIRMED card set, held between `resolveChecklistEntities` (action) and
+ * `commitCardChecklist` (mutation) so the operator can review new
+ * players/teams in EntityReviewWizard before the entities are persisted.
+ *
+ * These are the cards the operator paired and kept, handed over by
+ * `CardPairingModal` — not the fetch's output. (It used to be the fetch's
+ * output, hence the name; the fetch no longer returns cards at all.)
+ *
+ * `batchId` is present whenever there are unknowns — it's what the wizard
+ * subscribes to (entityReviewQueue.getBatch) and what commitCardChecklist
+ * reads back to resolve each name's create/link decision.
  */
 type FetchPreview = {
   sportId: Id<"selectorOptions">;
@@ -124,7 +106,21 @@ export default function CardChecklist({
   // away, which is why the pickers ended up matching on a display string.
   const ancestorSportId = ancestorChain?.find((c) => c.level === "sport")?._id;
   const fetchChecklist = useAction(api.selectorOptions.fetchCardChecklist);
-  const commitChecklist = useMutation(api.selectorOptions.commitCardChecklist);
+  // NEO-195: the fetch publishes candidates as they become reviewable, so the
+  // modal fills in live instead of waiting ~80s for the whole thing.
+  const liveCandidates = useQuery(
+    api.checklistCandidates.getReadyCandidates,
+    { selectorOptionId: variantId },
+  );
+  const discardCandidates = useMutation(
+    api.checklistCandidates.discardCandidates,
+  );
+  // NEO-189: an ACTION, not a mutation. The commit is chunked server-side
+  // (prelude → N chunk mutations → finalize) because a 712-card checklist blew
+  // Convex's per-mutation system-operation budget; see the header comment on
+  // `commitCardChecklist` in convex/selectorOptions.ts. Call shape is
+  // unchanged.
+  const commitChecklist = useAction(api.selectorOptions.commitCardChecklist);
   const resolveEntities = useAction(
     api.selectorOptions.resolveChecklistEntities,
   );
@@ -153,14 +149,20 @@ export default function CardChecklist({
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
   const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(null);
-  // NEO-137: the fetched candidate buckets, held between fetch and the
-  // operator's pairing confirmation. Nothing is written while this is set.
-  const [pendingPairing, setPendingPairing] = useState<{
-    sportId: Id<"selectorOptions">;
-    autoMatched: Array<{ card: PairingCard; confidence: number }>;
-    unmatchedBsc: PairingCard[];
-    unmatchedSl: PairingCard[];
-  } | null>(null);
+  /**
+   * NEO-137/NEO-195 — is a pairing review open?
+   *
+   * The CARDS are not held here. They live in `checklistCandidates` and arrive
+   * on the `getReadyCandidates` subscription; this is only the session flag
+   * that says the operator is reviewing them. It replaces the `pendingPairing`
+   * state that used to hold a whole second copy of the fetch result — see the
+   * note on `streamedPairing` below.
+   *
+   * Distinct from `fetchInFlight`, which ends when the action resolves. This
+   * one outlives the fetch: the dialog stays open until the operator confirms
+   * or cancels.
+   */
+  const [pairingOpen, setPairingOpen] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -182,7 +184,7 @@ export default function CardChecklist({
     setSourceFilter({ bsc: null, sportlots: null });
     setSelectedCardId(null);
     setHideCrossListed(false);
-    setPendingPairing(null);
+    setPairingOpen(false);
   }, [variantId]);
 
   // Virtuoso scroll handle + a one-shot flag so when the user adds a card
@@ -194,10 +196,31 @@ export default function CardChecklist({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const newCardIdRef = useRef<Id<"cardChecklist"> | null>(null);
   const prevCardCountRef = useRef(0);
+  // NEO-195: true from the moment a sync starts until the action resolves.
+  // Distinct from `syncing`, which also covers the commit phase.
+  const [fetchInFlight, setFetchInFlight] = useState(false);
+  // NEO-195 — which sync run is current. Bumped whenever the operator cancels,
+  // so a run whose result arrives afterwards knows it was abandoned.
+  //
+  // Streaming made this necessary. Before it, Cancel could only happen AFTER
+  // the action had already resolved, so nothing was in flight to come back.
+  // Now the modal opens on the first ready candidate — seconds in — and Cancel
+  // lands mid-fetch. Without a guard the action resolves ~70s later and
+  // unconditionally re-opens the dialog over the full result, overwriting
+  // "Sync cancelled — no cards saved.": an operator who declined a sync and
+  // walked away returns to an open Confirm on a checklist they had refused.
+  //
+  // A ref, not state: the check runs inside an async closure that captured its
+  // own render's values, which is exactly where a state read would be stale.
+  const syncGenerationRef = useRef(0);
 
   /**
    * Three-phase pipeline (NEO-137 moved pairing to the front):
-   *   1. fetchChecklist → three buckets of CANDIDATES. No NB card exists yet.
+   *   1. fetchChecklist → publishes three buckets of CANDIDATES to
+   *      `checklistCandidates` as it reconciles them, and answers with a
+   *      count and a status message. No NB card exists yet, and the cards
+   *      themselves arrive on the `getReadyCandidates` subscription rather
+   *      than in this promise (NEO-195).
    *   2. CardPairingModal → operator confirms pairs and keeps any deliberate
    *      single-marketplace card. Everything else is discarded, which is what
    *      keeps a shared SportLots set's sibling-owned cards from being
@@ -210,40 +233,73 @@ export default function CardChecklist({
    * data for cards that never exist.
    */
   const handleSync = async () => {
+    // NEO-96: the sport row every downstream step keys on. It used to ride
+    // back on the fetch action's return; the client walks the same ancestor
+    // chain for its own pickers, so reading it here removes a third copy of
+    // one fact rather than adding a lookup. Checked BEFORE the fetch: an
+    // orphaned chain used to burn two live marketplace round-trips and then
+    // report the card counts of a sync that could not proceed.
+    if (!ancestorSportId) {
+      setSyncMessage(
+        "Cannot sync — this row has no sport ancestor, so cards cannot be attributed to a sport.",
+      );
+      return;
+    }
+    const generation = ++syncGenerationRef.current;
+    const abandoned = () => syncGenerationRef.current !== generation;
     setSyncing(true);
+    // NEO-195: opens the modal on the first streamed candidates, and gates
+    // Confirm until the action resolves — reviewing early is the point,
+    // committing a partial checklist is not.
+    setFetchInFlight(true);
+    setPairingOpen(true);
     setSyncMessage(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
-      if (!result.success || !result.sportId) {
+      // Cancelled while the fetch was still running: leave the operator's own
+      // message standing and drop the result on the floor.
+      if (abandoned()) return;
+      if (!result.success) {
+        setPairingOpen(false);
         setSyncMessage(result.message);
+        await discardCandidates({ selectorOptionId: variantId });
         return;
       }
-      const nothingToPair =
-        result.autoMatched.length === 0 &&
-        result.unmatchedBsc.length === 0 &&
-        result.unmatchedSl.length === 0;
-      if (nothingToPair) {
+      if (result.candidateCount === 0) {
         // A custom subtree has no marketplace cards at all, so there is
         // nothing to pair. Showing an empty pairing dialog would be a step
         // the operator can only click through — go straight to entity
         // resolution, which is where a custom card's own pendingPlayerNames
         // surface.
-        await handlePairingConfirm({ cards: [] }, result.sportId);
+        //
+        // Read off the action's own count, NOT off `liveCandidates`: the
+        // subscription's value at this instant may still predate the batch
+        // write, and mistaking a not-yet-delivered batch for an empty one
+        // would commit an empty checklist over a real set.
+        setPairingOpen(false);
+        await handlePairingConfirm({ cards: [] });
         return;
       }
-      setPendingPairing({
-        sportId: result.sportId,
-        autoMatched: result.autoMatched,
-        unmatchedBsc: result.unmatchedBsc,
-        unmatchedSl: result.unmatchedSl,
-      });
       setSyncMessage(result.message);
     } catch (error) {
+      // Same abandonment rule as the resolved path: a cancelled run that
+      // rejects afterwards must not overwrite "Sync cancelled — no cards
+      // saved." with its own failure. The action converts its own errors into
+      // `{ success: false }`, so reaching here means the CALL failed (network,
+      // auth) and whatever it had published is a partial batch nobody should
+      // be offered — close the review rather than leaving it confirmable.
+      if (abandoned()) return;
+      setPairingOpen(false);
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     } finally {
-      setSyncing(false);
+      // Only the CURRENT run may clear these — a superseded run finishing later
+      // would otherwise unlock Confirm on whatever is open now.
+      if (!abandoned()) {
+        setSyncing(false);
+        setFetchInFlight(false);
+      }
     }
   };
 
@@ -251,15 +307,20 @@ export default function CardChecklist({
    * Operator confirmed the pairing. Only now do the confirmed cards become
    * candidates for entity resolution and commit.
    */
-  const handlePairingConfirm = async (
-    result: { cards: PairingCard[] },
-    // Passed explicitly on the nothing-to-pair path, where the modal never
-    // opened and `pendingPairing` was never set.
-    sportIdOverride?: Id<"selectorOptions">,
-  ) => {
-    const sportId = sportIdOverride ?? pendingPairing?.sportId;
-    if (!sportId) return;
-    setPendingPairing(null);
+  const handlePairingConfirm = async (result: { cards: PairingCard[] }) => {
+    // Guarded again rather than trusted from `handleSync`: this is also the
+    // modal's own onConfirm, which can fire minutes later — long enough for
+    // the ancestor-chain subscription to have changed under it. Says so out
+    // loud, because the operator has just pressed Confirm and a bare `return`
+    // would read as the button doing nothing.
+    if (!ancestorSportId) {
+      setSyncMessage(
+        "Cannot save — this row has no sport ancestor, so cards cannot be attributed to a sport.",
+      );
+      return;
+    }
+    const sportId = ancestorSportId;
+    setPairingOpen(false);
     setCommitting(true);
     try {
       const { unknownPlayers, unknownTeams, batchId } = await resolveEntities({
@@ -301,13 +362,55 @@ export default function CardChecklist({
         cards: preview.cards,
         batchId: preview.batchId,
       });
+      // NEO-195: the candidates have been promoted into cardChecklist, so the
+      // staging rows have done their job. Dropping them here rather than
+      // leaving them for the next fetch's clear-stale step keeps the table
+      // empty between syncs.
+      //
+      // NEO-189: this await must stay BEFORE the "Saved" message. Now that
+      // `commitCardChecklist` is an action, `useAction`'s promise resolves as
+      // soon as the server returns — unlike `useMutation`, it carries no
+      // guarantee that the client's subscribed queries have caught up. But
+      // `discardCandidates` IS a mutation, and a mutation's resolution does
+      // guarantee the client reflects every write that preceded it on the
+      // server — which includes all of the action's internal commit
+      // mutations. So awaiting the discard first restores, for free, the
+      // repaint guarantee the mutation used to give us. .maestro/flows/
+      // setup.yaml waits for "Saved N cards" and then immediately asserts a
+      // "#NNN" card row is visible; painting the message any earlier races
+      // that assertion against the `getCardChecklist` subscription.
+      let discardError: unknown;
+      try {
+        await discardCandidates({ selectorOptionId: variantId });
+      } catch (error) {
+        // The cards ARE saved — the commit already succeeded. A failed
+        // discard leaves stale staging rows (the next fetch's clear-stale
+        // step sweeps them), so it must never be reported as "Commit
+        // failed".
+        discardError = error;
+        console.warn("Failed to discard checklist candidates:", error);
+      }
       // NEO-92: no more "enriching in background" note — every created
       // player/team was already enriched during the review wizard, before
       // this commit ran.
-      setSyncMessage(`Saved ${result.count} cards.`);
-    } catch (error) {
       setSyncMessage(
-        `Commit failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        discardError
+          ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
+          : `Saved ${result.count} cards.`,
+      );
+    } catch (error) {
+      // NEO-189: the commit is phased server-side and labels its failures with
+      // the phase that broke ("prelude", "chunk 2/3 (cards 151-300 of 375)",
+      // "finalize") — which tells the operator how much of the checklist
+      // landed. That label rides a ConvexError, because production redacts a
+      // plain Error down to "Server Error"; `userFacingMessage` is what reads
+      // it back. The `.message` fallback keeps every other failure reading
+      // exactly as it did before.
+      setSyncMessage(
+        `Commit failed: ${userFacingMessage(
+          error,
+          error instanceof Error ? error.message : "Unknown error",
+        )}`,
       );
     } finally {
       setCommitting(false);
@@ -396,6 +499,21 @@ export default function CardChecklist({
   // churns the list and widens the reflow window a Maestro tap can land in.
   // Guarded for the not-yet-loaded case so the hook stays above the early
   // return (Rules of Hooks). Sort semantics are unchanged.
+  // NEO-189: which parents are showing their variations. Collapsed by default
+  // — the point of the grouping is that a 908-row set reads as its 725 real
+  // cards until you ask for more.
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleVariations = useCallback((id: Id<"cardChecklist">) => {
+    setExpandedParents((prev) => {
+      const next = new Set(prev);
+      if (next.has(id as string)) next.delete(id as string);
+      else next.add(id as string);
+      return next;
+    });
+  }, []);
+
   const sortedCards = useMemo(() => {
     if (!cards) return [];
     return [...cards]
@@ -418,6 +536,108 @@ export default function CardChecklist({
       .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
   }, [cards, sourceFilter, hideCrossListed]);
 
+  // NEO-189 — variations hang off their parent instead of sitting flat in the
+  // scroll.
+  //
+  // 2021 Topps Heritage is 908 cards of which 183 are variations. Flat, that
+  // buries five near-identical "Bryce Harper" rows between #13 and #14 and the
+  // checklist stops reading as a checklist. Collapsed by default, the list is
+  // its 725 real cards again, and a parent says how many it is holding.
+  //
+  // `displayRows` is the flattened, virtualization-friendly view: every parent
+  // in card order, each followed by its variations only while it is open.
+  // Virtuoso keeps working on a flat array, so nothing here costs the list its
+  // windowing.
+  //
+  // A variation whose parent is NOT in the filtered list renders at TOP level
+  // rather than vanishing. Source filters and the cross-listing toggle can
+  // remove a parent while keeping its children, and a row you cannot see is a
+  // row you cannot fix — the same reason commitCardChecklist reports ambiguous
+  // groups instead of dropping them.
+  // a11y (NEO-189): id → card number over the FULL unfiltered `cards`, used to
+  // label a variation row with its parent's number even when that parent has
+  // been filtered out of `sortedCards` (an orphaned variation, rendered at top
+  // level below) or lives outside the current virtualized viewport.
+  const cardNumberById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const card of cards ?? []) {
+      map.set(card._id as string, card.cardNumber);
+    }
+    return map;
+  }, [cards]);
+
+  const variationsByParent = useMemo(() => {
+    const map = new Map<string, typeof sortedCards>();
+    for (const card of sortedCards) {
+      if (!card.variationOfCardId) continue;
+      const key = card.variationOfCardId as string;
+      const bucket = map.get(key);
+      if (bucket) bucket.push(card);
+      else map.set(key, [card]);
+    }
+    return map;
+  }, [sortedCards]);
+
+  const displayRows = useMemo(() => {
+    const presentIds = new Set(sortedCards.map((c) => c._id as string));
+    // NEO-189: the open card's parent counts as expanded, whatever the toggle
+    // says.
+    //
+    // Setting "Variation of" from the detail panel moves that card under its
+    // parent, and a collapsed parent would hide it — the panel would blink shut
+    // the moment the operator made the link, reading as the app losing their
+    // work rather than filing it. Derived rather than pushed into
+    // `expandedParents` so this never fights the operator's own toggle: close
+    // the parent and it stays closed once the selection moves on.
+    const selectedParentId = selectedCardId
+      ? (sortedCards.find((c) => c._id === selectedCardId)
+          ?.variationOfCardId as string | undefined)
+      : undefined;
+    const isExpanded = (id: string) =>
+      expandedParents.has(id) || id === selectedParentId;
+    const rows: Array<{
+      card: (typeof sortedCards)[number];
+      isVariation: boolean;
+      variationCount: number;
+      expanded: boolean;
+      // a11y (NEO-189): the parent's card number, so CardChecklistItem can say
+      // "Variation of #11" in text rather than relying on indentation + a
+      // border colour alone — see the prop's own doc comment. Looked up from
+      // the FULL `cards` list, not `sortedCards`, so an orphaned variation
+      // (its parent filtered out, see below) still gets a correct number
+      // instead of `undefined`.
+      parentCardNumber?: string;
+    }> = [];
+    for (const card of sortedCards) {
+      // Rendered under its parent below, unless that parent is filtered out.
+      if (card.variationOfCardId && presentIds.has(card.variationOfCardId as string)) {
+        continue;
+      }
+      const children = variationsByParent.get(card._id as string) ?? [];
+      rows.push({
+        card,
+        isVariation: !!card.variationOfCardId,
+        variationCount: children.length,
+        expanded: children.length > 0 && isExpanded(card._id as string),
+        parentCardNumber: card.variationOfCardId
+          ? cardNumberById.get(card.variationOfCardId as string)
+          : undefined,
+      });
+      if (children.length > 0 && isExpanded(card._id as string)) {
+        for (const child of children) {
+          rows.push({
+            card: child,
+            isVariation: true,
+            variationCount: 0,
+            expanded: false,
+            parentCardNumber: card.cardNumber,
+          });
+        }
+      }
+    }
+    return rows;
+  }, [sortedCards, variationsByParent, expandedParents, selectedCardId, cardNumberById]);
+
   // Only worth showing the toggle when this checklist actually has visiting
   // cards (mirrors ChecklistSourceFilter's `anyMulti` guard). Derived from
   // `cards`, not `sortedCards` — otherwise hiding them would remove the very
@@ -426,6 +646,69 @@ export default function CardChecklist({
     () => (cards ?? []).some((c) => c.isCrossListed),
     [cards],
   );
+  /**
+   * NEO-195 — the live candidate view, shaped like the modal's initialData.
+   *
+   * This is now the ONLY source for the dialog. It used to hand over to
+   * `pendingPairing` — a second, complete copy of the same rows returned by
+   * the action ~70s later — the moment the fetch resolved. That copy was pure
+   * cost: `CardPairingModal` absorbs `initialData` append-only, so every row
+   * in it was already known and its contents were dropped, and keeping the two
+   * in step meant widening two wires for every field the screen learned to
+   * show (NEO-199 did exactly that).
+   *
+   * Gated on `pairingOpen`, NOT on `fetchInFlight`: the review outlives the
+   * fetch, and gating on the fetch is what made a second source necessary in
+   * the first place.
+   *
+   * Gated on `total`, not `ready`. `ready` counts rows whose TEAM has
+   * resolved, and teams gate Confirm, not visibility (see
+   * convex/checklistCandidates.ts) — waiting on it here would hold the dialog
+   * shut for the first enrichment chunk and, worse, make "did the dialog open
+   * at all" depend on whether team enrichment got anywhere.
+   *
+   * A candidate carries its bucket, so the three columns come straight off it
+   * rather than being re-derived here.
+   */
+  const streamedPairing = useMemo(() => {
+    if (!pairingOpen || !liveCandidates || liveCandidates.total === 0) {
+      return null;
+    }
+    const toCard = (c: (typeof liveCandidates.cards)[number]): PairingCard => ({
+      cardNumber: c.cardNumber,
+      cardName: c.cardName,
+      teams: c.teams,
+      players: c.players,
+      attributes: c.attributes,
+      isRookie: c.isRookie,
+      isRelic: c.isRelic,
+      printRun: c.printRun,
+      autographType: c.autographType,
+      cardVariation: c.cardVariation,
+      // NEO-189: without this the modal commits every variation as a
+      // standalone card — the flag has to survive the whole path.
+      isVariation: c.isVariation,
+      platformData: c.platformData,
+      // NEO-199: the losing name from a server-side merge. Absent on every row
+      // the two marketplaces agree about, which is nearly all of them; where it
+      // is present the modal raises the same choice a hand-linked conflict gets.
+      nameConflict: c.nameConflict,
+      unmatched:
+        c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,
+    });
+    return {
+      autoMatched: liveCandidates.cards
+        .filter((c) => c.bucket === "matched")
+        .map((c) => ({ card: toCard(c), confidence: c.confidence ?? 1 })),
+      unmatchedBsc: liveCandidates.cards
+        .filter((c) => c.bucket === "bscOnly")
+        .map(toCard),
+      unmatchedSl: liveCandidates.cards
+        .filter((c) => c.bucket === "slOnly")
+        .map(toCard),
+    };
+  }, [pairingOpen, liveCandidates]);
+
   const lastSynced = useMemo(() => {
     if (!cards || cards.length === 0) return null;
     return Math.max(
@@ -443,16 +726,24 @@ export default function CardChecklist({
   }
 
   // NEO-25: resolve the open card from its id against the live sorted list.
+  //
+  // NEO-189: indexed against `displayRows`, NOT `sortedCards`. Virtuoso renders
+  // displayRows, and selectByIndex hands its index straight to
+  // `scrollToIndex` — indexing the two differently would scroll to a different
+  // row than the one it selected the moment any set has a variation in it.
+  //
+  // Prev/next therefore walks what is actually on screen: a collapsed
+  // variation is not steppable, which is the same rule as not being clickable.
   const selectedIndex = selectedCardId
-    ? sortedCards.findIndex((c) => c._id === selectedCardId)
+    ? displayRows.findIndex((r) => r.card._id === selectedCardId)
     : -1;
-  const selectedCard = selectedIndex >= 0 ? sortedCards[selectedIndex] : null;
+  const selectedCard = selectedIndex >= 0 ? displayRows[selectedIndex].card : null;
 
   // Move selection to a list position and keep it in view. "center" matches
   // the add-card scroll and dodges the sticky binder-header at y≈84.
   const selectByIndex = (idx: number) => {
-    if (idx < 0 || idx >= sortedCards.length) return;
-    setSelectedCardId(sortedCards[idx]._id);
+    if (idx < 0 || idx >= displayRows.length) return;
+    setSelectedCardId(displayRows[idx].card._id);
     virtuosoRef.current?.scrollToIndex({
       index: idx,
       align: "center",
@@ -631,15 +922,22 @@ export default function CardChecklist({
         ) : (
           <Virtuoso
             ref={virtuosoRef}
-            data={sortedCards}
-            computeItemKey={(_, card) => card._id}
-            itemContent={(_, card) => (
+            data={displayRows}
+            computeItemKey={(_, row) => row.card._id}
+            itemContent={(_, row) => (
               <div className="pb-1.5">
                 <CardChecklistItem
-                  card={card}
+                  card={row.card}
                   sourceLabelMaps={sourceLabelMaps}
-                  isSelected={card._id === selectedCardId}
+                  isSelected={row.card._id === selectedCardId}
                   onEdit={(id) => setSelectedCardId(id)}
+                  variationCount={row.variationCount}
+                  isVariation={row.isVariation}
+                  isExpanded={row.expanded}
+                  parentCardNumber={row.parentCardNumber}
+                  onToggleVariations={
+                    row.variationCount > 0 ? toggleVariations : undefined
+                  }
                 />
               </div>
             )}
@@ -653,7 +951,7 @@ export default function CardChecklist({
             // real operator returns to a checklist: they want to see what
             // they were last working on, not browse from #001 every time.
             initialTopMostItemIndex={
-              sortedCards.length > 0 ? sortedCards.length - 1 : 0
+              displayRows.length > 0 ? displayRows.length - 1 : 0
             }
             style={{ height: "min(70vh, 800px)" }}
             increaseViewportBy={{ top: 200, bottom: 400 }}
@@ -674,7 +972,7 @@ export default function CardChecklist({
           onPrev={() => selectByIndex(selectedIndex - 1)}
           onNext={() => selectByIndex(selectedIndex + 1)}
           hasPrev={selectedIndex > 0}
-          hasNext={selectedIndex >= 0 && selectedIndex < sortedCards.length - 1}
+          hasNext={selectedIndex >= 0 && selectedIndex < displayRows.length - 1}
         />
       )}
 
@@ -684,20 +982,34 @@ export default function CardChecklist({
         targetVariantId={variantId}
       />
 
-      {pendingPairing && (
+      {streamedPairing && (
         <CardPairingModal
           isOpen
-          onClose={() => {
-            setPendingPairing(null);
+          onClose={async () => {
+            // Supersede any in-flight fetch so its result cannot reopen this
+            // dialog behind the operator (see syncGenerationRef).
+            syncGenerationRef.current++;
+            setPairingOpen(false);
+            setFetchInFlight(false);
+            setSyncing(false);
             setSyncMessage("Sync cancelled — no cards saved.");
+            // NEO-195: candidates are worthless once the operator has walked
+            // away. Leaving them would make the NEXT fetch's clear-stale step
+            // do the work instead, one sync later and less obviously.
+            await discardCandidates({ selectorOptionId: variantId });
           }}
           onConfirm={handlePairingConfirm}
           setLabel={variantRow?.value}
-          initialData={{
-            autoMatched: pendingPairing.autoMatched,
-            unmatchedBsc: pendingPairing.unmatchedBsc,
-            unmatchedSl: pendingPairing.unmatchedSl,
-          }}
+          // One source, live for the whole review — during the fetch and after
+          // it. The modal absorbs updates append-only, so rows that arrive
+          // late join without disturbing a decision already made.
+          initialData={streamedPairing}
+          isStreaming={fetchInFlight}
+          streamProgress={
+            liveCandidates
+              ? { ready: liveCandidates.ready, total: liveCandidates.total }
+              : undefined
+          }
         />
       )}
 

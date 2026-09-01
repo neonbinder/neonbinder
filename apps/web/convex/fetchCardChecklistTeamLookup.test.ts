@@ -85,11 +85,17 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       args: {
         parentFilters: v.record(v.string(), v.string()),
         platformFilters: v.optional(v.record(v.string(), v.array(v.string()))),
+        // NEO-189: fetchCardChecklist now sends facet-keyed filters.
+        facetFilters: v.optional(v.record(v.string(), v.array(v.string()))),
+        sourceFacet: v.optional(
+          v.union(v.literal("setName"), v.literal("variantName")),
+        ),
       },
       returns: v.object({
         success: v.boolean(),
         cards: v.array(v.any()),
         message: v.optional(v.string()),
+        collisions: v.optional(v.array(v.any())),
       }),
       handler: async (): Promise<{ success: boolean; cards: BscCard[] }> => ({
         success: true,
@@ -142,6 +148,67 @@ const ADMIN_IDENTITY = {
   name: "Admin User",
   role: "admin",
 };
+
+/** The sport row of the seeded chain — what the client reads off its own
+ *  `getAncestorChain` subscription and hands to resolve/commit. */
+async function sportRowId(
+  t: ReturnType<typeof convexTest>,
+): Promise<Id<"selectorOptions">> {
+  return t.run(async (ctx) => {
+    const rows = await ctx.db.query("selectorOptions").collect();
+    return rows.find((r) => r.level === "sport")!._id;
+  });
+}
+
+/**
+ * The candidate rows as the pairing dialog receives them.
+ *
+ * This is the assertion surface for team enrichment, and it is the only one:
+ * `fetchCardChecklist` returns a count and a message, and the resolved team
+ * names reach the client by being PATCHED onto these rows (chunk by chunk, as
+ * each BSC lookup lands) rather than by riding back on the action's return.
+ */
+async function buckets(
+  t: ReturnType<typeof convexTest>,
+  id: Id<"selectorOptions">,
+) {
+  const live = await t
+    .withIdentity(ADMIN_IDENTITY)
+    .query(api.checklistCandidates.getReadyCandidates, {
+      selectorOptionId: id,
+    });
+  return {
+    matched: live.cards.filter((c) => c.bucket === "matched"),
+    bscOnly: live.cards.filter((c) => c.bucket === "bscOnly"),
+    slOnly: live.cards.filter((c) => c.bucket === "slOnly"),
+  };
+}
+
+/**
+ * A candidate row reduced to the card shape the operator confirms with.
+ *
+ * Mirrors `CardChecklist`'s own `toCard`: the staging row carries bookkeeping
+ * (`_id`, `stem`, `bucket`, `teamResolved`) that `previewCardValidator` — a
+ * strict object — would reject on the way into resolve/commit.
+ */
+function toPairingCard(
+  c: Awaited<ReturnType<typeof buckets>>["bscOnly"][number],
+) {
+  return {
+    cardNumber: c.cardNumber,
+    cardName: c.cardName,
+    teams: c.teams,
+    players: c.players,
+    attributes: c.attributes,
+    isRookie: c.isRookie,
+    isRelic: c.isRelic,
+    printRun: c.printRun,
+    autographType: c.autographType,
+    cardVariation: c.cardVariation,
+    isVariation: c.isVariation,
+    platformData: c.platformData,
+  };
+}
 
 /**
  * Seed a sport -> year -> setName -> variantType chain with BSC platform
@@ -228,8 +295,9 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
     expect(result.success).toBe(true);
     expect(mockState.teamLookupCalls).toHaveLength(0);
     // NEO-137: BSC-only candidate — nothing is an NB card until pairing.
-    expect(result.unmatchedBsc).toHaveLength(1);
-    expect(result.unmatchedBsc[0].teams).toEqual(["Kansas City Royals"]);
+    const { bscOnly } = await buckets(t, variantTypeId);
+    expect(bscOnly).toHaveLength(1);
+    expect(bscOnly[0].teams).toEqual(["Kansas City Royals"]);
   });
 
   test("a card with a BSC ref and no team gets resolved via fetchBscCardTeamNames and flows into unknownTeams", async () => {
@@ -254,17 +322,23 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
 
     expect(result.success).toBe(true);
     expect(mockState.teamLookupCalls).toEqual([["bsc-50"]]);
-    expect(result.unmatchedBsc).toHaveLength(1);
-    expect(result.unmatchedBsc[0].teams).toEqual(["Cincinnati Reds"]);
+    // The resolved name has to be ON THE ROW the modal reads. This is the
+    // whole point of the enrichment: the lookup is what the fetch spends most
+    // of its ~80s on, and until it lands here the operator confirms a card
+    // with no team and the review wizard never asks about "Cincinnati Reds".
+    const { bscOnly } = await buckets(t, variantTypeId);
+    expect(bscOnly).toHaveLength(1);
+    expect(bscOnly[0].teams).toEqual(["Cincinnati Reds"]);
 
     // NEO-137: unknown-entity bucketing moved out of fetch — it now runs on
-    // the CONFIRMED card set, after the operator pairs.
+    // the CONFIRMED card set, after the operator pairs. `sportId` comes off
+    // the ancestor chain the client already subscribes to, not off the fetch.
     const resolved = await asAdmin.action(
       api.selectorOptions.resolveChecklistEntities,
       {
         selectorOptionId: variantTypeId,
-        sportId: result.sportId!,
-        cards: result.unmatchedBsc,
+        sportId: await sportRowId(t),
+        cards: bscOnly.map(toPairingCard),
       },
     );
     expect(resolved.unknownTeams).toContain("Cincinnati Reds");
@@ -297,12 +371,11 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
     // NEO-137: an SL-only card is a candidate in the unmatched-SL column. It
     // is NOT turned into an NB card unless the operator keeps it — which is
     // what stops a shared SL set's sibling-owned cards being invented here.
-    expect(result.unmatchedSl).toHaveLength(1);
-    expect(result.unmatchedSl[0].platformData.bsc).toBeUndefined();
-    expect(result.unmatchedSl[0].platformData.sportlots).toEqual({
-      ref: "sl-77",
-    });
-    expect(result.unmatchedSl[0].teams).toBeUndefined();
+    const { slOnly } = await buckets(t, variantTypeId);
+    expect(slOnly).toHaveLength(1);
+    expect(slOnly[0].platformData.bsc).toBeUndefined();
+    expect(slOnly[0].platformData.sportlots).toEqual({ ref: "sl-77" });
+    expect(slOnly[0].teams).toBeUndefined();
   });
 
   test("needsTeamLookup empty (mixed batch, nothing needs lookup) — fetchBscCardTeamNames is never called", async () => {
@@ -334,7 +407,8 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
 
     expect(result.success).toBe(true);
     expect(mockState.teamLookupCalls).toHaveLength(0);
-    expect(result.unmatchedBsc).toHaveLength(1);
-    expect(result.unmatchedSl).toHaveLength(1);
+    const { bscOnly, slOnly } = await buckets(t, variantTypeId);
+    expect(bscOnly).toHaveLength(1);
+    expect(slOnly).toHaveLength(1);
   });
 });

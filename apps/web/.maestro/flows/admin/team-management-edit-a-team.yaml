@@ -34,14 +34,39 @@ tags:
 - extendedWaitUntil:
     visible: ".*of .* teams.*"
     timeout: 45000
-- inputText: "Yankees"
+# Filter by the fixture's FULL name, never the bare "Yankees". `teams` is a
+# GLOBAL table and other flows create rows in it while this one runs: on
+# 2026-09-01 (CI run 33546667978) a checklist flow on another runner committed a
+# player whose Wikidata career includes a Yankees farm club, which get-or-created
+# "Gulf Coast League Yankees" 14 seconds before this step. "Yankees" then matched
+# 2 of 105 teams and the assertion below failed — nothing was broken, the filter
+# text was just not specific enough to survive a concurrent worker.
+#
+# The full name is collision-proof in both directions: the filter is a plain
+# case-insensitive substring match on the team name (TeamManagement's `visible`),
+# so it still finds the fixture; a concurrent get-or-create of the Yankees
+# themselves lands on this very row, because teams dedupe on normalized name +
+# sport and every flow that can create them does so under Baseball ("Yankees,
+# New York" normalizes into the same key); and a farm club carries its own
+# city's name, never "New York Yankees" inside it.
+- inputText: "New York Yankees"
 
 # The list narrows to the fixture. Composed with the count so this cannot pass
 # against an unfiltered list that merely happens to contain the Yankees.
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 15000
-- tapOn: "New York Yankees"
+
+# Tap the ROW, anchored below the counter. maestro-web reports an input's
+# current value as its text, so now that the filter box holds "New York Yankees"
+# the box itself answers to that string too — and it sits above the list, so an
+# unanchored tap could land in the filter instead of selecting the team. The
+# counter renders between the two, so "below the counter" is the row and only
+# the row.
+- tapOn:
+    text: "New York Yankees"
+    below:
+      text: "1 of .* teams.*"
 
 # ── THE DETAIL PANEL ────────────────────────────────────────────────────────
 # Its heading is the team's name, and Save/Discover only exist inside it, so
@@ -92,11 +117,16 @@ tags:
 - extendedWaitUntil:
     visible: ".*of .* teams.*"
     timeout: 30000
-- inputText: "Yankees"
+# Same full-name filter and same counter-anchored row tap as on the way in —
+# see the comments above for why neither can be shortened.
+- inputText: "New York Yankees"
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 15000
-- tapOn: "New York Yankees"
+- tapOn:
+    text: "New York Yankees"
+    below:
+      text: "1 of .* teams.*"
 - extendedWaitUntil:
     visible: 'Bronx${WORKER_INDEX || "0"}'
     timeout: 15000

@@ -257,13 +257,23 @@ export const get = query({
  * NEO-25: the card detail panel renders player-name chips from
  * `cardChecklist.playerIds[]` without N round-trips. Mirrors
  * `teams.getManyByIds`. Missing IDs are silently dropped (an orphaned
- * link is a soft data error, not fatal). Public — `createdByUserId`
- * is stripped via `toPublicPlayer`.
+ * link is a soft data error, not fatal). `createdByUserId` is stripped
+ * via `toPublicPlayer`.
+ *
+ * NEO-202: this was the only function in this file with no identity check,
+ * and the mirror it names — `teams.getManyByIds` — calls `requireSignedIn`.
+ * That asymmetry is the exact shape NEO-154 called out (`teams.findOrCreate`
+ * had no guard while its `players.findOrCreate` twin did), recurring with the
+ * sides swapped. `requireSignedIn`, not `requireAdmin`: `players` is
+ * signed-in-readable reference data — `get`, `search` and `findByNameAndSport`
+ * all settle for signed-in — and the only callers (PlayerPicker, the card
+ * detail chips) sit behind `ProtectedLayout` anyway.
  */
 export const getManyByIds = query({
   args: { ids: v.array(v.id("players")) },
   returns: v.array(playerDocPublicValidator),
   handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
     const rows = await Promise.all(args.ids.map((id) => ctx.db.get(id)));
     return rows
       .filter((r): r is NonNullable<typeof r> => r !== null)

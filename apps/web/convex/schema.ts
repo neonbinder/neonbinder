@@ -121,6 +121,40 @@ export const selectorOptionFields = {
     bsc: v.optional(v.record(v.string(), v.string())),
     sportlots: v.optional(v.record(v.string(), v.string())),
   })),
+  // NEO-189 — slot → which BSC FACET that slot's id belongs to.
+  //
+  // A BSC id is not self-describing: `topps-series-1` is a value of the
+  // `setName` facet, `dugout-collection-artists-proofs` is a value of the
+  // `variantName` facet. The checklist fetch used to guess from the NB LEVEL
+  // of the row holding the id, which is wrong for the case this feature
+  // exists for — BSC files Topps Series 1 and Series 2 as two `setName` sets
+  // while SportLots has one set, so a **setName** id has to hang off a Base
+  // (`variantType`) row. Level-guessing discarded those ids silently.
+  //
+  // Keyed by SLOT, in a map parallel to `platformLabels`, rather than encoded
+  // into the slot key or the id:
+  //   • the slot key is already stored on every card as `platformData.*.src`,
+  //     so re-namespacing it would mean rewriting card pointers — the exact
+  //     silent-repointing hazard slots were introduced to avoid;
+  //   • folding it into the id would corrupt the value adapters filter on and
+  //     every equality check that compares ids;
+  //   • a parallel slot-keyed map inherits the allocation and detach
+  //     lifecycle that already works, and gets the right default for free.
+  //
+  // ABSENT = written before NEO-189. That is inert, not unknown: the fetch
+  // falls back to the old level rule and nothing infers a facet, because a
+  // wrong guess changes which marketplace sets a live checklist sources.
+  //
+  // BSC only — SportLots has one unit of attachment, so there is nothing to
+  // disambiguate. See convex/bscFacets.ts.
+  platformFacets: v.optional(v.object({
+    bsc: v.optional(
+      v.record(
+        v.string(),
+        v.union(v.literal("setName"), v.literal("variantName")),
+      ),
+    ),
+  })),
   // The SLOT that storeReconciledOptions matched against. Used during
   // re-reconciliation to refresh that one entry without clobbering
   // operator-attached extras. Absent → treat the lowest-numbered slot as
@@ -353,9 +387,73 @@ export default defineSchema({
     // Autograph signal: presence of autographType implies the card is
     // autographed. Values: "On-Card" / "Sticker" / "Cut".
     autographType: v.optional(v.string()),
-    // BSC variantName: "Gold", "Refractor", "/199", etc. Used as eBay
-    // Parallel/Variety aspect tail and for title generation.
+    // NEO-189: this card's VARIATION name — "Action", "Nickname", "Sliding",
+    // "Standing by bucket". One NeonBinder name per card, settled when the
+    // sources are paired at import; a marketplace's own wording is never
+    // stored.
+    //
+    // A plain string, deliberately, with no vocabulary table behind it:
+    // variation names are per-card and very often have no reuse at all, so a
+    // shared list would be one row per card wearing a join.
+    //
+    // Feeds the eBay Parallel/Variety aspect (via deriveCardFeatures'
+    // `parallelName`) and listing-title generation, which is why only a real
+    // printing variety may reach it — see `parseVariationDescription` in
+    // adapters/buysportscards.ts for the shelf notes that used to leak in here.
     cardVariation: v.optional(v.string()),
+    // NEO-189: when this card is a VARIATION of another card in the same set,
+    // the card it varies. Absent on a normal card and on a parent.
+    //
+    // A variation is the same checklist slot printed a second way — a different
+    // photo, a nickname on the nameplate, an outright error. NOT a parallel: a
+    // parallel is a whole alternate printing of a set and is already its own
+    // `selectorOptions` row with its own checklist. The two axes are
+    // orthogonal; a parallel's checklist can itself contain variations.
+    //
+    // WHY A POINTER, NOT A DERIVED GROUPING
+    //
+    // The obvious alternative is to derive the relationship from the card
+    // number — BSC suffixes a variation (`11` → `11b`), so `11b` "obviously"
+    // belongs to `11`. Three things kill that:
+    //
+    //   1. `updateCard` lets `cardNumber` be patched freely. A derived grouping
+    //      silently breaks the first time an operator corrects a number.
+    //   2. The parent is not always the bare number. 2021 Topps has no card #1
+    //      at all — it ships `1a` (base), `1b`, `1c`. 150 of its 660 stems have
+    //      no bare-numbered row.
+    //   3. SportLots does not suffix at all. It gives every variation of #13
+    //      the number `13` and distinguishes them in the description, so there
+    //      is nothing to derive from on that side.
+    //
+    // The suffix is still how the link is DERIVED at import (see
+    // `resolveVariationParents` in lib/cards/variations.ts) — it just is not
+    // what the link IS.
+    //
+    // A variation is a FULL CARD, not a delta on its parent: `playerIds`,
+    // `cardName`, `teamOnCardIds`, `printRun`, `features`, `sku` and both
+    // platform refs are all independently its own. Do not inherit-and-lock from
+    // the parent — under the hobby's "Legend" convention a variation is
+    // routinely a different player entirely (2021 Topps #52 is Archie Bradley;
+    // 52b/52c/52d are Mickey Mantle).
+    //
+    // Deleting a parent must clear this on its children — see `deleteCard`,
+    // which follows the same discipline `deleteCardCrossListingsFor` already
+    // establishes for junction rows.
+    variationOfCardId: v.optional(v.id("cardChecklist")),
+    // NEO-189: the operator set this parent by hand, so automation must leave
+    // it alone.
+    //
+    // Without this a re-sync silently undoes the correction: the commit pass
+    // re-derives every link from the card-number stem and clears any row it
+    // did not derive, so a hand-set parent survives exactly until the next
+    // fetch. That is the same failure NEO-137 fixed for card pairing, and it
+    // is fixed the same way — `placeholderPairs.mechanism: "manual"` marks a
+    // pair the automatic diff must skip, and this marks a parent link the
+    // automatic diff must skip.
+    //
+    // Set only by `setCardVariationParent` and by a custom card created with a
+    // parent. Never set by the marketplace commit path.
+    variationParentManual: v.optional(v.boolean()),
     // NEO-25: marketplace-agnostic listing title & description, authored once
     // and reused by every marketplace adapter (eBay/SportLots/BSC/MySlabs/
     // MyCardPost) so a listing doesn't recompute the title each time. NOT
@@ -411,7 +509,11 @@ export default defineSchema({
     lastUpdated: v.number(),
   })
     .index("by_selector_option", ["selectorOptionId"])
-    .index("by_selector_option_and_number", ["selectorOptionId", "cardNumber"]),
+    .index("by_selector_option_and_number", ["selectorOptionId", "cardNumber"])
+    // NEO-189: "give me this card's variations" as one indexed read rather than
+    // a scan of the set. Also what `deleteCard` uses to find the children whose
+    // pointer it must clear.
+    .index("by_variation_parent", ["variationOfCardId"]),
 
   // NEO-21: cross-release guest appearances. Some cards complete one set's
   // checklist but were physically printed inside a different product (2021
@@ -680,6 +782,92 @@ export default defineSchema({
     // seconds under the Wikidata pool, so the common run reads the oldest few,
     // finds none stale, and stops.
     .index("by_status", ["status"]),
+
+  // NEO-195: candidate cards for ONE checklist fetch, written as reconciliation
+  // produces them so the review modal can fill in live instead of waiting for
+  // the whole fetch.
+  //
+  // WHY A SEPARATE TABLE AND NOT cardChecklist
+  //
+  // The modal promises, in its own subtitle, "No cards are saved until you
+  // confirm." Candidates are exactly the things that are NOT saved yet — the
+  // operator may discard any of them — so they cannot live in the catalog.
+  // Confirm promotes them; cancel drops them.
+  //
+  // WHY status EXISTS
+  //
+  // A fetch is fast (~6s) but the per-card BSC team lookup that follows is not
+  // (~74s on a 743-card set). Showing a card before its team resolves is worse
+  // than making the operator wait: it looks reviewable, so they either wait
+  // anyway and gain nothing, or approve a card that was not ready. `status` is
+  // the gate that makes streaming safe rather than merely faster.
+  //
+  // A row is `ready` only when everything a reviewer needs is on it — its
+  // variation grouping, its players, its team.
+  checklistCandidates: defineTable({
+    selectorOptionId: v.id("selectorOptions"),
+    // One fetch run. Scopes cleanup and keeps a stale run from bleeding into a
+    // fresh one if an operator re-syncs before cancelling.
+    batchId: v.string(),
+    createdByUserId: v.string(),
+
+    // ── the reconciled card, mirroring previewCardValidator ────────────────
+    cardNumber: v.string(),
+    cardName: v.string(),
+    teams: v.optional(v.array(v.string())),
+    players: v.optional(v.array(v.string())),
+    attributes: v.optional(v.array(v.string())),
+    isRookie: v.optional(v.boolean()),
+    isRelic: v.optional(v.boolean()),
+    printRun: v.optional(v.number()),
+    autographType: v.optional(v.string()),
+    cardVariation: v.optional(v.string()),
+    isVariation: v.optional(v.boolean()),
+    platformData: cardPlatformWireDataValidator,
+    // NEO-199 — BSC and SportLots name this card differently. Written only on a
+    // `matched` row whose two sides disagreed (see lib/cards/card-name.ts), so
+    // a set where the marketplaces agree stores nothing extra on any of its
+    // ~900 rows. `cardName` above is still BSC's answer; this is the one the
+    // merge used to discard, kept so the review modal can offer the choice.
+    nameConflict: v.optional(
+      v.object({ bsc: v.string(), sportlots: v.string() }),
+    ),
+
+    // ── which column of the modal this belongs in ──────────────────────────
+    bucket: v.union(
+      v.literal("matched"),
+      v.literal("bscOnly"),
+      v.literal("slOnly"),
+    ),
+    // Pairing confidence for a matched row; the modal surfaces a fuzzy match
+    // differently from an exact one.
+    confidence: v.optional(v.number()),
+
+    // ── streaming ─────────────────────────────────────────────────────────
+    // Card-number stem. A parent and its variations share one, and the whole
+    // group is released together — otherwise an operator reviews #20 and #20b
+    // appears underneath it afterwards.
+    stem: v.string(),
+    status: v.union(v.literal("pending"), v.literal("ready")),
+    lastUpdated: v.number(),
+  })
+    .index("by_batch", ["batchId"])
+    .index("by_batch_and_status", ["batchId", "status"])
+    // Cleanup, and the modal's live read. Both are per-OPERATOR, not per-row:
+    // two admins syncing the same selectorOption at once each own their own
+    // candidate set, so one operator's fetch must neither clear nor surface
+    // the other's rows (NEO-195). `createdByUserId` therefore has to be part
+    // of the index rather than an in-memory filter, and it comes second
+    // because every caller fixes the selectorOption first.
+    //
+    // This REPLACED a bare ["selectorOptionId"] index. That index is a prefix
+    // of this one, so a future genuinely-global per-row query is still served
+    // here and a second index would only add write cost — a batch is ~900
+    // inserts.
+    .index("by_selector_option_and_user", [
+      "selectorOptionId",
+      "createdByUserId",
+    ]),
 
   // Set Selections - stores user's selected set parameters
   setSelections: defineTable({

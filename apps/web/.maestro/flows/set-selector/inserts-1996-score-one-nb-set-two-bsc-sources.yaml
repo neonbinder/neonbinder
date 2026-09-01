@@ -307,6 +307,19 @@ tags:
       text: "Match Cards.*"
     timeout: 120000
 
+# NEO-195 — the dialog OPENING is not the fetch FINISHING.
+# Since streaming, "Match Cards" appears on the first reconciled candidates
+# (~6s), not on the action's return. Every assertion below is about the FINAL
+# contents — the matched list being expanded, both columns empty, and the 220
+# count that is the whole point of this flow — so asserting on the streaming
+# dialog reads a half-filled screen and fails on whichever row had not arrived
+# yet. Confirm's own text is the signal: "Loading…" while streaming, "Confirm"
+# once the action resolves.
+- extendedWaitUntil:
+    visible:
+      text: "^Confirm$"
+    timeout: 120000
+
 # ============================================================
 # STEP 5 — THE PAIRING DIALOG, FULLY MATCHED
 #

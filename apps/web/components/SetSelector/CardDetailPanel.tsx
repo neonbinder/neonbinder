@@ -5,6 +5,7 @@ import { Textarea } from "../primitives/Textarea";
 import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker from "./PlayerPicker";
@@ -71,6 +72,8 @@ type CardDetailCard = {
   isRelic?: boolean;
   printRun?: number;
   cardVariation?: string;
+  // NEO-189: the card this one varies, when it is a variation.
+  variationOfCardId?: Id<"cardChecklist">;
   listingTitle?: string;
   listingDescription?: string;
   imageUrls?: { front?: string; back?: string };
@@ -128,6 +131,105 @@ export default function CardDetailPanel({
 }: CardDetailPanelProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const setCardFeature = useMutation(api.selectorOptions.setCardFeature);
+  const setVariationParent = useMutation(
+    api.selectorOptions.setCardVariationParent,
+  );
+  // NEO-189: the other cards in this checklist, so a variation can be pointed
+  // at the one it varies. Convex dedupes same-arg queries, so this rides along
+  // with the checklist the panel is already open inside.
+  const siblingCards = useQuery(api.selectorOptions.getCardChecklist, {
+    selectorOptionId: card.selectorOptionId,
+  });
+  const [parentError, setParentError] = useState<string | null>(null);
+  const [parentNumber, setParentNumber] = useState("");
+  // a11y: announced once a link/clear actually commits — see the effect below.
+  // This is the ONLY feedback a screen reader gets for either action: there is
+  // no Save step for this field (it writes immediately), and the visual swap
+  // from input → static text (or back) is silent otherwise.
+  const [parentStatus, setParentStatus] = useState<string | null>(null);
+  const parentCard = useMemo(
+    () =>
+      card.variationOfCardId
+        ? (siblingCards ?? []).find((c) => c._id === card.variationOfCardId)
+        : undefined,
+    [card.variationOfCardId, siblingCards],
+  );
+
+  // a11y: focus targets either side of the input ↔ static-text swap below.
+  // Whichever element had focus when a link/clear commits gets removed from
+  // the DOM (input unmounts on link, the Clear button unmounts on clear), and
+  // an unmounted focused element drops focus to <body> with no further
+  // warning — costly in a tool built around long keyboard-driven review
+  // sessions. The effect below moves focus to the element that replaces it.
+  const parentInputRef = useRef<HTMLInputElement | null>(null);
+  const clearButtonRef = useRef<HTMLButtonElement | null>(null);
+  // Tracks the previous linked state so the focus/announce effect only fires
+  // on a real transition, not on this component's initial mount (every
+  // remount — e.g. arrow-key nav to the next card — would otherwise steal
+  // focus and announce a link that isn't new).
+  const prevVariationOfIdRef = useRef(card.variationOfCardId);
+  useEffect(() => {
+    const prev = prevVariationOfIdRef.current;
+    const curr = card.variationOfCardId;
+    if (prev === curr) return;
+    prevVariationOfIdRef.current = curr;
+    if (curr) {
+      requestAnimationFrame(() => clearButtonRef.current?.focus());
+      // Reacting to an external system (the setVariationParent mutation
+      // committing and this card's reactive query updating), not deriving
+      // render state.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setParentStatus(
+        parentCard
+          ? `Linked as a variation of #${parentCard.cardNumber}.`
+          : "Linked.",
+      );
+    } else if (prev) {
+      requestAnimationFrame(() => parentInputRef.current?.focus());
+      setParentStatus("Variation link cleared.");
+    }
+    // parentCard intentionally omitted: it derives from curr + siblingCards,
+    // and re-running this on every siblingCards tick would re-focus/re-announce
+    // on unrelated reactive updates, not just on curr actually changing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card.variationOfCardId]);
+
+  /**
+   * Resolve a typed card number to a sibling and set (or clear) the link.
+   *
+   * An empty value clears. A number that matches nothing is reported rather
+   * than silently ignored — a typo that quietly does nothing is worse than one
+   * that says so.
+   */
+  const applyVariationParent = async (raw: string) => {
+    setParentError(null);
+    const wanted = raw.trim();
+    try {
+      if (!wanted) {
+        await setVariationParent({ cardId: card._id });
+        setParentNumber("");
+        return;
+      }
+      const match = (siblingCards ?? []).find(
+        (c) => c.cardNumber.toLowerCase() === wanted.toLowerCase(),
+      );
+      if (!match) {
+        setParentError(`No card #${wanted} in this checklist.`);
+        return;
+      }
+      await setVariationParent({ cardId: card._id, parentCardId: match._id });
+      setParentNumber("");
+    } catch (err) {
+      // The mutation refuses self-parenting, cross-checklist parents and
+      // nesting, and each refusal is a ConvexError carrying the reason. Read
+      // `data`, never `.message`: production redacts a plain Error to "Server
+      // Error", and even a surviving message arrives wrapped in
+      // "[CONVEX M(...)] [Request ID: ...]" noise.
+      setParentError(
+        userFacingMessage(err, "Could not set the parent card"),
+      );
+    }
+  };
   // NEO-21: every guest set this card is cross-listed into. A property of the
   // card itself, so it renders whether the panel was opened from the card's
   // home checklist or from one of its guest checklists.
@@ -535,6 +637,103 @@ export default function CardDetailPanel({
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
             />
+          </div>
+
+          {/* NEO-189 — which card this one is a variation OF.
+
+              The import derives this from the card number (BSC suffixes it,
+              SportLots brackets the description), but that cannot cover a
+              variation whose number shares no stem with its parent, or a set
+              being built by hand. This is the escape hatch, and the only way a
+              custom set gets variations at all.
+
+              A CARD NUMBER, not a picker. A checklist runs to hundreds of
+              cards, so a dropdown would be hundreds of options to scroll and
+              toggle pills are not an option at that size. The operator already
+              thinks "this is a variation of #1" — typing 1 is both faster and
+              how they hold the problem. It is also keyboard-first, which this
+              app requires.
+
+              A choice made here is marked manual and the next sync leaves it
+              alone — see setCardVariationParent. */}
+          <div>
+            {/* a11y: no `htmlFor` here — the Input primitive deliberately
+                never emits its own `id` (see components/primitives/Input.tsx)
+                because Maestro's resource-id falls back to aria-label when no
+                id is set, and `.maestro/flows/set-selector/
+                variation-link-group-and-unlink.yaml` targets this exact field
+                by its aria-label text. Adding an id to satisfy `htmlFor` would
+                switch Maestro's resource-id to that id and break the flow, so
+                this label stays a purely visual caption — same pattern every
+                other field in this panel already uses — and the input's own
+                `aria-label` below carries the accessible name instead. */}
+            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+              Variation of
+            </label>
+            {parentCard ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm flex-1 truncate">
+                  #{parentCard.cardNumber} {parentCard.cardName}
+                </span>
+                <button
+                  ref={clearButtonRef}
+                  type="button"
+                  onClick={() => void applyVariationParent("")}
+                  className="text-xs px-2 py-1 rounded border border-gray-600 hover:bg-gray-700"
+                  aria-label="Clear variation parent"
+                >
+                  Clear
+                </button>
+              </div>
+            ) : (
+              <Input
+                bare
+                ref={parentInputRef}
+                type="text"
+                value={parentNumber}
+                onChange={(e) => setParentNumber(e.target.value)}
+                onBlur={() => void applyVariationParent(parentNumber)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void applyVariationParent(parentNumber);
+                  }
+                }}
+                className="w-full p-1.5 text-sm"
+                placeholder="Card number, e.g. 1"
+                aria-label="Card number this one is a variation of"
+              />
+            )}
+            {parentError && (
+              // a11y: NOT the brand `#FF2EB3` used for errors/destructive
+              // actions elsewhere in this file (e.g. the Cancel/Discard
+              // buttons) — measured contrast for that hex against this
+              // panel's own background is 3.34:1 on white and 4.4:1 on
+              // dark:bg-gray-800, both under WCAG 1.4.3's 4.5:1 minimum for
+              // normal-size text. This is a systemic app-wide issue (the same
+              // hex is used as text-on-light elsewhere already), out of scope
+              // to fix everywhere here, but an *error message* specifically
+              // has to be legible, so this instance uses a darkened/lightened
+              // variant in the same hue: 5.55:1 on white, 5.87:1 on
+              // dark:bg-gray-800.
+              <p className="text-xs text-[#C2178A] dark:text-[#FF6FCB] mt-1" role="alert">
+                {parentError}
+              </p>
+            )}
+            {/* a11y: the only feedback a screen reader gets that the link
+                (or clear) actually committed — see the effect that sets this
+                and moves focus, above. `aria-live="polite"` rather than
+                `role="alert"` because this is a success confirmation, not
+                something demanding interruption. */}
+            {parentStatus && !parentError && (
+              <p
+                className="text-xs text-gray-600 dark:text-gray-300 mt-1"
+                role="status"
+                aria-live="polite"
+              >
+                {parentStatus}
+              </p>
+            )}
           </div>
 
           {/* Players */}

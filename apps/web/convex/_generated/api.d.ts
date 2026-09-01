@@ -28,6 +28,7 @@ import type * as auth from "../auth.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
 import type * as browserAudience from "../browserAudience.js";
 import type * as cardChecklist from "../cardChecklist.js";
+import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
 import type * as e2eQueue from "../e2eQueue.js";
@@ -100,6 +101,7 @@ declare const fullApi: ApiFromModules<{
   backfillCardFeatures: typeof backfillCardFeatures;
   browserAudience: typeof browserAudience;
   cardChecklist: typeof cardChecklist;
+  checklistCandidates: typeof checklistCandidates;
   credentials: typeof credentials;
   crons: typeof crons;
   e2eQueue: typeof e2eQueue;

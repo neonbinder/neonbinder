@@ -3,14 +3,21 @@
 import { action, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { primaryId } from "../platformSlots";
+import { displayVariationLabel } from "../../lib/cards/variations";
 import { api, internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
 import { Id } from "../_generated/dataModel";
 import {
   recordAdapterCall,
+  recordAdapterPhase,
   newRequestId,
   classifyAdapterError,
 } from "../observability";
+// NEO-198: this adapter's retry policy and the aggregator's per-child deadline
+// are the same fact and now have one definition. Importing a plain (non-node)
+// module from a "use node" one is fine; the reverse is not, which is why the
+// numbers live there rather than here.
+import { SL_SELECTOR_BUDGET } from "./selectorBudgets";
 
 type Level = "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert" | "parallel";
 
@@ -27,8 +34,18 @@ const SL_FETCH_TIMEOUT_MS = 30_000;
 // the column. So the selector fetch uses a tight per-attempt budget and retries
 // a few times (logging each miss) before surfacing a fetch error. Heavier calls
 // (card checklists, set lists) keep the 30s default.
-const SL_SELECTOR_FETCH_TIMEOUT_MS = 3_000;
-const SL_SELECTOR_FETCH_MAX_ATTEMPTS = 3;
+//
+// NEO-198: these are local aliases of SL_SELECTOR_BUDGET rather than
+// literals. The aggregator's SL_CHILD_DEADLINE_MS is derived from the same
+// object, so bumping a retry here automatically widens the deadline that has to
+// contain it — which is the drift that produced a 12s deadline over a 16s
+// ceiling. `convex/adapters/selectorBudgets.test.ts` fails if they part ways.
+const SL_SELECTOR_FETCH_TIMEOUT_MS = SL_SELECTOR_BUDGET.perAttemptTimeoutMs;
+const SL_SELECTOR_FETCH_MAX_ATTEMPTS = SL_SELECTOR_BUDGET.maxAttempts;
+// Settle-in sleep between a forced re-auth and the re-POST in the empty-result
+// recovery loop below. Named because it is part of the exported ceiling.
+const SL_SELECTOR_EMPTY_RETRY_BACKOFF_MS =
+  SL_SELECTOR_BUDGET.emptyRetryBackoffMs;
 
 async function slFetch(
   url: string,
@@ -238,6 +255,23 @@ export const fetchSportLotsSelectorOptions = action({
         };
       }
 
+      // NEO-198 — publish progress BEFORE anything downstream can hang.
+      // fetchAggregatedOptions abandons this action at SL_CHILD_DEADLINE_MS and
+      // then has no return value to read `tokenMs` off, so it cannot tell an
+      // auth stall from a marketplace stall. This breadcrumb is the only thing
+      // that survives the abandonment: joined by requestId, its presence means
+      // the token resolved and the hang is downstream; its absence means we
+      // never got out of getSiteToken. Emitted only once the cookie is in hand
+      // — the no-cookie path above already records a real call with stage:"auth".
+      recordAdapterPhase(ctx, {
+        requestId,
+        operation: "fetchSportLotsSelectorOptions",
+        platform: "sportlots",
+        level: args.level,
+        phase: "token_ready",
+        elapsed_ms: tokenMs,
+      });
+
       // setName and variantType: BSC-only levels in NB's hierarchy.
       // SL doesn't have separate set or variant-type concepts.
       if (args.level === "setName" || args.level === "variantType") {
@@ -427,7 +461,9 @@ export const fetchSportLotsSelectorOptions = action({
           .catch(() => {});
         sessionCookie = (await getSportLotsCookie(ctx)) ?? sessionCookie;
         // Brief backoff so the fresh session settles before the re-POST.
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await new Promise((resolve) =>
+          setTimeout(resolve, SL_SELECTOR_EMPTY_RETRY_BACKOFF_MS),
+        );
         try {
           const retryResp = await slFetch(
             NEWINVEN_URL,
@@ -674,6 +710,83 @@ async function fetchSetNames(
 }
 
 /**
+ * NEO-189 — pull a VARIATION marker out of a SportLots card description.
+ *
+ * SportLots appends a bracketed suffix to a variation and leaves the card
+ * number IDENTICAL to its parent's. Confirmed live 2026-08-27/28:
+ *
+ *   2021 Topps Heritage (set 189991)
+ *     11  … #11 Alec Bohm|Spencer Howard
+ *     11  … #11 Alec Bohm [ VAR Action Image ]
+ *
+ *   2021 Topps (set 328996 era)
+ *     1   … #1 Fernando Tatis Jr.
+ *     1   … #1 Fernando Tatis Jr. [ Sliding ]
+ *     1   … #1 Fernando Tatis Jr. [ In Dugout ]
+ *
+ * THE `VAR` PREFIX IS OPTIONAL. The first version of this required it, so an
+ * entire set written the second way — every 2021 Topps photo variation —
+ * parsed as an ordinary card. BSC flagged its side (`1b`, `1c`), SportLots
+ * did not flag its own, nothing paired, and 524 BSC-only sat opposite 88
+ * SL-only rows that were the very same cards.
+ *
+ * So the bracket itself is the marker and `VAR` is stripped when present.
+ *
+ * ## The one thing a bracket does NOT mean
+ *
+ * A bracket holding nothing but a known attribute token — `[ SP ]`, `[ RC ]` —
+ * is describing the card, not naming a second version of it. Those are left
+ * alone; `tokenizeSlDescription` picks them up as attributes.
+ *
+ * The residual risk is a bracket that is neither: a genuinely new convention
+ * would be read as a variation name. That is the safer direction to fail —
+ * a mislabelled variation is visible in the review modal and fixable, whereas
+ * the previous failure silently dropped whole sets of pairings.
+ *
+ * Returns SL's RAW label. It is not translated: which NeonBinder name it and
+ * BSC's wording both mean is settled when the two are paired, not guessed by
+ * an adapter.
+ */
+/**
+ * Bracket contents that describe the card rather than name a variation of it.
+ * Mirrors the tokens `tokenizeSlDescription` already lifts into attributes.
+ */
+const SL_BRACKET_ATTRIBUTE_TOKENS = new Set([
+  "SP",
+  "SSP",
+  "RC",
+  "AU",
+  "RELIC",
+  "MEM",
+  "VAR",
+]);
+
+export function parseSlVariationMarker(desc: string): {
+  isVariation: boolean;
+  /** SportLots' own wording for this card's variation, untranslated. */
+  variationLabel?: string;
+  residual: string;
+} {
+  // `VAR ` is optional — see the note above. Tolerant of internal spacing.
+  const m = desc.match(/\s*\[\s*(?:VAR\s+)?([^\]]+?)\s*\]\s*/i);
+  if (!m) return { isVariation: false, residual: desc };
+  const inner = m[1].trim();
+  // A bracket holding only an attribute token describes the card rather than
+  // naming a second version of it.
+  if (SL_BRACKET_ATTRIBUTE_TOKENS.has(inner.toUpperCase())) {
+    return { isVariation: false, residual: desc };
+  }
+  const residual = (desc.slice(0, m.index) + desc.slice(m.index! + m[0].length))
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    isVariation: true,
+    variationLabel: displayVariationLabel(inner),
+    residual,
+  };
+}
+
+/**
  * Tokenize a SportLots card description for known attribute markers.
  * Returns the tokens to lift onto attributes[], the printRun if present,
  * and the residual text (description with markers stripped) for use as
@@ -758,6 +871,9 @@ export const fetchSportLotsChecklist = action({
         printRun: v.optional(v.number()),
         autographType: v.optional(v.string()),
         cardVariation: v.optional(v.string()),
+        // NEO-189: does this source consider the row a variation of another
+        // card? A domain answer, not a marketplace field.
+        isVariation: v.optional(v.boolean()),
         platformRef: v.optional(v.string()),
         sportlotsRef: v.optional(v.string()),
       }),
@@ -818,9 +934,31 @@ export const fetchSportLotsChecklist = action({
         };
       }
 
-      // Parse card table rows
-      // Pattern: <td class="smallleft">CARD_NUMBER</td> ... <td class="smallleft">DESCRIPTION</td>
-      const cardRegex = /<td class="smallleft">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
+      // Parse card table rows.
+      //
+      // Pattern: <td class="small(color)?left">CARD_NUMBER</td>
+      //          <td class="smallleft">DESCRIPTION</td>
+      //
+      // NEO-189 — the number cell carries a DIFFERENT class on a variation row.
+      // SportLots tints the card number when a row is a variation of the row
+      // above it, and it does that by swapping the class:
+      //
+      //   base row       <td class="smallleft">20</td>
+      //                  <td class="smallleft">2025 Topps Base Set #20 Coby Mayo</td>
+      //   variation row  <td class="smallcolorleft">20</td>
+      //                  <td class="smallleft">… #20 Coby Mayo [ VAR Factory Set ]</td>
+      //
+      // Verified against the live listcards page for set 328996 on 2026-08-27.
+      //
+      // The old pattern required "smallleft" on BOTH cells, so it matched the
+      // base row and skipped the variation entirely — silently, since a
+      // non-matching row is simply not a row. Every SportLots variation has
+      // therefore been invisible to NeonBinder: a 2025 Topps sync reported
+      // "0 SL-only" and paired 0 variations, and both numbers looked like
+      // "SportLots does not carry these" rather than "we never parsed them".
+      //
+      // Only the number cell varies; the description cell stays "smallleft".
+      const cardRegex = /<td class="small(?:color)?left">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
       const cards: Array<{
         cardNumber: string;
         cardName: string;
@@ -831,6 +969,10 @@ export const fetchSportLotsChecklist = action({
         printRun?: number;
         autographType?: string;
         cardVariation?: string;
+        /** NEO-189: SL marks a variation with ` [ VAR … ] ` and keeps the
+         *  parent's card number, so this flag is the only thing separating
+         *  these rows from the card they vary. */
+        isVariation?: boolean;
         platformRef?: string;
         sportlotsRef?: string;
       }> = [];
@@ -932,8 +1074,19 @@ export const fetchSportLotsChecklist = action({
             working = working.substring(echo + cardNumber.length + 1).trim();
           }
 
-          const { attributes, printRun, residual } = tokenizeSlDescription(working);
-          const cardName = residual || fullDescription;
+          // NEO-189: lift SL's ` [ VAR … ] ` marker before tokenizing, so the
+          // marker never lands in cardName and the variation signal reaches
+          // the domain. SL keeps the parent's card number, so this flag is the
+          // ONLY thing distinguishing these rows from their parent.
+          const {
+            isVariation,
+            variationLabel,
+            residual: withoutVariation,
+          } = parseSlVariationMarker(working);
+
+          const { attributes, printRun, residual } =
+            tokenizeSlDescription(withoutVariation);
+          const cardName = residual || withoutVariation || fullDescription;
 
           pageCards.push({
             cardNumber,
@@ -941,6 +1094,10 @@ export const fetchSportLotsChecklist = action({
             attributes: attributes.length ? attributes : undefined,
             printRun,
             autographType: attributes.includes("AU") ? "Unknown" : undefined,
+            // NEO-189: SportLots' answer to the domain question, plus its own
+            // wording for the variation. Untranslated — see parseSlVariationMarker.
+            isVariation: isVariation || undefined,
+            cardVariation: variationLabel,
             // NEO-91: the raw, un-tokenized description (not the bare card
             // number) — this is what lands in cardChecklist.platformData.
             // sportlots. SL reuses the same cardNumber across variation rows

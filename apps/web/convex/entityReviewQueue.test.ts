@@ -909,9 +909,12 @@ describe("recordAllRemainingAsCreate", () => {
   });
 
   test("a later enrichment write does NOT clear the decisions it set", async () => {
-    // applyLookupResult patches only status/enrichment. Locked in because the
-    // NEO-110 investigation's first hypothesis was that this write clobbered
-    // `decision` on rows that were pending at bulk-decide time.
+    // Locked in because the NEO-110 investigation's first hypothesis was that
+    // this write clobbered `decision` on rows that were pending at bulk-decide
+    // time. NEO-189 made the guarantee stronger rather than weaker: the write
+    // is now skipped outright on a decided row, so the decision cannot be
+    // touched and the row keeps the `pending` status it was decided with. See
+    // the "decided-row guard" block below for why that is inert.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const selectorOptionId = await seedSelectorOption(t);
@@ -939,7 +942,7 @@ describe("recordAllRemainingAsCreate", () => {
       batchId: "bulk",
     });
     expect(rows.filter((r) => r.decision).length).toBe(3);
-    expect(rows.every((r) => r.status === "ready")).toBe(true);
+    expect(rows.every((r) => r.status === "pending")).toBe(true);
   });
 
   test("is scoped to its own batch — rows in another batch are untouched", async () => {
@@ -983,6 +986,122 @@ describe("recordAllRemainingAsCreate", () => {
         batchId: "bulk",
       }),
     ).rejects.toThrow();
+  });
+});
+
+// ===========================================================================
+// applyLookupResult — NEO-189 decided-row guard
+// ===========================================================================
+
+/**
+ * The seed job's `commitCardChecklist` died on a Convex optimistic-concurrency
+ * conflict: its prelude reads a whole `entityReviewQueue` batch, and stragglers
+ * from the Wikidata pool kept patching those same rows through
+ * `applyLookupResult` — on every internal retry, so the commit never won.
+ *
+ * convex-test runs mutations serially and therefore cannot reproduce a real OCC
+ * conflict. So the fix is tested where it actually lives: the WRITER no longer
+ * writes once the operator has ruled. (The bounded retry behind it is a plain
+ * function, unit-tested in lib/errors/occ-retry.test.ts.)
+ */
+describe("applyLookupResult — decided-row guard (NEO-189)", () => {
+  test("skips the patch entirely on a row that already carries a decision", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const id = await insertRow(t, {
+      selectorOptionId, sportId: selectorOptionId, batchId: "b", kind: "player", name: "Decided", status: "pending",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(id, { decision: { action: "create" } }),
+    );
+
+    // A straggler lookup lands after the operator hit "Add All Remaining".
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id,
+      status: "ready",
+      enrichment: { wikidataId: "Q42", isHallOfFame: true },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    // No write happened at all — which is the point: a write here is what
+    // invalidated the commit prelude's read set.
+    expect(row!.status).toBe("pending");
+    expect(row!.enrichment).toBeUndefined();
+    expect(row!.decision).toEqual({ action: "create" });
+  });
+
+  test("does not downgrade a decided row that had already resolved", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const id = await insertRow(t, {
+      selectorOptionId, sportId: selectorOptionId, batchId: "b", kind: "player", name: "Both", status: "ready",
+    });
+    await t.run(async (ctx) =>
+      ctx.db.patch(id, {
+        decision: { action: "create" },
+        enrichment: { wikidataId: "Q1" },
+      }),
+    );
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id,
+      status: "error",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    expect(row!.status).toBe("ready");
+    expect(row!.enrichment?.wikidataId).toBe("Q1");
+  });
+
+  test("still patches an UNDECIDED pending row — the wizard depends on it", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const id = await insertRow(t, {
+      selectorOptionId, sportId: selectorOptionId, batchId: "b", kind: "player", name: "Waiting", status: "pending",
+    });
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id,
+      status: "ready",
+      enrichment: { wikidataId: "Q7", isHallOfFame: false },
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    // Undecided rows are the ones the wizard blocks on: the guard must not
+    // touch them, or the review step never becomes reviewable.
+    expect(row!.status).toBe("ready");
+    expect(row!.enrichment?.wikidataId).toBe("Q7");
+  });
+
+  test("still resolves an UNDECIDED row whose lookup found nothing", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const id = await insertRow(t, {
+      selectorOptionId, sportId: selectorOptionId, batchId: "b", kind: "team", name: "NoMatch", status: "pending",
+    });
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id,
+      status: "error",
+    });
+
+    expect((await t.run(async (ctx) => ctx.db.get(id)))!.status).toBe("error");
+  });
+
+  test("no-ops on a row a Cancel deleted while the lookup was draining", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const id = await insertRow(t, {
+      selectorOptionId, sportId: selectorOptionId, batchId: "b", kind: "player", name: "Gone", status: "pending",
+    });
+    await t.run(async (ctx) => ctx.db.delete(id));
+
+    await expect(
+      t.mutation(internal.entityReviewQueue.applyLookupResult, {
+        id,
+        status: "ready",
+      }),
+    ).resolves.toBeNull();
   });
 });
 

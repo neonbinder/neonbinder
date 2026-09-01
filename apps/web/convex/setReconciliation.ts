@@ -1,4 +1,5 @@
 import { action, mutation } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -636,6 +637,326 @@ export const fetchRawOptions = action({
         ],
         message: `Failed to fetch options: ${error instanceof Error ? error.message : "Unknown error"}`,
       };
+    }
+  },
+});
+
+/**
+ * NEO-196 — candidate pools for the "Attach more source sets" dialog.
+ *
+ * `fetchRawOptions` above answers a different question: "what does each
+ * marketplace offer at NB LEVEL X under NB PARENT Y". That is right for the
+ * reconciler, which is walking the NeonBinder tree. It is wrong for the attach
+ * dialog, which is trying to reach a marketplace set that is NOT under this
+ * row's parent — the whole point of a multi-source row is that some of its
+ * cards were released somewhere else (1996 Score DCAP split across two BSC
+ * sets; 2021 Score's last 20 cards released in Chronicles).
+ *
+ * Two facts about the marketplaces drive the shape of these two actions, and
+ * they are the reason a single "browse one NB level up" control could not work:
+ *
+ *   SportLots has no set/variant split at all. `dealsets.tpl` returns a FLAT
+ *   list of sets for a sport+year+brand, and that list is both the browse
+ *   surface and the attachable unit. It is reached at NB level "insert"
+ *   (see LEVEL_TO_TARGET_SELECT / fetchSetNames in adapters/sportlots.ts);
+ *   at "setName", "variantType" and "parallel" SL returns nothing at all.
+ *   So SL needs no scope control: one call already yields every set under the
+ *   year/manufacturer.
+ *
+ *   BSC does have the split — `setName` then `variantName` — and its facet
+ *   API cannot enumerate variantNames with their owning set. So BSC needs two
+ *   steps: list the year's sets, then list one set's variants. That is the
+ *   "browse up to setName, then back down" the dialog renders.
+ *
+ * Both actions are deliberately scoped from the ROW, not from a client-supplied
+ * level/parent pair, so the shared backend (web + mobile) has one honest entry
+ * point per marketplace and callers cannot construct an incoherent request.
+ */
+
+type AttachContext = {
+  /** Display values, for adapter `parentFilters`. */
+  sport?: string;
+  year?: string;
+  manufacturer?: string;
+  setName?: string;
+  /** Marketplace ids resolved off the ancestor chain. */
+  slSport?: string;
+  slYear?: string;
+  slManufacturer?: string;
+  bscSport?: string[];
+  bscYear?: string[];
+  bscSetName?: string[];
+  /** Display name of the row's own set, for the BSC breadcrumb. */
+  setLabel?: string;
+  /** True when any node in the chain is user-created — skip marketplaces. */
+  isCustom: boolean;
+};
+
+/**
+ * Resolve the sport / year / manufacturer / setName context for an attach
+ * dialog opened on `selectorOptionId`.
+ *
+ * Rejects rows the attach mutation itself would reject (`attachPlatformIds`
+ * is variantType/insert/parallel only) so an unusable pool can never be built
+ * for a row that could not receive it.
+ */
+async function resolveAttachContext(
+  ctx: ActionCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<AttachContext> {
+  const chain = await ctx.runQuery(api.selectorOptions.getAncestorChain, {
+    id: selectorOptionId,
+  });
+  const row = chain[chain.length - 1];
+  if (!row) {
+    throw new Error(`selectorOptions row not found: ${selectorOptionId}`);
+  }
+  if (
+    row.level !== "variantType" &&
+    row.level !== "insert" &&
+    row.level !== "parallel"
+  ) {
+    throw new Error(
+      `attach candidates are only defined for variantType/insert/parallel rows (got level=${row.level})`,
+    );
+  }
+
+  const out: AttachContext = { isCustom: false };
+  for (const ancestor of chain) {
+    if (ancestor.isCustom === true) out.isCustom = true;
+    const slIds = slotIds(ancestor, "sportlots");
+    const bscIds = slotIds(ancestor, "bsc");
+    switch (ancestor.level) {
+      case "sport":
+        out.sport = ancestor.value;
+        out.slSport = slIds[0];
+        out.bscSport = bscIds.length > 0 ? bscIds : undefined;
+        break;
+      case "year":
+        out.year = ancestor.value;
+        out.slYear = slIds[0];
+        out.bscYear = bscIds.length > 0 ? bscIds : undefined;
+        break;
+      case "manufacturer":
+        out.manufacturer = ancestor.value;
+        out.slManufacturer = slIds[0];
+        // manufacturer has no BSC facet — SL only (LEVEL_TO_BSC_FACET).
+        break;
+      case "setName":
+        out.setName = ancestor.value;
+        out.setLabel = ancestor.value;
+        out.bscSetName = bscIds.length > 0 ? bscIds : undefined;
+        break;
+      default:
+        break;
+    }
+  }
+  return out;
+}
+
+const attachOptionValidator = v.object({
+  value: v.string(),
+  platformValue: v.string(),
+});
+
+/**
+ * Every SportLots set under the row's sport / year / manufacturer.
+ *
+ * This is the SL side of NEO-196's "let me find a sibling set". SL's list is
+ * already the full year+brand list — `fetchSetNames` ignores setName and
+ * variantType entirely — so there is nothing to scope and no browse control on
+ * this pane. What was broken was the LEVEL the dialog asked for: it passed the
+ * NB row's own level, and SL answers "insert" only. A variantType row got
+ * `{ success: true, options: [] }` (SL's documented unsupported-level reply)
+ * and a parallel row got a hard `Unknown level: parallel` — in both cases the
+ * dialog rendered an empty pane with no error.
+ */
+export const fetchSlAttachSets = action({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.object({
+    success: v.boolean(),
+    options: v.array(attachOptionValidator),
+    message: v.string(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    success: boolean;
+    options: PlatformItem[];
+    message: string;
+  }> => {
+    await requireAdmin(ctx);
+    const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
+    if (cxt.isCustom) {
+      return {
+        success: true,
+        options: [],
+        message: "Custom subtree — no marketplace sets to attach",
+      };
+    }
+
+    const platformFilters: Record<string, string> = {};
+    if (cxt.slSport) platformFilters.sport = cxt.slSport;
+    if (cxt.slYear) platformFilters.year = cxt.slYear;
+    if (cxt.slManufacturer) platformFilters.manufacturer = cxt.slManufacturer;
+
+    try {
+      const result = await ctx.runAction(
+        api.adapters.sportlots.fetchSportLotsSelectorOptions,
+        {
+          // SL's flat set list lives at NB level "insert" — see fetchSetNames.
+          level: "insert",
+          parentFilters: {
+            ...(cxt.sport ? { sport: cxt.sport } : {}),
+            ...(cxt.year ? { year: cxt.year } : {}),
+            ...(cxt.manufacturer ? { manufacturer: cxt.manufacturer } : {}),
+          },
+          ...(Object.keys(platformFilters).length > 0
+            ? { platformFilters }
+            : {}),
+        },
+      );
+      if (!result.success) {
+        return {
+          success: false,
+          options: [],
+          message: result.message || "SportLots fetch failed",
+        };
+      }
+      return {
+        success: true,
+        options: result.options,
+        message: `SL: ${result.options.length} set(s)`,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[fetchSlAttachSets] SportLots error:`, error);
+      return { success: false, options: [], message };
+    }
+  },
+});
+
+/**
+ * The BSC side of NEO-196, in two views:
+ *
+ *   view "sets"     — every BSC set for the row's sport + year. BSC has no
+ *                     manufacturer facet, so this spans manufacturers; the
+ *                     pane says so and search narrows it.
+ *   view "variants" — the variantName list for ONE BSC set: `setSlug` when the
+ *                     operator has browsed to a sibling set, otherwise the
+ *                     row's own set. This is the default view.
+ *
+ * Deliberately NOT filtered by the row's variantType. The dialog exists to
+ * repair cross-marketplace mismatches, and BSC routinely files a set NB calls
+ * a parallel under `variant=insert` (and vice versa); constraining the facet to
+ * the NB row's own variant hid exactly the rows the operator came here for.
+ * It also emptied the pane outright for Base rows, where BSC's variantName
+ * facet under `variant=base` is usually empty (see BaseMappingForm).
+ */
+export const fetchBscAttachOptions = action({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    view: v.union(v.literal("sets"), v.literal("variants")),
+    // Only meaningful for view "variants". Omitted → the row's own set.
+    setSlug: v.optional(v.string()),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    options: v.array(attachOptionValidator),
+    // Echoed back so the breadcrumb can name the set the pane is showing even
+    // on the default view, where the client never picked one.
+    setSlug: v.optional(v.string()),
+    message: v.string(),
+  }),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    success: boolean;
+    options: PlatformItem[];
+    setSlug?: string;
+    message: string;
+  }> => {
+    await requireAdmin(ctx);
+    const cxt = await resolveAttachContext(ctx, args.selectorOptionId);
+    if (cxt.isCustom) {
+      return {
+        success: true,
+        options: [],
+        message: "Custom subtree — no marketplace sets to attach",
+      };
+    }
+
+    const platformFilters: Record<string, string[]> = {};
+    if (cxt.bscSport) platformFilters.sport = cxt.bscSport;
+    if (cxt.bscYear) platformFilters.year = cxt.bscYear;
+
+    // sport + year are what scope a BSC facet query. Without them the setName
+    // aggregation is the whole catalogue, which is not a browsable pool — fail
+    // loudly instead of handing the operator 40k rows.
+    if (!platformFilters.sport || !platformFilters.year) {
+      const missing = [
+        platformFilters.sport ? null : "sport",
+        platformFilters.year ? null : "year",
+      ].filter(Boolean);
+      return {
+        success: false,
+        options: [],
+        message:
+          `Missing platformData.bsc on: ${missing.join(", ")}. ` +
+          `Upstream selectorOptions hydration did not write the BSC slugs ` +
+          `needed to scope this query.`,
+      };
+    }
+
+    // view "variants" needs a set to scope to; fall back to the row's own.
+    const setSlug =
+      args.view === "variants"
+        ? (args.setSlug ?? cxt.bscSetName?.[0])
+        : undefined;
+    if (args.view === "variants" && !setSlug) {
+      return {
+        success: false,
+        options: [],
+        message:
+          `Missing platformData.bsc on: setName=${cxt.setName ?? "(unknown)"}. ` +
+          `Browse the year's sets to pick one explicitly.`,
+      };
+    }
+    if (setSlug) platformFilters.setName = [setSlug];
+
+    try {
+      const result = await ctx.runAction(
+        api.adapters.buysportscards.fetchBscSelectorOptions,
+        {
+          // "setName" → BSC's setName facet; "insert" → its variantName facet.
+          level: args.view === "sets" ? "setName" : "insert",
+          parentFilters: {
+            ...(cxt.sport ? { sport: cxt.sport } : {}),
+            ...(cxt.year ? { year: cxt.year } : {}),
+          },
+          platformFilters,
+        },
+      );
+      if (!result.success) {
+        return {
+          success: false,
+          options: [],
+          ...(setSlug ? { setSlug } : {}),
+          message: result.message || "BSC fetch failed",
+        };
+      }
+      return {
+        success: true,
+        options: result.options,
+        ...(setSlug ? { setSlug } : {}),
+        message: `BSC: ${result.options.length} ${args.view === "sets" ? "set" : "variant"}(s)`,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[fetchBscAttachOptions] BSC error:`, error);
+      return { success: false, options: [], message };
     }
   },
 });

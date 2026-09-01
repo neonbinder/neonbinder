@@ -81,7 +81,7 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [
@@ -122,7 +122,7 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [
@@ -178,7 +178,7 @@ describe("commitCardChecklist generates a cross-marketplace sku on insert (NEO-9
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
 
     const commitCard = () =>
-      asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: variantTypeId,
         sportId,
         cards: [

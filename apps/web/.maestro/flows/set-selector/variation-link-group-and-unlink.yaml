@@ -1,0 +1,328 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Card variations — point a card at the card it varies, see it group under it, and unlink it back out"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE (NEO-189): the variation relationship between two cards in
+# the same checklist, end to end through the UI an operator actually uses.
+#
+# What it proves, in order:
+#   - the "Variation of" control resolves a typed CARD NUMBER to a sibling and
+#     writes the link (setCardVariationParent) with no Save step
+#   - the checklist then GROUPS the child under its parent: the child row leaves
+#     the top level and the parent says "1 variation"
+#   - the disclosure opens to reveal the child and closes again
+#   - clearing the link returns the child to the top level and the parent's
+#     disclosure disappears
+#
+# R2 — no branch can green this flow without exercising the link: every step is
+# unconditional, and the grouped/ungrouped states are asserted BOTH ways (#701
+# must be GONE while grouped and BACK once unlinked), so a link that silently
+# no-ops fails here rather than passing quietly.
+#
+# WHY A CUSTOM SUBTREE (R7a): marketplace-derived variations need a live BSC/SL
+# fetch, which is neither deterministic nor available per worker. A custom set
+# short-circuits the adapters (isCustomSubtree, NEO-22) and exercises the same
+# schema field, the same mutation and the same grouping code. Deriving a
+# variation from marketplace card numbers is covered by unit tests against the
+# real payloads (fetchCardChecklist.variationPairing.test.ts,
+# commitCardChecklist.variations.test.ts, adapters/sportlots.test.ts).
+#
+# The manual link is also the ONLY way a custom set gets variations, so this is
+# the acceptance test for that capability, not merely a UI check.
+#
+# R3 — DEDUP: no other flow touches "Variation of" or the grouping disclosure.
+# Card-field round-trips belong to card-detail-panel; add/delete of a custom card
+# belongs to custom-card-crud. Both appear here only as scaffolding.
+#
+# Card numbers carry ${ATTEMPT_ID} so a retry cannot collide with rows a prior
+# attempt left behind, and both cards are deleted at the end.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# THE PARENT — #700-<attempt>
+# util-add-custom-card drills the per-worker custom subtree (R9), adds the
+# "Base" insert idempotently, opens the CardChecklist and submits the card.
+# Returns with "Edit card 700-<attempt>" scrolled into view.
+# ============================================================
+
+- runFlow:
+    file: util-add-custom-card.yaml
+    env:
+      SET_NAME: "cvar-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      INSERT_NAME: "Base"
+      CARD_NUMBER: "700-${ATTEMPT_ID}"
+      PLAYER_NAME: "Base Player ${ATTEMPT_ID}"
+
+# ============================================================
+# THE VARIATION — #701-<attempt>
+#
+# Added INLINE rather than by calling util-add-custom-card a second time.
+# R3 says reuse shared logic, and this repeats the util's Steps 5–10 — but the
+# util's first act is a full re-drill (openLink /set-selector, then all six
+# EntitySelector levels), and we are already standing on the checklist those
+# levels lead to. Measured on 2026-08-29: the second call cost 2m46s of pure
+# re-navigation and made this the slowest flow in the suite (465s against the
+# current 359s pole, .maestro/flow-timings.tsv) — the work queue seeds
+# longest-first, so a new long pole costs the whole suite's wall-clock. The
+# steps below are the util's, verbatim in behaviour and in the reasons for each
+# guard; only the drill is skipped.
+#
+# direction: UP on the add-card button — it sits ABOVE the checklist, and the
+# util returned with the list scrolled DOWN to card #700's row. A default
+# (DOWN) scroll searches away from it. Already-visible short lists satisfy this
+# immediately, so it is safe either way.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+
+# The card-number input is autofocused — type straight into it.
+- inputText: "701-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Variation Player ${ATTEMPT_ID}"
+
+# Submit sits at the bottom of the add-card form; centerElement drives it to
+# mid-viewport so Maestro's own scroll-before-tap has content to scroll to.
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Submit new card"
+
+# After Submit, CardChecklist re-sorts and Virtuoso only renders rows near the
+# current scroll position, so the new row is not in the DOM yet — scroll to
+# materialise it rather than waiting on its text. centerElement matches the
+# component's own scrollToIndex({align:"center"}), so the two scroll authorities
+# agree and the row's bounds are stable when read.
+- scrollUntilVisible:
+    element:
+      id: "Edit card 701-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# Both rows are ordinary top-level cards before anything is linked. This is the
+# baseline the grouping assertion below is measured against.
+- assertVisible: "#700-${ATTEMPT_ID}"
+- assertVisible: "#701-${ATTEMPT_ID}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# LINK: open #701's detail panel and declare it a variation of #700
+# The control takes a CARD NUMBER rather than offering a picker — a checklist
+# runs to hundreds of cards, and the operator already thinks "this is a
+# variation of #700".
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Edit card 701-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+
+# "Variation of" is the 9th field in the drawer's own scroll container, well
+# below the 629px fold. The drawer is right-anchored (~480px wide, x>=544), so
+# scrollUntilVisible's viewport-centre swipe lands on the BACKDROP and cannot
+# drive the drawer's inner scroll — it burned its whole timeout and failed with
+# "No visible element found" on the first run of this flow. Manual swipes at
+# x=80% are inside the drawer; this is the same pattern
+# player-picker-create-custom-card and checklist-fetch-unknown-entities-link-existing
+# use to reach the bottom of this drawer. Two swipes land "Variation of" in the
+# middle band (three would reach Players, the last section).
+# R8's centerElement does not apply: scrollUntilVisible cannot be used here at
+# all, so the swipes are followed by a hard visibility wait instead.
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- extendedWaitUntil:
+    visible:
+      id: "Card number this one is a variation of"
+    timeout: 7000
+
+- tapOn:
+    id: "Card number this one is a variation of"
+- inputText: "700-${ATTEMPT_ID}"
+- pressKey: Enter
+
+# The link is written immediately — there is deliberately no Save step for this
+# field: it is a relationship, not a draft edit. Once linked, the input is
+# replaced by the parent's identity and a Clear control.
+- extendedWaitUntil:
+    visible:
+      id: "Clear variation parent"
+    timeout: 7000
+# The panel names the parent it resolved, so a mistyped number shows up as the
+# wrong card rather than as a silent success. Regex-contains: the number and the
+# name share one text node, and the assertion is that BOTH resolved.
+- assertVisible:
+    text: ".*#700-${ATTEMPT_ID} Base Player ${ATTEMPT_ID}.*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# GROUPED: the child leaves the top level and the parent reports the count
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Close card detail"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
+# THE grouping assertion: variations are collapsed by default, so #701 is no
+# longer a row of its own. A 908-card set has to read as its 725 real cards.
+- assertNotVisible: "#701-${ATTEMPT_ID}"
+
+- scrollUntilVisible:
+    element:
+      id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+# The count is stated in words on the parent's subtitle line — the caret alone
+# would show there is something to open but not whether it is worth opening.
+- assertVisible:
+    text: ".*1 variation.*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# EXPAND / COLLAPSE: the disclosure reveals the child and hides it again
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible: "#701-${ATTEMPT_ID}"
+    timeout: 7000
+# The disclosure flips to its collapse form once open.
+- assertVisible:
+    id: "Hide 1 variation of card 700-${ATTEMPT_ID}"
+
+- tapOn:
+    id: "Hide 1 variation of card 700-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    notVisible: "#701-${ATTEMPT_ID}"
+    timeout: 7000
+
+# Re-open it: the child row is how the next step reaches the card.
+- tapOn:
+    id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible: "#701-${ATTEMPT_ID}"
+    timeout: 7000
+
+# ════════════════════════════════════════════════════════════════════════════
+# UNLINK: clearing returns the child to the top level
+# A wrong link has to be correctable — the derivation gets cases wrong, and a
+# relationship you cannot undo is worse than one you never made.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 701-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Edit card 701-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+# Same drawer inner-scroll problem as above — the drawer reopens at the top.
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- extendedWaitUntil:
+    visible:
+      id: "Clear variation parent"
+    timeout: 7000
+- tapOn:
+    id: "Clear variation parent"
+
+# Back to an empty input, which is what "not a variation" looks like here.
+- extendedWaitUntil:
+    visible:
+      id: "Card number this one is a variation of"
+    timeout: 7000
+- tapOn:
+    id: "Close card detail"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
+# #701 is an ordinary card again — visible without expanding anything — and the
+# parent holds nothing, so its disclosure is gone entirely.
+- extendedWaitUntil:
+    visible: "#701-${ATTEMPT_ID}"
+    timeout: 7000
+- assertNotVisible:
+    id: "Show 1 variation of card 700-${ATTEMPT_ID}"
+- assertNotVisible:
+    id: "Hide 1 variation of card 700-${ATTEMPT_ID}"
+
+# ════════════════════════════════════════════════════════════════════════════
+# CLEANUP — delete both of this attempt's cards (R7: leave the worker's set as
+# it was found).
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 701-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 10000
+- tapOn:
+    id: "Delete card 701-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 701-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    notVisible: "#701-${ATTEMPT_ID}"
+    timeout: 7000
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 700-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 10000
+- tapOn:
+    id: "Delete card 700-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 700-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    notVisible: "#700-${ATTEMPT_ID}"
+    timeout: 7000

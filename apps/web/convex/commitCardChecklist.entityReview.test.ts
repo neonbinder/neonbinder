@@ -169,7 +169,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Mike Trout", players: ["Mike Trout"] })],
@@ -238,7 +238,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Daulton Varsho", players: ["Daulton Varsho"] })],
@@ -287,7 +287,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       // no enrichment key at all
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Daulton Varsho", players: ["Daulton Varsho"] })],
@@ -332,7 +332,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Mike Trout", players: ["Mike Trout"] })],
@@ -391,7 +391,7 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
       },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Team Card", teams: ["Los Angeles Angels"] })],
@@ -461,7 +461,7 @@ describe("commitCardChecklist: 'link' decision resolves to the existing row, no 
       decision: { action: "link", linkedPlayerId: realPlayerId },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Griffey", players: ["Ken Griffey Junior"] })],
@@ -505,7 +505,7 @@ describe("commitCardChecklist: 'link' decision resolves to the existing row, no 
       decision: { action: "link", linkedTeamId: realTeamId },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Team Card", teams: ["LA Angels of Anaheim"] })],
@@ -552,7 +552,7 @@ describe("commitCardChecklist: post-commit batch cleanup", () => {
       enrichment: { careerTeams: [] },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "Mike Trout", players: ["Mike Trout"] })],
@@ -581,7 +581,7 @@ describe("commitCardChecklist: post-commit batch cleanup", () => {
       decision: { action: "create" },
     });
 
-    await asAdmin.mutation(api.selectorOptions.commitCardChecklist, {
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
       sportId,
       cards: [makeCard({ cardNumber: "1", cardName: "No Unknowns Card" })],

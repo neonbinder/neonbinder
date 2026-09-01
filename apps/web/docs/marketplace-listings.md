@@ -582,3 +582,72 @@ Generated at card-creation time (`commitCardChecklist`'s insert branch, and `add
 **Audit completed:** 2026-05-25  
 **Author:** NEO-24 audit agent  
 **Status:** Ready for Stage 2 (schema changes)
+
+
+---
+
+## Card variations — how each marketplace identifies one (NEO-189)
+
+A **variation** is the same checklist slot printed a second way: a different
+photo, a nickname on the nameplate, team-colour treatment, an uncorrected
+error. It is **not a parallel** — a parallel is a whole alternate printing of a
+set and is its own `selectorOptions` row with its own checklist. The two axes
+are orthogonal: a parallel's checklist can itself contain variations.
+
+Roughly a fifth of a modern base set can be variations (183 of 908 rows in 2021
+Topps Heritage), so this is not an edge case.
+
+### The two marketplaces disagree about almost everything
+
+| | Buy Sports Cards | SportLots |
+|---|---|---|
+| card number | **suffixed** — `11` → `11b`, `11c` (seen to `h`) | **identical to the parent** — every row is `11` |
+| marker | `VAR` token in `playerAttribute`, and/or a `VAR:` prefix on `playerAttributeDesc` | a bracketed suffix on the description |
+| name | `VAR: Action` | `[ VAR Action Image ]` *or* `[ Sliding ]` — the `VAR` is optional |
+| identity | its own `cardId` | the full description string; the number is not unique |
+
+Three consequences worth carrying:
+
+1. **A SportLots card number does not identify a row.** It is shared by a card
+   and all its variations. Anything keyed on it — a claim set, a lookup index,
+   a link action — picks whichever row came first. This has caused four
+   separate bugs; the description (`platformData.sportlots.ref`) is the
+   identity, per NEO-91.
+2. **The `VAR` prefix is optional on SportLots.** 2021 Topps Heritage writes
+   `[ VAR Action Image ]`; 2021 Topps writes `[ Sliding ]`. Requiring the token
+   silently dropped an entire set's variations.
+3. **The parent is not always the bare number.** 2021 Topps has no card `#1` —
+   it ships `1a` (base), `1b`, `1c`. The rule that holds is *group by numeric
+   stem; the one row in the group that is not marked as a variation is the
+   parent*.
+
+### What NeonBinder stores
+
+Only its own facts. Per the product owner: *"I don't want to hold their data
+because it is not relevant to NB."*
+
+* `cardChecklist.variationOfCardId` — the card this one varies.
+* `cardChecklist.cardVariation` — the variation's name, a plain string. There
+  is deliberately **no vocabulary table**: variation names are per-card and
+  very often unique (2021 Topps used 163 distinct labels for 213 variations),
+  so a shared list would be one row per card wearing a join.
+* `cardChecklist.variationParentManual` — the operator set this by hand, so the
+  import derivation must leave it alone. Same contract as
+  `placeholderPairs.mechanism: "manual"`.
+* `platformData.{bsc,sportlots}.ref` — the per-marketplace identity, which is
+  **all that listing a variation needs**. What either marketplace calls the
+  variation is never stored.
+
+### Listing implications
+
+A variation is a **full card**, not a delta on its parent: its own players,
+team, print run, features and SKU. Under the hobby's "Legend" convention it may
+be a different player entirely — 2021 Topps #52 is Archie Bradley while `52b`,
+`52c` and `52d` are Mickey Mantle. Nothing in a listing may inherit from the
+parent.
+
+`cardVariation` feeds `deriveCardFeatures`' `parallelName`, which maps to
+**eBay's Parallel/Variety aspect** — so only a genuine printing variety may
+reach it. BSC overloads `playerAttributeDesc` for shelf notes ("Puzzle piece B2
+on back") and for "this is the base card"; those are filtered out at the
+adapter boundary.

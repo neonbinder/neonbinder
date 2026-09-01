@@ -165,6 +165,15 @@ tags:
           when:
             visible: "Match Cards.*"
           commands:
+            # NEO-195 — Confirm is gated on `isStreaming` and `handleConfirm`
+            # returns early while it is true, so tapping it before the fetch
+            # resolves is a SILENT no-op and the `notVisible` below times out
+            # blaming the modal. Same sync point setup.yaml and
+            # checklist-pairing-dialog-cancel.yaml use.
+            - extendedWaitUntil:
+                visible:
+                  text: "^Confirm$"
+                timeout: 120000
             - runFlow:
                 when:
                   visible:

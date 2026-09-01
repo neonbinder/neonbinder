@@ -25,6 +25,8 @@ type CardChecklistItemProps = {
       sportlots?: { ref: string; src?: string };
     };
     isCustom?: boolean;
+    // NEO-189: the card this row is a variation OF, when it is one.
+    variationOfCardId?: Id<"cardChecklist">;
     // NEO-21: present only on guest rows — a card printed in another product
     // that also completes this checklist. `selectorOptionId` above still
     // points at its HOME set, so these three carry the guest-side context.
@@ -44,6 +46,30 @@ type CardChecklistItemProps = {
   // NEO-25: open the card detail panel for this card. State is hoisted into
   // CardChecklist; the row no longer owns an inline edit modal.
   onEdit: (id: Id<"cardChecklist">) => void;
+  // NEO-189 — variation grouping. A set can be 20% variations (183 of 908 in
+  // 2021 Topps Heritage), and rendering them flat buries five near-identical
+  // rows between consecutive card numbers. So a parent owns its variations and
+  // reveals them on demand.
+  //
+  // How many variations hang off this card. 0/undefined on a variation row and
+  // on an ordinary card.
+  variationCount?: number;
+  // This row IS a variation — indented under its parent.
+  isVariation?: boolean;
+  // Whether this parent's variations are currently showing.
+  isExpanded?: boolean;
+  // Toggle this parent open/closed. Absent when the row has no variations.
+  onToggleVariations?: (id: Id<"cardChecklist">) => void;
+  // a11y: the parent's card number, present only on a variation row. The
+  // ml-8 + left-border nesting that shows this row belongs to another card is
+  // entirely visual — a screen reader (and a keyboard user tabbing straight to
+  // this row's Edit/Delete button without reading the row first) gets none of
+  // it otherwise, especially once virtualization has unmounted the parent row
+  // this one is indented under. Folded into the subtitle text and the
+  // Edit/Delete labels below so the relationship travels with the row itself
+  // rather than depending on a DOM relationship to a node that may not be
+  // mounted.
+  parentCardNumber?: string;
 };
 
 /**
@@ -77,6 +103,11 @@ export default function CardChecklistItem({
   sourceLabelMaps,
   isSelected,
   onEdit,
+  variationCount,
+  isVariation,
+  isExpanded,
+  onToggleVariations,
+  parentCardNumber,
 }: CardChecklistItemProps) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -115,20 +146,72 @@ export default function CardChecklistItem({
 
   // Build the secondary line: "<team(s)> · /99 · Refractor · On-Card auto"
   const subParts: string[] = [];
+  // NEO-189/a11y: said in words, not just in indentation — see the
+  // `parentCardNumber` prop note above.
+  if (isVariation && parentCardNumber) {
+    subParts.push(`Variation of #${parentCardNumber}`);
+  }
   if (teamLabel) subParts.push(teamLabel);
   if (card.printRun) subParts.push(`/${card.printRun}`);
   if (card.cardVariation) subParts.push(card.cardVariation);
   if (card.autographType) subParts.push(`${card.autographType} auto`);
+  // NEO-189: say it in words on the parent. The caret alone shows there is
+  // something to open but not that it is worth opening.
+  if ((variationCount ?? 0) > 0) {
+    subParts.push(
+      `${variationCount} variation${variationCount === 1 ? "" : "s"}`,
+    );
+  }
+
+  const hasVariations = (variationCount ?? 0) > 0;
 
   return (
     <div
       onClick={() => onEdit(card._id)}
       className={`flex items-center gap-3 p-2.5 border rounded-md dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 group cursor-pointer ${
+        isVariation ? "ml-8 border-l-2 border-l-gray-300 dark:border-l-gray-500" : ""
+      } ${
         isSelected
           ? "ring-2 ring-[#00B7FF] border-[#00B7FF] bg-blue-50/40 dark:bg-blue-900/10"
           : ""
       }`}
     >
+      {/* NEO-189: the disclosure sits in a fixed-width slot on EVERY row, not
+          just parents. An element that appears only on some rows would change
+          their width and re-measure the virtualized list — the same reflow the
+          reserved subtitle line below exists to avoid.
+
+          a11y: the slot is w-6/h-6 (24px), not w-5 — WCAG 2.2 SC 2.5.8 Target
+          Size (Minimum) requires a 24×24 CSS-pixel hit area for a control like
+          this, and the glyph alone (a 12px caret with no padding) was well
+          under half that. The button fills the slot so the whole 24×24 box is
+          clickable/tappable, not just the visible caret — same reasoning as
+          the always-reserved slot itself: uniform across every row, so this
+          never changes row width based on whether a given row has variations. */}
+      <span className="w-6 h-6 shrink-0 flex items-center justify-center">
+        {hasVariations && onToggleVariations && (
+          <button
+            type="button"
+            onClick={(e) => {
+              // The whole row opens the detail panel; disclosing variations is
+              // a different action and must not do both.
+              e.stopPropagation();
+              onToggleVariations(card._id);
+            }}
+            aria-expanded={isExpanded ? true : false}
+            aria-label={
+              isExpanded
+                ? `Hide ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${card.cardNumber}`
+                : `Show ${variationCount} variation${variationCount === 1 ? "" : "s"} of card ${card.cardNumber}`
+            }
+            className="w-6 h-6 flex items-center justify-center text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] rounded"
+          >
+            <span aria-hidden="true" className="text-xs">
+              {isExpanded ? "▾" : "▸"}
+            </span>
+          </button>
+        )}
+      </span>
       <span className="text-sm font-mono text-gray-500 dark:text-gray-400 w-12 text-right shrink-0">
         #{card.cardNumber}
       </span>
