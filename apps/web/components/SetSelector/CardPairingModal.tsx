@@ -1434,13 +1434,85 @@ export default function CardPairingModal({
             )}
           </header>
 
-          <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
+          {/* TWO deliberate details on this scroller, both in service of the
+              sticky Matched header below.
+
+              `px-4 pb-4` and NOT `p-4`. The top padding used to live here, and
+              OBSERVED (Jason's screenshot): the stuck bar sat 16px below the
+              scrollport's top edge and rows slid up through the strip between
+              the dialog header and the bar, visible ABOVE it — "it looks funny
+              with the list scrolling behind it". The 16px is the scroller's own
+              `pt-4`. Rather than cancel it with a negative `top` — which
+              depends on exactly where `top: 0` resolves against a padded
+              scrollport, and over-shoots into a clipped bar if that assumption
+              is wrong — the padding is MOVED INTO the bar as its own `pt-4`.
+              With no top padding on the scroller there is no band between the
+              scrollport top and the bar for anything to show through: the 16px
+              is now opaque bar. That holds however the offset resolves, which
+              is why it is the fix rather than a tuned constant. Spacing at rest
+              is unchanged, because the matched section is this scroller's first
+              child and the 16px simply moved inside it.
+
+              `scroll-pt-12` is what makes the bar safe for the OTHER way this
+              list scrolls. Linking a pair calls `refocusSelectedRadio`, and
+              `.focus()` makes the browser scroll the merged row into view on
+              its own — with a sticky bar and no scroll-padding that lands the
+              row UNDER the bar, so the operator is sent to a decision they
+              cannot see. `scroll-padding-top` on the scroller is honoured by
+              focus-driven scrolling as well as by `scrollIntoView`, so it
+              covers both of Jason's causes (manual scroll, and the auto-scroll
+              after a drag or click link) with one declaration rather than a
+              scroll-margin on every row. 48px clears the bar's ~43px (pt-4 +
+              text-sm line box + py-1.5 + border). */}
+          <div className="flex-1 overflow-y-auto scroll-pt-12 px-4 pb-4 flex flex-col gap-4">
             {/* Matched */}
             <section>
+              {/* NEO-189 operator feedback — the collapse control follows you
+                  down the list.
+
+                  Jason: "when I scroll the matched line should lock to the
+                  top… that will allow somebody to quickly collapse again."
+                  With 220 matched rows the toggle is the only way back to the
+                  columns, and it scrolled off after the first screenful, so
+                  collapsing meant scrolling all the way back up first.
+
+                  Sticky, not fixed: the containing block is this <section>, so
+                  the bar un-sticks when the matched list's end scrolls past
+                  and does NOT hover over the unmatched columns below — the
+                  default behaviour is the wanted behaviour, which is why the
+                  section is the right place for it and nothing between here
+                  and the scroll container may introduce its own overflow,
+                  transform or containment.
+
+                  A WRAPPER rather than the button itself: the bar has to be
+                  an opaque box spanning the WHOLE scrollport for rows to read
+                  as passing under it, and the button is only as wide as its
+                  text and as tall as its own line. So the wrapper owns every
+                  edge a row could show through:
+                    - `-mx-4 px-4` bleeds it across the scroller's horizontal
+                      padding, so nothing peeks at the sides;
+                    - `pt-4` is the scroller's former `pt-4`, moved here so
+                      nothing peeks above it either (see the note on the
+                      scroller);
+                    - `bg-gray-900` matches the dialog body exactly, so at rest
+                      the bar is invisible and only its border reads.
+                  `z-20` puts it over the static rows and the draggable
+                  unmatched rows, and under dnd-kit's DragOverlay (fixed,
+                  z-999) so a dragged card still passes over the top. The
+                  shadow is what makes a row read as travelling UNDER the bar
+                  rather than being clipped by it — Tailwind's own `shadow-*`
+                  are tuned for light backgrounds and are invisible on
+                  gray-900, hence the explicit value.
+
+                  It never covers the first row: sticky keeps the element in
+                  flow, so at scroll-top the bar occupies its own space and
+                  offsets only once the section scrolls — collapsed or short,
+                  there is nothing to cover. */}
+              <div className="sticky top-0 z-20 -mx-4 px-4 pt-4 mb-2 bg-gray-900 border-b border-gray-700/60 shadow-[0_6px_8px_-6px_rgba(0,0,0,0.8)]">
               <button
                 type="button"
                 ref={matchedToggleRef}
-                className="text-sm font-semibold text-gray-200 mb-2 px-2 py-1.5"
+                className="text-sm font-semibold text-gray-200 px-2 py-1.5"
                 onClick={() => setMatchedCollapsed((v) => !v)}
                 // The count is appended ONLY when there is a conflict: an
                 // aria-label overrides the button's own text for assistive
@@ -1464,6 +1536,7 @@ export default function CardPairingModal({
                   </span>
                 )}
               </button>
+              </div>
               {!matchedCollapsed && (
                 <ul className="flex flex-col gap-1">
                   {state.matched.map((m, i) => {
