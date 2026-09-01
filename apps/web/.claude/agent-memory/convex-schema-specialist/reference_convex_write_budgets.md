@@ -58,3 +58,32 @@ numbered #1-110) insert two rows. A chunk that re-read the table would see the
 previous chunk's inserts and silently collapse them. Resolve the upsert target
 once, outside the chunks, and pass it in. See
 `convex/commitCardChecklist.duplicateNumbers.test.ts` and NEO-203.
+
+## The other thing that kills a bulk mutation: OCC, not budget
+
+Same commit, different failure. `commitCardChecklist`'s prelude reads a whole
+`entityReviewQueue` batch; the Wikidata pool's stragglers kept patching those
+rows, so the mutation lost the optimistic-concurrency race on Convex's every
+internal retry:
+
+> Documents read from or written to the "<table>" table changed while this
+> mutation was being run **and on every subsequent retry**. A call to
+> "<module>.js:<fn>" changed the document with ID "<id>"
+
+That last clause names the contending writer — read it, it is the diagnosis.
+
+Splitting a mutation into phases makes this **more** likely, not less: a phase
+that reads a whole batch stays open across the wall-clock of the phases around
+it. Before chunking anything that reads a table a background pool writes to,
+check whether that writer still needs to write. Here it did not —
+`applyLookupResult` was patching rows the operator had already ruled on, and
+nothing would ever read the result. **Guarding the writer is the fix; retrying
+the reader is the belt-and-braces** (`lib/errors/occ-retry.ts`).
+
+## Prod redacts plain Errors
+
+A `throw new Error(...)` from a Convex function reaches the browser as
+"Server Error" in production, while dev and preview pass the text through — so
+a carefully-worded diagnostic reads perfectly all the way through testing and
+flattens exactly where it matters. Only a `ConvexError`'s string `data`
+survives. See `lib/errors/user-facing-message.ts`, which is the read-back side.

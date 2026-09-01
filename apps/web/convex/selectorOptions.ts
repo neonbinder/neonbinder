@@ -41,6 +41,9 @@ import {
   suggestVariationPairings,
 } from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
+// NEO-189: bounded retry for Convex's optimistic-concurrency conflict, used
+// by every phase of the chunked commit below.
+import { runWithOccRetry } from "../lib/errors/occ-retry";
 // NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
 // An auto-matched disagreement and a manual one have to be the same thing —
 // see the note in lib/cards/card-name.ts.
@@ -6533,14 +6536,41 @@ export const commitCardChecklist = action({
     // O(distinct names) in a single transaction.
     assertCardBatchWithinLimits(args.cards, "commitCardChecklist");
 
-    // Rethrow with the phase that failed. The partial-write note above is only
-    // actionable if the error says how far the commit got.
+    // Run one phase: retry an optimistic-concurrency conflict a bounded number
+    // of times, then rethrow labelled with the phase that failed.
+    //
+    // WHY THE RETRY (NEO-189). The prelude reads a whole `entityReviewQueue`
+    // batch, and the Wikidata pool's lookups were still landing on those rows
+    // while it read — so the commit lost the OCC race on Convex's every
+    // internal retry and the seed job went red. The real fix is upstream:
+    // `applyLookupResult` and the completion backstop now no-op on a row that
+    // already carries a decision, so the contending write does not happen at
+    // all. This is the belt-and-braces behind it, for a straggler that was
+    // already in flight before its own guard could see the decision. An
+    // OCC-failed mutation rolled back completely, so re-running a phase starts
+    // from the state it started from the first time — see lib/errors/occ-retry.
+    //
+    // Every phase gets it, chunks included. A chunk is the phase where a
+    // conflict hurts MOST: a prelude failure writes nothing, but a chunk
+    // failure leaves a partial commit with the finalize sweep unrun (see the
+    // atomicity note above). `cardChecklist` rows have their own background
+    // writer — `processBscTeamEnrichmentQueue` from a previous sync — so this
+    // is not hypothetical there either.
+    //
+    // WHY ConvexError AND NOT Error. Production redacts a plain `Error` thrown
+    // from a Convex function down to "Server Error"; only a ConvexError's
+    // string `data` crosses to the client intact. A phase label the operator
+    // cannot read on prod is not a phase label. See
+    // lib/errors/user-facing-message.ts, which is what the client reads it
+    // back with.
     const phase = async <T>(label: string, run: () => Promise<T>): Promise<T> => {
       try {
-        return await run();
+        return await runWithOccRetry(run);
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
-        throw new Error(`commitCardChecklist: ${label} failed — ${detail}`);
+        throw new ConvexError(
+          `commitCardChecklist: ${label} failed — ${detail}`,
+        );
       }
     };
 

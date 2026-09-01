@@ -170,7 +170,17 @@ describe("backstopEntityReviewRowImpl", () => {
     ).resolves.toBeNull();
   });
 
-  test("preserves a decision on a pending row it ages (a bulk-created, still-looking-up row)", async () => {
+  test("leaves a DECIDED pending row completely alone (NEO-189)", async () => {
+    // This used to age the row to "error" while preserving `decision`. It no
+    // longer writes at all, because a write on a decided row is exactly what
+    // made `commitCardChecklist`'s prelude lose an optimistic-concurrency race
+    // against the draining pool — see the note on this function.
+    //
+    // The "never stranded on pending" invariant is about rows the operator has
+    // NOT ruled on. A decided row's status is inert: the wizard's `current`
+    // skips decided rows and its progress counter counts decisions, and the row
+    // itself does not survive — commit and Cancel both delete the batch, and
+    // `sweepStalePendingRows` ages whatever an abandoned wizard leaves.
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
     const row = await seedRow(t, {
@@ -184,9 +194,28 @@ describe("backstopEntityReviewRowImpl", () => {
     await t.run((ctx) => backstopEntityReviewRowImpl(ctx, row, FAILED));
 
     const r = await getRow(t, row);
-    expect(r!.status).toBe("error");
-    // The user's "Add All Remaining as New" decision must survive the backstop.
+    expect(r!.status).toBe("pending");
+    // The user's "Add All Remaining as New" decision must survive regardless.
     expect(r!.decision).toEqual({ action: "create" });
+  });
+
+  test("an UNDECIDED pending row is still aged — the invariant is intact", async () => {
+    // The guard above must not become "the backstop stopped working". A row
+    // nobody has ruled on is exactly what this function exists for.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const row = await seedRow(t, {
+      selectorOptionId,
+      batchId: "b",
+      name: "Undecided",
+      status: "pending",
+    });
+
+    await t.run((ctx) => backstopEntityReviewRowImpl(ctx, row, FAILED));
+
+    const r = await getRow(t, row);
+    expect(r!.status).toBe("error");
+    expect(r!.decision).toBeUndefined();
   });
 
   test("several completions in ONE transaction each resolve their OWN distinct row", async () => {

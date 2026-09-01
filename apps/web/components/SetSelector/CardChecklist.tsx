@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useAction, useMutation } from "convex/react";
+import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
@@ -398,8 +399,18 @@ export default function CardChecklist({
           : `Saved ${result.count} cards.`,
       );
     } catch (error) {
+      // NEO-189: the commit is phased server-side and labels its failures with
+      // the phase that broke ("prelude", "chunk 2/3 (cards 151-300 of 375)",
+      // "finalize") — which tells the operator how much of the checklist
+      // landed. That label rides a ConvexError, because production redacts a
+      // plain Error down to "Server Error"; `userFacingMessage` is what reads
+      // it back. The `.message` fallback keeps every other failure reading
+      // exactly as it did before.
       setSyncMessage(
-        `Commit failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        `Commit failed: ${userFacingMessage(
+          error,
+          error instanceof Error ? error.message : "Unknown error",
+        )}`,
       );
     } finally {
       setCommitting(false);
