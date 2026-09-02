@@ -267,3 +267,96 @@ describe("CardChecklistItem — variation grouping (NEO-189)", () => {
     expect(onEdit).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-102 — the attention mark
+//
+// The mark is DERIVED from the row (see card-attention.ts), so the assertions
+// here are about which rows show it and about the reserved slot that keeps it
+// from resizing a row. Row geometry is not cosmetic in this list: a row that
+// changes size re-measures the Virtuoso list and reflows every row below it,
+// which is the long-standing dropped-tap flake the reserved subtitle line and
+// reserved disclosure slot already exist to prevent. Attention state flips
+// under the operator (the background BSC team pass lands, or they fix a card
+// in the walker), so it is exactly the state that must not do that.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklistItem — NEO-102 attention mark", () => {
+  it("marks a BSC-linked row whose team lookup ran and found nothing", () => {
+    renderItem({
+      card: makeCard({
+        platformData: { bsc: { ref: "bsc-ref-42" } },
+        teamCheckDoneAt: 1_000,
+      }),
+    });
+
+    const mark = screen.getByLabelText("Card 42 needs attention: no team on this card yet");
+    expect(mark).toBeTruthy();
+    // Non-interactive by design: fixing happens in the walker, and a button
+    // here would add another tab stop per row to a virtualized list.
+    expect(mark.tagName).toBe("SPAN");
+    expect(mark.getAttribute("role")).toBe("img");
+  });
+
+  it("does NOT mark a BSC-linked row whose team lookup has not run yet", () => {
+    // The BSC enrichment queue is still going to answer for this card, so
+    // badging it now would flood a freshly-synced set with items that resolve
+    // themselves.
+    renderItem({ card: makeCard({ platformData: { bsc: { ref: "bsc-ref-42" } } }) });
+    expect(screen.queryByLabelText(/needs attention/)).toBeNull();
+  });
+
+  it("marks a custom row with no team right away — nothing will ever look it up", () => {
+    // No platformData.bsc.ref, so no automatic source: `makeCard()`'s default
+    // is exactly this shape. Gating on teamCheckDoneAt regardless of the ref
+    // (as an earlier draft of the rule did) left these cards permanently
+    // unbadged, which is the invisibility NEO-102 exists to fix.
+    renderItem({ card: makeCard({ isCustom: true }) });
+    expect(
+      screen.getByLabelText("Card 42 needs attention: no team on this card yet"),
+    ).toBeTruthy();
+  });
+
+  it("does NOT mark a row that has a team", () => {
+    renderItem({
+      card: makeCard({
+        platformData: { bsc: { ref: "bsc-ref-42" } },
+        teamCheckDoneAt: 1_000,
+        teamOnCardIds: ["team-1" as unknown as Id<"teams">],
+      }),
+    });
+    expect(screen.queryByLabelText(/needs attention/)).toBeNull();
+  });
+
+  it("does NOT mark a row an operator said has no team", () => {
+    // The field that separates "nobody has answered" from "answered: none",
+    // and the reason a re-sync stops asking.
+    renderItem({
+      card: makeCard({ teamCheckDoneAt: 1_000, teamNoneConfirmedAt: 2_000 }),
+    });
+    expect(screen.queryByLabelText(/needs attention/)).toBeNull();
+  });
+
+  it("reserves the mark's slot on every row, marked or not", () => {
+    // The guard against the reflow described above: the slot is a constant
+    // 20px box whether or not the mark is in it. A refactor that renders the
+    // mark inline fails here — which is the point, since nothing else in the
+    // suite would notice.
+    const { unmount } = renderItem({
+      card: makeCard({ platformData: { bsc: { ref: "bsc-ref-42" } } }),
+    });
+    const withoutMark = document.querySelectorAll(".w-5.h-5").length;
+    unmount();
+
+    renderItem({
+      card: makeCard({
+        platformData: { bsc: { ref: "bsc-ref-42" } },
+        teamCheckDoneAt: 1_000,
+      }),
+    });
+    const withMark = document.querySelectorAll(".w-5.h-5").length;
+
+    expect(withoutMark).toBeGreaterThan(0);
+    expect(withMark).toBeGreaterThan(withoutMark);
+  });
+});

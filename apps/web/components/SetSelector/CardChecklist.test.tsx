@@ -69,7 +69,37 @@ vi.mock("../../convex/_generated/api", () => ({
       getReadyCandidates: "getReadyCandidates",
       discardCandidates: "discardCandidates",
     },
+    // NEO-102: reached once real card rows render (CardChecklistItem's team
+    // sub-line, TeamPicker inside the attention walker's fixer) or the walker
+    // opens. Routed through the same string-reference mock as everything else.
+    teams: {
+      getManyByIds: "teams.getManyByIds",
+      list: "teams.list",
+      findOrCreate: "teams.findOrCreate",
+    },
+    players: { getManyByIds: "players.getManyByIds" },
+    cardChecklist: {
+      suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
+      confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
+    },
   },
+}));
+
+/**
+ * NEO-102 — Virtuoso renders nothing measurable under jsdom (no layout), so
+ * the attention tests below could not see a card row through it. Replaced with
+ * a plain map, which is what the row-level assertions actually need. Every
+ * pre-existing test in this file drives the zero-candidate path with
+ * `state.cards = []`, so this changes nothing for them.
+ */
+vi.mock("react-virtuoso", () => ({
+  Virtuoso: ({
+    data,
+    itemContent,
+  }: {
+    data: unknown[];
+    itemContent: (index: number, item: unknown) => React.ReactNode;
+  }) => <div>{data.map((item, i) => <div key={i}>{itemContent(i, item)}</div>)}</div>,
 }));
 
 const mockFetchChecklist = vi.fn();
@@ -98,6 +128,10 @@ vi.mock("convex/react", () => ({
     if (ref === "getSelectorOptionById") return state.variantRow;
     if (ref === "getAncestorChain") return state.ancestorChain;
     if (ref === "getReadyCandidates") return state.liveCandidates;
+    // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
+    // resolved-but-empty, which is the "no career history" shape.
+    if (ref === "cardChecklist.suggestedTeamsForCard") return [];
+    if (ref === "teams.getManyByIds" || ref === "teams.list") return [];
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
   },
@@ -457,5 +491,147 @@ describe("CardChecklist — commit paints 'Saved' only after the queries catch u
     );
     expect(screen.queryByText(/Saved/)).toBeNull();
     expect(mockDiscardCandidates).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-102 — the set-level "needs attention" pass
+//
+// The count, the filter and the walker's entry points. All three read the same
+// derived rule (card-attention.ts) off the live getCardChecklist rows, which is
+// why fixing a card needs nothing invalidated: the row changes and the count
+// follows.
+// ---------------------------------------------------------------------------
+
+/** A stored row that needs a team: a lookup ran, found nothing, nobody answered. */
+function attentionCard(overrides: Record<string, unknown> = {}) {
+  return {
+    _id: "card-a" as unknown as Id<"cardChecklist">,
+    selectorOptionId: VARIANT_ID,
+    cardNumber: "1",
+    cardName: "AL Leaders ERA LL",
+    platformData: { bsc: { ref: "bsc-1" } },
+    teamCheckDoneAt: 1_000,
+    ...overrides,
+  };
+}
+
+/** A settled row: its lookup ran and found a team. */
+function settledCard(overrides: Record<string, unknown> = {}) {
+  return {
+    _id: "card-b" as unknown as Id<"cardChecklist">,
+    selectorOptionId: VARIANT_ID,
+    cardNumber: "2",
+    cardName: "Tarik Skubal",
+    platformData: { bsc: { ref: "bsc-2" } },
+    teamCheckDoneAt: 1_000,
+    teamOnCardIds: ["team-1"],
+    ...overrides,
+  };
+}
+
+describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [attentionCard(), settledCard()];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+  });
+
+  it("counts the flagged rows and marks only those rows in the grid", () => {
+    renderChecklist();
+
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention/ }).textContent,
+    ).toContain("1 need attention");
+    expect(screen.getAllByLabelText(/needs attention/)).toHaveLength(1);
+    expect(screen.getByLabelText(/Card 1 needs attention/)).toBeTruthy();
+  });
+
+  it("announces the count in a live region, since the chip's own label changes silently", () => {
+    renderChecklist();
+
+    const announced = screen
+      .getAllByRole("status")
+      .map((el) => el.textContent ?? "")
+      .join(" | ");
+    expect(announced).toContain("1 card needs attention on this checklist");
+  });
+
+  it("hides the row entirely when nothing needs attention", () => {
+    state.cards = [settledCard()];
+    renderChecklist();
+
+    expect(screen.queryByText(/need attention/)).toBeNull();
+  });
+
+  it("toggling the chip filters the grid down to the flagged rows", () => {
+    renderChecklist();
+
+    expect(screen.getByText("Tarik Skubal")).toBeTruthy();
+
+    const chip = screen.getByRole("button", { name: /Show only cards needing attention/ });
+    fireEvent.click(chip);
+
+    expect(screen.getByText("AL Leaders ERA LL")).toBeTruthy();
+    expect(screen.queryByText("Tarik Skubal")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention \(on\)/ }),
+    ).toBeTruthy();
+  });
+
+  it("opens the walker from the header, any time", async () => {
+    renderChecklist();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Cards Needing Attention");
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
+      "#1 AL Leaders ERA LL",
+    );
+  });
+
+  it("does not open the walker on its own without a commit", () => {
+    renderChecklist();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("opens the walker on its own once a commit has landed and something is flagged", async () => {
+    // The zero-candidate path: the fetch short-circuits, the client skips the
+    // pairing dialog and runs straight through resolveEntities → runCommit.
+    // Shortest route to a completed commit.
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 2 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    let resolveFetch!: (value: unknown) => void;
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+
+    renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "Custom selector subtree — no marketplace data available.",
+        candidateCount: 0,
+      });
+    });
+
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    // The commit's own status line is deliberately unchanged — the walker is
+    // the disclosure, not a longer sentence in the banner.
+    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Cards Needing Attention");
   });
 });

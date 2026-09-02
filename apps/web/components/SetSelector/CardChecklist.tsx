@@ -23,6 +23,8 @@ import ChecklistSourceFilter, {
   type SourceFilter,
 } from "./ChecklistSourceFilter";
 import CrossListingImportModal from "./CrossListingImportModal";
+import CardAttentionWalker from "./CardAttentionWalker";
+import { needsAttention } from "./card-attention";
 import { Input } from "../primitives/Input";
 
 
@@ -113,6 +115,16 @@ const NO_SYNC_DECISIONS: SyncReviewResult = {
   heldBackIndices: [],
   conflictResolutions: [],
 };
+
+/**
+ * NEO-102 — how long after a commit the walker may still auto-open.
+ *
+ * The background BSC team pass writes `teamCheckDoneAt` for the freshly
+ * committed cards over the seconds following the commit, and only then can a
+ * card be known to have no team. Long enough to catch that; short enough that
+ * the modal cannot appear over unrelated work.
+ */
+const POST_COMMIT_ATTENTION_GRACE_MS = 15_000;
 
 export default function CardChecklist({
   variantId,
@@ -263,6 +275,35 @@ export default function CardChecklist({
   // NEO-21: let the operator collapse the checklist back to just this set's
   // own cards. Local to this component — nothing above needs it.
   const [hideCrossListed, setHideCrossListed] = useState(false);
+  /**
+   * NEO-102 — the post-commit "needs attention" pass.
+   *
+   * `attentionOnly` filters the grid down to the flagged rows (same Chip
+   * pattern as the cross-release toggle). The other two drive the walker, and
+   * they are separate on purpose:
+   *
+   *  - `walkerOpenedByHand` — the operator pressed the header button.
+   *  - `attentionArmed` — a commit just landed, so the walker MAY open itself.
+   *
+   * Whether the walker is actually open is then DERIVED (`walkerOpen`, below)
+   * rather than stored, because the trigger is not the commit — it is the
+   * count going non-zero, which happens later. A BSC-linked card is not
+   * flagged until `processBscTeamEnrichmentQueue` has been and gone (one
+   * detail request every 300ms), so at the instant a commit resolves the
+   * answer for a BSC set is still "nothing needs attention". Deriving the
+   * open state means the arm can wait for the real answer without an effect
+   * that watches the count and calls setState — which is a cascading-render
+   * pattern the lint rule rightly rejects, and which would need the state and
+   * the count to be kept in agreement by hand.
+   *
+   * The arm is disarmed by a timer started in the commit handler (not an
+   * effect) so it cannot fire minutes later on top of unrelated work, and by
+   * the walker's own close.
+   */
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [walkerOpenedByHand, setWalkerOpenedByHand] = useState(false);
+  const [attentionArmed, setAttentionArmed] = useState(false);
+  const attentionArmTimer = useRef<number | null>(null);
   const [showCrossListingModal, setShowCrossListingModal] = useState(false);
 
   // Reset filter + close the detail panel when the variant changes — chips and
@@ -603,6 +644,21 @@ export default function CardChecklist({
           ...notes,
         ].join(" "),
       );
+      // NEO-102: the commit itself never knows whether a card has a team — the
+      // BSC team pass runs after it, and a BSC-linked card is not even flagged
+      // until that pass has been and gone. So arm here and let `walkerOpen`
+      // derive the rest. The status line above is deliberately unchanged; the
+      // walker is the disclosure.
+      //
+      // The disarm timer is started HERE, in the handler, rather than in an
+      // effect — an effect that watched the count and set state would be the
+      // cascading-render pattern the lint rule rejects.
+      setAttentionArmed(true);
+      if (attentionArmTimer.current !== null) clearTimeout(attentionArmTimer.current);
+      attentionArmTimer.current = window.setTimeout(() => {
+        setAttentionArmed(false);
+        attentionArmTimer.current = null;
+      }, POST_COMMIT_ATTENTION_GRACE_MS);
     } catch (error) {
       // NEO-189: the commit is phased server-side and labels its failures with
       // the phase that broke ("prelude", "chunk 2/3 (cards 151-300 of 375)",
@@ -720,6 +776,51 @@ export default function CardChecklist({
     });
   }, []);
 
+  /**
+   * NEO-102 — how many stored rows need a human, derived (see
+   * card-attention.ts). Recomputed from the live subscription, so fixing a
+   * card in the walker drops the count without anything having to invalidate
+   * it.
+   */
+  const attentionCount = useMemo(
+    () => (cards ?? []).filter((c) => needsAttention(c)).length,
+    [cards],
+  );
+
+  /**
+   * Is the walker open? Derived, never stored — see the state block above.
+   *
+   * The armed half reads the live count, so a commit that flags nothing yet
+   * opens nothing, and the walker appears by itself the moment the background
+   * BSC team pass stamps the first card it could not answer for.
+   *
+   * One consequence worth naming: on the ARMED path, answering the last card
+   * takes the count to zero and the dialog closes itself rather than showing
+   * the walker's all-clear step. That is the right end to an interruption the
+   * operator did not ask for — the job is done, so the modal gets out of the
+   * way. Opened by hand it stays put and says "All clear", because there the
+   * operator asked to be in it.
+   */
+  const walkerOpen = walkerOpenedByHand || (attentionArmed && attentionCount > 0);
+
+  /** Both paths out of the walker: the operator is done, or deferred the rest. */
+  const closeAttentionWalker = useCallback(() => {
+    setWalkerOpenedByHand(false);
+    setAttentionArmed(false);
+    if (attentionArmTimer.current !== null) {
+      clearTimeout(attentionArmTimer.current);
+      attentionArmTimer.current = null;
+    }
+  }, []);
+
+  // Only a cleanup: a commit's disarm timer must not outlive the component.
+  useEffect(
+    () => () => {
+      if (attentionArmTimer.current !== null) clearTimeout(attentionArmTimer.current);
+    },
+    [],
+  );
+
   const sortedCards = useMemo(() => {
     if (!cards) return [];
     return [...cards]
@@ -737,10 +838,15 @@ export default function CardChecklist({
           return false;
         }
         if (hideCrossListed && c.isCrossListed) return false;
+        // NEO-102: same shape as the two filters above — one predicate, no
+        // separate list. A variation whose parent is filtered out still
+        // renders at top level, which is what keeps a flagged variation
+        // reachable while this filter is on.
+        if (attentionOnly && !needsAttention(c)) return false;
         return true;
       })
       .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
-  }, [cards, sourceFilter, hideCrossListed]);
+  }, [cards, sourceFilter, hideCrossListed, attentionOnly]);
 
   // NEO-189 — variations hang off their parent instead of sitting flat in the
   // scroll.
@@ -1141,6 +1247,56 @@ export default function CardChecklist({
           </div>
         )}
 
+        {/* NEO-102 — the set-level attention row. Only rendered when there is
+            something to say (or the filter is on and has emptied the grid, so
+            the operator always has the control that got them there).
+
+            Two controls, deliberately, because they answer two questions: the
+            Chip filters the grid to the flagged rows ("which ones?"), and the
+            link opens the walker ("fix them"). Overloading one control would
+            make it impossible to look at the list without being put into a
+            modal. */}
+        {(attentionCount > 0 || attentionOnly) && (
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-24 shrink-0">
+              Attention
+            </span>
+            <Chip
+              label={`${attentionCount} need attention`}
+              ariaLabel={`Show only cards needing attention${attentionOnly ? " (on)" : ""}`}
+              title="Cards with a question nobody has answered yet — start with no team on the card"
+              active={attentionOnly}
+              onClick={() => setAttentionOnly((v) => !v)}
+            />
+            {attentionCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setWalkerOpenedByHand(true)}
+                aria-label={`Fix cards needing attention one at a time (${attentionCount})`}
+                className="text-xs text-gray-400 underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+              >
+                Fix them one at a time
+              </button>
+            )}
+            {/*
+              The chip's own label changes silently — a screen reader is never
+              told that the count went from 5 to 4 when a card is fixed. This
+              is the live region that says it. Visually hidden because the chip
+              beside it already carries the number on screen; saying it twice
+              would be clutter, and saying it nowhere would be a regression.
+
+              role="status" with no explicit aria-live, per
+              accessibility-auditor/live-region-role-pattern.md: the role
+              already implies a polite live region, and this line never
+              switches to role="alert".
+            */}
+            <p className="sr-only" role="status">
+              {attentionCount} {attentionCount === 1 ? "card needs" : "cards need"}{" "}
+              attention on this checklist
+            </p>
+          </div>
+        )}
+
         {sortedCards.length === 0 ? (
           <div className="text-center py-6">
             <p className="text-gray-500 dark:text-gray-400 mb-4">
@@ -1209,6 +1365,23 @@ export default function CardChecklist({
           onNext={() => selectByIndex(selectedIndex + 1)}
           hasPrev={selectedIndex > 0}
           hasNext={selectedIndex >= 0 && selectedIndex < displayRows.length - 1}
+        />
+      )}
+
+      {/* NEO-102 — the post-commit attention pass. Kept mounted only while
+          open; it takes the FULL row list and derives its own queue, so rows
+          arriving from the background BSC pass join it without the walker
+          losing the card on screen. */}
+      {walkerOpen && cards && (
+        <CardAttentionWalker
+          isOpen
+          cards={cards}
+          sportId={ancestorSportId}
+          // a11y: see syncButtonRef's own comment — this can open across an
+          // async gap after a commit, so its own activeElement-at-mount
+          // capture cannot be trusted.
+          restoreFocusRef={syncButtonRef}
+          onClose={closeAttentionWalker}
         />
       )}
 
