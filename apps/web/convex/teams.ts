@@ -480,6 +480,21 @@ export const applyEnrichmentInternal = internalMutation({
  * Returns the color outcome so the UI can say what happened. Enrichment errors
  * stay swallowed: it is best-effort by design, and an unchanged row IS the
  * "found nothing" signal.
+ *
+ * ## THE ONLY SANCTIONED PATH TO RE-ENRICH AN EXISTING TEAM (NEO-203)
+ *
+ * Jason, 2026-09-02: automatic enrichment fires for NEW teams only — "we should
+ * never be firing that on an update. Team data generally doesn't change." This
+ * action is the deliberate exception and the only one: it is admin-gated, it is
+ * initiated by a human looking at the row, and it exists precisely for the case
+ * where the stored answer is WRONG (a match against the wrong franchise), which
+ * is the one situation where re-running a source is the remedy rather than
+ * churn.
+ *
+ * That is why it passes `force` down both legs. `enrichTeam` otherwise skips
+ * any team already carrying enrichment markers, which is every team an operator
+ * would want to fix. Do NOT copy this flag into an automatic caller — see the
+ * contract on `wikidataPool.enqueueEnrichment`.
  */
 export const enrichFromWikidata = action({
   args: { id: v.id("teams"), force: v.optional(v.boolean()) },
@@ -502,6 +517,10 @@ export const enrichFromWikidata = action({
     try {
       await ctx.runMutation(internal.wikidataPool.enqueueEnrichment, {
         teamIds: [args.id],
+        // NEO-203: the operator exception. Without this the enqueued
+        // `enrichTeam` would skip the team as already-enriched, which is
+        // exactly the team this button exists to re-do.
+        force: true,
       });
     } catch (error) {
       console.error("[teams.enrichFromWikidata] enqueue failed:", error);

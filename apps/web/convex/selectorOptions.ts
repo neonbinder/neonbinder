@@ -6086,6 +6086,11 @@ export const commitCardChecklistPrelude = internalMutation({
     // Collected and returned to the action, which hands them to the finalize
     // phase to enqueue after the writes land, rather than enriching inline:
     // enrichment is a network round-trip per team and this is a mutation.
+    // NEO-203: this array carries `enqueueEnrichment`'s creation-only
+    // contract, so the early return below is load-bearing — a team that
+    // ALREADY EXISTS must leave without being pushed. Enrichment is for rows
+    // this commit brought into being; an existing team's data is not re-looked
+    // up by any automatic path.
     const enrichmentTeamIds: Array<Id<"teams">> = [];
     const resolveTeamIdByName = async (rawName: string): Promise<Id<"teams">> => {
       const normalized = norm(rawName);
@@ -6095,7 +6100,7 @@ export const commitCardChecklistPrelude = internalMutation({
           q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
         )
         .first();
-      if (existing) return existing._id;
+      if (existing) return existing._id; // NOT enqueued — see above.
       const id = await ctx.db.insert("teams", {
         name: rawName.trim(),
         nameNormalized: normalized,
@@ -6973,6 +6978,17 @@ export const commitCardChecklistFinalize = internalMutation({
     // budget is what keeps a fetch that creates fifty career teams from
     // producing fifty concurrent requests. No `playerIds` because players
     // created there were already enriched from the wizard's own preview.
+    //
+    // NEO-203 — this satisfies `enqueueEnrichment`'s CREATION-ONLY contract,
+    // and the reason is worth stating rather than leaving to be re-derived:
+    // `enrichmentTeamIds` is appended to at exactly one place in the prelude,
+    // the branch of `resolveTeamIdByName` immediately after
+    // `ctx.db.insert("teams", …)`. A team the lookup FOUND returns early and
+    // is never added. So this list is, structurally, "teams this commit
+    // created" — never a pre-existing row. Automatic enrichment must never
+    // fire for a team that already exists (Jason, 2026-09-02: team data
+    // generally doesn't change); if you ever widen what feeds this list,
+    // that invariant is what you are breaking.
     if (args.enrichmentTeamIds.length > 0) {
       await ctx.scheduler.runAfter(
         0,
