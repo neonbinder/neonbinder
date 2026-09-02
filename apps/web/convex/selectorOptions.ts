@@ -842,6 +842,18 @@ export const getCardChecklist = query({
       // NEO-90: set once the BSC per-card team-enrichment queue has
       // checked this card, regardless of outcome (see schema.ts).
       teamCheckDoneAt: v.optional(v.number()),
+      // NEO-102: the two halves of "does this card still need a human to
+      // settle its team?". Returned because the checklist derives that badge
+      // client-side through `features/cardAttention.ts` — the same pure
+      // function a server-side caller would use — and `teamCheckDoneAt` above
+      // is only half the answer.
+      teamNoneConfirmedAt: v.optional(v.number()),
+      // Audit only; the UI reads nothing from it. It is here because Convex
+      // validates `returns` STRICTLY — see the note on `variationOfCardId`
+      // below — so a field the table carries and this list omits throws
+      // `Object contains extra field` for every row that has it. This query is
+      // `requireAdmin`, and the value is an admin's own Clerk subject.
+      teamNoneConfirmedByUserId: v.optional(v.string()),
       attributes: v.optional(v.array(v.string())),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
@@ -1945,6 +1957,25 @@ export const updateCard = mutation({
       if (value !== undefined) {
         filtered[key] = value;
       }
+    }
+    // NEO-102: giving this card a real team RETIRES the operator's "no team"
+    // confirmation, in the same patch, so the two can never contradict each
+    // other on the row.
+    //
+    // DERIVED from the write, never accepted as an argument. Note that this
+    // mutation patches a filtered SPREAD of its own args — adding
+    // `teamNoneConfirmedAt` to the validator above would make a
+    // review-suppression timestamp directly settable by any admin client,
+    // which is exactly what the schema comment forbids. Patching `undefined`
+    // is how Convex deletes a field.
+    //
+    // Only a NON-EMPTY write clears it. `teamOnCardIds: []` is the operator
+    // unlinking every team, which leaves the card teamless and the
+    // confirmation still true.
+    const writtenTeamIds = filtered.teamOnCardIds;
+    if (Array.isArray(writtenTeamIds) && writtenTeamIds.length > 0) {
+      filtered.teamNoneConfirmedAt = undefined;
+      filtered.teamNoneConfirmedByUserId = undefined;
     }
     if (Object.keys(filtered).length > 0) {
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
@@ -6567,8 +6598,41 @@ export const commitCardChecklistChunk = internalMutation({
         }
         if (Object.keys(contentPatch).length > 0) contentAppliedCount++;
 
+        // ── NEO-102: the operator's "no team" confirmation ─────────────────
+        //
+        // Retired only when a NON-EMPTY `teamOnCardIds` is ACTUALLY written in
+        // this transaction — i.e. when it came through the `applyFields` +
+        // `baseVersion` gate above and survived the server-side re-diff. That
+        // is the same one gate, not a second one: no `applyFields` entry, a
+        // stale `baseVersion`, or a value that re-diffed as unchanged all mean
+        // nothing was written and the flag is left exactly as it stands.
+        //
+        // Which also settles the two cases that would otherwise be wrong:
+        // a LINKAGE-ONLY refresh (the common re-sync, and the whole reason
+        // this phase runs) never touches the flag, and a sync whose card
+        // carries no teams never touches it either — an empty upstream answer
+        // is not evidence against a human's answer, it is what produced the
+        // question. Nothing in the commit path ever SETS the flag; that is
+        // `cardChecklist.confirmCardNoTeam`'s job alone.
+        const teamIdsWritten = Array.isArray(contentPatch.teamOnCardIds)
+          ? (contentPatch.teamOnCardIds as Array<Id<"teams">>)
+          : undefined;
+        const retireNoneConfirmed =
+          existing.teamNoneConfirmedAt !== undefined &&
+          teamIdsWritten !== undefined &&
+          teamIdsWritten.length > 0;
+
         await ctx.db.patch(existing._id, {
           ...contentPatch,
+          // Patching `undefined` is how Convex deletes a field. Spread only
+          // when it applies, so an untouched row's patch is byte-identical to
+          // what it was before this feature existed.
+          ...(retireNoneConfirmed
+            ? {
+                teamNoneConfirmedAt: undefined,
+                teamNoneConfirmedByUserId: undefined,
+              }
+            : {}),
           // Linkage is ALWAYS refreshed — routing a marketplace's update to
           // the row linked to it is the whole reason this sync exists, and it
           // is not content NeonBinder owns.
@@ -6588,10 +6652,19 @@ export const commitCardChecklistChunk = internalMutation({
           contentPatch.teamOnCardIds !== undefined
             ? card.teamOnCardIds
             : existing.teamOnCardIds;
+        // NEO-102: and never re-derive a team for a card an operator settled
+        // as teamless. Read off what the row will HAVE after this patch, like
+        // `effectiveTeamIds` above — a commit that just retired the flag
+        // (because it wrote real teams) is not suppressed by it, and one that
+        // left it standing is.
+        const noneConfirmedAfter = retireNoneConfirmed
+          ? undefined
+          : existing.teamNoneConfirmedAt;
         if (
           mergedPlatformData.bsc &&
           (!effectiveTeamIds || effectiveTeamIds.length === 0) &&
-          !existing.teamCheckDoneAt
+          !existing.teamCheckDoneAt &&
+          !noneConfirmedAfter
         ) {
           bscTeamEnrichmentIds.push(existing._id);
         }

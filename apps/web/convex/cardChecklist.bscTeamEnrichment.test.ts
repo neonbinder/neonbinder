@@ -73,6 +73,8 @@ type InsertCardOpts = {
   bsc?: string; // platformData.bsc; omit to simulate "no BSC ref"
   teamOnCardIds?: Array<Id<"teams">>;
   teamCheckDoneAt?: number;
+  // NEO-102: an operator confirmed this card carries no team.
+  teamNoneConfirmedAt?: number;
 };
 
 async function insertCard(
@@ -92,6 +94,9 @@ async function insertCard(
       ...(opts.teamOnCardIds ? { teamOnCardIds: opts.teamOnCardIds } : {}),
       ...(opts.teamCheckDoneAt !== undefined
         ? { teamCheckDoneAt: opts.teamCheckDoneAt }
+        : {}),
+      ...(opts.teamNoneConfirmedAt !== undefined
+        ? { teamNoneConfirmedAt: opts.teamNoneConfirmedAt }
         : {}),
     }),
   );
@@ -461,5 +466,111 @@ describe("enqueueBscTeamBackfill", () => {
 
     // Between the two calls, every eligible row was reachable exactly once.
     expect(first.enqueued + second.enqueued).toBe(TOTAL_ROWS);
+  });
+});
+
+// ===========================================================================
+// NEO-102 — the BSC background writer never overturns an operator's
+// "this card carries no team"
+// ===========================================================================
+
+/**
+ * `teamCheckDoneAt` and `teamNoneConfirmedAt` are different facts, and every
+ * path that used to read "empty teamOnCardIds" as "not looked up yet" now has
+ * to say which one it means. These three are that path's whole surface: the
+ * read that decides whether to spend a live BSC request, the write that
+ * applies the answer, and the backfill scan that finds legacy rows.
+ *
+ * The write-time check is the load-bearing one. The queue walks a whole set at
+ * one request every 300ms while the operator works the same checklist, so a
+ * confirmation can land after a card was enqueued and before its answer comes
+ * back. An enqueue-time filter alone would be checked minutes too early.
+ */
+describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
+  test("getForBscTeamCheck: needsCheck is false for a none-confirmed card", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", {
+      bsc: "bsc-1",
+      // Deliberately WITHOUT teamCheckDoneAt: the confirmation alone has to
+      // be enough, or a card confirmed before any lookup ran would still
+      // burn a request.
+      teamNoneConfirmedAt: 1_700_000_000_000,
+    });
+
+    const result = await t.query(internal.cardChecklist.getForBscTeamCheck, {
+      cardChecklistId: cardId,
+    });
+    expect(result).toEqual({ bscCardId: "bsc-1", needsCheck: false });
+  });
+
+  test("applyBscTeamResolution: a found team is NOT written over a none-confirmed card", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", {
+      bsc: "bsc-1",
+      teamNoneConfirmedAt: 1_700_000_000_000,
+    });
+
+    // The in-flight case: this card was enqueued before the operator
+    // confirmed, and BSC has since answered with a real team.
+    const result = await t.mutation(
+      internal.cardChecklist.applyBscTeamResolution,
+      { cardChecklistId: cardId, teamName: "New York Yankees" },
+    );
+    expect(result).toEqual({ applied: false, teamCreated: false });
+
+    const card = await getCard(t, cardId);
+    expect(card!.teamOnCardIds).toBeUndefined();
+    expect(card!.teamNoneConfirmedAt).toBe(1_700_000_000_000);
+    // Stamped on the way out, mirroring the has-teams early return: the
+    // lookup HAS now been and gone, which also takes the row out of the
+    // backfill scan.
+    expect(card!.teamCheckDoneAt).toBeTypeOf("number");
+
+    // And no team row was minted as a side effect.
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams).toHaveLength(0);
+  });
+
+  test("applyBscTeamResolution: an already-stamped none-confirmed card is left completely alone", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", {
+      bsc: "bsc-1",
+      teamCheckDoneAt: 1_600_000_000_000,
+      teamNoneConfirmedAt: 1_700_000_000_000,
+    });
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: "New York Yankees",
+    });
+
+    const card = await getCard(t, cardId);
+    // Not re-stamped: in Convex a patch invalidates every query that read the
+    // row, so a pointless write re-renders the checklist for nothing.
+    expect(card!.teamCheckDoneAt).toBe(1_600_000_000_000);
+    expect(card!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("enqueueBscTeamBackfill: a none-confirmed card is not eligible", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t);
+    await insertCard(t, variantTypeId, "1", { bsc: "bsc-1" });
+    await insertCard(t, variantTypeId, "2", {
+      bsc: "bsc-2",
+      teamNoneConfirmedAt: 1_700_000_000_000,
+    });
+
+    const result = await t.mutation(
+      internal.cardChecklist.enqueueBscTeamBackfill,
+      { batchSize: 10 },
+    );
+
+    // Only card #1. The confirmed one is settled, so re-deriving its team is
+    // work whose best outcome is a no-op and whose worst is a contradiction.
+    expect(result.enqueued).toBe(1);
+    expect(result.remaining).toBe(0);
   });
 });
