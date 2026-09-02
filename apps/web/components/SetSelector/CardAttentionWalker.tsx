@@ -159,6 +159,12 @@ export default function CardAttentionWalker({
   const current =
     remaining.find((c) => (c._id as string) === pinnedId) ?? remaining[0] ?? null;
 
+  const items = current ? deriveCardAttention(current) : [];
+  // The FIRST item whose kind is registered — not simply items[0]. A card
+  // flagged for a kind this bundle does not know about plus one it does must
+  // still be fixable for the one it does.
+  const { item: primaryItem, Fixer } = pickAttentionFixer(items);
+
   /** Move the pin past `cardId`, so the next render presents the card after it. */
   const movePinPast = (cardId: string) => {
     const idx = remaining.findIndex((c) => (c._id as string) === cardId);
@@ -185,13 +191,41 @@ export default function CardAttentionWalker({
     };
   }, [isOpen, restoreFocusRef]);
 
-  if (!isOpen) return null;
+  /**
+   * a11y (audit fix) — focus on every ADVANCE, not just on open.
+   *
+   * A registered fixer remounts per card (`key={current._id}` below) and
+   * focuses its own first control on mount, so that half of "focus on every
+   * advance" was already covered. The other half was not: the two states
+   * that render NO fixer at all — a kind this bundle has no fixer for, and
+   * the all-clear step once the last card is answered — mount nothing to
+   * grab focus. Whenever ADVANCING INTO one of those states unmounts
+   * whatever had focus (a fixer's own control disappearing, or Skip itself
+   * disappearing because `current` went to null), the browser blurs straight
+   * to `<body>` — the open-effect above only runs once, on `isOpen` becoming
+   * true, so it does not catch this. Same class of stranding NEO-189 found
+   * on a natively-disabled Confirm button, one level up: the control that
+   * had focus disappears mid-session and nothing takes its place.
+   *
+   * Deliberately guarded on `document.activeElement` actually BEING body
+   * (not just "no Fixer this render"), rather than parking unconditionally —
+   * Skip-ing from one no-fixer card to another no-fixer card unmounts
+   * nothing (the Skip button is the same DOM node across that transition,
+   * just its label/handler update), so focus is already exactly where it
+   * should be and forcing it onto the dialog container on every such advance
+   * would be a gratuitous, un-asked-for focus move away from Skip.
+   */
+  useEffect(() => {
+    if (!isOpen || Fixer) return;
+    const id = requestAnimationFrame(() => {
+      if (!document.activeElement || document.activeElement === document.body) {
+        dialogRef.current?.focus();
+      }
+    });
+    return () => cancelAnimationFrame(id);
+  }, [isOpen, Fixer, current?._id]);
 
-  const items = current ? deriveCardAttention(current) : [];
-  // The FIRST item whose kind is registered — not simply items[0]. A card
-  // flagged for a kind this bundle does not know about plus one it does must
-  // still be fixable for the one it does.
-  const { item: primaryItem, Fixer } = pickAttentionFixer(items);
+  if (!isOpen) return null;
 
   const skipCurrent = () => {
     if (!current) return;
@@ -216,6 +250,10 @@ export default function CardAttentionWalker({
         role="dialog"
         aria-modal="true"
         aria-labelledby="card-attention-walker-title"
+        // a11y: -1, not a tab stop — this is only a focus-park target for the
+        // advance-time effect above (the all-clear step and a kind with no
+        // registered fixer both mount no control of their own to grab focus).
+        tabIndex={-1}
         ref={dialogRef}
         onKeyDown={(e) => {
           if (e.key === "Escape") {

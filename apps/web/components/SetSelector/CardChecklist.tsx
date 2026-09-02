@@ -800,8 +800,28 @@ export default function CardChecklist({
    * operator did not ask for — the job is done, so the modal gets out of the
    * way. Opened by hand it stays put and says "All clear", because there the
    * operator asked to be in it.
+   *
+   * a11y (audit fix): the armed path must not steal focus out of an active
+   * text field. This component re-renders on every `getCardChecklist`
+   * subscription tick, and the background BSC pass landing is exactly such a
+   * tick — with nothing guarding it, a commit's grace window could pop this
+   * modal open, and move focus into it, while the operator is mid-keystroke
+   * in the Add Card form or a card's detail panel, with no warning. Reading
+   * `document.activeElement` here is read-only and advisory (it can only ever
+   * SUPPRESS an auto-open, never cause one), and it evaluates once per actual
+   * render, not per keystroke, because the Add Card fields are deliberately
+   * uncontrolled (NEO-36) and typing in them does not re-render this
+   * component. The manual entry point (the header chip + "Fix them one at a
+   * time") stays available regardless, so nothing is hidden — worst case the
+   * operator opens it themselves once they are done typing, instead of the
+   * 15s window auto-opening it for them.
    */
-  const walkerOpen = walkerOpenedByHand || (attentionArmed && attentionCount > 0);
+  const typingElsewhere =
+    attentionArmed &&
+    (document.activeElement instanceof HTMLInputElement ||
+      document.activeElement instanceof HTMLTextAreaElement);
+  const walkerOpen =
+    walkerOpenedByHand || (attentionArmed && attentionCount > 0 && !typingElsewhere);
 
   /** Both paths out of the walker: the operator is done, or deferred the rest. */
   const closeAttentionWalker = useCallback(() => {
@@ -1258,7 +1278,15 @@ export default function CardChecklist({
             modal. */}
         {(attentionCount > 0 || attentionOnly) && (
           <div className="flex items-center gap-2 flex-wrap mb-3">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-24 shrink-0">
+            {/* a11y (1.4.3): text-gray-400 with no dark: variant measures
+                2.60:1 against this container's light-mode bg-white (needs
+                4.5:1). text-gray-500 dark:text-gray-400 is the pairing this
+                same file already uses for secondary text that must survive
+                both themes (see the `lastSynced` line above) — 4.84:1 light /
+                6.82:1 dark, both pass. The sibling "Cross-release" label a few
+                lines up has the identical (unfixed) defect; out of scope here
+                since it predates this commit — flagged in the audit report. */}
+            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide w-24 shrink-0">
               Attention
             </span>
             <Chip
@@ -1273,7 +1301,9 @@ export default function CardChecklist({
                 type="button"
                 onClick={() => setWalkerOpenedByHand(true)}
                 aria-label={`Fix cards needing attention one at a time (${attentionCount})`}
-                className="text-xs text-gray-400 underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                // a11y (1.4.3): same gray-400-with-no-dark:-variant fix as the
+                // label above.
+                className="text-xs text-gray-500 dark:text-gray-400 underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
               >
                 Fix them one at a time
               </button>

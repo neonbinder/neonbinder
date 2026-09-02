@@ -247,6 +247,13 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
                     // stay reachable, or the notice explaining why it is inert
                     // is unreachable by keyboard (the NEO-189 finding).
                     aria-disabled={blocked || undefined}
+                    // a11y (audit fix): a screen-reader user landing directly
+                    // on a blocked chip (Tab, not having heard the role=status
+                    // cap notice announce) got no explanation at all — only a
+                    // sighted user reading the paragraph below the picker knew
+                    // why it wouldn't toggle. Ties the chip to that notice the
+                    // same way `attention-team-hint` already ties to Save.
+                    aria-describedby={blocked ? "attention-team-cap" : undefined}
                     aria-label={`${chip.name} (from ${chip.playerNames.join(" and ")}'s career)`}
                     onClick={() => {
                       if (blocked) return;
@@ -275,7 +282,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
             waiting for a sync to populate the table. */}
         <TeamPicker value={chosen} onChange={applyTeams} sportId={sportId} disabled={busy} />
         {atCap && (
-          <p role="status" className="text-xs text-[#00B7FF]">
+          <p id="attention-team-cap" role="status" className="text-xs text-[#00B7FF]">
             That is the limit of {MAX_TEAMS_ON_CARD} teams on one card. Remove one to
             add another.
           </p>
@@ -294,11 +301,30 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         >
           {busy ? "Saving…" : "Save & Next (Enter)"}
         </NeonButton>
-        <NeonButton secondary disabled={busy} onClick={() => void recordNoTeam()}>
+        <NeonButton
+          secondary
+          // Not natively disabled, for the same reason as Save above: this is
+          // the button an operator most likely just pressed (it's the ONE
+          // that sets `busy`), so native `disabled` would blur the browser's
+          // focus straight to `<body>` the instant the request started —
+          // exactly the focus-park-pattern failure mode, on the control that
+          // had focus a moment ago rather than a neighbour.
+          aria-disabled={busy || undefined}
+          onClick={() => {
+            if (busy) return;
+            void recordNoTeam();
+          }}
+        >
           No team on this card
         </NeonButton>
       </div>
-      <p id="attention-team-hint" className="text-xs text-gray-500">
+      {/* a11y (1.4.3): text-gray-500 measures 3.67:1 against this dialog's
+          bg-gray-900 — fails 4.5:1 (the recurring gray-500-on-gray-900 bug,
+          see accessibility-auditor/contrast-reference.md). This component
+          carries no `dark:` variants anywhere (it only ever renders inside
+          CardAttentionWalker's always-dark card), so the fix is the same
+          swap used everywhere else that bug turns up: gray-400, 6.82:1. */}
+      <p id="attention-team-hint" className="text-xs text-gray-400">
         {chosen.length === 0
           ? "Pick at least one team, or record that this card has none."
           : `Saves ${chosen.length} ${chosen.length === 1 ? "team" : "teams"} on this card.`}

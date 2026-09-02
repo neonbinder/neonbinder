@@ -413,6 +413,55 @@ describe("CardAttentionWalker — fixing a card", () => {
     expect(mockUpdateCard).not.toHaveBeenCalled();
   });
 
+  it("'No team on this card' stays in the tab order while its own request is in flight", async () => {
+    // NEO-189's audit found a Confirm that natively-disabled itself the
+    // instant it went inert, dropping out of the tab order and stranding
+    // focus with no route to the reason. This button is the same shape of
+    // control (it sets `busy`, which used to natively-disable it too) — the
+    // fix is aria-disabled, same as Save.
+    let resolveConfirm!: (v: { confirmed: boolean; stamped: boolean }) => void;
+    mockConfirmCardNoTeam.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveConfirm = resolve;
+      }),
+    );
+    renderWalker([needsTeamRow()]);
+
+    const noTeamBtn = screen.getByRole("button", {
+      name: "No team on this card",
+    }) as HTMLButtonElement;
+    fireEvent.click(noTeamBtn);
+
+    await waitFor(() => expect(noTeamBtn.textContent).toBe("No team on this card"));
+    // Still reachable — not the native `disabled` attribute, which would pull
+    // it out of the tab order entirely.
+    expect(noTeamBtn.disabled).toBe(false);
+
+    resolveConfirm({ confirmed: true, stamped: true });
+    await waitFor(() => expect(mockConfirmCardNoTeam).toHaveBeenCalledTimes(1));
+  });
+
+  it("a blocked chip at the cap is described by the cap notice, for a screen-reader user landing on it directly", () => {
+    suggestionsByCard["card-1"] = Array.from({ length: 9 }, (_, i) => ({
+      teamId: `team-${i + 1}`,
+      name: `Team ${i + 1}`,
+      source: "career" as const,
+      playerName: "Someone",
+    }));
+    renderWalker([needsTeamRow()]);
+
+    const ninth = chip("Team 9", "Someone");
+    expect(ninth.getAttribute("aria-describedby")).toBe("attention-team-cap");
+    const cap = document.getElementById("attention-team-cap");
+    expect(cap).toBeTruthy();
+    expect(cap?.textContent).toContain("limit of 8 teams");
+
+    // A chip that IS chosen is never "blocked" even at the cap — removing one
+    // of the eight is always legal, so it carries no such description.
+    const first = chip("Team 1", "Someone");
+    expect(first.getAttribute("aria-describedby")).toBeNull();
+  });
+
   it("counts an already-confirmed card as answered (confirmed, not stamped)", async () => {
     // Another tab, or a double-press, got there first. Nothing was written by
     // THIS call, but the card is answered — so it still advances.
@@ -609,10 +658,22 @@ describe("CardAttentionWalker — deferring", () => {
     expect(screen.getByRole("status").textContent).toContain("2 cards need attention");
   });
 
-  it("falls through to the all-clear step when the last card is fixed elsewhere", () => {
+  it("falls through to the all-clear step when the last card is fixed elsewhere, and does not strand focus on <body>", async () => {
+    // The chip that had focus (MissingTeamFixer's own control) unmounts along
+    // with the whole fixer once `current` has nowhere left to point — nothing
+    // else in the all-clear branch is focusable, so without the walker's own
+    // advance-time park, focus would blur straight to <body> with the dialog
+    // still open. See the audit-fix comment above the effect in
+    // CardAttentionWalker.tsx.
     const row = needsTeamRow();
     const { rerender, onClose } = renderWalker([row]);
     expect(screen.getByRole("heading", { level: 3 })).toBeTruthy();
+    // Let the fixer's own mount-time focus (and the walker's one-shot open
+    // fallback) settle onto the chip first — a real animation frame always
+    // elapses before an operator's next action, and collapsing that gap is
+    // what let a STALE, already-scheduled fallback from the open effect win
+    // the race against this test's own assertion below.
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("BUTTON"));
 
     rerender(
       <CardAttentionWalker
@@ -625,6 +686,7 @@ describe("CardAttentionWalker — deferring", () => {
 
     expect(screen.getByText(/All clear/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Skip card/ })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("dialog")));
   });
 });
 

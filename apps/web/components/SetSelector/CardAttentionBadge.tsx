@@ -55,7 +55,15 @@ export default function CardAttentionBadge({
       role="img"
       aria-label={`Card ${cardNumber} needs attention: ${reasons}`}
       title={`Needs attention — ${reasons}`}
-      className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-amber-400/70 bg-amber-400/15 text-[11px] font-bold text-amber-600 dark:text-amber-300"
+      // a11y (1.4.3 / 1.4.11): the original light-mode pairing — border-
+      // amber-400/70 + text-amber-600 over this badge's own translucent
+      // bg-amber-400/15 (itself blended over the row's white background) —
+      // measured 1.48:1 (border, non-text, needs 3:1) and 2.92:1 (text, needs
+      // 4.5:1); both fail. Dark mode's amber-300/amber-400 pairing already
+      // passed (7.36:1 text, 4.90:1 border) and is unchanged. amber-700/
+      // amber-800 solid measure 5.03:1 and 6.48:1 against this same
+      // composited background, so both clear their thresholds with margin.
+      className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-amber-700 dark:border-amber-400/70 bg-amber-400/15 text-[11px] font-bold text-amber-800 dark:text-amber-300"
     >
       <span aria-hidden="true">!</span>
     </span>

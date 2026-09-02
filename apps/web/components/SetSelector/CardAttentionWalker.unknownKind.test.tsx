@@ -16,7 +16,7 @@
  * real.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -86,5 +86,67 @@ describe("CardAttentionWalker — a kind with no registered fixer", () => {
 
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Skip-ing between two cards neither of which has a fixer does not yank focus off Skip", async () => {
+    // Nothing unmounts on this transition — the Skip button is the SAME DOM
+    // node before and after (only its label/handler update), so focus is
+    // already exactly where it should be. The walker's advance-time focus
+    // effect (CardAttentionWalker.tsx) is guarded on `document.activeElement`
+    // actually having dropped to <body> for exactly this reason: an earlier,
+    // unconditional version of that fix would have yanked focus off Skip and
+    // onto the dialog container on every such advance, for no reason.
+    const onClose = vi.fn();
+    render(
+      <CardAttentionWalker
+        isOpen
+        cards={[
+          { _id: "card-1" as unknown as Id<"cardChecklist">, cardNumber: "1", cardName: "First" },
+          { _id: "card-2" as unknown as Id<"cardChecklist">, cardNumber: "2", cardName: "Second" },
+        ]}
+        onClose={onClose}
+      />,
+    );
+
+    const skip1 = screen.getByRole("button", { name: "Skip card 1 for now" });
+    skip1.focus();
+    fireEvent.click(skip1);
+
+    const skip2 = screen.getByRole("button", { name: "Skip card 2 for now" });
+    expect(skip2).toBe(skip1); // literally the same node, per the comment above
+
+    // Give the walker's own requestAnimationFrame-scheduled effect a full
+    // tick to run, so a regression that fires unconditionally has a chance
+    // to show up before we assert it did not.
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    });
+    expect(document.activeElement).toBe(skip2);
+  });
+
+  it("Skip-ing the LAST no-fixer card to all-clear parks focus on the dialog, not <body>", async () => {
+    const onClose = vi.fn();
+    render(
+      <CardAttentionWalker
+        isOpen
+        cards={[{ _id: "card-1" as unknown as Id<"cardChecklist">, cardNumber: "1", cardName: "Only" }]}
+        onClose={onClose}
+      />,
+    );
+
+    // Let the open effect's own one-shot fallback settle first — see the
+    // comment on the equivalent wait in CardAttentionWalker.test.tsx's
+    // "falls through to the all-clear step" test for why a real animation
+    // frame always elapses here in practice.
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("BUTTON"));
+
+    const skip = screen.getByRole("button", { name: "Skip card 1 for now" });
+    skip.focus();
+    fireEvent.click(skip);
+
+    expect(screen.getByText(/All clear/)).toBeTruthy();
+    // Skip itself unmounted (current is now null) — this IS a real unmount,
+    // unlike the no-fixer-to-no-fixer case above, so the park has to fire.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("dialog")));
   });
 });
