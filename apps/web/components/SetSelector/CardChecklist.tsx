@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useAction, useMutation } from "convex/react";
+import { useQuery, useAction, useMutation, useConvex } from "convex/react";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { api } from "../../convex/_generated/api";
@@ -12,6 +12,11 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
 import CardPairingModal, { type PairingCard } from "./CardPairingModal";
+import SyncReviewModal, {
+  needsSyncReview,
+  type SyncDiff,
+  type SyncReviewResult,
+} from "./sync-review-modal";
 import ChecklistSourceFilter, {
   Chip,
   type SourceChips,
@@ -72,8 +77,41 @@ type FetchPreview = {
     };
     unmatched?: "bsc" | "sl";
   }>;
+  /**
+   * NEO-203 — the operator's content-review answers, POSITIONALLY ALIGNED with
+   * `cards`.
+   *
+   * Not merged into the cards themselves because `resolveChecklistEntities`
+   * validates its payload against the strict `previewCardValidator`, which has
+   * no `applyFields`/`baseVersion`; only `commitCardChecklist` accepts those.
+   * So the decisions ride alongside and `runCommit` zips them on at the last
+   * moment. Empty on the unreviewed path, which is the fail-closed default the
+   * server also assumes.
+   */
+  decisions: Array<{ applyFields?: string[]; baseVersion?: number }>;
+  /** Rows the operator explicitly ticked for deletion in the review. */
+  operatorDeleteIds: Array<Id<"cardChecklist">>;
   unknownPlayers: string[];
   unknownTeams: string[];
+};
+
+/** The confirmed cards, waiting on the content-diff review. */
+type PendingReview = {
+  sportId: Id<"selectorOptions">;
+  cards: PairingCard[];
+  diff: SyncDiff;
+};
+
+/**
+ * NEO-203 — "the operator reviewed nothing", which is also what an unreviewed
+ * commit sends. Applies no content, deletes nothing, holds nothing back.
+ */
+const NO_SYNC_DECISIONS: SyncReviewResult = {
+  applyFieldsByIndex: {},
+  baseVersionByIndex: {},
+  operatorDeleteIds: [],
+  heldBackIndices: [],
+  conflictResolutions: [],
 };
 
 export default function CardChecklist({
@@ -125,6 +163,17 @@ export default function CardChecklist({
     api.selectorOptions.resolveChecklistEntities,
   );
   const addCustomCard = useMutation(api.selectorOptions.addCustomCard);
+  /**
+   * NEO-203 — the content diff is fetched ONCE, imperatively, between pairing
+   * and the entity wizard.
+   *
+   * A `useQuery` subscription would be wrong twice over: its argument is the
+   * whole confirmed card array (a new subscription key on every keystroke of
+   * the pairing session), and a live diff would move under the operator while
+   * they review it — the very thing `baseVersion` exists to detect. One
+   * snapshot, reviewed, then re-checked server-side at write time.
+   */
+  const convex = useConvex();
 
   const [syncing, setSyncing] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -149,6 +198,8 @@ export default function CardChecklist({
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
   const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(null);
+  // NEO-203 — confirmed cards parked in front of the content-diff review.
+  const [pendingReview, setPendingReview] = useState<PendingReview | null>(null);
   /**
    * NEO-137/NEO-195 — is a pairing review open?
    *
@@ -185,6 +236,9 @@ export default function CardChecklist({
     setSelectedCardId(null);
     setHideCrossListed(false);
     setPairingOpen(false);
+    // NEO-203: a diff computed against one variant's rows is meaningless
+    // against another's.
+    setPendingReview(null);
   }, [variantId]);
 
   // Virtuoso scroll handle + a one-shot flag so when the user adds a card
@@ -306,6 +360,14 @@ export default function CardChecklist({
   /**
    * Operator confirmed the pairing. Only now do the confirmed cards become
    * candidates for entity resolution and commit.
+   *
+   * NEO-203 inserts ONE step in front of that: the content-diff review. The
+   * cards are compared server-side against the NB rows they will land on, and
+   * if anything is genuinely different — or anything upstream stopped listing a
+   * card NeonBinder holds — the operator settles it before entity resolution
+   * runs. Skipped entirely when there is nothing to settle, on the same
+   * precedent as the `candidateCount === 0` short-circuit above: a dialog an
+   * operator can only click through is a step, not a safeguard.
    */
   const handlePairingConfirm = async (result: { cards: PairingCard[] }) => {
     // Guarded again rather than trusted from `handleSync`: this is also the
@@ -323,27 +385,80 @@ export default function CardChecklist({
     setPairingOpen(false);
     setCommitting(true);
     try {
-      const { unknownPlayers, unknownTeams, batchId } = await resolveEntities({
-        selectorOptionId: variantId,
-        sportId,
-        cards: result.cards,
-      });
-      const preview: FetchPreview = {
-        sportId,
-        batchId,
-        cards: result.cards,
-        unknownPlayers,
-        unknownTeams,
-      };
-      if (unknownPlayers.length === 0 && unknownTeams.length === 0) {
-        await runCommit(preview);
-      } else {
-        // Stash preview; the review wizard handles the rest.
-        setPendingPreview(preview);
-        setSyncMessage(
-          `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+      // Nothing incoming means nothing to diff, and — critically — it must NOT
+      // be read as "upstream removed every card": the custom-subtree path
+      // reaches here with an empty set by design.
+      if (result.cards.length > 0) {
+        const diff = await convex.query(
+          api.selectorOptions.diffChecklistAgainstExisting,
+          { selectorOptionId: variantId, cards: result.cards },
         );
+        if (needsSyncReview(diff)) {
+          setPendingReview({ sportId, cards: result.cards, diff });
+          return;
+        }
       }
+      await resolveAndCommit(sportId, result.cards, NO_SYNC_DECISIONS);
+    } catch (error) {
+      setSyncMessage(
+        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    } finally {
+      setCommitting(false);
+    }
+  };
+
+  /**
+   * The operator's answers on the review screen, applied to the confirmed set:
+   * held-back cards dropped, accepted fields attached, deletions carried
+   * through. Also the path taken when the review is skipped (Escape, "Skip
+   * changes", or nothing to review) — with an empty result, which applies
+   * nothing and deletes nothing.
+   */
+  const resolveAndCommit = async (
+    sportId: Id<"selectorOptions">,
+    cards: PairingCard[],
+    review: SyncReviewResult,
+  ) => {
+    const heldBack = new Set(review.heldBackIndices);
+    const kept = cards
+      .map((card, index) => ({ card, index }))
+      .filter(({ index }) => !heldBack.has(index));
+    const { unknownPlayers, unknownTeams, batchId } = await resolveEntities({
+      selectorOptionId: variantId,
+      sportId,
+      cards: kept.map(({ card }) => card),
+    });
+    const preview: FetchPreview = {
+      sportId,
+      batchId,
+      cards: kept.map(({ card }) => card),
+      decisions: kept.map(({ index }) => ({
+        applyFields: review.applyFieldsByIndex[index],
+        baseVersion: review.baseVersionByIndex[index],
+      })),
+      operatorDeleteIds: review.operatorDeleteIds,
+      unknownPlayers,
+      unknownTeams,
+    };
+    if (unknownPlayers.length === 0 && unknownTeams.length === 0) {
+      await runCommit(preview);
+    } else {
+      // Stash preview; the review wizard handles the rest.
+      setPendingPreview(preview);
+      setSyncMessage(
+        `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+      );
+    }
+  };
+
+  const handleSyncReviewDone = async (review: SyncReviewResult) => {
+    if (!pendingReview) return;
+    const { sportId, cards } = pendingReview;
+    setPendingReview(null);
+    setCommitting(true);
+    try {
+      await resolveAndCommit(sportId, cards, review);
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -359,8 +474,25 @@ export default function CardChecklist({
       const result = await commitChecklist({
         selectorOptionId: variantId,
         sportId: preview.sportId,
-        cards: preview.cards,
+        // NEO-203: the operator's per-field answer rides on the card, and ONLY
+        // where they actually accepted something. A card with no accepted
+        // fields is sent byte-identical to how it was sent before this feature
+        // existed, which is what keeps the unreviewed path fail-closed on both
+        // ends of the wire.
+        cards: preview.cards.map((card, i) => {
+          const decision = preview.decisions[i];
+          return decision?.applyFields?.length
+            ? {
+                ...card,
+                applyFields: decision.applyFields,
+                baseVersion: decision.baseVersion,
+              }
+            : card;
+        }),
         batchId: preview.batchId,
+        ...(preview.operatorDeleteIds.length > 0
+          ? { operatorDeleteIds: preview.operatorDeleteIds }
+          : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
       // staging rows have done their job. Dropping them here rather than
@@ -393,10 +525,41 @@ export default function CardChecklist({
       // NEO-92: no more "enriching in background" note — every created
       // player/team was already enriched during the review wizard, before
       // this commit ran.
+      // NEO-203: everything the commit had to REFUSE or defer gets said out
+      // loud, in the same banner as the count. Each of these is a decision the
+      // server made on the operator's behalf, and every one of them is
+      // invisible otherwise — a stale decision in particular looks exactly
+      // like "my edit didn't take" if nothing reports it. Appended only when
+      // non-zero, so an ordinary sync still reads "Saved N cards."
+      const notes: string[] = [];
+      if (result.operatorDeleted) {
+        notes.push(`Deleted ${result.operatorDeleted}.`);
+      }
+      if (result.staleDecisions) {
+        notes.push(
+          `${result.staleDecisions} changed under review — not applied; re-sync to see them again.`,
+        );
+      }
+      if (result.conflicts?.length) {
+        notes.push(
+          `${result.conflicts.length} linked to two cards — not saved.`,
+        );
+      }
+      if (result.collisionInserts) {
+        notes.push(`${result.collisionInserts} saved as new rows.`);
+      }
+      if (result.unmatchedExistingCount) {
+        notes.push(
+          `${result.unmatchedExistingCount} no longer listed upstream (kept).`,
+        );
+      }
       setSyncMessage(
-        discardError
-          ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
-          : `Saved ${result.count} cards.`,
+        [
+          discardError
+            ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
+            : `Saved ${result.count} cards.`,
+          ...notes,
+        ].join(" "),
       );
     } catch (error) {
       // NEO-189: the commit is phased server-side and labels its failures with
@@ -1010,6 +1173,21 @@ export default function CardChecklist({
               ? { ready: liveCandidates.ready, total: liveCandidates.total }
               : undefined
           }
+        />
+      )}
+
+      {pendingReview && (
+        <SyncReviewModal
+          isOpen
+          diff={pendingReview.diff}
+          setLabel={variantRow?.value}
+          saving={committing}
+          // Escape and "Skip changes" are the SAME non-destructive forward
+          // step: carry on with nothing extra applied. Deliberately not the
+          // pairing modal's abort — see the note at the top of
+          // sync-review-modal.tsx.
+          onSkip={() => void handleSyncReviewDone(NO_SYNC_DECISIONS)}
+          onConfirm={(review) => void handleSyncReviewDone(review)}
         />
       )}
 

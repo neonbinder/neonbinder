@@ -75,6 +75,7 @@ vi.mock("../../convex/_generated/api", () => ({
 const mockFetchChecklist = vi.fn();
 const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
+const mockDiffChecklist = vi.fn();
 const mockDiscardCandidates = vi.fn();
 
 // Mutable holders read lazily by the mocked hooks at call time — same shape
@@ -112,6 +113,12 @@ vi.mock("convex/react", () => ({
     if (ref === "commitCardChecklist") return mockCommitChecklist;
     return vi.fn();
   },
+  // NEO-203: the content-diff review is a ONE-SHOT query (see the note on
+  // `useConvex` in CardChecklist.tsx — a subscription keyed on the whole
+  // confirmed card array would re-diff under the operator mid-review). Every
+  // flow in this file drives the zero-candidate path, which short-circuits
+  // before the diff is ever requested, so this only has to exist.
+  useConvex: () => ({ query: mockDiffChecklist }),
 }));
 
 // ---------------------------------------------------------------------------

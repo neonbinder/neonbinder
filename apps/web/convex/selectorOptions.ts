@@ -47,7 +47,12 @@ import { runWithOccRetry } from "../lib/errors/occ-retry";
 // NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
 // An auto-matched disagreement and a manual one have to be the same thing —
 // see the note in lib/cards/card-name.ts.
-import { conflictingNames } from "../lib/cards/card-name";
+// NEO-203: `nameKey` is the SAME case/whitespace/punctuation/diacritic fold
+// the pairing modal already judges "do these two names mean the same thing?"
+// with. The content-diff review reuses it verbatim to decide whether a changed
+// field is a reformatting or a rewrite — a second fold would mean two screens
+// in one pipeline disagreeing about what counts as cosmetic.
+import { conflictingNames, nameKey } from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
@@ -284,6 +289,54 @@ function sameContentValue(stored: unknown, incoming: unknown): boolean {
     );
   }
   return stored === incoming;
+}
+
+/**
+ * NEO-203 — how much a re-sync is trusted to change one field, unreviewed.
+ *
+ * TIER 1 — trust-critical. These are what a listing is generated FROM and what
+ * a buyer sees: who is on the card, which team, whether it is a rookie, a
+ * relic, an autograph, numbered, or a named variation. A marketplace
+ * "correcting" any of them over an operator's own answer is the failure this
+ * ticket exists to prevent, so the review UI never pre-checks a tier-1 change.
+ *
+ * TIER 2 — `cardName` and `attributes`. Substantive when they change meaning,
+ * routine when they change spelling.
+ *
+ * There is no tier 3 field, because tier 3 is not a field property: it is the
+ * CHANGE being a pure case/whitespace/punctuation/diacritic reformatting
+ * ("Jose" → "José", "Ken Griffey Jr" → "Ken Griffey Jr."). That is decided per
+ * diff entry via `foldEqual`, and a fold-equal change is safe to accept on ANY
+ * field including a tier-1 one — the card is still saying the same thing. So
+ * the tier here drives PRESENTATION and the formatting-only/content-changes
+ * split; `foldEqual` drives the default checkbox state.
+ */
+const NB_CONTENT_FIELD_TIER: Record<NbContentField, 1 | 2> = {
+  cardName: 2,
+  attributes: 2,
+  playerIds: 1,
+  teamOnCardIds: 1,
+  isRookie: 1,
+  isRelic: 1,
+  printRun: 1,
+  autographType: 1,
+  cardVariation: 1,
+};
+
+/**
+ * NEO-203 — one content value as the review UI has to render it.
+ *
+ * Every NB content field ends up a string on the wire because the review is
+ * a git-style old/new comparison and the fields are heterogeneous (string
+ * arrays, booleans, a number, plain strings). Empty comes back as the empty
+ * string, which the UI paints as an em dash — "this card says nothing here" is
+ * a real and different statement from "this card says no".
+ */
+function displayContentValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  return String(value);
 }
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
@@ -5617,6 +5670,158 @@ export const CARDS_PER_COMMIT_CHUNK = 150;
 export const MAX_OPERATOR_DELETE_IDS = 1000;
 
 /**
+ * The stored-row shape `buildMatchMaps` needs. Deliberately narrower than
+ * `Doc<"cardChecklist">` so a read-only caller can hand it a projection.
+ */
+type MatchMapRow = {
+  _id: Id<"cardChecklist">;
+  cardNumber: string;
+  platformData?: Doc<"cardChecklist">["platformData"];
+};
+
+/** Exactly the half of `CommitPrelude` that `resolveExistingIds` consumes. */
+type MatchMaps = {
+  existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
+  existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
+  existingIdBySlotNumber: Array<{ key: string; id: Id<"cardChecklist"> }>;
+  existingIdByNumberNoRef: Array<{
+    cardNumber: string;
+    id: Id<"cardChecklist">;
+  }>;
+  ambiguousMatchKeys: string[];
+  slotBySetId: Array<{ side: MatchSide; setId: string; slot: string }>;
+};
+
+/**
+ * NEO-203 — build the four match maps from a checklist snapshot.
+ *
+ * ## Why this is its own function
+ *
+ * TWO callers, and they must never disagree: `commitCardChecklistPrelude`
+ * (which WRITES) and `diffChecklistAgainstExisting` (the read-only review the
+ * operator is shown before that write). If the review resolved matches by one
+ * rule and the commit by another, the operator would be accepting a diff
+ * against a row the commit then declines to touch — which is precisely the
+ * "silent, count-preserving corruption" this ticket exists to remove, wearing
+ * a review UI. So the map-building lives here, `resolveExistingIds` is already
+ * pure, and the two phases share both. Do NOT inline either back into a
+ * caller.
+ *
+ * Pure and read-only: it takes a snapshot and a leaf node, and touches no
+ * database. The snapshot must be the `by_selector_option` collect for the row
+ * being synced — every map here is per-selectorOption and per-side, never
+ * global.
+ *
+ * ## The rule, in one line
+ *
+ * Every tier, refs included, is exactly-one-or-nothing. This used to be one
+ * map, cardNumber → id, last row with a given number wins. Card numbers are
+ * not unique at ANY scope — not across the source sets a variant fans out to,
+ * and not even within one set (a 2025 release ships a veteran #1 and a rookie
+ * #1, two distinct cards that are not variations of each other) — so that key
+ * silently merged unrelated cards on every re-sync: one row patched twice,
+ * another left stale, the row count unchanged.
+ *
+ * What identifies a marketplace row is its REF, which is what the rest of this
+ * codebase already links on (NEO-137's `platformData`). The number-based tiers
+ * survive the one case a ref cannot — SportLots' ref IS the card description
+ * (NEO-91), so an upstream description fix changes it — and they are guarded
+ * so hard that they match only when the answer is unarguable.
+ *
+ * Two stored rows carrying one ref is already-corrupt data — very likely this
+ * bug's own residue, and duplicate SportLots refs occur upstream too (SL's ref
+ * IS the description, so two identically-described cards are genuinely
+ * indistinguishable; the fetch path reports those as `indistinguishableSlRefs`).
+ * Picking one of the two is the silent merge this ticket removes, so the key is
+ * withheld and reported in `ambiguousMatchKeys` instead.
+ */
+function buildMatchMaps(
+  existingCards: MatchMapRow[],
+  leafNode: Doc<"selectorOptions"> | null,
+): MatchMaps {
+  const byBscRef = new Map<string, Array<Id<"cardChecklist">>>();
+  const bySlRef = new Map<string, Array<Id<"cardChecklist">>>();
+  const bySlotNumber = new Map<string, Array<Id<"cardChecklist">>>();
+  const byNumberNoRef = new Map<string, Array<Id<"cardChecklist">>>();
+  const push = (
+    m: Map<string, Array<Id<"cardChecklist">>>,
+    k: string,
+    id: Id<"cardChecklist">,
+  ) => {
+    const bucket = m.get(k);
+    if (bucket) bucket.push(id);
+    else m.set(k, [id]);
+  };
+  for (const row of existingCards) {
+    const bscRef = row.platformData?.bsc?.ref;
+    const slRef = row.platformData?.sportlots?.ref;
+    if (bscRef) push(byBscRef, bscRef, row._id);
+    if (slRef) push(bySlRef, slRef, row._id);
+    for (const side of MATCH_SIDES) {
+      const src = row.platformData?.[side]?.src;
+      if (src) {
+        push(bySlotNumber, slotNumberMatchKey(side, src, row.cardNumber), row._id);
+      }
+    }
+    if (!bscRef && !slRef) push(byNumberNoRef, row.cardNumber, row._id);
+  }
+
+  const ambiguousMatchKeys: string[] = [];
+  // Exactly-one or nothing, on every tier. A key several rows hold is withheld
+  // from the map and reported instead — the action logs the report, so "this
+  // card was treated as new" always has a visible reason.
+  //
+  // Ref keys are TRUNCATED in the report: a SportLots ref is the card
+  // description, unbounded upstream text, and this string goes to a log.
+  const unambiguous = (
+    m: Map<string, Array<Id<"cardChecklist">>>,
+    label: string,
+  ): Array<[string, Id<"cardChecklist">]> => {
+    const out: Array<[string, Id<"cardChecklist">]> = [];
+    for (const [key, ids] of m) {
+      if (ids.length === 1) out.push([key, ids[0]]);
+      else ambiguousMatchKeys.push(`${label}:${truncateForLog(key)}`);
+    }
+    return out;
+  };
+
+  const existingIdByBscRef = unambiguous(byBscRef, "bscRef");
+  const existingIdBySlRef = unambiguous(bySlRef, "slRef");
+  const existingIdBySlotNumber = unambiguous(bySlotNumber, "slotNumber");
+  const existingIdByNumberNoRef = unambiguous(byNumberNoRef, "numberNoRef");
+
+  // The parent row's ATTACHED marketplace sets. Read off the SAME node
+  // `resolveCardSlots` reads, so the key the cascade builds for an incoming
+  // card and the key built here for a stored one describe the same slot. Never
+  // allocates — an unattached source set simply yields no slot, and a card from
+  // it skips tier 2 entirely.
+  const slotBySetId: Array<{ side: MatchSide; setId: string; slot: string }> =
+    [];
+  if (leafNode) {
+    for (const side of MATCH_SIDES) {
+      for (const { slot, id } of slotEntries(leafNode, side)) {
+        slotBySetId.push({ side, setId: id, slot });
+      }
+    }
+  }
+
+  return {
+    existingIdByBscRef: existingIdByBscRef.map(([ref, id]) => ({ ref, id })),
+    existingIdBySlRef: existingIdBySlRef.map(([ref, id]) => ({ ref, id })),
+    existingIdBySlotNumber: existingIdBySlotNumber.map(([key, id]) => ({
+      key,
+      id,
+    })),
+    existingIdByNumberNoRef: existingIdByNumberNoRef.map(([cardNumber, id]) => ({
+      cardNumber,
+      id,
+    })),
+    ambiguousMatchKeys,
+    slotBySetId,
+  };
+}
+
+/**
  * NEO-92/NEO-189 — the once-per-commit half of `commitCardChecklist`.
  *
  * Everything here is per-COMMIT, not per-card, so it runs exactly once no
@@ -6013,96 +6218,12 @@ export const commitCardChecklistPrelude = internalMutation({
 
     // ── NEO-203: the match maps ─────────────────────────────────────────────
     //
-    // This used to be one map, cardNumber → id, last row with a given number
-    // wins. Card numbers are not unique at ANY scope — not across the source
-    // sets a variant fans out to, and not even within one set (a 2025 release
-    // ships a veteran #1 and a rookie #1, two distinct cards that are not
-    // variations of each other) — so that key silently merged unrelated cards
-    // on every re-sync: one row patched twice, another left stale, the row
-    // count unchanged.
-    //
-    // What identifies a marketplace row is its REF, which is exactly what the
-    // rest of this codebase already links on (NEO-137's `platformData`). The
-    // number-based tiers below survive the one case a ref cannot — SportLots'
-    // ref IS the card description (NEO-91), so an upstream description fix
-    // changes it — and they are guarded so hard that they match only when the
-    // answer is unarguable.
-    //
-    // EVERY tier, refs included, is exactly-one-or-nothing. Two stored rows
-    // carrying one ref is already-corrupt data — very likely this bug's own
-    // residue, and duplicate SportLots refs occur upstream too (SL's ref IS
-    // the description, so two identically-described cards are genuinely
-    // indistinguishable; the fetch path reports those as
-    // `indistinguishableSlRefs`). Picking one of the two is the silent merge
-    // this ticket removes, so the key is withheld and reported instead.
-    const byBscRef = new Map<string, Array<Id<"cardChecklist">>>();
-    const bySlRef = new Map<string, Array<Id<"cardChecklist">>>();
-    const bySlotNumber = new Map<string, Array<Id<"cardChecklist">>>();
-    const byNumberNoRef = new Map<string, Array<Id<"cardChecklist">>>();
-    const push = (
-      m: Map<string, Array<Id<"cardChecklist">>>,
-      k: string,
-      id: Id<"cardChecklist">,
-    ) => {
-      const bucket = m.get(k);
-      if (bucket) bucket.push(id);
-      else m.set(k, [id]);
-    };
-    for (const row of existingCards) {
-      const bscRef = row.platformData?.bsc?.ref;
-      const slRef = row.platformData?.sportlots?.ref;
-      if (bscRef) push(byBscRef, bscRef, row._id);
-      if (slRef) push(bySlRef, slRef, row._id);
-      for (const side of MATCH_SIDES) {
-        const src = row.platformData?.[side]?.src;
-        if (src) {
-          push(bySlotNumber, slotNumberMatchKey(side, src, row.cardNumber), row._id);
-        }
-      }
-      if (!bscRef && !slRef) push(byNumberNoRef, row.cardNumber, row._id);
-    }
-
-    const ambiguousMatchKeys: string[] = [];
-    // Exactly-one or nothing, on every tier. A key several rows hold is
-    // withheld from the map and reported instead — the action logs the report,
-    // so "this card was treated as new" always has a visible reason.
-    //
-    // Ref keys are TRUNCATED in the report: a SportLots ref is the card
-    // description, unbounded upstream text, and this string goes to a log.
-    const unambiguous = (
-      m: Map<string, Array<Id<"cardChecklist">>>,
-      label: string,
-    ): Array<[string, Id<"cardChecklist">]> => {
-      const out: Array<[string, Id<"cardChecklist">]> = [];
-      for (const [key, ids] of m) {
-        if (ids.length === 1) out.push([key, ids[0]]);
-        else ambiguousMatchKeys.push(`${label}:${truncateForLog(key)}`);
-      }
-      return out;
-    };
-
-    const existingIdByBscRef = unambiguous(byBscRef, "bscRef");
-    const existingIdBySlRef = unambiguous(bySlRef, "slRef");
-    const existingIdBySlotNumber = unambiguous(bySlotNumber, "slotNumber");
-    const existingIdByNumberNoRef = unambiguous(byNumberNoRef, "numberNoRef");
-
-    // The parent row's ATTACHED marketplace sets. Read off the SAME node
-    // `resolveCardSlots` reads, so the key the action builds for an incoming
-    // card and the key the prelude built for a stored one describe the same
-    // slot. Never allocates — an unattached source set simply yields no slot,
-    // and a card from it skips tier 2 entirely.
-    const slotBySetId: Array<{
-      side: MatchSide;
-      setId: string;
-      slot: string;
-    }> = [];
-    if (leafNode) {
-      for (const side of MATCH_SIDES) {
-        for (const { slot, id } of slotEntries(leafNode, side)) {
-          slotBySetId.push({ side, setId: id, slot });
-        }
-      }
-    }
+    // Built by `buildMatchMaps`, which is SHARED with the read-only review
+    // query `diffChecklistAgainstExisting` — see the note there for why the
+    // rule cannot be allowed to live in two places. The maps are derived
+    // entirely from the `existingCards` snapshot read above plus the leaf
+    // node, so this phase does no extra database work for them.
+    const matchMaps = buildMatchMaps(existingCards, leafNode);
 
     return {
       userId,
@@ -6121,17 +6242,7 @@ export const commitCardChecklistPrelude = internalMutation({
       existingCustomCardNumbers: existingCards
         .filter((c) => c.isCustom)
         .map((c) => c.cardNumber),
-      existingIdByBscRef: existingIdByBscRef.map(([ref, id]) => ({ ref, id })),
-      existingIdBySlRef: existingIdBySlRef.map(([ref, id]) => ({ ref, id })),
-      existingIdBySlotNumber: existingIdBySlotNumber.map(([key, id]) => ({
-        key,
-        id,
-      })),
-      existingIdByNumberNoRef: existingIdByNumberNoRef.map(
-        ([cardNumber, id]) => ({ cardNumber, id }),
-      ),
-      ambiguousMatchKeys,
-      slotBySetId,
+      ...matchMaps,
     };
   },
 });
@@ -7032,6 +7143,424 @@ function resolveExistingIds(
 
   return { existingIdByIndex, conflicts, collisions, matchedByTier };
 }
+
+// ─── NEO-203 phase C: the content-diff review ──────────────────────────────
+
+/** One changed NB-owned field, as the review renders it. */
+const syncDiffFieldValidator = v.object({
+  /** A member of `NB_CONTENT_FIELDS`. */
+  name: v.string(),
+  /** 1 = trust-critical, 2 = substantive-or-cosmetic. See NB_CONTENT_FIELD_TIER. */
+  tier: v.number(),
+  oldValue: v.string(),
+  newValue: v.string(),
+  /**
+   * Which marketplace this card came from. Per-CARD, not per-field: the
+   * BSC↔SportLots merge happens client-side in `CardPairingModal.mergePair`
+   * and does not record which side won each field, so a per-field claim would
+   * be a guess dressed as provenance.
+   */
+  source: v.union(
+    v.literal("bsc"),
+    v.literal("sportlots"),
+    v.literal("both"),
+    v.literal("none"),
+  ),
+  /**
+   * Do the two values fold to the same thing under `nameKey` — i.e. is this a
+   * reformatting rather than a rewrite? Drives the default checkbox state.
+   */
+  foldEqual: v.boolean(),
+});
+
+const syncDiffValidator = v.object({
+  cards: v.array(
+    v.object({
+      /** Index into the `cards` argument, so the caller can address it back. */
+      index: v.number(),
+      cardNumber: v.string(),
+      cardName: v.string(),
+      bucket: v.union(
+        v.literal("identical"),
+        v.literal("formattingOnly"),
+        v.literal("contentChanges"),
+        v.literal("new"),
+      ),
+      existingId: v.optional(v.id("cardChecklist")),
+      /** The matched row's `lastUpdated` as of this diff — the card's `baseVersion`. */
+      baseVersion: v.optional(v.number()),
+      fields: v.array(syncDiffFieldValidator),
+    }),
+  ),
+  /**
+   * Existing non-custom rows no incoming card matched, split by whether their
+   * absence is actually evidence of removal — see the handler.
+   */
+  removedUpstream: v.object({
+    fullyOrphaned: v.array(
+      v.object({
+        id: v.id("cardChecklist"),
+        cardNumber: v.string(),
+        cardName: v.string(),
+        sides: v.array(v.union(v.literal("bsc"), v.literal("sportlots"))),
+      }),
+    ),
+    partialOrphanCount: v.number(),
+  }),
+  /** Cards whose two refs point at two different NB rows. */
+  conflicts: v.array(
+    v.object({
+      index: v.number(),
+      cardNumber: v.string(),
+      cardName: v.string(),
+      bsc: v.object({
+        rowId: v.id("cardChecklist"),
+        cardNumber: v.string(),
+        cardName: v.string(),
+      }),
+      sportlots: v.object({
+        rowId: v.id("cardChecklist"),
+        cardNumber: v.string(),
+        cardName: v.string(),
+      }),
+    }),
+  ),
+  /** Cards that lost a match collision and will be inserted as their own row. */
+  collisionInsertCount: v.number(),
+  /** Match keys withheld because more than one row holds them. COUNT ONLY — the
+   * keys embed marketplace refs (a SportLots ref is the whole card description)
+   * and have no business crossing to a browser. */
+  ambiguousMatchCount: v.number(),
+});
+
+/**
+ * NEO-203 phase C — what a re-sync would CHANGE, computed server-side.
+ *
+ * ## Why a query and not fields on `checklistCandidates`
+ *
+ * The obvious alternative was to thread the diff onto the streamed candidate
+ * rows, which already carry every card to the client. It is wrong for one
+ * decisive reason: a candidate row is PRE-PAIRING. `CardPairingModal` merges a
+ * BSC row and a SportLots row into ONE card (`mergePair`), lets the operator
+ * settle a name conflict, hand-link two singles, and discard everything left
+ * over. The card whose content the operator must review is the merged,
+ * confirmed one — which does not exist until Confirm is pressed, and is not
+ * any single candidate row. Diffing candidates would show the operator a
+ * comparison against a card that is never written.
+ *
+ * There is also nothing left to stream by this point: pairing is confirmed,
+ * the whole confirmed set is in hand, and the next steps (entity review,
+ * commit) are already imperative one-shot calls. So this is a one-shot query
+ * called from `CardChecklist`'s pipeline between pairing and the entity
+ * wizard, and `checklistCandidates` needs no new fields at all — the least
+ * churn of the two options.
+ *
+ * ## Why it is server-side
+ *
+ * A client-computed diff would be a claim about rows the client cannot see,
+ * and `commitCardChecklist` would then be trusting the operator's browser
+ * about which stored row an incoming card is. It matches with
+ * `buildMatchMaps` + `resolveExistingIds` — literally the same two functions
+ * the commit runs — so what the operator reviews is what the commit will
+ * match. `baseVersion` is the matched row's `lastUpdated` AT THIS INSTANT; the
+ * chunk re-checks it inside its own writing transaction, so a row that moves
+ * between review and commit applies nothing and is reported.
+ *
+ * ## Player and team fields are diffed BY NAME
+ *
+ * A stored row holds `playerIds`/`teamOnCardIds`; an incoming card holds
+ * names, and the ids it would resolve to do not exist yet — `EntityReviewWizard`
+ * creates them AFTER this step. Resolving names to ids here would therefore be
+ * both wrong (the answer changes before the commit) and expensive (one indexed
+ * lookup per distinct name). Names are also what an operator can actually
+ * judge. The commit re-diffs on IDS before writing, so a disagreement between
+ * the two views can only ever DROP a write, never add one.
+ *
+ * ## Bounded
+ *
+ * `assertCardBatchWithinLimits` caps the payload; the reads are one
+ * `by_selector_option` collect plus one `db.get` per DISTINCT player/team id on
+ * MATCHED rows only.
+ */
+export const diffChecklistAgainstExisting = query({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    cards: v.array(previewCardValidator),
+  },
+  returns: syncDiffValidator,
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    assertCardBatchWithinLimits(args.cards, "diffChecklistAgainstExisting");
+
+    const leafNode = await ctx.db.get(args.selectorOptionId);
+    const existingCards = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.selectorOptionId),
+      )
+      .collect();
+
+    // The SAME two functions the commit runs. See `buildMatchMaps`.
+    const matchMaps = buildMatchMaps(existingCards, leafNode);
+    const match = resolveExistingIds(args.cards, matchMaps);
+    const ambiguousMatchCount = matchMaps.ambiguousMatchKeys.length;
+
+    const rowById = new Map<string, Doc<"cardChecklist">>();
+    for (const row of existingCards) rowById.set(row._id, row);
+
+    const matchedIds = new Set<string>();
+    for (const id of match.existingIdByIndex) if (id) matchedIds.add(id);
+
+    // Names for the entity ids on MATCHED rows only — deduped, so a 900-card
+    // set costs at most one read per distinct player and team it references,
+    // not one per card.
+    const neededPlayerIds = new Set<string>();
+    const neededTeamIds = new Set<string>();
+    for (const id of matchedIds) {
+      const row = rowById.get(id);
+      if (!row) continue;
+      for (const p of row.playerIds ?? []) neededPlayerIds.add(p);
+      for (const t of row.teamOnCardIds ?? []) neededTeamIds.add(t);
+    }
+    const playerNameById = new Map<string, string>();
+    for (const id of neededPlayerIds) {
+      const doc = await ctx.db.get(id as Id<"players">);
+      if (doc) playerNameById.set(id, doc.name);
+    }
+    const teamNameById = new Map<string, string>();
+    for (const id of neededTeamIds) {
+      const doc = await ctx.db.get(id as Id<"teams">);
+      if (doc) teamNameById.set(id, doc.name);
+    }
+    // A dangling id is data the operator needs to SEE, not silently drop: a
+    // vanished player must not make a card look like it agrees with upstream.
+    const nameOf = (map: Map<string, string>, id: string) =>
+      map.get(id) ?? "(missing)";
+
+    const conflictIndices = new Set(match.conflicts.map((c) => c.index));
+
+    const cards: Array<{
+      index: number;
+      cardNumber: string;
+      cardName: string;
+      bucket: "identical" | "formattingOnly" | "contentChanges" | "new";
+      existingId?: Id<"cardChecklist">;
+      baseVersion?: number;
+      fields: Array<{
+        name: string;
+        tier: number;
+        oldValue: string;
+        newValue: string;
+        source: "bsc" | "sportlots" | "both" | "none";
+        foldEqual: boolean;
+      }>;
+    }> = [];
+
+    args.cards.forEach((c, index) => {
+      // A conflicted card is reported on its own below; it is not a diff, it
+      // is a question about identity that has to be settled first.
+      if (conflictIndices.has(index)) return;
+
+      const hasBsc = !!c.platformData.bsc?.ref;
+      const hasSl = !!c.platformData.sportlots?.ref;
+      const source: "bsc" | "sportlots" | "both" | "none" =
+        hasBsc && hasSl ? "both" : hasBsc ? "bsc" : hasSl ? "sportlots" : "none";
+
+      const existingId = match.existingIdByIndex[index];
+      const row = existingId ? rowById.get(existingId) : undefined;
+      if (!row) {
+        cards.push({
+          index,
+          cardNumber: c.cardNumber,
+          cardName: c.cardName,
+          bucket: "new",
+          fields: [],
+        });
+        return;
+      }
+
+      const storedPlayers = (row.playerIds ?? []).map((id) =>
+        nameOf(playerNameById, id),
+      );
+      const storedTeams = (row.teamOnCardIds ?? []).map((id) =>
+        nameOf(teamNameById, id),
+      );
+      const incomingPlayers = (c.players ?? [])
+        .map((p) => p.trim())
+        .filter(Boolean);
+      // Same precedence the commit action uses to build `teamOnCardIds`.
+      const incomingTeamSources = c.teams?.length
+        ? c.teams
+        : c.team
+          ? [c.team]
+          : [];
+      const incomingTeams = incomingTeamSources
+        .map((t) => t.trim())
+        .filter(Boolean);
+      // The commit merges an `unmatched-<side>` marker into `attributes` for a
+      // deliberately-kept single-marketplace card, so the diff has to compare
+      // against the same value the chunk would write — otherwise every kept
+      // single would show a permanent, un-actionable attributes change.
+      const incomingAttributes = c.unmatched
+        ? Array.from(
+            new Set([...(c.attributes ?? []), `unmatched-${c.unmatched}`]),
+          )
+        : c.attributes;
+
+      const comparisons: Array<{
+        name: NbContentField;
+        stored: unknown;
+        incoming: unknown;
+      }> = [
+        { name: "cardName", stored: row.cardName, incoming: c.cardName },
+        { name: "playerIds", stored: storedPlayers, incoming: incomingPlayers },
+        {
+          name: "teamOnCardIds",
+          stored: storedTeams,
+          incoming: incomingTeams,
+        },
+        {
+          name: "attributes",
+          stored: row.attributes,
+          incoming: incomingAttributes,
+        },
+        { name: "isRookie", stored: row.isRookie, incoming: c.isRookie },
+        { name: "isRelic", stored: row.isRelic, incoming: c.isRelic },
+        { name: "printRun", stored: row.printRun, incoming: c.printRun },
+        {
+          name: "autographType",
+          stored: row.autographType,
+          incoming: c.autographType,
+        },
+        {
+          name: "cardVariation",
+          stored: row.cardVariation,
+          incoming: c.cardVariation,
+        },
+      ];
+
+      const fields = comparisons
+        .filter(({ stored, incoming }) => !sameContentValue(stored, incoming))
+        .map(({ name, stored, incoming }) => {
+          const oldValue = displayContentValue(stored);
+          const newValue = displayContentValue(incoming);
+          return {
+            name,
+            tier: NB_CONTENT_FIELD_TIER[name],
+            oldValue,
+            newValue,
+            source,
+            foldEqual: nameKey(oldValue) === nameKey(newValue),
+          };
+        });
+
+      cards.push({
+        index,
+        cardNumber: c.cardNumber,
+        cardName: c.cardName,
+        bucket:
+          fields.length === 0
+            ? "identical"
+            : fields.every((f) => f.foldEqual)
+              ? "formattingOnly"
+              : "contentChanges",
+        existingId: row._id,
+        baseVersion: row.lastUpdated,
+        fields,
+      });
+    });
+
+    // ── What upstream no longer lists ───────────────────────────────────────
+    //
+    // A row is deletion-ELIGIBLE only when its absence is actually evidence
+    // that it was removed. Two things can produce an unmatched row that was
+    // NOT removed, and both must stay out of the delete list:
+    //
+    //  1. The side it is linked to did not come back. `fetchCardChecklist`
+    //     tolerates a single-side failure, so a SportLots outage makes every
+    //     SL-linked row look orphaned. A side counts as COVERED only if at
+    //     least one incoming card carries a ref on it.
+    //  2. Its identity is contested — its ref appears in a cross-side conflict
+    //     or it lost a match collision. Upstream still names it; what is
+    //     unresolved is which row that name belongs to.
+    //
+    // A row linked to BOTH sides where only one came back is exactly the
+    // spec's PARTIAL orphan: still live on one marketplace, so it gets a
+    // lighter treatment in the checklist, never a delete prompt.
+    const coveredSides: Record<MatchSide, boolean> = {
+      bsc: false,
+      sportlots: false,
+    };
+    for (const c of args.cards) {
+      if (c.platformData.bsc?.ref) coveredSides.bsc = true;
+      if (c.platformData.sportlots?.ref) coveredSides.sportlots = true;
+    }
+    const contested = new Set<string>();
+    for (const cf of match.conflicts) {
+      contested.add(cf.bscRowId);
+      contested.add(cf.slRowId);
+    }
+    for (const col of match.collisions) contested.add(col.existingId);
+
+    const fullyOrphaned: Array<{
+      id: Id<"cardChecklist">;
+      cardNumber: string;
+      cardName: string;
+      sides: MatchSide[];
+    }> = [];
+    let partialOrphanCount = 0;
+    for (const row of existingCards) {
+      // Custom cards are NeonBinder's own and have no upstream that could have
+      // dropped them — the finalize phase refuses to delete one either way.
+      if (row.isCustom) continue;
+      if (matchedIds.has(row._id)) continue;
+      const linked = MATCH_SIDES.filter((s) => !!row.platformData?.[s]?.ref);
+      // A row with no ref on either side (custom-shaped legacy data) has no
+      // linkage evidence at all, so its absence proves nothing.
+      const eligible =
+        linked.length > 0 &&
+        linked.every((s) => coveredSides[s]) &&
+        !contested.has(row._id);
+      if (eligible) {
+        fullyOrphaned.push({
+          id: row._id,
+          cardNumber: row.cardNumber,
+          cardName: row.cardName,
+          sides: linked,
+        });
+      } else {
+        partialOrphanCount++;
+      }
+    }
+    fullyOrphaned.sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
+
+    return {
+      cards,
+      removedUpstream: { fullyOrphaned, partialOrphanCount },
+      conflicts: match.conflicts.map((cf) => {
+        const bscRow = rowById.get(cf.bscRowId);
+        const slRow = rowById.get(cf.slRowId);
+        return {
+          index: cf.index,
+          cardNumber: cf.cardNumber,
+          cardName: args.cards[cf.index]?.cardName ?? "",
+          bsc: {
+            rowId: cf.bscRowId,
+            cardNumber: bscRow?.cardNumber ?? "",
+            cardName: bscRow?.cardName ?? "",
+          },
+          sportlots: {
+            rowId: cf.slRowId,
+            cardNumber: slRow?.cardNumber ?? "",
+            cardName: slRow?.cardName ?? "",
+          },
+        };
+      }),
+      collisionInsertCount: match.collisions.length,
+      ambiguousMatchCount,
+    };
+  },
+});
 
 /**
  * Commit a fetched checklist preview. Every player/team name that isn't

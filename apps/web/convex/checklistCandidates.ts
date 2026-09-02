@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { requireAdmin, getCurrentUserId } from "./auth";
+import { requireAdmin, getCurrentUserIdentity } from "./auth";
 import { cardPlatformWireDataValidator } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
 
@@ -217,11 +217,27 @@ export const resolveCandidateTeams = internalMutation({
  * not need a team, and Confirm is separately blocked until the fetch finishes.
  * `ready` counts how many have their team so the UI can show enrichment
  * progress.
+ *
+ * ## NEO-203 — admin-gated, but still non-throwing
+ *
+ * Every other function in the checklist pipeline is `requireAdmin`; this one
+ * was only ever auth-SCOPED, which was a gap rather than a decision — the
+ * cards it hands back are a privileged marketplace fetch, and set building is
+ * an admin surface end to end.
+ *
+ * It checks the role WITHOUT throwing, because the not-yet-authenticated case
+ * is real and normal here: this query is reactive and the modal mounts before
+ * auth necessarily resolves, so a throw surfaces as a broken subscription
+ * rather than as a permission error. An empty batch is the honest answer for
+ * "nobody who may see this is asking" — and a non-admin cannot write candidate
+ * rows in the first place (`startCandidateBatch` runs behind
+ * `fetchCardChecklist`'s own `requireAdmin`), so the scope and the gate agree.
  */
 export const getReadyCandidates = query({
   args: { selectorOptionId: v.id("selectorOptions") },
-  // Deliberately public-by-shape but self-scoping: the handler reads the
-  // caller's identity and can only ever return rows that caller wrote.
+  // Deliberately public-by-shape but self-scoping AND admin-gated: the handler
+  // reads the caller's identity and role, and can only ever return rows an
+  // admin caller wrote themselves.
   returns: v.object({
     batchId: v.optional(v.string()),
     total: v.number(),
@@ -252,10 +268,11 @@ export const getReadyCandidates = query({
     ),
   }),
   handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
+    const identity = await getCurrentUserIdentity(ctx);
+    if (!identity || identity.role !== "admin") {
       return { batchId: undefined, total: 0, ready: 0, cards: [] };
     }
+    const userId = identity.userId;
     const rows = await ctx.db
       .query("checklistCandidates")
       .withIndex("by_selector_option_and_user", (q) =>
