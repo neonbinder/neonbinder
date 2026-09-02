@@ -23,6 +23,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
+import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 
@@ -372,6 +373,138 @@ describe("updateCard and the no-team confirmation", () => {
 });
 
 // ===========================================================================
+// updateCard — MAX_CARD_TEAMS is server-enforced, not just a UI cap
+// ===========================================================================
+
+/**
+ * `MissingTeamFixer.tsx`'s 8-team cap is advisory: it stops the operator from
+ * building a silly write in the UI, but nothing before this validation
+ * stopped a direct `updateCard` call (or a future caller that forgets the
+ * client-side cap) from writing an unbounded array, a pile of duplicate ids,
+ * or an id that doesn't resolve to a real team at all.
+ */
+describe("updateCard — team validation", () => {
+  test("rejects more teams than MAX_CARD_TEAMS, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const cardId = await insertCard(t, leafId);
+    const teamIds = await Promise.all(
+      Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) =>
+        insertTeam(t, sportId, `Team ${i + 1}`),
+      ),
+    );
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        teamOnCardIds: teamIds,
+      }),
+    ).rejects.toThrow(/at most 8 teams/);
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("dedupes duplicate team ids before writing, preserving first-seen order", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const cardId = await insertCard(t, leafId);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+    const redSox = await insertTeam(t, sportId, "Boston Red Sox");
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: [yankees, redSox, yankees],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([yankees, redSox]);
+  });
+
+  test("a duplicate-heavy list that dedupes UNDER the cap is accepted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const cardId = await insertCard(t, leafId);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+    // Nine copies of the same id — over the raw cap, but dedupes to one.
+    const requested = Array.from({ length: MAX_CARD_TEAMS + 1 }, () => yankees);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: requested,
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([yankees]);
+  });
+
+  test("rejects a team id that no longer resolves to a row, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const cardId = await insertCard(t, leafId);
+    const danglingTeamId = await insertTeam(t, sportId, "Deleted Team");
+    await t.run(async (ctx) => ctx.db.delete(danglingTeamId));
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        teamOnCardIds: [danglingTeamId],
+      }),
+    ).rejects.toThrow(/no longer exists/);
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("rejects a team from a different sport than the card's, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t); // Baseball
+    const cardId = await insertCard(t, leafId);
+    const basketballSportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Basketball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const lakers = await insertTeam(t, basketballSportId, "Los Angeles Lakers");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        teamOnCardIds: [lakers],
+      }),
+    ).rejects.toThrow(/not a team in this card's sport/);
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toBeUndefined();
+  });
+
+  test("accepts a team that matches the card's own sport", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const cardId = await insertCard(t, leafId);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: [yankees],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([yankees]);
+  });
+});
+
+// ===========================================================================
 // getCardChecklist round-trips the new columns
 // ===========================================================================
 
@@ -548,6 +681,34 @@ describe("suggestedTeamsForCard", () => {
         cardId: dangling,
       }),
     ).toEqual([]);
+  });
+
+  test("a player with no career teamYears contributes nothing, while a co-player on the same card still suggests theirs", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "2024" });
+    const dbacks = await insertTeam(t, sportId, "Arizona Diamondbacks");
+    // No teamYears at all — a rookie card shot before any career entry exists,
+    // or a player row created without one. The `?? []` fallback must make
+    // this a silent no-op for THIS player, not a thrown error for the card.
+    const rookie = await insertPlayer(t, sportId, "Blank Career Rookie", []);
+    const veteran = await insertPlayer(t, sportId, "Corbin Carroll", [
+      { teamId: dbacks, fromYear: 2022 },
+    ]);
+    const cardId = await insertCard(t, leafId, { playerIds: [rookie, veteran] });
+
+    const suggestions = await asAdmin.query(
+      api.cardChecklist.suggestedTeamsForCard,
+      { cardId },
+    );
+    expect(suggestions).toEqual([
+      {
+        teamId: dbacks,
+        name: "Arizona Diamondbacks",
+        source: "career",
+        playerName: "Corbin Carroll",
+      },
+    ]);
   });
 
   test("is admin-gated", async () => {

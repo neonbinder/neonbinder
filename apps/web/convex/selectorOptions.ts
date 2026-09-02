@@ -55,6 +55,7 @@ import { runWithOccRetry } from "../lib/errors/occ-retry";
 import { conflictingNames, nameKey } from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
+import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
@@ -1958,6 +1959,62 @@ export const updateCard = mutation({
         filtered[key] = value;
       }
     }
+    // NEO-102 security follow-up: `teamOnCardIds` arrives from two admin
+    // clients — the card detail panel's TeamPicker and the attention walker's
+    // MissingTeamFixer — and the 8-team cap the fixer enforces is UI only.
+    // An admin calling this mutation directly (or a future caller that
+    // forgets the client-side cap) must not be able to write an unbounded
+    // array, a pile of duplicate ids, or an id that doesn't resolve to a real
+    // team. Dedupe first (preserving the caller's order — the array is
+    // display order, not just a set) so a client that double-submits the same
+    // chip doesn't get counted twice against the cap.
+    if (Array.isArray(filtered.teamOnCardIds)) {
+      const requested = filtered.teamOnCardIds as Array<Id<"teams">>;
+      const deduped: Array<Id<"teams">> = [];
+      const seen = new Set<string>();
+      for (const teamId of requested) {
+        if (seen.has(teamId)) continue;
+        seen.add(teamId);
+        deduped.push(teamId);
+      }
+      if (deduped.length > MAX_CARD_TEAMS) {
+        throw new ConvexError(
+          `A card can carry at most ${MAX_CARD_TEAMS} teams.`,
+        );
+      }
+      if (deduped.length > 0) {
+        // Cheap: the card's own row plus one indexed ancestor walk, both
+        // already paid for elsewhere on this same mutation's write path
+        // (`findSportForSelectorOption` mirrors the lookup
+        // `applyBscTeamResolution` and the commit chunk already do).
+        const card = await ctx.db.get(id);
+        if (!card) throw new ConvexError("updateCard: no such card");
+        const sportId = await findSportForSelectorOption(
+          ctx,
+          card.selectorOptionId,
+        );
+        const teamRows = await Promise.all(
+          deduped.map((teamId) => ctx.db.get(teamId)),
+        );
+        for (let i = 0; i < deduped.length; i++) {
+          const team = teamRows[i];
+          if (!team) {
+            throw new ConvexError("One of the selected teams no longer exists.");
+          }
+          // Only enforced when the card's own sport is resolvable — an
+          // orphaned ancestor chain (see the ambiguous-row note on
+          // `findSportForSelectorOption`) must not turn an otherwise-valid
+          // team edit into a hard failure.
+          if (sportId && team.sportId !== sportId) {
+            throw new ConvexError(
+              `"${team.name}" is not a team in this card's sport.`,
+            );
+          }
+        }
+      }
+      filtered.teamOnCardIds = deduped;
+    }
+
     // NEO-102: giving this card a real team RETIRES the operator's "no team"
     // confirmation, in the same patch, so the two can never contradict each
     // other on the row.

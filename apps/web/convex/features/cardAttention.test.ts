@@ -97,6 +97,20 @@ describe("deriveCardAttention — missingTeam", () => {
       deriveCardAttention({}),
     );
   });
+
+  test("an empty-string bsc.ref is treated as no ref — flagged immediately, not held for the lookup", () => {
+    // Every other reader of platformData.bsc.ref in this codebase (see
+    // selectorOptions.ts's `!!c.platformData.bsc?.ref` checks) treats a falsy
+    // ref as "no linkage", not "linked with nothing to say". This pins the
+    // same convention here: a card cannot be stuck waiting forever on
+    // `teamCheckDoneAt` for a ref that was never a real one.
+    expect(
+      deriveCardAttention({
+        teamOnCardIds: [],
+        platformData: { bsc: { ref: "" } },
+      }),
+    ).toEqual(MISSING_TEAM);
+  });
 });
 
 describe("needsAttention", () => {

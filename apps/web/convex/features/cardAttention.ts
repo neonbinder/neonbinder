@@ -109,3 +109,18 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
 export function needsAttention(row: AttentionCardRow): boolean {
   return deriveCardAttention(row).length > 0;
 }
+
+/**
+ * NEO-102 — the hard cap on how many teams one card can carry.
+ *
+ * eBay's Team aspect is single-select, so a listing only ever sends one team
+ * regardless of how many a card has on file; the multi-team case this feature
+ * exists for is a League Leaders / rookie-combo card, where a handful of
+ * players each contribute one team. 8 is a sanity bound on that, not a
+ * marketplace rule — nothing requires exactly this number, it just keeps a
+ * fat-fingered "select all" from writing an unbounded array. Enforced
+ * server-side in `selectorOptions.updateCard`; `MissingTeamFixer.tsx` mirrors
+ * it client-side so the picker and its cap message never disagree with what
+ * the server will actually accept.
+ */
+export const MAX_CARD_TEAMS = 8;

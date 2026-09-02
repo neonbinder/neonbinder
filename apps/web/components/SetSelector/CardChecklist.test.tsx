@@ -634,4 +634,145 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain("Cards Needing Attention");
   });
+
+  /**
+   * `walkerOpen` is derived (`walkerOpenedByHand || (attentionArmed &&
+   * attentionCount > 0)`, see the note above its declaration in
+   * CardChecklist.tsx) specifically so the two ways in only agree on the
+   * count going non-zero and disagree on what happens when it goes back to
+   * zero: opened BY HAND, the walker stays up and says "All clear" (the
+   * operator asked to be in it); ARMED by a commit, it closes itself the
+   * instant the count returns to zero (the job the interruption was for is
+   * done, so the modal should get out of the way). Nothing in
+   * CardAttentionWalker.test.tsx exercises this — that file drives the
+   * walker directly with `isOpen` pinned true, never through the parent's
+   * derivation — so it is exactly the seam a change to either boolean could
+   * break silently.
+   */
+  it("opened BY HAND, stays open and shows All clear once the last flagged row is fixed elsewhere", () => {
+    const { rerender } = renderChecklist();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+    );
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    // The BSC pass (or another tab) answers the one flagged card — nothing
+    // the walker itself did.
+    state.cards = [settledCard()];
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(/All clear/)).toBeTruthy();
+  });
+
+  it("ARMED by a commit, closes itself (no All-clear step) once the last flagged row is fixed elsewhere", async () => {
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockResolvedValue({ count: 2 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    let resolveFetch!: (value: unknown) => void;
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+
+    const { rerender } = renderChecklist();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: "Custom selector subtree — no marketplace data available.",
+        candidateCount: 0,
+      });
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    await screen.findByRole("dialog"); // armed itself open, per the test above
+
+    state.cards = [settledCard()];
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+
+    // Gets out of the way instead of showing "All clear" for a dialog the
+    // operator never asked to open.
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  /**
+   * The arm is disarmed by a timer (`POST_COMMIT_ATTENTION_GRACE_MS`, 15s)
+   * started in the commit handler, specifically so a card the BSC pass flags
+   * long after the operator has moved on to unrelated work does not suddenly
+   * pop the walker open on top of them. Nothing else in this file exercises
+   * the timer actually firing.
+   */
+  it("the arm expires after the grace period; a row flagged after that does not open the walker on its own", async () => {
+    vi.useFakeTimers();
+    try {
+      // Nothing flagged at the instant the commit lands — the common
+      // BSC-linked case, where the queue is still going to run.
+      state.cards = [settledCard()];
+      state.liveCandidates = { ready: 0, total: 0, cards: [] };
+      mockResolveEntities.mockResolvedValue({
+        unknownPlayers: [],
+        unknownTeams: [],
+        batchId: undefined,
+      });
+      mockCommitChecklist.mockResolvedValue({ count: 1 });
+      mockDiscardCandidates.mockResolvedValue(undefined);
+      mockFetchChecklist.mockResolvedValue({
+        success: true,
+        message: "Custom selector subtree — no marketplace data available.",
+        candidateCount: 0,
+      });
+
+      const { rerender } = renderChecklist();
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Sync card checklist"));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(mockCommitChecklist).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("dialog")).toBeNull(); // nothing flagged yet
+
+      // Past the grace window, with nothing having appeared while it ran.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(15_001);
+      });
+
+      // The BSC pass finally lands a flagged card — too late; the arm has
+      // already expired, so this must not pop the walker open unattended.
+      state.cards = [attentionCard()];
+      act(() => {
+        rerender(
+          <CardChecklist
+            variantId={VARIANT_ID}
+            sourceChips={{}}
+            sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+          />,
+        );
+      });
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+      // The card still counts, and is still reachable by hand.
+      expect(
+        screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+      ).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
