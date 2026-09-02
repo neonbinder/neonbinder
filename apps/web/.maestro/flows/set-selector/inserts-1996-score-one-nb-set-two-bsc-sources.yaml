@@ -423,30 +423,68 @@ tags:
 # and each one here would cost another ~90s live round-trip to reach.
 #
 # ── 7a. EDIT ONE CARD'S NAME IN NEONBINDER ────────────────────────
-# The checklist is sorted by card number and Virtuoso renders it in DOM order,
-# so the first "Edit" button IS the first card of the set. We deliberately do
-# not name that card: 1996 Score is duplicate-numbered across the two BSC
-# series (that is why it is the fixture), so a card number is not a unique
-# handle here. Every assertion below keys off the marker we type instead, which
-# is unique by construction and independent of how the marketplaces number an
-# Artist's Proof.
+# WHICH card does not matter, and we deliberately do not name one: 1996 Score is
+# duplicate-numbered across the two BSC series (CI run 33589796484's hierarchy
+# shows TWO "Edit card 74" and TWO "Edit card 75"), so a card number is not a
+# unique handle here. Every assertion below keys off the marker we type, which is
+# unique by construction.
+#
+# WHY THE OBVIOUS VERSION OF THIS IS A TRAP — read before "simplifying" it.
+# The checklist is a react-virtuoso list with `increaseViewportBy={{top: 200,
+# bottom: 400}}`, so it always renders ~3-4 rows ABOVE its own scroll viewport.
+# Those rows are CSS-clipped but their layout bounds are real, and Maestro's CDP
+# hit-test reports them as 100% visible — sitting, visually, on top of the
+# attributes panel further up the page. `scrollUntilVisible` on "Edit card .*"
+# therefore matches a clipped row, reports "Visibility Percent: 1.0", scrolls
+# NOTHING, and the tap lands on empty page chrome. That is exactly how this flow
+# failed on its first CI run: it tapped "Edit card 73" at (687,284) and the
+# drawer never opened.
+#
+# THE FIX — anchor the tap BELOW the source-filter label. Maestro's `below`
+# filter is `candidate.bounds.y > anchor.bounds.y` (top edges, verified against
+# maestro-client.jar's Filters.below$lambda$22), and `relativeTo` returns the
+# survivors sorted by ASCENDING distance from the anchor. So this selects the
+# TOPMOST row that starts below the label — i.e. the first genuinely on-screen
+# row — and every clipped row is excluded. From that CI hierarchy: the label sits
+# at y=478, the last clipped row's Edit at y=466, the first real one at y=530.
+# The 12px margin is structural, not luck: both are fixed offsets from the list
+# container's top (the label by CSS spacing, the clipped row by the 64px row
+# pitch), so page scrolling moves them together and cannot close the gap.
+#
+# The label's DOM text is "BSC source" — it only LOOKS like "BSC SOURCE" because
+# of a CSS `uppercase`, and Maestro matches the DOM.
 # ============================================================
 
+# Bring the anchor on screen first. It is an ordinary, non-virtualised element,
+# so unlike a row this scroll cannot land on a clipped phantom. Note it is a
+# no-op when the label is ALREADY visible — maestro only scrolls (and only then
+# applies centring) if the element is off screen; the CI log shows it completing
+# at "Scrolling try count: 0". That is fine: the `below` geometry is invariant
+# under page scroll, and if the label ends up so low that no row is on screen
+# beneath it, the tap fails with a plain "element not found" rather than
+# silently hitting the wrong thing.
 - scrollUntilVisible:
     element:
-      id: "Edit card .*"
+      text: "BSC source"
     centerElement: true
     timeout: 15000
-# waitToSettleTimeoutMs: the commit above has just repainted the whole list, so
-# row y-coords can still be moving between Maestro's lookup and its tap.
-- tapOn:
-    id: "Edit card .*"
-    index: 0
-    waitToSettleTimeoutMs: 2000
-- extendedWaitUntil:
-    visible:
-      id: "Card name"
-    timeout: 15000
+
+# retry + a hard gate on the drawer opening: the tap target is now correct by
+# construction, but Virtuoso can still repaint between Maestro reading the row's
+# bounds and the click landing. Same result-keyed retry the drill util uses for
+# that exact staleness (see util-drill-to-2024-topps-chrome).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "Edit card .*"
+          below:
+            text: "BSC source"
+          waitToSettleTimeoutMs: 1000
+      - extendedWaitUntil:
+          visible:
+            id: "Card name"
+          timeout: 15000
 
 # Type a marker INTO the existing name rather than replacing it. A Maestro-web
 # tap on a filled input drops the caret mid-string, so `inputText` inserts the
@@ -472,8 +510,13 @@ tags:
 # into a green run. Fail here instead, where the message says so.
 - assertNotVisible:
     id: "Card name"
+# Scoped below the same anchor, for the same reason the tap is: an unscoped
+# match could be satisfied by a CSS-clipped row, which would prove the row
+# exists but not that we are looking at the one we just edited.
 - assertVisible:
     text: ".*NB203-${ATTEMPT_ID}.*"
+    below:
+      text: "BSC source"
 
 # ============================================================
 # 7b. RE-FETCH THE SAME CHECKLIST
@@ -577,11 +620,19 @@ tags:
 # marketplace content over a NeonBinder-owned field by default, the marker
 # would be gone and this fails.
 #
-# R8 note — scrolling without centering on purpose: nothing is tapped after
-# this, and the edited card is the FIRST row of the list, which cannot be
-# centred once the list is already at its top.
+# The checklist stays mounted across the re-sync — only the modals came and
+# went — so Virtuoso holds its scroll and the edited row is still where 7a left
+# it. Re-centre the anchor (cheap, non-virtualised) in case a modal shifted the
+# PAGE, then assert the row below it. Deliberately NOT `scrollUntilVisible` on
+# the row itself: page scrolling does not move this list's own scroller (see the
+# `initialTopMostItemIndex` note in CardChecklist.tsx), so scrolling for a row is
+# either a no-op or a match on a clipped one.
 - scrollUntilVisible:
     element:
-      text: ".*NB203-${ATTEMPT_ID}.*"
-    visibilityPercentage: 50
+      text: "BSC source"
+    centerElement: true
     timeout: 15000
+- assertVisible:
+    text: ".*NB203-${ATTEMPT_ID}.*"
+    below:
+      text: "BSC source"
