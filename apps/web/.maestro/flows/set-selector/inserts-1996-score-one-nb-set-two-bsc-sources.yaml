@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Inserts — ONE NeonBinder set maps to TWO BSC sets and one SportLots set (1996 Score, NEO-137)"
+name: "Inserts — ONE NeonBinder set maps to TWO BSC sets and one SportLots set, and a re-sync keeps NeonBinder's own card name (1996 Score, NEO-137 + NEO-203)"
 tags:
   - set-selector
 ---
@@ -8,6 +8,10 @@ tags:
 # sets, the two sides independent. This flow covers that end to end — the
 # reconcile that builds the set, and the card fetch that proves both sources
 # are read.
+#
+# STEP 7 adds ONE more, and only because it is free here: NEO-203's re-sync
+# content-diff review. See the note above STEP 7 for why it rides on this flow
+# rather than owning one.
 #
 # WHY ONE FLOW, having briefly been two. I split it on a guess that the combined
 # runtime (cold insert sync + reconcile + cold two-source fetch + entity wizard)
@@ -390,3 +394,194 @@ tags:
       text: ".*Saved 220 cards.*"
     # NEO-163: absorbs the removed notVisible gate's budget.
     timeout: 120000
+
+# ============================================================
+# STEP 7 — RE-SYNC: NEONBINDER'S OWN EDIT SURVIVES THE NEXT FETCH (NEO-203)
+#
+# The set is committed now, so the NEXT fetch is a RE-sync: every incoming card
+# lands on a row that already exists, and upstream and NeonBinder both have an
+# opinion about what that card SAYS. NEO-203's rule is that NeonBinder owns its
+# checklist — a re-sync always refreshes marketplace LINKAGE, and only changes
+# CONTENT where the operator ticks a box. The review dialog is where that ask
+# happens.
+#
+# WHY THIS RIDES ON THIS FLOW, not its own. The expensive part of testing a
+# re-sync is HAVING a committed, marketplace-backed, duplicate-numbered set to
+# re-sync — the reconcile plus the cold two-source fetch above, ~4 minutes. A
+# standalone flow would pay all of that again to reach the same starting line,
+# and (per SET-REGISTRY.md) 1996 Score has exactly ONE sanctioned writer, so a
+# second flow could not touch this set anyway. Here the marginal cost is one
+# re-fetch. E2E is the repo's only prod gate; that trade is the whole reason
+# this is a segment and not a file.
+#
+# WHAT IS AND IS NOT ASSERTED. One decision, start to finish: an operator edits
+# a card's name in NeonBinder, re-fetches, is SHOWN the marketplace's competing
+# name, declines it, and still has their own name afterwards. The Escape /
+# "Skip changes" path, the formatting-only bulk accept, the delete confirm and
+# the conflict radiogroup are all covered by sync-review-modal.test.tsx — they
+# are dialog-local state machines with nothing marketplace-shaped about them,
+# and each one here would cost another ~90s live round-trip to reach.
+#
+# ── 7a. EDIT ONE CARD'S NAME IN NEONBINDER ────────────────────────
+# The checklist is sorted by card number and Virtuoso renders it in DOM order,
+# so the first "Edit" button IS the first card of the set. We deliberately do
+# not name that card: 1996 Score is duplicate-numbered across the two BSC
+# series (that is why it is the fixture), so a card number is not a unique
+# handle here. Every assertion below keys off the marker we type instead, which
+# is unique by construction and independent of how the marketplaces number an
+# Artist's Proof.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card .*"
+    centerElement: true
+    timeout: 15000
+# waitToSettleTimeoutMs: the commit above has just repainted the whole list, so
+# row y-coords can still be moving between Maestro's lookup and its tap.
+- tapOn:
+    id: "Edit card .*"
+    index: 0
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
+
+# Type a marker INTO the existing name rather than replacing it. A Maestro-web
+# tap on a filled input drops the caret mid-string, so `inputText` inserts the
+# marker contiguously and no `eraseText` guesswork is involved (see
+# card-detail-panel.yaml for the caret behaviour). The result is a name that is
+# unmistakably OURS and cannot fold-equal the marketplace's — which is what
+# puts this card in "Content changes" rather than "Formatting only", and what
+# leaves its checkbox UNTICKED by default.
+- tapOn:
+    id: "Card name"
+- inputText: "NB203-${ATTEMPT_ID}"
+# Save lives in the drawer's sticky footer, OUTSIDE the scroll container.
+# `scrollUntilVisible` can never satisfy centering on it and times out even
+# while it is plainly on screen — so assert + tap, per card-detail-panel.yaml.
+- assertVisible:
+    id: "Save card edit"
+- tapOn:
+    id: "Save card edit"
+
+# The drawer closes on save, and the row repaints with our name. This is the
+# PRECONDITION for everything below — if the edit never landed, the review
+# dialog would have nothing to show and STEP 7's whole point would evaporate
+# into a green run. Fail here instead, where the message says so.
+- assertNotVisible:
+    id: "Card name"
+- assertVisible:
+    text: ".*NB203-${ATTEMPT_ID}.*"
+
+# ============================================================
+# 7b. RE-FETCH THE SAME CHECKLIST
+#
+# The button reads "Refresh" once cards exist (it said "Fetch from
+# Marketplaces" the first time), so target its stable accessible name. A live
+# BSC + SportLots round-trip — the sanctioned long wait.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Sync card checklist"
+
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*"
+    timeout: 120000
+# Same NEO-195 rule as STEP 4: the dialog OPENS on the first streamed
+# candidates, Confirm's own label is what says the fetch RESOLVED.
+- extendedWaitUntil:
+    visible:
+      text: "^Confirm$"
+    timeout: 120000
+
+# Both BSC sources fetched and merged again — the upstream side of "no rows
+# added or lost". 110 would mean the fan-out regressed on the re-sync path.
+- assertVisible:
+    text: ".*220 cards will be saved.*"
+- tapOn:
+    id: "Confirm card matches"
+
+# ============================================================
+# 7c. THE REVIEW DIALOG APPEARS, AND SHOWS OUR CARD
+#
+# Confirm hands the paired cards to `diffChecklistAgainstExisting` and, because
+# one card genuinely differs, the review opens. Plain 7s: this is one Convex
+# query, not a marketplace call. If it needs longer, that is a product finding
+# to raise — not a timeout to inflate.
+# ============================================================
+
+- extendedWaitUntil:
+    visible: ".*Review Changes — Dugout Collection Artists Proofs.*"
+    timeout: 7000
+
+# Our card is under "Content changes", not buried in the collapsed
+# formatting-only group.
+- assertVisible:
+    text: ".*Content changes \\([1-9][0-9]*\\).*"
+
+# ONE element carries the entire claim. The per-field checkbox's accessible
+# name is "Apply Card name to #<n> <marketplace name>: <NeonBinder name>
+# becomes <marketplace name>", so matching our marker on the LEFT of "becomes"
+# proves the dialog is offering, for this specific card, to replace OUR name
+# with the marketplace's — the marketplace value against the NeonBinder value,
+# which is the decision this screen exists to put in front of an operator.
+- assertVisible:
+    id: ".*Apply Card name to #.*: .*NB203-${ATTEMPT_ID}.* becomes .*"
+
+# NOTHING ADDED, NOTHING LOST — asserted where the diff states it outright.
+# "0 new" means every one of the 220 incoming cards matched a row NeonBinder
+# already holds, so the re-sync inserts none; the absence of the "no longer
+# listed upstream" section means no row NeonBinder holds went unclaimed. A
+# re-sync that duplicated rows (the NEO-203 regression) fails on the first, one
+# that orphaned rows fails on the second.
+- assertVisible:
+    text: ".* 0 new .*unchanged.*"
+- assertNotVisible:
+    text: ".*no longer listed upstream.*"
+
+# ============================================================
+# 7d. KEEP OUR VERSION, AND COMMIT
+#
+# We leave the Card name box UNTICKED — that IS "keep the NeonBinder version",
+# and it is the default precisely because a rewrite is never pre-accepted.
+# Pressing "Apply & Continue" rather than "Skip changes" is deliberate: it runs
+# the commit path that carries per-field decisions on the wire, which still has
+# to leave the one field we declined alone. Skipping would exercise a strictly
+# easier path.
+#
+# No delete checkbox is ticked, so Apply submits directly rather than raising
+# the deletion confirm.
+# ============================================================
+
+- tapOn:
+    id: "Apply selected changes"
+
+# Every player and team on these 220 cards was created by STEP 6's commit, so
+# the entity wizard has nothing to ask and the commit runs straight through.
+# 120s mirrors STEP 6's budget for the identical 220-card commit.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved 220 cards.*"
+    timeout: 120000
+
+# THE ACCEPTANCE CRITERION. The marketplace's name for this card was offered
+# and declined, so the checklist still shows OURS. If the re-sync had written
+# marketplace content over a NeonBinder-owned field by default, the marker
+# would be gone and this fails.
+#
+# R8 note — scrolling without centering on purpose: nothing is tapped after
+# this, and the edited card is the FIRST row of the list, which cannot be
+# centred once the list is already at its top.
+- scrollUntilVisible:
+    element:
+      text: ".*NB203-${ATTEMPT_ID}.*"
+    visibilityPercentage: 50
+    timeout: 15000

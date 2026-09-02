@@ -18,7 +18,7 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
-| Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-shared-sl-set-1996-score.yaml` — **sole writer** |
+| Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 
 ### 1996 Score — approved for NEO-137, sole-writer
 
@@ -46,6 +46,22 @@ every run, so these are the values it re-establishes):
 | its BSC mappings | both series |
 | its SportLots mappings | the one combined set |
 | its card checklist | **220** cards, every one paired across both marketplaces |
+| its FIRST card's name | carries a `NB203-<ATTEMPT_ID>` marker (NEO-203, below) |
+
+**NEO-203 — the flow now re-syncs the set once more before it ends.** Its
+STEP 7 edits the first card's name in NeonBinder, re-fetches the same
+checklist, and declines the marketplace's competing name in the re-sync review
+dialog. Two consequences worth knowing:
+
+* The set is left with **220 cards still**, but the first card's NeonBinder
+  name carries the run's `ATTEMPT_ID` marker. Nothing else reads that card, and
+  `setup.yaml`'s reset clears it at the head of every run, so it accumulates
+  only across `MAESTRO_NO_DEPS=1` local re-runs.
+* This is the ONLY end-to-end coverage of the re-sync content-diff review, and
+  it lives here rather than in its own flow because the costly part of testing
+  a re-sync is having a committed marketplace-backed set to re-sync — which
+  this flow has just built, and which the sole-writer rule below forbids a
+  second flow from building.
 
 220 is also the fan-out regression guard. BSC does not OR multi-value facets:
 before `fetchBscChecklist` fanned out one request per source set, this exact
