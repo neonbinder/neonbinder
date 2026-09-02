@@ -177,7 +177,28 @@ export default function CardChecklist({
 
   const [syncing, setSyncing] = useState(false);
   const [committing, setCommitting] = useState(false);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  /**
+   * a11y: mirrors the `role`/`aria-live` status-vs-alert pattern documented
+   * for `apps/web/app/print/placeholders/intake.tsx`'s upload notice — same
+   * two things that pattern gets right: the element's `role` switches between
+   * `"status"` (routine) and `"alert"` (failure) rather than staying a plain
+   * `<div>` with neither, and a `key={tone}` forces React to remount the node
+   * on a tone change so AT doesn't miss it re-announcing (some screen readers
+   * cache a live region's politeness from the moment it entered the tree).
+   * `setSyncMessage` below is a thin wrapper so the many existing call sites
+   * keep passing a bare string — only the handful that report a real failure
+   * pass the second `"error"` argument.
+   */
+  const [syncNotice, setSyncNotice] = useState<{
+    text: string;
+    tone: "status" | "error";
+  } | null>(null);
+  const setSyncMessage = useCallback(
+    (text: string | null, tone: "status" | "error" = "status") => {
+      setSyncNotice(text === null ? null : { text, tone });
+    },
+    [],
+  );
   const [showAddForm, setShowAddForm] = useState(false);
   // NEO-36: the add-card form fields are UNCONTROLLED (refs, read at submit)
   // rather than controlled React state. CardChecklist re-renders on every
@@ -194,6 +215,22 @@ export default function CardChecklist({
   const cardNameRef = useRef<HTMLInputElement>(null);
   const teamRef = useRef<HTMLInputElement>(null);
   const playersRef = useRef<HTMLInputElement>(null);
+  /**
+   * a11y (NEO-203 audit follow-up) — the durable "restore focus here" target
+   * for `SyncReviewModal`. That modal mounts only after `handlePairingConfirm`
+   * unmounts `CardPairingModal` and then `await`s a real Convex query
+   * (`diffChecklistAgainstExisting`); by the time it mounts, whatever
+   * `CardPairingModal`'s own trigger was has already lost focus to `<body>`
+   * across that async gap, so `SyncReviewModal`'s own
+   * `document.activeElement`-at-mount capture is unreliable here. This button
+   * — the one that actually starts the whole fetch→pair→review→commit
+   * pipeline — is what a keyboard/screen-reader user should land back on
+   * once the pipeline finishes (Skip or Apply); it stays mounted for the
+   * modal's entire lifetime (only ONE of the two `NeonButton`s below is ever
+   * rendered at a time, both share this ref, and neither depends on the
+   * pipeline's own state).
+   */
+  const syncButtonRef = useRef<HTMLButtonElement>(null);
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
@@ -296,6 +333,7 @@ export default function CardChecklist({
     if (!ancestorSportId) {
       setSyncMessage(
         "Cannot sync — this row has no sport ancestor, so cards cannot be attributed to a sport.",
+        "error",
       );
       return;
     }
@@ -315,7 +353,7 @@ export default function CardChecklist({
       if (abandoned()) return;
       if (!result.success) {
         setPairingOpen(false);
-        setSyncMessage(result.message);
+        setSyncMessage(result.message, "error");
         await discardCandidates({ selectorOptionId: variantId });
         return;
       }
@@ -346,6 +384,7 @@ export default function CardChecklist({
       setPairingOpen(false);
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "error",
       );
     } finally {
       // Only the CURRENT run may clear these — a superseded run finishing later
@@ -378,6 +417,7 @@ export default function CardChecklist({
     if (!ancestorSportId) {
       setSyncMessage(
         "Cannot save — this row has no sport ancestor, so cards cannot be attributed to a sport.",
+        "error",
       );
       return;
     }
@@ -402,6 +442,7 @@ export default function CardChecklist({
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "error",
       );
     } finally {
       setCommitting(false);
@@ -462,6 +503,7 @@ export default function CardChecklist({
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        "error",
       );
     } finally {
       setCommitting(false);
@@ -574,6 +616,7 @@ export default function CardChecklist({
           error,
           error instanceof Error ? error.message : "Unknown error",
         )}`,
+        "error",
       );
     } finally {
       setCommitting(false);
@@ -952,6 +995,7 @@ export default function CardChecklist({
               </NeonButton>
               {sortedCards.length > 0 && (
                 <NeonButton
+                  ref={syncButtonRef}
                   secondary
                   onClick={handleSync}
                   disabled={busy}
@@ -1040,9 +1084,37 @@ export default function CardChecklist({
           </div>
         )}
 
-        {syncMessage && (
-          <div className="p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm">
-            {syncMessage}
+        {syncNotice && (
+          // a11y (WCAG 4.1.3): this is the post-sync/post-commit result
+          // banner — "Saved N cards.", the NEO-203 notes (deletions, stale
+          // decisions, conflicts, collision inserts), and every failure
+          // message. None of that was previously announced to a screen-
+          // reader user at all. `key`/`role`/`aria-live` mirror
+          // intake.tsx's notice pattern exactly (see setSyncNotice's own
+          // comment above) — `role="alert"` already implies an assertive
+          // live region, so `aria-live` is left `undefined` rather than
+          // also set to "polite" for that case.
+          <div
+            key={syncNotice.tone}
+            role={syncNotice.tone === "error" ? "alert" : "status"}
+            aria-live={syncNotice.tone === "error" ? undefined : "polite"}
+            aria-atomic="true"
+            className={
+              // a11y (1.4.3): mirrors the status box below it exactly (same
+              // structure, pink swapped in for blue) rather than the brand's
+              // literal `#FF2EB3` — this container renders in BOTH light and
+              // dark (`bg-white dark:bg-gray-800`, unlike the always-dark
+              // review modal), and pink text at any low opacity measures
+              // under 4.5:1 against both a near-white light background and
+              // this file's `gray-800` dark one. Tailwind's `pink-*` scale,
+              // paired the same way `blue-*` already is below, measures
+              // 6.7:1 light / 10.1:1 dark.
+              syncNotice.tone === "error"
+                ? "p-2 mb-3 bg-pink-100 dark:bg-pink-900/30 border border-pink-300 dark:border-pink-700 rounded-md text-pink-800 dark:text-pink-200 text-sm"
+                : "p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm"
+            }
+          >
+            {syncNotice.text}
           </div>
         )}
 
@@ -1075,6 +1147,7 @@ export default function CardChecklist({
               No cards in this checklist yet.
             </p>
             <NeonButton
+              ref={syncButtonRef}
               onClick={handleSync}
               disabled={busy}
               aria-label="Sync card checklist"
@@ -1182,6 +1255,10 @@ export default function CardChecklist({
           diff={pendingReview.diff}
           setLabel={variantRow?.value}
           saving={committing}
+          // a11y: see syncButtonRef's own comment — this modal opens across
+          // an async gap from whatever CardPairingModal's trigger was, so its
+          // own document.activeElement-at-mount capture cannot be trusted.
+          restoreFocusRef={syncButtonRef}
           // Escape and "Skip changes" are the SAME non-destructive forward
           // step: carry on with nothing extra applied. Deliberately not the
           // pairing modal's abort — see the note at the top of

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import NeonButton from "../modules/NeonButton";
@@ -318,6 +319,7 @@ export default function SyncReviewModal({
   diff,
   setLabel,
   saving,
+  restoreFocusRef,
   onSkip,
   onConfirm,
 }: {
@@ -327,6 +329,23 @@ export default function SyncReviewModal({
   setLabel?: string;
   /** The pipeline is already working; the footer buttons lock. */
   saving?: boolean;
+  /**
+   * a11y: where to send keyboard focus when this dialog closes, PREFERRED
+   * over this component's own `document.activeElement`-at-mount capture.
+   *
+   * That capture is the right default when this modal is opened directly
+   * from a click (nothing async in between — `document.activeElement` at
+   * mount really is the trigger). It is NOT reliable for this modal
+   * specifically: its one real caller (`CardChecklist`) mounts it only after
+   * unmounting `CardPairingModal` and then `await`ing a Convex query, so by
+   * the time this component's own mount effect runs, whatever was focused
+   * before that async gap has already reverted to `<body>` — capturing that
+   * would "restore" focus to nowhere. A caller that knows its own durable
+   * trigger (e.g. the button that started the whole pipeline) can hand it
+   * over here instead. Optional and additive: every existing caller/test that
+   * omits it keeps the exact original mount-time-capture behavior.
+   */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
   /**
    * Escape, or the footer's "Skip". Advances the pipeline applying NOTHING
    * extra — NOT an abort of the sync.
@@ -364,13 +383,23 @@ export default function SyncReviewModal({
 
   useEffect(() => {
     if (!isOpen) return;
-    triggerRef.current = document.activeElement as HTMLElement | null;
+    // a11y: prefer the caller's durable trigger (see restoreFocusRef's own
+    // doc comment) over document.activeElement — falls back to the original
+    // capture-on-mount behavior whenever the prop is absent, so every caller
+    // that does not pass it keeps working exactly as before. Captured into a
+    // local rather than read again in the cleanup: restoreFocusRef.current
+    // is a plain DOM ref (React does not clear it out from under an effect
+    // the way it would a ref callback), and reading it once keeps this an
+    // ordinary mount/unmount pairing.
+    const restoreTarget = restoreFocusRef?.current;
+    triggerRef.current =
+      restoreTarget ?? (document.activeElement as HTMLElement | null);
     const id = requestAnimationFrame(() => skipBtnRef.current?.focus());
     return () => {
       cancelAnimationFrame(id);
       triggerRef.current?.focus?.();
     };
-  }, [isOpen]);
+  }, [isOpen, restoreFocusRef]);
 
   // Non-destructive by default, every time: focus lands on Cancel, not on the
   // button that deletes rows.

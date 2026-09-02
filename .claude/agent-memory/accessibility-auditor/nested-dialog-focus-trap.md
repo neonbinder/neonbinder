@@ -1,6 +1,6 @@
 ---
 name: nested-dialog-focus-trap
-description: A dialog-inside-a-dialog (delete confirm over a review screen) needs its OWN Tab trap and its own focus-restore-on-close — the outer dialog's trap silently covers neither, found in sync-review-modal.tsx (NEO-203)
+description: A dialog-inside-a-dialog (delete confirm over a review screen) needs its OWN Tab trap and its own focus-restore-on-close — the outer dialog's trap silently covers neither; plus the optional restoreFocusRef pattern for a modal whose own document.activeElement capture can't be trusted across an async cross-modal handoff (NEO-203)
 metadata:
   type: patterns
 ---
@@ -49,7 +49,7 @@ here unlike the top-level open-focus effect — the target button was never
 unmounted, only the confirm's own overlay was, so it's already in the DOM and
 focusable the instant `setConfirmingDeletes(false)` runs.
 
-## A related, NOT-fixed finding: cross-modal handoff can make `document.activeElement`-at-mount capture the wrong thing
+## Related finding: cross-modal handoff can make `document.activeElement`-at-mount capture the wrong thing — fixed (NEO-203 follow-up, 2026-09-01)
 
 `SyncReviewModal`'s top-level open effect does
 `triggerRef.current = document.activeElement` to restore focus to whatever
@@ -66,15 +66,35 @@ closing `SyncReviewModal` restores focus to nowhere useful, same failure
 shape as [[focus-park-pattern]] describes, just via a different mechanism
 (stale capture instead of a disable-triggered blur).
 
-**Not fixed** in the NEO-203 audit: a real fix needs `CardChecklist.tsx` (the
-parent) to hand `SyncReviewModal` something durable to restore focus to (a
-ref/id for its own "Sync/Refresh" button), which `SyncReviewModal` cannot
-reconstruct on its own once the async gap has already happened — and that
-audit was scoped to `sync-review-modal.tsx` only. **General lesson for future
-audits**: whenever two portal-rendered dialogs hand off across an `await`,
-don't trust `document.activeElement` captured at the second dialog's mount
-time to be the meaningful trigger — verify there isn't an async gap between
-the first dialog's unmount and the second's mount before assuming that
-capture-on-mount / restore-on-unmount pattern (correct and sufficient
-elsewhere in this codebase, e.g. the delete-confirm case above) actually
-works end to end.
+**Left unfixed in the initial NEO-203 audit** (scoped to `sync-review-modal.tsx`
+only), then **fixed in a follow-up pass** once `CardChecklist.tsx` came into
+scope. The shape of the fix:
+
+- `SyncReviewModal` gained an optional prop, `restoreFocusRef?: RefObject<HTMLElement | null>`
+  — when present, it's preferred over the component's own
+  `document.activeElement`-at-mount capture for BOTH setting the initial
+  `triggerRef` and (implicitly, since `triggerRef` is what the unmount
+  cleanup reads) what focus is restored to on close. When the prop is absent,
+  behavior is byte-identical to before (falls through to
+  `document.activeElement`), which is what let all 24 pre-existing tests pass
+  unmodified.
+- `CardChecklist.tsx` added one ref (`syncButtonRef`) shared by BOTH of its
+  "Sync card checklist" `NeonButton`s (only one is ever mounted at a time,
+  keyed on `sortedCards.length`), and passed it down as `restoreFocusRef`.
+  That button is the one that actually starts the whole
+  fetch→pair→review→commit pipeline, stays mounted for the pipeline's entire
+  duration (unlike `CardPairingModal`'s own trigger, which is exactly the
+  thing that goes stale across the async gap), and is what an operator
+  actually expects focus to return to once Skip/Apply finishes.
+
+**General lesson for future audits**: whenever two portal-rendered dialogs
+hand off across an `await`, don't trust `document.activeElement` captured at
+the second dialog's mount time to be the meaningful trigger — verify there
+isn't an async gap between the first dialog's unmount and the second's mount
+before assuming that capture-on-mount / restore-on-unmount pattern (correct
+and sufficient elsewhere in this codebase, e.g. the delete-confirm case
+above) actually works end to end. When a modal component's own capture can't
+be trusted because of who calls it, an optional `restoreFocusRef` prop that
+the parent can supply — falling back to the original self-contained behavior
+when absent — is a low-risk way to fix it without changing the modal's
+default behavior or its existing tests.
