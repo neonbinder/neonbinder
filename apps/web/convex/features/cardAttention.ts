@@ -49,6 +49,16 @@ export type AttentionKind = AttentionItem["kind"];
 export type AttentionCardRow = {
   /** The team(s) printed on the card. Absent and `[]` are the same statement. */
   teamOnCardIds?: readonly string[];
+  /**
+   * Team names an operator typed that no `teams` row exists for yet — the
+   * add-card form's "Team (optional)" field writes here and the next sync
+   * resolves them into `teamOnCardIds` (see schema.ts, and the resolve pass in
+   * selectorOptions.ts). A non-empty list is an answer already given: the card
+   * is UNRESOLVED, not unanswered, so it counts as having a team. Reading only
+   * `teamOnCardIds` badged every hand-added card with a typed team and sent
+   * the walker to ask the operator for something they had just supplied.
+   */
+  pendingTeamNames?: readonly string[];
   /** Operator confirmed this card carries no team — see schema.ts. */
   teamNoneConfirmedAt?: number;
   /** The BSC per-card team lookup has RUN, whatever it found — see schema.ts. */
@@ -72,7 +82,10 @@ export type AttentionCardRow = {
  *
  * ## The `missingTeam` rule, and why it has three clauses
  *
- *   1. `teamOnCardIds` is empty — nothing else is a missing team.
+ *   1. the card has no team on file — `teamOnCardIds` AND `pendingTeamNames`
+ *      are both empty. A pending name is a team the operator typed that no
+ *      `teams` row exists for yet, so the card is unresolved rather than
+ *      unanswered; nothing else is a missing team.
  *   2. `teamNoneConfirmedAt` is unset. An operator who said "this card carries
  *      no team" has answered; re-asking is the bug this field exists to stop.
  *   3. the card is not still WAITING on the automatic answer.
@@ -96,7 +109,8 @@ export type AttentionCardRow = {
 export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const items: AttentionItem[] = [];
 
-  const hasTeam = (row.teamOnCardIds?.length ?? 0) > 0;
+  const hasTeam =
+    (row.teamOnCardIds?.length ?? 0) > 0 || (row.pendingTeamNames?.length ?? 0) > 0;
   const awaitingBscLookup = !!row.platformData?.bsc?.ref && !row.teamCheckDoneAt;
   if (!hasTeam && !row.teamNoneConfirmedAt && !awaitingBscLookup) {
     items.push({ kind: "missingTeam" });
@@ -119,8 +133,9 @@ export function needsAttention(row: AttentionCardRow): boolean {
  * players each contribute one team. 8 is a sanity bound on that, not a
  * marketplace rule — nothing requires exactly this number, it just keeps a
  * fat-fingered "select all" from writing an unbounded array. Enforced
- * server-side in `selectorOptions.updateCard`; `MissingTeamFixer.tsx` mirrors
- * it client-side so the picker and its cap message never disagree with what
- * the server will actually accept.
+ * server-side in `selectorOptions.updateCard`; `MissingTeamFixer.tsx` IMPORTS
+ * this same constant (through the `components/SetSelector/card-attention`
+ * seam) rather than keeping its own copy, so the picker and its cap message
+ * cannot disagree with what the server will actually accept.
  */
 export const MAX_CARD_TEAMS = 8;

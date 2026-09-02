@@ -56,6 +56,13 @@ export type CardChecklistRow = {
   teamCheckDoneAt?: number;
   teamNoneConfirmedAt?: number;
   /**
+   * NEO-102: names typed into the add-card form's "Team (optional)" field that
+   * no `teams` row exists for yet. `deriveCardAttention` counts a non-empty
+   * list as HAVING a team — leave this off the row and every hand-added card
+   * with a typed team gets badged "no team" and walked.
+   */
+  pendingTeamNames?: string[];
+  /**
    * NEO-102: `deriveCardAttention` reads `bsc.ref`'s presence — a BSC-linked
    * card has an automatic team source still to come, so it is not badged until
    * `teamCheckDoneAt` says that lookup has been and gone. A card without one

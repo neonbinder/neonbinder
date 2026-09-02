@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import TeamPicker from "./TeamPicker";
+import { MAX_CARD_TEAMS } from "./card-attention";
 import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRegistry";
 
 /**
@@ -41,9 +42,6 @@ import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRe
  *   pink never appears here — that is Cancel's colour, and recording "no
  *   team" is an answer, not an abandonment.
  */
-
-/** Server cap on teams per card. Mirrors MAX_CARD_TEAMS in the Convex layer. */
-export const MAX_TEAMS_ON_CARD = 8;
 
 export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) {
   // Out-of-band because the locked fixer contract passes only the row, and a
@@ -97,7 +95,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   useEffect(() => {
     if (teamIds !== null || suggestions === undefined) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- preselects the suggested teams the moment the suggestion query resolves; the query is async, so this cannot be an initial-state value
-    setTeamIds(chips.slice(0, MAX_TEAMS_ON_CARD).map((c) => c.teamId));
+    setTeamIds(chips.slice(0, MAX_CARD_TEAMS).map((c) => c.teamId));
   }, [suggestions, teamIds, chips]);
 
   // Focus the first suggestion chip as soon as it exists, else the picker's
@@ -117,16 +115,19 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   // them on every keystroke elsewhere in the dialog.
   const chosen = useMemo(() => teamIds ?? [], [teamIds]);
   const chosenSet = useMemo(() => new Set(chosen as unknown as string[]), [chosen]);
-  const atCap = chosen.length >= MAX_TEAMS_ON_CARD;
+  const atCap = chosen.length >= MAX_CARD_TEAMS;
 
   /**
    * Every change goes through here so the cap is enforced once, for the chips
    * and the picker alike. An addition past the cap is REFUSED rather than
    * trimmed — trimming would silently drop whichever team the operator just
-   * picked, and the server would reject the whole write anyway.
+   * picked, and `selectorOptions.updateCard` would reject the whole write
+   * anyway: `MAX_CARD_TEAMS` is the SAME constant on both sides (imported from
+   * convex/features/cardAttention through the card-attention seam), so the cap
+   * message below cannot claim a number the server disagrees with.
    */
   const applyTeams = (next: Array<Id<"teams">>) => {
-    if (next.length > MAX_TEAMS_ON_CARD) return;
+    if (next.length > MAX_CARD_TEAMS) return;
     setTeamIds(next);
   };
 
@@ -283,7 +284,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         <TeamPicker value={chosen} onChange={applyTeams} sportId={sportId} disabled={busy} />
         {atCap && (
           <p id="attention-team-cap" role="status" className="text-xs text-[#00B7FF]">
-            That is the limit of {MAX_TEAMS_ON_CARD} teams on one card. Remove one to
+            That is the limit of {MAX_CARD_TEAMS} teams on one card. Remove one to
             add another.
           </p>
         )}

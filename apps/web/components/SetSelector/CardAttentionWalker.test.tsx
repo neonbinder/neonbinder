@@ -401,6 +401,28 @@ describe("CardAttentionWalker — fixing a card", () => {
     );
   });
 
+  // NEO-102: the picker's popover overlaid "Save & Next (Enter)", so the click
+  // meant for Save landed on a typeahead option and added a SECOND team
+  // instead of saving. The overlay itself is fixed and pinned in
+  // TeamPicker.test.tsx (outside-click close — jsdom has no layout, so it
+  // cannot be reproduced from here); this pins the outcome that regressed:
+  // one pick, one save, one team.
+  it("after picking a team, Save & Next writes exactly that team — once", async () => {
+    const row = needsTeamRow();
+    renderWalker([row]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Stub add team" }));
+    expect(screen.getByTestId("picker-value").textContent).toBe("extra-0");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save & Next (Enter)" }));
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: row._id,
+      teamOnCardIds: ["extra-0"],
+    });
+  });
+
   it("'No team on this card' records the explicit answer instead of a team list", async () => {
     const row = needsTeamRow();
     renderWalker([row]);

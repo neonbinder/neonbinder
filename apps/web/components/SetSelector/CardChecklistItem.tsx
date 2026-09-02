@@ -13,11 +13,16 @@ type CardChecklistItemProps = {
     cardName: string;
     playerIds?: Array<Id<"players">>;
     teamOnCardIds?: Array<Id<"teams">>;
-    // NEO-102: the two timestamps `deriveCardAttention` reads. Both optional,
-    // so a caller that has not been updated still typechecks and simply never
-    // shows the attention mark.
+    // NEO-102: the rest of what `deriveCardAttention` reads, beyond
+    // `teamOnCardIds` above and the required `platformData` below. All
+    // optional, so a caller that has not been updated still typechecks and
+    // simply never shows the attention mark — but note the direction each one
+    // fails in: omit a timestamp and the mark is missed; omit
+    // `pendingTeamNames` and every hand-added card carrying a typed team is
+    // WRONGLY marked, which is the louder bug.
     teamCheckDoneAt?: number;
     teamNoneConfirmedAt?: number;
+    pendingTeamNames?: string[];
     attributes?: string[];
     isRookie?: boolean;
     isRelic?: boolean;

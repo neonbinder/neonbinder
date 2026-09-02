@@ -6,10 +6,11 @@
  * and in the browser, and a test that needed a database would not be testing
  * that.
  *
- * The matrix below is the specification. Read together, the four "no team"
- * rows say the thing that is easy to get wrong: empty `teamOnCardIds` is NOT
- * by itself a missing team. It is missing when nobody — neither the BSC
- * background lookup nor a human — has answered the question yet.
+ * The matrix below is the specification. Read together, the "no team" rows say
+ * the thing that is easy to get wrong: empty `teamOnCardIds` is NOT by itself
+ * a missing team. It is missing when nobody — not the BSC background lookup,
+ * not a human confirming "none", not a human who typed a team name the sync
+ * has yet to resolve — has answered the question yet.
  */
 
 import { describe, expect, test } from "vitest";
@@ -98,6 +99,36 @@ describe("deriveCardAttention — missingTeam", () => {
     );
   });
 
+  test("a custom card with a PENDING team name is not flagged", () => {
+    // The add-card form's "Team (optional)" field writes the typed name to
+    // `pendingTeamNames` and leaves `teamOnCardIds` empty until the next sync
+    // resolves it. Reading only `teamOnCardIds` badged that card "no team" and
+    // sent the walker to ask the operator for the team they had just typed.
+    expect(
+      deriveCardAttention({
+        teamOnCardIds: [],
+        pendingTeamNames: ["Savannah Bananas"],
+        platformData: {},
+      }),
+    ).toEqual([]);
+    expect(
+      needsAttention({ pendingTeamNames: ["Savannah Bananas"] }),
+    ).toBe(false);
+  });
+
+  test("an EMPTY pendingTeamNames array is still a missing team", () => {
+    // `[]` is not an answer. The resolve pass in selectorOptions.ts strips
+    // names as it resolves them and can leave the array behind empty, so this
+    // is a real stored shape — and it must read exactly like an absent one.
+    expect(
+      deriveCardAttention({
+        teamOnCardIds: [],
+        pendingTeamNames: [],
+        platformData: {},
+      }),
+    ).toEqual(MISSING_TEAM);
+  });
+
   test("an empty-string bsc.ref is treated as no ref — flagged immediately, not held for the lookup", () => {
     // Every other reader of platformData.bsc.ref in this codebase (see
     // selectorOptions.ts's `!!c.platformData.bsc?.ref` checks) treats a falsy
@@ -121,6 +152,8 @@ describe("needsAttention", () => {
       { platformData: { bsc: { ref: "b" } } },
       { platformData: { bsc: { ref: "b" } }, teamCheckDoneAt: 1 },
       { teamNoneConfirmedAt: 1 },
+      { pendingTeamNames: ["Savannah Bananas"] },
+      { pendingTeamNames: [] },
     ];
     for (const row of rows) {
       expect(needsAttention(row)).toBe(deriveCardAttention(row).length > 0);
