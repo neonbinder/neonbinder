@@ -5,6 +5,7 @@ import type { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import { normalizePlayerName } from "./players";
+import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
 
 /**
  * Lowercase + strip punctuation + token-sort. Same shape as the player
@@ -410,9 +411,33 @@ export const applyEnrichmentInternal = internalMutation({
         sportId: existing.sportId,
       });
     }
-    if (args.city !== undefined) patch.city = args.city;
-    if (args.yearsActive !== undefined) patch.yearsActive = args.yearsActive;
-    if (args.colors !== undefined) patch.colors = args.colors;
+    // NEO-203: fill-a-gap ONLY, on every field — same rule the `leagueId`
+    // branch above already followed, now applied to the three that did not.
+    //
+    // Background enrichment must never overwrite an operator-visible value it
+    // did not write. These three are all editable by hand in Team Management
+    // (`updateTeam` below), and every one of them was being blindly restamped
+    // on each re-enrichment: a corrected city, a hand-entered franchise span,
+    // or hand-picked spine-label colors survived only until the next time the
+    // team was enqueued — which a checklist commit does routinely
+    // (`commitCardChecklistFinalize` → `wikidataPool.enqueueEnrichment`).
+    //
+    // Enrichment beating enrichment is still fine and still happens: a team
+    // with no colors takes ESPN's here, and `resolveTeamColors` may then
+    // supersede those with teamcolorcodes.com's better-covered answer — see
+    // the ordering note in adapters/wikidata.ts `enrichTeam`. What changed is
+    // that a value a HUMAN put there is no longer in that contest.
+    if (args.city !== undefined && !existing.city) patch.city = args.city;
+    if (args.yearsActive !== undefined && !existing.yearsActive) {
+      patch.yearsActive = args.yearsActive;
+    }
+    if (
+      args.colors !== undefined &&
+      !existing.colors?.primary &&
+      !existing.colors?.secondary
+    ) {
+      patch.colors = args.colors;
+    }
     if (args.wikidataId !== undefined || args.espnId !== undefined) {
       patch.externalIds = {
         ...(existing.externalIds ?? {}),
@@ -610,6 +635,19 @@ export const saveTeamFields = mutation({
         }
       }
       patch.colors = args.colors ?? undefined;
+      // NEO-203: stamp PROVENANCE alongside the value. `resolveTeamColors`
+      // skips any team that already carries a `colorSource`, and hand-entered
+      // colors carried none — so the next background lookup (which a checklist
+      // commit schedules for every team it touches) overwrote them. Clearing
+      // the colors clears the marker too, which puts the team back in the
+      // automatic lane exactly as it was before anyone edited it.
+      patch.colorSource = args.colors
+        ? {
+            url: MANUAL_COLOR_SOURCE_URL,
+            matchedName: existing.name,
+            resolvedAt: Date.now(),
+          }
+        : undefined;
     }
 
     await ctx.db.patch(args.id, patch);

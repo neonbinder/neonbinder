@@ -9,9 +9,9 @@
  * what these tests check, because it decided whether real data was destroyed at
  * fetch time — and it was wrong.
  *
- * The upsert keys against rows ALREADY IN THE DATABASE: `existingByNumber` is
- * built from a `by_selector_option` query taken before the write loop, and rows
- * the loop itself inserts are never added to it. So a commit inserts one
+ * The commit matches each incoming card against rows ALREADY IN THE DATABASE,
+ * from a `by_selector_option` snapshot taken before any chunk writes — rows a
+ * chunk itself inserts are never candidates. So a commit inserts one
  * `cardChecklist` row per incoming card, and Convex indexes carry no uniqueness
  * constraint. Two cards numbered #1 produce two rows.
  *
@@ -23,26 +23,27 @@
  * next person to consider a number-keyed merge does not have to run Maestro to
  * find out what commit actually does.
  *
- * ## KNOWN LIMITATION, deliberately not asserted here — RE-SYNC
+ * ## RE-SYNC — the limitation this header used to describe is FIXED (NEO-203)
  *
- * The insert path above is sound. The RE-sync path is not: on a second commit
- * `existingByNumber` holds one row per number, so both incoming #1s resolve to
- * the SAME stored row. One gets patched twice (the later card wins) and the
- * other stored row is left carrying stale data — `processedNumbers` contains
- * "1", so the stale-row sweep does not delete it either. The row count stays
- * right and the contents drift.
+ * It read: the insert path is sound but the re-sync path is not, because
+ * `existingByNumber` held one row per number, so both incoming #1s resolved to
+ * the SAME stored row — one patched twice, the other left stale, the row count
+ * unchanged and the contents drifting.
  *
- * This predates the dedup and is NOT what that dedup fixed — dropping at fetch
- * time hid the conflict from the operator instead of resolving it, and cost the
- * first sync its data too. The real fix is to key the upsert on the identity
- * the rest of this codebase already uses for a marketplace row —
- * `platformData.bsc.ref` / `platformData.sportlots.ref` (NEO-91: SportLots'
- * ref IS the description, precisely because its numbers repeat) — falling back
- * to cardNumber only for rows with no ref. That changes how every existing set
- * re-syncs, so it is its own ticket rather than a rider on a regression fix.
+ * NEO-203 replaced that key with a cascade that leads on the identity the rest
+ * of this codebase already links a marketplace row by: `platformData.bsc.ref`,
+ * then `platformData.sportlots.ref` (NEO-91 — SportLots' ref IS the card
+ * description, precisely because its numbers repeat), then
+ * `(side, slot, cardNumber)` and finally bare cardNumber against rows with no
+ * ref at all. Every number-based tier matches only when exactly one stored row
+ * and exactly one incoming card claim the key; anything ambiguous is surfaced,
+ * never guessed. Card numbers are not unique at ANY scope — not across source
+ * sets, and not within one set either, where a veteran #1 and a rookie #1 can
+ * be two distinct cards.
  *
- * No test pins the broken behaviour: a test asserting a defect fails the day
- * someone fixes it, which teaches exactly the wrong lesson.
+ * The re-sync assertions themselves live with the rest of the NEO-203 matrix
+ * rather than here; this file's job stays what it always was, which is proving
+ * the INSERT path represents a duplicate-numbered checklist honestly.
  */
 
 import { convexTest } from "convex-test";

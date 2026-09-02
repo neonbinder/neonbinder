@@ -14,9 +14,11 @@
  * chunk mutation per `CARDS_PER_COMMIT_CHUNK` cards, then a finalize mutation.
  * That split introduces failure modes a single transaction could not have:
  *
- *  - the stale-card sweep in finalize sees rows written by EVERY chunk, so if
- *    it were told only about the last chunk it would delete the rest of the
- *    commit it just wrote;
+ *  - finalize's whole-commit bookkeeping (the unmatched-existing report, the
+ *    custom-card sortOrder pass, the operator's explicit deletes) sees rows
+ *    written by EVERY chunk, so if it were told only about the last chunk it
+ *    would mis-report — and, before NEO-203 made deletion explicit, would have
+ *    DELETED the rest of the commit it had just written;
  *  - a variation's parent can be written by a different chunk than the child,
  *    so the link cannot be resolved inside a chunk;
  *  - sortOrder is computed across the whole commit, so two chunks must not
@@ -173,9 +175,11 @@ describe("commitCardChecklist — chunked commit", () => {
     expect(result).toMatchObject({ success: true, count: TOTAL_CARDS });
 
     const { rows, byNumber } = await readChecklist(t, variantTypeId);
-    // The finalize phase sweeps rows it was not told about. If it had seen
-    // only the final chunk's ids, the first two chunks would be gone.
+    // Every chunk's rows are present, and finalize accounted for all of them:
+    // a phase told only about the final chunk would report the first two
+    // chunks as unmatched (and, before NEO-203, would have deleted them).
     expect(rows.length).toBe(TOTAL_CARDS);
+    expect(result.unmatchedExistingCount).toBe(0);
     expect(byNumber.size).toBe(TOTAL_CARDS);
     for (const c of cards) expect(byNumber.has(c.cardNumber)).toBe(true);
     // Every row got a SKU — the insert-then-patch pair inside each chunk.
@@ -243,7 +247,25 @@ describe("commitCardChecklist — chunked commit", () => {
     expect(parent.variationOfCardId).toBeUndefined();
   });
 
-  test("re-committing a SMALLER multi-chunk set deletes only the stale cards", async () => {
+  /**
+   * BEHAVIOUR CHANGE — NEO-203. This test used to be
+   * "re-committing a SMALLER multi-chunk set deletes only the stale cards",
+   * and asserted that finalize deleted every non-custom row the new payload
+   * did not mention.
+   *
+   * That made a marketplace the authority on whether a NeonBinder card exists.
+   * BSC dropping a listing, a short checklist, or a partially-failed fetch
+   * destroyed NB rows and their cross-listings as a side effect of a sync.
+   * NeonBinder owns its sets: a marketplace could be dropped entirely tomorrow
+   * and every NB set must stand untouched.
+   *
+   * So the sweep is gone. A row upstream no longer lists is KEPT and counted
+   * in `unmatchedExistingCount`; deleting it is a separate, explicit operator
+   * decision carried by `operatorDeleteIds` on a later commit. The multi-chunk
+   * premise still matters — finalize must see every chunk's ids, or it would
+   * report the first two chunks' rows as unmatched.
+   */
+  test("re-committing a SMALLER multi-chunk set deletes NOTHING and reports the gap", async () => {
     const t = convexTest(schema, modules);
     const { sportId, variantTypeId } = await seedTree(t);
     const cards = multiChunkCards();
@@ -255,12 +277,13 @@ describe("commitCardChecklist — chunked commit", () => {
         sportId,
         cards,
       });
-    expect((await readChecklist(t, variantTypeId)).rows.length).toBe(TOTAL_CARDS);
+    const before = await readChecklist(t, variantTypeId);
+    expect(before.rows.length).toBe(TOTAL_CARDS);
 
-    // Still more than one chunk, so a sweep keyed on a single chunk's ids
-    // would delete the first chunk's rows along with the genuinely stale ones.
+    // Still more than one chunk, so a report keyed on a single chunk's ids
+    // would name the first chunk's rows as missing upstream.
     const smaller = cards.slice(0, CARDS_PER_COMMIT_CHUNK + 20);
-    await t
+    const result = await t
       .withIdentity(ADMIN_IDENTITY)
       .action(api.selectorOptions.commitCardChecklist, {
         selectorOptionId: variantTypeId,
@@ -269,14 +292,16 @@ describe("commitCardChecklist — chunked commit", () => {
       });
 
     const { rows, byNumber } = await readChecklist(t, variantTypeId);
-    expect(rows.length).toBe(smaller.length);
-    // Kept: everything still on the checklist, including the first chunk's
-    // very first row.
-    for (const c of smaller) expect(byNumber.has(c.cardNumber)).toBe(true);
-    // Dropped: everything the marketplace no longer lists.
-    for (const c of cards.slice(smaller.length)) {
-      expect(byNumber.has(c.cardNumber)).toBe(false);
-    }
+    // Nothing was destroyed. Every row that existed before still exists.
+    expect(rows.length).toBe(TOTAL_CARDS);
+    expect(new Set(rows.map((r) => r._id))).toEqual(
+      new Set(before.rows.map((r) => r._id)),
+    );
+    for (const c of cards) expect(byNumber.has(c.cardNumber)).toBe(true);
+    // And the cards upstream stopped listing are reported, exactly once each,
+    // so an operator can act on them instead of discovering them missing.
+    expect(result.unmatchedExistingCount).toBe(cards.length - smaller.length);
+    expect(result.operatorDeleted).toBe(0);
   });
 
   test("re-committing the SAME multi-chunk set upserts rather than duplicating", async () => {
@@ -303,12 +328,18 @@ describe("commitCardChecklist — chunked commit", () => {
     const second = await readChecklist(t, variantTypeId);
 
     expect(second.rows.length).toBe(TOTAL_CARDS);
-    // Same rows, not new ones: the upsert key is resolved once, against the
+    // Same rows, not new ones: the match is resolved once, against the
     // PRE-commit snapshot, and handed to every chunk. A chunk that re-read the
     // table would still find these rows — but it would also find the rows
     // earlier chunks of the same commit had just inserted, which is what would
     // collapse a legitimately duplicate-numbered checklist. See
     // convex/commitCardChecklist.duplicateNumbers.test.ts.
+    //
+    // NEO-203: these fixture cards carry no `platformData` at all, so they
+    // match on the LAST tier of the cascade — bare cardNumber against rows
+    // with no ref on either side. That tier is what keeps custom and legacy
+    // rows re-syncable, and it applies here because every number in the
+    // fixture is distinct.
     expect(new Set(second.rows.map((r) => r._id))).toEqual(
       new Set(first.rows.map((r) => r._id)),
     );

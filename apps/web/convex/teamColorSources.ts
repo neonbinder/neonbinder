@@ -38,6 +38,23 @@ import { findSeedColors } from "../lib/teams/seed-team-lookup";
  */
 const SEED_SOURCE_URL = "bundled:seed-team-colors";
 
+/**
+ * NEO-203 — provenance for colors an OPERATOR typed in Team Management.
+ *
+ * `resolveTeamColors` below already refuses to overwrite a team that carries a
+ * `colorSource` unless explicitly forced. Hand-entered colors had no
+ * provenance at all, so they failed that check and were silently replaced by
+ * the next background lookup — and a checklist commit enqueues one
+ * (`commitCardChecklistFinalize` → `wikidataPool.enqueueEnrichment` →
+ * `enrichTeam`), so "the operator's colors survive until the next sync" was
+ * the real behaviour.
+ *
+ * Stamped by `teams.updateTeam`. Same shape and same purpose as
+ * `SEED_SOURCE_URL`: a `colorSource.url` that names where the answer came from
+ * when it was not a fetched page.
+ */
+export const MANUAL_COLOR_SOURCE_URL = "operator:team-management";
+
 const sourceEntryValidator = v.object({
   name: v.string(),
   url: v.string(),
