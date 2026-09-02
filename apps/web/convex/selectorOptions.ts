@@ -7562,6 +7562,219 @@ export const diffChecklistAgainstExisting = query({
   },
 });
 
+// ─── NEO-203 phase E: pre-merge data audit ─────────────────────────────────
+
+/**
+ * Row caps for the audit below.
+ *
+ * A Convex query may read ~16k documents, so the two scans together have to
+ * stay comfortably inside that. These numbers are ~4x the largest real
+ * checklist (a 908-card set) and well past the current catalog's node count;
+ * if either scan truncates, the report says so rather than quietly reporting a
+ * partial answer as a clean bill of health.
+ */
+const AUDIT_CARD_SCAN_LIMIT = 8000;
+const AUDIT_NODE_SCAN_LIMIT = 4000;
+const AUDIT_SAMPLE_LIMIT = 20;
+
+/**
+ * NEO-203 phase E — the pre-merge verification sweep.
+ *
+ * ## What it is for, and when it stops being useful
+ *
+ * NEO-203 changes what a re-sync keys on: from `cardNumber` (which is not
+ * unique at any scope) to the marketplace REF, with number-based tiers behind
+ * it that only fire when the answer is unarguable. Existing data was written
+ * under the old rule, so before the change ships this answers the three
+ * questions that decide how much of it heals on its own:
+ *
+ *   1. **Ref-less non-custom rows.** These can only ever match on tier 3 (bare
+ *      card number against no-ref rows), so they are the rows most exposed to
+ *      the old bug's residue and the least able to heal on a re-sync.
+ *   2. **Variants whose checklist holds duplicate card numbers.** Under the old
+ *      keying these are exactly the rows that got merged into one another — one
+ *      patched twice, another left stale. Under the new keying they are fine
+ *      PROVIDED they carry refs, which is why (1) and (2) are read together.
+ *   3. **Variants with more than one attached slot on a side.** The N:M sets
+ *      (NEO-189 attaches several marketplace sets to one variant), which is
+ *      what makes duplicate numbers routine rather than exotic. These are the
+ *      at-risk sets to re-sync first and eyeball.
+ *
+ * Run by an operator, on dev and then prod:
+ *
+ *   npx convex run selectorOptions:auditChecklistDataForResync '{}'
+ *
+ * `internalQuery` deliberately: this is an operator tool with no UI and no
+ * client caller, and `internal` is the only access rule that cannot be got at
+ * from a browser at all. It is also read-only — it reports, it never repairs.
+ *
+ * It returns COUNTS plus bounded samples, never whole rows: the point is to
+ * size the problem, and a marketplace ref is unbounded upstream text that has
+ * no business being echoed back in bulk.
+ *
+ * SAFE TO DELETE once NEO-203 has been verified on prod. It has no callers in
+ * the application and nothing depends on its shape.
+ */
+export const auditChecklistDataForResync = internalQuery({
+  args: {},
+  returns: v.object({
+    scanned: v.object({
+      cardChecklistRows: v.number(),
+      selectorOptionRows: v.number(),
+      // True when a scan hit its cap, so every count below is a LOWER BOUND.
+      truncated: v.boolean(),
+    }),
+    // (1) Non-custom rows with no ref on either side.
+    reflessCards: v.object({
+      count: v.number(),
+      samples: v.array(
+        v.object({
+          selectorOptionId: v.id("selectorOptions"),
+          cardNumber: v.string(),
+        }),
+      ),
+    }),
+    // (2) Variants whose checklist repeats a card number.
+    duplicateCardNumbers: v.object({
+      variantCount: v.number(),
+      samples: v.array(
+        v.object({
+          selectorOptionId: v.id("selectorOptions"),
+          // How many DISTINCT numbers are held by more than one row here.
+          duplicateNumberCount: v.number(),
+        }),
+      ),
+    }),
+    // (3) Rows with more than one attached marketplace set on a side.
+    multiSlotVariants: v.object({
+      count: v.number(),
+      samples: v.array(
+        v.object({
+          selectorOptionId: v.id("selectorOptions"),
+          bscSlots: v.number(),
+          sportlotsSlots: v.number(),
+        }),
+      ),
+    }),
+  }),
+  handler: async (ctx) => {
+    // A FULL-TABLE WALK, capped. There is no index that answers "every row
+    // lacking a ref" or "every node with two slots" — both predicates are over
+    // field CONTENTS, not over an indexed key — and adding indexes to the
+    // schema for a one-off pre-merge check would outlive the check. `take`
+    // bounds the read; asking for one row past the cap is how truncation is
+    // detected, and the report says so out loud rather than passing a partial
+    // scan off as a clean result.
+    const cardRows = await ctx.db
+      .query("cardChecklist")
+      .take(AUDIT_CARD_SCAN_LIMIT + 1);
+    const cardsTruncated = cardRows.length > AUDIT_CARD_SCAN_LIMIT;
+    const cards = cardsTruncated
+      ? cardRows.slice(0, AUDIT_CARD_SCAN_LIMIT)
+      : cardRows;
+
+    const nodeRows = await ctx.db
+      .query("selectorOptions")
+      .take(AUDIT_NODE_SCAN_LIMIT + 1);
+    const nodesTruncated = nodeRows.length > AUDIT_NODE_SCAN_LIMIT;
+    const nodes = nodesTruncated
+      ? nodeRows.slice(0, AUDIT_NODE_SCAN_LIMIT)
+      : nodeRows;
+
+    // (1) + (2), from the one card scan.
+    let reflessCount = 0;
+    const reflessSamples: Array<{
+      selectorOptionId: Id<"selectorOptions">;
+      cardNumber: string;
+    }> = [];
+    const numbersByVariant = new Map<string, Map<string, number>>();
+    for (const row of cards) {
+      // Custom cards have no upstream and are expected to carry no ref, so
+      // counting them here would bury the rows that actually matter.
+      if (!row.isCustom) {
+        const hasRef =
+          !!row.platformData?.bsc?.ref || !!row.platformData?.sportlots?.ref;
+        if (!hasRef) {
+          reflessCount++;
+          if (reflessSamples.length < AUDIT_SAMPLE_LIMIT) {
+            reflessSamples.push({
+              selectorOptionId: row.selectorOptionId,
+              cardNumber: row.cardNumber,
+            });
+          }
+        }
+      }
+      // Duplicate numbers count CUSTOM rows too: a custom card sharing a number
+      // with a marketplace card is exactly the collision the old keying merged.
+      const key = row.selectorOptionId as string;
+      let counts = numbersByVariant.get(key);
+      if (!counts) {
+        counts = new Map<string, number>();
+        numbersByVariant.set(key, counts);
+      }
+      counts.set(row.cardNumber, (counts.get(row.cardNumber) ?? 0) + 1);
+    }
+
+    let duplicateVariantCount = 0;
+    const duplicateSamples: Array<{
+      selectorOptionId: Id<"selectorOptions">;
+      duplicateNumberCount: number;
+    }> = [];
+    for (const [variantId, counts] of numbersByVariant) {
+      let duplicateNumberCount = 0;
+      for (const n of counts.values()) if (n > 1) duplicateNumberCount++;
+      if (duplicateNumberCount === 0) continue;
+      duplicateVariantCount++;
+      if (duplicateSamples.length < AUDIT_SAMPLE_LIMIT) {
+        duplicateSamples.push({
+          selectorOptionId: variantId as Id<"selectorOptions">,
+          duplicateNumberCount,
+        });
+      }
+    }
+
+    // (3), from the node scan. Read through `slotIds` — the same helper every
+    // slot-aware path uses — so "an attached set" means here exactly what it
+    // means at write time.
+    let multiSlotCount = 0;
+    const multiSlotSamples: Array<{
+      selectorOptionId: Id<"selectorOptions">;
+      bscSlots: number;
+      sportlotsSlots: number;
+    }> = [];
+    for (const node of nodes) {
+      const bscSlots = slotIds(node, "bsc").length;
+      const sportlotsSlots = slotIds(node, "sportlots").length;
+      if (bscSlots <= 1 && sportlotsSlots <= 1) continue;
+      multiSlotCount++;
+      if (multiSlotSamples.length < AUDIT_SAMPLE_LIMIT) {
+        multiSlotSamples.push({
+          selectorOptionId: node._id,
+          bscSlots,
+          sportlotsSlots,
+        });
+      }
+    }
+
+    return {
+      scanned: {
+        cardChecklistRows: cards.length,
+        selectorOptionRows: nodes.length,
+        truncated: cardsTruncated || nodesTruncated,
+      },
+      reflessCards: { count: reflessCount, samples: reflessSamples },
+      duplicateCardNumbers: {
+        variantCount: duplicateVariantCount,
+        samples: duplicateSamples,
+      },
+      multiSlotVariants: {
+        count: multiSlotCount,
+        samples: multiSlotSamples,
+      },
+    };
+  },
+});
+
 /**
  * Commit a fetched checklist preview. Every player/team name that isn't
  * already in our tables was reviewed one-at-a-time in the NEO-92 review wizard
