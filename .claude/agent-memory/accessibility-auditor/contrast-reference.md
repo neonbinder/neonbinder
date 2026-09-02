@@ -50,6 +50,51 @@ White text on `#00C2FF` (secondary/blue) = **2.07:1**. White text on `#FF2E9A`
 (cancel/pink) = **3.44:1**. Both fail 4.5:1 for normal-size button text. Black
 text on `#00D558` (primary/green) = 10.66:1, fine.
 
+## Tailwind v4 default `gray-*` scale (OKLCH-defined) — resolved sRGB hex
+
+This app also uses plain Tailwind `gray-*` (not `slate-*`) in some components
+(e.g. `apps/web/components/SetSelector/sync-review-modal.tsx`,
+`CardPairingModal.tsx`). Tailwind v4's theme defines these in OKLCH
+(`node_modules/tailwindcss/theme.css`), not hex, so they need conversion before
+computing contrast. Resolved once (NEO-203 audit) via a manual OKLCH→sRGB
+implementation — reuse these rather than re-deriving:
+
+| Token | OKLCH | sRGB hex |
+|---|---|---|
+| gray-100 | 96.7% 0.003 264.542 | #f3f4f6 |
+| gray-300 | 87.2% 0.01 258.338 | #d1d5dc |
+| gray-400 | 70.7% 0.022 261.325 | #99a1af |
+| gray-500 | 55.1% 0.027 264.364 | #6a7282 |
+| gray-700 | 37.3% 0.034 259.733 | #364153 |
+| gray-800 | 27.8% 0.033 256.848 | #1e2939 |
+| gray-900 | 21% 0.034 264.665 | #101828 |
+| cyan-900 | 39.8% 0.07 227.392 | #104e64 |
+| cyan-100 | 95.6% 0.045 203.388 | #cefafe |
+
+`gray-500` vs opaque `gray-900` = **3.67:1** — fails 4.5:1, same recurring
+pattern as `slate-500` above but on the OTHER gray scale. `gray-400` vs
+`gray-900` = 6.82:1, passes. **Same fix applies: swap `text-gray-500` →
+`text-gray-400`.** Found live in `sync-review-modal.tsx` (5 occurrences, all
+fixed in the NEO-203 audit) — check both `slate-500\b` and `gray-500\b` (and
+the `-600` variants of each) whenever auditing new dark-theme UI here.
+
+## Chained opacity where text and background SHARE a hue — opacity direction reverses
+
+Normal chained-opacity intuition (see
+[[nested-opacity-contrast-and-radiogroup]]) is "less background opacity means
+more of the (darker) container shows through, so contrast against light text
+goes UP." That reverses when the background tint is the SAME color as the
+text — e.g. `bg-[#FF2EB3]/NN text-[#FF2EB3]` (a colored badge with matching
+text, as in `sync-review-modal.tsx`'s "needs review" tier-1 badge). There,
+*raising* the opacity drags the badge background toward the text's own hue,
+so contrast *falls* as opacity increases (at `/20` it was 3.99:1 — fails; at
+opacity 0, i.e. no tint at all, it's ~4.95:1 — the ceiling). The fix is to
+LOWER the opacity, not raise it: `/10` measured 4.55:1, clearing 4.5:1 with a
+small margin. Always check which direction opacity is pushing contrast when
+text and its background tint are literally the same hex — it is not always
+"more opacity = worse" or "more opacity = better," it depends on whether text
+and background are moving toward or away from each other in color space.
+
 ## Open question, not yet resolved
 
 `apps/web/app/globals.css` sets `body` background via `--background` which is

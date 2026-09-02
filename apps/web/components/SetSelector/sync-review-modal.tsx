@@ -277,7 +277,15 @@ function CardDiffRow({
                   </span>
                   {f.tier === 1 && (
                     <span
-                      className="rounded px-1.5 py-0.5 bg-[#FF2EB3]/20 text-[#FF2EB3]"
+                      // a11y: pink-on-pink here needs a LOWER fill opacity, not
+                      // higher — text and background share a hue, so raising
+                      // the tint drags the background toward the text color
+                      // and contrast falls. /20 measured 3.99:1 against this
+                      // row's actual (composited) background — fails WCAG
+                      // 1.4.3's 4.5:1 for this text-xs badge, on exactly the
+                      // label the tier exists to make someone stop and read.
+                      // /10 measures 4.55:1.
+                      className="rounded px-1.5 py-0.5 bg-[#FF2EB3]/10 text-[#FF2EB3]"
                       // Not decoration: "check this one deliberately" is the
                       // entire point of the tier.
                     >
@@ -342,7 +350,16 @@ export default function SyncReviewModal({
 
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const skipBtnRef = useRef<HTMLButtonElement | null>(null);
+  const confirmDialogRef = useRef<HTMLDivElement | null>(null);
   const confirmCancelRef = useRef<HTMLButtonElement | null>(null);
+  // a11y: the control the delete-confirm was opened FROM. Backing out of the
+  // confirm (Cancel, or Escape) unmounts the confirm's own DOM but leaves the
+  // review dialog open — nothing then moves focus back to Apply & Continue,
+  // so the browser drops it to <body> the instant the focused Cancel button
+  // is removed. Same failure shape documented for this codebase's shared
+  // busy-flag pattern; the fix here is the same idea, just triggered by a
+  // conditional unmount instead of a `disabled` flip.
+  const applyBtnRef = useRef<HTMLButtonElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -500,7 +517,7 @@ export default function SyncReviewModal({
               a box below. Nothing here is applied — or deleted — unless you say
               so.
             </p>
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-gray-400 mt-1">
               {groups.contentChanges.length} card
               {groups.contentChanges.length === 1 ? "" : "s"} with content
               changes · {groups.formattingOnly.length} formatting-only ·{" "}
@@ -662,7 +679,7 @@ export default function SyncReviewModal({
                 Content changes ({groups.contentChanges.length})
               </h3>
               {groups.contentChanges.length === 0 ? (
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-gray-400">
                   Nothing upstream contradicts what NeonBinder already says.
                 </p>
               ) : (
@@ -683,21 +700,40 @@ export default function SyncReviewModal({
             {groups.formattingOnly.length > 0 && (
               <section aria-labelledby="sync-review-formatting">
                 <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-                  <button
-                    type="button"
-                    id="sync-review-formatting"
-                    className="text-sm font-semibold text-gray-200"
-                    aria-expanded={!formattingCollapsed}
-                    onClick={() => setFormattingCollapsed((v) => !v)}
-                    aria-label={`${
-                      formattingCollapsed ? "Expand" : "Collapse"
-                    } formatting-only changes, ${groups.formattingOnly.length} cards`}
-                  >
-                    <span aria-hidden="true">
-                      {formattingCollapsed ? "▶" : "▼"}{" "}
-                    </span>
-                    Formatting only ({groups.formattingOnly.length})
-                  </button>
+                  {/* a11y: the sibling sections ("Content changes", "Linked to
+                      two cards", "No longer listed upstream") all head
+                      themselves with a real <h3>, which is what lets a
+                      screen-reader user jump section-to-section by heading
+                      (NVDA/JAWS "H" key etc). This section's own heading IS
+                      interactive (an APG disclosure button), so it gets the
+                      same treatment the pattern calls for — a heading
+                      WRAPPING the button — rather than dropping out of the
+                      heading list entirely. `className="contents"` keeps the
+                      <h3> from adding its own box/font-size, so nothing here
+                      looks different. */}
+                  <h3 className="contents">
+                    <button
+                      type="button"
+                      id="sync-review-formatting"
+                      className="text-sm font-semibold text-gray-200"
+                      aria-expanded={!formattingCollapsed}
+                      // a11y: only meaningful while expanded — the list
+                      // unmounts entirely rather than being hidden when
+                      // collapsed, so there is nothing to point at at that
+                      // point, which is the same "not in the tree" disclosure
+                      // behaviour aria-expanded is reporting.
+                      aria-controls="sync-review-formatting-list"
+                      onClick={() => setFormattingCollapsed((v) => !v)}
+                      aria-label={`${
+                        formattingCollapsed ? "Expand" : "Collapse"
+                      } formatting-only changes, ${groups.formattingOnly.length} cards`}
+                    >
+                      <span aria-hidden="true">
+                        {formattingCollapsed ? "▶" : "▼"}{" "}
+                      </span>
+                      Formatting only ({groups.formattingOnly.length})
+                    </button>
+                  </h3>
                   <NeonButton
                     secondary
                     size="1"
@@ -713,12 +749,12 @@ export default function SyncReviewModal({
                       : "Accept all formatting changes"}
                   </NeonButton>
                 </div>
-                <p className="text-xs text-gray-500 mb-2">
+                <p className="text-xs text-gray-400 mb-2">
                   Spelling, capitalisation and accents only — these cards still
                   say the same thing, so they are pre-accepted.
                 </p>
                 {!formattingCollapsed && (
-                  <ul className="flex flex-col gap-2">
+                  <ul id="sync-review-formatting-list" className="flex flex-col gap-2">
                     {groups.formattingOnly.map((c) => (
                       <CardDiffRow
                         key={c.index}
@@ -815,7 +851,7 @@ export default function SyncReviewModal({
                           className="text-xs text-gray-300 cursor-pointer"
                         >
                           #{r.cardNumber} {r.cardName}
-                          <span className="text-gray-500">
+                          <span className="text-gray-400">
                             {" "}
                             — was on{" "}
                             {r.sides
@@ -831,7 +867,7 @@ export default function SyncReviewModal({
             )}
 
             {(diff.collisionInsertCount > 0 || diff.ambiguousMatchCount > 0) && (
-              <p className="text-xs text-gray-500" role="status">
+              <p className="text-xs text-gray-400" role="status">
                 {diff.collisionInsertCount > 0 &&
                   `${diff.collisionInsertCount} card${
                     diff.collisionInsertCount === 1 ? "" : "s"
@@ -845,7 +881,16 @@ export default function SyncReviewModal({
           </div>
 
           <footer className="p-4 border-t border-gray-700 flex items-center justify-between gap-2 flex-wrap">
-            <span className="text-xs text-gray-400">
+            {/* a11y (WCAG 4.1.3): this running total updates on every checkbox
+                toggle, the same "cart count" shape the SC's own examples use —
+                without a live region a screen-reader user gets no non-visual
+                feedback that their tick changed the count that is about to be
+                applied. role="status" only (no explicit aria-live): the role
+                already implies aria-live="polite" + aria-atomic="true", and it
+                never toggles to "alert" here, so there is no reason to add the
+                explicit attribute — see the codebase's own status/alert notice
+                pattern for when that IS needed. */}
+            <span className="text-xs text-gray-400" role="status">
               {acceptedFieldCount} change
               {acceptedFieldCount === 1 ? "" : "s"} will be applied
               {anyOrphanSelected
@@ -869,6 +914,7 @@ export default function SyncReviewModal({
                 Skip changes
               </NeonButton>
               <NeonButton
+                ref={applyBtnRef}
                 size="2"
                 disabled={saving}
                 onClick={handleApply}
@@ -885,18 +931,58 @@ export default function SyncReviewModal({
             operator has just individually ticked. */}
         {confirmingDeletes && (
           <div
+            ref={confirmDialogRef}
             className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4"
             role="alertdialog"
             aria-modal="true"
             aria-labelledby="sync-delete-confirm-heading"
             aria-describedby="sync-delete-confirm-body"
             onKeyDown={(e) => {
-              if (e.key !== "Escape") return;
-              // Escape here backs out of the confirm ONLY. It must not also
-              // skip the review behind it — one keypress that dismisses two
-              // dialogs is how an operator loses work they had just finished.
+              if (e.key === "Escape") {
+                // Escape here backs out of the confirm ONLY. It must not also
+                // skip the review behind it — one keypress that dismisses two
+                // dialogs is how an operator loses work they had just
+                // finished.
+                e.stopPropagation();
+                setConfirmingDeletes(false);
+                // a11y: Apply & Continue is still mounted (only the confirm's
+                // own DOM unmounts), so it is safe to focus synchronously —
+                // no rAF/remount race to wait out. See applyBtnRef's comment.
+                applyBtnRef.current?.focus();
+                return;
+              }
+              if (e.key !== "Tab") return;
+              // a11y: this alertdialog is a DOM descendant of the outer
+              // review dialog's own `dialogRef`, so without stopping
+              // propagation AND trapping Tab locally here, an unhandled Tab
+              // bubbles up to the outer dialog's onKeyDown, which computes
+              // its focusable set from the WHOLE subtree — including the
+              // review dialog's own checkboxes and buttons sitting behind
+              // this overlay. Concretely: Shift+Tab from this dialog's own
+              // first focusable (Cancel) would not match the outer handler's
+              // "first" element (the review dialog's own first checkbox), so
+              // the outer handler no-ops and native Tab order takes over,
+              // walking focus straight into content that is supposed to be
+              // inert while this confirm is open. Trapping — and stopping
+              // propagation — here keeps Tab entirely inside whichever
+              // dialog is actually on top, matching what `aria-modal="true"`
+              // promises.
               e.stopPropagation();
-              setConfirmingDeletes(false);
+              const root = confirmDialogRef.current;
+              if (!root) return;
+              const focusable = root.querySelectorAll<HTMLElement>(
+                'button:not([disabled]), input:not([disabled]), [href], select, textarea, [tabindex]:not([tabindex="-1"])',
+              );
+              if (focusable.length === 0) return;
+              const first = focusable[0];
+              const last = focusable[focusable.length - 1];
+              if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+              } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+              }
             }}
           >
             <div className="bg-gray-900 border border-gray-700 rounded-lg w-full max-w-md p-4">
@@ -920,7 +1006,14 @@ export default function SyncReviewModal({
                   ref={confirmCancelRef}
                   secondary
                   size="2"
-                  onClick={() => setConfirmingDeletes(false)}
+                  onClick={() => {
+                    setConfirmingDeletes(false);
+                    // a11y: see applyBtnRef's comment above — this button is
+                    // about to unmount while focused, and the review dialog
+                    // stays open, so without this the browser drops focus to
+                    // <body> the instant it disappears.
+                    applyBtnRef.current?.focus();
+                  }}
                   aria-label="Cancel deleting cards"
                 >
                   Cancel

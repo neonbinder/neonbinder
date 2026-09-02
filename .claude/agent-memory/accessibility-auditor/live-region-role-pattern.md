@@ -48,3 +48,23 @@ not just error ones? A `role="alert"` region for failures is not sufficient by
 itself if successful actions restructure the DOM (items moving between lists)
 with no live region narrating what happened — see [[focus-park-pattern]] for
 where this was also missing in `review-grid.tsx`.
+
+## Another gap found, not yet fixed: `CardChecklist.tsx`'s `syncMessage` banner
+
+`apps/web/components/SetSelector/CardChecklist.tsx` renders its post-sync/
+post-commit status text (`"Saved N cards."`, `"Commit failed: ..."`, error
+strings, the `unknownPlayers`/`unknownTeams` prompt, etc.) in a plain
+`<div>` with **no `role` and no `aria-live` at all** — none of the
+`status`/`alert` pattern above. This is real content a screen-reader user
+needs (result counts, deletion counts, stale-decision warnings, conflict
+counts — all appended dynamically by NEO-203's new `notes` logic in
+`runCommit`), and it currently announces nothing. Flagged in the NEO-203
+audit (2026-09-01) but **deliberately not fixed there**: that audit's scope
+was `sync-review-modal.tsx` only ("do not touch any other files"), and this
+div is pre-existing markup in a different file that the audit wasn't
+permitted to edit. Still live — check it first before re-deriving this from
+scratch. The fix, when someone is allowed to touch `CardChecklist.tsx`, is
+exactly the `key`/`role`/`aria-live` pattern above: this message toggles
+between routine ("Saved N cards.") and failure ("Commit failed: ...", "Error:
+...") content, which is precisely the two-tone case the intake.tsx pattern
+was built for.
