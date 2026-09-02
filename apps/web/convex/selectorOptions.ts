@@ -47,7 +47,12 @@ import { runWithOccRetry } from "../lib/errors/occ-retry";
 // NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
 // An auto-matched disagreement and a manual one have to be the same thing —
 // see the note in lib/cards/card-name.ts.
-import { conflictingNames } from "../lib/cards/card-name";
+// NEO-203: `nameKey` is the SAME case/whitespace/punctuation/diacritic fold
+// the pairing modal already judges "do these two names mean the same thing?"
+// with. The content-diff review reuses it verbatim to decide whether a changed
+// field is a reformatting or a rewrite — a second fold would mean two screens
+// in one pipeline disagreeing about what counts as cosmetic.
+import { conflictingNames, nameKey } from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { normalizePlayerName } from "./players";
@@ -178,6 +183,188 @@ async function resolveCardSlots(
     }
     return out;
   };
+}
+
+/**
+ * NEO-203 — the two marketplace sides a card can be linked to, in the fixed
+ * order the matching cascade tries them.
+ */
+const MATCH_SIDES = ["bsc", "sportlots"] as const;
+type MatchSide = (typeof MATCH_SIDES)[number];
+
+/**
+ * NEO-203 — the tier-2 match key: `side`, the SLOT the card came from, and its
+ * card number.
+ *
+ * `\0` cannot appear in a slot key or a card number, so the join is
+ * unambiguous — `"bsc|src1|2"` and `"bsc|src|1-2"` would not be.
+ *
+ * Built for stored rows in `commitCardChecklistPrelude` (from
+ * `platformData[side].src`) and for incoming cards in `resolveExistingIds`
+ * (from the wire `setId`, resolved against the parent's ATTACHED slots by the
+ * same rule `resolveCardSlots` writes with). One function so the two sides of
+ * the comparison cannot drift apart.
+ */
+function slotNumberMatchKey(
+  side: MatchSide,
+  slot: string,
+  cardNumber: string,
+): string {
+  return `${side}\u0000${slot}\u0000${cardNumber}`;
+}
+
+/**
+ * NEO-203 — bound one identifier before it reaches a log line.
+ *
+ * A SportLots ref IS the card description (NEO-91), so it is unbounded text
+ * that came from a marketplace. Every structured log below reports bounded
+ * SAMPLES plus a full count, and truncates each identifier it prints; the
+ * count is the operational signal, the sample is only there to make the
+ * problem recognisable. Refs never go into a `ConvexError` message at all —
+ * that string crosses to the browser.
+ */
+const LOG_REF_MAX_CHARS = 120;
+function truncateForLog(value: string): string {
+  return value.length > LOG_REF_MAX_CHARS
+    ? `${value.slice(0, LOG_REF_MAX_CHARS)}…`
+    : value;
+}
+
+/**
+ * NEO-203 — the card fields NeonBinder owns, and the ONLY ones a re-sync may
+ * write onto an existing row, and then only for the fields the operator named
+ * in `applyFields`.
+ *
+ * Everything not on this list is either linkage (`platformData` — always
+ * refreshed, it is the whole reason the sync exists), NB bookkeeping
+ * (`sortOrder`, `lastUpdated`, `sku`), or owned by another engine entirely
+ * (`features` by propagation, `variationOfCardId` by the finalize pass).
+ *
+ * Per-FIELD rather than per-card because the two decisions are genuinely
+ * independent: an upstream fix that adds a missing rookie flag and an upstream
+ * "correction" that overwrites a carefully spelled card name arrive on the
+ * same card, and an operator must be able to take the first without the
+ * second.
+ */
+const NB_CONTENT_FIELDS = [
+  "cardName",
+  "playerIds",
+  "teamOnCardIds",
+  "attributes",
+  "isRookie",
+  "isRelic",
+  "printRun",
+  "autographType",
+  "cardVariation",
+] as const;
+type NbContentField = (typeof NB_CONTENT_FIELDS)[number];
+const NB_CONTENT_FIELD_SET: ReadonlySet<string> = new Set(NB_CONTENT_FIELDS);
+
+/**
+ * NEO-203 — is the incoming value for one NB content field the same thing the
+ * row already says?
+ *
+ * The chunk re-runs the diff server-side before writing anything, so an
+ * accepted field whose value did not actually change is dropped from the
+ * patch. This only ever removes writes, never adds one.
+ *
+ * ## What counts as "says nothing"
+ *
+ * Five spellings, and on these fields they are all one statement:
+ *
+ *   `undefined` · `null` · `[]` · `false` · `""`
+ *
+ * An absent array and an empty one are the same statement ("no players on this
+ * card"), and both spellings occur on both sides — the action leaves an empty
+ * resolution `undefined`, while an adapter may send `[]`.
+ *
+ * `false` and `""` were added after CI round 2 caught the real cost of leaving
+ * them out. Saving a card in the edit drawer writes EXPLICIT `isRookie: false`,
+ * `isRelic: false`, `cardVariation: ""`, while the adapters simply omit those
+ * keys on a card that is none of those things. So every card an operator had
+ * curated came back on the next re-sync carrying spurious tier-1 "needs review"
+ * diffs — `Rookie: − no / + —`, `Variation: − — / + —` — i.e. the review screen
+ * shouted loudest about precisely the cards a human had already got right, and
+ * one of those entries folded equal, pre-ticked itself, and made the footer
+ * claim a change was pending when nothing had changed at all.
+ *
+ * "Not a rookie" and "no rookie flag recorded" are the same fact about a
+ * baseball card; so are "" and "no variation". This is a domain truth, not a
+ * comparison convenience — which is why it belongs HERE, in the one predicate
+ * both the review diff and the chunk's pre-write re-diff read, rather than as a
+ * filter bolted onto the display layer.
+ *
+ * NOT emptyish: `0`. A number field on these cards (`printRun`) has no zero
+ * that means "absent" — `/0` is not a print run — so folding it in would only
+ * ever hide a real difference.
+ *
+ * Arrays compare ELEMENT-WISE IN ORDER. Order is meaningful here: `playerIds`
+ * on a multi-player card lists them as the card does, and that ordering feeds
+ * the generated listing title.
+ */
+function sameContentValue(stored: unknown, incoming: unknown): boolean {
+  const emptyish = (x: unknown) =>
+    x === undefined ||
+    x === null ||
+    x === false ||
+    x === "" ||
+    (Array.isArray(x) && x.length === 0);
+  if (emptyish(stored) && emptyish(incoming)) return true;
+  if (Array.isArray(stored) && Array.isArray(incoming)) {
+    return (
+      stored.length === incoming.length &&
+      stored.every((value, i) => value === incoming[i])
+    );
+  }
+  return stored === incoming;
+}
+
+/**
+ * NEO-203 — how much a re-sync is trusted to change one field, unreviewed.
+ *
+ * TIER 1 — trust-critical. These are what a listing is generated FROM and what
+ * a buyer sees: who is on the card, which team, whether it is a rookie, a
+ * relic, an autograph, numbered, or a named variation. A marketplace
+ * "correcting" any of them over an operator's own answer is the failure this
+ * ticket exists to prevent, so the review UI never pre-checks a tier-1 change.
+ *
+ * TIER 2 — `cardName` and `attributes`. Substantive when they change meaning,
+ * routine when they change spelling.
+ *
+ * There is no tier 3 field, because tier 3 is not a field property: it is the
+ * CHANGE being a pure case/whitespace/punctuation/diacritic reformatting
+ * ("Jose" → "José", "Ken Griffey Jr" → "Ken Griffey Jr."). That is decided per
+ * diff entry via `foldEqual`, and a fold-equal change is safe to accept on ANY
+ * field including a tier-1 one — the card is still saying the same thing. So
+ * the tier here drives PRESENTATION and the formatting-only/content-changes
+ * split; `foldEqual` drives the default checkbox state.
+ */
+const NB_CONTENT_FIELD_TIER: Record<NbContentField, 1 | 2> = {
+  cardName: 2,
+  attributes: 2,
+  playerIds: 1,
+  teamOnCardIds: 1,
+  isRookie: 1,
+  isRelic: 1,
+  printRun: 1,
+  autographType: 1,
+  cardVariation: 1,
+};
+
+/**
+ * NEO-203 — one content value as the review UI has to render it.
+ *
+ * Every NB content field ends up a string on the wire because the review is
+ * a git-style old/new comparison and the fields are heterogeneous (string
+ * arrays, booleans, a number, plain strings). Empty comes back as the empty
+ * string, which the UI paints as an em dash — "this card says nothing here" is
+ * a real and different statement from "this card says no".
+ */
+function displayContentValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (Array.isArray(value)) return value.join(", ");
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  return String(value);
 }
 
 // ===== LEVEL VALIDATOR (reused across functions) =====
@@ -1525,30 +1712,6 @@ export const renameSelectorOption = mutation({
 });
 
 /**
- * Validator for the rich per-card payload that storeCardChecklist accepts.
- * Mirrors the shape returned by fetchBscChecklist + fetchSportLotsChecklist
- * after reconciliation. Player/team strings have already been resolved to
- * IDs by the time this runs (commitCardChecklist handles findOrCreate and
- * passes IDs in here).
- */
-const richChecklistCardValidator = v.object({
-  cardNumber: v.string(),
-  cardName: v.string(),
-  // NEO-26: free-text `team` removed; callers pass `teamOnCardIds[]`.
-  playerIds: v.optional(v.array(v.id("players"))),
-  teamOnCardIds: v.optional(v.array(v.id("teams"))),
-  attributes: v.optional(v.array(v.string())),
-  isRookie: v.optional(v.boolean()),
-  isRelic: v.optional(v.boolean()),
-  printRun: v.optional(v.number()),
-  autographType: v.optional(v.string()),
-  cardVariation: v.optional(v.string()),
-  // WIRE shape — marketplace set ids. Resolved to slots on the card's own
-  // parent row at write time (NEO-137).
-  platformData: cardPlatformWireDataValidator,
-});
-
-/**
  * Natural-numeric comparator for card numbers.
  *
  * Card numbers are short strings like "1", "1a", "1b", "2", "10", "DK-1",
@@ -1617,106 +1780,13 @@ async function restampCardChecklistSortOrders(
   }
 }
 
-export const storeCardChecklist = mutation({
-  args: {
-    selectorOptionId: v.id("selectorOptions"),
-    cards: v.array(richChecklistCardValidator),
-  },
-  returns: v.object({
-    success: v.boolean(),
-    count: v.number(),
-  }),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const { selectorOptionId, cards } = args;
-    assertCardBatchWithinLimits(cards, "storeCardChecklist");
-
-    // Get existing cards for this variant
-    const existingCards = await ctx.db
-      .query("cardChecklist")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", selectorOptionId),
-      )
-      .collect();
-
-    const existingByNumber = new Map<string, (typeof existingCards)[0]>();
-    for (const card of existingCards) {
-      existingByNumber.set(card.cardNumber, card);
-    }
-
-    // NEO-137: incoming refs name marketplace SET ids; stored refs name a slot
-    // on this card's own parent row. Resolve once for the whole batch.
-    const toStoredPlatformData = await resolveCardSlots(ctx, selectorOptionId);
-
-    const processedNumbers = new Set<string>();
-
-    for (let i = 0; i < cards.length; i++) {
-      const card = cards[i];
-      processedNumbers.add(card.cardNumber);
-
-      const existing = existingByNumber.get(card.cardNumber);
-      if (existing) {
-        // Merge platform data — keep prior refs if the new payload omits one side
-        const mergedPlatformData = {
-          ...existing.platformData,
-          ...toStoredPlatformData(card.platformData, existing.platformData),
-        };
-        await ctx.db.patch(existing._id, {
-          cardName: card.cardName,
-          // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
-          playerIds: card.playerIds,
-          teamOnCardIds: card.teamOnCardIds,
-          attributes: card.attributes,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          printRun: card.printRun,
-          autographType: card.autographType,
-          cardVariation: card.cardVariation,
-          platformData: mergedPlatformData,
-          sortOrder: i,
-          lastUpdated: Date.now(),
-        });
-      } else {
-        await ctx.db.insert("cardChecklist", {
-          selectorOptionId,
-          cardNumber: card.cardNumber,
-          cardName: card.cardName,
-          // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
-          playerIds: card.playerIds,
-          teamOnCardIds: card.teamOnCardIds,
-          attributes: card.attributes,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          printRun: card.printRun,
-          autographType: card.autographType,
-          cardVariation: card.cardVariation,
-          platformData: toStoredPlatformData(card.platformData),
-          sortOrder: i,
-          lastUpdated: Date.now(),
-        });
-      }
-    }
-
-    // Delete non-custom cards that weren't in the new set
-    for (const existing of existingCards) {
-      if (!processedNumbers.has(existing.cardNumber) && !existing.isCustom) {
-        // NEO-21: drop this card's cross-listing rows before the card itself.
-        await deleteCardCrossListingsFor(ctx, existing._id);
-        await ctx.db.delete(existing._id);
-      }
-    }
-
-    // Re-stamp sortOrder by natural cardNumber so custom cards (which were
-    // inserted with a snapshot-of-empty-checklist sortOrder of 0) interleave
-    // correctly with the just-committed marketplace rows. Without this, a
-    // custom card added when the checklist was empty stays at sortOrder=0
-    // and ties with marketplace card index 0, making the visual ordering
-    // unpredictable.
-    await restampCardChecklistSortOrders(ctx, selectorOptionId);
-
-    return { success: true, count: cards.length };
-  },
-});
+// NEO-203: `storeCardChecklist` lived here — a public mutation with zero
+// callers that upserted a checklist keyed on cardNumber alone, deleted every
+// non-custom row whose number was absent from the payload, and blanket-patched
+// marketplace content over NB rows. All three are exactly what this ticket
+// removed from the live commit path, so it was deleted rather than re-keyed
+// (decision log, 2026-09-01). `commitCardChecklist` is the only write path into
+// `cardChecklist` from a marketplace fetch.
 
 export const addCustomCard = mutation({
   args: {
@@ -4526,7 +4596,7 @@ interface ReconciledCard {
   unmatched?: "bsc" | "sl";
 }
 
-const previewCardValidator = v.object({
+const previewCardFields = {
   cardNumber: v.string(),
   cardName: v.string(),
   team: v.optional(v.string()),
@@ -4572,6 +4642,44 @@ const previewCardValidator = v.object({
     v.object({ bsc: v.string(), sportlots: v.string() }),
   ),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
+};
+
+const previewCardValidator = v.object(previewCardFields);
+
+/**
+ * NEO-203 — the commit wire shape: a preview card PLUS the operator's decision
+ * about what may be written over an existing NeonBinder row.
+ *
+ * NeonBinder owns its card data; a marketplace exists only to link an NB card
+ * back to a marketplace for listing. So a re-sync that MATCHES an existing row
+ * refreshes that row's marketplace linkage unconditionally, and writes a
+ * content field only when the operator named THAT FIELD in `applyFields`.
+ *
+ * Per-field rather than per-card because the two decisions are independent:
+ * one upstream change adds a missing rookie flag (take it) while another
+ * overwrites a carefully spelled card name (leave it), and they arrive on the
+ * same card. Names are checked against `NB_CONTENT_FIELDS` server-side and
+ * anything unrecognised is dropped, so the list can only narrow what is
+ * written.
+ *
+ * ABSENT or EMPTY is the safe default deliberately: an unreviewed commit —
+ * every caller that predates the review UI included, and an older SPA talking
+ * to this backend mid-deploy — refreshes linkage and leaves operator edits
+ * alone. This fails closed; it is never "write unless told not to".
+ *
+ * `baseVersion` is the matched row's `lastUpdated` as of the diff the operator
+ * was shown, and is required for `applyFields` to have any effect. The chunk
+ * re-checks it against the row inside the writing transaction, so a decision
+ * made against content that has since changed applies nothing and is reported.
+ *
+ * Neither field has any effect on the INSERT path. A card that matches no
+ * existing row is a new card, and marketplace data is the legitimate bootstrap
+ * for one.
+ */
+const commitCardValidator = v.object({
+  ...previewCardFields,
+  applyFields: v.optional(v.array(v.string())),
+  baseVersion: v.optional(v.number()),
 });
 
 /**
@@ -5578,6 +5686,210 @@ export const resolveChecklistEntities = action({
 export const CARDS_PER_COMMIT_CHUNK = 150;
 
 /**
+ * NEO-203 — hard ceiling on how many rows one commit may be told to delete.
+ *
+ * Mirrors `MAX_CROSS_LISTING_CARD_NUMBERS` above and exists for the same
+ * reason: a client-side cap is advisory, and a direct API call must not be
+ * able to hand a single transaction an unbounded delete list. Deletion is now
+ * an explicit operator decision (see `commitCardChecklistFinalize`), and an
+ * operator confirming a thousand deletions in one pass is already far beyond
+ * anything the review UI produces.
+ */
+export const MAX_OPERATOR_DELETE_IDS = 1000;
+
+/**
+ * The stored-row shape `buildMatchMaps` needs. Deliberately narrower than
+ * `Doc<"cardChecklist">` so a read-only caller can hand it a projection.
+ */
+type MatchMapRow = {
+  _id: Id<"cardChecklist">;
+  cardNumber: string;
+  platformData?: Doc<"cardChecklist">["platformData"];
+};
+
+/** Exactly the half of `CommitPrelude` that `resolveExistingIds` consumes. */
+type MatchMaps = {
+  existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
+  existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
+  existingIdBySlotNumber: Array<{ key: string; id: Id<"cardChecklist"> }>;
+  existingIdByNumberNoRef: Array<{
+    cardNumber: string;
+    id: Id<"cardChecklist">;
+  }>;
+  ambiguousMatchKeys: string[];
+  slotBySetId: Array<{ side: MatchSide; setId: string; slot: string }>;
+};
+
+/**
+ * The keys `buildMatchMaps` WITHHELD, raw and per tier.
+ *
+ * Distinct from `MatchMaps.ambiguousMatchKeys`, which is a flat array of
+ * `label:truncated-key` strings built for a LOG LINE — a SportLots ref is the
+ * whole card description, so what goes to a log is bounded. These sets are the
+ * untruncated originals, kept in-process so `resolveExistingIds` can answer a
+ * question the log form cannot: did any of this actually change an incoming
+ * card's outcome?
+ *
+ * That distinction is the whole point (CI round 2). Re-syncing 1996 Score
+ * Dugout Collection withheld 110 `slotNumber` keys — one SportLots set holds
+ * both series, so `(side, slot, number)` repeats by design — and the review
+ * screen announced "110 match keys are held by more than one card, so those
+ * cards are treated as new" directly above "0 new". Every card had matched at
+ * the ref tier; the fallback tiers were never consulted. The count was true and
+ * the sentence was false, on exactly the duplicate-numbered sets this feature
+ * exists to serve.
+ */
+type WithheldMatchKeys = {
+  bscRef: Set<string>;
+  slRef: Set<string>;
+  slotNumber: Set<string>;
+  numberNoRef: Set<string>;
+};
+
+/**
+ * NEO-203 — build the four match maps from a checklist snapshot.
+ *
+ * ## Why this is its own function
+ *
+ * TWO callers, and they must never disagree: `commitCardChecklistPrelude`
+ * (which WRITES) and `diffChecklistAgainstExisting` (the read-only review the
+ * operator is shown before that write). If the review resolved matches by one
+ * rule and the commit by another, the operator would be accepting a diff
+ * against a row the commit then declines to touch — which is precisely the
+ * "silent, count-preserving corruption" this ticket exists to remove, wearing
+ * a review UI. So the map-building lives here, `resolveExistingIds` is already
+ * pure, and the two phases share both. Do NOT inline either back into a
+ * caller.
+ *
+ * Pure and read-only: it takes a snapshot and a leaf node, and touches no
+ * database. The snapshot must be the `by_selector_option` collect for the row
+ * being synced — every map here is per-selectorOption and per-side, never
+ * global.
+ *
+ * ## The rule, in one line
+ *
+ * Every tier, refs included, is exactly-one-or-nothing. This used to be one
+ * map, cardNumber → id, last row with a given number wins. Card numbers are
+ * not unique at ANY scope — not across the source sets a variant fans out to,
+ * and not even within one set (a 2025 release ships a veteran #1 and a rookie
+ * #1, two distinct cards that are not variations of each other) — so that key
+ * silently merged unrelated cards on every re-sync: one row patched twice,
+ * another left stale, the row count unchanged.
+ *
+ * What identifies a marketplace row is its REF, which is what the rest of this
+ * codebase already links on (NEO-137's `platformData`). The number-based tiers
+ * survive the one case a ref cannot — SportLots' ref IS the card description
+ * (NEO-91), so an upstream description fix changes it — and they are guarded
+ * so hard that they match only when the answer is unarguable.
+ *
+ * Two stored rows carrying one ref is already-corrupt data — very likely this
+ * bug's own residue, and duplicate SportLots refs occur upstream too (SL's ref
+ * IS the description, so two identically-described cards are genuinely
+ * indistinguishable; the fetch path reports those as `indistinguishableSlRefs`).
+ * Picking one of the two is the silent merge this ticket removes, so the key is
+ * withheld and reported in `ambiguousMatchKeys` instead.
+ */
+function buildMatchMaps(
+  existingCards: MatchMapRow[],
+  leafNode: Doc<"selectorOptions"> | null,
+): { maps: MatchMaps; withheld: WithheldMatchKeys } {
+  const byBscRef = new Map<string, Array<Id<"cardChecklist">>>();
+  const bySlRef = new Map<string, Array<Id<"cardChecklist">>>();
+  const bySlotNumber = new Map<string, Array<Id<"cardChecklist">>>();
+  const byNumberNoRef = new Map<string, Array<Id<"cardChecklist">>>();
+  const push = (
+    m: Map<string, Array<Id<"cardChecklist">>>,
+    k: string,
+    id: Id<"cardChecklist">,
+  ) => {
+    const bucket = m.get(k);
+    if (bucket) bucket.push(id);
+    else m.set(k, [id]);
+  };
+  for (const row of existingCards) {
+    const bscRef = row.platformData?.bsc?.ref;
+    const slRef = row.platformData?.sportlots?.ref;
+    if (bscRef) push(byBscRef, bscRef, row._id);
+    if (slRef) push(bySlRef, slRef, row._id);
+    for (const side of MATCH_SIDES) {
+      const src = row.platformData?.[side]?.src;
+      if (src) {
+        push(bySlotNumber, slotNumberMatchKey(side, src, row.cardNumber), row._id);
+      }
+    }
+    if (!bscRef && !slRef) push(byNumberNoRef, row.cardNumber, row._id);
+  }
+
+  const ambiguousMatchKeys: string[] = [];
+  const withheld: WithheldMatchKeys = {
+    bscRef: new Set(),
+    slRef: new Set(),
+    slotNumber: new Set(),
+    numberNoRef: new Set(),
+  };
+  // Exactly-one or nothing, on every tier. A key several rows hold is withheld
+  // from the map and reported instead — the action logs the report, so "this
+  // card was treated as new" always has a visible reason.
+  //
+  // Ref keys are TRUNCATED in the REPORT: a SportLots ref is the card
+  // description, unbounded upstream text, and that string goes to a log. The
+  // `withheld` sets keep the key verbatim, because they are compared against
+  // incoming keys in-process and a truncated key would silently stop matching.
+  const unambiguous = (
+    m: Map<string, Array<Id<"cardChecklist">>>,
+    label: keyof WithheldMatchKeys,
+  ): Array<[string, Id<"cardChecklist">]> => {
+    const out: Array<[string, Id<"cardChecklist">]> = [];
+    for (const [key, ids] of m) {
+      if (ids.length === 1) {
+        out.push([key, ids[0]]);
+      } else {
+        ambiguousMatchKeys.push(`${label}:${truncateForLog(key)}`);
+        withheld[label].add(key);
+      }
+    }
+    return out;
+  };
+
+  const existingIdByBscRef = unambiguous(byBscRef, "bscRef");
+  const existingIdBySlRef = unambiguous(bySlRef, "slRef");
+  const existingIdBySlotNumber = unambiguous(bySlotNumber, "slotNumber");
+  const existingIdByNumberNoRef = unambiguous(byNumberNoRef, "numberNoRef");
+
+  // The parent row's ATTACHED marketplace sets. Read off the SAME node
+  // `resolveCardSlots` reads, so the key the cascade builds for an incoming
+  // card and the key built here for a stored one describe the same slot. Never
+  // allocates — an unattached source set simply yields no slot, and a card from
+  // it skips tier 2 entirely.
+  const slotBySetId: Array<{ side: MatchSide; setId: string; slot: string }> =
+    [];
+  if (leafNode) {
+    for (const side of MATCH_SIDES) {
+      for (const { slot, id } of slotEntries(leafNode, side)) {
+        slotBySetId.push({ side, setId: id, slot });
+      }
+    }
+  }
+
+  return {
+    maps: {
+      existingIdByBscRef: existingIdByBscRef.map(([ref, id]) => ({ ref, id })),
+      existingIdBySlRef: existingIdBySlRef.map(([ref, id]) => ({ ref, id })),
+      existingIdBySlotNumber: existingIdBySlotNumber.map(([key, id]) => ({
+        key,
+        id,
+      })),
+      existingIdByNumberNoRef: existingIdByNumberNoRef.map(
+        ([cardNumber, id]) => ({ cardNumber, id }),
+      ),
+      ambiguousMatchKeys,
+      slotBySetId,
+    },
+    withheld,
+  };
+}
+
+/**
  * NEO-92/NEO-189 — the once-per-commit half of `commitCardChecklist`.
  *
  * Everything here is per-COMMIT, not per-card, so it runs exactly once no
@@ -5626,10 +5938,56 @@ export const commitCardChecklistPrelude = internalMutation({
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     setNameValue: v.optional(v.string()),
     existingCustomCardNumbers: v.array(v.string()),
-    // The upsert key, resolved ONCE against the pre-commit state of the
-    // checklist. See the long note in `commitCardChecklistChunk`.
-    existingIdByNumber: v.array(
+    // ── NEO-203: the match maps, all four resolved ONCE against the
+    // pre-commit state of the checklist — and built ONLY over this
+    // selectorOption's `by_selector_option` snapshot, never globally. See
+    // `resolveExistingIds` for the cascade that consumes them and
+    // `commitCardChecklistChunk` for why the answer is computed here rather
+    // than re-derived per chunk.
+    //
+    // Every map here is exactly-one-or-nothing: a key held by more than one
+    // existing row yields NO match and is reported in `ambiguousMatchKeys`.
+    // That includes refs — duplicate SportLots refs are a known real condition
+    // (`indistinguishableSlRefs` in the fetch path), and picking one of two
+    // rows claiming the same marketplace card is the silent merge this ticket
+    // exists to remove.
+    existingIdByBscRef: v.array(
+      v.object({ ref: v.string(), id: v.id("cardChecklist") }),
+    ),
+    existingIdBySlRef: v.array(
+      v.object({ ref: v.string(), id: v.id("cardChecklist") }),
+    ),
+    // Key is `side \0 slotKey \0 cardNumber` — built by `slotNumberMatchKey`,
+    // which the action uses on the incoming side too so the two cannot
+    // disagree about the shape. Only keys held by EXACTLY ONE existing row
+    // appear here; a key two rows share is ambiguous and is reported below
+    // instead, never matched.
+    existingIdBySlotNumber: v.array(
+      v.object({ key: v.string(), id: v.id("cardChecklist") }),
+    ),
+    // Rows carrying NO ref on either side — custom cards and pre-NEO-137
+    // legacy rows. Same exactly-one rule.
+    existingIdByNumberNoRef: v.array(
       v.object({ cardNumber: v.string(), id: v.id("cardChecklist") }),
+    ),
+    // Keys deliberately withheld from the maps above because more than one
+    // existing row holds them. Surfaced, never guessed at — the action logs
+    // them so an operator can see WHY a card was treated as new.
+    ambiguousMatchKeys: v.array(v.string()),
+    // The parent row's ATTACHED marketplace sets: marketplace set id → slot
+    // key, per side. Tier 2 resolves an incoming card's WIRE `setId` strictly
+    // through this map — it never compares a `setId` string against a stored
+    // `src` value, because slot keys are short and guessable ("b0") and a
+    // marketplace set literally named `b0` must not match anything. An
+    // unattached set id yields no slot and therefore no tier-2 match, which is
+    // the same "attached slots only, never allocate" rule `resolveCardSlots`
+    // enforces at write time.
+    slotBySetId: v.array(
+      v.object({
+        side: v.union(v.literal("bsc"), v.literal("sportlots")),
+        setId: v.string(),
+        slot: v.string(),
+      }),
     ),
   }),
   handler: async (ctx, args): Promise<CommitPrelude> => {
@@ -5728,6 +6086,11 @@ export const commitCardChecklistPrelude = internalMutation({
     // Collected and returned to the action, which hands them to the finalize
     // phase to enqueue after the writes land, rather than enriching inline:
     // enrichment is a network round-trip per team and this is a mutation.
+    // NEO-203: this array carries `enqueueEnrichment`'s creation-only
+    // contract, so the early return below is load-bearing — a team that
+    // ALREADY EXISTS must leave without being pushed. Enrichment is for rows
+    // this commit brought into being; an existing team's data is not re-looked
+    // up by any automatic path.
     const enrichmentTeamIds: Array<Id<"teams">> = [];
     const resolveTeamIdByName = async (rawName: string): Promise<Id<"teams">> => {
       const normalized = norm(rawName);
@@ -5737,7 +6100,7 @@ export const commitCardChecklistPrelude = internalMutation({
           q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
         )
         .first();
-      if (existing) return existing._id;
+      if (existing) return existing._id; // NOT enqueued — see above.
       const id = await ctx.db.insert("teams", {
         name: rawName.trim(),
         nameNormalized: normalized,
@@ -5926,14 +6289,19 @@ export const commitCardChecklistPrelude = internalMutation({
       ? (await ctx.db.get(setNameAncestorId))?.value
       : undefined;
 
-    // The upsert key. Built exactly as the old single mutation built it —
-    // iterate the pre-commit rows in index order and let a later row with the
-    // same number win — so re-sync semantics are byte-identical, NEO-203
-    // included (see the chunk phase for why that matters here).
-    const existingIdByNumber = new Map<string, Id<"cardChecklist">>();
-    for (const card of existingCards) {
-      existingIdByNumber.set(card.cardNumber, card._id);
-    }
+    // ── NEO-203: the match maps ─────────────────────────────────────────────
+    //
+    // Built by `buildMatchMaps`, which is SHARED with the read-only review
+    // query `diffChecklistAgainstExisting` — see the note there for why the
+    // rule cannot be allowed to live in two places. The maps are derived
+    // entirely from the `existingCards` snapshot read above plus the leaf
+    // node, so this phase does no extra database work for them.
+    //
+    // The `withheld` half is deliberately dropped here: it is raw, untruncated
+    // marketplace text, and this value crosses a function boundary into the
+    // action. The commit path only needs the bounded `ambiguousMatchKeys` for
+    // its log line; the review query, which computes in one process, keeps it.
+    const { maps: matchMaps } = buildMatchMaps(existingCards, leafNode);
 
     return {
       userId,
@@ -5952,10 +6320,7 @@ export const commitCardChecklistPrelude = internalMutation({
       existingCustomCardNumbers: existingCards
         .filter((c) => c.isCustom)
         .map((c) => c.cardNumber),
-      existingIdByNumber: Array.from(existingIdByNumber, ([cardNumber, id]) => ({
-        cardNumber,
-        id,
-      })),
+      ...matchMaps,
     };
   },
 });
@@ -5975,7 +6340,15 @@ type CommitPrelude = {
   setNameAncestorId?: Id<"selectorOptions">;
   setNameValue?: string;
   existingCustomCardNumbers: string[];
-  existingIdByNumber: Array<{ cardNumber: string; id: Id<"cardChecklist"> }>;
+  existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
+  existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
+  existingIdBySlotNumber: Array<{ key: string; id: Id<"cardChecklist"> }>;
+  existingIdByNumberNoRef: Array<{
+    cardNumber: string;
+    id: Id<"cardChecklist">;
+  }>;
+  ambiguousMatchKeys: string[];
+  slotBySetId: Array<{ side: MatchSide; setId: string; slot: string }>;
 };
 
 /**
@@ -6005,6 +6378,20 @@ const commitChunkCardValidator = v.object({
   playerNames: v.array(v.string()),
   // The pre-commit row this card upserts into, or absent to insert a new row.
   existingId: v.optional(v.id("cardChecklist")),
+  // NEO-203 — which NB-owned content fields the operator accepted for THIS
+  // card. Absent or empty means linkage-only: the row's `platformData` is
+  // refreshed and nothing it says about the card is touched.
+  //
+  // Names are validated against `NB_CONTENT_FIELDS` in the handler and
+  // anything unrecognised is dropped, so a stale or hostile client can only
+  // ever narrow what is written, never widen it.
+  applyFields: v.optional(v.array(v.string())),
+  // NEO-203 — the matched row's `lastUpdated` as it stood when the operator
+  // was shown the diff. If the stored row has moved since, the decision was
+  // made against content that no longer exists, so NO content is applied and
+  // the card is reported. Required whenever `applyFields` is non-empty: an
+  // unverifiable decision is treated the same as no decision.
+  baseVersion: v.optional(v.number()),
 });
 
 /**
@@ -6025,13 +6412,42 @@ const commitChunkCardValidator = v.object({
  * chunking would have introduced on its own. So the action resolves each card's
  * target row once, from the prelude's pre-commit snapshot, and hands it down.
  *
- * NEO-203 (the `existingByNumber` keying that corrupts re-syncs when two
- * sources share card numbers) is deliberately NOT fixed here: the key is
- * cardNumber, last row wins, exactly as before. The one visible difference is
- * that when two incoming cards resolve to the SAME stored row across a chunk
- * boundary, the second one's `platformData` merge sees the first one's write
- * rather than the pre-commit value. That is reachable only in the re-sync case
- * NEO-203 already describes as broken, and it merges onto fresher data.
+ * NEO-203 replaced that key. It is no longer cardNumber-with-last-row-wins but
+ * a ref-first cascade resolved in the action (`resolveExistingIds`), and two
+ * incoming cards can no longer resolve to the same stored row at all — the
+ * second one loses the collision and becomes an insert, marked and logged. So
+ * the cross-chunk read-your-own-write caveat this note used to carry is gone.
+ *
+ * ## What a MATCHED row may have written to it (NEO-203)
+ *
+ * NeonBinder owns its card data; a marketplace exists only to link an NB card
+ * back to a marketplace for listing. A matched row therefore always gets its
+ * `platformData` linkage refreshed — that is the entire point of the sync —
+ * and gets a content field written only when ALL of the following hold:
+ *
+ *   1. the operator named that field in `applyFields`;
+ *   2. `NB_CONTENT_FIELDS` recognises the name;
+ *   3. the card's `baseVersion` still matches the stored row's `lastUpdated`,
+ *      so the decision was made against the content actually on the row;
+ *   4. the incoming value actually DIFFERS from the stored one.
+ *
+ * Every one of those can only ever narrow the patch. Absent `applyFields` (an
+ * older SPA talking to this backend mid-deploy, or any caller that predates
+ * the review UI) writes no content at all — this fails closed, never "patch
+ * unless told not to".
+ *
+ * ## Why the commit still takes wire cards rather than re-reading candidates
+ *
+ * The values written here arrive from the client rather than being re-read
+ * server-side from `checklistCandidates`. That is deliberate and was accepted
+ * with three compensating controls, all in this handler: the fail-closed
+ * `applyFields` gate, the `baseVersion` re-check against the row as it stands
+ * INSIDE this transaction (the model is `cardChecklist.applyBscTeamResolution`),
+ * and the server-side re-diff that drops fields whose value did not change.
+ * The patch is a literal field-by-field enumeration and the incoming card is
+ * never spread, so `selectorOptionId`, `sku`, `isCustom`, `features`,
+ * `variationOfCardId` and `variationParentManual` cannot be reached from this
+ * path whatever `applyFields` says.
  */
 export const commitCardChecklistChunk = internalMutation({
   args: {
@@ -6045,6 +6461,14 @@ export const commitCardChecklistChunk = internalMutation({
   returns: v.object({
     storedIds: v.array(v.id("cardChecklist")),
     bscTeamEnrichmentIds: v.array(v.id("cardChecklist")),
+    // NEO-203 — rows whose accepted content was NOT applied because the row
+    // moved between the operator seeing the diff and this transaction running
+    // (or because the decision arrived unverifiable, with no `baseVersion`).
+    // Linkage was still refreshed for them; only content was withheld.
+    staleDecisionIds: v.array(v.id("cardChecklist")),
+    // How many matched rows actually had a content field written, for the
+    // action's commit log. A count, never the values.
+    contentAppliedCount: v.number(),
   }),
   handler: async (
     ctx,
@@ -6052,6 +6476,8 @@ export const commitCardChecklistChunk = internalMutation({
   ): Promise<{
     storedIds: Array<Id<"cardChecklist">>;
     bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
+    staleDecisionIds: Array<Id<"cardChecklist">>;
+    contentAppliedCount: number;
   }> => {
     const toStoredPlatformData = await resolveCardSlots(
       ctx,
@@ -6078,8 +6504,14 @@ export const commitCardChecklistChunk = internalMutation({
     // team resolved yet. Returned to the action, which unions every chunk's
     // list and hands it to the finalize phase to schedule.
     const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
+    const staleDecisionIds: Array<Id<"cardChecklist">> = [];
+    let contentAppliedCount = 0;
 
     for (const card of args.cards) {
+      // Deliberately `rowsById.get`, not `ctx.db.get`: the map is this
+      // selectorOption's own snapshot, so an id that is foreign to this
+      // checklist (or that another writer deleted since the prelude read)
+      // simply misses and the card falls through to the insert branch.
       const existing = card.existingId ? rowsById.get(card.existingId) : undefined;
       if (existing) {
         storedIds.push(existing._id);
@@ -6089,7 +6521,31 @@ export const commitCardChecklistChunk = internalMutation({
           ...existing.platformData,
           ...toStoredPlatformData(card.platformData, existing.platformData),
         };
-        await ctx.db.patch(existing._id, {
+
+        // ── NEO-203: what, if anything, of the incoming CONTENT applies ─────
+        //
+        // Fail closed at every step. `applyFields` absent or empty is the
+        // default and means linkage-only.
+        const requested = card.applyFields ?? [];
+        // The decision has to have been made against the row as it stands.
+        // Re-checked HERE, inside the transaction that writes, exactly as
+        // `cardChecklist.applyBscTeamResolution` re-reads before applying a
+        // background team result.
+        const versionOk =
+          card.baseVersion !== undefined &&
+          card.baseVersion === existing.lastUpdated;
+        if (requested.length > 0 && !versionOk) {
+          staleDecisionIds.push(existing._id);
+        }
+        const accepted: Set<string> =
+          requested.length > 0 && versionOk
+            ? new Set(requested.filter((f) => NB_CONTENT_FIELD_SET.has(f)))
+            : new Set();
+
+        // The incoming value of each NB-owned field, enumerated literally.
+        // Never a spread of `card` — this list is the complete set of things
+        // a marketplace re-sync is allowed to say about an existing NB card.
+        const incoming: Record<NbContentField, unknown> = {
           cardName: card.cardName,
           // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
           playerIds: card.playerIds,
@@ -6100,13 +6556,41 @@ export const commitCardChecklistChunk = internalMutation({
           printRun: card.printRun,
           autographType: card.autographType,
           cardVariation: card.cardVariation,
+        };
+        // Re-diff server-side: an accepted field whose value did not actually
+        // change is not written. Only ever fewer fields than asked for.
+        const contentPatch: Record<string, unknown> = {};
+        for (const field of NB_CONTENT_FIELDS) {
+          if (!accepted.has(field)) continue;
+          if (sameContentValue(existing[field], incoming[field])) continue;
+          contentPatch[field] = incoming[field];
+        }
+        if (Object.keys(contentPatch).length > 0) contentAppliedCount++;
+
+        await ctx.db.patch(existing._id, {
+          ...contentPatch,
+          // Linkage is ALWAYS refreshed — routing a marketplace's update to
+          // the row linked to it is the whole reason this sync exists, and it
+          // is not content NeonBinder owns.
           platformData: mergedPlatformData,
+          // NEO-203: sortOrder stays unconditional. It is NB-owned ordering
+          // bookkeeping derived from card numbers across the whole commit, not
+          // anything the marketplace said about this card, so leaving it
+          // un-restamped on an unreviewed re-sync would desynchronise the
+          // checklist's display order from its own contents.
           sortOrder: card.sortOrder,
           lastUpdated: Date.now(),
         });
+        // Enrichment keys off what the row will actually HAVE after this
+        // patch, not off what the marketplace sent: when content was not
+        // applied, the stored teams are still the row's answer.
+        const effectiveTeamIds =
+          contentPatch.teamOnCardIds !== undefined
+            ? card.teamOnCardIds
+            : existing.teamOnCardIds;
         if (
           mergedPlatformData.bsc &&
-          (!card.teamOnCardIds || card.teamOnCardIds.length === 0) &&
+          (!effectiveTeamIds || effectiveTeamIds.length === 0) &&
           !existing.teamCheckDoneAt
         ) {
           bscTeamEnrichmentIds.push(existing._id);
@@ -6202,7 +6686,12 @@ export const commitCardChecklistChunk = internalMutation({
       }
     }
 
-    return { storedIds, bscTeamEnrichmentIds };
+    return {
+      storedIds,
+      bscTeamEnrichmentIds,
+      staleDecisionIds,
+      contentAppliedCount,
+    };
   },
 });
 
@@ -6227,14 +6716,27 @@ export const commitCardChecklistChunk = internalMutation({
 export const commitCardChecklistFinalize = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
-    // Union of every chunk's stored ids, and every incoming card number. The
-    // sweep below spares a row matching EITHER: ids are what the brief for this
-    // change asks for (they cannot mistake one chunk's rows for stale ones),
-    // numbers are what the pre-chunking sweep actually keyed on, and keeping
-    // both means a duplicate-numbered row that today survives a re-sync still
-    // survives one. See NEO-203.
+    // Union of every chunk's stored ids, and every committed card number.
+    // Nothing is deleted on the strength of these anymore (see
+    // `operatorDeleteIds`) — they identify the rows this commit touched, which
+    // is what the unmatched-existing report is computed against and what the
+    // custom-card sortOrder pass keys on.
     committedIds: v.array(v.id("cardChecklist")),
     committedNumbers: v.array(v.string()),
+    // ── NEO-203: deletion is an OPERATOR ACTION, not a sync side effect ─────
+    //
+    // This phase used to delete every non-custom row the incoming payload did
+    // not account for. That made a marketplace the authority on whether a
+    // NeonBinder card exists: BSC dropping a listing, or a fetch returning a
+    // short checklist, silently destroyed NB rows and their cross-listings.
+    // NeonBinder owns its sets — a marketplace could be dropped entirely
+    // tomorrow and every NB set must stand untouched.
+    //
+    // So the sweep now REPORTS (`unmatchedExistingIds`) and deletes only what
+    // an operator explicitly named. Deletion stays in this phase, and not in a
+    // chunk, for the reason the atomicity note on the action gives: finalize
+    // is a single transaction, so a partial delete is not a reachable state.
+    operatorDeleteIds: v.array(v.id("cardChecklist")),
     variationLinks: v.array(
       v.object({
         childId: v.id("cardChecklist"),
@@ -6255,12 +6757,23 @@ export const commitCardChecklistFinalize = internalMutation({
   },
   returns: v.object({
     variationsLinked: v.number(),
-    staleDeleted: v.number(),
+    // How many of `operatorDeleteIds` were actually deleted. The rest were
+    // refused by one of the guards below and are counted separately.
+    operatorDeleted: v.number(),
+    deleteSkipped: v.number(),
+    // Non-custom rows in this checklist that no incoming card matched — the
+    // ones that vanished upstream. Reported, never acted on.
+    unmatchedExistingIds: v.array(v.id("cardChecklist")),
   }),
   handler: async (
     ctx,
     args,
-  ): Promise<{ variationsLinked: number; staleDeleted: number }> => {
+  ): Promise<{
+    variationsLinked: number;
+    operatorDeleted: number;
+    deleteSkipped: number;
+    unmatchedExistingIds: Array<Id<"cardChecklist">>;
+  }> => {
     const rows = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) =>
@@ -6311,15 +6824,77 @@ export const commitCardChecklistFinalize = internalMutation({
 
     const committedIds = new Set<string>(args.committedIds);
     const committedNumbers = new Set(args.committedNumbers);
-    let staleDeleted = 0;
+
+    // ── NEO-203: explicit deletes, then the report ──────────────────────────
+    //
+    // Five guards, in order, and every refusal is counted rather than thrown:
+    // a bad id in this list must not lose the operator the rest of a commit
+    // that has already written every chunk.
+    if (args.operatorDeleteIds.length > MAX_OPERATOR_DELETE_IDS) {
+      throw new Error(
+        `commitCardChecklistFinalize: ${args.operatorDeleteIds.length} operatorDeleteIds exceeds the ${MAX_OPERATOR_DELETE_IDS} limit for a single commit`,
+      );
+    }
+    const requestedDeletes = new Set<string>(args.operatorDeleteIds);
+    const deletedIds: Array<Id<"cardChecklist">> = [];
+    let deleteSkipped = 0;
+    for (const id of requestedDeletes) {
+      // 1. It must be a row of THIS checklist. `rowsById` is the
+      //    `by_selector_option` snapshot, so an id belonging to another set —
+      //    or one already gone — simply is not here. Skipped, never deleted,
+      //    never thrown.
+      const row = rowsById.get(id);
+      if (!row) {
+        deleteSkipped++;
+        continue;
+      }
+      // 2. Custom cards are NeonBinder's own, never marketplace-derived, and
+      //    have no upstream that could have dropped them.
+      if (row.isCustom) {
+        deleteSkipped++;
+        continue;
+      }
+      // 3. The row came back in THIS sync. Whatever the operator decided when
+      //    they were shown the previous state, upstream still lists this card,
+      //    so deleting it now would discard a row the same commit just wrote.
+      if (committedIds.has(row._id) || committedNumbers.has(row.cardNumber)) {
+        deleteSkipped++;
+        continue;
+      }
+      // NEO-21: drop this card's cross-listing rows before the card itself.
+      await deleteCardCrossListingsFor(ctx, row._id);
+      // NEO-189: and re-parent anything that varies it. The old inference
+      // sweep deleted rows without this, which left variations pointing at a
+      // row that no longer existed — `deleteCard` has always done both.
+      await orphanVariationsOf(ctx, row._id);
+      await ctx.db.delete(row._id);
+      deletedIds.push(row._id);
+    }
+
+    // What upstream no longer lists. NOT deleted — surfaced, so the operator
+    // can decide, which is what `operatorDeleteIds` above carries back on a
+    // later commit.
+    const unmatchedExistingIds: Array<Id<"cardChecklist">> = [];
     for (const existing of rows) {
       if (existing.isCustom) continue;
       if (committedIds.has(existing._id)) continue;
-      if (committedNumbers.has(existing.cardNumber)) continue;
-      // NEO-21: drop this card's cross-listing rows before the card itself.
-      await deleteCardCrossListingsFor(ctx, existing._id);
-      await ctx.db.delete(existing._id);
-      staleDeleted++;
+      if (requestedDeletes.has(existing._id)) continue;
+      unmatchedExistingIds.push(existing._id);
+    }
+
+    // One audit line per commit that touched deletions. Ids and counts only.
+    if (args.operatorDeleteIds.length > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "commit_card_operator_deletes",
+          selectorOptionId: args.selectorOptionId,
+          userId: await getCurrentUserId(ctx),
+          requested: args.operatorDeleteIds.length,
+          deleted: deletedIds.length,
+          skipped: deleteSkipped,
+          deletedIds,
+        }),
+      );
     }
 
     // Patch preserved custom cards whose sortOrder shifted because of the
@@ -6403,6 +6978,17 @@ export const commitCardChecklistFinalize = internalMutation({
     // budget is what keeps a fetch that creates fifty career teams from
     // producing fifty concurrent requests. No `playerIds` because players
     // created there were already enriched from the wizard's own preview.
+    //
+    // NEO-203 — this satisfies `enqueueEnrichment`'s CREATION-ONLY contract,
+    // and the reason is worth stating rather than leaving to be re-derived:
+    // `enrichmentTeamIds` is appended to at exactly one place in the prelude,
+    // the branch of `resolveTeamIdByName` immediately after
+    // `ctx.db.insert("teams", …)`. A team the lookup FOUND returns early and
+    // is never added. So this list is, structurally, "teams this commit
+    // created" — never a pre-existing row. Automatic enrichment must never
+    // fire for a team that already exists (Jason, 2026-09-02: team data
+    // generally doesn't change); if you ever widen what feeds this list,
+    // that invariant is what you are breaking.
     if (args.enrichmentTeamIds.length > 0) {
       await ctx.scheduler.runAfter(
         0,
@@ -6446,7 +7032,920 @@ export const commitCardChecklistFinalize = internalMutation({
       }
     }
 
-    return { variationsLinked, staleDeleted };
+    return {
+      variationsLinked,
+      operatorDeleted: deletedIds.length,
+      deleteSkipped,
+      unmatchedExistingIds,
+    };
+  },
+});
+
+/**
+ * NEO-203 — decide, for every incoming card, WHICH existing row it is an
+ * update to (if any). The whole of the matching fix lives in this function.
+ *
+ * ## Why not cardNumber
+ *
+ * Card numbers are not unique at any scope. Not across the source sets one NB
+ * variant fans out to (BSC splits 1996 Score Dugout Collection Artist's Proofs
+ * into two series and numbers both #1-110), and not even within one set — a
+ * 2025 release ships a veteran #1 and a rookie #1, two distinct cards that are
+ * not variations of each other. Keying on it merged unrelated cards on every
+ * re-sync, silently and without changing the row count.
+ *
+ * ## The cascade
+ *
+ * 1. `bsc.ref`, then `sportlots.ref` — the stable linkage identity, and what
+ *    the rest of the codebase already links on (NEO-137). If the two refs on
+ *    ONE incoming card point at DIFFERENT stored rows, that is a genuine
+ *    contradiction: the card is excluded from the commit entirely and
+ *    reported. Choosing a side would corrupt one row; inserting would create
+ *    the duplicate this ticket exists to prevent.
+ * 2. `(side, slot, cardNumber)`. This is what survives the one thing a ref
+ *    cannot: a SportLots ref IS the card description (NEO-91), so an upstream
+ *    description fix changes it. The slot comes from the parent row's ATTACHED
+ *    sets only, resolved through `slotBySetId` — an incoming `setId` string is
+ *    never compared against a stored `src`. A card with NO `setId` skips this
+ *    tier entirely rather than falling back to the primary slot the way
+ *    `resolveCardSlots` does when WRITING: that fallback is right for
+ *    attributing a card, and wrong here, because it would widen matching
+ *    across exactly the duplicate-number case the tier is guarded against.
+ * 3. Bare `cardNumber`, against rows carrying NO ref on either side — custom
+ *    cards and pre-NEO-137 legacy rows, which have no other identity.
+ *
+ * Tiers 2 and 3 match only when the key is held by exactly one existing row
+ * AND named by exactly one incoming card. Any ambiguity is a non-match, and
+ * non-matches are surfaced, never guessed.
+ *
+ * ## Collisions
+ *
+ * Two incoming cards resolving to one stored row: the first keeps it, the
+ * second becomes an insert carrying a `ref-collision` attribute marker so the
+ * ambiguity is visible in the checklist rather than latent until someone
+ * reads a log. Never a silent merge — that IS the bug.
+ */
+type IncomingMatchCard = {
+  cardNumber: string;
+  platformData?: WirePlatformData;
+};
+
+type MatchResolution = {
+  /** Incoming index → the stored row it updates. Absent means insert. */
+  existingIdByIndex: Array<Id<"cardChecklist"> | undefined>;
+  /** Indices excluded from the commit: the card's two refs disagree. */
+  conflicts: Array<{
+    index: number;
+    cardNumber: string;
+    bscRowId: Id<"cardChecklist">;
+    slRowId: Id<"cardChecklist">;
+  }>;
+  /** Indices that lost a collision and became inserts. */
+  collisions: Array<{
+    index: number;
+    cardNumber: string;
+    existingId: Id<"cardChecklist">;
+  }>;
+  /** Per-tier match counts, for the commit log. */
+  matchedByTier: { bscRef: number; slRef: number; slotNumber: number; noRef: number };
+  /**
+   * Indices of cards that ended up UNMATCHED, and would not have if a key had
+   * been unambiguous — either because several stored rows hold the key (it was
+   * withheld from the map) or because several incoming cards claim it while a
+   * stored row does hold it.
+   *
+   * Empty unless `withheld` is supplied. This is the difference between
+   * "ambiguity EXISTS in this checklist" and "ambiguity CHANGED an outcome",
+   * and only the second is worth telling an operator about — see
+   * `WithheldMatchKeys`. A set whose fallback keys repeat by design but whose
+   * every card carries a ref reports nothing here, correctly.
+   */
+  ambiguityBlocked: number[];
+};
+
+function resolveExistingIds(
+  cards: IncomingMatchCard[],
+  prelude: Pick<
+    CommitPrelude,
+    | "existingIdByBscRef"
+    | "existingIdBySlRef"
+    | "existingIdBySlotNumber"
+    | "existingIdByNumberNoRef"
+    | "slotBySetId"
+  >,
+  /**
+   * The raw keys `buildMatchMaps` withheld. Optional because the commit path
+   * receives its maps back from the prelude MUTATION, which only carries the
+   * bounded/truncated log form across that boundary — see the note there. The
+   * review query builds both in one process and passes this, which is what
+   * lets it say something true about ambiguity instead of something alarming.
+   */
+  withheld?: WithheldMatchKeys,
+): MatchResolution {
+  const byBscRef = new Map(
+    prelude.existingIdByBscRef.map(({ ref, id }) => [ref, id] as const),
+  );
+  const bySlRef = new Map(
+    prelude.existingIdBySlRef.map(({ ref, id }) => [ref, id] as const),
+  );
+  const bySlotNumber = new Map(
+    prelude.existingIdBySlotNumber.map(({ key, id }) => [key, id] as const),
+  );
+  const byNumberNoRef = new Map(
+    prelude.existingIdByNumberNoRef.map(
+      ({ cardNumber, id }) => [cardNumber, id] as const,
+    ),
+  );
+  const slotBySetId = new Map(
+    prelude.slotBySetId.map(
+      ({ side, setId, slot }) => [`${side} ${setId}`, slot] as const,
+    ),
+  );
+
+  // The slot key an incoming card claims on one side, or undefined when this
+  // tier does not apply to it.
+  const incomingSlotKey = (
+    card: IncomingMatchCard,
+    side: MatchSide,
+  ): string | undefined => {
+    const wire = card.platformData?.[side];
+    if (!wire?.setId) return undefined;
+    const slot = slotBySetId.get(`${side} ${wire.setId}`);
+    if (!slot) return undefined;
+    return slotNumberMatchKey(side, slot, card.cardNumber);
+  };
+
+  // How many INCOMING cards claim each number-based key. A key two incoming
+  // cards share cannot identify one stored row either, so it is as ambiguous
+  // from this direction as from the stored side.
+  const incomingSlotKeyCount = new Map<string, number>();
+  const incomingNumberCount = new Map<string, number>();
+  for (const card of cards) {
+    for (const side of MATCH_SIDES) {
+      const key = incomingSlotKey(card, side);
+      if (key) {
+        incomingSlotKeyCount.set(key, (incomingSlotKeyCount.get(key) ?? 0) + 1);
+      }
+    }
+    incomingNumberCount.set(
+      card.cardNumber,
+      (incomingNumberCount.get(card.cardNumber) ?? 0) + 1,
+    );
+  }
+
+  const existingIdByIndex: Array<Id<"cardChecklist"> | undefined> = [];
+  const conflicts: MatchResolution["conflicts"] = [];
+  const collisions: MatchResolution["collisions"] = [];
+  const matchedByTier = { bscRef: 0, slRef: 0, slotNumber: 0, noRef: 0 };
+  const ambiguityBlocked: number[] = [];
+  const claimed = new Set<string>();
+
+  /**
+   * Did ambiguity — rather than the card simply being new — cost this card a
+   * match? Asked ONLY of cards the cascade left unmatched.
+   *
+   * Two directions, and both need a stored row to have existed, or there was
+   * nothing to lose:
+   *
+   *   STORED side — the key is in `withheld`, meaning several stored rows hold
+   *   it, so it was kept out of the map rather than guessed at.
+   *   INCOMING side — several cards in THIS payload claim the key, and the map
+   *   does hold a row for it. Without the map check this would fire on every
+   *   duplicate-numbered new card, which is the false alarm being fixed.
+   */
+  const blockedByAmbiguity = (card: IncomingMatchCard): boolean => {
+    if (!withheld) return false;
+    const bscRef = card.platformData?.bsc?.ref;
+    if (bscRef && withheld.bscRef.has(bscRef)) return true;
+    const slRef = card.platformData?.sportlots?.ref;
+    if (slRef && withheld.slRef.has(slRef)) return true;
+    for (const side of MATCH_SIDES) {
+      const key = incomingSlotKey(card, side);
+      if (!key) continue;
+      if (withheld.slotNumber.has(key)) return true;
+      if ((incomingSlotKeyCount.get(key) ?? 0) > 1 && bySlotNumber.has(key)) {
+        return true;
+      }
+    }
+    const number = card.cardNumber;
+    if (withheld.numberNoRef.has(number)) return true;
+    if (
+      (incomingNumberCount.get(number) ?? 0) > 1 &&
+      byNumberNoRef.has(number)
+    ) {
+      return true;
+    }
+    return false;
+  };
+
+  cards.forEach((card, index) => {
+    const bscRef = card.platformData?.bsc?.ref;
+    const slRef = card.platformData?.sportlots?.ref;
+    const bscRowId = bscRef ? byBscRef.get(bscRef) : undefined;
+    const slRowId = slRef ? bySlRef.get(slRef) : undefined;
+
+    if (bscRowId && slRowId && bscRowId !== slRowId) {
+      conflicts.push({ index, cardNumber: card.cardNumber, bscRowId, slRowId });
+      existingIdByIndex.push(undefined);
+      return;
+    }
+
+    let matched: Id<"cardChecklist"> | undefined;
+    let tier: keyof typeof matchedByTier | undefined;
+    if (bscRowId) {
+      matched = bscRowId;
+      tier = "bscRef";
+    } else if (slRowId) {
+      matched = slRowId;
+      tier = "slRef";
+    } else {
+      for (const side of MATCH_SIDES) {
+        const key = incomingSlotKey(card, side);
+        if (!key) continue;
+        if ((incomingSlotKeyCount.get(key) ?? 0) !== 1) continue;
+        const candidate = bySlotNumber.get(key);
+        if (!candidate) continue;
+        matched = candidate;
+        tier = "slotNumber";
+        break;
+      }
+      if (!matched && (incomingNumberCount.get(card.cardNumber) ?? 0) === 1) {
+        const candidate = byNumberNoRef.get(card.cardNumber);
+        if (candidate) {
+          matched = candidate;
+          tier = "noRef";
+        }
+      }
+    }
+
+    if (matched && claimed.has(matched)) {
+      collisions.push({ index, cardNumber: card.cardNumber, existingId: matched });
+      existingIdByIndex.push(undefined);
+      return;
+    }
+    if (matched) {
+      claimed.add(matched);
+      if (tier) matchedByTier[tier]++;
+    } else if (withheld && blockedByAmbiguity(card)) {
+      // Only reached for a card that found NO row. A card that matched on a
+      // ref does not care that some fallback key it never consulted repeats.
+      ambiguityBlocked.push(index);
+    }
+    existingIdByIndex.push(matched);
+  });
+
+  return {
+    existingIdByIndex,
+    conflicts,
+    collisions,
+    matchedByTier,
+    ambiguityBlocked,
+  };
+}
+
+// ─── NEO-203 phase C: the content-diff review ──────────────────────────────
+
+/** One changed NB-owned field, as the review renders it. */
+const syncDiffFieldValidator = v.object({
+  /** A member of `NB_CONTENT_FIELDS`. */
+  name: v.string(),
+  /** 1 = trust-critical, 2 = substantive-or-cosmetic. See NB_CONTENT_FIELD_TIER. */
+  tier: v.number(),
+  oldValue: v.string(),
+  newValue: v.string(),
+  /**
+   * Which marketplace this card came from. Per-CARD, not per-field: the
+   * BSC↔SportLots merge happens client-side in `CardPairingModal.mergePair`
+   * and does not record which side won each field, so a per-field claim would
+   * be a guess dressed as provenance.
+   */
+  source: v.union(
+    v.literal("bsc"),
+    v.literal("sportlots"),
+    v.literal("both"),
+    v.literal("none"),
+  ),
+  /**
+   * Do the two values fold to the same thing under `nameKey` — i.e. is this a
+   * reformatting rather than a rewrite? Drives the default checkbox state.
+   */
+  foldEqual: v.boolean(),
+});
+
+const syncDiffValidator = v.object({
+  cards: v.array(
+    v.object({
+      /** Index into the `cards` argument, so the caller can address it back. */
+      index: v.number(),
+      cardNumber: v.string(),
+      cardName: v.string(),
+      bucket: v.union(
+        v.literal("identical"),
+        v.literal("formattingOnly"),
+        v.literal("contentChanges"),
+        v.literal("new"),
+      ),
+      existingId: v.optional(v.id("cardChecklist")),
+      /** The matched row's `lastUpdated` as of this diff — the card's `baseVersion`. */
+      baseVersion: v.optional(v.number()),
+      fields: v.array(syncDiffFieldValidator),
+    }),
+  ),
+  /**
+   * Existing non-custom rows no incoming card matched, split by whether their
+   * absence is actually evidence of removal — see the handler.
+   */
+  removedUpstream: v.object({
+    fullyOrphaned: v.array(
+      v.object({
+        id: v.id("cardChecklist"),
+        cardNumber: v.string(),
+        cardName: v.string(),
+        sides: v.array(v.union(v.literal("bsc"), v.literal("sportlots"))),
+      }),
+    ),
+    partialOrphanCount: v.number(),
+  }),
+  /** Cards whose two refs point at two different NB rows. */
+  conflicts: v.array(
+    v.object({
+      index: v.number(),
+      cardNumber: v.string(),
+      cardName: v.string(),
+      bsc: v.object({
+        rowId: v.id("cardChecklist"),
+        cardNumber: v.string(),
+        cardName: v.string(),
+      }),
+      sportlots: v.object({
+        rowId: v.id("cardChecklist"),
+        cardNumber: v.string(),
+        cardName: v.string(),
+      }),
+    }),
+  ),
+  /** Cards that lost a match collision and will be inserted as their own row. */
+  collisionInsertCount: v.number(),
+  /**
+   * How many incoming cards were left unmatched BECAUSE a match key was
+   * ambiguous — not how many ambiguous keys exist.
+   *
+   * The distinction is the whole field. A variant fanned out across two
+   * marketplace series repeats its `(side, slot, number)` fallback keys by
+   * design, so "ambiguous keys exist" is the normal state of exactly the sets
+   * this feature serves; it says nothing about whether any card suffered for
+   * it. This counts cards that actually did — the only version of the fact an
+   * operator can act on. See `WithheldMatchKeys`.
+   *
+   * A COUNT, never the keys: they embed marketplace refs (a SportLots ref is
+   * the whole card description) and have no business crossing to a browser.
+   */
+  ambiguityBlockedCount: v.number(),
+});
+
+/**
+ * NEO-203 phase C — what a re-sync would CHANGE, computed server-side.
+ *
+ * ## Why a query and not fields on `checklistCandidates`
+ *
+ * The obvious alternative was to thread the diff onto the streamed candidate
+ * rows, which already carry every card to the client. It is wrong for one
+ * decisive reason: a candidate row is PRE-PAIRING. `CardPairingModal` merges a
+ * BSC row and a SportLots row into ONE card (`mergePair`), lets the operator
+ * settle a name conflict, hand-link two singles, and discard everything left
+ * over. The card whose content the operator must review is the merged,
+ * confirmed one — which does not exist until Confirm is pressed, and is not
+ * any single candidate row. Diffing candidates would show the operator a
+ * comparison against a card that is never written.
+ *
+ * There is also nothing left to stream by this point: pairing is confirmed,
+ * the whole confirmed set is in hand, and the next steps (entity review,
+ * commit) are already imperative one-shot calls. So this is a one-shot query
+ * called from `CardChecklist`'s pipeline between pairing and the entity
+ * wizard, and `checklistCandidates` needs no new fields at all — the least
+ * churn of the two options.
+ *
+ * ## Why it is server-side
+ *
+ * A client-computed diff would be a claim about rows the client cannot see,
+ * and `commitCardChecklist` would then be trusting the operator's browser
+ * about which stored row an incoming card is. It matches with
+ * `buildMatchMaps` + `resolveExistingIds` — literally the same two functions
+ * the commit runs — so what the operator reviews is what the commit will
+ * match. `baseVersion` is the matched row's `lastUpdated` AT THIS INSTANT; the
+ * chunk re-checks it inside its own writing transaction, so a row that moves
+ * between review and commit applies nothing and is reported.
+ *
+ * ## Player and team fields are diffed BY NAME
+ *
+ * A stored row holds `playerIds`/`teamOnCardIds`; an incoming card holds
+ * names, and the ids it would resolve to do not exist yet — `EntityReviewWizard`
+ * creates them AFTER this step. Resolving names to ids here would therefore be
+ * both wrong (the answer changes before the commit) and expensive (one indexed
+ * lookup per distinct name). Names are also what an operator can actually
+ * judge. The commit re-diffs on IDS before writing, so a disagreement between
+ * the two views can only ever DROP a write, never add one.
+ *
+ * ## Bounded
+ *
+ * `assertCardBatchWithinLimits` caps the payload; the reads are one
+ * `by_selector_option` collect plus one `db.get` per DISTINCT player/team id on
+ * MATCHED rows only.
+ */
+export const diffChecklistAgainstExisting = query({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    cards: v.array(previewCardValidator),
+  },
+  returns: syncDiffValidator,
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    assertCardBatchWithinLimits(args.cards, "diffChecklistAgainstExisting");
+
+    const leafNode = await ctx.db.get(args.selectorOptionId);
+    const existingCards = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.selectorOptionId),
+      )
+      .collect();
+
+    // The SAME two functions the commit runs. See `buildMatchMaps`. Unlike the
+    // commit, this runs in ONE process, so it can hand the cascade the raw
+    // withheld keys and learn whether ambiguity actually cost any card a match.
+    const { maps: matchMaps, withheld } = buildMatchMaps(
+      existingCards,
+      leafNode,
+    );
+    const match = resolveExistingIds(args.cards, matchMaps, withheld);
+
+    const rowById = new Map<string, Doc<"cardChecklist">>();
+    for (const row of existingCards) rowById.set(row._id, row);
+
+    const matchedIds = new Set<string>();
+    for (const id of match.existingIdByIndex) if (id) matchedIds.add(id);
+
+    // Names for the entity ids on MATCHED rows only — deduped, so a 900-card
+    // set costs at most one read per distinct player and team it references,
+    // not one per card.
+    const neededPlayerIds = new Set<string>();
+    const neededTeamIds = new Set<string>();
+    for (const id of matchedIds) {
+      const row = rowById.get(id);
+      if (!row) continue;
+      for (const p of row.playerIds ?? []) neededPlayerIds.add(p);
+      for (const t of row.teamOnCardIds ?? []) neededTeamIds.add(t);
+    }
+    const playerNameById = new Map<string, string>();
+    for (const id of neededPlayerIds) {
+      const doc = await ctx.db.get(id as Id<"players">);
+      if (doc) playerNameById.set(id, doc.name);
+    }
+    const teamNameById = new Map<string, string>();
+    for (const id of neededTeamIds) {
+      const doc = await ctx.db.get(id as Id<"teams">);
+      if (doc) teamNameById.set(id, doc.name);
+    }
+    // A dangling id is data the operator needs to SEE, not silently drop: a
+    // vanished player must not make a card look like it agrees with upstream.
+    const nameOf = (map: Map<string, string>, id: string) =>
+      map.get(id) ?? "(missing)";
+
+    const conflictIndices = new Set(match.conflicts.map((c) => c.index));
+
+    const cards: Array<{
+      index: number;
+      cardNumber: string;
+      cardName: string;
+      bucket: "identical" | "formattingOnly" | "contentChanges" | "new";
+      existingId?: Id<"cardChecklist">;
+      baseVersion?: number;
+      fields: Array<{
+        name: string;
+        tier: number;
+        oldValue: string;
+        newValue: string;
+        source: "bsc" | "sportlots" | "both" | "none";
+        foldEqual: boolean;
+      }>;
+    }> = [];
+
+    args.cards.forEach((c, index) => {
+      // A conflicted card is reported on its own below; it is not a diff, it
+      // is a question about identity that has to be settled first.
+      if (conflictIndices.has(index)) return;
+
+      const hasBsc = !!c.platformData.bsc?.ref;
+      const hasSl = !!c.platformData.sportlots?.ref;
+      const source: "bsc" | "sportlots" | "both" | "none" =
+        hasBsc && hasSl ? "both" : hasBsc ? "bsc" : hasSl ? "sportlots" : "none";
+
+      const existingId = match.existingIdByIndex[index];
+      const row = existingId ? rowById.get(existingId) : undefined;
+      if (!row) {
+        cards.push({
+          index,
+          cardNumber: c.cardNumber,
+          cardName: c.cardName,
+          bucket: "new",
+          fields: [],
+        });
+        return;
+      }
+
+      const storedPlayers = (row.playerIds ?? []).map((id) =>
+        nameOf(playerNameById, id),
+      );
+      const storedTeams = (row.teamOnCardIds ?? []).map((id) =>
+        nameOf(teamNameById, id),
+      );
+      const incomingPlayers = (c.players ?? [])
+        .map((p) => p.trim())
+        .filter(Boolean);
+      // Same precedence the commit action uses to build `teamOnCardIds`.
+      const incomingTeamSources = c.teams?.length
+        ? c.teams
+        : c.team
+          ? [c.team]
+          : [];
+      const incomingTeams = incomingTeamSources
+        .map((t) => t.trim())
+        .filter(Boolean);
+      // The commit merges an `unmatched-<side>` marker into `attributes` for a
+      // deliberately-kept single-marketplace card, so the diff has to compare
+      // against the same value the chunk would write — otherwise every kept
+      // single would show a permanent, un-actionable attributes change.
+      const incomingAttributes = c.unmatched
+        ? Array.from(
+            new Set([...(c.attributes ?? []), `unmatched-${c.unmatched}`]),
+          )
+        : c.attributes;
+
+      const comparisons: Array<{
+        name: NbContentField;
+        stored: unknown;
+        incoming: unknown;
+      }> = [
+        { name: "cardName", stored: row.cardName, incoming: c.cardName },
+        { name: "playerIds", stored: storedPlayers, incoming: incomingPlayers },
+        {
+          name: "teamOnCardIds",
+          stored: storedTeams,
+          incoming: incomingTeams,
+        },
+        {
+          name: "attributes",
+          stored: row.attributes,
+          incoming: incomingAttributes,
+        },
+        { name: "isRookie", stored: row.isRookie, incoming: c.isRookie },
+        { name: "isRelic", stored: row.isRelic, incoming: c.isRelic },
+        { name: "printRun", stored: row.printRun, incoming: c.printRun },
+        {
+          name: "autographType",
+          stored: row.autographType,
+          incoming: c.autographType,
+        },
+        {
+          name: "cardVariation",
+          stored: row.cardVariation,
+          incoming: c.cardVariation,
+        },
+      ];
+
+      const fields = comparisons
+        .filter(({ stored, incoming }) => !sameContentValue(stored, incoming))
+        .map(({ name, stored, incoming }) => {
+          const oldValue = displayContentValue(stored);
+          const newValue = displayContentValue(incoming);
+          return {
+            name,
+            tier: NB_CONTENT_FIELD_TIER[name],
+            oldValue,
+            newValue,
+            source,
+            foldEqual: nameKey(oldValue) === nameKey(newValue),
+          };
+        });
+
+      cards.push({
+        index,
+        cardNumber: c.cardNumber,
+        cardName: c.cardName,
+        bucket:
+          fields.length === 0
+            ? "identical"
+            : fields.every((f) => f.foldEqual)
+              ? "formattingOnly"
+              : "contentChanges",
+        existingId: row._id,
+        baseVersion: row.lastUpdated,
+        fields,
+      });
+    });
+
+    // ── What upstream no longer lists ───────────────────────────────────────
+    //
+    // A row is deletion-ELIGIBLE only when its absence is actually evidence
+    // that it was removed. Two things can produce an unmatched row that was
+    // NOT removed, and both must stay out of the delete list:
+    //
+    //  1. The side it is linked to did not come back. `fetchCardChecklist`
+    //     tolerates a single-side failure, so a SportLots outage makes every
+    //     SL-linked row look orphaned. A side counts as COVERED only if at
+    //     least one incoming card carries a ref on it.
+    //  2. Its identity is contested — its ref appears in a cross-side conflict
+    //     or it lost a match collision. Upstream still names it; what is
+    //     unresolved is which row that name belongs to.
+    //
+    // A row linked to BOTH sides where only one came back is exactly the
+    // spec's PARTIAL orphan: still live on one marketplace, so it gets a
+    // lighter treatment in the checklist, never a delete prompt.
+    const coveredSides: Record<MatchSide, boolean> = {
+      bsc: false,
+      sportlots: false,
+    };
+    for (const c of args.cards) {
+      if (c.platformData.bsc?.ref) coveredSides.bsc = true;
+      if (c.platformData.sportlots?.ref) coveredSides.sportlots = true;
+    }
+    const contested = new Set<string>();
+    for (const cf of match.conflicts) {
+      contested.add(cf.bscRowId);
+      contested.add(cf.slRowId);
+    }
+    for (const col of match.collisions) contested.add(col.existingId);
+
+    const fullyOrphaned: Array<{
+      id: Id<"cardChecklist">;
+      cardNumber: string;
+      cardName: string;
+      sides: MatchSide[];
+    }> = [];
+    let partialOrphanCount = 0;
+    for (const row of existingCards) {
+      // Custom cards are NeonBinder's own and have no upstream that could have
+      // dropped them — the finalize phase refuses to delete one either way.
+      if (row.isCustom) continue;
+      if (matchedIds.has(row._id)) continue;
+      const linked = MATCH_SIDES.filter((s) => !!row.platformData?.[s]?.ref);
+      // A row with no ref on either side (custom-shaped legacy data) has no
+      // linkage evidence at all, so its absence proves nothing.
+      const eligible =
+        linked.length > 0 &&
+        linked.every((s) => coveredSides[s]) &&
+        !contested.has(row._id);
+      if (eligible) {
+        fullyOrphaned.push({
+          id: row._id,
+          cardNumber: row.cardNumber,
+          cardName: row.cardName,
+          sides: linked,
+        });
+      } else {
+        partialOrphanCount++;
+      }
+    }
+    fullyOrphaned.sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
+
+    return {
+      cards,
+      removedUpstream: { fullyOrphaned, partialOrphanCount },
+      conflicts: match.conflicts.map((cf) => {
+        const bscRow = rowById.get(cf.bscRowId);
+        const slRow = rowById.get(cf.slRowId);
+        return {
+          index: cf.index,
+          cardNumber: cf.cardNumber,
+          cardName: args.cards[cf.index]?.cardName ?? "",
+          bsc: {
+            rowId: cf.bscRowId,
+            cardNumber: bscRow?.cardNumber ?? "",
+            cardName: bscRow?.cardName ?? "",
+          },
+          sportlots: {
+            rowId: cf.slRowId,
+            cardNumber: slRow?.cardNumber ?? "",
+            cardName: slRow?.cardName ?? "",
+          },
+        };
+      }),
+      collisionInsertCount: match.collisions.length,
+      ambiguityBlockedCount: match.ambiguityBlocked.length,
+    };
+  },
+});
+
+// ─── NEO-203 phase E: pre-merge data audit ─────────────────────────────────
+
+/**
+ * Row caps for the audit below.
+ *
+ * A Convex query may read ~16k documents, so the two scans together have to
+ * stay comfortably inside that. These numbers are ~4x the largest real
+ * checklist (a 908-card set) and well past the current catalog's node count;
+ * if either scan truncates, the report says so rather than quietly reporting a
+ * partial answer as a clean bill of health.
+ */
+const AUDIT_CARD_SCAN_LIMIT = 8000;
+const AUDIT_NODE_SCAN_LIMIT = 4000;
+const AUDIT_SAMPLE_LIMIT = 20;
+
+/**
+ * NEO-203 phase E — the pre-merge verification sweep.
+ *
+ * ## What it is for, and when it stops being useful
+ *
+ * NEO-203 changes what a re-sync keys on: from `cardNumber` (which is not
+ * unique at any scope) to the marketplace REF, with number-based tiers behind
+ * it that only fire when the answer is unarguable. Existing data was written
+ * under the old rule, so before the change ships this answers the three
+ * questions that decide how much of it heals on its own:
+ *
+ *   1. **Ref-less non-custom rows.** These can only ever match on tier 3 (bare
+ *      card number against no-ref rows), so they are the rows most exposed to
+ *      the old bug's residue and the least able to heal on a re-sync.
+ *   2. **Variants whose checklist holds duplicate card numbers.** Under the old
+ *      keying these are exactly the rows that got merged into one another — one
+ *      patched twice, another left stale. Under the new keying they are fine
+ *      PROVIDED they carry refs, which is why (1) and (2) are read together.
+ *   3. **Variants with more than one attached slot on a side.** The N:M sets
+ *      (NEO-189 attaches several marketplace sets to one variant), which is
+ *      what makes duplicate numbers routine rather than exotic. These are the
+ *      at-risk sets to re-sync first and eyeball.
+ *
+ * Run by an operator, on dev and then prod:
+ *
+ *   npx convex run selectorOptions:auditChecklistDataForResync '{}'
+ *
+ * `internalQuery` deliberately: this is an operator tool with no UI and no
+ * client caller, and `internal` is the only access rule that cannot be got at
+ * from a browser at all. It is also read-only — it reports, it never repairs.
+ *
+ * It returns COUNTS plus bounded samples, never whole rows: the point is to
+ * size the problem, and a marketplace ref is unbounded upstream text that has
+ * no business being echoed back in bulk.
+ *
+ * SAFE TO DELETE once NEO-203 has been verified on prod. It has no callers in
+ * the application and nothing depends on its shape.
+ */
+export const auditChecklistDataForResync = internalQuery({
+  args: {},
+  returns: v.object({
+    scanned: v.object({
+      cardChecklistRows: v.number(),
+      selectorOptionRows: v.number(),
+      // True when a scan hit its cap, so every count below is a LOWER BOUND.
+      truncated: v.boolean(),
+    }),
+    // (1) Non-custom rows with no ref on either side.
+    reflessCards: v.object({
+      count: v.number(),
+      samples: v.array(
+        v.object({
+          selectorOptionId: v.id("selectorOptions"),
+          cardNumber: v.string(),
+        }),
+      ),
+    }),
+    // (2) Variants whose checklist repeats a card number.
+    duplicateCardNumbers: v.object({
+      variantCount: v.number(),
+      samples: v.array(
+        v.object({
+          selectorOptionId: v.id("selectorOptions"),
+          // How many DISTINCT numbers are held by more than one row here.
+          duplicateNumberCount: v.number(),
+        }),
+      ),
+    }),
+    // (3) Rows with more than one attached marketplace set on a side.
+    multiSlotVariants: v.object({
+      count: v.number(),
+      samples: v.array(
+        v.object({
+          selectorOptionId: v.id("selectorOptions"),
+          bscSlots: v.number(),
+          sportlotsSlots: v.number(),
+        }),
+      ),
+    }),
+  }),
+  handler: async (ctx) => {
+    // A FULL-TABLE WALK, capped. There is no index that answers "every row
+    // lacking a ref" or "every node with two slots" — both predicates are over
+    // field CONTENTS, not over an indexed key — and adding indexes to the
+    // schema for a one-off pre-merge check would outlive the check. `take`
+    // bounds the read; asking for one row past the cap is how truncation is
+    // detected, and the report says so out loud rather than passing a partial
+    // scan off as a clean result.
+    const cardRows = await ctx.db
+      .query("cardChecklist")
+      .take(AUDIT_CARD_SCAN_LIMIT + 1);
+    const cardsTruncated = cardRows.length > AUDIT_CARD_SCAN_LIMIT;
+    const cards = cardsTruncated
+      ? cardRows.slice(0, AUDIT_CARD_SCAN_LIMIT)
+      : cardRows;
+
+    const nodeRows = await ctx.db
+      .query("selectorOptions")
+      .take(AUDIT_NODE_SCAN_LIMIT + 1);
+    const nodesTruncated = nodeRows.length > AUDIT_NODE_SCAN_LIMIT;
+    const nodes = nodesTruncated
+      ? nodeRows.slice(0, AUDIT_NODE_SCAN_LIMIT)
+      : nodeRows;
+
+    // (1) + (2), from the one card scan.
+    let reflessCount = 0;
+    const reflessSamples: Array<{
+      selectorOptionId: Id<"selectorOptions">;
+      cardNumber: string;
+    }> = [];
+    const numbersByVariant = new Map<string, Map<string, number>>();
+    for (const row of cards) {
+      // Custom cards have no upstream and are expected to carry no ref, so
+      // counting them here would bury the rows that actually matter.
+      if (!row.isCustom) {
+        const hasRef =
+          !!row.platformData?.bsc?.ref || !!row.platformData?.sportlots?.ref;
+        if (!hasRef) {
+          reflessCount++;
+          if (reflessSamples.length < AUDIT_SAMPLE_LIMIT) {
+            reflessSamples.push({
+              selectorOptionId: row.selectorOptionId,
+              cardNumber: row.cardNumber,
+            });
+          }
+        }
+      }
+      // Duplicate numbers count CUSTOM rows too: a custom card sharing a number
+      // with a marketplace card is exactly the collision the old keying merged.
+      const key = row.selectorOptionId as string;
+      let counts = numbersByVariant.get(key);
+      if (!counts) {
+        counts = new Map<string, number>();
+        numbersByVariant.set(key, counts);
+      }
+      counts.set(row.cardNumber, (counts.get(row.cardNumber) ?? 0) + 1);
+    }
+
+    let duplicateVariantCount = 0;
+    const duplicateSamples: Array<{
+      selectorOptionId: Id<"selectorOptions">;
+      duplicateNumberCount: number;
+    }> = [];
+    for (const [variantId, counts] of numbersByVariant) {
+      let duplicateNumberCount = 0;
+      for (const n of counts.values()) if (n > 1) duplicateNumberCount++;
+      if (duplicateNumberCount === 0) continue;
+      duplicateVariantCount++;
+      if (duplicateSamples.length < AUDIT_SAMPLE_LIMIT) {
+        duplicateSamples.push({
+          selectorOptionId: variantId as Id<"selectorOptions">,
+          duplicateNumberCount,
+        });
+      }
+    }
+
+    // (3), from the node scan. Read through `slotIds` — the same helper every
+    // slot-aware path uses — so "an attached set" means here exactly what it
+    // means at write time.
+    let multiSlotCount = 0;
+    const multiSlotSamples: Array<{
+      selectorOptionId: Id<"selectorOptions">;
+      bscSlots: number;
+      sportlotsSlots: number;
+    }> = [];
+    for (const node of nodes) {
+      const bscSlots = slotIds(node, "bsc").length;
+      const sportlotsSlots = slotIds(node, "sportlots").length;
+      if (bscSlots <= 1 && sportlotsSlots <= 1) continue;
+      multiSlotCount++;
+      if (multiSlotSamples.length < AUDIT_SAMPLE_LIMIT) {
+        multiSlotSamples.push({
+          selectorOptionId: node._id,
+          bscSlots,
+          sportlotsSlots,
+        });
+      }
+    }
+
+    return {
+      scanned: {
+        cardChecklistRows: cards.length,
+        selectorOptionRows: nodes.length,
+        truncated: cardsTruncated || nodesTruncated,
+      },
+      reflessCards: { count: reflessCount, samples: reflessSamples },
+      duplicateCardNumbers: {
+        variantCount: duplicateVariantCount,
+        samples: duplicateSamples,
+      },
+      multiSlotVariants: {
+        count: multiSlotCount,
+        samples: multiSlotSamples,
+      },
+    };
   },
 });
 
@@ -6486,21 +7985,42 @@ export const commitCardChecklistFinalize = internalMutation({
  *              pre-commit snapshot the upsert keys against.
  *   chunk    → once per CARDS_PER_COMMIT_CHUNK cards. Pure writer.
  *   finalize → once, over the union of every chunk's ids: variation links,
- *              the stale sweep, sortOrder, review cleanup, schedules.
+ *              the operator's explicit deletes, the unmatched-existing report,
+ *              sortOrder, review cleanup, schedules.
  *
  * ## ATOMICITY IS LOST — read this before adding a phase
  *
  * A mutation was all-or-nothing. This is not. A failure during chunk N leaves
- * chunks 1..N-1 written, chunk N+1.. unwritten, and the finalize phase (stale
- * delete, variation links, sortOrder fixups, review-row cleanup, background
- * enrichment) NOT run. The checklist is then a partial, unswept copy of the
- * preview.
+ * chunks 1..N-1 written, chunk N+1.. unwritten, and the finalize phase
+ * (operator deletes, variation links, sortOrder fixups, review-row cleanup,
+ * background enrichment) NOT run. The checklist is then a partial copy of the
+ * preview with none of its whole-commit bookkeeping applied.
  *
- * Re-running the same commit is the recovery, and it is safe: cards upsert by
- * number, so the already-written rows are patched rather than duplicated, and
- * the finalize phase sweeps whatever the interrupted run left behind. The
- * errors this action throws name the phase that failed for exactly that reason
- * — "which cards made it" is answerable from the phase and chunk index.
+ * Re-running the same commit is the recovery, and it is STILL safe under
+ * NEO-203's ref keying — for a better reason than the number keying gave.
+ *
+ * The old claim was "cards upsert by number, so already-written rows are
+ * patched rather than duplicated". That held only as far as numbers were
+ * unique, which they are not. What holds now: a chunk INSERTS a row with the
+ * incoming card's `platformData` already on it, refs included
+ * (`toStoredPlatformData` keeps the ref whether or not a slot resolves). So
+ * every row the interrupted run managed to insert is in the next run's prelude
+ * snapshot AND carries the same ref the payload will send again — and refs are
+ * stable within one commit's payload, because it is the same payload. Tier 1
+ * of the cascade therefore matches each re-sent card to the exact row the
+ * interrupted run created for it. No duplicates, and no dependence on card
+ * numbers being distinct.
+ *
+ * Two consequences worth stating plainly. Those re-matched rows are then
+ * treated as MATCHED rows, so the re-run refreshes their linkage and applies
+ * content only where `applyFields` says to — which is correct, since the
+ * interrupted run inserted them with full content already. And the finalize
+ * phase no longer sweeps: what an interrupted run left behind that the re-run
+ * does not match is REPORTED (`unmatchedExistingIds`), not deleted. Recovery
+ * is complete, but tidying is an operator decision like every other deletion.
+ *
+ * The errors this action throws name the phase that failed — "which cards made
+ * it" is answerable from the phase and chunk index.
  *
  * What must NOT be added to a chunk: anything that deletes, anything that reads
  * the commit as a whole, anything whose partial application is worse than not
@@ -6511,22 +8031,58 @@ export const commitCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     sportId: v.id("selectorOptions"),
-    cards: v.array(previewCardValidator),
+    // NEO-203: each card may carry the operator's per-field accept decision
+    // (`applyFields` + `baseVersion`). Absent on every caller that predates
+    // the review UI, which is what makes this additive.
+    cards: v.array(commitCardValidator),
     // Present whenever the fetch surfaced unknown names (and the wizard
     // ran); absent on the zero-unknowns fast path.
     batchId: v.optional(v.string()),
+    // NEO-203: rows the operator explicitly chose to delete. A marketplace
+    // dropping a card never deletes anything on its own — see the note on
+    // `commitCardChecklistFinalize`.
+    operatorDeleteIds: v.optional(v.array(v.id("cardChecklist"))),
   },
   returns: v.object({
     success: v.boolean(),
     count: v.number(),
     createdPlayerIds: v.array(v.id("players")),
     createdTeamIds: v.array(v.id("teams")),
+    // ── NEO-203: what the operator has to know about this commit ───────────
+    // Rows present in NeonBinder that no incoming card matched — the cards
+    // that vanished upstream. Reported, never deleted.
+    unmatchedExistingCount: v.number(),
+    // Cards excluded from the commit because their BSC and SportLots refs
+    // point at two different NB rows. Neither guessing nor inserting is safe,
+    // so the card is not written at all until an operator resolves it.
+    conflicts: v.array(
+      v.object({
+        cardNumber: v.string(),
+        bscRowId: v.id("cardChecklist"),
+        slRowId: v.id("cardChecklist"),
+      }),
+    ),
+    // Cards that lost a match collision and were inserted as new rows instead.
+    collisionInserts: v.number(),
+    // Matched rows whose accepted content was withheld because the row moved
+    // between the operator's review and the write.
+    staleDecisions: v.number(),
+    operatorDeleted: v.number(),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
     count: number;
     createdPlayerIds: Array<Id<"players">>;
     createdTeamIds: Array<Id<"teams">>;
+    unmatchedExistingCount: number;
+    conflicts: Array<{
+      cardNumber: string;
+      bscRowId: Id<"cardChecklist">;
+      slRowId: Id<"cardChecklist">;
+    }>;
+    collisionInserts: number;
+    staleDecisions: number;
+    operatorDeleted: number;
   }> => {
     // Enforced HERE, before any phase runs, so a non-admin call writes
     // nothing at all — the phases below re-check, but this is the boundary.
@@ -6535,6 +8091,14 @@ export const commitCardChecklist = action({
     // per-transaction ceiling, not the per-commit one: the prelude is still
     // O(distinct names) in a single transaction.
     assertCardBatchWithinLimits(args.cards, "commitCardChecklist");
+    // Checked before ANY phase writes, so an over-long delete list costs the
+    // operator nothing. Finalize re-checks — it is separately callable.
+    const operatorDeleteIds = args.operatorDeleteIds ?? [];
+    if (operatorDeleteIds.length > MAX_OPERATOR_DELETE_IDS) {
+      throw new ConvexError(
+        `commitCardChecklist: ${operatorDeleteIds.length} operatorDeleteIds exceeds the ${MAX_OPERATOR_DELETE_IDS} limit for a single commit`,
+      );
+    }
 
     // Run one phase: retry an optimistic-concurrency conflict a bounded number
     // of times, then rethrow labelled with the phase that failed.
@@ -6601,9 +8165,18 @@ export const commitCardChecklist = action({
     const playerNameById = new Map(
       prelude.playerNameById.map(({ id, name }) => [id as string, name] as const),
     );
-    const existingIdByNumber = new Map(
-      prelude.existingIdByNumber.map(({ cardNumber, id }) => [cardNumber, id] as const),
-    );
+    // ── NEO-203: which existing row each incoming card updates ──────────────
+    const match = resolveExistingIds(args.cards, prelude);
+    const conflictIndices = new Set(match.conflicts.map((c) => c.index));
+    const collisionIndices = new Set(match.collisions.map((c) => c.index));
+
+    // Cards excluded from the commit are excluded from EVERYTHING that follows
+    // — sort ordering, the committed-number set, the chunk payloads — because
+    // nothing is being written for them. Their original indices are carried
+    // along so variation resolution below still speaks in whole-payload terms.
+    const committed = args.cards
+      .map((card, index) => ({ card, index }))
+      .filter(({ index }) => !conflictIndices.has(index));
 
     // Pre-compute the target sortOrder for every card that will be in this
     // selectorOption after the upsert: incoming cards (marketplace) PLUS
@@ -6613,12 +8186,12 @@ export const commitCardChecklist = action({
     // marketplace cards "1".."335". Done in-memory in the action — every chunk
     // and the finalize phase are handed the answer, so no phase has to re-read
     // the table to agree with the others about ordering.
-    const incomingNumbers = new Set(args.cards.map((c) => c.cardNumber));
+    const incomingNumbers = new Set(committed.map(({ card }) => card.cardNumber));
     const preservedCustomNumbers = prelude.existingCustomCardNumbers.filter(
       (cn) => !incomingNumbers.has(cn),
     );
     const allFinalNumbers: string[] = [
-      ...args.cards.map((c) => c.cardNumber),
+      ...committed.map(({ card }) => card.cardNumber),
       ...preservedCustomNumbers,
     ];
     allFinalNumbers.sort(compareCardNumbers);
@@ -6627,7 +8200,7 @@ export const commitCardChecklist = action({
 
     // Resolve per-card playerIds / teamOnCardIds. Cards whose names are
     // all unresolved end up with empty arrays (left undefined).
-    const chunkCards = args.cards.map((c, i) => {
+    const chunkCards = committed.map(({ card: c, index }) => {
       const playerIds: Array<Id<"players">> = [];
       for (const p of c.players ?? []) {
         const id = playerIdByName.get(p.trim());
@@ -6639,31 +8212,49 @@ export const commitCardChecklist = action({
         const id = teamIdByName.get(t.trim());
         if (id) teamOnCardIds.push(id);
       }
+      // Reconciliation markers live in `attributes` so they are visible on the
+      // card itself, not only in a log. NEO-203 adds `ref-collision`: this
+      // card resolved to a row another incoming card had already claimed, so
+      // it was inserted as its own row instead. The marker is what makes that
+      // discoverable on the NEXT sync rather than latent forever.
+      const markers = [
+        ...(c.unmatched ? [`unmatched-${c.unmatched}`] : []),
+        ...(collisionIndices.has(index) ? ["ref-collision"] : []),
+      ];
       return {
-        cardNumber: c.cardNumber,
-        cardName: c.cardName,
-        // NEO-26: legacy `team` no longer emitted. The free-text string
-        // from the adapter is consumed above to resolve teamOnCardIds[];
-        // it isn't written to cardChecklist anywhere.
-        playerIds: playerIds.length ? playerIds : undefined,
-        teamOnCardIds: teamOnCardIds.length ? teamOnCardIds : undefined,
-        attributes: c.unmatched
-          ? Array.from(new Set([...(c.attributes ?? []), `unmatched-${c.unmatched}`]))
-          : c.attributes,
-        isRookie: c.isRookie,
-        isRelic: c.isRelic,
-        printRun: c.printRun,
-        autographType: c.autographType,
-        cardVariation: c.cardVariation,
-        // NEO-137: WIRE shape here (marketplace set ids); the chunk resolves it
-        // to slots so a stored card's `src` always names a slot on its own
-        // parent row.
-        platformData: c.platformData,
-        sortOrder: targetSortOrder.get(c.cardNumber) ?? i,
-        playerNames: playerIds
-          .map((id) => playerNameById.get(id as string))
-          .filter((n): n is string => n !== undefined),
-        existingId: existingIdByNumber.get(c.cardNumber),
+        originalIndex: index,
+        card: {
+          cardNumber: c.cardNumber,
+          cardName: c.cardName,
+          // NEO-26: legacy `team` no longer emitted. The free-text string
+          // from the adapter is consumed above to resolve teamOnCardIds[];
+          // it isn't written to cardChecklist anywhere.
+          playerIds: playerIds.length ? playerIds : undefined,
+          teamOnCardIds: teamOnCardIds.length ? teamOnCardIds : undefined,
+          attributes: markers.length
+            ? Array.from(new Set([...(c.attributes ?? []), ...markers]))
+            : c.attributes,
+          isRookie: c.isRookie,
+          isRelic: c.isRelic,
+          printRun: c.printRun,
+          autographType: c.autographType,
+          cardVariation: c.cardVariation,
+          // NEO-137: WIRE shape here (marketplace set ids); the chunk resolves
+          // it to slots so a stored card's `src` always names a slot on its own
+          // parent row.
+          platformData: c.platformData,
+          sortOrder: targetSortOrder.get(c.cardNumber) ?? index,
+          playerNames: playerIds
+            .map((id) => playerNameById.get(id as string))
+            .filter((n): n is string => n !== undefined),
+          existingId: match.existingIdByIndex[index],
+          // NEO-203: the operator's per-field decision travels with the card.
+          // The chunk validates the names, re-checks `baseVersion` against the
+          // row inside its own transaction, and re-diffs before writing — so
+          // nothing here is trusted, it is only proposed.
+          applyFields: c.applyFields,
+          baseVersion: c.baseVersion,
+        },
       };
     });
 
@@ -6671,8 +8262,17 @@ export const commitCardChecklist = action({
     // consumed below to resolve variation parents — which is the whole reason
     // the links are computed HERE rather than inside a chunk: a child in chunk
     // 3 can have its parent in chunk 1, and neither chunk can see the other.
-    const storedIdByIndex: Array<Id<"cardChecklist">> = [];
+    //
+    // NEO-203: SPARSE, and indexed by the card's position in `args.cards`
+    // rather than by its position in the chunk stream. A conflicted card is
+    // never sent to a chunk, so the two are no longer the same sequence, and
+    // variation resolution below speaks in whole-payload indices.
+    const storedIdByIndex: Array<Id<"cardChecklist"> | undefined> = new Array(
+      args.cards.length,
+    ).fill(undefined);
     const bscTeamEnrichmentIds: Array<Id<"cardChecklist">> = [];
+    const staleDecisionIds: Array<Id<"cardChecklist">> = [];
+    let contentAppliedCount = 0;
     const chunkCount = Math.ceil(chunkCards.length / CARDS_PER_COMMIT_CHUNK);
     for (let start = 0; start < chunkCards.length; start += CARDS_PER_COMMIT_CHUNK) {
       const slice = chunkCards.slice(start, start + CARDS_PER_COMMIT_CHUNK);
@@ -6680,20 +8280,27 @@ export const commitCardChecklist = action({
       const result: {
         storedIds: Array<Id<"cardChecklist">>;
         bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
+        staleDecisionIds: Array<Id<"cardChecklist">>;
+        contentAppliedCount: number;
       } = await phase(
         `chunk ${index}/${chunkCount} (cards ${start + 1}-${start + slice.length} of ${chunkCards.length})`,
         () =>
           ctx.runMutation(internal.selectorOptions.commitCardChecklistChunk, {
             selectorOptionId: args.selectorOptionId,
-            cards: slice,
+            cards: slice.map(({ card }) => card),
             sportSkuCode: prelude.sportSkuCode,
             sportValue: prelude.sportValue,
             setNameValue: prelude.setNameValue,
             inheritedFeatures: prelude.inheritedFeatures,
           }),
       );
-      storedIdByIndex.push(...result.storedIds);
+      // The chunk returns one stored id per card it was given, in order.
+      slice.forEach(({ originalIndex }, i) => {
+        storedIdByIndex[originalIndex] = result.storedIds[i];
+      });
       bscTeamEnrichmentIds.push(...result.bscTeamEnrichmentIds);
+      staleDecisionIds.push(...result.staleDecisionIds);
+      contentAppliedCount += result.contentAppliedCount;
     }
 
     // ── NEO-189: which card varies which ────────────────────────────────────
@@ -6709,13 +8316,50 @@ export const commitCardChecklist = action({
     // variations and no base card) or more than one. Those rows are left
     // unlinked rather than guessed at, and reported so the set builder can
     // surface them. Guessing here would silently marry two unrelated cards.
-    const variationLinks = resolveVariationParents(
-      args.cards.map((c) => ({
-        cardNumber: c.cardNumber,
-        isVariation: !!c.isVariation,
-        variationLabel: c.cardVariation,
-      })),
-    );
+    //
+    // NEO-203: run PER SOURCE SET, not over the merged payload. The rule
+    // groups on the card-number stem alone, which lib/cards/variations.ts
+    // states outright is sound only when the input covers ONE marketplace set:
+    // across a fan-out, Bill Bonham's #29 variation lands in the same stem as
+    // Deivi Garcia's #29 and links to it. That is structurally identical to
+    // the legitimate different-player case (a Legend short print IS a
+    // different player), so nothing downstream can tell them apart — only the
+    // scoping can. Cards with no source attribution at all are their own
+    // partition rather than being spread across the others.
+    //
+    // Indices stay GLOBAL: each partition is resolved on its own rows and the
+    // results are translated back, so `parentByIndex` still indexes
+    // `args.cards` and `variationClearIds` below stays a whole-list decision.
+    const variationPartitions = new Map<string, number[]>();
+    args.cards.forEach((c, i) => {
+      const sourceKey =
+        c.platformData?.bsc?.setId ??
+        c.platformData?.sportlots?.setId ??
+        "unattributed";
+      const bucket = variationPartitions.get(sourceKey);
+      if (bucket) bucket.push(i);
+      else variationPartitions.set(sourceKey, [i]);
+    });
+    const variationLinks: {
+      parentByIndex: Map<number, number>;
+      unresolvedStems: string[];
+    } = { parentByIndex: new Map(), unresolvedStems: [] };
+    for (const indices of variationPartitions.values()) {
+      const resolved = resolveVariationParents(
+        indices.map((i) => ({
+          cardNumber: args.cards[i].cardNumber,
+          isVariation: !!args.cards[i].isVariation,
+          variationLabel: args.cards[i].cardVariation,
+        })),
+      );
+      for (const [child, parent] of resolved.parentByIndex) {
+        variationLinks.parentByIndex.set(indices[child], indices[parent]);
+      }
+      // Not deduped across partitions: the same stem unresolved in two source
+      // sets is two separate groups needing review, and collapsing them would
+      // understate the work.
+      variationLinks.unresolvedStems.push(...resolved.unresolvedStems);
+    }
     const links: Array<{
       childId: Id<"cardChecklist">;
       parentId: Id<"cardChecklist">;
@@ -6729,17 +8373,23 @@ export const commitCardChecklist = action({
       links.push({ childId, parentId });
     }
     const variationClearIds: Array<Id<"cardChecklist">> = [];
-    for (let i = 0; i < chunkCards.length; i++) {
+    for (let i = 0; i < args.cards.length; i++) {
       if (variationLinks.parentByIndex.has(i)) continue;
       const id = storedIdByIndex[i];
       if (id) variationClearIds.push(id);
     }
 
-    const { variationsLinked } = await phase("finalize", () =>
+    const committedIds = storedIdByIndex.filter(
+      (id): id is Id<"cardChecklist"> => id !== undefined,
+    );
+    const { variationsLinked, operatorDeleted, unmatchedExistingIds } = await phase(
+      "finalize",
+      () =>
       ctx.runMutation(internal.selectorOptions.commitCardChecklistFinalize, {
         selectorOptionId: args.selectorOptionId,
-        committedIds: storedIdByIndex,
+        committedIds,
         committedNumbers: Array.from(incomingNumbers),
+        operatorDeleteIds,
         variationLinks: links,
         variationClearIds,
         customSortOrders: preservedCustomNumbers.map((cardNumber) => ({
@@ -6768,11 +8418,73 @@ export const commitCardChecklist = action({
       );
     }
 
+    // ── NEO-203: one structured line per commit that had anything to say ────
+    //
+    // Counts are the operational signal; the bounded samples exist only to
+    // make a problem recognisable. Ids and card numbers only — never a diffed
+    // VALUE, and refs only via the already-truncated `ambiguousMatchKeys`.
+    // None of this ever reaches a `ConvexError`, which crosses to the browser.
+    const somethingToReport =
+      match.conflicts.length > 0 ||
+      match.collisions.length > 0 ||
+      prelude.ambiguousMatchKeys.length > 0 ||
+      staleDecisionIds.length > 0 ||
+      unmatchedExistingIds.length > 0;
+    if (somethingToReport) {
+      console.log(
+        JSON.stringify({
+          msg: "commit_card_matching",
+          selectorOptionId: args.selectorOptionId,
+          incoming: args.cards.length,
+          matchedByTier: match.matchedByTier,
+          // Two refs on one card pointing at two different NB rows. Excluded
+          // from the commit rather than guessed at or duplicated.
+          conflictCount: match.conflicts.length,
+          conflicts: match.conflicts.slice(0, 20).map((c) => ({
+            cardNumber: c.cardNumber,
+            bscRowId: c.bscRowId,
+            slRowId: c.slRowId,
+          })),
+          // Two incoming cards resolving to one row: first won, second was
+          // inserted with a `ref-collision` attribute marker.
+          collisionCount: match.collisions.length,
+          collisions: match.collisions.slice(0, 20).map((c) => ({
+            cardNumber: c.cardNumber,
+            existingId: c.existingId,
+          })),
+          // Keys the prelude withheld because several stored rows hold them.
+          ambiguousKeyCount: prelude.ambiguousMatchKeys.length,
+          ambiguousKeys: prelude.ambiguousMatchKeys.slice(0, 20),
+          // Accepted content withheld: the row moved under the review.
+          staleDecisionCount: staleDecisionIds.length,
+          staleDecisionIds: staleDecisionIds.slice(0, 20),
+          contentAppliedCount,
+          // Rows upstream no longer lists. Reported only — a marketplace
+          // dropping a card does not delete a NeonBinder row.
+          unmatchedExistingCount: unmatchedExistingIds.length,
+          unmatchedExistingIds: unmatchedExistingIds.slice(0, 20),
+        }),
+      );
+    }
+
     return {
       success: true,
-      count: args.cards.length,
+      // The cards this commit actually wrote. Equal to `args.cards.length`
+      // whenever nothing was excluded, which is every commit with no ref
+      // conflict — reporting the payload size instead would claim rows that
+      // were deliberately not written.
+      count: chunkCards.length,
       createdPlayerIds: prelude.createdPlayerIds,
       createdTeamIds: prelude.createdTeamIds,
+      unmatchedExistingCount: unmatchedExistingIds.length,
+      conflicts: match.conflicts.map((c) => ({
+        cardNumber: c.cardNumber,
+        bscRowId: c.bscRowId,
+        slRowId: c.slRowId,
+      })),
+      collisionInserts: match.collisions.length,
+      staleDecisions: staleDecisionIds.length,
+      operatorDeleted,
     };
   },
 });

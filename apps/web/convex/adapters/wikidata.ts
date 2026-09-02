@@ -373,6 +373,68 @@ export async function lookupPlayerEnrichment(
 }
 
 /**
+ * NEO-203 — "has this row already been enriched?", for the creation-only guard
+ * on `enrichPlayer` / `enrichTeam` below.
+ *
+ * ## Choosing markers that cannot mis-fire on a legitimately bare new row
+ *
+ * The guard must never suppress enrichment for a team or player that was just
+ * created and genuinely has nothing yet. So the marker set is exactly the
+ * fields that NO creation path writes, checked against every path that can
+ * insert a row and then enqueue it:
+ *
+ *   teams — `selectorOptions` prelude `resolveTeamIdByName`, and
+ *           `teams.findOrCreateInternal`. Both insert exactly
+ *           `{name, nameNormalized, sportId, leagueId, lastUpdated}`.
+ *   players — the `selectorOptions` prelude create path, which is the only one
+ *           that inserts a player row outside Team/Player Management.
+ *
+ * `leagueId` and `lastUpdated` are therefore NOT markers, and must never
+ * become ones: every creation path sets both, so either would make the guard
+ * skip every brand-new row and silently disable enrichment entirely. That is
+ * the one failure mode this design has, and it is why the markers are listed
+ * explicitly here rather than derived from "any enrichment field".
+ *
+ * Everything below IS a marker: no insert path writes any of them, and each is
+ * something enrichment (or an operator) put there. A row carrying even one has
+ * already been answered.
+ */
+function teamEnrichmentMarkers(team: {
+  city?: string;
+  yearsActive?: unknown;
+  colors?: { primary?: string; secondary?: string };
+  colorSource?: unknown;
+  colorCandidates?: unknown[];
+  externalIds?: { wikidataId?: string; espnId?: string };
+}): string[] {
+  const markers: string[] = [];
+  if (team.city) markers.push("city");
+  if (team.yearsActive) markers.push("yearsActive");
+  if (team.colors?.primary || team.colors?.secondary) markers.push("colors");
+  if (team.colorSource) markers.push("colorSource");
+  if ((team.colorCandidates?.length ?? 0) > 0) markers.push("colorCandidates");
+  if (team.externalIds?.wikidataId) markers.push("wikidataId");
+  if (team.externalIds?.espnId) markers.push("espnId");
+  return markers;
+}
+
+/** The player twin of `teamEnrichmentMarkers` — same contract, same reasoning. */
+function playerEnrichmentMarkers(player: {
+  teamYears?: unknown[];
+  isHallOfFame?: boolean;
+  externalIds?: { wikidataId?: string };
+}): string[] {
+  const markers: string[] = [];
+  if ((player.teamYears?.length ?? 0) > 0) markers.push("teamYears");
+  // `false` is a real answer — "we looked, and they are not in the Hall" — and
+  // must count as enriched, or every non-HoF player stays permanently eligible
+  // for another lookup.
+  if (player.isHallOfFame !== undefined) markers.push("isHallOfFame");
+  if (player.externalIds?.wikidataId) markers.push("wikidataId");
+  return markers;
+}
+
+/**
  * Internal action — given a player record, look up its Wikidata QID,
  * pull career teams + HoF status, and persist via applyEnrichmentInternal.
  *
@@ -382,11 +444,33 @@ export async function lookupPlayerEnrichment(
  * resolutions per player); the calling action treats it as best-effort.
  */
 export const enrichPlayer = internalAction({
-  args: { playerId: v.id("players") },
+  args: { playerId: v.id("players"), force: v.optional(v.boolean()) },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const player = await ctx.runQuery(internal.players.getInternal, { id: args.playerId });
     if (!player) return null;
+
+    // ── NEO-203: automatic enrichment is CREATION-ONLY ──────────────────────
+    //
+    // Jason, 2026-09-02: "if the player is already known we should not try to
+    // look up the data again." Same rule and same structural belt as
+    // `enrichTeam` below — see `playerEnrichmentMarkers` for why these
+    // particular fields cannot mis-fire on a bare newly-created player.
+    //
+    // Above the network call deliberately: the point is that no LOOKUP happens
+    // for a known player, not merely that no write does. This one is the most
+    // expensive enrichment we run (one entity lookup plus N team resolutions).
+    const alreadyEnriched = playerEnrichmentMarkers(player);
+    if (alreadyEnriched.length > 0 && !args.force) {
+      console.log(
+        JSON.stringify({
+          msg: "enrich_player_skipped_existing",
+          playerId: args.playerId,
+          markers: alreadyEnriched,
+        }),
+      );
+      return null;
+    }
 
     // NEO-96: resolve the sport row's config once, then reuse it for both the
     // lookup and the career-team creations below.
@@ -495,11 +579,38 @@ export async function lookupTeamEnrichment(
 }
 
 export const enrichTeam = internalAction({
-  args: { teamId: v.id("teams") },
+  args: { teamId: v.id("teams"), force: v.optional(v.boolean()) },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
     const team = await ctx.runQuery(internal.teams.getInternal, { id: args.teamId });
     if (!team) return null;
+
+    // ── NEO-203: automatic enrichment is CREATION-ONLY ──────────────────────
+    //
+    // Jason, 2026-09-02: "the enrichment writes should only fire if the team is
+    // new. We should never be firing that on an update. Team data generally
+    // doesn't change."
+    //
+    // Every automatic call site already passes only ids it just inserted, but
+    // that was a convention held by four separate callers. This is the
+    // structural belt behind it: if the row already carries an enrichment
+    // answer, the lookup does not run at all — no SPARQL round-trip, no ESPN
+    // fetch, no colour sitemap read, no write.
+    //
+    // Cheap by design: it is a field check on a row this handler already read,
+    // and it sits ABOVE the network calls, so a mis-enqueued existing team
+    // costs nothing rather than three outbound requests.
+    const alreadyEnriched = teamEnrichmentMarkers(team);
+    if (alreadyEnriched.length > 0 && !args.force) {
+      console.log(
+        JSON.stringify({
+          msg: "enrich_team_skipped_existing",
+          teamId: args.teamId,
+          markers: alreadyEnriched,
+        }),
+      );
+      return null;
+    }
 
     const sportCtx = await ctx.runQuery(
       internal.selectorOptions.getSportEnrichmentContext,
@@ -541,6 +652,10 @@ export const enrichTeam = internalAction({
     // INTER_ENTITY_DELAY_MS; nothing may call this in a tight loop.
     await ctx.runAction(internal.teamColorSources.resolveTeamColors, {
       teamId: args.teamId,
+      // Not `args.force`: the operator's force path calls `resolveTeamColors`
+      // itself, with force, from `teams.enrichFromWikidata` — which is what
+      // lets it return an outcome to the UI. Forcing here too would re-run the
+      // whole colour search twice for one operator click.
     });
     return null;
   },

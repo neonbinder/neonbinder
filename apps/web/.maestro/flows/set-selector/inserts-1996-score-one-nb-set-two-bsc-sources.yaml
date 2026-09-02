@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Inserts — ONE NeonBinder set maps to TWO BSC sets and one SportLots set (1996 Score, NEO-137)"
+name: "Inserts — ONE NeonBinder set maps to TWO BSC sets and one SportLots set, and a re-sync keeps NeonBinder's own card name (1996 Score, NEO-137 + NEO-203)"
 tags:
   - set-selector
 ---
@@ -8,6 +8,10 @@ tags:
 # sets, the two sides independent. This flow covers that end to end — the
 # reconcile that builds the set, and the card fetch that proves both sources
 # are read.
+#
+# STEP 7 adds ONE more, and only because it is free here: NEO-203's re-sync
+# content-diff review. See the note above STEP 7 for why it rides on this flow
+# rather than owning one.
 #
 # WHY ONE FLOW, having briefly been two. I split it on a guess that the combined
 # runtime (cold insert sync + reconcile + cold two-source fetch + entity wizard)
@@ -390,3 +394,277 @@ tags:
       text: ".*Saved 220 cards.*"
     # NEO-163: absorbs the removed notVisible gate's budget.
     timeout: 120000
+
+# ============================================================
+# STEP 7 — RE-SYNC: NEONBINDER'S OWN EDIT SURVIVES THE NEXT FETCH (NEO-203)
+#
+# The set is committed now, so the NEXT fetch is a RE-sync: every incoming card
+# lands on a row that already exists, and upstream and NeonBinder both have an
+# opinion about what that card SAYS. NEO-203's rule is that NeonBinder owns its
+# checklist — a re-sync always refreshes marketplace LINKAGE, and only changes
+# CONTENT where the operator ticks a box. The review dialog is where that ask
+# happens.
+#
+# WHY THIS RIDES ON THIS FLOW, not its own. The expensive part of testing a
+# re-sync is HAVING a committed, marketplace-backed, duplicate-numbered set to
+# re-sync — the reconcile plus the cold two-source fetch above, ~4 minutes. A
+# standalone flow would pay all of that again to reach the same starting line,
+# and (per SET-REGISTRY.md) 1996 Score has exactly ONE sanctioned writer, so a
+# second flow could not touch this set anyway. Here the marginal cost is one
+# re-fetch. E2E is the repo's only prod gate; that trade is the whole reason
+# this is a segment and not a file.
+#
+# WHAT IS AND IS NOT ASSERTED. One decision, start to finish: an operator edits
+# a card's name in NeonBinder, re-fetches, is SHOWN the marketplace's competing
+# name, declines it, and still has their own name afterwards. The Escape /
+# "Skip changes" path, the formatting-only bulk accept, the delete confirm and
+# the conflict radiogroup are all covered by sync-review-modal.test.tsx — they
+# are dialog-local state machines with nothing marketplace-shaped about them,
+# and each one here would cost another ~90s live round-trip to reach.
+#
+# ── 7a. EDIT ONE CARD'S NAME IN NEONBINDER ────────────────────────
+# WHICH card does not matter, and we deliberately do not name one: 1996 Score is
+# duplicate-numbered across the two BSC series (CI run 33589796484's hierarchy
+# shows TWO "Edit card 74" and TWO "Edit card 75"), so a card number is not a
+# unique handle here. Every assertion below keys off the marker we type, which is
+# unique by construction.
+#
+# WHY THE OBVIOUS VERSION OF THIS IS A TRAP — read before "simplifying" it.
+# The checklist is a react-virtuoso list with `increaseViewportBy={{top: 200,
+# bottom: 400}}`, so it always renders ~3-4 rows ABOVE its own scroll viewport.
+# Those rows are CSS-clipped but their layout bounds are real, and Maestro's CDP
+# hit-test reports them as 100% visible — sitting, visually, on top of the
+# attributes panel further up the page. `scrollUntilVisible` on "Edit card .*"
+# therefore matches a clipped row, reports "Visibility Percent: 1.0", scrolls
+# NOTHING, and the tap lands on empty page chrome. That is exactly how this flow
+# failed on its first CI run: it tapped "Edit card 73" at (687,284) and the
+# drawer never opened.
+#
+# THE FIX — anchor the tap BELOW the source-filter label. Maestro's `below`
+# filter is `candidate.bounds.y > anchor.bounds.y` (top edges, verified against
+# maestro-client.jar's Filters.below$lambda$22), and `relativeTo` returns the
+# survivors sorted by ASCENDING distance from the anchor. So this selects the
+# TOPMOST row that starts below the label — i.e. the first genuinely on-screen
+# row — and every clipped row is excluded. From that CI hierarchy: the label sits
+# at y=478, the last clipped row's Edit at y=466, the first real one at y=530.
+# The 12px margin is structural, not luck: both are fixed offsets from the list
+# container's top (the label by CSS spacing, the clipped row by the 64px row
+# pitch), so page scrolling moves them together and cannot close the gap.
+#
+# The label's DOM text is "BSC source" — it only LOOKS like "BSC SOURCE" because
+# of a CSS `uppercase`, and Maestro matches the DOM.
+# ============================================================
+
+# Bring the anchor on screen first. It is an ordinary, non-virtualised element,
+# so unlike a row this scroll cannot land on a clipped phantom. Note it is a
+# no-op when the label is ALREADY visible — maestro only scrolls (and only then
+# applies centring) if the element is off screen; the CI log shows it completing
+# at "Scrolling try count: 0". That is fine: the `below` geometry is invariant
+# under page scroll, and if the label ends up so low that no row is on screen
+# beneath it, the tap fails with a plain "element not found" rather than
+# silently hitting the wrong thing.
+- scrollUntilVisible:
+    element:
+      text: "BSC source"
+    centerElement: true
+    timeout: 15000
+
+# retry + a hard gate on the drawer opening: the tap target is now correct by
+# construction, but Virtuoso can still repaint between Maestro reading the row's
+# bounds and the click landing. Same result-keyed retry the drill util uses for
+# that exact staleness (see util-drill-to-2024-topps-chrome).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "Edit card .*"
+          below:
+            text: "BSC source"
+          waitToSettleTimeoutMs: 1000
+      - extendedWaitUntil:
+          visible:
+            id: "Card name"
+          timeout: 15000
+
+# Type a marker INTO the existing name rather than replacing it. A Maestro-web
+# tap on a filled input drops the caret mid-string, so `inputText` inserts the
+# marker contiguously and no `eraseText` guesswork is involved (see
+# card-detail-panel.yaml for the caret behaviour). The result is a name that is
+# unmistakably OURS and cannot fold-equal the marketplace's — which is what
+# puts this card in "Content changes" rather than "Formatting only", and what
+# leaves its checkbox UNTICKED by default.
+- tapOn:
+    id: "Card name"
+- inputText: "NB203-${ATTEMPT_ID}"
+# Save lives in the drawer's sticky footer, OUTSIDE the scroll container.
+# `scrollUntilVisible` can never satisfy centering on it and times out even
+# while it is plainly on screen — so assert + tap, per card-detail-panel.yaml.
+- assertVisible:
+    id: "Save card edit"
+- tapOn:
+    id: "Save card edit"
+
+# The drawer closes on save, and the row repaints with our name. This is the
+# PRECONDITION for everything below — if the edit never landed, the review
+# dialog would have nothing to show and STEP 7's whole point would evaporate
+# into a green run. Fail here instead, where the message says so.
+- assertNotVisible:
+    id: "Card name"
+# Scoped below the same anchor, for the same reason the tap is: an unscoped
+# match could be satisfied by a CSS-clipped row, which would prove the row
+# exists but not that we are looking at the one we just edited.
+- assertVisible:
+    text: ".*NB203-${ATTEMPT_ID}.*"
+    below:
+      text: "BSC source"
+
+# ============================================================
+# 7b. RE-FETCH THE SAME CHECKLIST
+#
+# The button reads "Refresh" once cards exist (it said "Fetch from
+# Marketplaces" the first time), so target its stable accessible name. A live
+# BSC + SportLots round-trip — the sanctioned long wait.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Sync card checklist"
+
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*"
+    timeout: 120000
+# Same NEO-195 rule as STEP 4: the dialog OPENS on the first streamed
+# candidates, Confirm's own label is what says the fetch RESOLVED.
+- extendedWaitUntil:
+    visible:
+      text: "^Confirm$"
+    timeout: 120000
+
+# Both BSC sources fetched and merged again — the upstream side of "no rows
+# added or lost". 110 would mean the fan-out regressed on the re-sync path.
+- assertVisible:
+    text: ".*220 cards will be saved.*"
+- tapOn:
+    id: "Confirm card matches"
+
+# ============================================================
+# 7c. THE REVIEW DIALOG APPEARS, AND SHOWS OUR CARD
+#
+# Confirm hands the paired cards to `diffChecklistAgainstExisting` and, because
+# one card genuinely differs, the review opens. Plain 7s: this is one Convex
+# query, not a marketplace call — and MEASURED at 338ms in CI run 33595567945
+# (06:02:45.905 → 06:02:46.243), so ~95% headroom. The worry that diffing 220
+# cards against their stored rows would be slow is answered: it is not. Do not
+# inflate this.
+# ============================================================
+
+- extendedWaitUntil:
+    visible: ".*Review Changes — Dugout Collection Artists Proofs.*"
+    timeout: 7000
+
+# EXACTLY ONE card changed. Not "one or more": we edited one card, so a second
+# content-changed card would mean the re-sync invented a difference on a card
+# nobody touched — which is precisely the regression NEO-203's NB-owned rule
+# exists to prevent. Tight is the point.
+- assertVisible:
+    text: ".*Content changes \\(1\\).*"
+
+# ...and the field it changed is the card NAME.
+#
+# DO NOT reach for the checkbox here. Its aria-label reads "Apply Card name to
+# #<n> <name>: <old> becomes <new>" and looks like the perfect single-element
+# assertion — it is unreachable. maestro-web emits NO hierarchy node for a bare
+# <input type="checkbox">, so that accessible name does not exist as far as
+# Maestro is concerned. Verified against the view hierarchy of CI run
+# 33595567945: the dialog contributes text nodes and its two footer <button>s
+# ("Apply selected changes"), and nothing whatsoever for the four field
+# checkboxes. (The `id: "Value for Reprint"` precedent in
+# topps-chrome-add-feature.yaml does NOT contradict this — despite that flow's
+# comment calling it "a real <input type=checkbox>", FeatureValueControl's
+# CheckboxValueControl renders a <button aria-pressed>, which is why it works.)
+#
+# "Card name" is the field label inside the dialog, and it is unambiguous here:
+# the card drawer unmounted at 7a (asserted above) and the add-card form is
+# closed, so the two other elements carrying that accessible name are gone.
+- assertVisible:
+    text: "Card name"
+
+# NeonBinder's value is the one being offered up for replacement — our marker
+# sits on the "was" side of the diff. Scoped BELOW the field label on purpose:
+# the checklist row behind the portal carries this exact same string (the
+# hierarchy shows both, at y=219 for the row and y=248 for the dialog), and an
+# unscoped match could be satisfied by the page behind the dialog. The label
+# sits between them at y=230, so anchoring on it selects the dialog's copy.
+#
+# We do NOT also pin the marketplace value: it is whatever BSC/SportLots say
+# this card is called, which the flow cannot know in advance. It does not need
+# to — the diff only lists a field AT ALL when the two sides differ, so a
+# "Card name" row whose old side is ours is already the marketplace value
+# standing against the NeonBinder value.
+- assertVisible:
+    text: ".*NB203-${ATTEMPT_ID}.*"
+    below:
+      text: "Card name"
+
+# NOTHING ADDED, NOTHING LOST — asserted where the diff states it outright.
+# "0 new" means every one of the 220 incoming cards matched a row NeonBinder
+# already holds, so the re-sync inserts none; the absence of the "no longer
+# listed upstream" section means no row NeonBinder holds went unclaimed. A
+# re-sync that duplicated rows (the NEO-203 regression) fails on the first, one
+# that orphaned rows fails on the second.
+- assertVisible:
+    text: ".* 0 new .*unchanged.*"
+- assertNotVisible:
+    text: ".*no longer listed upstream.*"
+
+# ============================================================
+# 7d. KEEP OUR VERSION, AND COMMIT
+#
+# We leave the Card name box UNTICKED — that IS "keep the NeonBinder version",
+# and it is the default precisely because a rewrite is never pre-accepted.
+# Pressing "Apply & Continue" rather than "Skip changes" is deliberate: it runs
+# the commit path that carries per-field decisions on the wire, which still has
+# to leave the one field we declined alone. Skipping would exercise a strictly
+# easier path.
+#
+# No delete checkbox is ticked, so Apply submits directly rather than raising
+# the deletion confirm.
+# ============================================================
+
+- tapOn:
+    id: "Apply selected changes"
+
+# Every player and team on these 220 cards was created by STEP 6's commit, so
+# the entity wizard has nothing to ask and the commit runs straight through.
+# 120s mirrors STEP 6's budget for the identical 220-card commit.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved 220 cards.*"
+    timeout: 120000
+
+# THE ACCEPTANCE CRITERION. The marketplace's name for this card was offered
+# and declined, so the checklist still shows OURS. If the re-sync had written
+# marketplace content over a NeonBinder-owned field by default, the marker
+# would be gone and this fails.
+#
+# The checklist stays mounted across the re-sync — only the modals came and
+# went — so Virtuoso holds its scroll and the edited row is still where 7a left
+# it. Re-centre the anchor (cheap, non-virtualised) in case a modal shifted the
+# PAGE, then assert the row below it. Deliberately NOT `scrollUntilVisible` on
+# the row itself: page scrolling does not move this list's own scroller (see the
+# `initialTopMostItemIndex` note in CardChecklist.tsx), so scrolling for a row is
+# either a no-op or a match on a clipped one.
+- scrollUntilVisible:
+    element:
+      text: "BSC source"
+    centerElement: true
+    timeout: 15000
+- assertVisible:
+    text: ".*NB203-${ATTEMPT_ID}.*"
+    below:
+      text: "BSC source"

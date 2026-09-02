@@ -296,6 +296,22 @@ export const getInternal = internalQuery({
  * Apply Wikidata enrichment to an existing player row. Called from the
  * Wikidata adapter action so this runs in a mutation context with no
  * external IO. Updates teamYears, isHallOfFame, externalIds.
+ *
+ * NEO-203 — deliberately a full write, unlike its `teams` twin, which fills
+ * gaps only. The asymmetry is not an oversight:
+ *
+ *  - `teams.applyEnrichmentInternal` guards because `teams.saveTeamFields`
+ *    lets an operator hand-edit city / yearsActive / colors, so a blind write
+ *    there destroys human input. `players` has NO such editor — there is no
+ *    mutation in this file that writes `teamYears` or `isHallOfFame` from a
+ *    person — so there is nothing here for a gap-fill rule to protect.
+ *  - The only two callers left are a player being CREATED (nothing to
+ *    clobber) and the operator's own force path, whose entire purpose is to
+ *    replace an answer that turned out to be wrong. A gap-fill rule would
+ *    defeat that second one.
+ *
+ * If a player editor is ever added, this needs the `teams` treatment — and
+ * `convex/teams.applyEnrichmentInternal.test.ts` is the shape to copy.
  */
 export const applyEnrichmentInternal = internalMutation({
   args: {
@@ -341,6 +357,26 @@ export const applyEnrichmentInternal = internalMutation({
  * instead of adding an uncoordinated request that could push Wikidata past its
  * per-IP ceiling. Still fire-and-forget — the pool runs the work in the
  * background and enrichPlayer persists its own result.
+ *
+ * ## THE ONLY SANCTIONED PATH TO RE-LOOK-UP AN EXISTING PLAYER (NEO-203)
+ *
+ * Jason, 2026-09-02: "if the player is already known we should not try to look
+ * up the data again." Automatic enrichment is creation-only; `enrichPlayer`
+ * enforces that structurally by skipping any player that already carries
+ * career teams, a Hall-of-Fame answer, or a Wikidata id.
+ *
+ * This action is the deliberate exception, exactly as its `teams` twin is: it
+ * is admin-gated, human-initiated on a specific row, and its purpose is the one
+ * case where the stored answer is wrong. It therefore passes `force`. No
+ * automatic caller may — see `wikidataPool.enqueueEnrichment`.
+ *
+ * Note what is NOT an exception: the entity-review wizard's preview lookup.
+ * That runs on unresolved NAMES before any row exists (`runEntityReviewLookup`
+ * writes only to `entityReviewQueue`), and `resolveUnknownsAndStartBatch`
+ * queues a name only after `players.findByNameAndSport` returned nothing. A
+ * "link" decision — the operator pointing an unknown name at an existing
+ * player — likewise triggers no lookup for that player: the commit prelude
+ * reads the linked row once for its spelling and enqueues nothing.
  */
 export const enrichFromWikidata = action({
   args: { id: v.id("players") },
@@ -354,6 +390,9 @@ export const enrichFromWikidata = action({
     try {
       await ctx.runMutation(internal.wikidataPool.enqueueEnrichment, {
         playerIds: [args.id],
+        // NEO-203: the operator exception — see the note above. Automatic
+        // callers must never set this.
+        force: true,
       });
     } catch (error) {
       console.error("[players.enrichFromWikidata] failed:", error);

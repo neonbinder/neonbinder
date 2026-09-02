@@ -1,0 +1,2 @@
+- [BSC vs SportLots data trust](marketplace_data_trust_characteristics.md) — BSC structured fields are high-confidence catalog fixes; SL is free-text sellers' wording, lower confidence. Weight diff-review defaults accordingly.
+- [NEO-203 content-diff review UX spec](neo-203-content-diff-review-spec.md) — the "changed"/"removed-upstream" re-sync review modal design delivered 2026-09-01: separate modal, per-field checkboxes with risk-tiered defaults, formatting-only bulk accept, cross-listing-aware delete gating.

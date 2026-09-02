@@ -153,6 +153,32 @@ export const enqueueEntityReviewLookups = internalMutation({
  * onto the SAME 5-wide lane, so this path shares Wikidata's IP budget with the
  * review-wizard drain instead of competing with it.
  *
+ * ## CONTRACT (NEO-203): pass ONLY ids you just inserted
+ *
+ * Jason, 2026-09-02: "the enrichment writes should only fire if the team is
+ * new. We should never be firing that on an update. Team data generally
+ * doesn't change." And, for players: "if the player is already known we should
+ * not try to look up the data again."
+ *
+ * So every automatic caller of this mutation must pass ids for rows created in
+ * the SAME operation — which each of them knows at insert time, and none of
+ * them has to go looking up. Concretely, today:
+ *
+ *   - `commitCardChecklistFinalize` passes `prelude.enrichmentTeamIds`, which
+ *     `resolveTeamIdByName` appends to ONLY on the branch immediately after
+ *     `ctx.db.insert("teams", …)`. It deliberately passes no `playerIds` at
+ *     all: players created in that prelude were already enriched from the
+ *     review wizard's own preview lookup.
+ *
+ * A row that already exists must never be enqueued here. Passing one is not a
+ * silent no-op — `enrichPlayer`/`enrichTeam` carry a structural guard that
+ * skips and logs — but the guard is a belt, not the contract. Do not lean on it.
+ *
+ * `force` is the ONE sanctioned exception and belongs to human-initiated
+ * re-enrichment only: `teams.enrichFromWikidata` / `players.enrichFromWikidata`,
+ * the admin-gated operator remedy for a wrong franchise or a bad match. No
+ * automatic path may set it.
+ *
  * No `onComplete`: unlike a review row, an un-enriched player or team is a
  * perfectly valid end state (the long-standing "a miss is fall-back, not
  * failure" convention in adapters/wikidata.ts) — there is nothing to age, so a
@@ -166,6 +192,8 @@ export const enqueueEnrichment = internalMutation({
   args: {
     playerIds: v.optional(v.array(v.id("players"))),
     teamIds: v.optional(v.array(v.id("teams"))),
+    /** Operator re-enrichment only — see the contract note above. */
+    force: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args): Promise<null> => {
@@ -173,14 +201,14 @@ export const enqueueEnrichment = internalMutation({
       await wikidataPool.enqueueAction(
         ctx,
         internal.adapters.wikidata.enrichPlayer,
-        { playerId },
+        { playerId, force: args.force },
       );
     }
     for (const teamId of args.teamIds ?? []) {
       await wikidataPool.enqueueAction(
         ctx,
         internal.adapters.wikidata.enrichTeam,
-        { teamId },
+        { teamId, force: args.force },
       );
     }
     return null;
