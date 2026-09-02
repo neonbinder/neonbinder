@@ -268,11 +268,35 @@ const NB_CONTENT_FIELD_SET: ReadonlySet<string> = new Set(NB_CONTENT_FIELDS);
  * accepted field whose value did not actually change is dropped from the
  * patch. This only ever removes writes, never adds one.
  *
+ * ## What counts as "says nothing"
+ *
+ * Five spellings, and on these fields they are all one statement:
+ *
+ *   `undefined` · `null` · `[]` · `false` · `""`
+ *
  * An absent array and an empty one are the same statement ("no players on this
- * card"), and the two spellings occur on both sides of the comparison — the
- * action leaves an empty resolution `undefined`, while an adapter may send
- * `[]`. Treating them as different would rewrite half a checklist to say
- * nothing new.
+ * card"), and both spellings occur on both sides — the action leaves an empty
+ * resolution `undefined`, while an adapter may send `[]`.
+ *
+ * `false` and `""` were added after CI round 2 caught the real cost of leaving
+ * them out. Saving a card in the edit drawer writes EXPLICIT `isRookie: false`,
+ * `isRelic: false`, `cardVariation: ""`, while the adapters simply omit those
+ * keys on a card that is none of those things. So every card an operator had
+ * curated came back on the next re-sync carrying spurious tier-1 "needs review"
+ * diffs — `Rookie: − no / + —`, `Variation: − — / + —` — i.e. the review screen
+ * shouted loudest about precisely the cards a human had already got right, and
+ * one of those entries folded equal, pre-ticked itself, and made the footer
+ * claim a change was pending when nothing had changed at all.
+ *
+ * "Not a rookie" and "no rookie flag recorded" are the same fact about a
+ * baseball card; so are "" and "no variation". This is a domain truth, not a
+ * comparison convenience — which is why it belongs HERE, in the one predicate
+ * both the review diff and the chunk's pre-write re-diff read, rather than as a
+ * filter bolted onto the display layer.
+ *
+ * NOT emptyish: `0`. A number field on these cards (`printRun`) has no zero
+ * that means "absent" — `/0` is not a print run — so folding it in would only
+ * ever hide a real difference.
  *
  * Arrays compare ELEMENT-WISE IN ORDER. Order is meaningful here: `playerIds`
  * on a multi-player card lists them as the card does, and that ordering feeds
@@ -280,7 +304,11 @@ const NB_CONTENT_FIELD_SET: ReadonlySet<string> = new Set(NB_CONTENT_FIELDS);
  */
 function sameContentValue(stored: unknown, incoming: unknown): boolean {
   const emptyish = (x: unknown) =>
-    x === undefined || x === null || (Array.isArray(x) && x.length === 0);
+    x === undefined ||
+    x === null ||
+    x === false ||
+    x === "" ||
+    (Array.isArray(x) && x.length === 0);
   if (emptyish(stored) && emptyish(incoming)) return true;
   if (Array.isArray(stored) && Array.isArray(incoming)) {
     return (
@@ -5693,6 +5721,32 @@ type MatchMaps = {
 };
 
 /**
+ * The keys `buildMatchMaps` WITHHELD, raw and per tier.
+ *
+ * Distinct from `MatchMaps.ambiguousMatchKeys`, which is a flat array of
+ * `label:truncated-key` strings built for a LOG LINE — a SportLots ref is the
+ * whole card description, so what goes to a log is bounded. These sets are the
+ * untruncated originals, kept in-process so `resolveExistingIds` can answer a
+ * question the log form cannot: did any of this actually change an incoming
+ * card's outcome?
+ *
+ * That distinction is the whole point (CI round 2). Re-syncing 1996 Score
+ * Dugout Collection withheld 110 `slotNumber` keys — one SportLots set holds
+ * both series, so `(side, slot, number)` repeats by design — and the review
+ * screen announced "110 match keys are held by more than one card, so those
+ * cards are treated as new" directly above "0 new". Every card had matched at
+ * the ref tier; the fallback tiers were never consulted. The count was true and
+ * the sentence was false, on exactly the duplicate-numbered sets this feature
+ * exists to serve.
+ */
+type WithheldMatchKeys = {
+  bscRef: Set<string>;
+  slRef: Set<string>;
+  slotNumber: Set<string>;
+  numberNoRef: Set<string>;
+};
+
+/**
  * NEO-203 — build the four match maps from a checklist snapshot.
  *
  * ## Why this is its own function
@@ -5738,7 +5792,7 @@ type MatchMaps = {
 function buildMatchMaps(
   existingCards: MatchMapRow[],
   leafNode: Doc<"selectorOptions"> | null,
-): MatchMaps {
+): { maps: MatchMaps; withheld: WithheldMatchKeys } {
   const byBscRef = new Map<string, Array<Id<"cardChecklist">>>();
   const bySlRef = new Map<string, Array<Id<"cardChecklist">>>();
   const bySlotNumber = new Map<string, Array<Id<"cardChecklist">>>();
@@ -5767,20 +5821,32 @@ function buildMatchMaps(
   }
 
   const ambiguousMatchKeys: string[] = [];
+  const withheld: WithheldMatchKeys = {
+    bscRef: new Set(),
+    slRef: new Set(),
+    slotNumber: new Set(),
+    numberNoRef: new Set(),
+  };
   // Exactly-one or nothing, on every tier. A key several rows hold is withheld
   // from the map and reported instead — the action logs the report, so "this
   // card was treated as new" always has a visible reason.
   //
-  // Ref keys are TRUNCATED in the report: a SportLots ref is the card
-  // description, unbounded upstream text, and this string goes to a log.
+  // Ref keys are TRUNCATED in the REPORT: a SportLots ref is the card
+  // description, unbounded upstream text, and that string goes to a log. The
+  // `withheld` sets keep the key verbatim, because they are compared against
+  // incoming keys in-process and a truncated key would silently stop matching.
   const unambiguous = (
     m: Map<string, Array<Id<"cardChecklist">>>,
-    label: string,
+    label: keyof WithheldMatchKeys,
   ): Array<[string, Id<"cardChecklist">]> => {
     const out: Array<[string, Id<"cardChecklist">]> = [];
     for (const [key, ids] of m) {
-      if (ids.length === 1) out.push([key, ids[0]]);
-      else ambiguousMatchKeys.push(`${label}:${truncateForLog(key)}`);
+      if (ids.length === 1) {
+        out.push([key, ids[0]]);
+      } else {
+        ambiguousMatchKeys.push(`${label}:${truncateForLog(key)}`);
+        withheld[label].add(key);
+      }
     }
     return out;
   };
@@ -5806,18 +5872,20 @@ function buildMatchMaps(
   }
 
   return {
-    existingIdByBscRef: existingIdByBscRef.map(([ref, id]) => ({ ref, id })),
-    existingIdBySlRef: existingIdBySlRef.map(([ref, id]) => ({ ref, id })),
-    existingIdBySlotNumber: existingIdBySlotNumber.map(([key, id]) => ({
-      key,
-      id,
-    })),
-    existingIdByNumberNoRef: existingIdByNumberNoRef.map(([cardNumber, id]) => ({
-      cardNumber,
-      id,
-    })),
-    ambiguousMatchKeys,
-    slotBySetId,
+    maps: {
+      existingIdByBscRef: existingIdByBscRef.map(([ref, id]) => ({ ref, id })),
+      existingIdBySlRef: existingIdBySlRef.map(([ref, id]) => ({ ref, id })),
+      existingIdBySlotNumber: existingIdBySlotNumber.map(([key, id]) => ({
+        key,
+        id,
+      })),
+      existingIdByNumberNoRef: existingIdByNumberNoRef.map(
+        ([cardNumber, id]) => ({ cardNumber, id }),
+      ),
+      ambiguousMatchKeys,
+      slotBySetId,
+    },
+    withheld,
   };
 }
 
@@ -6223,7 +6291,12 @@ export const commitCardChecklistPrelude = internalMutation({
     // rule cannot be allowed to live in two places. The maps are derived
     // entirely from the `existingCards` snapshot read above plus the leaf
     // node, so this phase does no extra database work for them.
-    const matchMaps = buildMatchMaps(existingCards, leafNode);
+    //
+    // The `withheld` half is deliberately dropped here: it is raw, untruncated
+    // marketplace text, and this value crosses a function boundary into the
+    // action. The commit path only needs the bounded `ambiguousMatchKeys` for
+    // its log line; the review query, which computes in one process, keeps it.
+    const { maps: matchMaps } = buildMatchMaps(existingCards, leafNode);
 
     return {
       userId,
@@ -7019,6 +7092,19 @@ type MatchResolution = {
   }>;
   /** Per-tier match counts, for the commit log. */
   matchedByTier: { bscRef: number; slRef: number; slotNumber: number; noRef: number };
+  /**
+   * Indices of cards that ended up UNMATCHED, and would not have if a key had
+   * been unambiguous — either because several stored rows hold the key (it was
+   * withheld from the map) or because several incoming cards claim it while a
+   * stored row does hold it.
+   *
+   * Empty unless `withheld` is supplied. This is the difference between
+   * "ambiguity EXISTS in this checklist" and "ambiguity CHANGED an outcome",
+   * and only the second is worth telling an operator about — see
+   * `WithheldMatchKeys`. A set whose fallback keys repeat by design but whose
+   * every card carries a ref reports nothing here, correctly.
+   */
+  ambiguityBlocked: number[];
 };
 
 function resolveExistingIds(
@@ -7031,6 +7117,14 @@ function resolveExistingIds(
     | "existingIdByNumberNoRef"
     | "slotBySetId"
   >,
+  /**
+   * The raw keys `buildMatchMaps` withheld. Optional because the commit path
+   * receives its maps back from the prelude MUTATION, which only carries the
+   * bounded/truncated log form across that boundary — see the note there. The
+   * review query builds both in one process and passes this, which is what
+   * lets it say something true about ambiguity instead of something alarming.
+   */
+  withheld?: WithheldMatchKeys,
 ): MatchResolution {
   const byBscRef = new Map(
     prelude.existingIdByBscRef.map(({ ref, id }) => [ref, id] as const),
@@ -7087,7 +7181,46 @@ function resolveExistingIds(
   const conflicts: MatchResolution["conflicts"] = [];
   const collisions: MatchResolution["collisions"] = [];
   const matchedByTier = { bscRef: 0, slRef: 0, slotNumber: 0, noRef: 0 };
+  const ambiguityBlocked: number[] = [];
   const claimed = new Set<string>();
+
+  /**
+   * Did ambiguity — rather than the card simply being new — cost this card a
+   * match? Asked ONLY of cards the cascade left unmatched.
+   *
+   * Two directions, and both need a stored row to have existed, or there was
+   * nothing to lose:
+   *
+   *   STORED side — the key is in `withheld`, meaning several stored rows hold
+   *   it, so it was kept out of the map rather than guessed at.
+   *   INCOMING side — several cards in THIS payload claim the key, and the map
+   *   does hold a row for it. Without the map check this would fire on every
+   *   duplicate-numbered new card, which is the false alarm being fixed.
+   */
+  const blockedByAmbiguity = (card: IncomingMatchCard): boolean => {
+    if (!withheld) return false;
+    const bscRef = card.platformData?.bsc?.ref;
+    if (bscRef && withheld.bscRef.has(bscRef)) return true;
+    const slRef = card.platformData?.sportlots?.ref;
+    if (slRef && withheld.slRef.has(slRef)) return true;
+    for (const side of MATCH_SIDES) {
+      const key = incomingSlotKey(card, side);
+      if (!key) continue;
+      if (withheld.slotNumber.has(key)) return true;
+      if ((incomingSlotKeyCount.get(key) ?? 0) > 1 && bySlotNumber.has(key)) {
+        return true;
+      }
+    }
+    const number = card.cardNumber;
+    if (withheld.numberNoRef.has(number)) return true;
+    if (
+      (incomingNumberCount.get(number) ?? 0) > 1 &&
+      byNumberNoRef.has(number)
+    ) {
+      return true;
+    }
+    return false;
+  };
 
   cards.forEach((card, index) => {
     const bscRef = card.platformData?.bsc?.ref;
@@ -7137,11 +7270,21 @@ function resolveExistingIds(
     if (matched) {
       claimed.add(matched);
       if (tier) matchedByTier[tier]++;
+    } else if (withheld && blockedByAmbiguity(card)) {
+      // Only reached for a card that found NO row. A card that matched on a
+      // ref does not care that some fallback key it never consulted repeats.
+      ambiguityBlocked.push(index);
     }
     existingIdByIndex.push(matched);
   });
 
-  return { existingIdByIndex, conflicts, collisions, matchedByTier };
+  return {
+    existingIdByIndex,
+    conflicts,
+    collisions,
+    matchedByTier,
+    ambiguityBlocked,
+  };
 }
 
 // ─── NEO-203 phase C: the content-diff review ──────────────────────────────
@@ -7227,10 +7370,21 @@ const syncDiffValidator = v.object({
   ),
   /** Cards that lost a match collision and will be inserted as their own row. */
   collisionInsertCount: v.number(),
-  /** Match keys withheld because more than one row holds them. COUNT ONLY — the
-   * keys embed marketplace refs (a SportLots ref is the whole card description)
-   * and have no business crossing to a browser. */
-  ambiguousMatchCount: v.number(),
+  /**
+   * How many incoming cards were left unmatched BECAUSE a match key was
+   * ambiguous — not how many ambiguous keys exist.
+   *
+   * The distinction is the whole field. A variant fanned out across two
+   * marketplace series repeats its `(side, slot, number)` fallback keys by
+   * design, so "ambiguous keys exist" is the normal state of exactly the sets
+   * this feature serves; it says nothing about whether any card suffered for
+   * it. This counts cards that actually did — the only version of the fact an
+   * operator can act on. See `WithheldMatchKeys`.
+   *
+   * A COUNT, never the keys: they embed marketplace refs (a SportLots ref is
+   * the whole card description) and have no business crossing to a browser.
+   */
+  ambiguityBlockedCount: v.number(),
 });
 
 /**
@@ -7300,10 +7454,14 @@ export const diffChecklistAgainstExisting = query({
       )
       .collect();
 
-    // The SAME two functions the commit runs. See `buildMatchMaps`.
-    const matchMaps = buildMatchMaps(existingCards, leafNode);
-    const match = resolveExistingIds(args.cards, matchMaps);
-    const ambiguousMatchCount = matchMaps.ambiguousMatchKeys.length;
+    // The SAME two functions the commit runs. See `buildMatchMaps`. Unlike the
+    // commit, this runs in ONE process, so it can hand the cascade the raw
+    // withheld keys and learn whether ambiguity actually cost any card a match.
+    const { maps: matchMaps, withheld } = buildMatchMaps(
+      existingCards,
+      leafNode,
+    );
+    const match = resolveExistingIds(args.cards, matchMaps, withheld);
 
     const rowById = new Map<string, Doc<"cardChecklist">>();
     for (const row of existingCards) rowById.set(row._id, row);
@@ -7557,7 +7715,7 @@ export const diffChecklistAgainstExisting = query({
         };
       }),
       collisionInsertCount: match.collisions.length,
-      ambiguousMatchCount,
+      ambiguityBlockedCount: match.ambiguityBlocked.length,
     };
   },
 });

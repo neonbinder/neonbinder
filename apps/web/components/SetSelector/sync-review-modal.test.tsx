@@ -58,7 +58,7 @@ function diff(over: Partial<SyncDiff> = {}): SyncDiff {
     removedUpstream: { fullyOrphaned: [], partialOrphanCount: 0 },
     conflicts: [],
     collisionInsertCount: 0,
-    ambiguousMatchCount: 0,
+    ambiguityBlockedCount: 0,
     ...over,
   };
 }
@@ -462,6 +462,60 @@ describe("SyncReviewModal — cross-side conflicts", () => {
     expect(
       screen.getByLabelText(/^Treat as new —/).getAttribute("aria-checked"),
     ).toBe("true");
+  });
+});
+
+describe("SyncReviewModal — the match-quality status line", () => {
+  it("says nothing at all when ambiguity cost no card a match", () => {
+    // CI round 2: the count used to be of ambiguous KEYS, and a variant fanned
+    // out across two marketplace series has plenty of those in perfectly
+    // healthy data — the 1996 Score re-sync claimed "110 match keys are held
+    // by more than one card, so those cards are treated as new" directly above
+    // "0 new". Silence is the truthful rendering of "nothing happened".
+    renderModal(
+      diff({
+        cards: [
+          diffCard({ bucket: "formattingOnly", fields: [field({ foldEqual: true })] }),
+        ],
+        ambiguityBlockedCount: 0,
+      }),
+    );
+    expect(screen.queryByText(/treated as new/)).toBeNull();
+    expect(screen.queryByText(/match key/)).toBeNull();
+    expect(screen.queryByText(/could not be matched/)).toBeNull();
+    expect(screen.queryByText(/saved as new rows/)).toBeNull();
+  });
+
+  it("counts CARDS, not keys, when ambiguity really did block matches", () => {
+    renderModal(diff({ cards: [diffCard()], ambiguityBlockedCount: 2 }));
+    expect(
+      screen.getByText(
+        /2 cards could not be matched to an existing card .* they will be saved as new rows rather than guessed at\./,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("reads as singular for one card", () => {
+    renderModal(diff({ cards: [diffCard()], ambiguityBlockedCount: 1 }));
+    expect(
+      screen.getByText(
+        /1 card could not be matched .* it will be saved as a new row rather than guessed at\./,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("still reports collision inserts on their own", () => {
+    renderModal(
+      diff({
+        cards: [diffCard()],
+        collisionInsertCount: 3,
+        ambiguityBlockedCount: 0,
+      }),
+    );
+    expect(
+      screen.getByText(/3 cards will be saved as new rows because another card/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/could not be matched/)).toBeNull();
   });
 });
 

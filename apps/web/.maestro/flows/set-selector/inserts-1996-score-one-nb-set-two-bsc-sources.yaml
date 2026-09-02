@@ -557,27 +557,59 @@ tags:
 #
 # Confirm hands the paired cards to `diffChecklistAgainstExisting` and, because
 # one card genuinely differs, the review opens. Plain 7s: this is one Convex
-# query, not a marketplace call. If it needs longer, that is a product finding
-# to raise — not a timeout to inflate.
+# query, not a marketplace call — and MEASURED at 338ms in CI run 33595567945
+# (06:02:45.905 → 06:02:46.243), so ~95% headroom. The worry that diffing 220
+# cards against their stored rows would be slow is answered: it is not. Do not
+# inflate this.
 # ============================================================
 
 - extendedWaitUntil:
     visible: ".*Review Changes — Dugout Collection Artists Proofs.*"
     timeout: 7000
 
-# Our card is under "Content changes", not buried in the collapsed
-# formatting-only group.
+# EXACTLY ONE card changed. Not "one or more": we edited one card, so a second
+# content-changed card would mean the re-sync invented a difference on a card
+# nobody touched — which is precisely the regression NEO-203's NB-owned rule
+# exists to prevent. Tight is the point.
 - assertVisible:
-    text: ".*Content changes \\([1-9][0-9]*\\).*"
+    text: ".*Content changes \\(1\\).*"
 
-# ONE element carries the entire claim. The per-field checkbox's accessible
-# name is "Apply Card name to #<n> <marketplace name>: <NeonBinder name>
-# becomes <marketplace name>", so matching our marker on the LEFT of "becomes"
-# proves the dialog is offering, for this specific card, to replace OUR name
-# with the marketplace's — the marketplace value against the NeonBinder value,
-# which is the decision this screen exists to put in front of an operator.
+# ...and the field it changed is the card NAME.
+#
+# DO NOT reach for the checkbox here. Its aria-label reads "Apply Card name to
+# #<n> <name>: <old> becomes <new>" and looks like the perfect single-element
+# assertion — it is unreachable. maestro-web emits NO hierarchy node for a bare
+# <input type="checkbox">, so that accessible name does not exist as far as
+# Maestro is concerned. Verified against the view hierarchy of CI run
+# 33595567945: the dialog contributes text nodes and its two footer <button>s
+# ("Apply selected changes"), and nothing whatsoever for the four field
+# checkboxes. (The `id: "Value for Reprint"` precedent in
+# topps-chrome-add-feature.yaml does NOT contradict this — despite that flow's
+# comment calling it "a real <input type=checkbox>", FeatureValueControl's
+# CheckboxValueControl renders a <button aria-pressed>, which is why it works.)
+#
+# "Card name" is the field label inside the dialog, and it is unambiguous here:
+# the card drawer unmounted at 7a (asserted above) and the add-card form is
+# closed, so the two other elements carrying that accessible name are gone.
 - assertVisible:
-    id: ".*Apply Card name to #.*: .*NB203-${ATTEMPT_ID}.* becomes .*"
+    text: "Card name"
+
+# NeonBinder's value is the one being offered up for replacement — our marker
+# sits on the "was" side of the diff. Scoped BELOW the field label on purpose:
+# the checklist row behind the portal carries this exact same string (the
+# hierarchy shows both, at y=219 for the row and y=248 for the dialog), and an
+# unscoped match could be satisfied by the page behind the dialog. The label
+# sits between them at y=230, so anchoring on it selects the dialog's copy.
+#
+# We do NOT also pin the marketplace value: it is whatever BSC/SportLots say
+# this card is called, which the flow cannot know in advance. It does not need
+# to — the diff only lists a field AT ALL when the two sides differ, so a
+# "Card name" row whose old side is ours is already the marketplace value
+# standing against the NeonBinder value.
+- assertVisible:
+    text: ".*NB203-${ATTEMPT_ID}.*"
+    below:
+      text: "Card name"
 
 # NOTHING ADDED, NOTHING LOST — asserted where the diff states it outright.
 # "0 new" means every one of the 220 incoming cards matched a row NeonBinder

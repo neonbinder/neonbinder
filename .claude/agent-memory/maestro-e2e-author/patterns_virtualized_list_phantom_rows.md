@@ -30,8 +30,19 @@ to settle any selector-semantics question rather than guessing.) Worked example
 with the geometry spelled out: STEP 7a of
 `apps/web/.maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml`.
 
-Related: a `<input type="checkbox">`'s aria-label IS exposed as Maestro's
-resource-id (precedent: `id: "Value for Reprint"`), but its CHECKED state is not
-observable at all — assert the persisted effect instead. And maestro-web splits
-node text at child ELEMENT boundaries only, so `<h2>Cards <span>(220)</span></h2>`
-is two nodes while a `<p>` of text + JSX expressions is one.
+**maestro-web emits NO hierarchy node for a bare `<input type="checkbox">`** —
+not the element, not its `aria-label`. Verified against the view hierarchy of CI
+run 33595567945, where a dialog's four field checkboxes contributed nothing while
+its text nodes and `<button>`s were all present. So you cannot select, tap, or
+assert a checkbox by its accessible name; assert the surrounding label text and
+the persisted effect instead. Do NOT trust
+`topps-chrome-add-feature.yaml`'s comment claiming `id: "Value for Reprint"` is
+"a real `<input type=checkbox>`" — that comment is wrong about the DOM;
+`FeatureValueControl`'s `CheckboxValueControl` renders a `<button aria-pressed>`,
+which is the only reason that selector resolves. **Confirm what an element
+actually renders as before citing it as precedent** — I asserted checkbox
+exposure from that comment and it cost a CI round.
+
+Also: maestro-web splits node text at child ELEMENT boundaries only, so
+`<h2>Cards <span>(220)</span></h2>` is two nodes while a `<p>` of text + JSX
+expressions is one. And `sr-only` spans DO appear, as 1×1px nodes.

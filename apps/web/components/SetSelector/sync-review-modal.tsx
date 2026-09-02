@@ -87,7 +87,12 @@ export type SyncDiff = {
   };
   conflicts: SyncDiffConflict[];
   collisionInsertCount: number;
-  ambiguousMatchCount: number;
+  /**
+   * How many incoming cards were left unmatched BECAUSE a match key was
+   * ambiguous — deliberately NOT how many ambiguous keys exist. See the note
+   * where this renders, and `WithheldMatchKeys` in convex/selectorOptions.ts.
+   */
+  ambiguityBlockedCount: number;
 };
 
 /** Which NB row the operator believes a cross-side-conflicted card really is. */
@@ -895,16 +900,33 @@ export default function SyncReviewModal({
               </section>
             )}
 
-            {(diff.collisionInsertCount > 0 || diff.ambiguousMatchCount > 0) && (
+            {/* Both lines count CARDS, and both are suppressed at zero.
+                `ambiguityBlockedCount` used to be a count of ambiguous KEYS,
+                which on a variant fanned out across two marketplace series is
+                a large number in perfectly healthy data: the 1996 Score
+                re-sync announced "110 match keys are held by more than one
+                card, so those cards are treated as new" directly above "0
+                new". Every card had matched on its ref and the fallback tiers
+                were never consulted, so the sentence was false — and false in
+                the alarming direction, on exactly the duplicate-numbered sets
+                this whole feature exists for. The server now reports how many
+                cards ambiguity actually cost a match, so this line appears
+                only when it has something to say. */}
+            {(diff.collisionInsertCount > 0 ||
+              diff.ambiguityBlockedCount > 0) && (
               <p className="text-xs text-gray-400" role="status">
                 {diff.collisionInsertCount > 0 &&
                   `${diff.collisionInsertCount} card${
                     diff.collisionInsertCount === 1 ? "" : "s"
                   } will be saved as new rows because another card claimed the same match. `}
-                {diff.ambiguousMatchCount > 0 &&
-                  `${diff.ambiguousMatchCount} match key${
-                    diff.ambiguousMatchCount === 1 ? " is" : "s are"
-                  } held by more than one card, so those cards are treated as new rather than guessed at.`}
+                {diff.ambiguityBlockedCount > 0 &&
+                  `${diff.ambiguityBlockedCount} card${
+                    diff.ambiguityBlockedCount === 1 ? "" : "s"
+                  } could not be matched to an existing card because more than one card claims the same identity — ${
+                    diff.ambiguityBlockedCount === 1
+                      ? "it will be saved as a new row"
+                      : "they will be saved as new rows"
+                  } rather than guessed at.`}
               </p>
             )}
           </div>

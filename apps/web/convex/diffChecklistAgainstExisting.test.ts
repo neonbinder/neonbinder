@@ -362,6 +362,274 @@ describe("diffChecklistAgainstExisting — bucketing", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// CI round 2 — "absent" has five spellings, and the edit drawer writes three of
+// them explicitly.
+// ---------------------------------------------------------------------------
+
+describe("diffChecklistAgainstExisting — explicitly-empty stored values", () => {
+  /** What saving a card in the edit drawer leaves on the row. */
+  async function simulateOperatorSave(
+    t: ReturnType<typeof convexTest>,
+    id: Id<"cardChecklist">,
+  ) {
+    await t.run(async (ctx) => {
+      await ctx.db.patch(id, {
+        isRookie: false,
+        isRelic: false,
+        cardVariation: "",
+      });
+    });
+  }
+
+  test("an explicit false/empty-string on the row is NOT a change against an absent incoming value", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" })],
+      });
+    const [row] = await storedRows(t, leafId);
+    await simulateOperatorSave(t, row._id);
+
+    // The adapters simply omit these keys on a card that is none of those
+    // things. Before this fix the operator's own save came back as three
+    // tier-1 "needs review" diffs on the next sync — the review screen shouted
+    // loudest about the cards a human had already got right.
+    const result = await diff(t, leafId, [
+      card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" }),
+    ]);
+
+    expect(result.cards).toHaveLength(1);
+    expect(result.cards[0].fields).toEqual([]);
+    expect(result.cards[0].bucket).toBe("identical");
+  });
+
+  test("no field entry is ever emitted for a pair that both render as empty", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" })],
+      });
+    const [row] = await storedRows(t, leafId);
+    await simulateOperatorSave(t, row._id);
+
+    // The defect this pins: `cardVariation: ""` vs absent rendered as
+    // `− —` / `+ —`, folded equal, pre-ticked itself, and made the footer
+    // claim "1 change will be applied" for a change that did not exist. A
+    // no-op entry must not reach the screen AT ALL — suppressing it at the
+    // render layer would leave the footer's count lying.
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "1",
+        cardName: "Curated",
+        bscRef: "bsc-1",
+        // A real, substantive change, so the card IS reviewable — which is
+        // what makes the absence of the other entries meaningful.
+        printRun: 99,
+      }),
+    ]);
+
+    const names = result.cards[0].fields.map((f) => f.name);
+    expect(names).toEqual(["printRun"]);
+    expect(
+      result.cards[0].fields.every((f) => f.oldValue !== "" || f.newValue !== ""),
+    ).toBe(true);
+  });
+
+  test("a real true→absent change on the same field is still reported and still applies", async () => {
+    // The counterpart guard: widening "empty" must not swallow a genuine
+    // clearing. `true` is not emptyish, so this stays a change.
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          card({
+            cardNumber: "1",
+            cardName: "Was a rookie",
+            bscRef: "bsc-1",
+            isRookie: true,
+          }),
+        ],
+      });
+    const [row] = await storedRows(t, leafId);
+
+    const result = await diff(t, leafId, [
+      card({ cardNumber: "1", cardName: "Was a rookie", bscRef: "bsc-1" }),
+    ]);
+    const entry = result.cards[0];
+    expect(entry.fields.map((f) => f.name)).toEqual(["isRookie"]);
+    expect(entry.fields[0]).toMatchObject({ oldValue: "yes", newValue: "" });
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          {
+            ...card({ cardNumber: "1", cardName: "Was a rookie", bscRef: "bsc-1" }),
+            applyFields: ["isRookie"],
+            baseVersion: entry.baseVersion,
+          },
+        ],
+      });
+    expect((await storedRows(t, leafId))[0].isRookie).toBeUndefined();
+    expect(row.isRookie).toBe(true);
+  });
+
+  test("the chunk's pre-write re-diff agrees: accepting a false→absent field writes nothing", async () => {
+    // The same predicate guards both ends of the wire. If they disagreed, a
+    // field the review declined to show could still be written by the commit.
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" })],
+      });
+    const [row] = await storedRows(t, leafId);
+    await simulateOperatorSave(t, row._id);
+    const saved = (await storedRows(t, leafId))[0];
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          {
+            ...card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" }),
+            // A hostile or stale client naming them anyway changes nothing.
+            applyFields: ["isRookie", "isRelic", "cardVariation"],
+            baseVersion: saved.lastUpdated,
+          },
+        ],
+      });
+
+    const after = (await storedRows(t, leafId))[0];
+    expect(after.isRookie).toBe(false);
+    expect(after.isRelic).toBe(false);
+    expect(after.cardVariation).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CI round 2 — ambiguity that exists vs ambiguity that cost something.
+// ---------------------------------------------------------------------------
+
+describe("diffChecklistAgainstExisting — ambiguity is only reported when it changed an outcome", () => {
+  /**
+   * The 1996 Score shape: ONE SportLots set holds both series, so two distinct
+   * cards land on the same `(side, slot, cardNumber)` fallback key. That key is
+   * withheld as ambiguous — correctly — but both cards carry their own ref.
+   */
+  async function seedSharedSlot(t: ReturnType<typeof convexTest>) {
+    const { sportId, leafId } = await seedTree(t, {
+      slSlots: { s0: "sl-combined" },
+    });
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          card({
+            cardNumber: "1",
+            cardName: "Series One #1",
+            slRef: "sl-s1-1",
+            slSetId: "sl-combined",
+          }),
+          card({
+            cardNumber: "1",
+            cardName: "Series Two #1",
+            slRef: "sl-s2-1",
+            slSetId: "sl-combined",
+          }),
+        ],
+      });
+    return { sportId, leafId };
+  }
+
+  test("ambiguous fallback keys with every card ref-matched report NOTHING", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedSharedSlot(t);
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "1",
+        cardName: "Series One #1",
+        slRef: "sl-s1-1",
+        slSetId: "sl-combined",
+      }),
+      card({
+        cardNumber: "1",
+        cardName: "Series Two #1",
+        slRef: "sl-s2-1",
+        slSetId: "sl-combined",
+      }),
+    ]);
+
+    // The regression: the screen used to announce "N match keys are held by
+    // more than one card, so those cards are treated as new" beside "0 new".
+    // The fallback tier was never consulted — every card matched on its ref —
+    // so nothing was treated as new and there is nothing to report.
+    expect(result.ambiguityBlockedCount).toBe(0);
+    expect(result.cards.every((c) => c.bucket === "identical")).toBe(true);
+    expect(result.cards.some((c) => c.bucket === "new")).toBe(false);
+  });
+
+  test("a card that ambiguity actually cost a match IS counted", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedSharedSlot(t);
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "1",
+        // A SportLots description edit changes the ref (NEO-91), so tier 1
+        // misses and the cascade falls through to the slot+number tier — which
+        // is exactly the key two stored rows share. No guess is made.
+        cardName: "Series One #1",
+        slRef: "sl-s1-1-description-was-corrected",
+        slSetId: "sl-combined",
+      }),
+    ]);
+
+    expect(result.ambiguityBlockedCount).toBe(1);
+    expect(result.cards.map((c) => c.bucket)).toEqual(["new"]);
+  });
+
+  test("a genuinely new card is not blamed on ambiguity", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedSharedSlot(t);
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "500",
+        cardName: "Brand New",
+        slRef: "sl-500",
+        slSetId: "sl-combined",
+      }),
+    ]);
+
+    expect(result.cards.map((c) => c.bucket)).toEqual(["new"]);
+    expect(result.ambiguityBlockedCount).toBe(0);
+  });
+});
+
 describe("diffChecklistAgainstExisting — the diff is the commit's own matching", () => {
   test("baseVersion comes back as the matched row's lastUpdated and the very next commit accepts it", async () => {
     const t = convexTest(schema, modules);
