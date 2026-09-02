@@ -369,3 +369,141 @@ describe("commitCardChecklist — chunked commit", () => {
     expect(players.length).toBe(0);
   });
 });
+
+/**
+ * NEO-203 — matching survives BOTH kinds of scale at once: a checklist large
+ * enough to span several chunks, carrying duplicate card numbers across two
+ * source sets (the `duplicateNumbers.test.ts` shape), re-synced with
+ * per-card corrections.
+ *
+ * The prelude resolves every match ONCE, from a single pre-commit snapshot,
+ * and hands each chunk only the ids it needs — so this is really asserting
+ * that `resolveExistingIds`' cascade and the chunk boundary never interact:
+ * a correction aimed at a card in the FIRST chunk and one aimed at a card in
+ * the LAST chunk each land on the one row they name, never on that row's
+ * same-numbered sibling in the other series.
+ */
+describe("commitCardChecklist — chunked re-sync with duplicate-numbered cards (NEO-203)", () => {
+  const S1 = "series-1";
+  const S2 = "series-2";
+  // Larger than one chunk on its own, so the combined two-series payload
+  // spans at least three chunks and the two probed cards land in different
+  // ones (see targetNumberEarly/targetNumberLate below).
+  const PER_SERIES = CARDS_PER_COMMIT_CHUNK + 20;
+
+  function dupCard(series: string, n: number, name: string) {
+    return {
+      cardNumber: String(n),
+      cardName: name,
+      team: undefined,
+      teams: [],
+      players: [],
+      attributes: [],
+      isRookie: undefined,
+      isRelic: undefined,
+      printRun: undefined,
+      autographType: undefined,
+      cardVariation: undefined,
+      isVariation: undefined,
+      platformData: { bsc: { ref: `${series}-card-${n}` } },
+    };
+  }
+
+  test("a fresh multi-chunk commit stores every duplicate-numbered row distinctly, and a later multi-chunk re-sync corrects each row independently", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, variantTypeId } = await seedTree(t);
+
+    const initialCards: ReturnType<typeof dupCard>[] = [];
+    for (const series of [S1, S2]) {
+      for (let n = 1; n <= PER_SERIES; n++) {
+        initialCards.push(dupCard(series, n, `${series} player ${n}`));
+      }
+    }
+    expect(initialCards.length).toBeGreaterThan(CARDS_PER_COMMIT_CHUNK * 2);
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: initialCards,
+      });
+
+    const { rows } = await readChecklist(t, variantTypeId);
+    expect(rows).toHaveLength(initialCards.length);
+    expect(new Set(rows.map((r) => r.cardNumber)).size).toBe(PER_SERIES);
+    expect(new Set(rows.map((r) => r.platformData?.bsc?.ref)).size).toBe(
+      initialCards.length,
+    );
+
+    const byRef = new Map(rows.map((r) => [r.platformData?.bsc?.ref, r]));
+
+    // One card from the FIRST chunk, one from the LAST — different series, so
+    // a number-keyed match would cross-contaminate them.
+    const targetNumberEarly = 1;
+    const targetNumberLate = PER_SERIES;
+    const s1Early = byRef.get(`${S1}-card-${targetNumberEarly}`)!;
+    const s2Late = byRef.get(`${S2}-card-${targetNumberLate}`)!;
+    // The premise of this test, asserted rather than assumed: S1's #1 is the
+    // very first card in the payload (chunk 1) and S2's last card is the very
+    // last (a later chunk), so the fix below crosses a chunk boundary.
+    const earlyIndex = 0;
+    const lateIndex = initialCards.length - 1;
+    expect(Math.floor(earlyIndex / CARDS_PER_COMMIT_CHUNK)).not.toBe(
+      Math.floor(lateIndex / CARDS_PER_COMMIT_CHUNK),
+    );
+
+    const correctedCards = initialCards.map((c) => {
+      if (c.platformData.bsc.ref === s1Early.platformData!.bsc!.ref) {
+        return {
+          ...c,
+          cardName: "S1 Early Corrected",
+          applyFields: ["cardName"],
+          baseVersion: s1Early.lastUpdated,
+        };
+      }
+      if (c.platformData.bsc.ref === s2Late.platformData!.bsc!.ref) {
+        return {
+          ...c,
+          cardName: "S2 Late Corrected",
+          applyFields: ["cardName"],
+          baseVersion: s2Late.lastUpdated,
+        };
+      }
+      return c;
+    });
+
+    const result = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: correctedCards,
+      });
+
+    expect(result.count).toBe(initialCards.length);
+    expect(result.collisionInserts).toBe(0);
+    expect(result.conflicts).toHaveLength(0);
+    expect(result.staleDecisions).toBe(0);
+
+    const after = (await readChecklist(t, variantTypeId)).rows;
+    expect(after).toHaveLength(initialCards.length); // no duplication, no loss
+
+    const afterByRef = new Map(after.map((r) => [r.platformData?.bsc?.ref, r]));
+    const s1EarlyAfter = afterByRef.get(`${S1}-card-${targetNumberEarly}`)!;
+    const s2LateAfter = afterByRef.get(`${S2}-card-${targetNumberLate}`)!;
+    expect(s1EarlyAfter.cardName).toBe("S1 Early Corrected");
+    expect(s2LateAfter.cardName).toBe("S2 Late Corrected");
+    // The correction landed on the SAME row it started as...
+    expect(s1EarlyAfter._id).toBe(s1Early._id);
+    expect(s2LateAfter._id).toBe(s2Late._id);
+    // ...and its same-numbered sibling in the OTHER series is untouched —
+    // the Alice/Bob probe, at chunk-spanning scale.
+    expect(afterByRef.get(`${S2}-card-${targetNumberEarly}`)!.cardName).toBe(
+      `${S2} player ${targetNumberEarly}`,
+    );
+    expect(afterByRef.get(`${S1}-card-${targetNumberLate}`)!.cardName).toBe(
+      `${S1} player ${targetNumberLate}`,
+    );
+  });
+});

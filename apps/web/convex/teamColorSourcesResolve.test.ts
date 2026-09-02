@@ -17,6 +17,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
+import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -226,6 +227,44 @@ describe("resolveTeamColors", () => {
     // Not one request — not even the sitemap. A live search is ~1.5MB, so
     // skipping has to happen before any fetch, not after.
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("NEO-203: colors an operator hand-entered in Team Management carry manual provenance and survive resolveTeamColors", async () => {
+    // Before NEO-203, `saveTeamFields` wrote `colors` alone. Hand-entered
+    // colors then carried no `colorSource`, so they failed the "already
+    // resolved" check above and were silently overwritten by the very next
+    // background enrichment pass — which a checklist commit schedules for
+    // every team it touches. `saveTeamFields` now stamps
+    // `MANUAL_COLOR_SOURCE_URL` alongside the value for exactly this reason.
+    const t = convexTest(schema, modules);
+    const teamId = await seed(t, "Saitama Seibu Lions");
+
+    await t
+      .withIdentity({ subject: "admin", role: "admin" })
+      .mutation(api.teams.saveTeamFields, {
+        id: teamId,
+        colors: { primary: "#112233", secondary: "#445566" },
+      });
+
+    const afterSave = await getTeam(t, teamId);
+    expect(afterSave!.colorSource!.url).toBe(MANUAL_COLOR_SOURCE_URL);
+
+    // A resync's background enrichment enqueues this with no `force` — same
+    // call `resolveTeamColors` above proves is skipped for ANY colorSource.
+    // This test pins the SPECIFIC path: a hand-entered value reaches that
+    // same protection, not just a scraped one.
+    const fetchMock = stubSite({
+      urls: ["https://teamcolorcodes.com/saitama-seibu-lions-color-codes/"],
+    });
+    const outcome = await t.action(internal.teamColorSources.resolveTeamColors, {
+      teamId,
+    });
+
+    expect(outcome).toBe("skipped");
+    expect(fetchMock).not.toHaveBeenCalled();
+    const team = await getTeam(t, teamId);
+    expect(team!.colors).toEqual({ primary: "#112233", secondary: "#445566" });
+    expect(team!.colorSource!.url).toBe(MANUAL_COLOR_SOURCE_URL);
   });
 
   test("force re-searches a team whose match was wrong", async () => {
