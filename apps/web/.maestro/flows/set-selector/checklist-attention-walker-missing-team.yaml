@@ -35,10 +35,12 @@ tags:
 #   fails immediately instead of silently answering someone else's question.
 #
 # NOT COVERED HERE — and why
-#   • Auto-open after a commit. The walker arms itself when commitCardChecklist
-#     resolves, which needs a real marketplace fetch + commit; a custom subtree
-#     never fetches (isCustomSubtree, NEO-22) and the real sets are read-only
-#     (R7a). Component-covered in CardAttentionWalker.test.tsx.
+#   • The post-commit banner CTA ("K need attention — Fix them one at a time").
+#     It only renders after a commitCardChecklist, which needs a real
+#     marketplace fetch; a custom subtree never fetches (isCustomSubtree,
+#     NEO-22) and the real sets are read-only (R7a). Component-covered in
+#     CardChecklist.test.tsx. (The walker never opens on its own — an earlier
+#     auto-open was removed after it swallowed taps in two wizard flows.)
 #   • The preselected suggestion chips. They come from the card's PLAYERS'
 #     career years, and a custom card added through the add-card form has
 #     pending player NAMES, not linked player rows with careers — so there is
