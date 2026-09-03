@@ -559,13 +559,26 @@ export default function CardDetailPanel({
                   {card.pendingTeamNames!.map((name) => (
                     <span key={name}>
                       {name}{" "}
-                      <span className="text-gray-400 dark:text-gray-500">
+                      {/* a11y: this MUST stay `text-gray-500 dark:text-gray-400`
+                          (the container's own pair, two lines up) and never the
+                          reverse — `text-gray-400 dark:text-gray-500` measures
+                          2.54:1 on this panel's light-mode `bg-white` and 3.04:1
+                          on its `dark:bg-gray-800`, both under WCAG 1.4.3's
+                          4.5:1 floor for normal text (script-verified). The
+                          reversed pair was in here before; if you're tempted to
+                          dim this relative to the name, use weight/size, not a
+                          lighter gray in light mode. */}
+                      <span className="text-gray-500 dark:text-gray-400">
                         (unconfirmed)
                       </span>
                     </span>
                   ))}
                 </div>
-                <p className="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">
+                {/* Same a11y note as above — text-gray-500 (light) /
+                    text-gray-400 (dark) is the pair that clears 4.5:1 against
+                    this panel's bg-white / dark:bg-gray-800; the reverse fails
+                    both. */}
+                <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
                   Typed on the card before it was linked — resolves at the next
                   sync, or pick a team to replace it.
                 </p>

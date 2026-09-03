@@ -198,11 +198,46 @@ export default function TeamPicker({
     setTimeout(() => triggerRef.current?.focus(), 0);
   };
 
+  /**
+   * Close on Tab (or Shift+Tab) out of the picker while the popover is open —
+   * the keyboard counterpart to the pointerdown-outside handler above.
+   *
+   * That handler only ever sees mouse/touch input. A keyboard user reaches
+   * the same "popover still open, covering something below it" state a
+   * different way: the popover has no focus trap, so Tab from its last
+   * option (or the input, if there are none) walks focus straight out of the
+   * picker's subtree and onto whatever the caller placed next in the DOM —
+   * in `CardChecklist`'s quick-add form, the "Add"/"Cancel" buttons
+   * immediately following this field. Without closing here, those buttons
+   * receive focus while still visually covered by the open `absolute
+   * ... z-10` popover (WCAG 2.4.11 Focus Not Obscured) — the same overlap
+   * the comment above already documents for `MissingTeamFixer`, just reached
+   * by Tab instead of by leaving focus where it was.
+   *
+   * Checked via a deferred read of `document.activeElement` rather than the
+   * blur event's own `relatedTarget`: `relatedTarget` on `blur`/`focusout` is
+   * unreliable across environments (notably jsdom, where it comes back
+   * `null` even for an ordinary focus move), so the read has to happen after
+   * the browser/test environment has actually settled the new focus target,
+   * not off the outgoing event. Deliberately NOT `closePopover`: that steals
+   * focus back to the trigger, which would fight the Tab the user just
+   * pressed.
+   */
+  const handleRootBlur = () => {
+    if (!popoverOpen) return;
+    setTimeout(() => {
+      if (rootRef.current?.contains(document.activeElement)) return;
+      setPopoverOpen(false);
+      setQuery("");
+    }, 0);
+  };
+
   return (
     <div
       ref={rootRef}
       className="flex flex-wrap gap-1.5 items-center"
       aria-label="Team picker"
+      onBlur={handleRootBlur}
     >
       {value.map((id) => (
         <span

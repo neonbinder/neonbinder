@@ -1200,8 +1200,20 @@ export default function CardChecklist({
                   row is then badged, per deriveCardAttention). Matches the card
                   drawer's Teams label so the two read as the same field.
                   No `htmlFor`: the picker is a chip row, not one input, and its
-                  controls carry their own aria-labels. */}
-              <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+                  controls carry their own aria-labels.
+                  a11y: `text-gray-500 dark:text-gray-400`, NOT the bare
+                  `text-gray-400` the drawer's "Teams" label uses. Tailwind's
+                  default media-based dark mode means `dark:` only applies
+                  under a dark OS preference — a visitor in light mode sees
+                  this on the form's `bg-gray-50` panel with no dark override,
+                  and plain `text-gray-400` there measures well under 4.5:1
+                  (script-verified against the panel's white/gray-50 light
+                  background). This pair is the one confirmed passing in both
+                  themes elsewhere in this file (see the sub-line note in
+                  CardChecklistItem.tsx). The drawer's own "Teams" label has
+                  the same bare-`text-gray-400` gap but is pre-existing and out
+                  of scope here — see NEO-208 a11y audit notes. */}
+              <label className="block text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
                 Team (optional)
               </label>
               <TeamPicker
