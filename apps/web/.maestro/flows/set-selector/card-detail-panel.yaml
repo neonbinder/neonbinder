@@ -137,23 +137,25 @@ tags:
 # without depending on a clean-slate exact match we can no longer produce (there
 # is no reliable full-clear of a mid-caret pre-filled input in maestro-web).
 #
-# NEO-101 — WHY THE MARKER IS SHORT ("T101-${ATTEMPT_ID}", ~10 chars):
+# NEO-101 — WHY THE MARKER IS SHORT ("T${ATTEMPT_ID}", ~12 chars):
 # listingTitle now has a HARD 80-character cap. Over it, `updateCard` throws and
 # the drawer's Save button goes aria-disabled — so a marker long enough to push
 # the concatenated value past 80 does not fail this flow's ASSERTION, it fails
 # the flow at the Save step, several actions later and for a reason that reads
 # like a product bug. The old marker ("2024 Topps Chrome NEO-25 Test Title …",
-# ~47 chars) inserted into the ~32-char auto title landed at 79–80: passing by
-# one character, and only until a pre-filled title got any longer. The marker's
-# only job is to be UNIQUE per attempt, and 10 characters does that with ~40
-# characters of headroom against the cap. Keep it short if you change it.
+# ~47 chars) landed the value at 79–80. The arithmetic today: the auto title is
+# "2026 Topps cd-0 Detail Panel Test <id> #888-<id>" ≈ 40 + 2·len(ATTEMPT_ID),
+# plus the marker 1 + len(ATTEMPT_ID). With an 11-char ATTEMPT_ID (runner r0–r7)
+# that is 74/80; a two-digit runner id adds 3 → 77. The marker's only job is to
+# be UNIQUE per attempt. Keep it short, and shorten PLAYER_NAME above before
+# ever lengthening it.
 # ============================================================
 
 - assertVisible:
     id: "Card title"
 - tapOn:
     id: "Card title"
-- inputText: "T101-${ATTEMPT_ID}"
+- inputText: "T${ATTEMPT_ID}"
 
 - assertVisible:
     id: "Card description"
@@ -295,7 +297,7 @@ tags:
 # edit did NOT persist — the marker would be absent on reopen.
 - assertVisible:
     id: "Card title"
-    text: ".*T101-${ATTEMPT_ID}.*"
+    text: ".*T${ATTEMPT_ID}.*"
 
 # The RC chip should be active (aria-pressed="true"). Attributes are at
 # position 6 — below Card title — so scroll down to bring the row into view.
