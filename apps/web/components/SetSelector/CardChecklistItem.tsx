@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import CardAttentionBadge from "./CardAttentionBadge";
+import { deriveCardAttention } from "./card-attention";
 
 type CardChecklistItemProps = {
   card: {
@@ -11,6 +13,16 @@ type CardChecklistItemProps = {
     cardName: string;
     playerIds?: Array<Id<"players">>;
     teamOnCardIds?: Array<Id<"teams">>;
+    // NEO-102: the rest of what `deriveCardAttention` reads, beyond
+    // `teamOnCardIds` above and the required `platformData` below. All
+    // optional, so a caller that has not been updated still typechecks and
+    // simply never shows the attention mark — but note the direction each one
+    // fails in: omit a timestamp and the mark is missed; omit
+    // `pendingTeamNames` and every hand-added card carrying a typed team is
+    // WRONGLY marked, which is the louder bug.
+    teamCheckDoneAt?: number;
+    teamNoneConfirmedAt?: number;
+    pendingTeamNames?: string[];
     attributes?: string[];
     isRookie?: boolean;
     isRelic?: boolean;
@@ -165,6 +177,12 @@ export default function CardChecklistItem({
 
   const hasVariations = (variationCount ?? 0) > 0;
 
+  // NEO-102 — derived, never stored: see card-attention.ts. Cheap enough to
+  // run per row inside the virtualized list (three field reads), and deriving
+  // it here rather than accepting it as a prop keeps the rule in exactly one
+  // place for the row, the header count, the filter and the walker.
+  const attention = deriveCardAttention(card);
+
   return (
     <div
       onClick={() => onEdit(card._id)}
@@ -316,6 +334,20 @@ export default function CardChecklistItem({
           </span>
         )}
       </div>
+      {/* NEO-102 — attention mark, in an ALWAYS-RESERVED slot.
+
+          Same reasoning as the disclosure slot on the left and the reserved
+          subtitle line above: this state flips under the operator (the
+          background BSC team pass lands, or they fix the card in the walker),
+          and a row that changes size when it flips re-measures the Virtuoso
+          list and reflows every row below — the dropped-tap flake. A constant
+          20px slot on every row means the mark can appear and disappear
+          without moving anything. */}
+      <span className="w-5 h-5 shrink-0 flex items-center justify-center">
+        {attention.length > 0 && (
+          <CardAttentionBadge items={attention} cardNumber={card.cardNumber} />
+        )}
+      </span>
       {/* Actions always rendered. Hiding them behind hover (opacity-0
           group-hover:opacity-100) made the buttons unreachable for
           Maestro headless web (no mouse hover) — taps registered

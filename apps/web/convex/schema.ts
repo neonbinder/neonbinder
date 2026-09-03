@@ -374,6 +374,44 @@ export default defineSchema({
     // has no team (an insert/subset card) would be re-fetched forever on
     // every future sync. Not touched by `lastUpdated`-driven logic.
     teamCheckDoneAt: v.optional(v.number()),
+    // NEO-102: an OPERATOR decided this card carries no team at all.
+    //
+    // DISTINCT FROM `teamCheckDoneAt` above, which means only that the BSC
+    // per-card lookup RAN, regardless of outcome. The distinction is
+    // load-bearing rather than pedantic: every teamless card synced before
+    // this feature existed already carries `teamCheckDoneAt`, so conflating
+    // the two would make every one of those cards permanently invisible to the
+    // reconciliation this field exists to drive. A card the background queue
+    // merely CHECKED still needs a human — that is the whole point — while a
+    // card a human deliberately marked teamless does not.
+    //
+    // The two together are what `features/cardAttention.ts` reads to decide
+    // whether a stored card is badged "missing team": empty `teamOnCardIds`
+    // alone cannot distinguish "no team on this card" from "nobody has looked
+    // yet", and these two fields are exactly the missing bits.
+    //
+    // Set ONLY by an operator action (`cardChecklist.confirmCardNoTeam`), and
+    // server-stamped — no client-supplied argument anywhere on this path
+    // carries a timestamp, because a forgeable one is operator-review
+    // suppression the client can mint for itself. CLEARED the moment a
+    // non-empty `teamOnCardIds` is actually written in the same transaction
+    // (`updateCard`, or the commit's reviewed content patch), so it can never
+    // contradict the teams on the row. Never touched by a linkage-only
+    // re-sync, and never set or cleared by a sync that carries no teams.
+    teamNoneConfirmedAt: v.optional(v.number()),
+    // The Clerk subject of the operator who confirmed it — same shape and
+    // purpose as `players.createdByUserId` and
+    // `entityReviewQueue.createdByUserId`. Audit only: no UI reads it.
+    // (`getCardChecklist` does list it in its `returns`, because that
+    // validator is strict and would otherwise reject every row carrying it —
+    // that query is admin-gated.)
+    //
+    // A Clerk subject STRING rather than an `Id<"users">`: `requireAdmin`
+    // returns the subject, and while a `users` table exists in this schema,
+    // nothing in `convex/` has ever written or read a row in it — so there is
+    // no document to point at, and every other audit column in this codebase
+    // is the subject string.
+    teamNoneConfirmedByUserId: v.optional(v.string()),
     // De-duped union of BSC playerAttribute[] + BSC features[] + variant
     // metadata. Tokens: ["RC","AU","RELIC","SP","SSP","NUM",...]. Drives
     // both the eBay Features aspect and the boolean derivations below.

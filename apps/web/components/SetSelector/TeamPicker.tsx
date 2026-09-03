@@ -34,6 +34,9 @@ import type { Id } from "../../convex/_generated/dataModel";
  *   ↑/↓ on input — move highlight
  *   Esc on input — close popover without selecting
  *   Backspace on empty input — remove last chip
+ *
+ * Pointer users get an outside-click close as well — see the effect below for
+ * why that is not just polish.
  */
 export default function TeamPicker({
   value,
@@ -74,6 +77,7 @@ export default function TeamPicker({
   const [creating, setCreating] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Reset highlight whenever the typed query changes.
   useEffect(() => {
@@ -87,6 +91,33 @@ export default function TeamPicker({
       const t = setTimeout(() => inputRef.current?.focus(), 0);
       return () => clearTimeout(t);
     }
+  }, [popoverOpen]);
+
+  /**
+   * Close on a pointerdown outside the picker — ordinary popover behaviour,
+   * and load-bearing in `MissingTeamFixer`. The popover is `absolute top-full
+   * w-64 z-10`, which puts it over that fixer's "Save & Next (Enter)" and "No
+   * team on this card", and Escape is not a way out THERE: Escape inside
+   * `CardAttentionWalker` means "defer this card". So without this, a walker
+   * operator who opened the picker had no way to uncover the two buttons they
+   * needed next.
+   *
+   * `pointerdown`, not `click`, so the popover is out of the way before the
+   * click resolves on whatever is underneath. Deliberately NOT `closePopover`:
+   * that returns focus to the trigger, which would yank focus off the control
+   * the pointer is in the middle of pressing. Selecting a match still leaves
+   * the popover open (see `addChip`) — that is inside the root, so multi-team
+   * picking is untouched.
+   */
+  useEffect(() => {
+    if (!popoverOpen) return;
+    const onPointerDown = (e: Event) => {
+      if (rootRef.current?.contains(e.target as Node)) return;
+      setPopoverOpen(false);
+      setQuery("");
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [popoverOpen]);
 
   const labelById = useMemo(() => {
@@ -169,6 +200,7 @@ export default function TeamPicker({
 
   return (
     <div
+      ref={rootRef}
       className="flex flex-wrap gap-1.5 items-center"
       aria-label="Team picker"
     >
@@ -197,11 +229,10 @@ export default function TeamPicker({
           ref={triggerRef}
           type="button"
           disabled={disabled}
-          // Always opens. Closing happens via Escape (on the input) or
-          // clicking a match (addChip stays open intentionally so the
-          // user can pick a second team for a multi-team card; final
-          // close is the user's Escape or selecting then explicitly
-          // moving on). Earlier code used `setPopoverOpen((v) => !v)`
+          // Always opens. Closing is Escape (on the input) or a pointerdown
+          // outside the picker — never selecting a match, which stays open
+          // intentionally so the user can pick a second team for a multi-team
+          // card. Earlier code used `setPopoverOpen((v) => !v)`
           // — a toggle — which silently closed the popover when the
           // test (or a real user) re-tapped "+ Add team" expecting
           // it to keep opening.

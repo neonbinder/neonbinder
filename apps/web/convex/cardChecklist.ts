@@ -22,10 +22,16 @@
  * (default 100 rows per batch).
  */
 
-import { internalMutation, internalQuery } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
+import { requireAdmin } from "./auth";
 import { normalizeTeamName } from "./teams";
 import { resolveDefaultLeagueId } from "./leagues";
 
@@ -227,7 +233,14 @@ export const getForBscTeamCheck = internalQuery({
     if (!row || !row.platformData?.bsc) return null;
     const needsCheck =
       (!row.teamOnCardIds || row.teamOnCardIds.length === 0) &&
-      !row.teamCheckDoneAt;
+      !row.teamCheckDoneAt &&
+      // NEO-102: an operator already settled this card as carrying no team.
+      // "Empty teams" is no longer the same statement as "not looked up yet",
+      // and every path that used to treat them as one has to say which it
+      // means. Spending a live BSC request to re-derive an answer a human
+      // already gave is the cheapest half of the problem; the expensive half
+      // is `applyBscTeamResolution` then writing a team over that answer.
+      !row.teamNoneConfirmedAt;
     // NEO-137: platformData.bsc is now {ref, src}; the BSC card id is the ref.
     return { bscCardId: row.platformData.bsc.ref, needsCheck };
   },
@@ -246,6 +259,26 @@ export const applyBscTeamResolution = internalMutation({
   handler: async (ctx, args) => {
     const row = await ctx.db.get(args.cardChecklistId);
     if (!row) return { applied: false, teamCreated: false };
+
+    // NEO-102: an operator confirmed this card carries no team. A background
+    // writer must never overturn that.
+    //
+    // Checked HERE, inside the writing mutation, on a fresh read — not at
+    // enqueue time — for the same reason the `teamOnCardIds` check below is:
+    // the confirmation can land while this lookup is in flight (the queue
+    // walks a whole set at one request every 300ms, and the operator is
+    // working the same checklist at the same time). An enqueue-time filter
+    // would be checked minutes earlier and would be exactly the race.
+    //
+    // Stamps `teamCheckDoneAt` on the way out, mirroring the early return
+    // below: the lookup HAS now been and gone for this card, and stamping it
+    // also takes the row out of `enqueueBscTeamBackfill`'s scan.
+    if (row.teamNoneConfirmedAt) {
+      if (!row.teamCheckDoneAt) {
+        await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
+      }
+      return { applied: false, teamCreated: false };
+    }
 
     if (row.teamOnCardIds && row.teamOnCardIds.length > 0) {
       if (!row.teamCheckDoneAt) {
@@ -363,7 +396,12 @@ export const enqueueBscTeamBackfill = internalMutation({
       const needsCheck =
         !!row.platformData?.bsc &&
         (!row.teamOnCardIds || row.teamOnCardIds.length === 0) &&
-        !row.teamCheckDoneAt;
+        !row.teamCheckDoneAt &&
+        // NEO-102: never re-derive a team for a card an operator settled as
+        // teamless. `applyBscTeamResolution` re-checks this too, so a row
+        // enqueued before the confirmation still cannot be overwritten — this
+        // clause is what stops the pointless live BSC request.
+        !row.teamNoneConfirmedAt;
       if (!needsCheck) continue;
       if (candidateIds.length < batchSize) {
         candidateIds.push(row._id);
@@ -392,5 +430,208 @@ export const enqueueBscTeamBackfill = internalMutation({
       continueCursor: page.continueCursor,
       estimatedDrainMs: candidateIds.length * BSC_TEAM_ENRICH_DELAY_MS,
     };
+  },
+});
+
+// ===========================================================================
+// NEO-102 — reconciling a card that has no team
+// ===========================================================================
+
+/**
+ * NEO-102 — the YEAR whose rosters a card's team suggestions come from.
+ *
+ * `features.season` on the card's own selectorOption is the cheap answer and
+ * the one every other consumer already trusts (SKU generation and listing-title
+ * generation both read it), so it wins and costs a single read. The `year`-level
+ * ancestor is the fallback for a row whose feature snapshot predates the
+ * `season` key.
+ *
+ * Returns undefined when neither exists. The caller then offers a player's
+ * WHOLE career rather than nothing: a suggestion the operator can reject beats
+ * an empty panel, and the operator is the one deciding either way.
+ *
+ * 16-step cutoff, matching `findSportForSelectorOption` above, so a cycle in
+ * the parent chain cannot wedge a reactive query.
+ */
+async function findSetYearForSelectorOption(
+  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<number | undefined> {
+  const parseYear = (raw: string | undefined): number | undefined => {
+    if (!raw) return undefined;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) ? parsed : undefined;
+  };
+  const leaf = await ctx.db.get(selectorOptionId);
+  if (!leaf) return undefined;
+  const fromFeatures = parseYear(leaf.features?.season);
+  if (fromFeatures !== undefined) return fromFeatures;
+  let cursor: Id<"selectorOptions"> | undefined = leaf.parentId;
+  let depth = 0;
+  while (cursor && depth < 16) {
+    const node = await ctx.db.get(cursor);
+    if (!node) return undefined;
+    if (node.level === "year") return parseYear(node.value);
+    cursor = node.parentId;
+    depth += 1;
+  }
+  return undefined;
+}
+
+/**
+ * NEO-102 — record that an operator has decided this card carries no team.
+ *
+ * ## Server-stamped, deliberately
+ *
+ * The only argument is the card. `teamNoneConfirmedAt` and
+ * `teamNoneConfirmedByUserId` are written from `Date.now()` and the
+ * `requireAdmin` return value — a timestamp on a client-supplied argument
+ * would be operator-review suppression the client can mint for itself, and
+ * this flag's whole job is to suppress both the BSC background lookup and the
+ * "missing team" badge. Nothing on any client path anywhere in this feature
+ * carries a timestamp.
+ *
+ * ## Refuses on a card that HAS teams
+ *
+ * Re-read inside the mutation and checked against the row as it stands, not
+ * against whatever the client last rendered — the same shape as
+ * `applyBscTeamResolution`'s guards. "No team" and "these three teams" cannot
+ * both be true, and the operator clicking this on a stale render must not be
+ * the way that contradiction gets written. `confirmed: false` is the honest
+ * answer, not an error: the card already has the thing the operator was being
+ * asked about.
+ *
+ * ## Idempotent, and does not re-stamp
+ *
+ * A second call on an already-confirmed card writes nothing and reports
+ * `stamped: false`. That is not just tidiness: in Convex, patching a row even
+ * with identical data invalidates every query that read it, which re-renders
+ * the checklist (see `valuesDeepEqual`'s note in selectorOptions.ts). It also
+ * keeps the audit stamp pointing at whoever actually made the call.
+ *
+ * `lastUpdated` is deliberately NOT touched. This is suppression bookkeeping,
+ * not card content — the same treatment `teamCheckDoneAt` gets — and bumping
+ * it would invalidate the `baseVersion` of a sync review the operator may have
+ * open in another tab, turning an unrelated accepted diff stale.
+ */
+export const confirmCardNoTeam = mutation({
+  args: { cardId: v.id("cardChecklist") },
+  returns: v.object({
+    /** The row now carries a "no team" confirmation. */
+    confirmed: v.boolean(),
+    /** THIS call wrote it. False when it was already confirmed, or refused. */
+    stamped: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+
+    const row = await ctx.db.get(args.cardId);
+    if (!row) return { confirmed: false, stamped: false };
+    if (row.teamOnCardIds && row.teamOnCardIds.length > 0) {
+      return { confirmed: false, stamped: false };
+    }
+    if (row.teamNoneConfirmedAt) return { confirmed: true, stamped: false };
+
+    await ctx.db.patch(row._id, {
+      teamNoneConfirmedAt: Date.now(),
+      teamNoneConfirmedByUserId: userId,
+    });
+    return { confirmed: true, stamped: true };
+  },
+});
+
+/**
+ * NEO-102 — career-team SUGGESTIONS for one card, from the players on it.
+ *
+ * Suggestions, never auto-fill. The operator accepts one with a keystroke and
+ * the write goes through `selectorOptions.updateCard` like any other team edit;
+ * nothing here writes anything, and confirming a card's team never writes back
+ * to `players.teamYears` (card team and player career are different facts —
+ * Mickey Mantle on a modern "Legend" insert is printed with the Yankees, which
+ * says nothing new about his career).
+ *
+ * ## The year filter
+ *
+ * `players.teamYears` is a whole career (Wikidata P54 with P580/P582
+ * qualifiers). For a 2024 set the useful answer is "who was he playing for in
+ * 2024", so entries are filtered to `fromYear <= year <= (toYear ?? this
+ * year)` — an open-ended entry is a current team. With no year resolvable
+ * (see `findSetYearForSelectorOption`) the whole career is offered rather than
+ * nothing.
+ *
+ * ## Deduped by teamId
+ *
+ * A multi-player card whose players share a team (the common League Leaders
+ * case) yields one chip, attributed to the first player that produced it —
+ * `playerName` is there so the operator can see WHY a team is being suggested,
+ * which is the difference between a suggestion they can judge and a guess.
+ *
+ * Bounded: one read per distinct `playerId` on the card plus one per distinct
+ * team those players name. A dangling player or team link is skipped rather
+ * than surfaced as a blank chip.
+ */
+export const suggestedTeamsForCard = query({
+  args: { cardId: v.id("cardChecklist") },
+  returns: v.array(
+    v.object({
+      teamId: v.id("teams"),
+      name: v.string(),
+      source: v.literal("career"),
+      /** Which player on the card this team came from. */
+      playerName: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    const row = await ctx.db.get(args.cardId);
+    if (!row) return [];
+    const playerIds = row.playerIds ?? [];
+    if (playerIds.length === 0) return [];
+
+    const year = await findSetYearForSelectorOption(ctx, row.selectorOptionId);
+    const thisYear = new Date().getFullYear();
+    const inYear = (fromYear: number, toYear?: number): boolean =>
+      year === undefined
+        ? true
+        : fromYear <= year && year <= (toYear ?? thisYear);
+
+    const out: Array<{
+      teamId: Id<"teams">;
+      name: string;
+      source: "career";
+      playerName: string;
+    }> = [];
+    const seenTeamIds = new Set<string>();
+    const seenPlayerIds = new Set<string>();
+    const teamNameById = new Map<string, string | null>();
+
+    for (const playerId of playerIds) {
+      // A card can legitimately list the same player twice (a dual-auto of one
+      // player); read each distinct id once.
+      if (seenPlayerIds.has(playerId)) continue;
+      seenPlayerIds.add(playerId);
+      const player = await ctx.db.get(playerId);
+      if (!player) continue; // dangling link — soft data error, not fatal
+      for (const entry of player.teamYears ?? []) {
+        if (!inYear(entry.fromYear, entry.toYear)) continue;
+        if (seenTeamIds.has(entry.teamId)) continue;
+        if (!teamNameById.has(entry.teamId)) {
+          const team = await ctx.db.get(entry.teamId);
+          teamNameById.set(entry.teamId, team?.name ?? null);
+        }
+        const name = teamNameById.get(entry.teamId);
+        if (!name) continue; // never suggest a blank chip
+        seenTeamIds.add(entry.teamId);
+        out.push({
+          teamId: entry.teamId,
+          name,
+          source: "career",
+          playerName: player.name,
+        });
+      }
+    }
+
+    return out;
   },
 });

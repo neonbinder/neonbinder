@@ -95,6 +95,65 @@ text and its background tint are literally the same hex — it is not always
 "more opacity = worse" or "more opacity = better," it depends on whether text
 and background are moving toward or away from each other in color space.
 
+## More Tailwind v4 OKLCH→sRGB conversions (NEO-102 audit, 2026-09-02)
+
+Extends the `gray-*` table above. Same method (manual OKLCH→sRGB, verified
+against `node_modules/tailwindcss/theme.css`).
+
+| Token | sRGB hex |
+|---|---|
+| gray-200 | #e5e7eb |
+| gray-600 | #4a5565 |
+| gray-700 | #364153 |
+| amber-300 | #ffd230 |
+| amber-400 | #ffb900 |
+| amber-600 | #e17100 |
+| amber-700 | #bb4d00 |
+| amber-800 | #973c00 |
+
+`gray-500` vs **white** (not just vs the dark grays above) = 4.84:1 — passes,
+barely. This matters because the established bi-theme fix pattern in this
+codebase (`text-gray-500 dark:text-gray-400`, seen first on `CardChecklist.
+tsx`'s `lastSynced` line) depends on gray-500 clearing 4.5:1 against a plain
+white light-mode background — confirmed here, don't assume without checking
+if a component's light background is ever non-white.
+
+## `text-gray-400` (or `text-gray-500`) used with NO `dark:` split, in a component that DOES render both themes
+
+A second recurring bug, distinct from the [gray-500-on-dark-backgrounds bug
+above](#the-recurring-bug-text-slate-500--text-slate-600-used-for-secondary-text):
+a class like `text-gray-400 uppercase ...` with no `dark:` variant, inside a
+container that genuinely has both light and dark styling (e.g.
+`bg-white dark:bg-gray-800`) applies gray-400 UNCONDITIONALLY — including in
+light mode, where it measures **2.60:1 against white** (fails 4.5:1 badly).
+Found in `CardChecklist.tsx`'s NEO-102 "Attention" row label and its "Fix
+them one at a time" link (both new in that commit), and the same defect
+already existed one block up on the pre-existing "Cross-release" label
+(left unfixed — pre-dates the audited diff). Fix: `text-gray-500
+dark:text-gray-400` — the exact pairing this same file already uses on the
+`lastSynced` line (4.84:1 light / 6.82:1 dark, both pass). **Check for this
+whenever a bi-themed component (any `dark:bg-*` in its own container) uses a
+bare `text-gray-400`/`text-gray-500`/`text-slate-400`/`text-slate-500` with
+no `dark:` prefix at all** — the mono-theme fix (swap 500→400) that resolves
+the OTHER recurring bug does not apply here; this one needs the split added,
+not the shade changed.
+
+## Amber badge on a translucent tint: light mode needs a darker pairing than dark mode
+
+`CardAttentionBadge.tsx`'s original `border-amber-400/70 bg-amber-400/15
+text-amber-600 dark:text-amber-300` — the dark-mode half (amber-300 text,
+amber-400/70 border, composited over `bg-amber-400/15` blended into
+`gray-800`) passed comfortably (7.36:1 text, 4.90:1 border), which made the
+light-mode half look "the same kind of safe" at a glance. It was not:
+composited over white instead of gray-800, amber-600 text measured 2.92:1 and
+the amber-400/70 border measured 1.48:1 — both fail (need 4.5:1 / 3:1). Fix
+was `amber-800`/`amber-700` solid for light mode specifically (measured
+6.48:1 / 5.03:1 against the same composited background), leaving dark mode
+untouched. **Lesson: verify each side of a `dark:` pair's contrast
+separately and don't infer one from the other — a translucent-tint badge in
+particular can need meaningfully different token weights per theme, not just
+a color swap.**
+
 ## Open question, not yet resolved
 
 `apps/web/app/globals.css` sets `body` background via `--background` which is

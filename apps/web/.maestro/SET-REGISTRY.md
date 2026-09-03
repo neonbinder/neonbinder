@@ -159,8 +159,11 @@ link targets and entity lookups behave as on a real set. A fully synthetic
 genuinely needs a sport with no data.
 
 Names are suffixed `-${WORKER_INDEX || 0}` so each of the 8 runners gets a
-private `selectorOptionId`. Two flows additionally suffix `-${ATTEMPT_ID}` where
-a retry must not observe its own prior debris.
+private `selectorOptionId`. Some flows additionally suffix `-${ATTEMPT_ID}`
+where a retry must not observe its own prior debris — the two
+`checklist-attention-*` flows (NEO-102) do it because they assert an EXACT
+count of the cards needing attention, and an exact count is only knowable on a
+checklist this attempt created from empty.
 
 | Prefix | Owning flow |
 |---|---|
@@ -170,6 +173,8 @@ a retry must not observe its own prior debris.
 | `ccrud-` | `custom-card-crud.yaml` |
 | `cd-` | `card-detail-panel.yaml` |
 | `cft-` | `card-features-editor-toggle.yaml` |
+| `cna-` | `checklist-attention-badge-and-filter.yaml` (also `-${ATTEMPT_ID}`) |
+| `cnw-` | `checklist-attention-walker-missing-team.yaml` (also `-${ATTEMPT_ID}`) |
 | `clt-` | `custom-card-row-opens-panel-with-autotitle.yaml` |
 | `cte-` | `checklist-fetch-wizard-add-career-team.yaml` |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |

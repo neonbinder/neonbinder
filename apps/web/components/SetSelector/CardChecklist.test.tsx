@@ -69,7 +69,52 @@ vi.mock("../../convex/_generated/api", () => ({
       getReadyCandidates: "getReadyCandidates",
       discardCandidates: "discardCandidates",
     },
+    // NEO-102: reached once real card rows render (CardChecklistItem's team
+    // sub-line, TeamPicker inside the attention walker's fixer) or the walker
+    // opens. Routed through the same string-reference mock as everything else.
+    teams: {
+      getManyByIds: "teams.getManyByIds",
+      list: "teams.list",
+      findOrCreate: "teams.findOrCreate",
+    },
+    players: { getManyByIds: "players.getManyByIds" },
+    cardChecklist: {
+      suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
+      confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
+    },
   },
+}));
+
+/**
+ * NEO-102 — Virtuoso renders nothing measurable under jsdom (no layout), so
+ * the attention tests below could not see a card row through it. Replaced with
+ * a plain map, which is what the row-level assertions actually need. Every
+ * pre-existing test in this file drives the zero-candidate path with
+ * `state.cards = []`, so this changes nothing for them.
+ */
+vi.mock("react-virtuoso", () => ({
+  Virtuoso: ({
+    data,
+    itemContent,
+  }: {
+    data: unknown[];
+    itemContent: (index: number, item: unknown) => React.ReactNode;
+  }) => <div>{data.map((item, i) => <div key={i}>{itemContent(i, item)}</div>)}</div>,
+}));
+
+/**
+ * NEO-102 (CI round 2): the entity-review wizard is stubbed down to its Cancel
+ * button. Only ONE thing about it matters here — what CardChecklist's banner
+ * says after `onCancel` fires — and the real wizard would drag in the whole
+ * `entityReviewQueue` query/mutation surface to prove a fact about its parent.
+ * Its own behaviour is covered by EntityReviewWizard.test.tsx.
+ */
+vi.mock("./EntityReviewWizard", () => ({
+  default: ({ onCancel }: { onCancel: () => void }) => (
+    <button type="button" onClick={onCancel}>
+      Cancel entity review
+    </button>
+  ),
 }));
 
 const mockFetchChecklist = vi.fn();
@@ -98,6 +143,10 @@ vi.mock("convex/react", () => ({
     if (ref === "getSelectorOptionById") return state.variantRow;
     if (ref === "getAncestorChain") return state.ancestorChain;
     if (ref === "getReadyCandidates") return state.liveCandidates;
+    // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
+    // resolved-but-empty, which is the "no career history" shape.
+    if (ref === "cardChecklist.suggestedTeamsForCard") return [];
+    if (ref === "teams.getManyByIds" || ref === "teams.list") return [];
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
   },
@@ -457,5 +506,315 @@ describe("CardChecklist — commit paints 'Saved' only after the queries catch u
     );
     expect(screen.queryByText(/Saved/)).toBeNull();
     expect(mockDiscardCandidates).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-102 — the set-level "needs attention" pass
+//
+// The count, the filter and the walker's entry points. All three read the same
+// derived rule (card-attention.ts) off the live getCardChecklist rows, which is
+// why fixing a card needs nothing invalidated: the row changes and the count
+// follows.
+// ---------------------------------------------------------------------------
+
+/** A stored row that needs a team: a lookup ran, found nothing, nobody answered. */
+function attentionCard(overrides: Record<string, unknown> = {}) {
+  return {
+    _id: "card-a" as unknown as Id<"cardChecklist">,
+    selectorOptionId: VARIANT_ID,
+    cardNumber: "1",
+    cardName: "AL Leaders ERA LL",
+    platformData: { bsc: { ref: "bsc-1" } },
+    teamCheckDoneAt: 1_000,
+    ...overrides,
+  };
+}
+
+/** A settled row: its lookup ran and found a team. */
+function settledCard(overrides: Record<string, unknown> = {}) {
+  return {
+    _id: "card-b" as unknown as Id<"cardChecklist">,
+    selectorOptionId: VARIANT_ID,
+    cardNumber: "2",
+    cardName: "Tarik Skubal",
+    platformData: { bsc: { ref: "bsc-2" } },
+    teamCheckDoneAt: 1_000,
+    teamOnCardIds: ["team-1"],
+    ...overrides,
+  };
+}
+
+/**
+ * Renders and drives a commit all the way through, via the ZERO-CANDIDATE
+ * path: the fetch short-circuits (`candidateCount: 0`), the client skips the
+ * pairing dialog and runs straight through resolveEntities → runCommit. It is
+ * the shortest route to a landed commit, which is what puts the post-commit
+ * banner — and its attention call-to-action — on screen.
+ *
+ * Set `state.cards` before calling; the commit mock does not change them (the
+ * live `getCardChecklist` subscription is what the count reads).
+ */
+async function commitZeroCandidatePath() {
+  state.liveCandidates = { ready: 0, total: 0, cards: [] };
+  mockResolveEntities.mockResolvedValue({
+    unknownPlayers: [],
+    unknownTeams: [],
+    batchId: undefined,
+  });
+  mockCommitChecklist.mockResolvedValue({ count: 2 });
+  mockDiscardCandidates.mockResolvedValue(undefined);
+  let resolveFetch!: (value: unknown) => void;
+  mockFetchChecklist.mockImplementation(
+    () => new Promise((resolve) => (resolveFetch = resolve)),
+  );
+
+  const rendered = renderChecklist();
+  fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  await act(async () => {
+    resolveFetch({
+      success: true,
+      message: "Custom selector subtree — no marketplace data available.",
+      candidateCount: 0,
+    });
+  });
+  await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+  return rendered;
+}
+
+/**
+ * Drives the same zero-candidate route as `commitZeroCandidatePath`, but stops
+ * one step short: `resolveChecklistEntities` reports an unknown player, so the
+ * entity-review wizard opens instead of the commit running — and the operator
+ * cancels it. NOTHING is saved on this path, which is exactly why the banner
+ * it leaves behind must not offer to fix anything.
+ */
+async function cancelEntityReviewPath() {
+  state.liveCandidates = { ready: 0, total: 0, cards: [] };
+  mockResolveEntities.mockResolvedValue({
+    unknownPlayers: [{ name: "Unknown Guy" }],
+    unknownTeams: [],
+    batchId: "batch-1",
+  });
+  mockDiscardCandidates.mockResolvedValue(undefined);
+  let resolveFetch!: (value: unknown) => void;
+  mockFetchChecklist.mockImplementation(
+    () => new Promise((resolve) => (resolveFetch = resolve)),
+  );
+
+  const rendered = renderChecklist();
+  fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  await act(async () => {
+    resolveFetch({
+      success: true,
+      message: "Custom selector subtree — no marketplace data available.",
+      candidateCount: 0,
+    });
+  });
+  await waitFor(() => expect(mockResolveEntities).toHaveBeenCalledTimes(1));
+  return rendered;
+}
+
+describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [attentionCard(), settledCard()];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+  });
+
+  it("counts the flagged rows and marks only those rows in the grid", () => {
+    renderChecklist();
+
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention/ }).textContent,
+    ).toContain("1 need attention");
+    expect(screen.getAllByLabelText(/needs attention/)).toHaveLength(1);
+    expect(screen.getByLabelText(/Card 1 needs attention/)).toBeTruthy();
+  });
+
+  it("announces the count in a live region, since the chip's own label changes silently", () => {
+    renderChecklist();
+
+    const announced = screen
+      .getAllByRole("status")
+      .map((el) => el.textContent ?? "")
+      .join(" | ");
+    expect(announced).toContain("1 card needs attention on this checklist");
+  });
+
+  it("hides the row entirely when nothing needs attention", () => {
+    state.cards = [settledCard()];
+    renderChecklist();
+
+    expect(screen.queryByText(/need attention/)).toBeNull();
+  });
+
+  it("toggling the chip filters the grid down to the flagged rows", () => {
+    renderChecklist();
+
+    expect(screen.getByText("Tarik Skubal")).toBeTruthy();
+
+    const chip = screen.getByRole("button", { name: /Show only cards needing attention/ });
+    fireEvent.click(chip);
+
+    expect(screen.getByText("AL Leaders ERA LL")).toBeTruthy();
+    expect(screen.queryByText("Tarik Skubal")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention \(on\)/ }),
+    ).toBeTruthy();
+  });
+
+  it("opens the walker from the header, any time", async () => {
+    renderChecklist();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Cards Needing Attention");
+    expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
+      "#1 AL Leaders ERA LL",
+    );
+  });
+
+  it("does not open the walker on its own", () => {
+    renderChecklist();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  /**
+   * `walkerOpenedByHand` is the only thing that mounts the walker — see the
+   * state block in CardChecklist.tsx. Nothing in
+   * CardAttentionWalker.test.tsx exercises this seam: that file drives the
+   * walker directly with `isOpen` pinned true, never through the parent, so
+   * a change that reintroduced an automatic open would go unnoticed there.
+   */
+  it("opened BY HAND, stays open and shows All clear once the last flagged row is fixed elsewhere", () => {
+    const { rerender } = renderChecklist();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+    );
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    // The BSC pass (or another tab) answers the one flagged card — nothing
+    // the walker itself did.
+    state.cards = [settledCard()];
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(/All clear/)).toBeTruthy();
+  });
+
+  /**
+   * NEO-102 regression — the walker used to ARM itself on a completed commit
+   * and open across the grid the moment the background BSC team pass flagged
+   * a row. Two E2E flows (checklist-fetch-unknown-entities-link-existing,
+   * checklist-fetch-wizard-add-career-team) commit a custom set whose one
+   * card has no team, so it was flagged immediately and the walker's
+   * `fixed inset-0` overlay swallowed the flow's next tap on the grid. The
+   * commit now says what needs attention and offers the walker; it does not
+   * take the screen.
+   */
+  it("after a commit, does NOT open the walker — it offers it in the banner instead", async () => {
+    await commitZeroCandidatePath();
+
+    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Fix them one at a time/ }),
+    ).toBeTruthy();
+  });
+
+  it("the banner CTA carries the live count", async () => {
+    state.cards = [attentionCard(), attentionCard({ _id: "card-c", cardNumber: "3" })];
+    await commitZeroCandidatePath();
+
+    expect(
+      screen.getByRole("button", { name: "2 need attention — Fix them one at a time" }),
+    ).toBeTruthy();
+  });
+
+  it("clicking the banner CTA opens the walker", async () => {
+    await commitZeroCandidatePath();
+
+    fireEvent.click(screen.getByRole("button", { name: /Fix them one at a time/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Cards Needing Attention");
+  });
+
+  it("the banner CTA is absent when the commit flagged nothing", async () => {
+    state.cards = [settledCard()];
+    await commitZeroCandidatePath();
+
+    // The banner itself is there — only the call-to-action half is not.
+    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+  });
+
+  it("the banner CTA disappears once the count reaches zero", async () => {
+    const { rerender } = await commitZeroCandidatePath();
+    expect(screen.getByRole("button", { name: /Fix them one at a time/ })).toBeTruthy();
+
+    // The BSC pass (or another tab) answers the one flagged card.
+    state.cards = [settledCard()];
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+  });
+
+  /**
+   * CI round 2 regression (flow `checklist-fetch-cancel-dialog`). The CTA was
+   * keyed off `syncNotice.tone === "status"` — which is EVERY routine notice,
+   * not just a commit. On a custom set holding a teamless card the cancel
+   * banner read "Fetch cancelled — no cards saved. 1 need attention — Fix them
+   * one at a time", offering to fix cards the operator had just declined to
+   * save, and breaking the flow's exact-text assertion on that element.
+   *
+   * The rule is structural, not textual: only the notice `runCommit` marks
+   * `kind: "committed"` carries the CTA.
+   */
+  it("leaves the cancelled-review banner exactly as written, with no attention CTA", async () => {
+    await cancelEntityReviewPath();
+    // Precondition: there IS something needing attention, so a tone-keyed CTA
+    // would have appeared here.
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention/ }).textContent,
+    ).toContain("1 need attention");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel entity review" }));
+
+    // Exact match: `getByText` compares the element's whole text content, so a
+    // CTA appended inside the banner would fail this outright.
+    expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("does not offer the CTA on the pre-commit 'needs confirmation' notice either", async () => {
+    await cancelEntityReviewPath();
+
+    // The wizard is open and nothing has been committed yet.
+    expect(
+      screen.getByText("1 new players + 0 new teams need confirmation"),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
   });
 });
