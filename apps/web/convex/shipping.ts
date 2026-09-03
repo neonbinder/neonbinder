@@ -14,7 +14,12 @@
  * lease) or `marketplaceAccountIds`.
  */
 
-import { query, mutation } from "./_generated/server";
+import {
+  query,
+  mutation,
+  internalQuery,
+  internalMutation,
+} from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { postalAddressValidator } from "./schema";
@@ -124,16 +129,31 @@ export const saveMyReturnAddress = mutation({
  * NEO-120 — record a label the seller has already paid for.
  *
  * Called after the purchase succeeds, from `postage.buyLetterLabel`. Kept as a
- * plain mutation rather than folded into the action because by the time it runs
- * the money is spent: a failure here must never be able to fail the purchase,
- * so the caller logs rather than throws.
+ * separate mutation rather than folded into the action because by the time it
+ * runs the money is spent: a failure here must never be able to fail the
+ * purchase, so the caller logs rather than throws.
  *
  * Minimal by design — this is not NEO-121's `shipments` table. No scan events,
  * no status machine, no sale linkage. It exists so a seller can see what they
  * spent and reprint a label they have already bought.
+ *
+ * ## Why `internalMutation` with an explicit `userId` (NEO-213)
+ * A row here is not just history any more — `getLabelPurchaseForUser` treats it
+ * as PROOF that a shipment belongs to the caller, and `postage.refreshLabelUrl`
+ * forwards the `easypostShipmentId` off the row straight to EasyPost. As a
+ * public mutation this was therefore a way to mint that proof: any signed-in
+ * seller could insert a row naming someone else's shipment id under their own
+ * userId, then "reprint" it. The ownership check downstream would pass, because
+ * the row really was theirs — it was the *shipment id on it* that was not.
+ *
+ * Closing that means the write can only come from the server, so it is internal
+ * and takes the userId as an argument. The one caller (`postage.buyLetterLabel`)
+ * derives that from its own verified Clerk subject and passes a shipment id it
+ * got back from the purchase, never one a client supplied.
  */
-export const recordLabelPurchase = mutation({
+export const recordLabelPurchase = internalMutation({
   args: {
+    userId: v.string(),
     easypostShipmentId: v.string(),
     trackingCode: v.string(),
     costCents: v.number(),
@@ -143,11 +163,8 @@ export const recordLabelPurchase = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) throw new Error("Not authenticated");
-
     await ctx.db.insert("labelPurchases", {
-      userId,
+      userId: args.userId,
       easypostShipmentId: args.easypostShipmentId,
       trackingCode: args.trackingCode,
       costCents: args.costCents,
@@ -192,5 +209,62 @@ export const listMyLabelPurchases = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .order("desc")
       .take(PURCHASE_HISTORY_LIMIT);
+  },
+});
+
+/**
+ * NEO-213 — one purchase row, but only if it belongs to `userId`.
+ *
+ * Exists because `postage.refreshLabelUrl` is an action and an action has no
+ * `ctx.db`. The alternative — letting the client hand the action an
+ * `easypostShipmentId` directly — would make a reprint call work for ANY
+ * shipment id the caller could guess or scrape, since the browser service only
+ * checks that the *key* belongs to the seller, not that the *shipment* does.
+ * So the id the action forwards to EasyPost is derived here, from a row this
+ * query has already proved is the caller's.
+ *
+ * Same rule, same reason as `adapters/placeholderUploads.ts:343-355`: an
+ * argument that names someone else's object turns a URL minter into a
+ * cross-user read oracle. Ownership is resolved server-side from the verified
+ * Clerk subject, never trusted from the argument.
+ *
+ * That only holds because `recordLabelPurchase` is internal. This query proves
+ * the ROW is the caller's; it cannot tell whether the shipment id written on
+ * that row was ever theirs. While the write was public, a seller could file a
+ * row of their own naming any shipment id they liked and this check would wave
+ * it through. The two functions are one boundary, not two — do not make the
+ * write public again without moving the shipment-id check somewhere else.
+ *
+ * Not-found and not-yours both return null, deliberately — a distinct "that
+ * isn't yours" would confirm the id exists, which is the oracle again in a
+ * smaller form. The caller renders one message for both.
+ *
+ * `internalQuery`, so it is unreachable from any client; the only caller is the
+ * action, which supplies the userId it read off the token.
+ */
+export const getLabelPurchaseForUser = internalQuery({
+  args: {
+    purchaseId: v.id("labelPurchases"),
+    userId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      _id: v.id("labelPurchases"),
+      _creationTime: v.number(),
+      userId: v.string(),
+      easypostShipmentId: v.string(),
+      trackingCode: v.string(),
+      costCents: v.number(),
+      weightOz: v.number(),
+      toAddress: postalAddressValidator,
+      labelUrl: v.string(),
+      purchasedAt: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.purchaseId);
+    if (!row || row.userId !== args.userId) return null;
+    return row;
   },
 });

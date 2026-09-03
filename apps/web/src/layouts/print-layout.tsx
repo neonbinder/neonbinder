@@ -26,6 +26,9 @@ import { api } from "@/convex/_generated/api";
 
 export const SECTIONS = [
   { label: "Shipping", path: "/print/shipping" },
+  // Directly after Shipping because it is where a label bought there ends up —
+  // the two are one flow read left to right (NEO-213).
+  { label: "Label History", path: "/print/labels" },
   { label: "QR Code", path: "/print/qr" },
   { label: "Placeholders", path: "/print/placeholders" },
   { label: "Spine Labels", path: "/print/spine-label" },
@@ -46,6 +49,7 @@ export const SECTIONS = [
  */
 function useWarmPrintQueries() {
   useQuery(api.shipping.getMyReturnAddress); // shipping labels
+  useQuery(api.shipping.listMyLabelPurchases); // label history
   useQuery(api.publicProfile.getMyPublicProfile); // QR code
   // Spine labels (NEO-147) deliberately has nothing here. Both of its queries
   // are demand-driven — `players.search` is skipped until the user types, and

@@ -65,6 +65,56 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Inputs for {@link imageBodyHtml} — a remote label image sized to the page. */
+export interface ImageBodyHtmlOptions {
+  /** Absolute https URL of the image. Anything else is refused. */
+  src: string;
+  widthIn: number;
+  heightIn: number;
+}
+
+/**
+ * Build the `<img>` body for a printed label, from a URL we did not author.
+ *
+ * ## Why this is a function rather than a template literal at the call site
+ * `bodyHtml` is dropped verbatim into the print iframe's `srcdoc`, and that
+ * iframe is SAME-ORIGIN. A label URL comes back from EasyPost via the browser
+ * service, so it is external input reaching a markup sink: a value containing
+ * `"` closes the attribute and everything after it is markup we did not write,
+ * executing with the page's origin. Both print call sites interpolated it by
+ * hand, which is exactly the shape that goes wrong once and is then wrong
+ * everywhere.
+ *
+ * Two defences, because either alone leaves a gap:
+ *
+ *  1. **Scheme check.** Only `https:` renders. `javascript:` is inert in a
+ *     `src`, but `data:` is not — a `data:image/svg+xml` document runs script in
+ *     the iframe's origin. A postage label is always an https URL from the
+ *     carrier; anything else is a bug or an attack, and printing a blank sheet
+ *     with no explanation is the worse outcome, so this throws a message the
+ *     seller can act on.
+ *  2. **Attribute escaping.** Even a legitimate https URL can carry `"` or `&`,
+ *     and escaping keeps it inside the attribute where it belongs.
+ *
+ * For an ordinary https URL the output is byte-identical to the markup this
+ * replaced, so nothing about the printed sheet changes.
+ */
+export function imageBodyHtml(options: ImageBodyHtmlOptions): string {
+  const { src, widthIn, heightIn } = options;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(src);
+  } catch {
+    throw new Error("That label's image address isn't a usable link.");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("That label's image address isn't a secure (https) link.");
+  }
+
+  return `<img src="${escapeHtml(src)}" alt="" style="width:${widthIn}in;height:${heightIn}in;display:block">`;
+}
+
 function buildDocument(options: PrintHtmlDocumentOptions): string {
   const { title, bodyHtml, css, page } = options;
   return `<!doctype html>

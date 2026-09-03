@@ -93,6 +93,19 @@ export interface PurchasedLabel {
   amountCents: number;
 }
 
+/**
+ * A label re-fetched from EasyPost for reprinting (NEO-213).
+ *
+ * Deliberately `PurchasedLabel` minus `amountCents`: a retrieve charges
+ * nothing, and the price the seller actually paid is whatever was recorded at
+ * purchase time. Echoing back a *current* amount here would invite the caller
+ * to overwrite a historical ledger entry with a number that never moved.
+ */
+export type RetrievedLabel = Pick<
+  PurchasedLabel,
+  "shipmentId" | "trackingCode" | "labelUrl"
+>;
+
 interface EasyPostRate {
   id: string;
   service: string;
@@ -179,16 +192,36 @@ export function createEasyPostClient(options: EasyPostClientOptions) {
   // HTTP Basic: API key as username, empty password.
   const authHeader = `Basic ${Buffer.from(`${options.apiKey}:`).toString("base64")}`;
 
-  async function request<T>(path: string, body: unknown): Promise<T> {
+  /**
+   * The single place an EasyPost call is made. Every status mapping below —
+   * 401/403 as a key problem, 402 as a funding problem, an abort as a timeout —
+   * lives here rather than at the call sites so that a new endpoint cannot
+   * quietly grow its own, weaker interpretation of a failure.
+   *
+   * SECURITY: `authHeader` is built once from the key and is never read back,
+   * logged, or attached to a thrown error. Nothing on this path can put the
+   * seller's API key into a message that reaches a caller.
+   */
+  async function request<T>(
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    // A GET carries no payload, so it declares no Content-Type either —
+    // EasyPost is content-sniffing-tolerant, but sending a body-less request
+    // that claims to have a JSON body is the kind of thing proxies punish.
+    const isGet = method === "GET";
     let response: Response;
     try {
       response = await doFetch(`${EASYPOST_BASE}${path}`, {
-        method: "POST",
-        headers: {
-          Authorization: authHeader,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
+        method,
+        headers: isGet
+          ? { Authorization: authHeader }
+          : {
+              Authorization: authHeader,
+              "Content-Type": "application/json",
+            },
+        ...(isGet ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {
@@ -240,7 +273,7 @@ export function createEasyPostClient(options: EasyPostClientOptions) {
       from: PostalAddressLike;
       weightOz: number;
     }): Promise<RateQuote> {
-      const shipment = await request<any>("/shipments", {
+      const shipment = await request<any>("POST", "/shipments", {
         shipment: {
           to_address: { ...toEasyPostAddress(args.to), verify: ["delivery"] },
           from_address: toEasyPostAddress(args.from),
@@ -303,6 +336,7 @@ export function createEasyPostClient(options: EasyPostClientOptions) {
       rateId: string;
     }): Promise<PurchasedLabel> {
       const bought = await request<any>(
+        "POST",
         `/shipments/${encodeURIComponent(args.shipmentId)}/buy`,
         { rate: { id: args.rateId } },
       );
@@ -323,6 +357,46 @@ export function createEasyPostClient(options: EasyPostClientOptions) {
         amountCents: bought.selected_rate
           ? moneyToCents(bought.selected_rate.rate)
           : 0,
+      };
+    },
+
+    /**
+     * Re-fetch a bought label so it can be printed again (NEO-213).
+     *
+     * Read-only and free — it buys nothing, so it is safe to call on every
+     * reprint. That is the reason the URL is fetched fresh each time rather
+     * than stored: EasyPost's `label_url` is a time-limited link to a file it
+     * keeps for **180 days** after purchase, so a URL captured at purchase
+     * time rots, and after 180 days the image is gone entirely and
+     * `postage_label.label_url` comes back null.
+     *
+     * A shipment EasyPost cannot find surfaces as an ordinary request failure
+     * from the shared helper, NOT as a distinct "missing" result — the router
+     * reserves 404 for "this seller has saved no API key", and conflating the
+     * two would tell a seller to re-enter a key that is already fine.
+     */
+    async retrieveLabel(args: { shipmentId: string }): Promise<RetrievedLabel> {
+      const shipment = await request<any>(
+        "GET",
+        `/shipments/${encodeURIComponent(args.shipmentId)}`,
+      );
+
+      const labelUrl = shipment?.postage_label?.label_url;
+      if (!labelUrl) {
+        // Nothing to retry and nothing to fix, so say what actually happened
+        // rather than implying a transient failure.
+        throw new EasyPostError(
+          "EasyPost no longer has this label — labels are kept for 180 days after purchase.",
+          "unknown",
+        );
+      }
+
+      return {
+        shipmentId: shipment.id ?? args.shipmentId,
+        // The label prints without it; an empty string beats blocking a
+        // reprint over a display field.
+        trackingCode: shipment.tracking_code ?? "",
+        labelUrl,
       };
     },
   };

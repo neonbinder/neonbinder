@@ -12,9 +12,10 @@ import { SignUpButton } from "@clerk/clerk-react";
  * Copy covers only what the feature does today. NEO-118 deliberately omitted
  * postage; NEO-120 shipped it (EasyPost, USPS First-Class letters, address
  * verification during rating), so the postage section below replaced that
- * omission. Still deliberately absent, because neither exists in the UI yet:
- * label purchase history, and any marketplace-order integration — the seller
- * addresses each envelope by hand. Do not promise either here.
+ * omission. NEO-213 shipped label purchase history — every purchase saved and
+ * reprintable — so that is now claimable too, and the postage section says so.
+ * Still deliberately absent: any marketplace-order integration. The seller
+ * addresses each envelope by hand. Do not promise that here.
  */
 export default function ShippingLabelsPage() {
   const navigate = useNavigate();
@@ -345,6 +346,13 @@ export default function ShippingLabelsPage() {
                   <div>
                     <h4 className="font-semibold text-slate-300">Tracking, Copied, Done</h4>
                     <p>Every purchase hands you a tracking number with a copy button, ready to paste back to your buyer.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="text-neon-blue font-bold text-xl">▸</span>
+                  <div>
+                    <h4 className="font-semibold text-slate-300">Reprint Without Re-Buying</h4>
+                    <p>Every label you buy is saved. Jammed printer, wrong tray, lost sheet — pull it back up and print it again for free.</p>
                   </div>
                 </div>
               </div>

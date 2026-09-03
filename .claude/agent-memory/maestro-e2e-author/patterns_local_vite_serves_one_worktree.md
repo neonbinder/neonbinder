@@ -33,5 +33,16 @@ APP_URL=http://localhost:3001 MAESTRO_PARALLELISM=1 MAESTRO_SKIP_BOOTSTRAP=1 \
 honoured by the runner (`APP_URL="${APP_URL:-http://localhost:3000}"`), so no
 script edit is needed. Kill your extra Vite when you are done.
 
+**Failure signature when Vite is on https** (cost two 5-min runs, 2026-09-03):
+pointing `APP_URL` at `https://localhost:3000` does NOT fail fast. Chromedriver
+runs with `acceptInsecureCerts: false`, so the mkcert page never finishes
+loading and the FIRST assert hangs the full driver timeout — the flow dies at
+~5m with `CommandFailed: java.util.concurrent.TimeoutException` on
+`getCurrentUrl {}` and an all-white screenshot. Every flow fails identically,
+including known-good ones like `profile/worker-bootstrap`. **A blank screenshot
+plus a `getCurrentUrl` timeout means the transport, not your selectors** —
+check `http` vs `https` before touching the flow. `curl -sk` against the same
+URL returning 200 does not clear the server: curl does not enforce the cert.
+
 Note the Convex backend is still shared dev regardless of which Vite you run —
 see [[local-validation-needs-a-pr-preview]].

@@ -17,7 +17,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 
 // convex-test requires import.meta.glob to discover all modules.
@@ -215,5 +215,222 @@ describe("saveMyReturnAddress — validation", () => {
       hasCredentials: true,
     });
     expect(row?.returnAddress?.line1).toBe("100 Binder Way");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-120's label history, backfilled in NEO-213 — the reprint feature makes
+// these load-bearing. Reprint reads a `labelPurchases` row and forwards the
+// shipment id on it to EasyPost, so the ordering, the cap and the ownership
+// boundary below are now the difference between "reprint my label" and
+// "reprint someone else's".
+// ---------------------------------------------------------------------------
+
+const OTHER_USER = "user_ship_bbbb2222";
+
+const TO_ADDRESS = {
+  name: "Ricky Henderson",
+  line1: "42 Leadoff Ln",
+  city: "Oakland",
+  state: "CA",
+  postalCode: "94621",
+  country: "US",
+};
+
+/**
+ * The arguments recordLabelPurchase takes, with per-call fields overridable.
+ *
+ * `userId` is one of them because the mutation is internal and takes the owner
+ * explicitly (NEO-213) — the caller is an action that already verified the
+ * subject, so there is no identity for the mutation itself to read.
+ */
+function purchaseArgs(
+  overrides: Partial<{ userId: string; trackingCode: string }> = {},
+) {
+  return {
+    userId: USER,
+    easypostShipmentId: "shp_test_0001",
+    trackingCode: "9400100000000000000001",
+    costCents: 78,
+    weightOz: 1,
+    toAddress: TO_ADDRESS,
+    labelUrl: "https://easypost-files.example/label-0001.png",
+    ...overrides,
+  };
+}
+
+/** Insert a purchase directly, bypassing auth — for seeding another user's. */
+async function seedPurchase(
+  t: ReturnType<typeof convexTest>,
+  userId: string,
+  trackingCode: string,
+) {
+  return await t.run(async (ctx) =>
+    ctx.db.insert("labelPurchases", {
+      ...purchaseArgs({ userId, trackingCode }),
+      purchasedAt: 1,
+    }),
+  );
+}
+
+// Internal (NEO-213): a public write here was a way to MINT the ownership proof
+// that `getLabelPurchaseForUser` checks — file a row under your own userId
+// carrying someone else's shipment id, then "reprint" it. Only the purchase
+// action writes rows now, and it passes the subject it verified.
+describe("recordLabelPurchase", () => {
+  test("files the row under the userId it is given", async () => {
+    const t = convexTest(schema, modules);
+    // No identity anywhere in this call — the owner is an argument, and the
+    // caller (postage.buyLetterLabel) is what proves it.
+    await t.mutation(
+      internal.shipping.recordLabelPurchase,
+      purchaseArgs({ userId: OTHER_USER }),
+    );
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("labelPurchases").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].userId).toBe(OTHER_USER);
+  });
+
+  test("stores every field, and stamps purchasedAt server-side", async () => {
+    const t = convexTest(schema, modules);
+    const before = Date.now();
+    await t.mutation(internal.shipping.recordLabelPurchase, purchaseArgs());
+    const after = Date.now();
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("labelPurchases")
+        .withIndex("by_user", (q) => q.eq("userId", USER))
+        .collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      userId: USER,
+      easypostShipmentId: "shp_test_0001",
+      trackingCode: "9400100000000000000001",
+      costCents: 78,
+      weightOz: 1,
+      labelUrl: "https://easypost-files.example/label-0001.png",
+    });
+    // A snapshot of what was printed, not a reference to anything editable.
+    expect(rows[0].toAddress).toEqual(TO_ADDRESS);
+    // The clock is the server's — the mutation takes no timestamp argument, so
+    // a client cannot backdate a purchase into or out of the history window.
+    expect(rows[0].purchasedAt).toBeGreaterThanOrEqual(before);
+    expect(rows[0].purchasedAt).toBeLessThanOrEqual(after);
+  });
+});
+
+describe("listMyLabelPurchases", () => {
+  test("returns an empty list when unauthenticated", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.shipping.listMyLabelPurchases, {})).resolves.toEqual(
+      [],
+    );
+  });
+
+  test("returns newest first", async () => {
+    const t = convexTest(schema, modules);
+    for (const code of ["first", "second", "third"]) {
+      await t.mutation(
+        internal.shipping.recordLabelPurchase,
+        purchaseArgs({ trackingCode: code }),
+      );
+    }
+
+    const rows = await t
+      .withIdentity({ subject: USER })
+      .query(api.shipping.listMyLabelPurchases, {});
+    expect(rows.map((r) => r.trackingCode)).toEqual(["third", "second", "first"]);
+  });
+
+  // The cap is what makes this a "recent purchases" view rather than an
+  // unbounded scan. Seed one past it and pin which end gets dropped: the
+  // OLDEST, because dropping the newest would hide the label a seller is most
+  // likely to be reprinting.
+  test("caps at 25, dropping the oldest", async () => {
+    const t = convexTest(schema, modules);
+    for (let i = 1; i <= 26; i++) {
+      await t.mutation(
+        internal.shipping.recordLabelPurchase,
+        purchaseArgs({ trackingCode: `label-${String(i).padStart(2, "0")}` }),
+      );
+    }
+
+    const rows = await t
+      .withIdentity({ subject: USER })
+      .query(api.shipping.listMyLabelPurchases, {});
+    expect(rows).toHaveLength(25);
+    const codes = rows.map((r) => r.trackingCode);
+    expect(codes[0]).toBe("label-26");
+    expect(codes[24]).toBe("label-02");
+    expect(codes).not.toContain("label-01");
+  });
+
+  test("shows each seller only their own purchases", async () => {
+    const t = convexTest(schema, modules);
+    await t.mutation(
+      internal.shipping.recordLabelPurchase,
+      purchaseArgs({ userId: USER, trackingCode: "mine" }),
+    );
+    await t.mutation(
+      internal.shipping.recordLabelPurchase,
+      purchaseArgs({ userId: OTHER_USER, trackingCode: "theirs" }),
+    );
+
+    const mine = await t
+      .withIdentity({ subject: USER })
+      .query(api.shipping.listMyLabelPurchases, {});
+    const theirs = await t
+      .withIdentity({ subject: OTHER_USER })
+      .query(api.shipping.listMyLabelPurchases, {});
+
+    expect(mine.map((r) => r.trackingCode)).toEqual(["mine"]);
+    expect(theirs.map((r) => r.trackingCode)).toEqual(["theirs"]);
+  });
+});
+
+// This query is the whole authorization boundary for NEO-213's reprint: the
+// action has no ctx.db, so this is the only thing standing between a purchase
+// id and someone else's EasyPost shipment.
+describe("getLabelPurchaseForUser — reprint ownership", () => {
+  test("returns the row to its owner", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t, USER, "mine");
+
+    const row = await t.query(internal.shipping.getLabelPurchaseForUser, {
+      purchaseId,
+      userId: USER,
+    });
+    expect(row?.trackingCode).toBe("mine");
+    expect(row?.easypostShipmentId).toBe("shp_test_0001");
+  });
+
+  test("returns null for another user's purchase", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t, OTHER_USER, "theirs");
+
+    const row = await t.query(internal.shipping.getLabelPurchaseForUser, {
+      purchaseId,
+      userId: USER,
+    });
+    expect(row).toBeNull();
+  });
+
+  // Same answer as "not yours", deliberately — a different one would confirm
+  // the id exists, and the caller renders one message for both.
+  test("returns null for an id that no longer exists", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t, USER, "gone");
+    await t.run(async (ctx) => ctx.db.delete(purchaseId));
+
+    const row = await t.query(internal.shipping.getLabelPurchaseForUser, {
+      purchaseId,
+      userId: USER,
+    });
+    expect(row).toBeNull();
   });
 });

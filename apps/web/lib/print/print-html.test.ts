@@ -17,6 +17,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 import {
+  imageBodyHtml,
   waitForImages,
   type ImageBearingDocument,
   type PrintableImage,
@@ -71,6 +72,67 @@ async function isSettled(p: Promise<unknown>): Promise<boolean> {
   ]);
   return winner !== marker;
 }
+
+// NEO-213 — the label URL is EasyPost's, and `bodyHtml` is dropped verbatim
+// into a SAME-ORIGIN iframe's srcdoc. Both print call sites used to build the
+// <img> by hand, so a URL carrying a quote could close the attribute and run as
+// markup with the app's origin. These pin both halves of the fix.
+describe("imageBodyHtml", () => {
+  const SIZE = { widthIn: 6, heightIn: 4 };
+
+  test("renders an ordinary https label exactly as before", () => {
+    // Byte-for-byte the markup the hand-built template produced — the printed
+    // sheet must not change, only the handling of a hostile URL.
+    expect(
+      imageBodyHtml({ src: "https://easypost.example/label.png", ...SIZE }),
+    ).toBe(
+      '<img src="https://easypost.example/label.png" alt="" style="width:6in;height:4in;display:block">',
+    );
+  });
+
+  test("escapes a quote rather than letting it close the attribute", () => {
+    const body = imageBodyHtml({
+      src: 'https://easypost.example/a.png?x="><script>alert(1)</script>',
+      ...SIZE,
+    });
+    expect(body).not.toContain("<script>");
+    expect(body).toContain("&quot;");
+    // One tag, still one tag: nothing escaped the src attribute.
+    expect(body.match(/</g)).toHaveLength(1);
+  });
+
+  test("escapes & and < in a query string", () => {
+    const body = imageBodyHtml({
+      src: "https://easypost.example/a.png?a=1&b=2",
+      ...SIZE,
+    });
+    expect(body).toContain("a=1&amp;b=2");
+  });
+
+  // `javascript:` is inert in a src, but a data: SVG is a document that runs
+  // script in the iframe's origin. A postage label is always https.
+  test.each([
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+    "http://easypost.example/label.png",
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+  ])("refuses a non-https src (%s)", (src) => {
+    expect(() => imageBodyHtml({ src, ...SIZE })).toThrow(/https/i);
+  });
+
+  test("refuses something that is not a URL at all", () => {
+    expect(() => imageBodyHtml({ src: "not a url", ...SIZE })).toThrow(
+      /usable link/i,
+    );
+  });
+
+  // The seller sees this text, so it must not be a stack trace or a scheme name.
+  test("its refusal reads as a sentence a seller can act on", () => {
+    expect(() => imageBodyHtml({ src: "", ...SIZE })).toThrow(
+      /label's image address/i,
+    );
+  });
+});
 
 describe("waitForImages", () => {
   test("resolves immediately when there are no images", async () => {
