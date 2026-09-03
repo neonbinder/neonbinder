@@ -381,9 +381,18 @@ export const seedMyTestCredentials = action({
     // it gets back, so an unconditional extra element would change the result
     // of seeding on every deployment that has no EasyPost key. Silence when
     // unconfigured keeps this additive.
+    //
+    // NEO-121 — stores through the INTERNAL helper, not the public
+    // `saveEasypostKey`, precisely because the public one now schedules webhook
+    // registration (decision 8). Every preview seeds this same shared test key
+    // for 8 worker users, so registering here would pile a webhook per preview
+    // per worker onto one EasyPost test account — and `preview-cleanup.yml`
+    // deletes the preview deployment, so nothing would ever unregister them.
+    // The seed stores the key; only a real seller's save registers a hook.
     const easypostKey = process.env.DEV_EASYPOST_API_KEY;
     if (easypostKey) {
-      const result = await ctx.runAction(api.postage.saveEasypostKey, {
+      const result = await ctx.runAction(internal.postage.storeEasypostKeyForUser, {
+        userId,
         apiKey: easypostKey,
       });
       seeded.push({ site: "easypost", stored: result.success });

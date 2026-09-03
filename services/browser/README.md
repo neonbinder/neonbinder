@@ -75,6 +75,38 @@ Delists a card using web automation.
 }
 ```
 
+### EasyPost postage routes
+
+Convex never holds a seller's EasyPost API key (NEO-20's credential boundary),
+so it asks this service to make every EasyPost call. Every route below is
+scoped by `EASYPOST_KEY_PATTERN` — none of them will touch a secret that is not
+an `easypost-credentials-*` secret.
+
+| Route | What it does |
+|---|---|
+| `PUT /easypost/:key` | Store (replace) the seller's EasyPost API key |
+| `DELETE /easypost/:key` | Delete it. Idempotent (NEO-121 — moved off the unguarded `DELETE /credentials/:key`) |
+| `POST /easypost/:key/rate` | Price a First-Class letter. Charges nothing |
+| `POST /easypost/:key/buy` | Buy a quoted rate. **Spends the seller's money** |
+| `GET /easypost/:key/label/:shipmentId` | Re-fetch a bought label for reprinting (NEO-213) |
+| `GET /easypost/:key/tracker/:shipmentId` | Current USPS scans for a bought shipment (NEO-121) |
+| `GET /easypost/:key/webhooks` | List the account's webhooks, for reconciliation (NEO-121) |
+| `POST /easypost/:key/webhooks` | Register `{url, secret}`. The URL must be https on a `*.convex.site` host (NEO-121) |
+| `DELETE /easypost/:key/webhooks/:webhookId` | Unregister a webhook (NEO-121) |
+
+Two status contracts on this router are load-bearing and must not drift:
+
+- **A JSON `404` means "no EasyPost key saved for this user" and nothing else.**
+  Convex branches on it to prompt for a key. A shipment EasyPost itself cannot
+  find is a `502`; a shipment with no tracker yet is a `409` (`no_tracker`); a
+  request this service refuses to send upstream at all is a `400`
+  (`invalid_input`). EasyPost's *own* 404 on a webhook delete is turned into
+  success inside the client, never here.
+- **No response body or log line carries a webhook URL token.** The registered
+  URL contains a per-seller bearer token in its path and EasyPost quotes the URL
+  it rejected in its error text, so `redactWebhookToken` scrubs
+  `/webhooks/easypost/<token>` on the way out of both the client and the router.
+
 ## Docker
 
 Build and run with Docker:

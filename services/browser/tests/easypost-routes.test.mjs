@@ -22,7 +22,11 @@ import { createServer } from "node:http";
 
 const require = createRequire(import.meta.url);
 
-const { createEasypostRouter } = require("../dist/routes/easypost");
+const {
+  createEasypostRouter,
+  validateWebhookUrl,
+  isValidWebhookSecret,
+} = require("../dist/routes/easypost");
 
 // ---------------------------------------------------------------------------
 // In-memory store (mirrors real SecretsManagerService semantics — the
@@ -60,6 +64,19 @@ class InMemorySecretsManager {
     }
     this._store.set(key, { ...credentials });
   }
+
+  // Mirrors SecretsManagerService.deleteCredentials, including the part that
+  // matters: a secret that is already gone is a SUCCESS, not a miss. The real
+  // store swallows Secret Manager's NOT_FOUND for exactly that reason, so a
+  // clear is idempotent end to end.
+  async deleteCredentials(key) {
+    this._validateKey(key);
+    if (this.failNextWrite) {
+      this.failNextWrite = false;
+      throw new Error("Secret Manager unavailable");
+    }
+    this._store.delete(key);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +85,38 @@ class InMemorySecretsManager {
 // ---------------------------------------------------------------------------
 
 let clientCalls;
+let createWebhookCalls;
+let deleteWebhookCalls;
+
+/**
+ * A normalised tracker as services/easypost.ts produces one — the four real
+ * USPS scans from the production letter NEO-121 was verified against, already
+ * in ms and with the null locations dropped.
+ */
+const TRACKER_SNAPSHOT = {
+  trackerId: "trk_92253672884048",
+  status: "out_for_delivery",
+  statusDetail: "out_for_delivery",
+  updatedAt: Date.parse("2026-08-29T00:06:00Z"),
+  lastScanAt: Date.parse("2026-08-29T00:06:00Z"),
+  estDeliveryAt: Date.parse("2026-08-28T00:00:00Z"),
+  publicTrackingUrl: "https://track.easypost.com/djE6dHJrX2ZpeHR1cmVfMDAx",
+  scans: [
+    {
+      at: Date.parse("2026-08-25T17:52:00Z"),
+      status: "in_transit",
+      message: "Origin Processing Cancellation of Postage",
+      city: "MADISON",
+      state: "WI",
+      zip: "53714",
+    },
+    {
+      at: Date.parse("2026-08-29T00:06:00Z"),
+      status: "out_for_delivery",
+      message: "Delivery",
+    },
+  ],
+};
 
 function fakeCreateClient({ apiKey }) {
   clientCalls.push({ apiKey });
@@ -92,6 +141,45 @@ function fakeCreateClient({ apiKey }) {
         trackingCode: "9400100000000000000000",
         labelUrl: "https://example.test/label.png",
       };
+    },
+    async retrieveTracker({ shipmentId }) {
+      // The ordinary early state of a letter: bought, not yet scanned.
+      if (shipmentId === "shp_notracker") {
+        throw Object.assign(
+          new Error("USPS has not scanned this label yet, so there is nothing to show."),
+          { kind: "no_tracker" },
+        );
+      }
+      return TRACKER_SNAPSHOT;
+    },
+    async listWebhooks() {
+      return [
+        {
+          webhookId: "hook_abc123",
+          url: "https://acme-123.convex.site/webhooks/easypost/Ab3xTOKENxYz",
+          mode: "production",
+          disabledAt: null,
+        },
+      ];
+    },
+    async createWebhook({ url, secret }) {
+      createWebhookCalls.push({ url, secret });
+      // EasyPost quotes the URL it rejected — and that URL carries the bearer
+      // token. This is the shape the router must never pass through raw.
+      if (url.includes("/reject-me")) {
+        throw Object.assign(
+          new Error(`Webhook URL ${url} could not be verified`),
+          { kind: "unknown" },
+        );
+      }
+      if (url.includes("/blow-up")) {
+        // No kind at all — the generic 502 path, which is the one that logs.
+        throw new Error(`Registration exploded for ${url}`);
+      }
+      return { webhookId: "hook_abc123", mode: "production" };
+    },
+    async deleteWebhook({ webhookId }) {
+      deleteWebhookCalls.push(webhookId);
     },
     async retrieveLabel({ shipmentId }) {
       // "not found" in the message on purpose: the router must NOT turn an
@@ -140,6 +228,8 @@ after(async () => {
 beforeEach(() => {
   store.clear();
   clientCalls = [];
+  createWebhookCalls = [];
+  deleteWebhookCalls = [];
   manager.failNextWrite = false;
 });
 
@@ -468,5 +558,455 @@ describe("GET /easypost/:key/label/:shipmentId", () => {
       error: "The requested shipment was not found",
       kind: "unknown",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-121 — scan visibility routes
+// ---------------------------------------------------------------------------
+
+const goodWebhookUrl =
+  "https://acme-123.convex.site/webhooks/easypost/Ab3xTOKENxYz";
+/** 43 chars — base64url of 32 random bytes, what Convex actually mints. */
+const goodSecret = "kJ8vQ2mR7pL4nX1wZ6yT3bC9dF5gH0sA2eU8iO4kM7Q";
+
+describe("validateWebhookUrl (the host allowlist)", () => {
+  // THE finding this function exists to close. Without the suffix check this
+  // router is a primitive for pointing any seller's EasyPost account at any
+  // endpoint on the internet — a registration that outlives NeonBinder,
+  // because clearing the key here does not unregister it there.
+  it("accepts a convex.site https url", () => {
+    assert.equal(validateWebhookUrl(goodWebhookUrl), goodWebhookUrl);
+    assert.equal(
+      validateWebhookUrl("https://x.convex.site/webhooks/easypost/T"),
+      "https://x.convex.site/webhooks/easypost/T",
+    );
+  });
+
+  it("trims surrounding whitespace", () => {
+    assert.equal(validateWebhookUrl(`  ${goodWebhookUrl}\n`), goodWebhookUrl);
+  });
+
+  for (const [label, url] of [
+    // The suffix-in-the-middle attack: a substring test on the whole URL
+    // passes this, a parsed-hostname test does not.
+    ["a lookalike host with the suffix in the middle", "https://x.convex.site.evil.com/webhooks/easypost/T"],
+    ["the suffix only in the path", "https://evil.com/x.convex.site/webhooks/easypost/T"],
+    ["the suffix only in a query string", "https://evil.com/?to=.convex.site"],
+    ["the suffix only in a fragment", "https://evil.com/#.convex.site"],
+    ["a host that merely ends in convex.site with no dot", "https://notconvex.site/x"],
+    ["the bare apex", "https://convex.site/x"],
+    ["http", "http://x.convex.site/webhooks/easypost/T"],
+    ["a protocol-relative url", "//x.convex.site/webhooks/easypost/T"],
+    ["no scheme at all", "x.convex.site/webhooks/easypost/T"],
+    ["javascript:", "javascript:alert(1)"],
+    ["data:", "data:text/html,<script>"],
+    ["file:", "file:///etc/passwd"],
+    // Parses with hostname x.convex.site, so a naive host check lets it
+    // through while handing EasyPost userinfo we never meant it to send.
+    ["userinfo smuggling", "https://evil.com@x.convex.site/webhooks/easypost/T"],
+    ["not a url at all", "definitely not a url"],
+    ["an empty string", ""],
+    ["whitespace only", "   "],
+    ["a number", 42],
+    ["null", null],
+    ["undefined", undefined],
+    ["an object", { url: "https://x.convex.site/" }],
+  ]) {
+    it(`rejects ${label}`, () => {
+      assert.equal(validateWebhookUrl(url), undefined);
+    });
+  }
+
+  it("rejects a url longer than any real one", () => {
+    assert.equal(
+      validateWebhookUrl(`https://x.convex.site/webhooks/easypost/${"t".repeat(600)}`),
+      undefined,
+    );
+  });
+
+  // A Convex site host is lowercased by URL parsing, so case cannot be used
+  // to slip past the suffix comparison.
+  it("is case-insensitive about the host", () => {
+    const mixed = "https://Acme-123.CONVEX.SITE/webhooks/easypost/T";
+    assert.equal(validateWebhookUrl(mixed), mixed);
+  });
+});
+
+describe("isValidWebhookSecret", () => {
+  it("accepts the 43-char base64url secret Convex mints", () => {
+    assert.equal(isValidWebhookSecret(goodSecret), true);
+    assert.equal(isValidWebhookSecret("x".repeat(32)), true);
+    assert.equal(isValidWebhookSecret("x".repeat(256)), true);
+  });
+
+  for (const [label, secret] of [
+    ["31 chars", "x".repeat(31)],
+    ["257 chars", "x".repeat(257)],
+    ["an empty string", ""],
+    ["a number", 12345678901234567890],
+    ["null", null],
+    ["undefined", undefined],
+    ["an array of chars", Array(40).fill("x")],
+  ]) {
+    it(`rejects ${label}`, () => {
+      assert.equal(isValidWebhookSecret(secret), false);
+    });
+  }
+});
+
+describe("GET /easypost/:key/tracker/:shipmentId", () => {
+  it("returns the normalised tracker and never the stored key", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/tracker/shp_letter`);
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.trackerId, "trk_92253672884048");
+    assert.equal(body.status, "out_for_delivery");
+    assert.equal(body.scans.length, 2);
+    assert.equal(JSON.stringify(body).includes(placeholderApiKey), false);
+    assert.equal(clientCalls[0].apiKey, placeholderApiKey);
+  });
+
+  it("refuses a marketplace key without reading it", async () => {
+    store.set(marketplaceKey, { username: "seller@example.com", password: "canary-placeholder" });
+    const res = await fetch(`${baseUrl}/easypost/${marketplaceKey}/tracker/shp_letter`);
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid credential key format" });
+    assert.equal(clientCalls.length, 0);
+  });
+
+  // Same untrusted-input guards as the label route, and for the same reason:
+  // the id reaches this route caller-authored.
+  for (const [label, rawId] of [
+    ["a whitespace-only shipment id", "  "],
+    ["an id with no shp_ prefix", "not-a-shipment"],
+    ["a traversal attempt", "shp_../.."],
+    ["an encoded traversal attempt", "shp_%2e%2e%2f"],
+    ["an id with a wrong-case prefix", "SHP_test"],
+    ["the bare prefix with no id", "shp_"],
+  ]) {
+    it(`400s on ${label}`, async () => {
+      store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+      const res = await fetch(
+        `${baseUrl}/easypost/${easypostKey}/tracker/${encodeURIComponent(rawId)}`,
+      );
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "Invalid shipmentId" });
+      assert.equal(clientCalls.length, 0);
+    });
+  }
+
+  it("400s on a shipment id longer than any real one", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(
+      `${baseUrl}/easypost/${easypostKey}/tracker/shp_${"x".repeat(101)}`,
+    );
+    assert.equal(res.status, 400);
+    assert.equal(clientCalls.length, 0);
+  });
+
+  it("404s when no key is saved", async () => {
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/tracker/shp_letter`);
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: "No EasyPost key saved for this user" });
+  });
+
+  // 409, not 404: 404 out of this router means "add your EasyPost key", and a
+  // letter that USPS has simply not scanned yet must not send a seller off to
+  // re-enter a key that is perfectly fine.
+  it("409s (not 404s) when the shipment has no tracker yet", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/tracker/shp_notracker`);
+
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.kind, "no_tracker");
+    assert.match(body.error, /has not scanned/);
+  });
+});
+
+describe("GET /easypost/:key/webhooks", () => {
+  it("lists the account's webhooks", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/webhooks`);
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.webhooks.length, 1);
+    assert.equal(body.webhooks[0].webhookId, "hook_abc123");
+    assert.equal(JSON.stringify(body).includes(placeholderApiKey), false);
+  });
+
+  it("refuses a marketplace key without reading it", async () => {
+    store.set(marketplaceKey, { username: "seller@example.com", password: "canary-placeholder" });
+    const res = await fetch(`${baseUrl}/easypost/${marketplaceKey}/webhooks`);
+    assert.equal(res.status, 400);
+    assert.equal(clientCalls.length, 0);
+  });
+
+  it("404s when no key is saved", async () => {
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/webhooks`);
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: "No EasyPost key saved for this user" });
+  });
+});
+
+describe("POST /easypost/:key/webhooks", () => {
+  const post = (key, body) =>
+    fetch(`${baseUrl}/easypost/${key}/webhooks`, {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(body),
+    });
+
+  it("registers a convex.site url and returns only the hook id and mode", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await post(easypostKey, { url: goodWebhookUrl, secret: goodSecret });
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body, { webhookId: "hook_abc123", mode: "production" });
+    // The secret went out in the request and comes back in nothing.
+    assert.equal(JSON.stringify(body).includes(goodSecret), false);
+    assert.equal(createWebhookCalls[0].url, goodWebhookUrl);
+    assert.equal(createWebhookCalls[0].secret, goodSecret);
+  });
+
+  it("refuses a marketplace key without reading it", async () => {
+    store.set(marketplaceKey, { username: "seller@example.com", password: "canary-placeholder" });
+    const res = await post(marketplaceKey, { url: goodWebhookUrl, secret: goodSecret });
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid credential key format" });
+    assert.equal(clientCalls.length, 0);
+  });
+
+  // The finding, at the route: an arbitrary host must never be registerable,
+  // and validation must happen BEFORE the seller's key is read.
+  for (const [label, url] of [
+    ["a lookalike host", "https://acme.convex.site.evil.com/webhooks/easypost/T"],
+    ["an arbitrary https host", "https://attacker.example.com/collect"],
+    ["http", "http://acme.convex.site/webhooks/easypost/T"],
+    ["a non-url", "not a url"],
+    ["a missing url", undefined],
+    ["a non-string url", 42],
+  ]) {
+    it(`400s on ${label}, before the key is read`, async () => {
+      store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+      const res = await post(easypostKey, { url, secret: goodSecret });
+
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "Invalid webhook url" });
+      // Neither the key nor EasyPost was touched.
+      assert.equal(clientCalls.length, 0);
+      assert.equal(createWebhookCalls.length, 0);
+    });
+  }
+
+  // The URL under test carries a bearer token, so a rejection says what was
+  // wrong in general terms and never quotes the input back.
+  it("does not echo the rejected url into the 400 body", async () => {
+    const res = await post(easypostKey, {
+      url: "http://acme.convex.site/webhooks/easypost/Ab3xTOKENxYz",
+      secret: goodSecret,
+    });
+    const text = await res.text();
+    assert.equal(text.includes("Ab3xTOKENxYz"), false);
+  });
+
+  for (const [label, secret] of [
+    ["a secret below the 32-char floor", "x".repeat(31)],
+    ["a secret above the 256-char ceiling", "x".repeat(257)],
+    ["an empty secret", ""],
+    ["a missing secret", undefined],
+    ["a non-string secret", 12345],
+  ]) {
+    it(`400s on ${label}, before the key is read`, async () => {
+      store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+      const res = await post(easypostKey, { url: goodWebhookUrl, secret });
+
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "Invalid webhook secret" });
+      assert.equal(clientCalls.length, 0);
+      assert.equal(createWebhookCalls.length, 0);
+    });
+  }
+
+  it("never echoes the rejected secret", async () => {
+    const tooShort = "shortsecret-Ab3xTOKENxYz";
+    const res = await post(easypostKey, { url: goodWebhookUrl, secret: tooShort });
+    assert.equal((await res.text()).includes(tooShort), false);
+  });
+
+  it("404s when no key is saved", async () => {
+    const res = await post(easypostKey, { url: goodWebhookUrl, secret: goodSecret });
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: "No EasyPost key saved for this user" });
+  });
+
+  // EasyPost quotes the URL it rejected, and that URL is a credential. The
+  // body Convex receives must already be scrubbed — forwarding an EasyPost
+  // message is deliberate (they are seller-actionable), so the scrubbing has
+  // to happen rather than the forwarding being dropped.
+  it("redacts the webhook token out of the forwarded error body", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await post(easypostKey, {
+      url: "https://acme-123.convex.site/webhooks/easypost/reject-me",
+      secret: goodSecret,
+    });
+
+    assert.equal(res.status, 502);
+    const text = await res.text();
+    assert.equal(text.includes("/webhooks/easypost/reject-me"), false);
+    assert.match(text, /webhooks\/easypost\/<token>/);
+  });
+
+  // The generic 502 path is the one that writes to console. A token reaching
+  // Cloud Logging is a credential in a log retained for 30 days.
+  it("redacts the token out of the log line, and logs no error object", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const original = console.error;
+    const logged = [];
+    console.error = (...args) => logged.push(args);
+    try {
+      const res = await post(easypostKey, {
+        url: "https://acme-123.convex.site/webhooks/easypost/blow-up",
+        secret: goodSecret,
+      });
+      assert.equal(res.status, 502);
+      // Generic body — the seller gets nothing to act on from an unclassified
+      // failure, so nothing is forwarded.
+      assert.deepEqual(await res.json(), { error: "EasyPost request failed" });
+    } finally {
+      console.error = original;
+    }
+
+    const flat = logged.map((args) => args.join(" ")).join("\n");
+    assert.equal(flat.includes("blow-up"), false);
+    assert.ok(flat.includes("/webhooks/easypost/<token>"));
+    // The message, not the Error — a stack or `cause` can still carry the URL.
+    assert.equal(logged[0].some((a) => a instanceof Error), false);
+  });
+});
+
+describe("DELETE /easypost/:key/webhooks/:webhookId", () => {
+  const del = (key, id) =>
+    fetch(`${baseUrl}/easypost/${key}/webhooks/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+
+  it("deletes with the stored key", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await del(easypostKey, "hook_abc123");
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { success: true, message: "Webhook deleted" });
+    assert.deepEqual(deleteWebhookCalls, ["hook_abc123"]);
+    assert.equal(clientCalls[0].apiKey, placeholderApiKey);
+  });
+
+  it("refuses a marketplace key without reading it", async () => {
+    store.set(marketplaceKey, { username: "seller@example.com", password: "canary-placeholder" });
+    const res = await del(marketplaceKey, "hook_abc123");
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid credential key format" });
+    assert.equal(clientCalls.length, 0);
+  });
+
+  for (const [label, id] of [
+    ["no hook_ prefix", "abc123"],
+    ["a wrong-case prefix", "HOOK_abc123"],
+    ["the bare prefix", "hook_"],
+    ["a traversal attempt", "hook_../.."],
+    ["an encoded traversal attempt", "hook_%2e%2e%2f"],
+    ["a hyphen (EasyPost mints none)", "hook_abc-123"],
+    ["whitespace only", "   "],
+  ]) {
+    it(`400s on a webhook id with ${label}`, async () => {
+      store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+      const res = await del(easypostKey, id);
+
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "Invalid webhookId" });
+      assert.equal(clientCalls.length, 0);
+      assert.equal(deleteWebhookCalls.length, 0);
+    });
+  }
+
+  it("400s on a webhook id longer than any real one", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await del(easypostKey, `hook_${"x".repeat(101)}`);
+    assert.equal(res.status, 400);
+    assert.equal(clientCalls.length, 0);
+  });
+
+  it("404s when no key is saved", async () => {
+    const res = await del(easypostKey, "hook_abc123");
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: "No EasyPost key saved for this user" });
+    assert.equal(deleteWebhookCalls.length, 0);
+  });
+});
+
+describe("DELETE /easypost/:key", () => {
+  // This route exists so the EasyPost key delete stops going through
+  // DELETE /credentials/:key, which carries NO prefix guard: a caller meaning
+  // to clear a postage key could name any secret and have it deleted.
+  it("deletes the stored EasyPost key", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}`, { method: "DELETE" });
+
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { success: true, message: "EasyPost key deleted" });
+    assert.equal(store.has(easypostKey), false);
+  });
+
+  it("refuses a marketplace key and deletes nothing", async () => {
+    store.set(marketplaceKey, {
+      username: "seller@example.com",
+      token: "placeholder-token",
+      refreshToken: "placeholder-refresh",
+    });
+    const res = await fetch(`${baseUrl}/easypost/${marketplaceKey}`, { method: "DELETE" });
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid credential key format" });
+    // The live marketplace secret survives, tokens and all.
+    assert.deepEqual(store.get(marketplaceKey), {
+      username: "seller@example.com",
+      token: "placeholder-token",
+      refreshToken: "placeholder-refresh",
+    });
+  });
+
+  it("refuses a malformed key", async () => {
+    const res = await fetch(
+      `${baseUrl}/easypost/easypost-credentials-bad%20user`,
+      { method: "DELETE" },
+    );
+    assert.equal(res.status, 400);
+  });
+
+  // The real Secret Manager store swallows NOT_FOUND, so clearing twice is a
+  // 200 both times. Convex calls this on a path that may already have run.
+  it("is idempotent — clearing an absent key succeeds", async () => {
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}`, { method: "DELETE" });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { success: true, message: "EasyPost key deleted" });
+  });
+
+  it("answers a store failure with a fixed string, not the error", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    manager.failNextWrite = true;
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}`, { method: "DELETE" });
+
+    // 500, NOT 502: no EasyPost call happens on this route, so a store failure
+    // must not be reported as "EasyPost request failed".
+    assert.equal(res.status, 500);
+    assert.deepEqual(await res.json(), { error: "Failed to delete EasyPost key" });
+    // Nothing was deleted.
+    assert.equal(store.has(easypostKey), true);
   });
 });
