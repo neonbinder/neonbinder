@@ -93,6 +93,20 @@ function fakeCreateClient({ apiKey }) {
         labelUrl: "https://example.test/label.png",
       };
     },
+    async retrieveLabel({ shipmentId }) {
+      // "not found" in the message on purpose: the router must NOT turn an
+      // EasyPost-side miss into the 404 that means "no key saved".
+      if (shipmentId === "shp_missing") {
+        throw Object.assign(new Error("The requested shipment was not found"), {
+          kind: "unknown",
+        });
+      }
+      return {
+        shipmentId,
+        trackingCode: "9400100000000000000000",
+        labelUrl: "https://example.test/label.png",
+      };
+    },
   };
 }
 
@@ -363,5 +377,78 @@ describe("POST /easypost/:key/buy", () => {
       body: JSON.stringify({ shipmentId: "shp_test" }),
     });
     assert.equal(res.status, 400);
+  });
+});
+
+describe("GET /easypost/:key/label/:shipmentId", () => {
+  it("retrieves with the stored key and returns only label fields", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/label/shp_test`);
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body, {
+      shipmentId: "shp_test",
+      trackingCode: "9400100000000000000000",
+      labelUrl: "https://example.test/label.png",
+    });
+    // The response carries business data only — never the stored key.
+    assert.equal(JSON.stringify(body).includes(placeholderApiKey), false);
+    assert.equal(clientCalls[0].apiKey, placeholderApiKey);
+  });
+
+  it("refuses a marketplace key without reading it", async () => {
+    store.set(marketplaceKey, {
+      username: "seller@example.com",
+      password: "canary-placeholder",
+    });
+    const res = await fetch(`${baseUrl}/easypost/${marketplaceKey}/label/shp_test`);
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid credential key format" });
+    // The canary's password never reached the EasyPost client.
+    assert.equal(clientCalls.length, 0);
+  });
+
+  it("400s on a shipment id longer than any real one", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(
+      `${baseUrl}/easypost/${easypostKey}/label/${"x".repeat(101)}`,
+    );
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid shipmentId" });
+    // Rejected before the stored key was ever read.
+    assert.equal(clientCalls.length, 0);
+  });
+
+  it("400s on a whitespace-only shipment id", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/label/%20%20`);
+
+    assert.equal(res.status, 400);
+    assert.deepEqual(await res.json(), { error: "Invalid shipmentId" });
+    assert.equal(clientCalls.length, 0);
+  });
+
+  it("404s when no key is saved", async () => {
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/label/shp_test`);
+
+    assert.equal(res.status, 404);
+    assert.deepEqual(await res.json(), { error: "No EasyPost key saved for this user" });
+  });
+
+  // The contract this route exists to keep: 404 means "add your EasyPost key",
+  // so a shipment EasyPost itself cannot find must NOT borrow that status —
+  // even though its message says "not found".
+  it("502s (not 404s) when EasyPost cannot find the shipment", async () => {
+    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/label/shp_missing`);
+
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), {
+      error: "The requested shipment was not found",
+      kind: "unknown",
+    });
   });
 });

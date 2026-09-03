@@ -45,6 +45,13 @@ const EASYPOST_KEY_PATTERN = /^easypost-credentials-[a-zA-Z0-9_-]+$/;
 const MAX_KEY_LENGTH = 256;
 
 /**
+ * EasyPost shipment ids are short (`shp_` + ~24 chars). The cap exists so a
+ * path segment of arbitrary length cannot be pushed through to an upstream
+ * URL; it is a sanity bound, not a format check.
+ */
+const MAX_SHIPMENT_ID_LENGTH = 100;
+
+/**
  * The slice of SecretsManagerService these routes use. Injectable so the tests
  * can mount the router over an in-memory store (see routes/credentials.ts).
  */
@@ -77,21 +84,31 @@ function easypostStatus(kind: string | undefined): number {
 
 function handleEasyPostFailure(err: unknown, res: Response, context: string) {
   const message = err instanceof Error ? err.message : "Unknown error";
+  const kind = (err as { kind?: string })?.kind;
+
+  // `kind` is checked FIRST, and that ordering is the contract, not a style
+  // choice. Only EasyPostError carries a kind; the store throws plain Errors.
+  // A 404 out of this router means exactly one thing to Convex — "no EasyPost
+  // key saved for this user" — and that is what drives the "add your key"
+  // prompt in the UI. EasyPost's own business messages routinely contain the
+  // words "not found" (an unverifiable address, a shipment id that does not
+  // resolve), so matching on the message before the kind would tell a seller
+  // whose key is perfectly fine to go re-enter it.
+  //
+  // Forwarding EasyPost's message is deliberate too: these are
+  // seller-actionable ("address not found", "insufficient funds"), and
+  // swallowing them would leave the UI saying "something went wrong" for a
+  // fixable typo. The key itself never appears in these messages.
+  if (kind) {
+    res.status(easypostStatus(kind)).json({ error: message, kind });
+    return;
+  }
   if (message.includes("Invalid credential key format")) {
     res.status(400).json({ error: "Invalid credential key format" });
     return;
   }
   if (message.includes("not found") || message.includes("No active version")) {
     res.status(404).json({ error: "No EasyPost key saved for this user" });
-    return;
-  }
-  const kind = (err as { kind?: string })?.kind;
-  // Deliberately forwards EasyPost's message: these are seller-actionable
-  // ("address not found", "insufficient funds"), and swallowing them would
-  // leave the UI saying "something went wrong" for a fixable typo. The key
-  // itself never appears in these messages.
-  if (kind) {
-    res.status(easypostStatus(kind)).json({ error: message, kind });
     return;
   }
   console.error(`${context} failed:`, err);
@@ -236,6 +253,42 @@ export function createEasypostRouter(
         res.json(await client.buyLabel({ shipmentId, rateId }));
       } catch (err) {
         handleEasyPostFailure(err, res, "EasyPost buy");
+      }
+    },
+  );
+
+  /**
+   * Re-fetch the label for an already-bought shipment so it can be reprinted
+   * (NEO-213). Read-only and free — it buys nothing.
+   *
+   * The URL is fetched rather than stored because EasyPost's `label_url` is a
+   * time-limited link into a file it keeps for 180 days; a URL captured at
+   * purchase time goes stale long before the label does.
+   *
+   * A shipment EasyPost cannot find is a 502 here, not a 404. 404 from this
+   * router means "no EasyPost key saved for this user" and nothing else — see
+   * handleEasyPostFailure.
+   */
+  router.get(
+    "/easypost/:key/label/:shipmentId",
+    async (
+      req: Request<{ key: string; shipmentId: string }>,
+      res: Response,
+    ) => {
+      if (rejectNonEasypostKey(req.params.key, res)) return;
+
+      const shipmentId = (req.params.shipmentId ?? "").trim();
+      if (!shipmentId || shipmentId.length > MAX_SHIPMENT_ID_LENGTH) {
+        res.status(400).json({ error: "Invalid shipmentId" });
+        return;
+      }
+
+      try {
+        const apiKey = await loadEasyPostKey(req.params.key);
+        const client = createClient({ apiKey });
+        res.json(await client.retrieveLabel({ shipmentId }));
+      } catch (err) {
+        handleEasyPostFailure(err, res, "EasyPost label retrieve");
       }
     },
   );

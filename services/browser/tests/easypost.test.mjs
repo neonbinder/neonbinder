@@ -326,6 +326,122 @@ describe("buyLabel", () => {
   });
 });
 
+/**
+ * NEO-213 — re-fetching a label for reprinting.
+ *
+ * The case that matters is the 180-day one: EasyPost keeps label images for
+ * 180 days and then returns the shipment with a null `label_url`. That is a
+ * 200 OK carrying nothing printable, so it has to be caught here or the seller
+ * gets a print page pointed at `undefined`.
+ */
+describe("retrieveLabel", () => {
+  const retrievedShipment = (over = {}) => ({
+    id: "shp_1",
+    tracking_code: "9400100000000000000000",
+    postage_label: { label_url: "https://easypost-files.example/label.png" },
+    ...over,
+  });
+
+  it("GETs the shipment and returns tracking plus the label url", async () => {
+    const { impl, calls } = stubFetch(jsonResponse(retrievedShipment()));
+
+    const label = await createEasyPostClient({
+      apiKey: "ek_test",
+      fetchImpl: impl,
+    }).retrieveLabel({ shipmentId: "shp_1" });
+
+    assert.match(calls[0].url, /\/v2\/shipments\/shp_1$/);
+    assert.equal(calls[0].init.method, "GET");
+    assert.deepEqual(label, {
+      shipmentId: "shp_1",
+      trackingCode: "9400100000000000000000",
+      labelUrl: "https://easypost-files.example/label.png",
+    });
+  });
+
+  // A retrieve buys nothing, so it must not look like a write on the wire.
+  it("sends no request body and no Content-Type", async () => {
+    const { impl, calls } = stubFetch(jsonResponse(retrievedShipment()));
+    await createEasyPostClient({ apiKey: "ek_test", fetchImpl: impl }).retrieveLabel({
+      shipmentId: "shp_1",
+    });
+
+    assert.equal(calls[0].init.body, undefined);
+    assert.equal(calls[0].init.headers["Content-Type"], undefined);
+  });
+
+  it("sends HTTP Basic auth with the key as username", async () => {
+    const { impl, calls } = stubFetch(jsonResponse(retrievedShipment()));
+    await createEasyPostClient({ apiKey: "ek_secret", fetchImpl: impl }).retrieveLabel({
+      shipmentId: "shp_1",
+    });
+
+    assert.equal(
+      calls[0].init.headers.Authorization,
+      `Basic ${Buffer.from("ek_secret:").toString("base64")}`,
+    );
+  });
+
+  it("url-encodes the shipment id", async () => {
+    const { impl, calls } = stubFetch(jsonResponse(retrievedShipment({ id: "a/b" })));
+    await createEasyPostClient({ apiKey: "k", fetchImpl: impl }).retrieveLabel({
+      shipmentId: "a/b",
+    });
+    assert.match(calls[0].url, /\/shipments\/a%2Fb$/);
+  });
+
+  // Past 180 days EasyPost still answers 200 — with no label.
+  it("explains the 180-day retention when the label url is null", async () => {
+    const { impl } = stubFetch(
+      jsonResponse(retrievedShipment({ postage_label: { label_url: null } })),
+    );
+
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "ek_test", fetchImpl: impl }).retrieveLabel({
+        shipmentId: "shp_1",
+      }),
+      (err) => err.kind === "unknown" && /180 days/.test(err.message),
+    );
+  });
+
+  it("explains itself when postage_label is missing entirely", async () => {
+    const { impl } = stubFetch(
+      jsonResponse({ id: "shp_1", tracking_code: "94001" }),
+    );
+
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "ek_test", fetchImpl: impl }).retrieveLabel({
+        shipmentId: "shp_1",
+      }),
+      (err) => err.kind === "unknown" && /180 days/.test(err.message),
+    );
+  });
+
+  // The shared request helper's mappings must apply to GET too, not just POST.
+  it("maps 401 to a key problem, not a generic failure", async () => {
+    const { impl } = stubFetch(jsonResponse({ error: { message: "unauthorized" } }, 401));
+
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "bad", fetchImpl: impl }).retrieveLabel({
+        shipmentId: "shp_1",
+      }),
+      (err) => err.kind === "auth" && /API key/.test(err.message),
+    );
+  });
+
+  it("reports a timeout as a timeout", async () => {
+    const impl = async () => {
+      throw new Error("The operation was aborted due to timeout");
+    };
+    await assert.rejects(
+      createEasyPostClient({ apiKey: "k", fetchImpl: impl }).retrieveLabel({
+        shipmentId: "shp_1",
+      }),
+      (err) => err.kind === "timeout",
+    );
+  });
+});
+
 describe("transport failures", () => {
   it("reports a timeout as a timeout", async () => {
     const impl = async () => {

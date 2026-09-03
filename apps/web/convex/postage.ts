@@ -18,7 +18,7 @@
  */
 
 import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { browserAuthHeaders, browserFetch, credKey } from "./credentials";
@@ -79,6 +79,32 @@ async function failureFrom(response: Response, fallback: string): Promise<never>
     // non-JSON body; keep the fallback
   }
   throw new ConvexError(message);
+}
+
+/**
+ * Is this 404 the easypost router saying "no key on file", or Express saying
+ * "no such route"?
+ *
+ * They are the same status code and opposite diagnoses. The router answers with
+ * JSON — `{error: "No EasyPost key saved for this user"}` (routes/easypost.ts's
+ * `handleEasyPostFailure`) — while an unrouted path falls through to Express's
+ * default handler and an HTML `Cannot GET /...` body. Telling a seller to add
+ * an API key they already added, because a Cloud Run revision predates the
+ * route, sends them to fix the one thing that is not broken. Anything else
+ * (including a JSON 404 the label route may raise for a shipment EasyPost no
+ * longer has) falls through to {@link failureFrom}, which forwards the service's
+ * own message.
+ *
+ * Reads a `clone()` so the body is still unread for `failureFrom`.
+ */
+async function isMissingKey404(response: Response): Promise<boolean> {
+  try {
+    const body = (await response.clone().json()) as { error?: string };
+    return typeof body?.error === "string" && /no easypost key/i.test(body.error);
+  } catch {
+    // Non-JSON body — Express's "Cannot GET", or nothing at all.
+    return false;
+  }
 }
 
 /**
@@ -222,6 +248,14 @@ export const quoteLetterRate = action({
  * The purchase is recorded even though `labelPurchases` is minimal: a seller who
  * paid for a label must be able to find it again. `easypostShipmentId` is stored
  * because EasyPost's label URLs expire and the id is how a reprint re-fetches.
+ *
+ * NEO-213: `historySaved` reports whether that record write actually landed. The
+ * write still cannot fail the purchase (see the catch below), but silently
+ * dropping it is worse than it looks — a label missing from history is a label
+ * the seller cannot reprint, and they find that out days later with no idea why.
+ * So the outcome is returned rather than only logged, and the UI warns on the
+ * spot ("save this label now — it didn't make it into your history") while the
+ * URL it just got back is still good.
  */
 export const buyLetterLabel = action({
   args: {
@@ -235,6 +269,7 @@ export const buyLetterLabel = action({
     trackingCode: v.string(),
     labelUrl: v.string(),
     amountCents: v.number(),
+    historySaved: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const userId = await getCurrentUserId(ctx);
@@ -266,6 +301,7 @@ export const buyLetterLabel = action({
     // Record after the purchase succeeds. If this write were to fail the money
     // is already spent, so it must never be able to reject the label — hence a
     // separate mutation whose failure is logged, not thrown.
+    let historySaved = false;
     try {
       await ctx.runMutation(api.shipping.recordLabelPurchase, {
         easypostShipmentId: bought.shipmentId,
@@ -275,6 +311,7 @@ export const buyLetterLabel = action({
         toAddress: args.to,
         labelUrl: bought.labelUrl,
       });
+      historySaved = true;
     } catch (err) {
       console.error(
         JSON.stringify({
@@ -285,6 +322,74 @@ export const buyLetterLabel = action({
       );
     }
 
-    return bought;
+    return { ...bought, historySaved };
+  },
+});
+
+/**
+ * NEO-213 — get a fresh, working URL for a label the seller already bought.
+ *
+ * A reprint is not a re-purchase: this charges nothing and mints no new
+ * postage. It re-fetches the shipment from EasyPost and hands back the current
+ * `postage_label` URL, because **the URL stored at purchase time expires** while
+ * the shipment id does not — which is exactly why `labelPurchases` keeps the id
+ * (see the table comment in schema.ts).
+ *
+ * Takes a `labelPurchases` row id, never a shipment id. The shipment id is read
+ * off the row *after* `getLabelPurchaseForUser` proves the row is the caller's,
+ * so a caller cannot aim this at a shipment they do not own — the browser
+ * service checks only that the credential key is theirs, not the shipment.
+ * Missing and not-yours produce the same message on purpose: a distinct
+ * "not yours" would confirm the id exists.
+ *
+ * **The 180-day wall.** EasyPost deletes label images 180 days after purchase.
+ * Past that the shipment still resolves but has no retrievable label, and there
+ * is nothing this action or a reprint can do about it — the postage was real,
+ * the image is gone. The browser route turns that into a seller-readable
+ * message and this action forwards it verbatim via {@link failureFrom}, rather
+ * than flattening it into "could not fetch", so the seller learns the label is
+ * expired rather than that something is broken.
+ */
+export const refreshLabelUrl = action({
+  args: { purchaseId: v.id("labelPurchases") },
+  returns: v.object({ labelUrl: v.string() }),
+  handler: async (ctx, args) => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const row = await ctx.runQuery(internal.shipping.getLabelPurchaseForUser, {
+      purchaseId: args.purchaseId,
+      userId,
+    });
+    if (!row) {
+      throw new ConvexError("That label purchase wasn't found.");
+    }
+
+    const response = await browserFetch(
+      `/easypost/${credKey(EASYPOST_SITE, userId)}/label/${encodeURIComponent(
+        row.easypostShipmentId,
+      )}`,
+      {
+        method: "GET",
+        headers: await browserAuthHeaders(),
+      },
+    );
+
+    // Only the router's own "no key saved" 404 means what the key prompt says.
+    // An Express "Cannot GET" 404 means this route is not on the deployed
+    // revision yet, and must not masquerade as a missing key.
+    if (response.status === 404 && (await isMissingKey404(response))) {
+      throw new ConvexError("Add your EasyPost API key on your profile first.");
+    }
+    if (!response.ok) {
+      await failureFrom(response, "Could not fetch the label for reprinting.");
+    }
+
+    const fetched = (await response.json()) as {
+      shipmentId: string;
+      trackingCode: string;
+      labelUrl: string;
+    };
+    return { labelUrl: fetched.labelUrl };
   },
 });

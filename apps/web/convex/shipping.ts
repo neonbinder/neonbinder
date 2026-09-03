@@ -14,7 +14,7 @@
  * lease) or `marketplaceAccountIds`.
  */
 
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { postalAddressValidator } from "./schema";
@@ -192,5 +192,55 @@ export const listMyLabelPurchases = query({
       .withIndex("by_user", (q) => q.eq("userId", userId))
       .order("desc")
       .take(PURCHASE_HISTORY_LIMIT);
+  },
+});
+
+/**
+ * NEO-213 — one purchase row, but only if it belongs to `userId`.
+ *
+ * Exists because `postage.refreshLabelUrl` is an action and an action has no
+ * `ctx.db`. The alternative — letting the client hand the action an
+ * `easypostShipmentId` directly — would make a reprint call work for ANY
+ * shipment id the caller could guess or scrape, since the browser service only
+ * checks that the *key* belongs to the seller, not that the *shipment* does.
+ * So the id the action forwards to EasyPost is derived here, from a row this
+ * query has already proved is the caller's.
+ *
+ * Same rule, same reason as `adapters/placeholderUploads.ts:343-355`: an
+ * argument that names someone else's object turns a URL minter into a
+ * cross-user read oracle. Ownership is resolved server-side from the verified
+ * Clerk subject, never trusted from the argument.
+ *
+ * Not-found and not-yours both return null, deliberately — a distinct "that
+ * isn't yours" would confirm the id exists, which is the oracle again in a
+ * smaller form. The caller renders one message for both.
+ *
+ * `internalQuery`, so it is unreachable from any client; the only caller is the
+ * action, which supplies the userId it read off the token.
+ */
+export const getLabelPurchaseForUser = internalQuery({
+  args: {
+    purchaseId: v.id("labelPurchases"),
+    userId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      _id: v.id("labelPurchases"),
+      _creationTime: v.number(),
+      userId: v.string(),
+      easypostShipmentId: v.string(),
+      trackingCode: v.string(),
+      costCents: v.number(),
+      weightOz: v.number(),
+      toAddress: postalAddressValidator,
+      labelUrl: v.string(),
+      purchasedAt: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.purchaseId);
+    if (!row || row.userId !== args.userId) return null;
+    return row;
   },
 });
