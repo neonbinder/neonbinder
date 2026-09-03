@@ -71,13 +71,23 @@ export type AttentionCardRow = {
   /** The team(s) printed on the card. Absent and `[]` are the same statement. */
   teamOnCardIds?: readonly string[];
   /**
-   * Team names an operator typed that no `teams` row exists for yet — the
-   * add-card form's "Team (optional)" field writes here and the next sync
-   * resolves them into `teamOnCardIds` (see schema.ts, and the resolve pass in
+   * Team names an operator typed that no `teams` row exists for yet; the next
+   * sync's resolve pass turns them into `teamOnCardIds` (see schema.ts and
    * selectorOptions.ts). A non-empty list is an answer already given: the card
    * is UNRESOLVED, not unanswered, so it counts as having a team. Reading only
    * `teamOnCardIds` badged every hand-added card with a typed team and sent
    * the walker to ask the operator for something they had just supplied.
+   *
+   * NEO-208 note on where these come from. The quick-add form used to be the
+   * main producer — it had a free-text "Team (optional)" box that wrote here —
+   * and it now uses `TeamPicker` and sends real `teamOnCardIds`, so a card
+   * added by hand today is born linked and never lands in this state. What
+   * remains are rows written before that, and an old SPA bundle still sending
+   * the legacy `addCustomCard.teams` name array. THE RULE IS UNCHANGED: a
+   * pending name still counts as an answer, because those legacy rows are
+   * exactly as answered as they ever were, and because the operator who typed
+   * the name is not the person to re-ask. `updateCard` clears the names when a
+   * real team is linked, so a row cannot end up counted twice.
    */
   pendingTeamNames?: readonly string[];
   /** Operator confirmed this card carries no team — see schema.ts. */

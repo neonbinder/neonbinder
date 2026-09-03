@@ -36,7 +36,7 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
@@ -346,5 +346,266 @@ describe("the automatic enqueue path never carries an existing row", () => {
 
     expect(enrichmentTeamIds).toHaveLength(1);
     expect(enrichmentTeamIds).not.toContain(existingTeamId);
+  });
+});
+
+/**
+ * NEO-208 — `teams.findOrCreate` joins the enqueueing creation paths.
+ *
+ * It was the one team-creation path in the product with no enrichment route at
+ * all. A reviewed team arrives already enriched (`processEntityReviewQueue` →
+ * `lookupTeamEnrichment` runs before the insert); a career team the commit
+ * prelude invents is enqueued by `commitCardChecklistFinalize`. A team born in
+ * `TeamPicker` — the card drawer, the attention walker's fixer, and since
+ * NEO-208 the quick-add form — stayed bare forever, and `teams.colors` is what
+ * spine labels read, so "bare forever" was user-visible.
+ *
+ * These assert the CONTRACT half rather than the network half: that the insert
+ * branch schedules exactly one enrichment and the FOUND branch schedules none.
+ * The scheduled work is not run — `enrichTeam`'s own creation-only guard is
+ * already covered above, and letting the pool actually drain here would test
+ * the pool, not this wiring.
+ */
+async function scheduledEnrichmentCount(
+  t: ReturnType<typeof convexTest>,
+): Promise<number> {
+  const names = await t.run(async (ctx) => {
+    const rows = await (
+      ctx as unknown as {
+        db: {
+          system: {
+            query: (n: string) => {
+              collect: () => Promise<Array<{ name: string }>>;
+            };
+          };
+        };
+      }
+    ).db.system.query("_scheduled_functions").collect();
+    return rows.map((r) => r.name);
+  });
+  return names.filter((n) => n.includes("enqueueEnrichment")).length;
+}
+
+describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () => {
+  const ADMIN = { subject: "admin_neo208", role: "admin" };
+
+  test("a team it CREATED is enqueued exactly once", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    const teamId = await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
+
+    expect(teamId).toBeDefined();
+    expect(await scheduledEnrichmentCount(t)).toBe(1);
+  });
+
+  test("a team it FOUND is not enqueued at all", async () => {
+    // The early `return existing._id` is what makes this mutation honour
+    // `enqueueEnrichment`'s creation-only contract. Jason, 2026-09-02: "we
+    // should never be firing that on an update."
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const existingId = await insertBareTeam(t, sportId, "New York Yankees");
+
+    const teamId = await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
+
+    expect(teamId).toBe(existingId);
+    expect(await scheduledEnrichmentCount(t)).toBe(0);
+  });
+
+  test("the second call for the same name enqueues nothing more", async () => {
+    // The realistic shape: two operators (or one operator twice) reach for the
+    // same team through the picker. Only the first creation costs a lookup.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const first = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "New York Yankees",
+      sportId,
+    });
+    expect(await scheduledEnrichmentCount(t)).toBe(1);
+
+    // The normalizer token-SORTS and strips punctuation, so this resolves to
+    // the same row — proving the guard is the row lookup, not string equality.
+    const second = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Yankees, New York",
+      sportId,
+    });
+
+    expect(second).toBe(first);
+    expect(await scheduledEnrichmentCount(t)).toBe(1);
+  });
+
+  test("findOrCreateInternal is unchanged — it enqueues nothing", async () => {
+    // Deliberately untouched by NEO-208. Its server-side callers already
+    // enqueue (or deliberately do not) at the site that knows whether the row
+    // is new; adding an enqueue here would double up on those.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await t.mutation(internal.teams.findOrCreateInternal, {
+      name: "Chiba Lotte Marines",
+      sportId,
+    });
+
+    expect(await scheduledEnrichmentCount(t)).toBe(0);
+  });
+
+  test("a rejected call — over-long name — enqueues nothing and creates nothing", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+        name: "z".repeat(121),
+        sportId,
+      }),
+    ).rejects.toThrow(/the limit is 120/);
+
+    expect(await scheduledEnrichmentCount(t)).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+  });
+
+  test("a sportId that is not a SPORT row is refused, so no orphan team is created", async () => {
+    // `v.id("selectorOptions")` proves the id is in that table, not that it
+    // points at a sport. A team hung off a variantType row is unreachable by
+    // every query that matters (`teams.list` and `findByNameAndSport` key on
+    // the sport row id) — the same unfindable-row class the pre-NEO-96
+    // `sport ?? ""` fallback produced.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const variantTypeId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        parentId: sportId,
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+        name: "Orphan FC",
+        sportId: variantTypeId,
+      }),
+    ).rejects.toThrow(/must be created under a sport/);
+
+    expect(await scheduledEnrichmentCount(t)).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+  });
+
+  test("a blank name is refused before anything is written", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t
+        .withIdentity(ADMIN)
+        .mutation(api.teams.findOrCreate, { name: "   ", sportId }),
+    ).rejects.toThrow(/team name is required/i);
+
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+  });
+
+  test("a name AT the 120-char cap is accepted — the bound is not off by one", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const atCap = "z".repeat(120);
+
+    const id = await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.findOrCreate, { name: atCap, sportId });
+
+    const team = await t.run(async (ctx) => ctx.db.get(id));
+    expect(team!.name).toBe(atCap);
+  });
+
+  test("a padded name that is 120 chars AFTER trim is accepted", async () => {
+    // Trim happens BEFORE the length check — an operator who pastes a padded
+    // name must not be refused for whitespace that was never going to be
+    // stored.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const padded = `   ${"z".repeat(120)}   `;
+
+    const id = await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.findOrCreate, { name: padded, sportId });
+
+    const team = await t.run(async (ctx) => ctx.db.get(id));
+    expect(team!.name).toBe("z".repeat(120));
+  });
+
+  test("whitespace-and-case variants of the same name collide onto ONE row and enqueue ONCE", async () => {
+    // `normalizeTeamName` lowercases, collapses whitespace, and token-sorts —
+    // this pins the collision on a variant that is neither the exact string
+    // nor the comma-reordered one already covered above: extra internal
+    // whitespace plus a case change.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const first = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "New York Yankees",
+      sportId,
+    });
+    const second = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "new york  yankees ",
+      sportId,
+    });
+
+    expect(second).toBe(first);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+    expect(await scheduledEnrichmentCount(t)).toBe(1);
+  });
+
+  test("team_created is logged as structured JSON, never string-concatenated with the name", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const id = await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+      name: "Savannah Bananas",
+      sportId,
+    });
+
+    const line = logSpy.mock.calls
+      .map((args) => String(args[0]))
+      .find((s) => s.includes("team_created"));
+    expect(line).toBeDefined();
+    // Parses as ONE JSON value — a concatenated `"team_created: " + name`
+    // string would fail this, which is the point: the name must never be
+    // free-form text sharing the line with the message.
+    const parsed = JSON.parse(line!);
+    expect(parsed).toMatchObject({ msg: "team_created", teamId: id, sportId });
+    expect(parsed.userId).toBe(ADMIN.subject);
+
+    logSpy.mockRestore();
+  });
+
+  test("a FOUND (not created) team logs no team_created line", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await insertBareTeam(t, sportId, "Existing Team");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+      name: "Existing Team",
+      sportId,
+    });
+
+    const line = logSpy.mock.calls
+      .map((args) => String(args[0]))
+      .find((s) => s.includes("team_created"));
+    expect(line).toBeUndefined();
+
+    logSpy.mockRestore();
   });
 });

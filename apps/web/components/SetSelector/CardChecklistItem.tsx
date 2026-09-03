@@ -18,10 +18,24 @@ type CardChecklistItemProps = {
     // optional, so a caller that has not been updated still typechecks and
     // simply never shows the attention mark — but note the direction each one
     // fails in: omit a timestamp and the mark is missed; omit
-    // `pendingTeamNames` and every hand-added card carrying a typed team is
-    // WRONGLY marked, which is the louder bug.
+    // `pendingTeamNames` and every card carrying a typed team is WRONGLY
+    // marked, which is the louder bug.
     teamCheckDoneAt?: number;
     teamNoneConfirmedAt?: number;
+    /**
+     * Team names typed by an operator that no `teams` row exists for yet.
+     *
+     * NEO-208: also RENDERED now, as `Name (unconfirmed)` in the sub-line
+     * below — previously this prop was read only by `deriveCardAttention`, so
+     * a row could carry a team name that appeared nowhere on screen while its
+     * badge stayed off, which read as the name having been dropped.
+     *
+     * Since NEO-208 the quick-add form sends real ids, so no NEW row is born
+     * with these. They still arrive on rows written before that (and from an
+     * old SPA bundle mid-cutover), and they are cleared by `updateCard` the
+     * moment a real team is linked — so this is a display of legacy state,
+     * not a state the product creates any more.
+     */
     pendingTeamNames?: string[];
     attributes?: string[];
     isRookie?: boolean;
@@ -164,6 +178,22 @@ export default function CardChecklistItem({
     subParts.push(`Variation of #${parentCardNumber}`);
   }
   if (teamLabel) subParts.push(teamLabel);
+  // NEO-208: an operator-typed team no `teams` row exists for yet. Rendered
+  // right after the resolved teams, marked so the two are not mistaken for
+  // each other — a resolved team is a link the rest of the product can act on,
+  // an unconfirmed one is a string waiting for the next sync's resolve pass.
+  //
+  // TEXT ONLY, and inside the SAME single truncated sub-line as everything
+  // else. Not a chip, not a second line, not a link: this row's height must
+  // not depend on its content. A row that changes size re-measures the
+  // Virtuoso list and reflows every row below it, which is the dropped-tap
+  // flake the reserved-height note on that line explains at length. Pending
+  // names disappear from a row (updateCard clears them on a real link) exactly
+  // like an enrichment-resolved team appears on one, so this is precisely the
+  // content that must not move a row.
+  for (const pendingName of card.pendingTeamNames ?? []) {
+    subParts.push(`${pendingName} (unconfirmed)`);
+  }
   if (card.printRun) subParts.push(`/${card.printRun}`);
   if (card.cardVariation) subParts.push(card.cardVariation);
   if (card.autographType) subParts.push(`${card.autographType} auto`);

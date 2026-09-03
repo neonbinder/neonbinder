@@ -76,6 +76,22 @@ type CardDetailCard = {
   cardName: string;
   playerIds?: Array<Id<"players">>;
   teamOnCardIds?: Array<Id<"teams">>;
+  /**
+   * NEO-208 — team names an operator typed that no `teams` row exists for yet.
+   *
+   * Read-only here, and shown above the picker rather than folded into it: a
+   * chip in `TeamPicker` is a real `teams._id` the rest of the product can act
+   * on, and putting a bare string among them would be claiming a link that
+   * does not exist. The drawer's job is to make the name VISIBLE (it rendered
+   * nowhere before this ticket) and to say what will happen to it.
+   *
+   * Not part of this panel's draft state or dirty-tracking. It is retired by
+   * the server, derived from a real team write — see `updateCard`, which
+   * clears it in the same patch as a non-empty `teamOnCardIds`. So an operator
+   * "replaces" a pending name by picking a team and saving; there is nothing
+   * here for them to edit or delete directly.
+   */
+  pendingTeamNames?: string[];
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -530,6 +546,52 @@ export default function CardDetailPanel({
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Teams
             </label>
+            {/* NEO-208 — unresolved typed names, above the picker and
+                read-only. TEXT ONLY, never an anchor or a button: there is no
+                action to offer. The name is retired server-side when a real
+                team is saved (updateCard clears `pendingTeamNames` in the same
+                patch as a non-empty `teamOnCardIds`), so the two things that
+                can happen to it are stated in the hint rather than wired to a
+                control the operator would have to find. */}
+            {(card.pendingTeamNames?.length ?? 0) > 0 && (
+              <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                <div className="flex flex-wrap gap-x-2">
+                  {/* Index-qualified key, not the name itself: `pendingTeamNames`
+                      is not deduplicated, and legacy rows written before
+                      NEO-208 can carry the same typed name twice. A bare
+                      `key={name}` then hands React duplicate sibling keys —
+                      a dev-mode warning, and the second entry silently
+                      dropped/mis-reconciled in the render. This list is
+                      read-only and never reordered, so the index is a stable
+                      identity here. */}
+                  {card.pendingTeamNames!.map((name, index) => (
+                    <span key={`${index}-${name}`}>
+                      {name}{" "}
+                      {/* a11y: this MUST stay `text-gray-500 dark:text-gray-400`
+                          (the container's own pair, two lines up) and never the
+                          reverse — `text-gray-400 dark:text-gray-500` measures
+                          2.54:1 on this panel's light-mode `bg-white` and 3.04:1
+                          on its `dark:bg-gray-800`, both under WCAG 1.4.3's
+                          4.5:1 floor for normal text (script-verified). The
+                          reversed pair was in here before; if you're tempted to
+                          dim this relative to the name, use weight/size, not a
+                          lighter gray in light mode. */}
+                      <span className="text-gray-500 dark:text-gray-400">
+                        (unconfirmed)
+                      </span>
+                    </span>
+                  ))}
+                </div>
+                {/* Same a11y note as above — text-gray-500 (light) /
+                    text-gray-400 (dark) is the pair that clears 4.5:1 against
+                    this panel's bg-white / dark:bg-gray-800; the reverse fails
+                    both. */}
+                <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                  Typed on the card before it was linked — resolves at the next
+                  sync, or pick a team to replace it.
+                </p>
+              </div>
+            )}
             <TeamPicker value={teamIds} onChange={setTeamIds} sportId={ancestorSportId} />
           </div>
 

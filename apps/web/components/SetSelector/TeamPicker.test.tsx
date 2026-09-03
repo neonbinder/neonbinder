@@ -20,9 +20,12 @@
  * its own spy.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Not mocked: the real class, because `userFacingMessage` narrows on
+// `instanceof ConvexError` and that is the whole point of the tests below.
+import { ConvexError } from "convex/values";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -425,5 +428,202 @@ describe("TeamPicker", () => {
 
     expect(screen.queryByLabelText("Create team Savannah Bananas")).toBeNull();
     expect(mockFindOrCreate).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-208 — a refused create is visible, not a silent no-op
+  //
+  // `teams.findOrCreate` grew two refusals in NEO-208 (a name over the length
+  // cap; a `sportId` that is a real `selectorOptions` id but not a sport row).
+  // `createAndAdd` was a bare try/finally, so both landed as nothing happening
+  // plus an unhandled rejection — the "Creating…" label flipped back and the
+  // operator had no idea why no chip appeared.
+  // -------------------------------------------------------------------------
+
+  it("shows the server's reason inline and adds no chip when the name is over the cap", async () => {
+    const longName = "x".repeat(130);
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(
+      // Verbatim shape of the real throw: a LENGTH, never the typed name —
+      // which is why it is safe to render.
+      new ConvexError("A team name is 130 characters; the limit is 120."),
+    );
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: longName },
+    });
+    fireEvent.click(screen.getByLabelText(`Create team ${longName}`));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "A team name is 130 characters; the limit is 120.",
+    );
+    // NEO-208: the popover this alert lives in must still be THIS popover —
+    // still open, with the typed name still in the box — not a fresh one
+    // the operator had to reopen after it silently closed underneath them.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe(longName);
+    // The failed create must not look like it half-worked.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("shows the non-sport refusal inline too", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError("A team must be created under a sport."),
+    );
+    const { onChange } = renderPicker({ sportId: OTHER_SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "A team must be created under a sport.",
+    );
+    // NEO-208: still the same open popover — see the identical assertion on
+    // the length-cap refusal above for why this matters.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe("Savannah Bananas");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a generic message for a non-ConvexError failure", async () => {
+    // A plain Error is redacted to "Server Error" in production and its
+    // `.message` arrives wrapped in "[CONVEX M(...)] [Request ID: ...]" noise,
+    // so nothing from it is shown.
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(new Error("kaboom at teams.ts:141"));
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not create team.");
+    expect(alert.textContent).not.toContain("kaboom");
+    // NEO-208: still the same open popover — see the identical assertion on
+    // the length-cap refusal above for why this matters.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("clears the message on the next keystroke", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError("A team name is 130 characters; the limit is 120."),
+    );
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    const input = screen.getByLabelText("Search teams");
+    fireEvent.change(input, { target: { value: "x".repeat(130) } });
+    fireEvent.click(screen.getByLabelText(`Create team ${"x".repeat(130)}`));
+    await screen.findByRole("alert");
+
+    // The message described the name that was in the box; editing it makes the
+    // message stale, so it goes away with the query it was about.
+    fireEvent.change(input, { target: { value: "Savannah Bananas" } });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+    // NEO-208: still the same open popover throughout — the whole point of
+    // "clears on next keystroke" is that a keystroke, not a silent
+    // close/reopen, is what made the message go away.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  // NEO-208 regression — the popover used to close itself out from under a
+  // refused create.
+  //
+  // Mechanism: the "+ Create" button has focus at the moment it's clicked
+  // (a real click focuses the element it lands on). The old `showCreateOption
+  // = ... && !creating && ...` unmounted that exact button the instant
+  // `creating` flipped true, so focus fell out of the picker's subtree onto
+  // <body>. `handleRootBlur` exists to close the popover on precisely that
+  // signal — "focus left the root", the Tab-out case it was built for — so
+  // it fired mid-request and closed the popover, clearing `createError`
+  // along with it, before the awaited `findOrCreate` had even rejected. The
+  // refusal then landed in state on an already-closed popover: invisible
+  // until the operator reopened it, which is what the manual tester saw.
+  //
+  // jsdom does not reproduce the browser half of this on its own: removing a
+  // focused node moves `document.activeElement` to <body> (confirmed via a
+  // throwaway repro against this file), but — unlike a real browser's
+  // synchronous "unfocusing steps" — it does not dispatch the blur/focusout
+  // event that `handleRootBlur` listens for. So this test fires that
+  // `focusOut` by hand as a stand-in for the real browser's dispatch, which
+  // is also what makes it a fair test of the fix: the guard added to
+  // `handleRootBlur` (`if (!popoverOpen || creating) return`) must swallow
+  // this even when the event arrives, not merely rely on the button no
+  // longer unmounting to prevent the event from ever firing.
+  it("regression: a rejected create keeps the popover open with the refusal visible, not silently closed by the Tab-out guard", async () => {
+    const longName = "x".repeat(130);
+    currentCandidates = [];
+    let rejectPending: (err: unknown) => void = () => {};
+    mockFindOrCreate.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectPending = reject;
+        }),
+    );
+    const { container, onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    // Let the popover's own open-time autofocus-input effect land first —
+    // it's queued on its own `setTimeout(0)` from the same click that opens
+    // the popover, and without waiting for it here it can win a later timer
+    // race and re-steal focus into the search box, masking what's under
+    // test (same reasoning as the identical wait in CardChecklist.test.tsx's
+    // Tab-out regression test).
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Search teams")),
+    );
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: longName },
+    });
+    const createButton = screen.getByLabelText(`Create team ${longName}`);
+    createButton.focus();
+    fireEvent.click(createButton);
+
+    // Stand-in for the browser's synchronous blur-on-removal — see the
+    // block comment above.
+    const root = container.querySelector(
+      '[aria-label="Team picker"]',
+    ) as HTMLElement;
+    fireEvent.focusOut(root);
+
+    await act(async () => {
+      rejectPending(
+        new ConvexError("A team name is 130 characters; the limit is 120."),
+      );
+      // Flush both the `handleRootBlur` and `createAndAdd`-catch
+      // `setTimeout(0)`s.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain(
+      "A team name is 130 characters; the limit is 120.",
+    );
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe(longName);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

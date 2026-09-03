@@ -21,10 +21,13 @@ const modules = (import.meta as unknown as {
 
 const ADMIN = { subject: "admin", role: "admin" };
 // NEO-154 gave `teams.findOrCreate` the signed-in guard its `players`
-// counterpart always had. Any signed-in caller passes it — these tests are
-// about league attachment, not authorization, so they use a plain user rather
-// than ADMIN to avoid implying an admin-only path.
-const SIGNED_IN = { subject: "user" };
+// counterpart always had; NEO-208 raised it to ADMIN, because its insert
+// branch now schedules a pooled Wikidata enrichment and the pool bounds
+// concurrency rather than total queued work (see the mutation, and
+// publicFunctionAuth.test.ts, for the whole reasoning). So the league-
+// attachment tests below call it as ADMIN. There is no longer a signed-in-but-
+// not-admin caller in this file at all — the one it used to have was here to
+// avoid implying an admin-only path, and the path IS admin-only now.
 
 async function seedSport(
   t: ReturnType<typeof convexTest>,
@@ -156,7 +159,7 @@ describe("every team-creation path attaches a league", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
-    const teamId = await t.withIdentity(SIGNED_IN).mutation(api.teams.findOrCreate, {
+    const teamId = await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
       name: "New York Yankees",
       sportId,
     });
@@ -189,7 +192,7 @@ describe("every team-creation path attaches a league", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t, { withConfig: false, value: "Pickleball" });
 
-    const teamId = await t.withIdentity(SIGNED_IN).mutation(api.teams.findOrCreate, {
+    const teamId = await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
       name: "Some Club",
       sportId,
     });
@@ -204,7 +207,7 @@ describe("every team-creation path attaches a league", () => {
     const sportId = await seedSport(t);
 
     for (const name of ["Yankees", "Mets", "Red Sox"]) {
-      await t.withIdentity(SIGNED_IN).mutation(api.teams.findOrCreate, { name, sportId });
+      await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, { name, sportId });
     }
 
     expect(await leagues(t)).toHaveLength(1);

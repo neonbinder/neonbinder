@@ -6,6 +6,7 @@ import {
   internalMutation,
   internalQuery,
   ActionCtx,
+  QueryCtx,
 } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { api, internal } from "./_generated/api";
@@ -1827,6 +1828,152 @@ async function restampCardChecklistSortOrders(
 // (decision log, 2026-09-01). `commitCardChecklist` is the only write path into
 // `cardChecklist` from a marketplace fetch.
 
+/**
+ * NEO-208 security condition — a bound on one operator-typed entity name.
+ *
+ * `addCustomCard`'s `players` / `teams` args are free text that lands in
+ * `pendingPlayerNames` / `pendingTeamNames` and is then read back by the
+ * listing-title generator, the entity-review wizard and the row sub-line. A
+ * real player or team name is nowhere near this long; the cap exists so a
+ * direct caller cannot park an essay on a row that several screens render.
+ * Over-length is a hard refusal rather than a silent trim: quietly storing
+ * something other than what the caller sent is how a name gets mangled and
+ * then confirmed as correct in the wizard.
+ */
+const MAX_PENDING_NAME_LENGTH = 120;
+
+/**
+ * NEO-208 security condition — how many typed TEAM names one `addCustomCard`
+ * call may carry.
+ *
+ * Deliberately the SAME number as `MAX_CARD_TEAMS`, and for the same reason:
+ * it is a sanity bound on a hand-typed field, not a marketplace rule. A team
+ * card names at most a handful of teams, so this sits well above anything
+ * legitimate while still being a hard bound.
+ */
+const MAX_PENDING_TEAM_NAMES = MAX_CARD_TEAMS;
+
+/**
+ * NEO-208 follow-up — how many typed PLAYER names one `addCustomCard` call may
+ * carry. Deliberately WIDER than `MAX_PENDING_TEAM_NAMES`: a team card or a
+ * multi-player insert (League Leaders, rookie combos) can legitimately list
+ * well past `MAX_CARD_TEAMS` players, where a card is never printed for more
+ * than a handful of teams. 20 is a sanity bound on a hand-typed field, not a
+ * marketplace rule — chosen to sit comfortably above the widest real
+ * multi-player card while still being a hard cap.
+ */
+const MAX_PENDING_PLAYER_NAMES = 20;
+
+/**
+ * Trim, drop empties, and refuse a list that is too long or a name that is —
+ * the shared shape of `addCustomCard`'s two free-text entity args.
+ *
+ * `label` only shapes the error text ("player" / "team"); `limit` is the
+ * per-kind cap (`MAX_PENDING_PLAYER_NAMES` / `MAX_PENDING_TEAM_NAMES`) — both
+ * errors name it so an operator — or a future client author — can see what
+ * WOULD be accepted rather than only that this was not.
+ */
+function normalizePendingNames(
+  raw: ReadonlyArray<string> | undefined,
+  label: string,
+  limit: number,
+): string[] | undefined {
+  if (raw === undefined) return undefined;
+  const names = raw.map((n) => n.trim()).filter((n) => n.length > 0);
+  if (names.length > limit) {
+    throw new ConvexError(
+      `A card can carry at most ${limit} ${label} names.`,
+    );
+  }
+  for (const name of names) {
+    if (name.length > MAX_PENDING_NAME_LENGTH) {
+      // The LENGTH, never the name itself: this string travels through
+      // Convex's error path into Sentry and the browser console, and row
+      // content has no business there (same rule as the listing-title cap).
+      throw new ConvexError(
+        `A ${label} name is ${name.length} characters; the limit is ${MAX_PENDING_NAME_LENGTH}.`,
+      );
+    }
+  }
+  return names;
+}
+
+/**
+ * NEO-102/NEO-208 — validate a full-replacement `teamOnCardIds` write, and
+ * hand back the linked teams' names.
+ *
+ * Shared by the TWO mutations that can put team ids on a `cardChecklist` row:
+ * `updateCard` (the card detail panel's TeamPicker and the attention walker's
+ * MissingTeamFixer) and, since NEO-208, `addCustomCard` (the quick-add form's
+ * TeamPicker). Both reach admin clients whose caps are UI only, so neither may
+ * lean on the client: an admin calling either mutation directly must not be
+ * able to write an unbounded array, a pile of duplicate ids, or an id that
+ * doesn't resolve to a real team in this card's sport.
+ *
+ * It exists as ONE function rather than two copies precisely because the two
+ * call sites are the same promise to the operator — a card born with a team is
+ * validated exactly as a card given one later. A second implementation is how
+ * the quick-add path would end up accepting something the drawer rejects.
+ *
+ * Dedupes FIRST, preserving the caller's order (the array is display order,
+ * not just a set), so a client that double-submits the same chip doesn't get
+ * counted twice against `MAX_CARD_TEAMS`.
+ *
+ * `selectorOptionId` is the row the card lives (or is about to live) under —
+ * `addCustomCard` holds it as an argument, `updateCard` reads it off the
+ * stored card. It is only used to resolve the sport, and only when there is at
+ * least one id to check; an empty write costs nothing beyond the caller's own
+ * row read.
+ *
+ * The returned `names` are the rows this function already read, so a caller
+ * that needs display names (the listing-title generator) does not read them a
+ * second time. Order matches `ids`.
+ */
+async function resolveTeamOnCardIdsForWrite(
+  ctx: QueryCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  requested: ReadonlyArray<Id<"teams">>,
+): Promise<{ ids: Array<Id<"teams">>; names: string[] }> {
+  const ids: Array<Id<"teams">> = [];
+  const seen = new Set<string>();
+  for (const teamId of requested) {
+    if (seen.has(teamId)) continue;
+    seen.add(teamId);
+    ids.push(teamId);
+  }
+  if (ids.length > MAX_CARD_TEAMS) {
+    throw new ConvexError(
+      `A card can carry at most ${MAX_CARD_TEAMS} teams.`,
+    );
+  }
+  if (ids.length === 0) return { ids, names: [] };
+
+  // Cheap: one indexed ancestor walk plus one read per team, both already
+  // paid for elsewhere on these mutations' write paths
+  // (`findSportForSelectorOption` mirrors the lookup `applyBscTeamResolution`
+  // and the commit chunk already do).
+  const sportId = await findSportForSelectorOption(ctx, selectorOptionId);
+  const teamRows = await Promise.all(ids.map((teamId) => ctx.db.get(teamId)));
+  const names: string[] = [];
+  for (let i = 0; i < ids.length; i++) {
+    const team = teamRows[i];
+    if (!team) {
+      throw new ConvexError("One of the selected teams no longer exists.");
+    }
+    // Only enforced when the card's own sport is resolvable — an orphaned
+    // ancestor chain (see the ambiguous-row note on
+    // `findSportForSelectorOption`) must not turn an otherwise-valid team
+    // edit into a hard failure.
+    if (sportId && team.sportId !== sportId) {
+      throw new ConvexError(
+        `"${team.name}" is not a team in this card's sport.`,
+      );
+    }
+    names.push(team.name);
+  }
+  return { ids, names };
+}
+
 export const addCustomCard = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -1842,19 +1989,65 @@ export const addCustomCard = mutation({
     // confirm Wikidata enrichment via the UnknownEntitiesDialog.
     // commitCardChecklist clears confirmed names from pendingPlayerNames
     // so the dialog doesn't re-prompt for the same player.
+    //
+    // Bounded by `normalizePendingNames` (count and per-name length) — see the
+    // note there for why an over-long name is refused rather than trimmed.
     players: v.optional(v.array(v.string())),
-    // Team names — same flow as players, but for the teams table.
+    /**
+     * Team NAMES, as free text — the pre-NEO-208 shape.
+     *
+     * NEO-208 gave the quick-add form a real `TeamPicker`, so the current SPA
+     * sends `teamOnCardIds` below and never this. It stays accepted for an old
+     * SPA bundle still in a tab mid-cutover (a Vercel deploy does not reload
+     * anybody's browser), and it behaves exactly as it always did: the names
+     * land in `pendingTeamNames` and the next sync's resolve pass turns them
+     * into real links. Remove it once no client can still be running that
+     * bundle.
+     */
     teams: v.optional(v.array(v.string())),
+    /**
+     * NEO-208 — the teams printed on this card, as real `teams` ids.
+     *
+     * The quick-add form's `TeamPicker` produces these, so a hand-added card
+     * is now born LINKED rather than born with a typed name nothing rendered
+     * (that invisibility is the whole of NEO-208). Validated by exactly the
+     * helper `updateCard` uses — see `resolveTeamOnCardIdsForWrite`.
+     */
+    teamOnCardIds: v.optional(v.array(v.id("teams"))),
   },
   returns: v.id("cardChecklist"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const pendingPlayerNames = args.players
-      ?.map((n) => n.trim())
-      .filter((n) => n.length > 0);
-    const pendingTeamNames = args.teams
-      ?.map((n) => n.trim())
-      .filter((n) => n.length > 0);
+    const pendingPlayerNames = normalizePendingNames(
+      args.players,
+      "player",
+      MAX_PENDING_PLAYER_NAMES,
+    );
+    const typedTeamNames = normalizePendingNames(
+      args.teams,
+      "team",
+      MAX_PENDING_TEAM_NAMES,
+    );
+
+    // NEO-208 — validated BEFORE anything is written, so a bad id (unknown,
+    // wrong sport, over the cap) leaves no half-created card behind. The
+    // returned names are the rows this already read; the listing title below
+    // uses them rather than reading the same teams a second time.
+    const { ids: teamOnCardIds, names: linkedTeamNames } =
+      await resolveTeamOnCardIdsForWrite(
+        ctx,
+        args.selectorOptionId,
+        args.teamOnCardIds ?? [],
+      );
+    const hasLinkedTeams = teamOnCardIds.length > 0;
+
+    // A real link is the same statement a typed name was reaching for, so the
+    // two never coexist on a row this mutation writes — mirroring
+    // `updateCard`, which retires `pendingTeamNames` whenever it writes a
+    // non-empty `teamOnCardIds`. Nothing sends both today (the current SPA
+    // sends ids only, an old bundle sends names only); this is what keeps a
+    // future caller from producing a row that says its team twice.
+    const pendingTeamNames = hasLinkedTeams ? undefined : typedTeamNames;
 
     // NEO-71-74: the selectorOption node this card lives under already
     // carries a complete, self-contained `features` snapshot (copy-down
@@ -1902,12 +2095,17 @@ export const addCustomCard = mutation({
       // title; write-once). Spelled out so this stays visibly the same input
       // shape as the commit insert branch below.
       cardVariation: undefined,
-      // NEO-101: a hand-added card has no `teamOnCardIds` yet — the operator's
-      // typed team names live in `pendingTeamNames` until a sync resolves them
-      // (see `deriveCardAttention`, which counts a pending name as an answer
-      // for exactly the same reason). Those names are what the operator meant,
-      // so they are what the title says.
-      teamNames: pendingTeamNames,
+      // NEO-208: a hand-added card CAN now be born linked — the quick-add
+      // form's TeamPicker sends real `teams` ids — so the title says the
+      // linked teams' stored names, read once by
+      // `resolveTeamOnCardIdsForWrite` above.
+      //
+      // NEO-101's fallback still stands underneath it, for an old SPA bundle
+      // that sent `teams: [string]`: those names live in `pendingTeamNames`
+      // until a sync resolves them (see `deriveCardAttention`, which counts a
+      // pending name as an answer for exactly the same reason). Either way the
+      // title says what the operator meant, resolved or not.
+      teamNames: hasLinkedTeams ? linkedTeamNames : pendingTeamNames,
       sport: sportValue,
     };
     const listingTitle = assessListingTitle(listingInputs);
@@ -1920,9 +2118,12 @@ export const addCustomCard = mutation({
       selectorOptionId: args.selectorOptionId,
       cardNumber: args.cardNumber,
       cardName: args.cardName,
-      // NEO-26: legacy `team` removed. The team string supplied via
-      // `args.teams` becomes a pendingTeamName above, then a teams
-      // entity link after the user confirms in UnknownEntitiesDialog.
+      // NEO-26/NEO-208: legacy `team` string removed long ago. Teams reach a
+      // new card one of two ways — real ids from the quick-add TeamPicker
+      // (`teamOnCardIds`, below), or, from an old SPA bundle only, typed names
+      // that become `pendingTeamNames` and are resolved by the next sync. The
+      // two are mutually exclusive by construction (see `pendingTeamNames`
+      // above).
       attributes: args.attributes,
       platformData: {},
       isCustom: true,
@@ -1932,6 +2133,7 @@ export const addCustomCard = mutation({
       ...(pendingTeamNames && pendingTeamNames.length > 0
         ? { pendingTeamNames }
         : {}),
+      ...(hasLinkedTeams ? { teamOnCardIds } : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
       listingTitle: listingTitle.title,
       listingDescription: generateListingDescription(listingInputs),
@@ -2068,59 +2270,20 @@ export const updateCard = mutation({
     // on that guess is the over-structuring NEO-189 rolled back. It surfaces
     // as a warn-only `aspectValueOverLimit` attention item instead.
 
-    // NEO-102 security follow-up: `teamOnCardIds` arrives from two admin
-    // clients — the card detail panel's TeamPicker and the attention walker's
-    // MissingTeamFixer — and the 8-team cap the fixer enforces is UI only.
-    // An admin calling this mutation directly (or a future caller that
-    // forgets the client-side cap) must not be able to write an unbounded
-    // array, a pile of duplicate ids, or an id that doesn't resolve to a real
-    // team. Dedupe first (preserving the caller's order — the array is
-    // display order, not just a set) so a client that double-submits the same
-    // chip doesn't get counted twice against the cap.
+    // NEO-102 security follow-up: `teamOnCardIds` arrives from admin clients
+    // — the card detail panel's TeamPicker, the attention walker's
+    // MissingTeamFixer, and (NEO-208) the quick-add form's TeamPicker via
+    // `addCustomCard` — and the 8-team cap those enforce is UI only. The
+    // validation lives in `resolveTeamOnCardIdsForWrite` above, shared
+    // verbatim with `addCustomCard` so the born-with-a-team path and the
+    // given-one-later path cannot diverge on what they accept.
     if (Array.isArray(filtered.teamOnCardIds)) {
-      const requested = filtered.teamOnCardIds as Array<Id<"teams">>;
-      const deduped: Array<Id<"teams">> = [];
-      const seen = new Set<string>();
-      for (const teamId of requested) {
-        if (seen.has(teamId)) continue;
-        seen.add(teamId);
-        deduped.push(teamId);
-      }
-      if (deduped.length > MAX_CARD_TEAMS) {
-        throw new ConvexError(
-          `A card can carry at most ${MAX_CARD_TEAMS} teams.`,
-        );
-      }
-      if (deduped.length > 0) {
-        // Cheap: the card's own row plus one indexed ancestor walk, both
-        // already paid for elsewhere on this same mutation's write path
-        // (`findSportForSelectorOption` mirrors the lookup
-        // `applyBscTeamResolution` and the commit chunk already do).
-        const card = await loadStoredCard();
-        const sportId = await findSportForSelectorOption(
-          ctx,
-          card.selectorOptionId,
-        );
-        const teamRows = await Promise.all(
-          deduped.map((teamId) => ctx.db.get(teamId)),
-        );
-        for (let i = 0; i < deduped.length; i++) {
-          const team = teamRows[i];
-          if (!team) {
-            throw new ConvexError("One of the selected teams no longer exists.");
-          }
-          // Only enforced when the card's own sport is resolvable — an
-          // orphaned ancestor chain (see the ambiguous-row note on
-          // `findSportForSelectorOption`) must not turn an otherwise-valid
-          // team edit into a hard failure.
-          if (sportId && team.sportId !== sportId) {
-            throw new ConvexError(
-              `"${team.name}" is not a team in this card's sport.`,
-            );
-          }
-        }
-      }
-      filtered.teamOnCardIds = deduped;
+      const { ids } = await resolveTeamOnCardIdsForWrite(
+        ctx,
+        (await loadStoredCard()).selectorOptionId,
+        filtered.teamOnCardIds as Array<Id<"teams">>,
+      );
+      filtered.teamOnCardIds = ids;
     }
 
     // NEO-102: giving this card a real team RETIRES the operator's "no team"
@@ -2141,6 +2304,18 @@ export const updateCard = mutation({
     if (Array.isArray(writtenTeamIds) && writtenTeamIds.length > 0) {
       filtered.teamNoneConfirmedAt = undefined;
       filtered.teamNoneConfirmedByUserId = undefined;
+      // NEO-208: and it retires any TYPED team name still sitting on the row.
+      // `pendingTeamNames` is "the operator named a team no `teams` row
+      // existed for yet"; linking a real team is that same intent, answered.
+      // Leaving both would print the row's team twice — once resolved, once
+      // as "(unconfirmed)" in the row sub-line and the drawer — and would
+      // leave the next sync's resolve pass still chasing a name nobody is
+      // waiting on. Same discipline as the two fields above: DERIVED from the
+      // write, never accepted as an argument (it is not in this mutation's
+      // validator), and only on a NON-EMPTY write — `teamOnCardIds: []` is the
+      // operator unlinking every team, which leaves the typed name as the only
+      // thing the row still knows about its team.
+      filtered.pendingTeamNames = undefined;
     }
     if (Object.keys(filtered).length > 0) {
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
