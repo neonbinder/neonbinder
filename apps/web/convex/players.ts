@@ -3,6 +3,11 @@ import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import type { Id } from "./_generated/dataModel";
+import {
+  longestToken,
+  nameTokens,
+  rankPlayerCandidates,
+} from "./lib/entityNearMatch";
 
 /**
  * Lowercase + collapse whitespace + strip punctuation + token-sort. Used
@@ -283,6 +288,110 @@ export const search = query({
       .take(limit);
 
     return docs.map(toPublicPlayer);
+  },
+});
+
+/** How many search-index rows feed the ranker, and how many rank out by default. */
+const NEAR_MATCH_SEARCH_CANDIDATES = 10;
+const NEAR_MATCH_DEFAULT_LIMIT = 5;
+const NEAR_MATCH_MAX_LIMIT = 25;
+
+/**
+ * NEO-212: the "did you mean?" prompt in front of creating a player. The twin
+ * of `teams.nearMatches` — see the section header above that function for what
+ * Convex's search index actually does (OR-ish over terms, prefix matching on
+ * the final term only, no typo tolerance) and why the fallback query below is
+ * a second search rather than a bigger `.take()`.
+ *
+ * Three steps, widening:
+ *
+ *   1. The exact dedup key, via `by_name_normalized_and_sport_id`. This is the
+ *      hit that must never be missed — a row `findOrCreate` would reuse.
+ *   2. `search_name` on the whole name; if that returns nothing, a second
+ *      search on the LAST token. Last, not longest: the ladder in
+ *      `lib/pairing/names.ts` treats the final token as the surname and
+ *      refuses to match anything whose surname disagrees, so the surname is
+ *      the only term whose absence guarantees a miss. "Shohei" would happily
+ *      out-rank the row we want; "Ohtani" cannot. `longestToken` is the
+ *      fallback's fallback, for the degenerate name with no tokens left after
+ *      normalisation.
+ *   3. `rankPlayerCandidates` over the union, dropping everything it ranks
+ *      neither exact nor close.
+ *
+ * Advisory only — `close` fires on a shared surname plus an initial, and two
+ * brothers share both. The operator decides; this query only offers.
+ *
+ * Admin-gated, unlike `search` above: this one exists to guard a write to
+ * globally-shared reference data, and its only caller is the review wizard.
+ * Returns the public shape (never `createdByUserId` — see `toPublicPlayer`).
+ */
+export const nearMatches = query({
+  args: {
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(
+    v.object({
+      _id: v.id("players"),
+      name: v.string(),
+      confidence: v.union(v.literal("exact"), v.literal("close")),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    const name = args.name.trim();
+    if (!name) return [];
+
+    const limit = Math.min(
+      args.limit ?? NEAR_MATCH_DEFAULT_LIMIT,
+      NEAR_MATCH_MAX_LIMIT,
+    );
+
+    // Keyed by id so the exact hit and a search hit for the same row collapse.
+    const candidates = new Map<
+      Id<"players">,
+      { _id: Id<"players">; name: string }
+    >();
+
+    const normalized = normalizePlayerName(name);
+    if (normalized) {
+      const exact = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
+        )
+        .first();
+      if (exact) candidates.set(exact._id, { _id: exact._id, name: exact.name });
+    }
+
+    const searchPlayers = async (term: string) =>
+      await ctx.db
+        .query("players")
+        .withSearchIndex("search_name", (q) =>
+          q.search("name", term).eq("sportId", args.sportId),
+        )
+        .take(NEAR_MATCH_SEARCH_CANDIDATES);
+
+    let hits = await searchPlayers(name);
+    if (hits.length === 0) {
+      const tokens = nameTokens(name);
+      const fallbackTerm = tokens.length > 0 ? tokens[tokens.length - 1] : longestToken(name);
+      if (fallbackTerm) hits = await searchPlayers(fallbackTerm);
+    }
+    for (const hit of hits) {
+      candidates.set(hit._id, { _id: hit._id, name: hit.name });
+    }
+
+    const rows = [...candidates.values()];
+    return rankPlayerCandidates(name, rows)
+      .slice(0, limit)
+      .map(({ index, confidence }) => ({
+        _id: rows[index]._id,
+        name: rows[index].name,
+        confidence,
+      }));
   },
 });
 

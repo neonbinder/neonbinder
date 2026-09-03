@@ -6,6 +6,7 @@ import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import { normalizePlayerName } from "./players";
 import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
+import { longestToken, rankTeamCandidates } from "./lib/entityNearMatch";
 
 /**
  * Lowercase + strip punctuation + token-sort. Same shape as the player
@@ -835,5 +836,272 @@ export const listForManagement = query({
     // reads as "that is all the teams", which is the kind of wrong the
     // operator cannot see.
     return { teams, totalCount: teams.length, truncated };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — the entity review wizard's dedup surface.
+//
+// The wizard's job is to stop a second "New York Yankees" row appearing under
+// a different spelling. Three queries back that, in ascending softness:
+// `resolveNames` (the exact key, in bulk, for the "will create N · M exist"
+// line), `nearMatches` (exact + fuzzy, for the per-name "did you mean?"
+// prompt), and `search` (free typeahead, for the operator who wants to go
+// looking themselves).
+//
+// **Convex search semantics, as they bear on all three** (verified against the
+// Convex docs, `docs/search/text-search.mdx`, on 2026-09-03):
+//
+//   * A search expression is split into words and matched word-wise, case- and
+//     punctuation-insensitively. It is OR-ish, not AND: a document matching
+//     ANY term can come back. Documents matching more terms rank higher, by
+//     BM25 (word frequency, field length, match proximity), ties broken toward
+//     newer documents.
+//   * Prefix matching applies to the FINAL term only — searching "r" matches
+//     "rabbit" and "send request", but "r nolan" prefix-matches only "nolan".
+//   * Typo/fuzzy matching no longer exists (removed after 2025-01-15). A
+//     misspelled token matches nothing.
+//   * Hard limits: 16 terms per query, 8 filter expressions, terms truncated
+//     at 32 characters, and at most 1024 index results scanned.
+//
+// That OR-ish behaviour is why `nearMatches` can search the whole name and
+// still find a row storing only part of it. The single-token FALLBACK search
+// exists for the other direction: with a multi-word query, every row sharing a
+// generic leading token ("New …", "Los …") is also a hit, and BM25 can rank
+// enough of them above the one row that actually matters to push it out of the
+// ten we take. Re-querying on the distinctive token alone gives that row a
+// field to itself. It is a second query rather than a wider `.take()` because
+// the miss is a ranking problem, not a volume one.
+// ---------------------------------------------------------------------------
+
+/**
+ * Default and maximum result counts for `search`. Mirrors `players.search` —
+ * see its comment for why the cap matters more than the default.
+ */
+const TEAM_SEARCH_DEFAULT_LIMIT = 10;
+const TEAM_SEARCH_MAX_LIMIT = 25;
+
+/**
+ * NEO-212: server-side team typeahead over the `search_name` index, the twin
+ * of `players.search`.
+ *
+ * Signed-in rather than admin, and returning `[]` rather than throwing when
+ * signed out, exactly as `players.search` does: team rows are globally-shared
+ * reference data with no per-user fields (see `teamDocValidator`), so the gate
+ * is about cost — a deployment URL ships in the client bundle and search is
+ * the most expensive query class Convex offers — not confidentiality.
+ *
+ * An empty query returns nothing rather than the first N teams: a typeahead
+ * that suggests before you type is noise, and it would be an unbounded browse.
+ */
+export const search = query({
+  args: {
+    query: v.string(),
+    sportId: v.optional(v.id("selectorOptions")),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(teamDocValidator),
+  handler: async (ctx, args) => {
+    if (!(await getCurrentUserId(ctx))) return [];
+
+    const term = args.query.trim();
+    if (!term) return [];
+
+    const limit = Math.min(
+      args.limit ?? TEAM_SEARCH_DEFAULT_LIMIT,
+      TEAM_SEARCH_MAX_LIMIT,
+    );
+
+    return await ctx.db
+      .query("teams")
+      .withSearchIndex("search_name", (q) => {
+        const search = q.search("name", term);
+        return args.sportId ? search.eq("sportId", args.sportId) : search;
+      })
+      .take(limit);
+  },
+});
+
+/**
+ * The most names one `resolveNames` call will answer for.
+ *
+ * A single checklist fetch surfaces a few dozen unknown teams at the outside.
+ * Over-length is REFUSED rather than truncated, and that is the whole point of
+ * the bound: this query's only consumer is the wizard's "will create N new
+ * teams · M already exist" line, and a silently truncated answer is a WRONG
+ * COUNT — the operator reads "3 new" and commits 70. A thrown error is
+ * something they can see.
+ */
+const RESOLVE_NAMES_MAX = 64;
+
+/**
+ * NEO-212: bulk existence check by the exact dedup key.
+ *
+ * Answers, for each submitted name, whether `commitCardChecklist` would find
+ * an existing row or insert a new one — the same `normalizeTeamName` +
+ * `by_name_normalized_and_sport_id` lookup `findOrCreate` performs, so the
+ * wizard's preview and the commit cannot disagree. This is the STRICT
+ * comparison; `nearMatches` below is the soft one, and the two are deliberately
+ * separate: an operator needs to know both "this will be created" and "…but
+ * something like it already exists".
+ *
+ * Returns one entry per input, in input order, duplicates included — the caller
+ * zips the result against its own list. Names normalising to the same key are
+ * looked up once.
+ *
+ * Admin-gated like every other operator-facing function in this file: the only
+ * caller is the review wizard, which lives behind admin tooling.
+ */
+export const resolveNames = query({
+  args: {
+    names: v.array(v.string()),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.array(
+    v.object({
+      name: v.string(),
+      existingTeamId: v.optional(v.id("teams")),
+      existingName: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    if (args.names.length > RESOLVE_NAMES_MAX) {
+      // The COUNT, never the names: this string reaches Sentry and the browser
+      // console through Convex's error path.
+      throw new ConvexError(
+        `Too many names to resolve at once (${args.names.length}; max ${RESOLVE_NAMES_MAX}).`,
+      );
+    }
+
+    const seen = new Map<string, { id: Id<"teams">; name: string } | null>();
+    const results: Array<{
+      name: string;
+      existingTeamId?: Id<"teams">;
+      existingName?: string;
+    }> = [];
+
+    for (const raw of args.names) {
+      const normalized = normalizeTeamName(raw);
+      // A name that normalises to nothing (punctuation only) can never match a
+      // stored key, and must not be reported as existing.
+      if (!normalized) {
+        results.push({ name: raw });
+        continue;
+      }
+
+      if (!seen.has(normalized)) {
+        const found = await ctx.db
+          .query("teams")
+          .withIndex("by_name_normalized_and_sport_id", (q) =>
+            q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
+          )
+          .first();
+        seen.set(
+          normalized,
+          found ? { id: found._id, name: found.name } : null,
+        );
+      }
+
+      const hit = seen.get(normalized) ?? null;
+      results.push(
+        hit
+          ? { name: raw, existingTeamId: hit.id, existingName: hit.name }
+          : { name: raw },
+      );
+    }
+
+    return results;
+  },
+});
+
+/** How many search-index rows feed the ranker, and how many rank out by default. */
+const NEAR_MATCH_SEARCH_CANDIDATES = 10;
+const NEAR_MATCH_DEFAULT_LIMIT = 5;
+const NEAR_MATCH_MAX_LIMIT = 25;
+
+/**
+ * NEO-212: the "did you mean?" prompt in front of creating a team.
+ *
+ * Three steps, widening:
+ *
+ *   1. The exact dedup key, via `by_name_normalized_and_sport_id`. Cheap, and
+ *      it is the one hit that must never be missed — a row `findOrCreate`
+ *      would silently reuse.
+ *   2. The `search_name` index on the whole name, then, only if that returned
+ *      nothing at all, a second search on the name's longest token. See the
+ *      section header above for what Convex's search actually does and why the
+ *      fallback is a separate query.
+ *   3. `rankTeamCandidates` over the union, dropping everything it ranks
+ *      neither exact nor close.
+ *
+ * Advisory only. Nothing here may auto-merge or auto-skip: `close` is a
+ * heuristic over case-folded containment and shared tokens, and the operator is
+ * the one who knows whether the 1962 Mets and the Mets are the same row.
+ */
+export const nearMatches = query({
+  args: {
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(
+    v.object({
+      _id: v.id("teams"),
+      name: v.string(),
+      confidence: v.union(v.literal("exact"), v.literal("close")),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    const name = args.name.trim();
+    if (!name) return [];
+
+    const limit = Math.min(
+      args.limit ?? NEAR_MATCH_DEFAULT_LIMIT,
+      NEAR_MATCH_MAX_LIMIT,
+    );
+
+    // Keyed by id so the exact hit and a search hit for the same row collapse.
+    const candidates = new Map<Id<"teams">, { _id: Id<"teams">; name: string }>();
+
+    const normalized = normalizeTeamName(name);
+    if (normalized) {
+      const exact = await ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", normalized).eq("sportId", args.sportId),
+        )
+        .first();
+      if (exact) candidates.set(exact._id, { _id: exact._id, name: exact.name });
+    }
+
+    const searchTeams = async (term: string) =>
+      await ctx.db
+        .query("teams")
+        .withSearchIndex("search_name", (q) =>
+          q.search("name", term).eq("sportId", args.sportId),
+        )
+        .take(NEAR_MATCH_SEARCH_CANDIDATES);
+
+    let hits = await searchTeams(name);
+    if (hits.length === 0) {
+      const fallbackTerm = longestToken(name);
+      if (fallbackTerm) hits = await searchTeams(fallbackTerm);
+    }
+    for (const hit of hits) {
+      candidates.set(hit._id, { _id: hit._id, name: hit.name });
+    }
+
+    const rows = [...candidates.values()];
+    return rankTeamCandidates(name, rows)
+      .slice(0, limit)
+      .map(({ index, confidence }) => ({
+        _id: rows[index]._id,
+        name: rows[index].name,
+        confidence,
+      }));
   },
 });
