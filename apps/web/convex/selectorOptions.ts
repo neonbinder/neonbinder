@@ -31,9 +31,11 @@ import {
   validateFeatureValue,
 } from "./features/deriveCardFeatures";
 import {
-  generateListingTitle,
+  assessListingTitle,
   generateListingDescription,
+  type ListingCardInputs,
 } from "./features/generateListing";
+import { LISTING_TITLE_MAX } from "./features/listingLimits";
 import { generateSku } from "./sku";
 import {
   cardNumberStem,
@@ -871,6 +873,12 @@ export const getCardChecklist = query({
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
       listingTitle: v.optional(v.string()),
       listingDescription: v.optional(v.string()),
+      // NEO-101: the generated title's core was cut to fit at creation time
+      // (see schema.ts). Returned because the checklist derives the
+      // `titleTruncated` attention item client-side through
+      // `features/cardAttention.ts`, and unlike `titleOverLimit` this one
+      // cannot be measured off the title string.
+      listingTitleTruncated: v.optional(v.boolean()),
       imageUrls: v.optional(v.object({
         front: v.optional(v.string()),
         back: v.optional(v.string()),
@@ -1740,27 +1748,45 @@ export const renameSelectorOption = mutation({
  * expectations for an appended custom slot.
  */
 /**
- * Walk a selectorOptions node's parent chain to find its setName ancestor's
- * display value (e.g. "Chrome"). Used only for listing-title/description
- * generation (NEO-24/71-74) — every other consumer of the ancestor chain
- * already had its own reason to walk it (e.g. commitCardChecklist's
- * setNameAncestorId), so this stays a small, focused helper rather than a
- * general-purpose ancestor-chain utility.
+ * Walk a selectorOptions node's parent chain ONCE, collecting the two ancestor
+ * display values listing generation needs: the setName ("Chrome") and the
+ * sport ("Baseball").
+ *
+ * NEO-101 widened this from `findSetNameValue`, which returned early at the
+ * setName level. The sport node sits ABOVE setName, so a second helper would
+ * have meant a second walk over the same chain for every card previewed or
+ * hand-added — the walk is the cost here, not the comparison, so both values
+ * come out of one pass.
+ *
+ * Still deliberately narrow rather than a general ancestor-chain utility:
+ * every other consumer of the chain already had its own reason to walk it
+ * (commitCardChecklist resolves both in the prelude, once per commit, and
+ * hands them to the chunks). Depth-bounded like
+ * `findSportForSelectorOption`, so a cyclic or corrupted `parentId` cannot
+ * spin a query.
  */
-async function findSetNameValue(
+async function findAncestorLabels(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
   node: any,
-): Promise<string | undefined> {
-  if (!node) return undefined;
-  if (node.level === "setName") return node.value;
-  let cursorId: Id<"selectorOptions"> | undefined = node.parentId;
-  while (cursorId) {
-    const n = await ctx.db.get(cursorId);
-    if (!n) break;
-    if (n.level === "setName") return n.value;
-    cursorId = n.parentId;
+): Promise<{ setName?: string; sport?: string }> {
+  const labels: { setName?: string; sport?: string } = {};
+  if (!node) return labels;
+  let current = node;
+  let depth = 0;
+  while (current && depth < 16) {
+    if (current.level === "setName" && labels.setName === undefined) {
+      labels.setName = current.value;
+    }
+    if (current.level === "sport" && labels.sport === undefined) {
+      labels.sport = current.value;
+    }
+    if (labels.setName !== undefined && labels.sport !== undefined) break;
+    const parentId: Id<"selectorOptions"> | undefined = current.parentId;
+    if (!parentId) break;
+    current = await ctx.db.get(parentId);
+    depth += 1;
   }
-  return undefined;
+  return labels;
 }
 
 
@@ -1854,8 +1880,9 @@ export const addCustomCard = mutation({
     // resolved to real player rows yet (that happens later, if confirmed,
     // via commitCardChecklist) — the operator typed a real name, so it's
     // the right thing to show regardless of reconciliation state.
-    const setNameValue = await findSetNameValue(ctx, parentNode);
-    const listingInputs = {
+    const { setName: setNameValue, sport: sportValue } =
+      await findAncestorLabels(ctx, parentNode);
+    const listingInputs: ListingCardInputs = {
       cardNumber: args.cardNumber,
       playerNames: pendingPlayerNames,
       year: mergedFeatures.season,
@@ -1866,7 +1893,24 @@ export const addCustomCard = mutation({
       isRelic: (args.attributes ?? []).includes("RELIC"),
       autographed: mergedFeatures.autographed,
       shortPrint: mergedFeatures.shortPrint,
+      // NEO-101: the add-custom-card form has no print-run field either (see
+      // `cardVariation` below); both arrive later through `updateCard`.
+      printRun: undefined,
+      // NEO-101: named explicitly even though it is always absent here — the
+      // add-custom-card form has no variation field, so a custom card acquires
+      // its `cardVariation` later via `updateCard` (which never regenerates the
+      // title; write-once). Spelled out so this stays visibly the same input
+      // shape as the commit insert branch below.
+      cardVariation: undefined,
+      // NEO-101: a hand-added card has no `teamOnCardIds` yet — the operator's
+      // typed team names live in `pendingTeamNames` until a sync resolves them
+      // (see `deriveCardAttention`, which counts a pending name as an answer
+      // for exactly the same reason). Those names are what the operator meant,
+      // so they are what the title says.
+      teamNames: pendingTeamNames,
+      sport: sportValue,
     };
+    const listingTitle = assessListingTitle(listingInputs);
 
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
     // below assigns the correct natural-cardNumber position. This way a
@@ -1889,8 +1933,12 @@ export const addCustomCard = mutation({
         ? { pendingTeamNames }
         : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-      listingTitle: generateListingTitle(listingInputs),
+      listingTitle: listingTitle.title,
       listingDescription: generateListingDescription(listingInputs),
+      // NEO-101: recorded only when the core actually had to be cut — the
+      // field is absent, not `false`, on the overwhelming majority of rows
+      // that fit fine (mean real title length is 34 characters).
+      ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
@@ -1959,6 +2007,67 @@ export const updateCard = mutation({
         filtered[key] = value;
       }
     }
+    // NEO-101: the hard title cap, enforced HERE because this is the single
+    // mutation every operator title edit goes through — the card detail panel
+    // and the attention walker's title fixer both land on it, and the panel's
+    // own counter is UI only. eBay REJECTS an over-length title rather than
+    // truncating it (see features/listingLimits.ts), so an unbounded write
+    // here is a listing that fails months later, at re-list time, across a
+    // whole hand-built set at once.
+    //
+    // Trim first, so trailing whitespace an operator could not see is neither
+    // stored nor counted against them.
+    //
+    // The error message carries the CAP and the LENGTH and never the title
+    // itself: this string travels through Convex's error path into Sentry and
+    // the browser console, and row content has no business there.
+    // NEO-101 security follow-up: the two branches below both need the STORED
+    // row. Loaded lazily and at most once — the common `updateCard` call is a
+    // plain field patch that enters neither branch and must not pay for a read
+    // it never uses.
+    let storedCard: Doc<"cardChecklist"> | null = null;
+    let storedCardLoaded = false;
+    const loadStoredCard = async (): Promise<Doc<"cardChecklist">> => {
+      if (!storedCardLoaded) {
+        storedCard = await ctx.db.get(id);
+        storedCardLoaded = true;
+      }
+      if (!storedCard) throw new ConvexError("updateCard: no such card");
+      return storedCard;
+    };
+
+    if (typeof filtered.listingTitle === "string") {
+      const trimmedTitle = filtered.listingTitle.trim();
+      if (trimmedTitle.length > LISTING_TITLE_MAX) {
+        throw new ConvexError(
+          `Listing title is ${trimmedTitle.length} characters; the limit is ${LISTING_TITLE_MAX}.`,
+        );
+      }
+      filtered.listingTitle = trimmedTitle;
+      // A human has now authored this title, so whether the GENERATOR's core
+      // fit is no longer a question anyone is asking — `undefined` in a patch
+      // is how Convex deletes a field.
+      //
+      // ONLY WHEN THE TITLE ACTUALLY CHANGED, though. `CardDetailPanel` sends
+      // `listingTitle` on EVERY save, whether or not the operator touched it,
+      // so keying the clear off "present in args" meant adding a team or
+      // flipping RC silently retired the "auto title was cut short" item —
+      // the row stops being badged while the title is still missing the words
+      // the generator cut. Same discipline as the `teamNoneConfirmedAt`
+      // retirement below, which is likewise conditioned on the write being a
+      // real one rather than merely present.
+      const existingTitle = (await loadStoredCard()).listingTitle;
+      if (trimmedTitle !== existingTitle) {
+        filtered.listingTitleTruncated = undefined;
+      }
+    }
+
+    // NEO-101 deliberately does NOT cap `cardVariation` here, even though
+    // eBay's aspect-value limit is 65. No NB field is yet proven to map
+    // verbatim onto an eBay item specific, and hard-blocking an operator edit
+    // on that guess is the over-structuring NEO-189 rolled back. It surfaces
+    // as a warn-only `aspectValueOverLimit` attention item instead.
+
     // NEO-102 security follow-up: `teamOnCardIds` arrives from two admin
     // clients — the card detail panel's TeamPicker and the attention walker's
     // MissingTeamFixer — and the 8-team cap the fixer enforces is UI only.
@@ -1987,8 +2096,7 @@ export const updateCard = mutation({
         // already paid for elsewhere on this same mutation's write path
         // (`findSportForSelectorOption` mirrors the lookup
         // `applyBscTeamResolution` and the commit chunk already do).
-        const card = await ctx.db.get(id);
-        if (!card) throw new ConvexError("updateCard: no such card");
+        const card = await loadStoredCard();
         const sportId = await findSportForSelectorOption(
           ctx,
           card.selectorOptionId,
@@ -2038,6 +2146,162 @@ export const updateCard = mutation({
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
     }
     return null;
+  },
+});
+
+/**
+ * NEO-101 — what the generator WOULD title this stored card today, plus the
+ * inputs it would use.
+ *
+ * Read-only, and it stores nothing. Two consumers, both in the card detail
+ * panel / attention walker: a **Regenerate** button that resets the title draft
+ * to this, and the labelled source chips (year, set, players, #, flags,
+ * variation) that show an operator WHICH facts the machine had — so when a
+ * title has to be shortened by hand, they can see what is safe to drop rather
+ * than guessing.
+ *
+ * ## Why a query and not a client-side call
+ *
+ * `assessListingTitle` is pure and the SPA could call it directly — but the
+ * inputs are not on the row. Player NAMES live behind `playerIds`, and the set
+ * name is an ancestor walk. Resolving those client-side would mean a second
+ * round of queries per card and a second place that can disagree with what the
+ * insert branch actually did.
+ *
+ * ## Kept in step with the insert branch by hand
+ *
+ * The field mapping below MIRRORS `commitCardChecklistChunk`'s insert branch
+ * (search `listingInputs` in this file) — same six feature keys, same
+ * `findSetNameValue` ancestor walk, same verbatim `cardVariation`. It is NOT
+ * shared code: the commit reads a merged features snapshot it computed a few
+ * lines earlier for a card that does not exist yet, this reads a stored row's
+ * own `features`. Folding those into one helper would mean a parameter object
+ * with the same shape as `ListingCardInputs` itself, which is the thing being
+ * built. **If you change one, change the other.**
+ *
+ * The one real difference is `playerNames`: a committed card has resolved
+ * `playerIds`, a custom card added by hand may still only have
+ * `pendingPlayerNames` (the names an operator typed, not yet reconciled to
+ * `players` rows). Both are the operator's answer, so both are used — resolved
+ * ids first, pending names as the fallback, exactly as `addCustomCard` does.
+ */
+export const previewListingTitle = query({
+  args: { cardId: v.id("cardChecklist") },
+  returns: v.object({
+    title: v.string(),
+    coreFits: v.boolean(),
+    dropped: v.array(v.string()),
+    inputs: v.object({
+      cardNumber: v.string(),
+      playerNames: v.array(v.string()),
+      year: v.optional(v.string()),
+      manufacturer: v.optional(v.string()),
+      setName: v.optional(v.string()),
+      parallelName: v.optional(v.string()),
+      isRookie: v.optional(v.boolean()),
+      isRelic: v.optional(v.boolean()),
+      autographed: v.optional(v.string()),
+      shortPrint: v.optional(v.string()),
+      printRun: v.optional(v.number()),
+      cardVariation: v.optional(v.string()),
+      // NEO-101: always present, possibly empty — same contract as
+      // `playerNames`, so the chips can render it without a null check.
+      teamNames: v.array(v.string()),
+      sport: v.optional(v.string()),
+    }),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const card = await ctx.db.get(args.cardId);
+    if (!card) throw new ConvexError("previewListingTitle: no such card");
+
+    // NEO-101 security follow-up: BOUND AND DEDUPE the fan-out before reading
+    // anything. `playerIds` is an unvalidated array on the row — `updateCard`
+    // accepts it as full replacement with no cap and no de-duplication, unlike
+    // `teamOnCardIds` (see `MAX_CARD_TEAMS` there) — so a single call to this
+    // query could otherwise turn one card id into an unbounded sequential
+    // `ctx.db.get` walk. Deduping first also stops a row that repeats the same
+    // id from paying for it twice, and from printing the player twice.
+    //
+    // The cap is deliberately generous rather than tight: the widest real
+    // multi-player cards (League Leaders, rookie combos) run to a handful of
+    // names, and a title only has room for two or three of them anyway, so 12
+    // is well past anything legitimate while still being a hard bound.
+    //
+    // Not fixed by adding a `MAX_CARD_PLAYERS` to `updateCard` here: doing
+    // that properly means dedupe + cap + existence checks on the write path,
+    // which changes an input contract `CardDetailPanel` and the commit path
+    // both use, and that is its own decision rather than a preview query's to
+    // make. This bound is local and costs nothing.
+    const PREVIEW_PLAYER_LOOKUP_LIMIT = 12;
+    const previewPlayerIds = [...new Set(card.playerIds ?? [])].slice(
+      0,
+      PREVIEW_PLAYER_LOOKUP_LIMIT,
+    );
+    const resolvedPlayerNames: string[] = [];
+    for (const playerId of previewPlayerIds) {
+      const player = await ctx.db.get(playerId);
+      // A dangling id is a data problem, not a reason to fail a preview —
+      // skip it and let the chips show what actually resolved.
+      if (player) resolvedPlayerNames.push(player.name);
+    }
+    const playerNames =
+      resolvedPlayerNames.length > 0
+        ? resolvedPlayerNames
+        : (card.pendingPlayerNames ?? []);
+
+    // Teams get the same treatment as players — deduped and BOUNDED before any
+    // read. The bound here is `MAX_CARD_TEAMS`, which is what `updateCard`
+    // already enforces on the write path, so a row that went through the
+    // supported path can never be truncated by it; the cap exists for rows
+    // written before that validation landed, or by a future caller that skips
+    // it.
+    const previewTeamIds = [...new Set(card.teamOnCardIds ?? [])].slice(
+      0,
+      MAX_CARD_TEAMS,
+    );
+    const resolvedTeamNames: string[] = [];
+    for (const teamId of previewTeamIds) {
+      const team = await ctx.db.get(teamId);
+      if (team) resolvedTeamNames.push(team.name);
+    }
+    // Same fallback as `playerNames`: a hand-added card carries the names the
+    // operator typed until a sync resolves them into `teams` rows, and those
+    // are the operator's answer.
+    const teamNames =
+      resolvedTeamNames.length > 0
+        ? resolvedTeamNames
+        : (card.pendingTeamNames ?? []).slice(0, MAX_CARD_TEAMS);
+
+    const features: Record<string, string> = card.features ?? {};
+    const parentNode = await ctx.db.get(card.selectorOptionId);
+    const { setName: setNameValue, sport: sportValue } =
+      await findAncestorLabels(ctx, parentNode);
+
+    const inputs: ListingCardInputs = {
+      cardNumber: card.cardNumber,
+      playerNames,
+      year: features.season,
+      manufacturer: features.manufacturer,
+      setName: setNameValue,
+      parallelName: features.parallelName,
+      isRookie: card.isRookie,
+      isRelic: card.isRelic,
+      autographed: features.autographed,
+      shortPrint: features.shortPrint,
+      printRun: card.printRun,
+      cardVariation: card.cardVariation,
+      teamNames,
+      sport: sportValue,
+    };
+
+    const { title, coreFits, dropped } = assessListingTitle(inputs);
+    return {
+      title,
+      coreFits,
+      dropped,
+      inputs: { ...inputs, playerNames, teamNames },
+    };
   },
 });
 
@@ -6018,6 +6282,12 @@ export const commitCardChecklistPrelude = internalMutation({
     playerNameById: v.array(
       v.object({ id: v.id("players"), name: v.string() }),
     ),
+    // NEO-101: the same trick one table over. Listing titles now carry the
+    // card's TEAM names, and resolving them per card in the chunk would be one
+    // `db.get` per team per card — the exact cost `playerNameById` exists to
+    // avoid. A commit's whole team vocabulary is a handful of rows; a commit's
+    // cards are hundreds.
+    teamNameById: v.array(v.object({ id: v.id("teams"), name: v.string() })),
     createdPlayerIds: v.array(v.id("players")),
     createdTeamIds: v.array(v.id("teams")),
     enrichmentTeamIds: v.array(v.id("teams")),
@@ -6291,6 +6561,7 @@ export const commitCardChecklistPrelude = internalMutation({
     }
 
     const teamIdByName = new Map<string, Id<"teams">>();
+    const teamNameById = new Map<Id<"teams">, string>();
     const createdTeamIds: Array<Id<"teams">> = [];
     for (const name of allTeamNames) {
       const normalized = norm(name);
@@ -6302,12 +6573,21 @@ export const commitCardChecklistPrelude = internalMutation({
         .first();
       if (existing) {
         teamIdByName.set(name, existing._id);
+        teamNameById.set(existing._id, existing.name);
         continue;
       }
       const decision = reviewByKey.get(`team:${normalized}`)?.decision;
       if (!decision) continue;
       if (decision.action === "link") {
-        if (decision.linkedTeamId) teamIdByName.set(name, decision.linkedTeamId);
+        if (decision.linkedTeamId) {
+          teamIdByName.set(name, decision.linkedTeamId);
+          // The LINKED row's own spelling, not the reviewed name — same
+          // reasoning as `playerNameById` above, and read at most once.
+          if (!teamNameById.has(decision.linkedTeamId)) {
+            const linked = await ctx.db.get(decision.linkedTeamId);
+            if (linked) teamNameById.set(decision.linkedTeamId, linked.name);
+          }
+        }
         continue;
       }
       const enrichment = reviewByKey.get(`team:${normalized}`)?.enrichment;
@@ -6340,6 +6620,7 @@ export const commitCardChecklistPrelude = internalMutation({
           : {}),
       });
       teamIdByName.set(name, id);
+      teamNameById.set(id, name.trim());
       createdTeamIds.push(id);
     }
 
@@ -6398,6 +6679,7 @@ export const commitCardChecklistPrelude = internalMutation({
       playerIdByName: Array.from(playerIdByName, ([name, id]) => ({ name, id })),
       teamIdByName: Array.from(teamIdByName, ([name, id]) => ({ name, id })),
       playerNameById: Array.from(playerNameById, ([id, name]) => ({ id, name })),
+      teamNameById: Array.from(teamNameById, ([id, name]) => ({ id, name })),
       createdPlayerIds,
       createdTeamIds,
       enrichmentTeamIds,
@@ -6420,6 +6702,7 @@ type CommitPrelude = {
   playerIdByName: Array<{ name: string; id: Id<"players"> }>;
   teamIdByName: Array<{ name: string; id: Id<"teams"> }>;
   playerNameById: Array<{ id: Id<"players">; name: string }>;
+  teamNameById: Array<{ id: Id<"teams">; name: string }>;
   createdPlayerIds: Array<Id<"players">>;
   createdTeamIds: Array<Id<"teams">>;
   enrichmentTeamIds: Array<Id<"teams">>;
@@ -6464,6 +6747,9 @@ const commitChunkCardValidator = v.object({
   sortOrder: v.number(),
   // Canonical names of `playerIds`, resolved once in the prelude.
   playerNames: v.array(v.string()),
+  // NEO-101: canonical names of `teamOnCardIds`, likewise resolved once in the
+  // prelude. Consumed by listing-title generation in the insert branch.
+  teamNames: v.array(v.string()),
   // The pre-commit row this card upserts into, or absent to insert a new row.
   existingId: v.optional(v.id("cardChecklist")),
   // NEO-203 — which NB-owned content fields the operator accepted for THIS
@@ -6757,7 +7043,7 @@ export const commitCardChecklistChunk = internalMutation({
         // NEO-24/71-74: write-once listing title/description, generated
         // once here at creation time, then freely editable afterward (same
         // model as every other default this session).
-        const listingInputs = {
+        const listingInputs: ListingCardInputs = {
           cardNumber: card.cardNumber,
           playerNames,
           year: mergedFeatures.season,
@@ -6767,8 +7053,28 @@ export const commitCardChecklistChunk = internalMutation({
           isRookie: card.isRookie,
           isRelic: card.isRelic,
           autographed: mergedFeatures.autographed,
+          // NEO-101: `printRun` was in the generator's token list from the
+          // start but was never actually passed from here, so no synced card
+          // has ever had `/99` in its title while `previewListingTitle`'s
+          // Regenerate would put one there. Passed now, so creation and
+          // regeneration agree.
+          printRun: card.printRun,
           shortPrint: mergedFeatures.shortPrint,
+          // NEO-101/189: NB's own per-card variation name, used verbatim in
+          // both the title (as an optional token) and the description. Same
+          // value written to the row's `cardVariation` column below.
+          cardVariation: card.cardVariation,
+          // NEO-101: resolved once per commit in the prelude, not per card —
+          // roughly half of sold listings name the team, so this is a real
+          // search term rather than filler.
+          teamNames: card.teamNames,
+          // NEO-101: the sport ancestor's value, already resolved by the
+          // prelude for the SKU prefix. The weakest token in the title and the
+          // last one tried; frequently de-duplicated away by a team name that
+          // already contains the word.
+          sport: args.sportValue,
         };
+        const listingTitle = assessListingTitle(listingInputs);
 
         const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
@@ -6787,8 +7093,10 @@ export const commitCardChecklistChunk = internalMutation({
           // NEO-24: inherit ancestor + derive per-card on insert. Existing
           // rows are owned by the propagation engine; never clobbered here.
           ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-          listingTitle: generateListingTitle(listingInputs),
+          listingTitle: listingTitle.title,
           listingDescription: generateListingDescription(listingInputs),
+          // NEO-101: only when the core was actually cut (see schema.ts).
+          ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
           sortOrder: card.sortOrder,
           lastUpdated: Date.now(),
         });
@@ -8295,6 +8603,9 @@ export const commitCardChecklist = action({
     const playerNameById = new Map(
       prelude.playerNameById.map(({ id, name }) => [id as string, name] as const),
     );
+    const teamNameById = new Map(
+      prelude.teamNameById.map(({ id, name }) => [id as string, name] as const),
+    );
     // ── NEO-203: which existing row each incoming card updates ──────────────
     const match = resolveExistingIds(args.cards, prelude);
     const conflictIndices = new Set(match.conflicts.map((c) => c.index));
@@ -8376,6 +8687,11 @@ export const commitCardChecklist = action({
           sortOrder: targetSortOrder.get(c.cardNumber) ?? index,
           playerNames: playerIds
             .map((id) => playerNameById.get(id as string))
+            .filter((n): n is string => n !== undefined),
+          // NEO-101: in the same stored order as `teamOnCardIds`, so the title
+          // names teams the way the card does.
+          teamNames: teamOnCardIds
+            .map((id) => teamNameById.get(id as string))
             .filter((n): n is string => n !== undefined),
           existingId: match.existingIdByIndex[index],
           // NEO-203: the operator's per-field decision travels with the card.

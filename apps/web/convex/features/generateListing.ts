@@ -8,7 +8,44 @@
  * Pure functions only — no DB access. Callers (commitCardChecklist's insert
  * branch, addCustomCard) resolve player names / ancestor values first and
  * pass them in as plain data, exactly like deriveCardFeatures.ts's contract.
+ *
+ * NEO-101 added `assessListingTitle`, which is the same generation reporting
+ * what it had to give up. The cap itself now lives in `listingLimits.ts` with
+ * its evidence; this module no longer keeps a private copy of the number.
+ *
+ * ## The formula, and why the title PACKS rather than stays short
+ *
+ *   core:      <year> <manufacturer/set> <players> #<cardNumber>
+ *   then, while each still fits, in this order:
+ *              AUTO, RELIC, <parallel>, /<printRun>, <cardVariation>,
+ *              RC, SP|SSP, <each team name>, "Rookie", <sport>
+ *
+ * A listing title is the only text eBay's search actually matches on, so an
+ * unused character is a search term thrown away. Jason's research
+ * (2026-09-02), two samples of SOLD listings — 119 Topps Chrome baseball and
+ * 120 Panini Prizm football — says what real sellers put in that space:
+ *
+ *   - two-thirds of titles run 70-80 characters; the mean is 70
+ *   - 70% lead with the year
+ *   - 82-93% carry the card number
+ *   - ~50% name the TEAM
+ *   - ~50% say RC or Rookie, and a THIRD of those use both words
+ *
+ * NeonBinder's own titles averaged 34. That is not concision, it is half the
+ * listing's searchable surface left blank — so the token list below is
+ * deliberately long, and the loop keeps trying tokens until the budget is
+ * genuinely spent. eBay's own seller guidance orders a title year, brand /
+ * edition, player, special features, grading, which is exactly the core here.
+ *
+ * The tail of the list is FILLER, and ordered as such. `"Rookie"` is appended
+ * late and only alongside `RC` — the two words are not redundant to a search
+ * engine (a third of sold rookie listings carry both), but `RC` is the one
+ * that must survive if only one can. `sport` is last: it is the weakest search
+ * term on the card (a buyer browsing baseball cards is already in baseball),
+ * so it exists purely to spend characters that would otherwise go unused.
  */
+
+import { LISTING_TITLE_MAX } from "./listingLimits";
 
 export type ListingCardInputs = {
   cardNumber: string;
@@ -27,9 +64,61 @@ export type ListingCardInputs = {
   /** features.shortPrint — "None" / "SP" / "SSP". */
   shortPrint?: string;
   printRun?: number;
+  /**
+   * NEO-101/189 — `cardChecklist.cardVariation`, NB's OWN per-card variation
+   * name ("Image Variation; Wearing sunglasses", "Nickname", "Sliding").
+   *
+   * Used VERBATIM. Deliberately not parsed: the `;`-separated shape some rows
+   * carry is an artefact of how the string was first authored, not a schema,
+   * and teaching this module to split on it would be re-introducing exactly
+   * the marketplace vocabulary NEO-189 spent a ticket removing. A variation is
+   * very often the reason a buyer searched, which is why it is a title token
+   * at all rather than description-only.
+   */
+  cardVariation?: string;
+  /**
+   * NEO-101 — the stored `teams.name` values for this card's `teamOnCardIds`,
+   * in stored order.
+   *
+   * VERBATIM, like `cardVariation`: "Seattle Mariners", "Oregon Ducks
+   * baseball", "Tigres del Licey". Never parsed into city/nickname, never
+   * abbreviated to "SEA". A team name is a search term a buyer types the way
+   * it is printed, and roughly half of sold listings carry one — abbreviating
+   * it would be inventing marketplace vocabulary for no gain.
+   */
+  teamNames?: string[];
+  /**
+   * NEO-101 — the ancestor sport node's value, e.g. "Baseball".
+   *
+   * The weakest token in the list and deliberately last: it is a filler word
+   * that spends leftover characters. Frequently swallowed by the word-level
+   * de-duplication below, because a team name like "Oregon Ducks baseball"
+   * already contains it.
+   */
+  sport?: string;
 };
 
-const EBAY_TITLE_MAX = 80;
+/**
+ * What `assessListingTitle` reports back: the title it built, and the two
+ * facts a caller cannot recover from the string afterwards.
+ */
+export type ListingTitleAssessment = {
+  /** The generated title. Always `<= LISTING_TITLE_MAX` characters. */
+  title: string;
+  /**
+   * False when the CORE (year / manufacturer / set / players) had to be cut to
+   * leave room for the card number. A stored row does not carry its player
+   * names or set name, so this cannot be re-derived later from the row alone —
+   * see `cardChecklist.listingTitleTruncated` in schema.ts.
+   */
+  coreFits: boolean;
+  /**
+   * The optional tokens that did not fit, in priority order. Purely
+   * informational: nothing is stored from this, it exists so the operator can
+   * see what the title gave up.
+   */
+  dropped: string[];
+};
 
 /**
  * A set node's `value` often already embeds its manufacturer's name as a
@@ -57,15 +146,191 @@ function startsWithWord(value: string, prefix: string): boolean {
   return boundaryChar === undefined || /\s/.test(boundaryChar);
 }
 
+function isRealParallel(inputs: ListingCardInputs): boolean {
+  const name = inputs.parallelName?.trim();
+  return !!name && name.toLowerCase() !== "base";
+}
+
 /**
- * eBay-style SEO title, target length ~80 chars (eBay's own hard cap). Core
- * identifying tokens (year/manufacturer/set/player/card#) always included;
- * optional high-value keywords (parallel, RC, AUTO, RELIC, SP/SSP, print
- * run) are appended one at a time, in priority order, only while they still
- * fit — so a long set/player name degrades gracefully instead of silently
- * overflowing eBay's limit.
+ * The optional keyword tokens, most valuable first.
+ *
+ * Order settled by Jason 2026-09-02 (collector consult plus the sold-listing
+ * research summarised in this module's header), and it is NOT the order this
+ * generator used before:
+ *
+ *   AUTO → RELIC → parallel → /printRun → cardVariation → RC → SP/SSP
+ *        → each team name → "Rookie" → sport
+ *
+ * AUTO and RELIC lead because they drive price and are eBay's own filter
+ * facets; parallel plus print run are how scarcity reads at a glance;
+ * the variation text is frequently the literal search term; RC and SP/SSP
+ * trail because both are obvious the moment the buyer opens the listing.
+ * Teams, the second "Rookie" spelling and the sport are the fill tail — real
+ * search terms, but the ones to lose first when the budget runs out.
+ *
+ * Returned RAW and in full. Nothing is filtered here: whether a token is
+ * redundant depends on the title as it stands when the token is reached, so
+ * that judgement belongs in the append loop, not in this list.
  */
-export function generateListingTitle(inputs: ListingCardInputs): string {
+function optionalTokens(inputs: ListingCardInputs): string[] {
+  const tokens: string[] = [];
+  if (inputs.autographed && inputs.autographed !== "None") tokens.push("AUTO");
+  if (inputs.isRelic) tokens.push("RELIC");
+  if (isRealParallel(inputs)) tokens.push(inputs.parallelName!.trim());
+  if (inputs.printRun) tokens.push(`/${inputs.printRun}`);
+  const variation = inputs.cardVariation?.trim();
+  if (variation) tokens.push(variation);
+  if (inputs.isRookie) tokens.push("RC");
+  if (inputs.shortPrint && inputs.shortPrint !== "None") {
+    tokens.push(inputs.shortPrint);
+  }
+  for (const team of inputs.teamNames ?? []) {
+    const trimmed = team.trim();
+    if (trimmed) tokens.push(trimmed);
+  }
+  // The second spelling of "rookie". Not redundant with `RC` to a search
+  // engine — a third of sold rookie listings carry both words — but it is the
+  // one to lose if only one fits, hence its position behind everything else
+  // that identifies the card.
+  if (inputs.isRookie) tokens.push("Rookie");
+  const sport = inputs.sport?.trim();
+  if (sport) tokens.push(sport);
+  return tokens;
+}
+
+/** Lowercased whitespace-delimited words of a string, for the de-dup test. */
+function wordsOf(text: string): string[] {
+  return text.toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Is every word of `token` already a word of the title built so far?
+ *
+ * ## Why word-level, and why against the WHOLE title
+ *
+ * The narrow version of this rule compared `parallelName` against
+ * `cardVariation`, because `deriveCardObservedFeatures` copies a card's
+ * `cardVariation` into `features.parallelName` (NEO-189) and both insert call
+ * sites therefore hand the generator the same string twice — titling a 2024
+ * Topps Chrome variation as `... #300b Image Variation Image Variation`.
+ *
+ * Lengthening the token list turned that one collision into a family of them:
+ *
+ *   - a team named "Oregon Ducks baseball" followed by the sport "Baseball";
+ *   - a manufacturer "Topps" already inside a set name "Topps Chrome", or a
+ *     parallel that repeats the product word;
+ *   - the same team resolved twice onto one card.
+ *
+ * All of them are the same defect — a word the buyer already read, spending
+ * characters twice — so all of them are answered by one rule: skip a token
+ * whose every word is already present as a word of the title. Comparing WORDS
+ * rather than whole strings is what catches "Oregon Ducks baseball" ⊃
+ * "Baseball"; comparing against the whole title rather than the token list is
+ * what catches repeats of a word from the core.
+ *
+ * It deliberately does NOT collapse `RC` and `Rookie`: different words, and
+ * carrying both is what real sold listings do.
+ *
+ * Approximate by construction — a token could in principle have every word
+ * scattered across unrelated parts of the title ("New York Yankees" after a
+ * "New York" team and a player surnamed Yankees). The failure mode is a
+ * dropped filler word on a card that will never exist, which is the right side
+ * to be wrong on.
+ */
+function alreadySaid(title: string, token: string): boolean {
+  const present = new Set(wordsOf(title));
+  const tokenWords = wordsOf(token);
+  return tokenWords.length > 0 && tokenWords.every((w) => present.has(w));
+}
+
+/**
+ * Strip a trailing "&" left dangling by a word-boundary cut.
+ *
+ * `playerNames` join with " & ", so a cut that keeps the connector but loses
+ * the player it was joining to yields "Aaron Judge &" — a title reading
+ * "... Aaron Judge & #17" that promises a second player and never delivers one.
+ * `&` sits between two spaces, so it is a perfectly good WORD as far as the
+ * boundary rule is concerned; nothing but this check stops the cut landing
+ * there.
+ *
+ * LOOPS deliberately: stripping one connector can expose another ("A & & B"),
+ * and a degenerate core built entirely of connectors must terminate at the
+ * empty string rather than spin. Each pass removes at least one character, so
+ * it does.
+ */
+function dropDanglingConnector(text: string): string {
+  let result = text.trimEnd();
+  while (/(^|\s)&$/.test(result)) {
+    result = result.slice(0, -1).trimEnd();
+  }
+  return result;
+}
+
+/**
+ * Cut `text` to at most `maxLength` characters at the last WHOLE-WORD boundary
+ * that fits.
+ *
+ * No ellipsis, ever. An `…` in a live eBay title reads to a buyer as a broken
+ * listing rather than as a deliberate abbreviation (collector consult,
+ * 2026-09-02), and it also costs a character that a real word could have used.
+ * A hard mid-word slice is the fallback only when there is no whitespace to cut
+ * at — a single unbroken token longer than the budget — because returning
+ * nothing at all would be worse.
+ */
+function cutAtWordBoundary(text: string, maxLength: number): string {
+  if (maxLength <= 0) return "";
+  if (text.length <= maxLength) return text;
+  const window = text.slice(0, maxLength);
+  const lastSpace = window.lastIndexOf(" ");
+  if (lastSpace > 0) return dropDanglingConnector(window.slice(0, lastSpace).trimEnd());
+  // The fallback cuts at a UTF-16 code unit, which can land BETWEEN the two
+  // halves of a surrogate pair — an emoji, or any astral character — leaving an
+  // orphaned high surrogate on the end. That is not a character: it renders as
+  // a replacement glyph and is not encodable as valid UTF-8 once a marketplace
+  // adapter serialises the title. Drop it.
+  //
+  // Only this branch needs the check. The word-boundary branch above cuts at a
+  // space, and a space is never half of anything.
+  const hardCut = /[\uD800-\uDBFF]$/.test(window) ? window.slice(0, -1) : window;
+  return hardCut.trimEnd();
+}
+
+/**
+ * NEO-101 — eBay-style SEO title, plus what it had to give up building it.
+ *
+ * ## The shape
+ *
+ * Core identifying tokens (year / manufacturer / set / players) then the card
+ * number, then optional high-value keywords appended one at a time while they
+ * still fit. `generateListingTitle` is a thin wrapper over this that returns
+ * only `.title`.
+ *
+ * ## Two guarantees, for ANY inputs
+ *
+ *   1. `title.length <= LISTING_TITLE_MAX`. eBay REJECTS an over-length title
+ *      rather than shortening it (see listingLimits.ts), so a title that does
+ *      not fit is a listing that never publishes.
+ *   2. the title ends with `#<cardNumber>`, or with `#<cardNumber>` followed by
+ *      optional tokens. The card number is the least negotiable token — a
+ *      listing is ambiguous without it — so it is never the thing that gets
+ *      cut; the descriptive prefix truncates instead.
+ *
+ * (Guarantee 1 assumes the card number itself fits: `#<cardNumber>` shorter
+ * than the cap. A card number pushing 80 characters is not a card number, and
+ * the alternative — truncating it — would break guarantee 2, which matters
+ * more.)
+ *
+ * ## Skip, don't stop
+ *
+ * A token that does not fit is SKIPPED and later tokens are still tried. The
+ * old loop `break`ed on the first miss, which meant one long parallel or
+ * variation name silently swallowed the three-character `RC` sitting behind it
+ * even though `RC` fit perfectly well. Priority order says which token wins a
+ * contested character, not which tokens are allowed to be considered.
+ */
+export function assessListingTitle(
+  inputs: ListingCardInputs,
+): ListingTitleAssessment {
   const identityParts: string[] = [];
   if (inputs.year) identityParts.push(inputs.year);
   identityParts.push(...manufacturerAndSetTokens(inputs));
@@ -77,45 +342,43 @@ export function generateListingTitle(inputs: ListingCardInputs): string {
     .filter(Boolean)
     .join(" ");
 
-  // The card number is the least negotiable token — a listing is ambiguous
-  // without it — so it's always appended last and never truncated away.
-  // Everything else (year/manufacturer/set/player) truncates from the end
-  // instead if the combination is too long to fit.
   const reserved = ` #${inputs.cardNumber}`;
-  const maxPrefixLen = EBAY_TITLE_MAX - reserved.length;
-  const prefixFits = corePrefix.length <= maxPrefixLen;
-  const prefix = prefixFits
+  const maxPrefixLen = LISTING_TITLE_MAX - reserved.length;
+  const coreFits = corePrefix.length <= maxPrefixLen;
+  const prefix = coreFits
     ? corePrefix
-    : corePrefix.slice(0, Math.max(0, maxPrefixLen - 1)).trimEnd() + "…";
+    : cutAtWordBoundary(corePrefix, maxPrefixLen);
 
   let title = `${prefix}${reserved}`.trim();
 
-  // Only attempt optional keyword embellishments when the core identity
-  // wasn't already truncated — appending more text to an already-full
-  // title would just get cut again, and the "…" already signals the cut.
-  if (prefixFits) {
-    const optional: string[] = [];
-    const isParallel =
-      inputs.parallelName && inputs.parallelName.toLowerCase() !== "base";
-    if (isParallel) optional.push(inputs.parallelName!);
-    if (inputs.isRookie) optional.push("RC");
-    if (inputs.autographed && inputs.autographed !== "None") {
-      optional.push("AUTO");
+  // Optional tokens are attempted even when the core had to be cut. A
+  // word-boundary cut can leave several characters of real slack (the word it
+  // dropped may have been long), and AUTO / RELIC are worth more to a buyer
+  // than that slack is — the operator is being asked to rewrite this title
+  // anyway, via `coreFits: false`.
+  const dropped: string[] = [];
+  for (const token of optionalTokens(inputs)) {
+    // A token the buyer has already read is not reported as dropped — it IS
+    // in the title, just not a second time.
+    if (alreadySaid(title, token)) continue;
+    const candidate = `${title} ${token}`;
+    if (candidate.length > LISTING_TITLE_MAX) {
+      dropped.push(token);
+      continue;
     }
-    if (inputs.isRelic) optional.push("RELIC");
-    if (inputs.shortPrint && inputs.shortPrint !== "None") {
-      optional.push(inputs.shortPrint);
-    }
-    if (inputs.printRun) optional.push(`/${inputs.printRun}`);
-
-    for (const token of optional) {
-      const candidate = `${title} ${token}`;
-      if (candidate.length > EBAY_TITLE_MAX) break;
-      title = candidate;
-    }
+    title = candidate;
   }
 
-  return title;
+  return { title, coreFits, dropped };
+}
+
+/**
+ * The title alone. Kept as its own export with its original signature because
+ * both insert call sites and a pile of tests call it; anything that also needs
+ * to know what was cut calls `assessListingTitle` directly.
+ */
+export function generateListingTitle(inputs: ListingCardInputs): string {
+  return assessListingTitle(inputs).title;
 }
 
 /**
@@ -123,6 +386,11 @@ export function generateListingTitle(inputs: ListingCardInputs): string {
  * absent fields are skipped entirely rather than rendered as blanks. Each
  * fact renders as its own line (the field is a multi-line textarea) rather
  * than one run-on paragraph.
+ *
+ * No cap applies here: eBay's description field takes ~500k of HTML, and the
+ * longest description this generator has ever produced on real data is 132
+ * characters. So unlike the title, nothing is dropped — a `cardVariation` too
+ * long to earn a place in the title still states itself in full here.
  */
 export function generateListingDescription(inputs: ListingCardInputs): string {
   const sentences: string[] = [];
@@ -130,8 +398,7 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
   const setParts = [inputs.year, ...manufacturerAndSetTokens(inputs)].filter(
     Boolean,
   );
-  const isParallel =
-    inputs.parallelName && inputs.parallelName.toLowerCase() !== "base";
+  const isParallel = isRealParallel(inputs);
   const setLabel = setParts.length > 0 ? setParts.join(" ") : null;
 
   if (setLabel && inputs.playerNames?.length) {
@@ -147,6 +414,33 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
     );
   } else {
     sentences.push(`Card #${inputs.cardNumber}.`);
+  }
+
+  // NEO-101: stated right after the identity sentence, because WHICH printing
+  // this is belongs with what the card is, not with its extras. Verbatim, and
+  // a string that already ends in a full stop does not get a second one.
+  //
+  // Skipped when the parallel name the sentence above already rendered IS this
+  // string — which is the common case, not an edge one: NEO-189 copies a card's
+  // `cardVariation` into `features.parallelName`, so both arrive here. Same
+  // de-duplication the title's token list does, for the same reason.
+  const variation = inputs.cardVariation?.trim();
+  const alreadyStated =
+    isParallel &&
+    inputs.parallelName!.trim().toLowerCase() === variation?.toLowerCase();
+  if (variation && !alreadyStated) {
+    sentences.push(
+      variation.endsWith(".") ? `Variation: ${variation}` : `Variation: ${variation}.`,
+    );
+  }
+
+  // NEO-101: named in full, once, however many teams the card carries — the
+  // description has no cap, so unlike the title nothing here competes for room.
+  const teamNames = (inputs.teamNames ?? [])
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (teamNames.length > 0) {
+    sentences.push(`Team: ${teamNames.join(", ")}.`);
   }
 
   if (inputs.isRookie) sentences.push("This is a Rookie Card.");

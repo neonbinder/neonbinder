@@ -28,6 +28,21 @@ built Convex preview. Verified 2026-09-01 on `neo-203-nb-owned-resync`.
   a flow whose precondition is "this real set does not exist yet" will fail on
   shared dev, where it usually already does.
 
+**What the failure looks like at run time:** a missing function makes the
+`useQuery` throw, the SPA falls to its error boundary, and the hierarchy
+collapses to one node — `"An error occurred. Please refresh the page."` — so the
+flow dies on whatever assertion follows, often reading like an unrelated
+selector bug. Confirmed again 2026-09-02 (NEO-101, `previewListingTitle`).
+
+**Run it anyway, and say where it stopped.** The client half of a feature
+(pure derivations, meters, alerts, dialogs) ships in the LOCAL BUNDLE, so a run
+against shared dev still validates every step BEFORE the first branch-only
+server call — on NEO-101 that was the drill, the add-card form, the drawer, the
+80-char alert and the blocked Save, i.e. most of the new selectors. Report the
+exact step it reached; that is a far better disclosure than "cannot run
+locally". Beware [[negative-asserts-pass-on-a-dead-page]] when reading the
+result.
+
 **How to apply:** before promising a local run for a flow on a backend-touching
 branch, run the `function-spec` check. If the function is missing, say so up
 front as a disclosure (CLAUDE.md: "an unrunnable test is a disclosure, an unrun

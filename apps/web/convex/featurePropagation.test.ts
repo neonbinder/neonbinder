@@ -797,6 +797,208 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     expect(secondPass[0]._id).toBe(cardId);
     expect(secondPass[0].listingTitle).toBe("My Custom Operator Title");
   });
+
+  // NEO-101 — the insert branch records that the generator had to CUT the
+  // title's core, because nothing downstream can re-derive it: the stored row
+  // carries neither the player names (they are behind `playerIds`) nor the set
+  // name (an ancestor walk), so "did the core fit?" is not a question the row
+  // can answer about itself. See `cardChecklist.listingTitleTruncated`.
+  test("an overflowing core writes listingTitleTruncated: true", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const hugeName =
+      "An Absurdly Long Player Full Name That Alone Exceeds The Entire Title Budget";
+    await asAdmin.mutation(api.players.findOrCreate, { name: hugeName, sportId });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "99999",
+          cardName: hugeName,
+          team: undefined,
+          teams: [],
+          players: [hugeName],
+          attributes: [],
+          isRookie: false,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: { ref: "bsc-99999" } },
+          unmatched: undefined,
+        },
+      ],
+    });
+
+    const [card] = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+
+    expect(card.listingTitleTruncated).toBe(true);
+    // Still a VALID, listable title — cut at a whole word, no ellipsis, card
+    // number intact. The flag says "a human should put the missing words
+    // back", not "this is broken".
+    expect(card.listingTitle!.length).toBeLessThanOrEqual(80);
+    expect(card.listingTitle).not.toContain("…");
+    expect(card.listingTitle!.endsWith("#99999")).toBe(true);
+  });
+
+  test("a card whose core fits omits listingTitleTruncated entirely", async () => {
+    // Absent, not `false`: the mean real title is 34 characters, so this is
+    // the overwhelming majority of rows and they should carry no field at all.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await asAdmin.mutation(api.players.findOrCreate, {
+      name: "Elly De La Cruz",
+      sportId,
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "50",
+          cardName: "Elly De La Cruz",
+          team: undefined,
+          teams: [],
+          players: ["Elly De La Cruz"],
+          attributes: [],
+          isRookie: false,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: { ref: "bsc-50" } },
+          unmatched: undefined,
+        },
+      ],
+    });
+
+    const [card] = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(card.listingTitleTruncated).toBeUndefined();
+  });
+
+  // NEO-101 — the packed title. Team names are resolved ONCE per commit in the
+  // prelude (`teamNameById`, alongside `playerNameById`) rather than per card
+  // in the chunk, which would have been one `db.get` per team per card; the
+  // sport value the chunk already carries for the SKU prefix doubles as the
+  // title's last fill token.
+  test("team name and sport reach the stored title on a fresh commit", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await asAdmin.mutation(api.players.findOrCreate, {
+      name: "Julio Rodriguez",
+      sportId,
+    });
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Seattle Mariners",
+      sportId,
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "12",
+          cardName: "Julio Rodriguez",
+          team: undefined,
+          teams: ["Seattle Mariners"],
+          players: ["Julio Rodriguez"],
+          attributes: ["RC"],
+          isRookie: true,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: { ref: "bsc-12" } },
+          unmatched: undefined,
+        },
+      ],
+    });
+
+    const [card] = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+
+    expect(card.listingTitle).toBe(
+      "2024 Topps Chrome Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
+    );
+    // The old generator stopped at 37 characters here. Sold listings average
+    // 70; this is the whole point of the change.
+    expect(card.listingTitle!.length).toBeGreaterThanOrEqual(60);
+    expect(card.listingTitle!.length).toBeLessThanOrEqual(80);
+    expect(card.listingDescription).toContain("Team: Seattle Mariners.");
+  });
+
+  // NEO-101 — `cardVariation` reaches the generated title and description
+  // VERBATIM. Before this ticket the generator ignored the field entirely, so
+  // a synced variation card titled identically to its parent apart from the
+  // card number — losing the one word a buyer was most likely searching for.
+  test("cardVariation reaches the generated title and description", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await asAdmin.mutation(api.players.findOrCreate, {
+      name: "Julio Rodriguez",
+      sportId,
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "300b",
+          cardName: "Julio Rodriguez",
+          team: undefined,
+          teams: [],
+          players: ["Julio Rodriguez"],
+          attributes: [],
+          isRookie: false,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: "Image Variation",
+          platformData: { bsc: { ref: "bsc-300b" } },
+          unmatched: undefined,
+        },
+      ],
+    });
+
+    const [card] = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+    expect(card.listingTitle).toBe(
+      "2024 Topps Chrome Julio Rodriguez #300b Image Variation Baseball",
+    );
+    // Once, not twice: `deriveCardObservedFeatures` also copies cardVariation
+    // into `features.parallelName`, so the identity sentence already names it.
+    expect(card.listingDescription).toBe(
+      "2024 Topps Chrome Image Variation card of Julio Rodriguez, #300b.",
+    );
+  });
 });
 
 describe("commitCardChecklist wires up BSC per-card team enrichment (NEO-90)", () => {

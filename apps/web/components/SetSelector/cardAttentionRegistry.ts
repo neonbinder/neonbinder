@@ -2,6 +2,7 @@ import { createContext, useContext, type ComponentType } from "react";
 import type { Id } from "../../convex/_generated/dataModel";
 import { attentionItemLabel, type AttentionItem } from "./card-attention";
 import MissingTeamFixer from "./MissingTeamFixer";
+import TitleFixer from "./TitleFixer";
 
 /**
  * NEO-102 — the attention-fixer registry. **This shape is a locked contract**
@@ -18,11 +19,11 @@ import MissingTeamFixer from "./MissingTeamFixer";
  *
  * `CardAttentionWalker` needs no change for either. It owns the queue, the
  * dialog chrome, the progress line, Skip and Close; a fixer owns one card's
- * question, its own writes, and its own primary action. NEO-101's coming
- * members are `{ kind: "titleOverLimit"; length: number }`,
- * `{ kind: "titleTruncated" }` and
- * `{ kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }`
- * — not added here; this file only has to make adding them cheap.
+ * question, its own writes, and its own primary action. NEO-101 landed
+ * `{ kind: "titleOverLimit"; length: number }`, `{ kind: "titleTruncated" }`
+ * and `{ kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }`
+ * through exactly that route — two lines in `attentionFixers`, two fields on
+ * `CardChecklistRow`, and no change to the walker.
  *
  * ## Fixer rules
  *
@@ -82,6 +83,20 @@ export type CardChecklistRow = {
   teamNoneConfirmedByUserId?: string;
   attributes?: string[];
   cardVariation?: string;
+  /**
+   * NEO-101: the marketplace-agnostic listing title, authored once at creation
+   * and edited by hand thereafter. `TitleFixer` pre-fills its input from this,
+   * so leaving it off the row would hand the operator an EMPTY field for a
+   * title that already exists — and Save would then blank it.
+   */
+  listingTitle?: string;
+  /**
+   * NEO-101: the auto-generated title did not fit and was cut at a word
+   * boundary. Read only for the wording of the fixer's note; the attention item
+   * itself comes from `deriveCardAttention`, and any write of `listingTitle`
+   * clears this server-side.
+   */
+  listingTitleTruncated?: boolean;
   autographType?: string;
   printRun?: number;
   isCustom?: boolean;
@@ -130,6 +145,13 @@ export function useAttentionSportId(): Id<"selectorOptions"> | undefined {
  */
 export const attentionFixers: Partial<Record<AttentionItem["kind"], AttentionFixer>> = {
   missingTeam: MissingTeamFixer,
+  // All three title-shaped kinds map to ONE component on purpose: they are the
+  // same field with different reasons, and a card flagged for two of them must
+  // be asked once, not twice. `TitleFixer` reads the whole `items` list and
+  // clears whichever apply in a single write.
+  titleOverLimit: TitleFixer,
+  titleTruncated: TitleFixer,
+  aspectValueOverLimit: TitleFixer,
 };
 
 /**

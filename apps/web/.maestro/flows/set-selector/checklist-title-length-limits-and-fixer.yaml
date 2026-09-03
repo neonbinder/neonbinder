@@ -1,0 +1,459 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Listing length limits — an over-long card title is refused, and an over-long variation is walked to a fix"
+tags:
+  - set-selector
+  - regression
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE feature (NEO-101): a marketplace length cap is something the
+# operator meets IN the product, not at listing time.
+#
+#   • The card drawer's "Card title" carries an N/80 meter, and a title past 80
+#     puts a role="alert" under the field and REFUSES the save (the button is
+#     aria-disabled, and `handleSave` returns early behind it). eBay rejects an
+#     over-length title outright — error 70, no truncation — so the refusal is
+#     the feature, not a nicety.
+#   • "Regenerate" rebuilds the title from the card's own fields and, over a
+#     draft the operator has typed into, costs a second deliberate click. That
+#     is the way BACK under the cap that does not depend on hand-editing a
+#     field Maestro cannot reliably clear.
+#   • The variation field is WARN-ONLY at 65 (eBay's item-specific value cap):
+#     it says what the risk is and the save goes through — because which NB
+#     field maps verbatim onto which marketplace aspect is not settled.
+#   • A card left over that cap is then badged "needs attention", counted in
+#     the header chip, and answerable in the walker's TitleFixer — whose Save
+#     writes through `updateCard`, so the badge clears because the ROW changed.
+#
+# WHAT MAKES IT FAIL IF THE FEATURE BREAKS (R2)
+#   Every step asserts the product's own words, not the mere presence of a
+#   field:
+#     • the over-cap alert ("... over the 80-character limit. Shorten it before
+#       saving.") must appear, and must STILL be there after Save is pressed —
+#       a Save that goes through closes the drawer, so a cap that stopped
+#       blocking fails here rather than reading as a slow save;
+#     • the warn-only alert must use the OTHER sentence ("You can still save
+#       it, but a marketplace that caps this field will reject the value"), and
+#       that save must close the drawer — a variation cap that started blocking
+#       fails here;
+#     • the walker must open on THIS card (the Skip button's accessible name is
+#       the only card-specific handle in the dialog) and its counter must read
+#       "1 card needs attention · 0 fixed" before and "0 cards need attention ·
+#       1 fixed" after;
+#     • the badge must be GONE from the grid afterwards, which is a re-read of
+#       the stored row — the only assertion that distinguishes a real write
+#       from a dialog that closed politely.
+#
+# WHAT THIS DELIBERATELY DOES NOT COVER — and why
+#   • `titleOverLimit` as an ATTENTION item. No flow can create one: `updateCard`
+#     now rejects a title over 80, so the only rows that can be in that state are
+#     ones written before the cap existed. Unit-covered in
+#     convex/features/cardAttention.test.ts.
+#   • `titleTruncated`. It is stamped at CREATION, when the generated core did
+#     not fit; producing one needs a set/player name long enough to overflow an
+#     80-character core, i.e. a fixture whose only purpose is to be long. The
+#     generator's cut is unit-covered (generateListing.test.ts) and the fixer's
+#     note is component-covered (TitleFixer.test.tsx).
+#   • The post-commit banner's "K need attention — Fix them one at a time" CTA.
+#     It only renders after a `commitCardChecklist`, which needs a real
+#     marketplace fetch; a custom subtree never fetches (isCustomSubtree,
+#     NEO-22) and the real sets are read-only (R7a). Component-covered in
+#     CardChecklist.test.tsx. The walker never opens on its own, so this flow
+#     opens it by hand from the header — the same door the sibling NEO-102
+#     walker flow uses.
+#
+# R3 — no other flow tests a length cap. `card-detail-panel.yaml` types a
+#   title and proves it round-trips, and its marker is deliberately SHORT so
+#   this cap can never block it; it asserts nothing about the cap itself. The
+#   two NEO-102 `checklist-attention-*` flows own the missing-team kind, the
+#   badge/filter surfaces and the walker's three answers — this one adds only
+#   the title-shaped kinds and the drawer's refusal. Navigation is the shared
+#   drill util (R9).
+#
+# R7a / DATA ISOLATION — a PER-WORKER, PER-ATTEMPT custom set
+#   `tlf-${WORKER_INDEX}-${ATTEMPT_ID}` under the REAL Baseball / 2024 / Topps
+#   ancestors (registered in .maestro/SET-REGISTRY.md). A custom Set node makes
+#   the subtree custom, so no BSC/SL call fires and nothing shared is read or
+#   written. Per ATTEMPT because this flow asserts an EXACT attention count and
+#   names the card the walker must present: a leftover flagged row from a
+#   failed attempt would put someone else's question in front of the operator
+#   and every card-specific assertion below would fail for the wrong reason.
+#   Nothing is deleted at the end — the set is this attempt's alone.
+#
+# DEPENDENCIES — none beyond the Phase-0 worker bootstrap. Unlike its NEO-102
+#   siblings this flow never picks a team, so it needs no setup-seeded roster;
+#   the real Baseball ancestor is used only to match their shape.
+#
+# HOW FAR THIS RUNS LOCALLY (measured 2026-09-02, 3m31s to the wall)
+#   Local E2E drives THIS branch's Vite bundle against SHARED DEV, which tracks
+#   main. Every rule this flow asserts is client-side (`deriveCardAttention`,
+#   the meter, the alert, the badge, the walker) and therefore works there — but
+#   `previewListingTitle` is a NEW Convex query, so the second Regenerate click
+#   makes `useQuery` throw and the SPA falls to its error boundary ("An error
+#   occurred. Please refresh the page." as the only node in the hierarchy).
+#   Everything up to and including both Regenerate taps is verified locally;
+#   from the rebuilt title onward needs the PR's own Convex preview.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# R9 — the drill util owns the six-level navigation and its waits.
+# Baseball → 2024 → Topps → tlf-<worker>-<attempt> → Insert → Base.
+# Returns with the CardChecklist open and "Open add card form" in viewport.
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "tlf-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ════════════════════════════════════════════════════════════════════════════
+# ONE CARD — and it is given a team on the way in.
+#
+# "Team (optional)" is filled DELIBERATELY, which is the opposite of what the
+# two NEO-102 flows do. A card with no team on file is flagged `missingTeam`,
+# and `pickAttentionFixer` hands a card to the fixer of its FIRST registered
+# kind — so a teamless card would open the MissingTeamFixer and this flow would
+# never reach the title question it exists for. The typed name lands in
+# `pendingTeamNames`, which `deriveCardAttention` counts as an answer already
+# given, so the only thing left to say about this card is its own length.
+#
+# FIXTURE SIZING — the generated title must FIT, and the names below are chosen
+# so it does. Titles now fill toward 80: this card generates
+#
+#   "2024 Topps tlf-<w>-<attempt> #101-<attempt> New York Yankees Baseball"
+#
+# which measures 63-71 characters across the ATTEMPT_ID lengths the runners
+# produce (`<runner>-a<n>-<RANDOM>`, 7-11 chars; ~73 even if a runner index ever
+# went to two digits). That headroom is not cosmetic. If the CORE overflowed,
+# the generator would cut it at a word boundary and stamp
+# `listingTitleTruncated`, which adds a SECOND attention item to this card - and
+# the walker's fixer would then state two reasons where every assertion below
+# expects exactly one. Keep the player and card names short if you change them;
+# the padding typed into the drawer is what exceeds the cap here, never the
+# fixture.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+
+# The card-number input is autofocused — type straight into it.
+- inputText: "101-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Title Cap ${ATTEMPT_ID}"
+- tapOn:
+    id: "Team"
+- inputText: "New York Yankees"
+
+# centerElement so Maestro's own scroll-before-tap has content to scroll to —
+# without it the CDP scroll returns nothing and the tap dies with
+# "null cannot be cast to non-null type kotlin.Int".
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Submit new card"
+
+# Virtuoso only renders rows near the current scroll position, so the new row is
+# not in the DOM yet — scroll to materialise it rather than waiting on its text.
+- scrollUntilVisible:
+    element:
+      id: "Edit card 101-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+- tapOn:
+    id: "Edit card 101-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE HARD CAP — a title past 80 characters cannot be saved.
+#
+# "Card title" is position 4 in the drawer body (see the field-order block in
+# card-detail-panel.yaml) — near the top of the drawer's own scroll container,
+# so no scroll is needed to reach it. NEO-101 added the meter and Regenerate to
+# its LABEL ROW and the alert BELOW the input; the input itself did not move and
+# its accessible name is still "Card title".
+#
+# A maestro-web tap on a pre-filled input drops the caret mid-string, so this
+# padding is INSERTED into the auto-generated title rather than appended. That
+# is fine and even useful: the exact resulting length is unknowable, so nothing
+# below asserts a character count — only the product's own over-cap sentence.
+# The padding is 86 characters, which puts any auto title (a custom card's is
+# ~45: "2024 Topps <set> #<number>") comfortably past 80 either way.
+# ════════════════════════════════════════════════════════════════════════════
+
+- assertVisible:
+    id: "Card title"
+- tapOn:
+    id: "Card title"
+- inputText: "NEO101PAD-EXTREMELY-LONG-LISTING-TITLE-SUFFIX-THAT-BLOWS-PAST-THE-EIGHTY-CHARACTER-CAP"
+
+# The alert under the field. Matched on the cap it names rather than on the
+# character count, which depends on where the caret landed.
+- assertVisible: ".*over the 80-character limit.*"
+- assertVisible: ".*Shorten it before saving.*"
+
+# THE REFUSAL. The button is aria-disabled rather than natively disabled (so the
+# reason stays reachable by keyboard), which means it is still tappable — and
+# `handleSave` returns early behind it. A save that went through would call
+# onClose and the drawer would be gone; it is still here, and still complaining.
+- tapOn:
+    id: "Save card edit"
+- assertVisible:
+    id: "Card name"
+- assertVisible: ".*Shorten it before saving.*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE WAY BACK — Regenerate, which costs two clicks over a dirty draft.
+#
+# The first click does not replace anything: the draft is the operator's own
+# wording and losing it is a real loss, so it asks. The second click fetches
+# `previewListingTitle` and applies the rebuilt title, which is generated within
+# the cap by construction.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Regenerate card title"
+- assertVisible: ".*Regenerate again to replace the title you have typed.*"
+- tapOn:
+    id: "Regenerate card title"
+
+# The rebuilt title landing is what makes the padding disappear, so THAT is the
+# thing to wait on. (For an <input>, Maestro's getNodeText returns its VALUE, so
+# all three of these read the field's contents rather than a label.)
+- extendedWaitUntil:
+    notVisible:
+      id: "Card title"
+      text: ".*NEO101PAD.*"
+    timeout: 7000
+# What is left is the whole rebuilt title, asserted as its exact SHAPE rather
+# than as "contains the card number":
+#
+#   2024 Topps <this attempt's set>  #101-<attempt>  New York Yankees  Baseball
+#   └─────── core ───────────────┘  └── number ──┘  └──── fill tail ─────┘
+#
+# The fill tail is the part worth pinning. Titles are built to fill toward 80
+# now, so after the core and the card number the generator keeps appending
+# while tokens fit — here the team the operator typed on the add-card form
+# (a custom card carries it in `pendingTeamNames`, and Regenerate reads the
+# same fallback the creation path does) and finally the sport, the weakest
+# token and the last one tried. A generator that stopped filling, or a
+# Regenerate that read different inputs from creation, fails on this line.
+#
+# It is also the POSITIVE assertion that deliberately follows the wait above: a
+# `notVisible` passes on a page that has fallen to its error boundary, a
+# `visible` does not, so a broken regenerate fails here rather than reading as
+# "the padding went away".
+- assertVisible:
+    id: "Card title"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} New York Yankees Baseball"
+# ...and it fits, so the refusal is lifted.
+- assertNotVisible: ".*Shorten it before saving.*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE WARN-ONLY CAP — a variation past 65 characters says so and saves anyway.
+#
+# "Card variation" is position 8 in the drawer body, below the fold. The drawer
+# is right-anchored (~480px wide, x>=544 at 1024), so scrollUntilVisible's
+# viewport-centre swipe lands on the BACKDROP and cannot drive the drawer's
+# inner scroll — the same wall variation-link-group-and-unlink.yaml documents.
+# Manual swipes at x=80% are inside the drawer. R8's centerElement does not
+# apply because scrollUntilVisible cannot be used here at all.
+#
+# THE STICKY-HEADER TRAP — why this is a pin-then-correct pair, not a swipe.
+#   CI run 33700877240 (runner 2) failed here, and the failure is worth spelling
+#   out because "assertVisible passed, the tap did nothing" is not a shape most
+#   flows have to think about. Two big swipes leave the drawer at its MAXIMUM
+#   scroll, and at max scroll "Card variation" sits at bounds [546,8][978,42] —
+#   underneath the drawer's own sticky header (the "Card #<n> CUSTOM" bar,
+#   y 0–50, which is INSIDE the drawer, not the app's page header). Maestro's
+#   assertVisible passed, because the input's layout bounds really are on
+#   screen; the tap at its centre (y≈25) then landed on the header, nothing was
+#   typed, the field still read its placeholder "e.g. Gold Refractor", and the
+#   flow died on the warn-alert assertion two steps later.
+#
+#   The fix leans on the one thing about this drawer that IS deterministic. At
+#   max scroll the variation input's y is fixed by the content BELOW it —
+#   Variation of, Players, Inherited from set, the image placeholder, all of
+#   constant height on this card — and NOT by anything above it (which grows
+#   when Regenerate adds its source chips). So: swipe THREE times to pin the
+#   drawer at that stable end position (the third is a no-op once it is there),
+#   then one measured swipe back DOWN by ~25% of the viewport (~157px), which
+#   lands the input around y≈165 — well clear of the 50px header and nowhere
+#   near the fold. The wait that follows is a re-assert AFTER the correction,
+#   not before it.
+#
+# The value is 71 characters — 6 past the aspect cap, and short enough that the
+# fixer can bring it back under by erasing from a mid-string caret (see there).
+# ════════════════════════════════════════════════════════════════════════════
+
+# Pin the drawer to the END of its scroll — a stable anchor, unlike "two swipes
+# from wherever we were".
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+
+# ...then back down by a measured amount, to lift the field out from under the
+# drawer's sticky header. duration is generous on purpose: a fast flick can pick
+# up momentum scrolling and overshoot the correction.
+- swipe:
+    start: "80%, 30%"
+    end: "80%, 55%"
+    duration: 400
+- extendedWaitUntil:
+    visible:
+      id: "Card variation"
+    timeout: 7000
+
+- tapOn:
+    id: "Card variation"
+- inputText: "Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout"
+
+# The OTHER sentence: this one states the risk instead of blocking. If the
+# variation cap ever started blocking, the save below would be refused and the
+# drawer would not close.
+- assertVisible: ".*a marketplace that caps this field will reject the value.*"
+
+- tapOn:
+    id: "Save card edit"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE BADGE AND THE COUNT — the stored row is now the one that needs a human.
+#
+# The mark is a single amber "!" glyph, so its MEANING lives in its accessible
+# name — which names both the card and the reason, and is therefore specific to
+# THIS row and THIS kind. R6: the scroll IS the assertion; nothing repeats it.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Card 101-${ATTEMPT_ID} needs attention: variation text is over the 65-character limit"
+    centerElement: true
+    timeout: 10000
+
+# An EXACT count — this attempt's checklist holds exactly one card, so a rule
+# that over- or under-flags fails here rather than reading as "a badge exists".
+- scrollUntilVisible:
+    element:
+      text: "1 need attention"
+    direction: UP
+    centerElement: true
+    timeout: 10000
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE WALKER — opened by hand from the header (it never opens itself).
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn: "Fix them one at a time"
+- extendedWaitUntil:
+    visible: "Cards Needing Attention"
+    timeout: 7000
+
+# It opened on THIS card, and its own counter agrees with the header chip.
+# The "." matches the middot separator.
+- assertVisible:
+    id: "Skip card 101-${ATTEMPT_ID} for now"
+- assertVisible:
+    text: ".*1 card needs attention . 0 fixed.*"
+# The reason it is asking, in the operator's words.
+- assertVisible: "variation text is over the 65-character limit"
+
+# The fixer's title field is pre-filled from the STORED row, so this is the
+# proof that the regenerated title reached the server intact — same exact shape
+# as the drawer showed, fill tail and all, with no padding anywhere in it. Its
+# accessible name is anchored to the card number precisely so it cannot be
+# confused with the drawer's own "Card title" field.
+- assertVisible:
+    id: "Card title for #101-${ATTEMPT_ID}"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} New York Yankees Baseball"
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE FIX — shorten the variation until the field stops complaining, then save.
+#
+# eraseText walks backwards from the caret, and a maestro-web tap on a
+# pre-filled input drops that caret mid-string, so this removes the front of the
+# value and leaves its tail. That is deliberate: the assertion is not "the value
+# is X" but "the field no longer reports itself over the cap", which is the same
+# thing the badge is derived from. 90 backspaces is more than the 71 characters
+# in there, so the only thing that survives is whatever sat after the caret.
+#
+# The drawer's sticky-header trap (see above) does NOT repeat here: the walker's
+# heading sits in a sibling ABOVE its scroll area rather than over it, so nothing
+# overlays this field. What COULD bite is the body's own `max-h-[70vh]` — a
+# fixer taller than ~437px would clip its lower half, and a clipped element
+# still reports layout bounds to Maestro's hit test. So assert the fixer's OWN
+# Save button first: it renders BELOW the variation input, so seeing it is
+# seeing that everything between is inside the visible body.
+# ════════════════════════════════════════════════════════════════════════════
+
+- assertVisible:
+    text: "Save \\(Enter\\)"
+- tapOn:
+    id: "Card variation for #101-${ATTEMPT_ID}"
+- eraseText: 90
+- extendedWaitUntil:
+    notVisible: ".*a marketplace that caps this field will reject the value.*"
+    timeout: 7000
+
+# Save writes through `updateCard`. Parentheses are escaped because Maestro
+# matches a selector as a regex — an unescaped "(Enter)" is a capture group and
+# would not match the button's literal text.
+- tapOn:
+    text: "Save \\(Enter\\)"
+
+# Nothing is left in this sitting, and the counter says one card was FIXED —
+# a walker that advanced without writing would still read "0 fixed".
+- extendedWaitUntil:
+    visible: ".*All clear.*nothing on this checklist needs attention.*"
+    timeout: 7000
+- assertVisible:
+    text: ".*0 cards need attention . 1 fixed.*"
+
+# Opened by hand, the walker stays up and says "All clear" rather than closing
+# itself, so the footer button reads "Done" and closing is the operator's move.
+- tapOn:
+    text: "Done \\(Esc\\)"
+- extendedWaitUntil:
+    notVisible: "Cards Needing Attention"
+    timeout: 7000
+
+# ════════════════════════════════════════════════════════════════════════════
+# BACK ON THE GRID — the badge is gone because the ROW changed.
+# The whole header row goes with it: with nothing flagged there is no count chip
+# and no way into the walker.
+# ════════════════════════════════════════════════════════════════════════════
+
+- extendedWaitUntil:
+    notVisible:
+      id: "Card 101-${ATTEMPT_ID} needs attention: variation text is over the 65-character limit"
+    timeout: 7000
+- assertNotVisible: "Fix them one at a time"
+- assertVisible: "#101-${ATTEMPT_ID}"

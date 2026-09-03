@@ -161,9 +161,12 @@ genuinely needs a sport with no data.
 Names are suffixed `-${WORKER_INDEX || 0}` so each of the 8 runners gets a
 private `selectorOptionId`. Some flows additionally suffix `-${ATTEMPT_ID}`
 where a retry must not observe its own prior debris — the two
-`checklist-attention-*` flows (NEO-102) do it because they assert an EXACT
-count of the cards needing attention, and an exact count is only knowable on a
-checklist this attempt created from empty.
+`checklist-attention-*` flows (NEO-102) and
+`checklist-title-length-limits-and-fixer.yaml` (NEO-101) do it because they
+assert an EXACT count of the cards needing attention, and an exact count is
+only knowable on a checklist this attempt created from empty. The NEO-101 flow
+additionally names the card its walker must present, so a leftover flagged row
+would put the wrong question on screen.
 
 | Prefix | Owning flow |
 |---|---|
@@ -188,6 +191,7 @@ checklist this attempt created from empty.
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |
 | `rnm-` | `rename-selector-option.yaml` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
+| `tlf-` | `checklist-title-length-limits-and-fixer.yaml` (also `-${ATTEMPT_ID}`) |
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
 | `vme-insert-` | `variant-metadata-editor-insert.yaml` |

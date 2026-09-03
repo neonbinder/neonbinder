@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
@@ -11,6 +11,15 @@ import TeamPicker from "./TeamPicker";
 import PlayerPicker from "./PlayerPicker";
 import CardFeaturesEditor, { CardFeatureRow } from "./CardFeaturesEditor";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
+import {
+  ASPECT_VALUE_MAX,
+  LISTING_TITLE_MAX,
+  TitleFieldNote,
+  TitleLengthAlert,
+  TitleLengthMeter,
+  titleLengthState,
+} from "./TitleLengthMeter";
+import { useTitlePreview } from "./useTitlePreview";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 
 const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
@@ -75,6 +84,13 @@ type CardDetailCard = {
   // NEO-189: the card this one varies, when it is a variation.
   variationOfCardId?: Id<"cardChecklist">;
   listingTitle?: string;
+  /**
+   * NEO-101: the auto-generated title did not fit and was cut at a word
+   * boundary, so what is stored is not the whole card. Set at creation and
+   * cleared server-side by any write of `listingTitle` — so an operator
+   * rewriting the title clears it by construction, with no flag to remember.
+   */
+  listingTitleTruncated?: boolean;
   listingDescription?: string;
   imageUrls?: { front?: string; back?: string };
   // NEO-137: ref = marketplace card identity, src = slot on the parent row.
@@ -279,6 +295,23 @@ export default function CardDetailPanel({
     listingTitle !== (card.listingTitle ?? "") ||
     listingDescription !== (card.listingDescription ?? "");
 
+  // ----- NEO-101 length limits -----------------------------------------
+  // The title is the ONLY field here with a hard cap: an over-length title is
+  // rejected by the marketplace at listing time rather than trimmed, and this
+  // panel plus the attention walker are the only two places an operator can
+  // write one. `updateCard` enforces the same constant server-side, so this is
+  // a courtesy that explains the refusal early, not the enforcement itself.
+  const titleState = titleLengthState(listingTitle.length, LISTING_TITLE_MAX, true);
+  const variationOverCap = cardVariation.length > ASPECT_VALUE_MAX;
+  const uid = useId();
+  const titleAlertId = `${uid}-title-limit`;
+  const variationAlertId = `${uid}-variation-limit`;
+  const titleDirty = listingTitle !== (card.listingTitle ?? "");
+
+  // Regenerate. Lazy: no preview is fetched until the operator asks for one,
+  // because the drawer opens for every card they arrow through.
+  const preview = useTitlePreview(card._id, setListingTitle);
+
   const toggleAttribute = (token: string) => {
     setAttributes((prev) =>
       prev.includes(token)
@@ -288,6 +321,10 @@ export default function CardDetailPanel({
   };
 
   const handleSave = async () => {
+    // Guard as well as the button's aria-disabled: the button stays in the tab
+    // order while over the cap (so the reason is reachable by keyboard), which
+    // means it stays activatable too.
+    if (saving || titleState.over) return;
     setSaving(true);
     try {
       const parsedPrintRun = printRun.trim() === "" ? undefined : Number(printRun);
@@ -313,7 +350,10 @@ export default function CardDetailPanel({
           : {}),
         cardVariation,
         // "" clears the stored value; undefined would leave it untouched.
-        listingTitle,
+        // Trimmed here as well as server-side so what the operator sees after a
+        // save is what they saved — a trailing space is otherwise invisible and
+        // makes the panel look dirty the moment it reopens.
+        listingTitle: listingTitle.trim(),
         listingDescription,
       });
       onClose();
@@ -506,27 +546,129 @@ export default function CardDetailPanel({
             />
           </div>
 
-          {/* Listing title + description (marketplace-agnostic) */}
+          {/* Listing title + description (marketplace-agnostic).
+
+              NEO-101: the header row is a <div>, not the <label> it used to be,
+              because Regenerate lives in it and a <button> inside a <label> is
+              a click-target fight. Nothing is lost: the label carried no
+              `htmlFor` and never wrapped the input, so the field's accessible
+              name has always come from its `aria-label` — which is also the
+              handle every Maestro flow taps (`id: "Card title"`), so it and the
+              field's position in the drawer are both unchanged. */}
           <div>
-            <label className="flex items-center justify-between text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               <span>Card title</span>
-              <span
-                className={
-                  listingTitle.length > 80 ? "text-[#FF2EB3]" : "text-gray-400"
-                }
-              >
-                {listingTitle.length} chars
+              <span className="flex items-center gap-2">
+                <TitleLengthMeter length={listingTitle.length} soft />
+                <button
+                  type="button"
+                  onClick={() => preview.request(titleDirty)}
+                  // a11y (2.5.3, audit fix): the visible text also becomes
+                  // "Rebuilding…"/"Replace?", neither a substring of a fully
+                  // static name. "Replace?" is kept as the fixed string on
+                  // purpose — this exact query
+                  // (`getByLabelText("Regenerate card title")`) is asserted
+                  // while `confirming` is true in
+                  // CardDetailPanel.titleLimits.test.tsx, so changing it here
+                  // would desync from that locked test. The confirm text
+                  // below (already wired via aria-describedby) covers the
+                  // gap for screen-reader users.
+                  aria-label={
+                    preview.loading ? "Regenerate card title — rebuilding" : "Regenerate card title"
+                  }
+                  aria-describedby={
+                    preview.confirming ? `${uid}-regen-confirm` : undefined
+                  }
+                  // a11y (1.4.3, audit fix): #00B7FF alone measures 2.28:1
+                  // against this drawer's light-mode `bg-white` (fails
+                  // 4.5:1) — this panel is genuinely bi-themed
+                  // (`bg-white dark:bg-gray-800`), unlike TitleFixer's
+                  // always-dark walker dialog. #0369A1 measures 5.93:1
+                  // against white; #00B7FF unchanged for dark mode (6.44:1
+                  // against gray-800).
+                  className="rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00B7FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+                >
+                  {preview.loading
+                    ? "Rebuilding…"
+                    : preview.confirming
+                      ? "Replace?"
+                      : "Regenerate"}
+                </button>
               </span>
-            </label>
+            </div>
             <Input
               bare
               type="text"
               value={listingTitle}
-              onChange={(e) => setListingTitle(e.target.value)}
+              onChange={(e) => {
+                setListingTitle(e.target.value);
+                // Typing is the operator changing their mind about replacing
+                // the draft — drop the pending confirm rather than leaving a
+                // second click armed against text they just wrote.
+                preview.cancelConfirm();
+              }}
+              // No maxLength, deliberately: it would silently swallow the tail
+              // of a pasted title, and an over-length title the operator cannot
+              // SEE is one they cannot fix. Let it overflow and say so.
               className={`${fieldClass("cardTitle")} w-full p-1.5 text-sm`}
               placeholder="Listing title reused across marketplaces"
               aria-label="Card title"
+              aria-invalid={titleState.over || undefined}
+              aria-describedby={titleState.over ? titleAlertId : undefined}
             />
+            <TitleLengthAlert id={titleAlertId} length={listingTitle.length} />
+            {preview.confirming && (
+              <p
+                id={`${uid}-regen-confirm`}
+                role="status"
+                aria-atomic="true"
+                // a11y (1.4.3, audit fix): same light/dark split as the
+                // Regenerate button above, same reason — this panel is
+                // bi-themed and #00B7FF alone fails 4.5:1 against its
+                // light-mode `bg-white`.
+                className="mt-1 text-[10px] text-[#0369A1] dark:text-[#00B7FF]"
+              >
+                Regenerate again to replace the title you have typed.
+              </p>
+            )}
+            {card.listingTitleTruncated && (
+              <TitleFieldNote>Auto title was cut short — rewrite it</TitleFieldNote>
+            )}
+            {preview.dropped.length > 0 && (
+              <TitleFieldNote>
+                Left out to fit: {preview.dropped.join(", ")}
+              </TitleFieldNote>
+            )}
+            {preview.chips.length > 0 && (
+              // What the title was built from. Plain text, never links: a card's
+              // variation text is operator- and marketplace-sourced content, so
+              // it is something to read, not something to follow.
+              <ul
+                aria-label="Title built from"
+                className="mt-1.5 flex flex-wrap gap-1"
+              >
+                {preview.chips.map((chip, idx) => (
+                  <li
+                    key={`${chip.label}-${chip.value}-${idx}`}
+                    // a11y (1.4.3, audit fix): this exact chip className,
+                    // unchanged, is also what TitleFixer.tsx renders — safe
+                    // there (always-dark surface) but not here. Composited
+                    // over this panel's light-mode `bg-white`, the original
+                    // `bg-gray-800/60 text-gray-200` measured 3.27:1 (fails
+                    // 4.5:1) and the label's `text-gray-400` measured 1.56:1
+                    // (fails badly). Light-mode values below measure 9.36:1
+                    // / 6.87:1 against their own `bg-gray-100`; dark-mode
+                    // values are the untouched originals.
+                    className="rounded-full border border-gray-300 bg-gray-100 dark:border-gray-700 dark:bg-gray-800/60 px-2 py-0.5 text-[10px] text-gray-700 dark:text-gray-200"
+                  >
+                    <span className="mr-1 uppercase tracking-wide text-gray-600 dark:text-gray-400">
+                      {chip.label}
+                    </span>
+                    {chip.value}
+                  </li>
+                ))}
+              </ul>
+            )}
             <p className="text-[10px] text-gray-400 mt-1">
               Stored once and reused by every marketplace listing.
             </p>
@@ -625,9 +767,17 @@ export default function CardDetailPanel({
             />
           </div>
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
-              Variation
-            </label>
+            {/* NEO-101: warn-only. This is the field most likely to be sent as
+                a marketplace item-specific value, which caps at 65 — but which
+                NB field maps to which aspect is not settled, so the counter
+                tells the truth and the save goes through either way. */}
+            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+              <span>Variation</span>
+              <TitleLengthMeter
+                length={cardVariation.length}
+                max={ASPECT_VALUE_MAX}
+              />
+            </div>
             <Input
               bare
               type="text"
@@ -636,6 +786,14 @@ export default function CardDetailPanel({
               className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm`}
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
+              aria-describedby={variationOverCap ? variationAlertId : undefined}
+            />
+            <TitleLengthAlert
+              id={variationAlertId}
+              length={cardVariation.length}
+              max={ASPECT_VALUE_MAX}
+              what="Variation"
+              blocking={false}
             />
           </div>
 
@@ -872,8 +1030,19 @@ export default function CardDetailPanel({
             <button
               onClick={handleSave}
               disabled={saving}
+              // aria-disabled rather than `disabled` for the over-cap case:
+              // native disabled drops the button out of the tab order, and the
+              // alert explaining WHY it is inert is reached through this
+              // button's aria-describedby — so disabling it natively would
+              // hide the reason from exactly the person who needs it (the
+              // NEO-189 stranding finding). `saving` keeps the native
+              // attribute: that state is momentary and self-explanatory.
+              aria-disabled={titleState.over || undefined}
+              aria-describedby={titleState.over ? titleAlertId : undefined}
               aria-label="Save card edit"
-              className="px-3 py-1.5 text-xs bg-[#00D558] text-black rounded hover:bg-[#00D558]/85 disabled:opacity-50 font-semibold"
+              className={`px-3 py-1.5 text-xs bg-[#00D558] text-black rounded hover:bg-[#00D558]/85 disabled:opacity-50 font-semibold ${
+                titleState.over ? "opacity-50 cursor-not-allowed" : ""
+              }`}
             >
               {saving ? "Saving…" : "Save"}
             </button>
