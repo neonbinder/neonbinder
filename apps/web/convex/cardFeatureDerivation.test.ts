@@ -222,4 +222,58 @@ describe("addCustomCard generates listingTitle/listingDescription (NEO-24/71-74)
     expect(card.listingDescription).toContain("#50");
     expect(card.listingDescription).toContain("Rookie Card");
   });
+
+  // NEO-101 — the packed title, on the hand-add path. A custom card has no
+  // `teamOnCardIds` yet: the team the operator typed sits in
+  // `pendingTeamNames` until a sync resolves it, and that pending name is
+  // already treated as an answer everywhere else (see `deriveCardAttention`),
+  // so it is what the title says. The sport comes from the ancestor walk that
+  // also resolves the set name — one pass, not two.
+  test("a custom card's typed team and its sport reach the generated title", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "sport", value: "Baseball" },
+    );
+    const yearId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "year", value: "2024", parentId: sportId },
+    );
+    const mfrId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "manufacturer", value: "Topps", parentId: yearId },
+    );
+    const setNameId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "setName", value: "Chrome", parentId: mfrId },
+    );
+    const variantTypeId = await asAdmin.mutation(
+      api.selectorOptions.addCustomSelectorOption,
+      { level: "variantType", value: "Base", parentId: setNameId },
+    );
+
+    await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: variantTypeId,
+      cardNumber: "12",
+      cardName: "Julio Rodriguez",
+      attributes: ["RC"],
+      players: ["Julio Rodriguez"],
+      teams: ["Seattle Mariners"],
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards[0];
+
+    expect(card.listingTitle).toBe(
+      "2024 Topps Chrome Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
+    );
+    // Sold listings average 70 characters; NB's used to average 34.
+    expect(card.listingTitle!.length).toBeGreaterThanOrEqual(60);
+    expect(card.listingTitle!.length).toBeLessThanOrEqual(80);
+    expect(card.listingDescription).toContain("Team: Seattle Mariners.");
+  });
 });

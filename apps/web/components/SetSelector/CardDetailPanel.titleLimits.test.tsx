@@ -113,6 +113,8 @@ beforeEach(() => {
       setName: "Topps Chrome",
       shortPrint: "SP",
       cardVariation: "Image Variation; Wearing sunglasses",
+      teamNames: ["Seattle Mariners"],
+      sport: "Baseball",
     },
   };
 });
@@ -223,8 +225,37 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     expect(chips.textContent).toContain("#300b");
     expect(chips.textContent).toContain("SP");
     expect(chips.textContent).toContain("Image Variation; Wearing sunglasses");
+    // The two fillers the generator now pads toward 80 with.
+    expect(chips.textContent).toContain("Seattle Mariners");
+    expect(chips.textContent).toContain("Baseball");
     // Plain text, never links.
     expect(chips.querySelector("a")).toBeNull();
+  });
+
+  it("renders no team or sport chip when the preview carries neither", async () => {
+    // An older deploy predates both fields. The chips must simply be absent —
+    // not "undefined", and not a thrown dialog.
+    previewResult = {
+      title: "2024 Topps Chrome Julio Rodriguez #300b",
+      coreFits: true,
+      dropped: [],
+      inputs: {
+        cardNumber: "300b",
+        playerNames: ["Julio Rodriguez"],
+        year: "2024",
+      },
+    };
+    renderPanel(makeCard({ listingTitle: "stale" }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    const chips = await screen.findByLabelText("Title built from");
+    expect(chips.textContent).toContain("Julio Rodriguez");
+    expect(chips.textContent).not.toContain("Team");
+    expect(chips.textContent).not.toContain("Sport");
+    expect(chips.textContent).not.toContain("undefined");
   });
 
   it("Regenerate over an edited draft asks a second time instead of discarding it", async () => {

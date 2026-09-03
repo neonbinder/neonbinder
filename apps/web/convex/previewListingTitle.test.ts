@@ -117,7 +117,11 @@ describe("previewListingTitle (NEO-101)", () => {
       cardId,
     });
 
-    expect(preview.title).toBe("2024 Topps Chrome Elly De La Cruz #50 RC");
+    // NEO-101: the sport ancestor and the second "Rookie" spelling are part
+    // of the packed title now, and both are resolved by THIS query.
+    expect(preview.title).toBe(
+      "2024 Topps Chrome Elly De La Cruz #50 RC Rookie Baseball",
+    );
     expect(preview.coreFits).toBe(true);
     expect(preview.dropped).toEqual([]);
     // The chips the panel renders come straight off this.
@@ -129,6 +133,8 @@ describe("previewListingTitle (NEO-101)", () => {
       setName: "Chrome",
       parallelName: "Base",
       isRookie: true,
+      teamNames: [],
+      sport: "Baseball",
     });
   });
 
@@ -153,7 +159,7 @@ describe("previewListingTitle (NEO-101)", () => {
     });
     expect(preview.inputs.playerNames).toEqual(["Nobody In The Players Table"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome Nobody In The Players Table #7",
+      "2024 Topps Chrome Nobody In The Players Table #7 Baseball",
     );
   });
 
@@ -180,7 +186,7 @@ describe("previewListingTitle (NEO-101)", () => {
       cardId,
     });
     expect(preview.title).toBe(
-      "2024 Topps Chrome #300b AUTO RELIC Gold /25 Image Variation SP",
+      "2024 Topps Chrome #300b AUTO RELIC Gold /25 Image Variation SP Baseball",
     );
     expect(preview.inputs.printRun).toBe(25);
     expect(preview.inputs.cardVariation).toBe("Image Variation");
@@ -214,7 +220,7 @@ describe("previewListingTitle (NEO-101)", () => {
     expect(preview.coreFits).toBe(false);
     // "skip, don't stop", end to end: the 5-character " AUTO" did not fit, the
     // 3-character " RC" behind it did, and the result lands exactly on the cap.
-    expect(preview.dropped).toEqual(["AUTO"]);
+    expect(preview.dropped).toEqual(["AUTO", "Rookie", "Baseball"]);
     expect(preview.title).toBe(
       "2024 Topps Chrome An Absurdly Long Player Full Name That Alone Exceeds #99999 RC",
     );
@@ -269,6 +275,72 @@ describe("previewListingTitle (NEO-101)", () => {
     expect(widePreview.inputs.playerNames).toHaveLength(12);
     expect(widePreview.inputs.playerNames[0]).toBe("Player 00");
     expect(widePreview.title.length).toBeLessThanOrEqual(80);
+  });
+
+  test("resolves team names from teamOnCardIds, deduped and bounded", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, variantTypeId } = await seedSubtree(t);
+
+    const teamIds = await t.run(async (ctx) => {
+      const ids: Id<"teams">[] = [];
+      for (let i = 0; i < 12; i++) {
+        ids.push(
+          await ctx.db.insert("teams", {
+            name: `Team ${String(i).padStart(2, "0")}`,
+            nameNormalized: `team ${i}`,
+            sportId,
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ids;
+    });
+
+    const dupeCardId = await insertCard(t, variantTypeId, {
+      cardNumber: "1",
+      teamOnCardIds: [teamIds[0], teamIds[0], teamIds[1]],
+    });
+    const dupePreview = await asAdmin.query(
+      api.selectorOptions.previewListingTitle,
+      { cardId: dupeCardId },
+    );
+    expect(dupePreview.inputs.teamNames).toEqual(["Team 00", "Team 01"]);
+    expect(dupePreview.inputs.sport).toBe("Baseball");
+
+    // 12 ids, capped at MAX_CARD_TEAMS — the same bound `updateCard` enforces
+    // on the write path, here for rows written before that validation landed.
+    const wideCardId = await insertCard(t, variantTypeId, {
+      cardNumber: "2",
+      teamOnCardIds: teamIds,
+    });
+    const widePreview = await asAdmin.query(
+      api.selectorOptions.previewListingTitle,
+      { cardId: wideCardId },
+    );
+    expect(widePreview.inputs.teamNames).toHaveLength(8);
+    expect(widePreview.title.length).toBeLessThanOrEqual(80);
+  });
+
+  test("falls back to pendingTeamNames for a hand-added card", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId } = await seedSubtree(t);
+
+    const cardId = await insertCard(t, variantTypeId, {
+      cardNumber: "9001",
+      isCustom: true,
+      pendingTeamNames: ["Savannah Bananas"],
+      features: { season: "2024", manufacturer: "Topps" },
+    });
+
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
+      cardId,
+    });
+    expect(preview.inputs.teamNames).toEqual(["Savannah Bananas"]);
+    expect(preview.title).toBe(
+      "2024 Topps Chrome #9001 Savannah Bananas Baseball",
+    );
   });
 
   test("requires admin", async () => {

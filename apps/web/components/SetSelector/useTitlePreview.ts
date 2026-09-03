@@ -54,6 +54,16 @@ type PreviewResult = {
     shortPrint?: string;
     printRun?: number;
     cardVariation?: string;
+    /**
+     * Stored team names, verbatim. Declared OPTIONAL although the query always
+     * returns it (possibly empty): a browser holding this bundle can be reading
+     * an older deploy that predates the field, and a `.map` on `undefined`
+     * inside a modal dialog takes the whole dialog with it.
+     */
+    teamNames?: string[];
+    /** e.g. "Baseball". Optional for the same reason, and genuinely absent for
+     * a set whose sport was never resolved. */
+    sport?: string;
   };
 };
 
@@ -88,22 +98,34 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
     if (v !== null) chips.push({ label, value: v });
   };
 
+  // Core first, in the order the generator lays it down.
   push("Year", inputs.year);
   push("Maker", inputs.manufacturer);
   push("Set", inputs.setName);
-  push("Parallel", inputs.parallelName);
   // One chip per player, not a joined string: on a multi-player card the names
   // are what an operator weighs against each other when shortening.
   for (const name of inputs.playerNames ?? []) {
     if (name) chips.push({ label: "Player", value: name });
   }
   if (inputs.cardNumber) chips.push({ label: "Number", value: `#${inputs.cardNumber}` });
+
+  // Then the optional tokens, in the priority the generator appends them:
+  // AUTO → RELIC → parallel → /printRun → variation → RC → SP/SSP → team(s) →
+  // sport. The last chips are therefore the first to be dropped when a title
+  // does not fit, which is the whole reason this row is ordered at all.
   push("Auto", inputs.autographed, "AUTO");
   push("Relic", inputs.isRelic, "RELIC");
-  push("Rookie", inputs.isRookie, "RC");
-  push("Short print", inputs.shortPrint, "SP");
+  push("Parallel", inputs.parallelName);
   if (inputs.printRun != null) chips.push({ label: "Print run", value: `/${inputs.printRun}` });
   push("Variation", inputs.cardVariation);
+  push("Rookie", inputs.isRookie, "RC");
+  push("Short print", inputs.shortPrint, "SP");
+  // One chip per team, matching the per-player treatment: a card can carry
+  // two, and "which of these is worth the characters" is the same judgement.
+  for (const name of inputs.teamNames ?? []) {
+    if (name) chips.push({ label: "Team", value: name });
+  }
+  push("Sport", inputs.sport);
 
   return chips;
 }

@@ -17,7 +17,10 @@ describe("generateListingTitle", () => {
       parallelName: "Base",
       isRookie: true,
     });
-    expect(title).toBe("2024 Topps Chrome Elly De La Cruz #50 RC");
+    // NEO-101 (Jason, 2026-09-02): titles now PACK. `Rookie` is appended as a
+    // second spelling behind `RC` — a third of sold rookie listings carry both
+    // words, and an unused character is a search term thrown away.
+    expect(title).toBe("2024 Topps Chrome Elly De La Cruz #50 RC Rookie");
     expect(title.length).toBeLessThanOrEqual(80);
   });
 
@@ -164,7 +167,7 @@ describe("assessListingTitle (NEO-101)", () => {
 
   test("reports the title, that the core fit, and nothing dropped, for a card that fits easily", () => {
     expect(assessListingTitle({ ...BASE, isRookie: true })).toEqual({
-      title: "2024 Topps Chrome Elly De La Cruz #50 RC",
+      title: "2024 Topps Chrome Elly De La Cruz #50 RC Rookie",
       coreFits: true,
       dropped: [],
     });
@@ -190,9 +193,9 @@ describe("assessListingTitle (NEO-101)", () => {
 
   test("optional tokens come out in the agreed priority order", () => {
     // Jason, 2026-09-02: AUTO -> RELIC -> parallel -> /printRun ->
-    // cardVariation -> RC -> SP/SSP. This is NOT the old order (which led with
-    // parallel and trailed with /printRun), so this test is the record of the
-    // decision as much as it is a check.
+    // cardVariation -> RC -> SP/SSP -> teams -> "Rookie" -> sport. This is NOT
+    // the old order (which led with parallel and trailed with /printRun), so
+    // this test is the record of the decision as much as it is a check.
     const { title, dropped } = assessListingTitle({
       cardNumber: "1",
       playerNames: ["A Player"],
@@ -204,9 +207,14 @@ describe("assessListingTitle (NEO-101)", () => {
       cardVariation: "Action",
       isRookie: true,
       shortPrint: "SSP",
+      teamNames: ["Reds"],
+      sport: "Baseball",
     });
-    expect(title).toBe("2024 A Player #1 AUTO RELIC Gold /25 Action RC SSP");
+    expect(title).toBe(
+      "2024 A Player #1 AUTO RELIC Gold /25 Action RC SSP Reds Rookie Baseball",
+    );
     expect(dropped).toEqual([]);
+    expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
   });
 
   test("a parallelName that IS the cardVariation is not printed twice", () => {
@@ -259,7 +267,7 @@ describe("assessListingTitle (NEO-101)", () => {
     });
     expect(coreFits).toBe(true);
     expect(dropped).toEqual([longVariation]);
-    expect(title).toBe("2024 Topps Chrome Elly De La Cruz #50 RC SP");
+    expect(title).toBe("2024 Topps Chrome Elly De La Cruz #50 RC SP Rookie");
     expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
   });
 
@@ -363,6 +371,113 @@ describe("assessListingTitle (NEO-101)", () => {
     expect(title).toBe(`#${cardNumber}`);
   });
 
+  test("team names are appended verbatim, in stored order, and never abbreviated", () => {
+    // ~50% of sold listings name the team (Jason's two-sample research,
+    // 2026-09-02). Verbatim matters: a buyer types the name as it is printed,
+    // so "Seattle Mariners" must not become "SEA" or "Mariners".
+    const { title, dropped } = assessListingTitle({
+      cardNumber: "12",
+      playerNames: ["Julio Rodriguez"],
+      year: "2024",
+      manufacturer: "Topps",
+      teamNames: ["Seattle Mariners"],
+      sport: "Baseball",
+    });
+    expect(title).toBe("2024 Topps Julio Rodriguez #12 Seattle Mariners Baseball");
+    expect(dropped).toEqual([]);
+  });
+
+  test("a multi-team card names every team it fits, in stored order", () => {
+    const { title } = assessListingTitle({
+      cardNumber: "1",
+      year: "2024",
+      teamNames: ["Tigres del Licey", "Aguilas Cibaenas"],
+    });
+    expect(title).toBe("2024 #1 Tigres del Licey Aguilas Cibaenas");
+  });
+
+  test('"Rookie" rides behind RC, and only when the card is a rookie', () => {
+    const rookie = assessListingTitle({
+      cardNumber: "1",
+      year: "2024",
+      isRookie: true,
+    });
+    expect(rookie.title).toBe("2024 #1 RC Rookie");
+    // Order matters: RC is the token that must survive if only one fits.
+    expect(rookie.title.indexOf("RC")).toBeLessThan(rookie.title.indexOf("Rookie"));
+
+    const notRookie = assessListingTitle({ cardNumber: "1", year: "2024" });
+    expect(notRookie.title).toBe("2024 #1");
+    expect(notRookie.title).not.toContain("Rookie");
+  });
+
+  test('a team name that already contains the sport swallows the sport token', () => {
+    // "Oregon Ducks baseball" ⊃ "Baseball". Word-level, case-insensitive — and
+    // NOT reported as dropped, because the word is right there in the title.
+    const { title, dropped } = assessListingTitle({
+      cardNumber: "5",
+      year: "2024",
+      teamNames: ["Oregon Ducks baseball"],
+      sport: "Baseball",
+    });
+    expect(title).toBe("2024 #5 Oregon Ducks baseball");
+    expect(dropped).toEqual([]);
+  });
+
+  test("a token repeating a word already in the CORE is skipped", () => {
+    // The core carries "Topps" via the set name; a parallel that repeats it
+    // spends five characters saying nothing new.
+    const { title } = assessListingTitle({
+      cardNumber: "1",
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Topps Chrome",
+      parallelName: "Topps Chrome",
+    });
+    expect(title).toBe("2024 Topps Chrome #1");
+  });
+
+  test("RC and Rookie are NOT collapsed into each other", () => {
+    // Different words, and carrying both is what real sold listings do — the
+    // de-dup is word-level, not concept-level, precisely so this survives.
+    const { title } = assessListingTitle({ cardNumber: "1", isRookie: true });
+    expect(title).toBe("#1 RC Rookie");
+  });
+
+  test("the same team listed twice is named once", () => {
+    const { title } = assessListingTitle({
+      cardNumber: "1",
+      year: "2024",
+      teamNames: ["Seattle Mariners", "Seattle Mariners"],
+    });
+    expect(title).toBe("2024 #1 Seattle Mariners");
+  });
+
+  test("a typical base card now PACKS toward the cap instead of stopping at ~34", () => {
+    // The defect this whole change answers: NB's real titles averaged 34
+    // characters against a sold-listing mean of 70, which is half the
+    // searchable surface of the listing left blank. A perfectly ordinary base
+    // card — year, set, one player, number, parallel, one team, sport — must
+    // now land in the band real sellers use.
+    const { title, coreFits, dropped } = assessListingTitle({
+      cardNumber: "150",
+      playerNames: ["Bobby Witt Jr"],
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Chrome",
+      parallelName: "Refractor",
+      teamNames: ["Kansas City Royals"],
+      sport: "Baseball",
+    });
+    expect(coreFits).toBe(true);
+    expect(dropped).toEqual([]);
+    expect(title).toBe(
+      "2024 Topps Chrome Bobby Witt Jr #150 Refractor Kansas City Royals Baseball",
+    );
+    expect(title.length).toBeGreaterThanOrEqual(60);
+    expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+  });
+
   test("no optional tokens present means nothing dropped and nothing invented", () => {
     expect(assessListingTitle({ cardNumber: "9" })).toEqual({
       title: "#9",
@@ -440,6 +555,15 @@ describe("generateListingTitle invariants — fuzz (NEO-101)", () => {
           rand() < 0.5 ? undefined : Math.floor(rand() * 10 ** (1 + Math.floor(rand() * 12))),
         // Long variation strings.
         cardVariation: rand() < 0.5 ? undefined : words(1 + Math.floor(rand() * 10)),
+        // NEO-101 fill tokens: several long team names, and a sport that
+        // sometimes duplicates a word already inside one of them.
+        teamNames:
+          rand() < 0.3
+            ? undefined
+            : Array.from({ length: 1 + Math.floor(rand() * 4) }, () =>
+                words(1 + Math.floor(rand() * 4)),
+              ),
+        sport: rand() < 0.3 ? undefined : pick(WORDS),
       };
 
       const { title, coreFits, dropped } = assessListingTitle(inputs);
@@ -600,6 +724,40 @@ describe("generateListingDescription", () => {
     expect(generateListingTitle({ cardNumber: "1", cardVariation: variation })).toBe(
       "#1",
     );
+  });
+
+  test("NEO-101: teams get their own line, named in full", () => {
+    const desc = generateListingDescription({
+      cardNumber: "12",
+      playerNames: ["Julio Rodriguez"],
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Chrome",
+      teamNames: ["Seattle Mariners"],
+      isRookie: true,
+    });
+    expect(desc.split("\n")).toEqual([
+      "2024 Topps Chrome card of Julio Rodriguez, #12.",
+      "Team: Seattle Mariners.",
+      "This is a Rookie Card.",
+    ]);
+  });
+
+  test("NEO-101: a multi-team card lists every team, uncapped", () => {
+    // The description has no cap, so unlike the title nothing here competes
+    // for room — a team the title had to drop still states itself in full.
+    const desc = generateListingDescription({
+      cardNumber: "1",
+      teamNames: ["Tigres del Licey", "Aguilas Cibaenas", "Estrellas Orientales"],
+    });
+    expect(desc).toContain(
+      "Team: Tigres del Licey, Aguilas Cibaenas, Estrellas Orientales.",
+    );
+  });
+
+  test("NEO-101: no teams means no Team line at all", () => {
+    const desc = generateListingDescription({ cardNumber: "1", teamNames: [] });
+    expect(desc).not.toContain("Team:");
   });
 
   test("autographed None does not add an autograph sentence", () => {

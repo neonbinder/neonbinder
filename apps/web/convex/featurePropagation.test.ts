@@ -892,6 +892,63 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     expect(card.listingTitleTruncated).toBeUndefined();
   });
 
+  // NEO-101 — the packed title. Team names are resolved ONCE per commit in the
+  // prelude (`teamNameById`, alongside `playerNameById`) rather than per card
+  // in the chunk, which would have been one `db.get` per team per card; the
+  // sport value the chunk already carries for the SKU prefix doubles as the
+  // title's last fill token.
+  test("team name and sport reach the stored title on a fresh commit", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await asAdmin.mutation(api.players.findOrCreate, {
+      name: "Julio Rodriguez",
+      sportId,
+    });
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Seattle Mariners",
+      sportId,
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "12",
+          cardName: "Julio Rodriguez",
+          team: undefined,
+          teams: ["Seattle Mariners"],
+          players: ["Julio Rodriguez"],
+          attributes: ["RC"],
+          isRookie: true,
+          isRelic: false,
+          printRun: undefined,
+          autographType: undefined,
+          cardVariation: undefined,
+          platformData: { bsc: { ref: "bsc-12" } },
+          unmatched: undefined,
+        },
+      ],
+    });
+
+    const [card] = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .collect(),
+    );
+
+    expect(card.listingTitle).toBe(
+      "2024 Topps Chrome Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
+    );
+    // The old generator stopped at 37 characters here. Sold listings average
+    // 70; this is the whole point of the change.
+    expect(card.listingTitle!.length).toBeGreaterThanOrEqual(60);
+    expect(card.listingTitle!.length).toBeLessThanOrEqual(80);
+    expect(card.listingDescription).toContain("Team: Seattle Mariners.");
+  });
+
   // NEO-101 — `cardVariation` reaches the generated title and description
   // VERBATIM. Before this ticket the generator ignored the field entirely, so
   // a synced variation card titled identically to its parent apart from the
@@ -934,7 +991,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
         .collect(),
     );
     expect(card.listingTitle).toBe(
-      "2024 Topps Chrome Julio Rodriguez #300b Image Variation",
+      "2024 Topps Chrome Julio Rodriguez #300b Image Variation Baseball",
     );
     // Once, not twice: `deriveCardObservedFeatures` also copies cardVariation
     // into `features.parallelName`, so the identity sentence already names it.

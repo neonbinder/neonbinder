@@ -91,6 +91,8 @@ beforeEach(() => {
       playerNames: ["Julio Rodriguez"],
       year: "2024",
       setName: "Topps Chrome",
+      teamNames: ["Seattle Mariners"],
+      sport: "Baseball",
     },
   };
 });
@@ -219,7 +221,30 @@ describe("TitleFixer (NEO-101)", () => {
     const chips = screen.getByLabelText("Title built from");
     expect(chips.textContent).toContain("Topps Chrome");
     expect(chips.textContent).toContain("#300b");
+    expect(chips.textContent).toContain("Seattle Mariners");
+    expect(chips.textContent).toContain("Baseball");
+    expect(chips.querySelector("a")).toBeNull();
     expect(screen.getByText("Left out to fit: SP")).toBeTruthy();
+  });
+
+  it("renders no team or sport chip when the preview carries neither", async () => {
+    previewResult = {
+      title: "2024 Topps Chrome Julio Rodriguez #300b",
+      coreFits: true,
+      dropped: [],
+      inputs: { cardNumber: "300b", playerNames: ["Julio Rodriguez"], year: "2024" },
+    };
+    renderFixer([truncated()], makeRow({ listingTitle: "2024 Topps #300b" }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    const chips = await screen.findByLabelText("Title built from");
+    expect(chips.textContent).toContain("Julio Rodriguez");
+    expect(chips.textContent).not.toContain("Team");
+    expect(chips.textContent).not.toContain("Sport");
+    expect(chips.textContent).not.toContain("undefined");
   });
 
   it("surfaces a refused write inline, and does not report a fix that did not land", async () => {
