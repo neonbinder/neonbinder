@@ -1195,4 +1195,168 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     // NEO-96: a team must reference a real sport row. No sport, no create.
     expect(screen.queryByLabelText(/^Create team /)).toBeNull();
   });
+
+  /**
+   * Creating a NEW team from the quick-add form's popover — the escape hatch
+   * `TeamPicker` gives every consumer (see its own module docstring) — was
+   * untested end-to-end from THIS form specifically. `teams.findOrCreate`'s
+   * resolved id has to make it all the way to `addCustomCard`'s
+   * `teamOnCardIds`, through the same React-state chip list the picked-from-
+   * the-list case uses.
+   */
+  it("creates a new team from the popover, then sends the freshly created id on submit", async () => {
+    mockFindOrCreateTeam.mockImplementation(
+      async ({ name }: { name: string; sportId: unknown }) => {
+        const newTeam = { _id: "team-bananas", name };
+        state.teams = [...state.teams, newTeam];
+        return newTeam._id;
+      },
+    );
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("520");
+    fireEvent.click(screen.getByLabelText("Add team"));
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+    });
+
+    expect(mockFindOrCreateTeam).toHaveBeenCalledWith({
+      name: "Savannah Bananas",
+      sportId: SPORT_ID,
+    });
+    // The picker's own "createAndAdd" chips it immediately — same as picking
+    // an existing match.
+    expect(screen.getByLabelText("Team: Savannah Bananas")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0].teamOnCardIds).toEqual([
+      "team-bananas",
+    ]);
+  });
+
+  it("cancelling after creating a team leaves the team CREATED server-side but sends nothing on submit", async () => {
+    // The mutation already ran — cancel only clears the FORM's local chip
+    // list, which is all NEO-208's reset-on-close guarantees. It does not,
+    // and cannot, undo a write that already committed.
+    mockFindOrCreateTeam.mockImplementation(
+      async ({ name }: { name: string; sportId: unknown }) => {
+        const newTeam = { _id: "team-bananas", name };
+        state.teams = [...state.teams, newTeam];
+        return newTeam._id;
+      },
+    );
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText("Add team"));
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+    });
+    expect(mockFindOrCreateTeam).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByLabelText("Cancel new card"));
+    openAddForm();
+    fillCardNumber("521");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    // No second team created, and the cancelled pick never reaches this card.
+    expect(mockFindOrCreateTeam).toHaveBeenCalledTimes(1);
+    expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty(
+      "teamOnCardIds",
+    );
+  });
+
+  it("submitting while the picker popover is still open still sends the picked team", async () => {
+    // `addChip` deliberately leaves the popover open after a pick (so a
+    // second team can be added without re-opening it) — this is the state the
+    // form is normally IN at the moment an operator hits Add, not an edge
+    // case reached only by skipping a close.
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("522");
+    pickTeam("New York Yankees");
+    // The popover is still open — its search box is still on screen.
+    expect(screen.getByLabelText("Search teams")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0].teamOnCardIds).toEqual([
+      YANKEES._id,
+    ]);
+  });
+
+  // a11y (WCAG 2.4.11 Focus Not Obscured): the picker's popover is
+  // `absolute top-full z-10` and opens right above this form's "Add"/
+  // "Cancel" buttons — the same overlap TeamPicker's own pointerdown-outside
+  // comment documents for MissingTeamFixer's "Save & Next"/"No team on this
+  // card" buttons, just reached here by Tab instead of a mouse click
+  // elsewhere. Without a keyboard-equivalent close, tabbing out of an open
+  // popover lands focus on a button the popover is still visually covering.
+  it("closes the team popover when Tab moves focus onto Submit (2.4.11)", async () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText("Add team"));
+    const searchInput = screen.getByLabelText("Search teams");
+
+    // Let the picker's own open-time autofocus effect land first. It moves
+    // focus into the search input on a `setTimeout(0)` queued by the same
+    // click; a real Tab key can't outrun that the way synchronous test code
+    // racing the same macrotask queue can, so without waiting for it here,
+    // that autofocus can win the race and re-steal focus into the popover a
+    // moment after our manual Tab-out below, masking the close this test
+    // means to check.
+    await waitFor(() => expect(document.activeElement).toBe(searchInput));
+
+    // Tab from inside the popover lands on the next focusable element in DOM
+    // order — the quick-add form's "Add" button — without the popover's own
+    // state changing on its own. Move focus there directly, the same
+    // observable effect a real Tab key press has. The close is deferred
+    // (TeamPicker reads `document.activeElement` a tick after the blur, not
+    // off the blur event's own `relatedTarget` — see its comment), so this
+    // needs an `act(async ...)` to flush that timer.
+    await act(async () => {
+      screen.getByLabelText("Submit new card").focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByLabelText("Search teams")).toBeNull();
+    // And the trigger is back to its closed state, not stuck mid-open.
+    expect(
+      screen.getByLabelText("Add team").getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
+  it("keeps the popover open when focus moves between controls inside it", async () => {
+    // Regression guard on the fix above: closing on "focus left the root"
+    // must not also fire for focus moving from one in-picker control to
+    // another (e.g. the search input to a match option), which is ordinary
+    // keyboard use, not a Tab-out.
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText("Add team"));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Search teams")),
+    );
+
+    await act(async () => {
+      screen.getByLabelText("Add New York Yankees").focus();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByLabelText("Search teams")).toBeTruthy();
+  });
 });

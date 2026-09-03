@@ -513,4 +513,99 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
 
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
   });
+
+  test("a name AT the 120-char cap is accepted — the bound is not off by one", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const atCap = "z".repeat(120);
+
+    const id = await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.findOrCreate, { name: atCap, sportId });
+
+    const team = await t.run(async (ctx) => ctx.db.get(id));
+    expect(team!.name).toBe(atCap);
+  });
+
+  test("a padded name that is 120 chars AFTER trim is accepted", async () => {
+    // Trim happens BEFORE the length check — an operator who pastes a padded
+    // name must not be refused for whitespace that was never going to be
+    // stored.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const padded = `   ${"z".repeat(120)}   `;
+
+    const id = await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.findOrCreate, { name: padded, sportId });
+
+    const team = await t.run(async (ctx) => ctx.db.get(id));
+    expect(team!.name).toBe("z".repeat(120));
+  });
+
+  test("whitespace-and-case variants of the same name collide onto ONE row and enqueue ONCE", async () => {
+    // `normalizeTeamName` lowercases, collapses whitespace, and token-sorts —
+    // this pins the collision on a variant that is neither the exact string
+    // nor the comma-reordered one already covered above: extra internal
+    // whitespace plus a case change.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const first = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "New York Yankees",
+      sportId,
+    });
+    const second = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "new york  yankees ",
+      sportId,
+    });
+
+    expect(second).toBe(first);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+    expect(await scheduledEnrichmentCount(t)).toBe(1);
+  });
+
+  test("team_created is logged as structured JSON, never string-concatenated with the name", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const id = await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+      name: "Savannah Bananas",
+      sportId,
+    });
+
+    const line = logSpy.mock.calls
+      .map((args) => String(args[0]))
+      .find((s) => s.includes("team_created"));
+    expect(line).toBeDefined();
+    // Parses as ONE JSON value — a concatenated `"team_created: " + name`
+    // string would fail this, which is the point: the name must never be
+    // free-form text sharing the line with the message.
+    const parsed = JSON.parse(line!);
+    expect(parsed).toMatchObject({ msg: "team_created", teamId: id, sportId });
+    expect(parsed.userId).toBe(ADMIN.subject);
+
+    logSpy.mockRestore();
+  });
+
+  test("a FOUND (not created) team logs no team_created line", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await insertBareTeam(t, sportId, "Existing Team");
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
+      name: "Existing Team",
+      sportId,
+    });
+
+    const line = logSpy.mock.calls
+      .map((args) => String(args[0]))
+      .find((s) => s.includes("team_created"));
+    expect(line).toBeUndefined();
+
+    logSpy.mockRestore();
+  });
 });

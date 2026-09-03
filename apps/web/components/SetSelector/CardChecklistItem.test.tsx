@@ -444,4 +444,25 @@ describe("CardChecklistItem — NEO-208 pending team names", () => {
     renderItem();
     expect(screen.queryByText(/unconfirmed/)).toBeNull();
   });
+
+  it("still renders a pending name even on a row that ALSO carries a real teamOnCardIds link", () => {
+    // A stale row: `updateCard` only retires `pendingTeamNames` when it
+    // itself writes a non-empty `teamOnCardIds` — a link made some other way
+    // (a direct write, a resolve pass that predates that clear) can leave both
+    // fields on the same row. `deriveCardAttention` does not flag this row
+    // (see cardChecklist.noTeam.test.ts), but the render loop here is
+    // unconditional — it appends every entry in `pendingTeamNames` regardless
+    // of `teamOnCardIds` — so the stale name stays visible rather than being
+    // silently swallowed once a real team exists. Pinned as the documented
+    // current behaviour, not asserted as ideal: a future change might prefer
+    // to hide it once a real link exists, and should update this test
+    // deliberately rather than by accident.
+    renderItem({
+      card: makeCard({
+        teamOnCardIds: ["team-1" as unknown as Id<"teams">],
+        pendingTeamNames: ["Stale Typed Name"],
+      }),
+    });
+    expect(screen.getByText("Stale Typed Name (unconfirmed)")).toBeTruthy();
+  });
 });

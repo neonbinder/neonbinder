@@ -1843,32 +1843,46 @@ async function restampCardChecklistSortOrders(
 const MAX_PENDING_NAME_LENGTH = 120;
 
 /**
- * NEO-208 security condition — how many typed names one `addCustomCard` call
- * may carry, per entity kind.
+ * NEO-208 security condition — how many typed TEAM names one `addCustomCard`
+ * call may carry.
  *
  * Deliberately the SAME number as `MAX_CARD_TEAMS`, and for the same reason:
- * it is a sanity bound on a hand-typed field, not a marketplace rule. A
- * League-Leaders card is the widest real case and sits well under it.
+ * it is a sanity bound on a hand-typed field, not a marketplace rule. A team
+ * card names at most a handful of teams, so this sits well above anything
+ * legitimate while still being a hard bound.
  */
-const MAX_PENDING_NAMES = MAX_CARD_TEAMS;
+const MAX_PENDING_TEAM_NAMES = MAX_CARD_TEAMS;
+
+/**
+ * NEO-208 follow-up — how many typed PLAYER names one `addCustomCard` call may
+ * carry. Deliberately WIDER than `MAX_PENDING_TEAM_NAMES`: a team card or a
+ * multi-player insert (League Leaders, rookie combos) can legitimately list
+ * well past `MAX_CARD_TEAMS` players, where a card is never printed for more
+ * than a handful of teams. 20 is a sanity bound on a hand-typed field, not a
+ * marketplace rule — chosen to sit comfortably above the widest real
+ * multi-player card while still being a hard cap.
+ */
+const MAX_PENDING_PLAYER_NAMES = 20;
 
 /**
  * Trim, drop empties, and refuse a list that is too long or a name that is —
  * the shared shape of `addCustomCard`'s two free-text entity args.
  *
- * `label` only shapes the error text ("player" / "team"); both errors name the
- * cap so an operator — or a future client author — can see what WOULD be
- * accepted rather than only that this was not.
+ * `label` only shapes the error text ("player" / "team"); `limit` is the
+ * per-kind cap (`MAX_PENDING_PLAYER_NAMES` / `MAX_PENDING_TEAM_NAMES`) — both
+ * errors name it so an operator — or a future client author — can see what
+ * WOULD be accepted rather than only that this was not.
  */
 function normalizePendingNames(
   raw: ReadonlyArray<string> | undefined,
   label: string,
+  limit: number,
 ): string[] | undefined {
   if (raw === undefined) return undefined;
   const names = raw.map((n) => n.trim()).filter((n) => n.length > 0);
-  if (names.length > MAX_PENDING_NAMES) {
+  if (names.length > limit) {
     throw new ConvexError(
-      `A card can carry at most ${MAX_PENDING_NAMES} ${label} names.`,
+      `A card can carry at most ${limit} ${label} names.`,
     );
   }
   for (const name of names) {
@@ -2004,8 +2018,16 @@ export const addCustomCard = mutation({
   returns: v.id("cardChecklist"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const pendingPlayerNames = normalizePendingNames(args.players, "player");
-    const typedTeamNames = normalizePendingNames(args.teams, "team");
+    const pendingPlayerNames = normalizePendingNames(
+      args.players,
+      "player",
+      MAX_PENDING_PLAYER_NAMES,
+    );
+    const typedTeamNames = normalizePendingNames(
+      args.teams,
+      "team",
+      MAX_PENDING_TEAM_NAMES,
+    );
 
     // NEO-208 — validated BEFORE anything is written, so a bad id (unknown,
     // wrong sport, over the cap) leaves no half-created card behind. The
