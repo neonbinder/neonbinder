@@ -10,6 +10,10 @@ import { fetchEspnTeamInfo } from "./espn";
 // `players.teamYears`; if they sorted differently the same player would read
 // back as a different timeline depending on which one created them.
 import { sortTeamYears } from "../../lib/players/team-tenure";
+// NEO-212 security review: the shared `Q<digits>` chokepoint. `qidFromIri`
+// below is where an EXTERNAL string first becomes something we call an id, so
+// it is the right place to decide whether it is one.
+import { isWikidataQid } from "../../lib/players/wikidata-id";
 
 /**
  * Wikidata SPARQL adapter — enriches players (HoF, career teams) and
@@ -172,10 +176,25 @@ async function runSparql(query: string): Promise<SparqlResults | null> {
 /**
  * Strip the wd: prefix from a Wikidata IRI to get the bare QID, e.g.
  * "http://www.wikidata.org/entity/Q5369" → "Q5369".
+ *
+ * NEO-212 security review — returns `undefined` unless the result actually IS
+ * a `Q<digits>` id.
+ *
+ * It used to return the last path segment unconditionally, which meant this
+ * function's return type said "a QID" while its behaviour said "whatever came
+ * after the last slash of a string an external endpoint sent us". That value
+ * flows into `players`/`teams` `externalIds.wikidataId`, and a stored id is
+ * later interpolated into an outbound link — so this is the earliest point
+ * where the claim can be made true rather than assumed.
+ *
+ * Callers cope by treating `undefined` as "no match", which is the answer they
+ * already had a branch for: a lookup that finds nothing is the ordinary case
+ * here (minor leaguers, defunct clubs), not an error path.
  */
-function qidFromIri(iri: string): string {
+function qidFromIri(iri: string): string | undefined {
   const idx = iri.lastIndexOf("/");
-  return idx === -1 ? iri : iri.slice(idx + 1);
+  const candidate = idx === -1 ? iri : iri.slice(idx + 1);
+  return isWikidataQid(candidate) ? candidate : undefined;
 }
 
 /**
@@ -227,7 +246,8 @@ async function findPlayerQid(
 
   const result = await runSparql(query);
   const binding = result?.results.bindings[0];
-  return binding ? qidFromIri(binding.player.value) : null;
+  // `?? null`: an IRI whose final segment is not a QID is no match at all.
+  return binding ? (qidFromIri(binding.player.value) ?? null) : null;
 }
 
 async function findTeamQid(
@@ -259,7 +279,8 @@ async function findTeamQid(
 
   const result = await runSparql(query);
   const binding = result?.results.bindings[0];
-  return binding ? qidFromIri(binding.team.value) : null;
+  // See the note in findPlayerQid — a non-QID segment is treated as no match.
+  return binding ? (qidFromIri(binding.team.value) ?? null) : null;
 }
 
 /**
@@ -394,8 +415,14 @@ export async function lookupPlayerEnrichment(
   const seenStints = new Set<string>();
 
   for (const row of result.results.bindings) {
-    if (row.team && row.teamLabel) {
-      const teamWdId = qidFromIri(row.team.value);
+    // NEO-212 security review: `qidFromIri` now answers `undefined` for an IRI
+    // whose final segment is not a `Q<digits>` id. A membership with no
+    // resolvable team QID is skipped: the QID is the stint dedup key, and
+    // keying on `"undefined"` would collapse two genuinely different teams'
+    // stints into one. Wikidata always returns entity IRIs here, so this is a
+    // guard against a malformed response, not an expected branch.
+    const teamWdId = row.team ? qidFromIri(row.team.value) : undefined;
+    if (row.team && row.teamLabel && teamWdId) {
       const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
       if (!seenStints.has(stintKey)) {
         seenStints.add(stintKey);
@@ -429,6 +456,8 @@ export async function lookupPlayerEnrichment(
         }
       }
     }
+    // `undefined === hofQid` is false, so a malformed award IRI simply fails to
+    // match rather than needing a branch of its own.
     if (hofQid && row.award && qidFromIri(row.award.value) === hofQid) {
       isHallOfFame = true;
     }

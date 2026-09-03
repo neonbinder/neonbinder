@@ -11,6 +11,10 @@ import {
   type NearMatch,
 } from "@/components/entities/NearMatchPanel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
+// NEO-212 security review: `WIKIDATA_QID` used to be re-declared here. It now
+// comes from the one module that also gates the href — see
+// lib/players/wikidata-id.ts.
+import { WIKIDATA_QID, wikidataUrl } from "@/lib/players/wikidata-id";
 
 /**
  * NEO-212 — Player Management, the `/admin/teams` twin.
@@ -63,10 +67,6 @@ const SEARCH_DEBOUNCE_MS = 200;
  * one's is to be right once they pause.
  */
 const NEAR_MATCH_DEBOUNCE_MS = 300;
-
-/** Match the server's `WIKIDATA_QID` shape, so a typo is caught before a
- *  round-trip rather than coming back as a ConvexError. */
-const WIKIDATA_QID = /^Q\d+$/;
 
 /**
  * `fromYear` ascending, open-ended stint last among stints starting the same
@@ -448,23 +448,32 @@ function PlayerDetail({
   };
 
   const qid = player.externalIds?.wikidataId;
+  const qidUrl = wikidataUrl(qid);
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
         <h4 className="text-lg font-semibold">{player.name}</h4>
         <CopyButton value={player.name} label="player name" />
-        {qid && (
-          <a
-            href={`https://www.wikidata.org/wiki/${qid}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm text-neon-blue underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-blue rounded-sm"
-          >
-            Wikidata {qid}
-            <span className="sr-only"> (opens in new tab)</span>
-          </a>
-        )}
+        {qid &&
+          (qidUrl ? (
+            <a
+              href={qidUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-neon-blue underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-neon-blue rounded-sm"
+            >
+              Wikidata {qid}
+              <span className="sr-only"> (opens in new tab)</span>
+            </a>
+          ) : (
+            // A stored id that is not `Q<digits>` — a legacy row, or one
+            // written before this field was validated. Shown as text so the
+            // operator can see the bad value and fix it in the editor below;
+            // never as a link, because the id would be interpolated into the
+            // href verbatim.
+            <span className="text-sm text-slate-400">Wikidata {qid}</span>
+          ))}
       </div>
 
       {nameTakenId && (

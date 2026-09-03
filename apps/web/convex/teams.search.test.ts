@@ -152,6 +152,27 @@ describe("teams.search", () => {
 
     expect(rows).toHaveLength(25);
   });
+
+  // NEO-212 security review: the cap above had no matching FLOOR. `limit: 0`
+  // and negatives reached `.take()`, which rejects a negative outright — and a
+  // thrown query inside `useQuery` unmounts the calling component rather than
+  // rendering an empty typeahead. Clamping into [1, 25] keeps a nonsense
+  // argument a nonsense result instead of a crash.
+  test("floors a zero or negative limit to one row instead of throwing", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    await seedTeam(t, "Springfield Isotopes", baseball);
+    await seedTeam(t, "Springfield Atoms", baseball);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    for (const limit of [0, -1, -500]) {
+      const rows = await asAdmin.query(api.teams.search, {
+        query: "Springfield",
+        limit,
+      });
+      expect(rows).toHaveLength(1);
+    }
+  });
 });
 
 describe("teams.resolveNames", () => {
@@ -374,6 +395,53 @@ describe("teams.nearMatches", () => {
     });
     expect(capped).toHaveLength(1);
     expect(capped[0]._id).toBe(yankeesId);
+  });
+
+  // NEO-212 security review: floored as well as capped. `limit: 0` returned an
+  // empty list, which the wizard reads as "nothing like this exists" — the
+  // exact wrong answer from the one query whose job is to warn before a
+  // duplicate write — and `limit: -1` made `.slice(0, -1)` drop the last
+  // candidate silently.
+  test("floors a zero or negative limit to one match instead of returning none", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const yankeesId = await seedTeam(t, "New York Yankees", baseball);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    for (const limit of [0, -1, -100]) {
+      const rows = await asAdmin.query(api.teams.nearMatches, {
+        name: "New York Yankees",
+        sportId: baseball,
+        limit,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]._id).toBe(yankeesId);
+    }
+  });
+
+  test("refuses a search term longer than a storable team name", async () => {
+    // The same 120-character bound `findOrCreate` puts on a STORED team name.
+    // Nothing longer could ever match a stored row, so refusing costs nothing
+    // real; an unbounded term otherwise reaches the search index and
+    // `rankTeamCandidates`'s per-token work.
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    await seedTeam(t, "New York Yankees", baseball);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    await expect(
+      asAdmin.query(api.teams.nearMatches, {
+        name: "Y".repeat(121),
+        sportId: baseball,
+      }),
+    ).rejects.toThrow(/121 characters; the limit is 120/);
+
+    await expect(
+      asAdmin.query(api.teams.nearMatches, {
+        name: "Y".repeat(120),
+        sportId: baseball,
+      }),
+    ).resolves.toEqual([]);
   });
 
   /**

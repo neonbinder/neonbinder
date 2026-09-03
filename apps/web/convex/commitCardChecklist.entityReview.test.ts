@@ -702,6 +702,11 @@ describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, a
     expect(skips[0].nameNormalized).toBe("checklist");
     expect(skips[0].skippedByUserId).toBe(ADMIN_IDENTITY.subject);
     expect(skips[0].skippedAt).toBeGreaterThan(0);
+    // NEO-212 security review: the commit that produced the skip is recorded
+    // alongside it. It is the audit handle `entityReviewSkips.listForSet`
+    // returns in place of `skippedByUserId`, so a suppressed name can be traced
+    // back to a review session without shipping an operator id to the client.
+    expect(skips[0].batchId).toBe("batch-1");
   });
 
   test("a team 'skip' creates no team and records under kind 'team'", async () => {
@@ -796,6 +801,7 @@ describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, a
 
     await commitSkip("batch-1");
     const [first] = await allSkips(t);
+    expect(first.batchId).toBe("batch-1");
 
     // Two commits inside one test can land on the same millisecond, which
     // would make "skippedAt moved forward" unfalsifiable. Backdate the stored
@@ -812,6 +818,11 @@ describe("commitCardChecklist: 'skip' decision creates nothing, links nothing, a
     expect(skips).toHaveLength(1);
     expect(skips[0]._id).toBe(first._id);
     expect(skips[0].skippedAt).toBeGreaterThan(0);
+    // NEO-212 security review: `batchId` moves forward with the other two
+    // audit fields. The row records who most recently stood behind the skip
+    // and in which session — pointing at the first batch while naming the
+    // second commit's operator would describe a session that never happened.
+    expect(skips[0].batchId).toBe("batch-2");
   });
 
   test("skips are PER SET — the same name skipped on one selectorOption leaves another set's row alone", async () => {

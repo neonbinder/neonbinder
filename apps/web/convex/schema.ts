@@ -921,11 +921,23 @@ export default defineSchema({
     name: v.string(),
     skippedAt: v.number(),
     skippedByUserId: v.string(),
+    // The commit that recorded (or last refreshed) this skip. Optional because
+    // rows written before this field existed have no answer, and because a
+    // commit can run without a review batch at all.
+    //
+    // Audit context for the admin read-back in `convex/entityReviewSkips.ts`,
+    // and the one field that makes "why is this name suppressed?" answerable:
+    // it points at the review batch whose decisions produced the row, which is
+    // what a Convex log search needs to reconstruct the session. Unlike
+    // `skippedByUserId` it is safe to return to the client — it identifies a
+    // batch, not a person.
+    batchId: v.optional(v.string()),
   })
     // The only read pattern: "was this exact name skipped for this set as this
     // kind?" — one indexed point lookup per unknown name during resolution.
-    // The prefix also covers a per-set (and per-set-and-kind) listing if an
-    // admin surface ever needs one.
+    // The prefix also covers a per-set (and per-set-and-kind) listing, which is
+    // exactly what `entityReviewSkips.listForSet` reads for the admin
+    // read-back / undo surface.
     .index("by_selector_option_and_kind_and_name", [
       "selectorOptionId",
       "kind",

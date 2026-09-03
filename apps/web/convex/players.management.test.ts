@@ -646,6 +646,53 @@ describe("savePlayerFields", () => {
     ).resolves.toBeNull();
   });
 
+  // NEO-212 security review: `savePlayerFields` was the SECOND route into
+  // `players.teamYears` and the only unbounded one — the wizard's route is
+  // capped by `MAX_MANUAL_CAREER_TEAMS` in convex/entityReviewQueue.ts, this
+  // one had no cap at all, and its per-stint validation loop does a
+  // `ctx.db.get` PER ENTRY.
+  test("refuses more than 64 career stints, naming the count and not the teams", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, { name: "Journeyman", sportId });
+    const team = await insertTeam(t, { name: "Any Town", sportId });
+
+    const overLong = Array.from({ length: 65 }, (_, i) => ({
+      teamId: team,
+      fromYear: 1900 + i,
+    }));
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(api.players.savePlayerFields, {
+        id: playerId,
+        teamYears: overLong,
+      }),
+    ).rejects.toThrow(/65 career stints; the limit is 64/);
+
+    // Nothing partial landed — the bound is checked before the loop that
+    // would otherwise have performed 65 reads.
+    expect((await getPlayer(t, playerId))?.teamYears).toBeUndefined();
+  });
+
+  test("accepts exactly 64 stints — the cap is generous headroom, not a squeeze", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, { name: "Journeyman", sportId });
+    const team = await insertTeam(t, { name: "Any Town", sportId });
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(api.players.savePlayerFields, {
+        id: playerId,
+        teamYears: Array.from({ length: 64 }, (_, i) => ({
+          teamId: team,
+          fromYear: 1900 + i,
+        })),
+      }),
+    ).resolves.toBeNull();
+
+    expect((await getPlayer(t, playerId))?.teamYears).toHaveLength(64);
+  });
+
   test("renames the player and recomputes nameNormalized", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);

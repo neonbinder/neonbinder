@@ -5,6 +5,11 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+// NEO-212 security review: an enrichment `wikidataId` arrives from
+// query.wikidata.org, so it is external input on its way into an `href`.
+// `wikidataUrl` returns null unless it is really a `Q<digits>` id — see
+// lib/players/wikidata-id.ts.
+import { wikidataUrl, wikipediaUrl } from "../../lib/players/wikidata-id";
 import NeonButton from "../modules/NeonButton";
 import { CopyButton } from "../primitives/CopyButton";
 import {
@@ -585,22 +590,29 @@ export default function EntityReviewWizard({
                   {current.enrichment &&
                     (current.enrichment.wikidataId || current.enrichment.enwikiTitle) && (
                       <p className="mt-1 flex flex-wrap items-center gap-3 text-xs">
-                        {current.enrichment.wikidataId && (
-                          <a
-                            href={`https://www.wikidata.org/wiki/${current.enrichment.wikidataId}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
-                          >
-                            Wikidata {current.enrichment.wikidataId}
-                            <span className="sr-only"> (opens in new tab)</span>
-                          </a>
-                        )}
+                        {current.enrichment.wikidataId &&
+                          (wikidataUrl(current.enrichment.wikidataId) ? (
+                            <a
+                              href={wikidataUrl(current.enrichment.wikidataId)!}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+                            >
+                              Wikidata {current.enrichment.wikidataId}
+                              <span className="sr-only"> (opens in new tab)</span>
+                            </a>
+                          ) : (
+                            // Not a `Q<digits>` id, so there is no record to
+                            // link to. The value is still SHOWN — the operator
+                            // needs to see what the lookup stored in order to
+                            // judge it — just not as a clickable destination.
+                            <span className="text-gray-400">
+                              Wikidata {current.enrichment.wikidataId}
+                            </span>
+                          ))}
                         {current.enrichment.enwikiTitle && (
                           <a
-                            href={`https://en.wikipedia.org/wiki/${encodeURIComponent(
-                              current.enrichment.enwikiTitle.replace(/ /g, "_"),
-                            )}`}
+                            href={wikipediaUrl(current.enrichment.enwikiTitle)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"

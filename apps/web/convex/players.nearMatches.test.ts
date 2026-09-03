@@ -219,6 +219,55 @@ describe("players.nearMatches", () => {
     expect(capped[0]._id).toBe(ohtaniId);
   });
 
+  // NEO-212 security review: the `limit` argument is client-supplied and was
+  // only capped, never floored. `limit: 0` returned an empty array, which the
+  // wizard reads as "nothing like this exists" — the exact wrong answer from
+  // the one query whose job is to warn before a duplicate write — and
+  // `limit: -1` made the handler's `.slice(0, -1)` silently drop the last
+  // candidate. Neither leaks anything; both defeat the warning.
+  test("floors a zero or negative limit to one match instead of returning none", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const ohtaniId = await seedPlayer(t, "Shohei Ohtani", baseball);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    for (const limit of [0, -1, -100]) {
+      const rows = await asAdmin.query(api.players.nearMatches, {
+        name: "Shohei Ohtani",
+        sportId: baseball,
+        limit,
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]._id).toBe(ohtaniId);
+    }
+  });
+
+  test("refuses a search term longer than a storable player name", async () => {
+    // The same 120-character bound `createByAdmin` and `savePlayerFields` put
+    // on a STORED name. Nothing longer than a storable name could ever match a
+    // stored row, so refusing costs nothing real — and an unbounded term
+    // otherwise reaches the search index and the ranker's per-token work.
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    await seedPlayer(t, "Mike Trout", baseball);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    await expect(
+      asAdmin.query(api.players.nearMatches, {
+        name: "M".repeat(121),
+        sportId: baseball,
+      }),
+    ).rejects.toThrow(/121 characters; the limit is 120/);
+
+    // 120 exactly is still accepted — the bound is a limit, not an off-by-one.
+    await expect(
+      asAdmin.query(api.players.nearMatches, {
+        name: "M".repeat(120),
+        sportId: baseball,
+      }),
+    ).resolves.toEqual([]);
+  });
+
   test("returns only _id, name and confidence — never createdByUserId", async () => {
     // `players` rows carry an audit-only `createdByUserId` that must not reach
     // the client; see `toPublicPlayer` at the top of convex/players.ts.

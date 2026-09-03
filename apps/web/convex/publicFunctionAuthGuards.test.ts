@@ -33,6 +33,21 @@
  * that blanket-applies a guard would silently break the only feature the
  * landing page markets. They are pinned as callable-while-anonymous so that
  * breakage is loud.
+ *
+ * ## NEO-212
+ *
+ * The same two shapes, applied to the ten public functions the entity review
+ * wizard and the Player Management page added. This file is hand-maintained —
+ * nothing enumerates the API, so a new public function is recorded here as
+ * part of writing it, and the NEO-212 audit's INFO finding was that ten had
+ * not been.
+ *
+ * `convex/publicFunctionAuth.test.ts` pins WHICH gate each of the ten carries.
+ * This file pins the two properties that survive however the refusal is
+ * reported: a refused write persisted nothing, and an admin-gated read still
+ * does not ship an audit field to the client. Admin-gating is not a licence to
+ * leak `createdByUserId` / `skippedByUserId` — the returns validator is what
+ * enforces the omission, and the validator is public.
  */
 
 import { convexTest } from "convex-test";
@@ -239,5 +254,133 @@ describe("NEO-202 — the deliberately anonymous queries stay anonymous", () => 
     // The omission of `userId` is what makes anonymous exposure safe. If it
     // ever reappears in the returns validator, this fails.
     expect(profile).not.toHaveProperty("userId");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — the review wizard + Player Management surface
+// ---------------------------------------------------------------------------
+
+describe("NEO-212 — a refused write to shared reference data persists nothing", () => {
+  test("players.createByAdmin refuses a non-admin without inserting a player", async () => {
+    // `players` is globally shared: a row created here is visible to, and
+    // reused by, every commit on every set. An ungated create is a write
+    // primitive against reference data, not a per-user record.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .mutation(api.players.createByAdmin, { name: "Ghost Player", sportId }),
+    ).rejects.toThrow(/admin access required/i);
+
+    expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toEqual([]);
+  });
+
+  test("entityReviewQueue.recordAllRemainingAsSkip refuses a non-admin without deciding a row", async () => {
+    // The BULK one: a single call marks every undecided name in a batch as
+    // "not an entity", and commit then makes each of those a durable per-set
+    // suppression. Ungated, one call could retire an operator's whole review.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    const rowId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId,
+        batchId: "batch-1",
+        createdByUserId: ADMIN.subject,
+        kind: "player" as const,
+        name: "CHECKLIST",
+        sportId: selectorOptionId,
+        status: "ready" as const,
+      }),
+    );
+
+    await expect(
+      t.withIdentity(MEMBER).mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+        selectorOptionId,
+        batchId: "batch-1",
+      }),
+    ).rejects.toThrow(/admin access required/i);
+
+    expect((await t.run(async (ctx) => ctx.db.get(rowId)))?.decision).toBeUndefined();
+  });
+
+  test("entityReviewSkips.clearSkip refuses a non-admin without deleting the row", async () => {
+    // The only destructive one of the ten. Deleting a skip re-opens a decision
+    // the operator already made — the name re-enters the wizard on the next
+    // sync — so the delete has to be as gated as the write that created it.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    const skipId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewSkips", {
+        selectorOptionId,
+        kind: "player" as const,
+        name: "CHECKLIST",
+        nameNormalized: "checklist",
+        skippedAt: Date.now(),
+        skippedByUserId: ADMIN.subject,
+      }),
+    );
+
+    await expect(
+      t.withIdentity(MEMBER).mutation(api.entityReviewSkips.clearSkip, { skipId }),
+    ).rejects.toThrow(/admin access required/i);
+
+    expect(await t.run(async (ctx) => ctx.db.get(skipId))).not.toBeNull();
+  });
+});
+
+describe("NEO-212 — admin-gated reads still omit their audit fields", () => {
+  test("entityReviewSkips.listForSet answers an admin without shipping skippedByUserId", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSport(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewSkips", {
+        selectorOptionId,
+        kind: "player" as const,
+        name: "CHECKLIST",
+        nameNormalized: "checklist",
+        skippedAt: Date.now(),
+        skippedByUserId: "clerk_some_operator",
+        batchId: "batch-1",
+      }),
+    );
+
+    const rows = await t
+      .withIdentity(ADMIN)
+      .query(api.entityReviewSkips.listForSet, { selectorOptionId });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).not.toHaveProperty("skippedByUserId");
+    // `batchId` is what the operator gets instead: enough to find the review
+    // session in the logs, and it names a batch rather than a person.
+    expect(rows[0].batchId).toBe("batch-1");
+  });
+
+  test("players.listForManagement and players.nearMatches answer an admin without shipping createdByUserId", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Ronald Acuna Jr",
+        nameNormalized: "acuna jr ronald",
+        sportId,
+        createdByUserId: "clerk_some_operator",
+        lastUpdated: Date.now(),
+      }),
+    );
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const listed = await asAdmin.query(api.players.listForManagement, {});
+    expect(listed.players).toHaveLength(1);
+    expect(listed.players[0]).not.toHaveProperty("createdByUserId");
+
+    const near = await asAdmin.query(api.players.nearMatches, {
+      name: "Ronald Acuna Jr",
+      sportId,
+    });
+    expect(near).toHaveLength(1);
+    expect(near[0]).not.toHaveProperty("createdByUserId");
   });
 });

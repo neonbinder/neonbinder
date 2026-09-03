@@ -1486,6 +1486,30 @@ describe("EntityReviewWizard — row header", () => {
     );
   });
 
+  it("shows a malformed Wikidata id as text, never as a link", () => {
+    // NEO-212 security review. `enrichment.wikidataId` originates at
+    // query.wikidata.org, so it is external input on its way into an `href`,
+    // and React warns on a `javascript:` URL while rendering it anyway. The
+    // guard is `wikidataUrl` (lib/players/wikidata-id.ts) returning null. The
+    // value is still SHOWN — the operator needs to see what the lookup found
+    // in order to judge it — just not as a destination.
+    currentRows = [
+      makeRow({
+        name: "Mike Trout",
+        status: "ready",
+        enrichment: { wikidataId: "javascript:alert(1)" },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.queryByRole("link", { name: /Wikidata/ })).toBeNull();
+    expect(screen.getByText("Wikidata javascript:alert(1)")).toBeTruthy();
+    // Nothing on the page carries the payload as a URL of any kind.
+    for (const a of Array.from(document.querySelectorAll("a"))) {
+      expect(a.getAttribute("href") ?? "").not.toContain("javascript:");
+    }
+  });
+
   it("renders neither link when the lookup found nothing", () => {
     currentRows = [makeRow({ status: "error", enrichment: undefined })];
     renderWizard();

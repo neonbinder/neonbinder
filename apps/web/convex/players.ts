@@ -9,6 +9,10 @@ import {
   rankPlayerCandidates,
 } from "./lib/entityNearMatch";
 import { sortTeamYears } from "../lib/players/team-tenure";
+// NEO-212 security review: `Q<digits>` is validated in exactly one place now.
+// See lib/players/wikidata-id.ts for why the render sites needed a chokepoint
+// they could share with the write path.
+import { isWikidataQid } from "../lib/players/wikidata-id";
 
 /**
  * Lowercase + collapse whitespace + strip punctuation + token-sort. Used
@@ -264,7 +268,17 @@ export const search = query({
   },
 });
 
-/** How many search-index rows feed the ranker, and how many rank out by default. */
+/**
+ * How many search-index rows feed the ranker, and how many rank out by default.
+ *
+ * NEO-212 security review: the `limit` argument is FLOORED as well as capped —
+ * `Math.max(1, Math.min(...))`. `Math.min` alone left `limit: 0` (an empty
+ * result that reads as "no near matches", i.e. "safe to create") and
+ * `limit: -1` (`.slice(0, -1)` drops the LAST candidate, silently hiding one)
+ * both reachable from the client. Neither is a data leak; both turn this
+ * query's only job — warning before a duplicate write — into a warning that
+ * quietly does not fire.
+ */
 const NEAR_MATCH_SEARCH_CANDIDATES = 10;
 const NEAR_MATCH_DEFAULT_LIMIT = 5;
 const NEAR_MATCH_MAX_LIMIT = 25;
@@ -316,10 +330,23 @@ export const nearMatches = query({
 
     const name = args.name.trim();
     if (!name) return [];
+    // NEO-212 security review: the same bound `createByAdmin` and
+    // `savePlayerFields` put on a stored name, applied to the SEARCH TERM too.
+    // An unbounded term is fed straight to a search index and to
+    // `rankPlayerCandidates`'s per-token work; nothing that could ever match a
+    // stored row is longer than a storable name, so refusing costs nothing
+    // real. Refused rather than truncated, matching the write paths.
+    if (name.length > MAX_PLAYER_NAME_LENGTH) {
+      throw new ConvexError(
+        `A player name is ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
+    }
 
-    const limit = Math.min(
-      args.limit ?? NEAR_MATCH_DEFAULT_LIMIT,
-      NEAR_MATCH_MAX_LIMIT,
+    // Floored as well as capped — see NEAR_MATCH_DEFAULT_LIMIT above for what
+    // `limit: 0` and `limit: -1` did without the `Math.max`.
+    const limit = Math.max(
+      1,
+      Math.min(args.limit ?? NEAR_MATCH_DEFAULT_LIMIT, NEAR_MATCH_MAX_LIMIT),
     );
 
     // Keyed by id so the exact hit and a search hit for the same row collapse.
@@ -464,7 +491,14 @@ export const applyEnrichmentInternal = internalMutation({
 
     if (args.teamYears !== undefined) patch.teamYears = args.teamYears;
     if (args.isHallOfFame !== undefined) patch.isHallOfFame = args.isHallOfFame;
-    if (args.wikidataId !== undefined) {
+    // NEO-212 security review: an id that is not `Q<digits>` is DROPPED, not
+    // stored. The value here originates at query.wikidata.org, so it is
+    // external input arriving on a path with no operator in it, and a stored
+    // id is later interpolated into an outbound link. Dropping is the right
+    // failure: `enrichPlayer` treats any stored `wikidataId` as "already
+    // enriched" and skips the row forever, so persisting a malformed one would
+    // permanently opt the player out of enrichment — worse than having none.
+    if (args.wikidataId !== undefined && isWikidataQid(args.wikidataId)) {
       patch.externalIds = { ...(existing.externalIds ?? {}), wikidataId: args.wikidataId };
     }
     await ctx.db.patch(args.id, patch);
@@ -561,8 +595,6 @@ const PLAYER_MANAGEMENT_CAP = 500;
  */
 const MAX_PLAYER_NAME_LENGTH = 120;
 
-/** A Wikidata entity id. The only form `externalIds.wikidataId` may hold. */
-const WIKIDATA_QID = /^Q\d+$/;
 
 /**
  * Earliest plausible career year. Baseball's first professional league (the
@@ -570,6 +602,30 @@ const WIKIDATA_QID = /^Q\d+$/;
  * amateur era without admitting an obvious typo like `195` or `19999`.
  */
 const MIN_CAREER_YEAR = 1850;
+
+/**
+ * NEO-212 security review: upper bound on how many career stints one
+ * `savePlayerFields` call may write to a single player row.
+ *
+ * The same guard rail, for the same reason, as
+ * `MAX_MANUAL_CAREER_TEAMS` / `MAX_EXCLUDED_CAREER_TEAM_NAMES` in
+ * `convex/entityReviewQueue.ts` — and it was the gap those two left. That path
+ * capped the wizard's route into `players.teamYears`; this editor is the OTHER
+ * route into the same field and had no bound at all, so an unbounded array
+ * reached the row through a per-stint validation loop that does a `ctx.db.get`
+ * PER ENTRY. Ten thousand stints is ten thousand reads inside one mutation.
+ *
+ * Not a confidentiality boundary — this path is admin-gated — but admin-gated
+ * is not the same as "cannot be driven by a compromised session or a UI bug",
+ * and an unbounded write into a globally-shared reference row is worth
+ * refusing on its own. A real career spans a handful of stints; 64 is generous
+ * headroom and matches the wizard's number so the two routes agree.
+ *
+ * The refusal carries the COUNT, never the names: the message reaches Sentry
+ * and the browser console through Convex's error path, and the names are
+ * operator input. Same rule as `teams.resolveNames`'s over-length refusal.
+ */
+const MAX_PLAYER_TEAM_YEARS = 64;
 
 /**
  * NEO-212: the whole player list, for the Player Management page.
@@ -851,8 +907,12 @@ export const savePlayerFields = mutation({
         // than a missing one: `enrichPlayer` treats ANY stored `wikidataId` as
         // "already enriched" and skips the row forever, so a typo here silently
         // opts a player out of enrichment.
-        if (!WIKIDATA_QID.test(qid)) {
-          throw new ConvexError(`Not a Wikidata entity id: ${qid}`);
+        if (!isWikidataQid(qid)) {
+          // The raw argument rather than `qid`: `isWikidataQid` is a type
+          // guard, so inside this branch `qid` has narrowed to `never` and
+          // cannot be interpolated. The operator recognises what they typed
+          // more readily than its trimmed form in any case.
+          throw new ConvexError(`Not a Wikidata entity id: ${args.wikidataId}`);
         }
         rest.wikidataId = qid;
       }
@@ -862,6 +922,14 @@ export const savePlayerFields = mutation({
     }
 
     if (args.teamYears !== undefined) {
+      // Bounded BEFORE the loop below, which does one `ctx.db.get` per entry.
+      // Checking inside it would still have performed the reads.
+      if (args.teamYears.length > MAX_PLAYER_TEAM_YEARS) {
+        throw new ConvexError(
+          `A player has ${args.teamYears.length} career stints; the limit is ${MAX_PLAYER_TEAM_YEARS}.`,
+        );
+      }
+
       // The upper bound is next year, not this one: a card printed in the
       // autumn routinely carries the following season, and refusing that would
       // make the editor wrong every winter.

@@ -18,6 +18,14 @@
  * sounds stronger and is worse: `publicProfile` is legitimately anonymous, so
  * such a test needs an allowlist, and an allowlist is where a genuinely-new
  * hole gets parked to make CI green. This pins the specific decisions instead.
+ *
+ * ## Hand-maintained, on purpose
+ *
+ * A new public function does NOT fail this file by existing — there is no
+ * enumeration to trip. Adding the entry is part of adding the function, and
+ * the NEO-212 audit's INFO finding was exactly that: ten public functions
+ * shipped on that branch without one. They are pinned in the NEO-212 block at
+ * the bottom.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -189,5 +197,139 @@ describe("NEO-154: public by intent stays public", () => {
     await expect(
       t.query(api.publicProfile.getPublicProfileByUsername, { username: "nobody" }),
     ).resolves.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — the entity review wizard's public surface
+// ---------------------------------------------------------------------------
+
+describe("NEO-212: the entity review + player management surface is admin-gated", () => {
+  /**
+   * Ten public functions arrived with the review wizard and the Player
+   * Management page, and none was recorded here. Every one of them reads or
+   * writes GLOBALLY-SHARED reference data (players, teams, and the per-set
+   * skip list that decides which names an operator is ever shown again), so
+   * "admin" is the intended gate for all ten and signed-in is not enough.
+   *
+   * Called with arguments that are valid but inert — the gate runs before any
+   * of them is used, so a refusal here cannot be argument validation wearing a
+   * guard's clothes. The two that need a real id get a seeded row.
+   *
+   * `teams.search` is the deliberate exception and is pinned separately below:
+   * it is signed-in, not admin, and it RETURNS EMPTY rather than throwing.
+   */
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) => Promise<unknown>]
+  > = [
+    ["players.nearMatches", (t, sportId) => t.query(api.players.nearMatches, { name: "Trout", sportId })],
+    ["players.listForManagement", (t) => t.query(api.players.listForManagement, {})],
+    ["players.createByAdmin", (t, sportId) => t.mutation(api.players.createByAdmin, { name: "Nobody", sportId })],
+    ["teams.resolveNames", (t, sportId) => t.query(api.teams.resolveNames, { names: [], sportId })],
+    ["teams.nearMatches", (t, sportId) => t.query(api.teams.nearMatches, { name: "Yankees", sportId })],
+    [
+      "entityReviewQueue.recordAllRemainingAsSkip",
+      (t, sportId) =>
+        t.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+          selectorOptionId: sportId,
+          batchId: "no-such-batch",
+        }),
+    ],
+    [
+      "entityReviewSkips.listForSet",
+      (t, sportId) => t.query(api.entityReviewSkips.listForSet, { selectorOptionId: sportId }),
+    ],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t, sportId)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId)).rejects.toThrow(
+      /Admin access required/,
+    );
+  });
+
+  // The two that need a real row of their own, kept out of the table above so
+  // the table stays readable rather than growing a per-entry seed hook.
+  test("players.savePlayerFields rejects anonymous and signed-in non-admin callers", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Mike Trout",
+        nameNormalized: "mike trout",
+        sportId,
+        createdByUserId: "seed",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    await expect(
+      t.mutation(api.players.savePlayerFields, { id: playerId, isHallOfFame: true }),
+    ).rejects.toThrow(/Not authenticated/);
+    await expect(
+      t
+        .withIdentity(SIGNED_IN)
+        .mutation(api.players.savePlayerFields, { id: playerId, isHallOfFame: true }),
+    ).rejects.toThrow(/Admin access required/);
+
+    // The refusal is only meaningful if nothing was written on the way to it.
+    const doc = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(doc?.isHallOfFame).toBeUndefined();
+  });
+
+  test("entityReviewSkips.clearSkip rejects anonymous and signed-in non-admin callers, and deletes nothing", async () => {
+    // The one DESTRUCTIVE function of the ten. A skip row is what keeps a name
+    // out of the review wizard for a set, so an ungated delete would let any
+    // caller silently re-open decisions an operator had already made.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const skipId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewSkips", {
+        selectorOptionId: sportId,
+        kind: "player" as const,
+        name: "CHECKLIST",
+        nameNormalized: "checklist",
+        skippedAt: 1_700_000_000_000,
+        skippedByUserId: "seed",
+      }),
+    );
+
+    await expect(
+      t.mutation(api.entityReviewSkips.clearSkip, { skipId }),
+    ).rejects.toThrow(/Not authenticated/);
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.entityReviewSkips.clearSkip, { skipId }),
+    ).rejects.toThrow(/Admin access required/);
+
+    expect(
+      await t.run(async (ctx) => ctx.db.query("entityReviewSkips").collect()),
+    ).toHaveLength(1);
+  });
+
+  test("teams.search is signed-in, not admin, and answers empty rather than throwing", async () => {
+    // Deliberately the softer gate, and recorded so a future sweep does not
+    // "fix" it upward. `teams` are signed-in-readable reference data with no
+    // per-user fields; the gate is about COST (search is the most expensive
+    // query class Convex offers and a deployment URL ships in the client
+    // bundle), not confidentiality — the same decision `players.search` made.
+    // Returning [] rather than throwing keeps a signed-out render a quiet
+    // no-op instead of unmounting the calling component.
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    expect(await t.query(api.teams.search, { query: "Yankees" })).toEqual([]);
+    expect(
+      await t.withIdentity(SIGNED_IN).query(api.teams.search, { query: "Yankees" }),
+    ).toEqual([]);
+    expect(
+      await t.withIdentity(ADMIN).query(api.teams.search, { query: "Yankees" }),
+    ).toEqual([]);
   });
 });

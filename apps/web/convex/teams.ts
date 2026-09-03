@@ -7,6 +7,10 @@ import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
 import { normalizePlayerName } from "./players";
 import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
 import { longestToken, rankTeamCandidates } from "./lib/entityNearMatch";
+// NEO-212 security review: the shared `Q<digits>` chokepoint — see
+// lib/players/wikidata-id.ts. Named for players only because that is where the
+// id first appeared; the shape is the same for every Wikidata entity.
+import { isWikidataQid } from "../lib/players/wikidata-id";
 
 /**
  * Lowercase + strip punctuation + token-sort. Same shape as the player
@@ -522,10 +526,19 @@ export const applyEnrichmentInternal = internalMutation({
     ) {
       patch.colors = args.colors;
     }
-    if (args.wikidataId !== undefined || args.espnId !== undefined) {
+    // NEO-212 security review: a `wikidataId` that is not `Q<digits>` is
+    // DROPPED rather than stored — same rule and same reasoning as
+    // `players.applyEnrichmentInternal`. The value arrives from
+    // query.wikidata.org with no operator in the path, and a stored id is what
+    // `enrichTeam`'s creation-only guard reads to decide the row is done.
+    const enrichedQid =
+      args.wikidataId !== undefined && isWikidataQid(args.wikidataId)
+        ? args.wikidataId
+        : undefined;
+    if (enrichedQid !== undefined || args.espnId !== undefined) {
       patch.externalIds = {
         ...(existing.externalIds ?? {}),
-        ...(args.wikidataId !== undefined ? { wikidataId: args.wikidataId } : {}),
+        ...(enrichedQid !== undefined ? { wikidataId: enrichedQid } : {}),
         ...(args.espnId !== undefined ? { espnId: args.espnId } : {}),
       };
     }
@@ -907,9 +920,14 @@ export const search = query({
     const term = args.query.trim();
     if (!term) return [];
 
-    const limit = Math.min(
-      args.limit ?? TEAM_SEARCH_DEFAULT_LIMIT,
-      TEAM_SEARCH_MAX_LIMIT,
+    // NEO-212 security review: FLOORED as well as capped. `Math.min` alone let
+    // a client pass `limit: 0` or a negative, and Convex's `.take()` rejects a
+    // negative outright — a thrown query inside `useQuery` unmounts the calling
+    // component rather than returning nothing. Clamping into [1, MAX] keeps a
+    // nonsense argument a nonsense RESULT instead of a crash.
+    const limit = Math.max(
+      1,
+      Math.min(args.limit ?? TEAM_SEARCH_DEFAULT_LIMIT, TEAM_SEARCH_MAX_LIMIT),
     );
 
     return await ctx.db
@@ -1058,10 +1076,25 @@ export const nearMatches = query({
 
     const name = args.name.trim();
     if (!name) return [];
+    // NEO-212 security review: the same bound `findOrCreate` puts on a STORED
+    // team name, applied to the search term. Nothing longer than a storable
+    // name could ever match a stored row, so refusing costs nothing real, and
+    // an unbounded term otherwise reaches both the search index and
+    // `rankTeamCandidates`'s per-token work. Refused rather than truncated,
+    // matching the write path.
+    if (name.length > MAX_TEAM_NAME_LENGTH) {
+      throw new ConvexError(
+        `A team name is ${name.length} characters; the limit is ${MAX_TEAM_NAME_LENGTH}.`,
+      );
+    }
 
-    const limit = Math.min(
-      args.limit ?? NEAR_MATCH_DEFAULT_LIMIT,
-      NEAR_MATCH_MAX_LIMIT,
+    // Floored as well as capped: `limit: 0` returned an empty list that reads
+    // as "nothing like this exists" — the exact wrong answer from a query whose
+    // only job is to warn before a duplicate write — and `limit: -1` made
+    // `.slice(0, -1)` silently drop the last candidate.
+    const limit = Math.max(
+      1,
+      Math.min(args.limit ?? NEAR_MATCH_DEFAULT_LIMIT, NEAR_MATCH_MAX_LIMIT),
     );
 
     // Keyed by id so the exact hit and a search hit for the same row collapse.

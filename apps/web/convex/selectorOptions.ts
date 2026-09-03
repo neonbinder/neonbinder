@@ -6737,6 +6737,12 @@ export const commitCardChecklistPrelude = internalMutation({
         await ctx.db.patch(existingSkip._id, {
           skippedAt: Date.now(),
           skippedByUserId: userId,
+          // Refreshed alongside the other two audit fields, for the same
+          // reason: the row records the CURRENT standing behind the skip, so
+          // pointing at the batch that first produced it while naming the
+          // operator who most recently reconfirmed it would describe a session
+          // that never happened.
+          batchId: args.batchId,
         });
       } else {
         await ctx.db.insert("entityReviewSkips", {
@@ -6746,6 +6752,11 @@ export const commitCardChecklistPrelude = internalMutation({
           name: row.name,
           skippedAt: Date.now(),
           skippedByUserId: userId,
+          // Always defined on this branch in practice — a skip decision only
+          // exists on a review row, and review rows are only read when
+          // `args.batchId` is set — but typed optional so the field never
+          // becomes a reason a commit cannot run.
+          batchId: args.batchId,
         });
       }
       // Handed back to the action so the finalize phase can retire the

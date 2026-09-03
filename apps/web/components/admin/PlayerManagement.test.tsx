@@ -165,10 +165,26 @@ const RICE = {
   lastUpdated: 1,
 };
 
+/**
+ * A row whose stored `wikidataId` is not a `Q<digits>` id at all — a legacy
+ * row, or one written before the field was validated. NEO-212 security review:
+ * the detail panel must show it and must not link it.
+ */
+const BAD_QID_PLAYER = {
+  _id: "p-badqid",
+  _creationTime: 4,
+  name: "Dodgy Row",
+  nameNormalized: "dodgy row",
+  sportId: "sport-baseball",
+  externalIds: { wikidataId: "javascript:alert(1)" },
+  lastUpdated: 1,
+};
+
 const PLAYERS_BY_ID: Record<string, unknown> = {
   "p-griffey": GRIFFEY,
   "p-trout": TROUT,
   "p-rice": RICE,
+  "p-badqid": BAD_QID_PLAYER,
 };
 
 const TEAMS = [
@@ -607,6 +623,27 @@ describe("PlayerManagement — the detail panel", () => {
     );
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+
+  it("shows a malformed stored Wikidata id as text, never as a link", () => {
+    // NEO-212 security review. A stored `externalIds.wikidataId` is not
+    // necessarily operator-typed at the moment it renders: it can come from
+    // the SPARQL adapter, or from a row written before `savePlayerFields`
+    // validated the field. Interpolating it into an `href` is how a
+    // `javascript:` URL reaches an anchor, and React warns and renders it
+    // anyway. `wikidataUrl` returning null is the guard.
+    //
+    // The value is still shown — this is the admin page whose whole job is to
+    // let the operator SEE and fix a bad id — just never as a destination.
+    management = { players: [BAD_QID_PLAYER], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+    fireEvent.click(screen.getByRole("button", { name: /Dodgy Row/ }));
+
+    expect(screen.queryByRole("link", { name: /Wikidata/ })).toBeNull();
+    expect(screen.getByText("Wikidata javascript:alert(1)")).toBeTruthy();
+    for (const a of Array.from(document.querySelectorAll("a"))) {
+      expect(a.getAttribute("href") ?? "").not.toContain("javascript:");
+    }
   });
 
   it("queues a re-enrichment and says it is coming", async () => {
