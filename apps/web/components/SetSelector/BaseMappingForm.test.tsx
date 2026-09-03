@@ -308,4 +308,30 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(mockSetPlatformData).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("renders neither the URL nor the raw message of a failed fetch (NEO-211 F3)", async () => {
+    // `result.message` on the !success path is fetchRawOptions' OUTER-CATCH
+    // string, which embeds the thrown exception — an adapter response body, a
+    // marketplace URL, or a credential hint. Twin of the leak fixed in
+    // VariantForm/ParallelForm; the platform name is ours, the detail stays in
+    // the Convex logs.
+    mockFetchRawOptions.mockResolvedValue({
+      success: false,
+      bscOptions: [],
+      slOptions: [],
+      errors: [{ platform: "sportlots", message: "boom" }],
+      message:
+        "Failed to fetch options: GET https://api.sportlots.com/x?key=SECRET 500",
+    });
+
+    renderForm();
+
+    const panel = await screen.findByText(/Failed to fetch options/);
+    expect(panel.textContent).toBe(
+      "Failed to fetch options. SportLots failed, nothing was changed.",
+    );
+    expect(panel.textContent).not.toContain("sportlots.com");
+    expect(panel.textContent).not.toContain("SECRET");
+    expect(panel.textContent).not.toContain("boom");
+  });
 });

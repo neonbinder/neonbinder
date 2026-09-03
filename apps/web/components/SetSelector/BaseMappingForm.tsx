@@ -6,13 +6,23 @@ import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import BaseSetPicker from "./BaseSetPicker";
 import type { PlatformItem } from "./ReconciliationModal";
+import { blockedMessageFromErrors } from "./selector-sync-feedback";
 
 type RawOptionsResult = {
   success: boolean;
   bscOptions: PlatformItem[];
   slOptions: PlatformItem[];
+  /** Per-platform failures. `success` stays true for a PARTIAL outage. */
+  errors: Array<{ platform: string; message: string }>;
   message?: string;
 };
+
+/**
+ * Lead-in for this form's fetch-failure message. Unchanged text, now a
+ * constant because `blockedMessageFromErrors` appends to it — the same shape
+ * `VariantForm` / `ParallelForm` use for their own prefixes.
+ */
+const SYNC_FAILED_PREFIX = "Failed to fetch options";
 
 type BaseMappingFormProps = {
   variantTypeId: GenericId<"selectorOptions">;
@@ -93,7 +103,16 @@ export default function BaseMappingForm({
 
       if (!result.success) {
         setPickerOpen(false);
-        setMessage(result.message || "Failed to fetch options");
+        // NEO-211 F3: `result.message` here is fetchRawOptions' OUTER-CATCH
+        // string, which embeds the thrown exception text — an adapter response
+        // body, a marketplace URL, or a credential hint. Twin of the line fixed
+        // in VariantForm/ParallelForm: raw marketplace text must never reach
+        // the DOM, so the platform names are ours and the detail stays in the
+        // Convex logs.
+        setMessage(
+          blockedMessageFromErrors(SYNC_FAILED_PREFIX, result.errors ?? []) ??
+            `${SYNC_FAILED_PREFIX}.`,
+        );
         return;
       }
 
