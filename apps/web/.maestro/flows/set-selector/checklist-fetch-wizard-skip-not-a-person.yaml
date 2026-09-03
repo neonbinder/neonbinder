@@ -18,7 +18,10 @@ tags:
 # before this the operator's only ways out were to mint a junk player row into a
 # globally-shared table or to cancel the whole batch. Skip is the third way out,
 # and it has to STICK: a skip an operator has to repeat on every re-sync is not a
-# decision, it is a chore.
+# decision, it is a chore. It also has to be REVERSIBLE — a decision the operator
+# cannot take back is a trap, so the set's "Skipped names" list carries an Unskip
+# that puts one name back in front of the next sync. Skip, stick, un-stick: one
+# decision and its undo, which is why they are one flow and not two.
 #
 # R2 — HARD ASSERTIONS, no silent fall-through. Every claim below fails loudly:
 #
@@ -67,6 +70,23 @@ tags:
 #       (`findSkippedEntityNames`, consulted by resolveUnknownsAndStartBatch
 #       BEFORE the players-existence check). Remove that record and this step
 #       goes red.
+#
+#   (f) UNSKIP RE-OFFERS EXACTLY THE ONE NAME — the decision's undo.
+#       The set's "Skipped names (3)" disclosure is the operator's see-and-undo
+#       record of (a)-(c); the count is asserted at 3, not 4, which is itself the
+#       proof that re-seeing an already-skipped name UPSERTS rather than
+#       accumulating a row per sync (the commit path keys on
+#       (selectorOptionId, kind, nameNormalized)). One name is then unskipped and
+#       the set re-synced, and the wizard must REOPEN — with the footer reading
+#       "Skip Remaining (1)" and the Apollo17 row on screen.
+#
+#       THE COUNT IS THE WHOLE POINT: (1) says the undo was SURGICAL. It brought
+#       back exactly the name that was unskipped and left the other two skipped —
+#       a broken unskip that cleared the set's whole record would read (3) here,
+#       and one that cleared nothing would never open the wizard at all. Both
+#       fail loudly. The wizard is then dismissed with Cancel, which deletes the
+#       batch's queue rows and commits nothing (R7) — the point was that the name
+#       was OFFERED, not what is done with it.
 #
 # R3 — DEDUP: "Add as New" is covered by checklist-keyboard-only-dialog,
 #   "Link to Existing" by checklist-fetch-unknown-entities-link-existing, and the
@@ -422,10 +442,99 @@ tags:
     text: ".*Saved [0-9]+ cards.*"
 
 # ============================================================
+# STEP 8 — R2(f): UNSKIP PUTS ONE NAME BACK IN FRONT OF THE NEXT SYNC
+# The "Skipped names" disclosure sits with the other per-set notices just under
+# the sync banner, above the card list. It is a collapsed <details>, so the rows
+# and their Unskip buttons only exist once the summary is tapped — which is why
+# the wait for the Unskip control below doubles as the assertion that the
+# disclosure opened (no separate assert needed, R6).
+#
+# The count is asserted as (3): three names were skipped at the Step 5 commit,
+# and Step 7 re-presented one of them WITHOUT adding a fourth row — commit
+# upserts on (selectorOptionId, kind, nameNormalized) rather than inserting per
+# sync. A (4) here would be that dedupe breaking.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*Skipped names \\(3\\).*"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    text: ".*Skipped names \\(3\\).*"
+
+# The row's undo control (aria "Unskip {name}"). Its presence proves the
+# disclosure expanded AND that this exact name is in the set's skip record.
+- extendedWaitUntil:
+    visible:
+      id: "Unskip Apollo17Lands-${ATTEMPT_ID}"
+    timeout: 15000
+- tapOn:
+    id: "Unskip Apollo17Lands-${ATTEMPT_ID}"
+# The panel's own live-region confirmation: "Unskipped {name} — it will be
+# reviewed on the next sync." (em dash matched as "." to keep a literal
+# non-ASCII character out of the matcher).
+- extendedWaitUntil:
+    visible:
+      text: ".*Unskipped Apollo17Lands-${ATTEMPT_ID}.*"
+
+# ── Re-sync: the unskipped name must be offered again ──────────────────────
+# Card 8005 still carries Apollo17Lands in its pendingPlayerNames — Step 7's
+# commit could not retire it, because the name was filtered out as skipped
+# BEFORE it ever became a candidate, so it was in neither the resolved nor the
+# skipped list that finalize clears from. With the skip record now gone, it is
+# an unknown again.
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- extendedWaitUntil:
+    visible:
+      id: "Sync card checklist"
+- tapOn:
+    id: "Sync card checklist"
+# No stale-notice gate needed here (unlike Step 7): this waits for the wizard
+# heading, which was NOT on screen before the tap, so nothing can satisfy it
+# early.
+- extendedWaitUntil:
+    visible: "Confirm New Players & Teams"
+    timeout: 60000
+
+# THE SURGICAL-UNDO ASSERT — exactly ONE name came back. The other two stay
+# skipped, so a whole-record wipe would read (3) here and fail.
+- extendedWaitUntil:
+    visible:
+      text: ".*Skip Remaining \\(1\\).*"
+    timeout: 30000
+# ...and it is the name we unskipped. The wizard shows a row's name once its
+# background Wikidata preview lands — a live external round-trip, so 30s.
+- extendedWaitUntil:
+    visible:
+      text: ".*Apollo17Lands-${ATTEMPT_ID}.*"
+    timeout: 30000
+
+# Dismiss without committing: the claim was that the name is OFFERED again, not
+# what the operator then does with it. Cancel is not gated by a confirm, and
+# cancelBatch deletes this batch's queue rows outright — nothing is created,
+# linked or skipped, and no row is left behind for a later attempt to trip on
+# (R7). "Fetch cancelled — no cards saved." is the positive proof it closed via
+# the cancel path rather than the page dying under it.
+- tapOn:
+    text: ".*Cancel \\(Esc\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Fetch cancelled . no cards saved.*"
+
+# ============================================================
 # CLEANUP — delete both test cards so the subtree stays clean for the next run
-# (R7: this flow leaves no state behind that a later flow could trip over; the
-# two `entityReviewSkips` rows it writes are keyed to attempt-unique names on
-# this worker's own private set and can never match anything again).
+# (R7: this flow leaves no state behind that a later flow could trip over. Step 8
+# removed the Apollo17 skip row; the two that remain — MoonLanding, Skylab — are
+# keyed to attempt-unique names on this worker's own private set and can never
+# match anything again. Both test cards go here, so nothing carries their pending
+# names forward either.)
 # ============================================================
 
 - scrollUntilVisible:
