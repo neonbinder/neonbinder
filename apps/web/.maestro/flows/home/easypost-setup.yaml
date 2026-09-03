@@ -23,13 +23,16 @@ tags:
     text: ".*Shipping Labels.*"
 - assertVisible: "Print the Label, Ship the Card"
 
-# The postage section's guide link.
+# The postage section's guide link. The link is a standalone element whose
+# whole text is the tap target — an inline link inside a wrapped paragraph
+# missed on CI because Linux font metrics wrap the line differently than a
+# dev Mac, moving the link away from the matched element's center.
 - scrollUntilVisible:
     element:
-      text: ".*grab your API key.*"
+      text: ".*Follow the EasyPost setup guide.*"
     centerElement: true
 - tapOn:
-    text: ".*grab your API key.*"
+    text: ".*Follow the EasyPost setup guide.*"
 
 # The guide: hero, the four steps in order, and the trust section.
 - assertVisible: "Get Your EasyPost Key"

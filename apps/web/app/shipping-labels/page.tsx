@@ -348,16 +348,20 @@ export default function ShippingLabelsPage() {
                   </div>
                 </div>
               </div>
+              {/* The link is its own block, not inline in the paragraph:
+                  Maestro taps the matched element's center, and an inline
+                  link's position inside a wrapped paragraph depends on the
+                  runner's font metrics — it missed on CI Linux while passing
+                  on macOS. A standalone link is tappable everywhere. */}
               <p className="text-slate-400 mt-6">
-                New to EasyPost?{" "}
-                <Link
-                  to="/easypost-setup"
-                  className="text-neon-blue underline hover:text-neon-teal"
-                >
-                  Set up a free account and grab your API key
-                </Link>{" "}
-                — it takes about five minutes, once.
+                New to EasyPost? Setting up takes about five minutes, once.
               </p>
+              <Link
+                to="/easypost-setup"
+                className="inline-block mt-2 text-neon-blue underline hover:text-neon-teal"
+              >
+                Follow the EasyPost setup guide →
+              </Link>
             </div>
           </div>
 
