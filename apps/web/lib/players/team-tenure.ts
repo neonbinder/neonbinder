@@ -6,21 +6,66 @@
  * is a pure function rather than inline page logic because the tie-breaking is
  * fiddly enough to be worth testing directly.
  *
- * ## The known inaccuracy, and why it is acceptable
+ * ## Tenure is PER-STINT, and summing across stints is a deliberate non-goal
  *
- * `players.teamYears` is deduped BY `teamId` at commit time, so a player who
- * left a team and came back collapses to a single entry spanning only one of
- * the stints. Tenure is therefore approximate for returning players. That is
- * tolerable precisely because this only picks a DEFAULT — the user sees every
- * team in the list and can choose another in one click. Fixing the underlying
- * dedup would change how career data is stored and belongs with that data, not
- * with a label designer.
+ * `players.teamYears` used to be deduped BY `teamId` at commit time, so a
+ * player who left a team and came back collapsed to a single entry spanning
+ * only one of the stints. NEO-212 fixed that: the key is now `(teamId,
+ * fromYear)`, so a returning player keeps every stint as its own row and the
+ * career timeline is no longer lossy.
+ *
+ * That does NOT mean this file now adds the stints up. `tenureYears` measures
+ * ONE stint, and `pickDefaultTeamYear` returns the single longest one — a
+ * player with two three-year runs at a team loses to one six-year run
+ * elsewhere. Deliberate: the function's whole job is to name a stint whose
+ * years the label can print ("Angels 2011–2019"), and a summed total has no
+ * years to print. It also only picks a DEFAULT — the user sees every stint in
+ * the list and can choose another in one click. If a "most associated
+ * franchise" ranking is ever wanted, it is a separate function over the same
+ * rows, not a change to these two.
  */
 
 export interface TeamYear {
   teamId: string;
   fromYear: number;
   toYear?: number;
+}
+
+/**
+ * NEO-212 — the one ordering for a career timeline: earliest stint first,
+ * and for two stints starting the same year, the one that ended first.
+ *
+ * ## Why it lives here rather than at either call site
+ *
+ * Career stints are written by two independent paths that must not disagree:
+ * `commitCardChecklistPrelude` (convex/selectorOptions.ts — the review
+ * wizard's "create" decision, merging Wikidata's careerTeams with the
+ * operator's manual entries) and `enrichPlayer` (convex/adapters/wikidata.ts —
+ * the post-creation enrichment action). Both store the result on
+ * `players.teamYears`. If they ordered differently, the same player would read
+ * back as a different timeline depending on which path happened to create
+ * them, and the stored row's diff would be unreadable. Sorted at WRITE time,
+ * not on render, so every consumer — the admin editor, card-detail chips,
+ * `pickDefaultTeamYear` above — reads one already-canonical order.
+ *
+ * An open-ended stint (`toYear` absent) means "still there", so it sorts LAST
+ * among stints sharing a `fromYear` — it is, by definition, the one that has
+ * not ended.
+ *
+ * Explicitly NOT a dedupe. Two stints at one franchise (traded away, later
+ * re-signed) are real and common, and collapsing them destroys the history
+ * `teamYears` exists to record. Only an exact `(teamId, fromYear)` repeat is a
+ * duplicate, and rejecting that is the caller's job — this only orders.
+ *
+ * Pure, and returns a new array; the input is never mutated.
+ */
+export function sortTeamYears<T extends { fromYear: number; toYear?: number }>(
+  rows: readonly T[],
+): T[] {
+  return [...rows].sort((a, b) => {
+    if (a.fromYear !== b.fromYear) return a.fromYear - b.fromYear;
+    return (a.toYear ?? Infinity) - (b.toYear ?? Infinity);
+  });
 }
 
 /**

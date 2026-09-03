@@ -44,6 +44,10 @@ import {
   suggestVariationPairings,
 } from "../lib/cards/variations";
 import { compareCardNumbers } from "../lib/cards/card-number";
+// NEO-212: the SINGLE career-timeline ordering, shared with `enrichPlayer` in
+// convex/adapters/wikidata.ts. Both write `players.teamYears`, and a player
+// can be created by either, so they must not disagree about the order.
+import { sortTeamYears } from "../lib/players/team-tenure";
 // NEO-189: bounded retry for Convex's optimistic-concurrency conflict, used
 // by every phase of the chunked commit below.
 import { runWithOccRetry } from "../lib/errors/occ-retry";
@@ -681,6 +685,52 @@ function isCustomSubtree(
 }
 
 /**
+ * NEO-212 — which of these candidate names has an operator already ruled "not
+ * a person / not a team" for this set?
+ *
+ * Lives here rather than in entityReviewQueue.ts because its only caller is
+ * `resolveUnknownsAndStartBatch` below, and it is shaped for that caller: one
+ * round trip carrying every candidate, rather than the N `ctx.runQuery` hops
+ * an action would otherwise pay to ask the same question name by name. Inside,
+ * it is still one indexed point lookup per candidate against
+ * `by_selector_option_and_kind_and_name` — batches are at most a few hundred
+ * names, comfortably inside a query's read budget.
+ *
+ * Takes NORMALIZED names, because that is what the index stores and what the
+ * caller has already computed to dedupe its own candidates. Returns the subset
+ * that is skipped, as `${kind}:${nameNormalized}` keys — a flat set the caller
+ * can test membership against without rebuilding a per-kind structure.
+ */
+export const findSkippedEntityNames = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    candidates: v.array(
+      v.object({
+        kind: v.union(v.literal("player"), v.literal("team")),
+        nameNormalized: v.string(),
+      }),
+    ),
+  },
+  returns: v.array(v.string()),
+  handler: async (ctx, args): Promise<string[]> => {
+    const skipped: string[] = [];
+    for (const candidate of args.candidates) {
+      const row = await ctx.db
+        .query("entityReviewSkips")
+        .withIndex("by_selector_option_and_kind_and_name", (q) =>
+          q
+            .eq("selectorOptionId", args.selectorOptionId)
+            .eq("kind", candidate.kind)
+            .eq("nameNormalized", candidate.nameNormalized),
+        )
+        .first();
+      if (row) skipped.push(`${candidate.kind}:${candidate.nameNormalized}`);
+    }
+    return skipped;
+  },
+});
+
+/**
  * Detect unresolved player/team names for a selectorOption and kick off the
  * NEO-92 review-wizard batch for whatever's unresolved. Shared by both the
  * marketplace path (folds in names observed on freshly-reconciled cards via
@@ -747,14 +797,49 @@ async function resolveUnknownsAndStartBatch(
     for (const t of r.pendingTeamNames ?? []) addTeam(t);
   }
 
-  for (const name of playerByNorm.values()) {
+  // ── NEO-212: names an operator already ruled are not an entity ──────────
+  //
+  // THIS is why a skipped name never re-enters the wizard. Everything else
+  // about a skip is per-batch and transient — `entityReviewQueue` rows are
+  // deleted the moment the commit finishes — so without this read the same
+  // "CHECKLIST" header row, sponsor logo, or stray column heading would be
+  // handed back to the operator on every single re-fetch of the set, and the
+  // only way to clear the wizard would remain what it was before: creating a
+  // bogus player row for it.
+  //
+  // Dropped BEFORE the players/teams existence checks, not after, so a skipped
+  // name is not merely left out of the batch but never counted as "unknown" at
+  // all — the caller reports these counts to the operator, and a name they
+  // have already settled is not an open question. It also saves the lookup.
+  //
+  // Scoped to THIS selectorOption, matching the table's per-set key: a name
+  // that is noise on one checklist is very often a real player on the next.
+  const skippedKeys = new Set(
+    await ctx.runQuery(internal.selectorOptions.findSkippedEntityNames, {
+      selectorOptionId: args.selectorOptionId,
+      candidates: [
+        ...Array.from(playerByNorm.keys(), (nameNormalized) => ({
+          kind: "player" as const,
+          nameNormalized,
+        })),
+        ...Array.from(teamByNorm.keys(), (nameNormalized) => ({
+          kind: "team" as const,
+          nameNormalized,
+        })),
+      ],
+    }),
+  );
+
+  for (const [normalized, name] of playerByNorm) {
+    if (skippedKeys.has(`player:${normalized}`)) continue;
     const existing = await ctx.runQuery(api.players.findByNameAndSport, {
       name,
       sportId: args.sportId,
     });
     if (!existing) unknownPlayers.push(name);
   }
-  for (const name of teamByNorm.values()) {
+  for (const [normalized, name] of teamByNorm) {
+    if (skippedKeys.has(`team:${normalized}`)) continue;
     const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
       name,
       sportId: args.sportId,
@@ -6467,6 +6552,12 @@ export const commitCardChecklistPrelude = internalMutation({
     createdTeamIds: v.array(v.id("teams")),
     enrichmentTeamIds: v.array(v.id("teams")),
     reviewRowIds: v.array(v.id("entityReviewQueue")),
+    // NEO-212: names this commit recorded in `entityReviewSkips`, split by
+    // kind. Returned rather than re-derived because the finalize phase, which
+    // retires custom cards' pending* entries, cannot see the batch's review
+    // rows — they are read here and deleted there.
+    skippedPlayerNames: v.array(v.string()),
+    skippedTeamNames: v.array(v.string()),
     inheritedFeatures: v.optional(v.record(v.string(), v.string())),
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     setNameValue: v.optional(v.string()),
@@ -6581,9 +6672,14 @@ export const commitCardChecklistPrelude = internalMutation({
       }
     }
 
-    // NEO-92: load this batch's reviewed decisions (create/link, no skip —
-    // see the wizard). Keyed by kind+normalized-name so a player and a team
-    // that happen to share a normalized name never collide.
+    // NEO-92/NEO-212: load this batch's reviewed decisions. Three variants:
+    // `create` (insert a row seeded from the cached enrichment), `link` (use
+    // an existing row's id), and `skip` — "this is not a person / not a team".
+    // A skip creates nothing and links nothing: the card keeps the raw name as
+    // free text, exactly as if the name had never been reviewed, and the name
+    // is recorded in `entityReviewSkips` below so it never re-enters this
+    // set's wizard. Keyed by kind+normalized-name so a player and a team that
+    // happen to share a normalized name never collide.
     const reviewRows = args.batchId
       ? await ctx.db
           .query("entityReviewQueue")
@@ -6597,6 +6693,68 @@ export const commitCardChecklistPrelude = internalMutation({
     const reviewByKey = new Map<string, (typeof reviewRows)[number]>();
     for (const row of reviewRows) {
       reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
+    }
+
+    // ── NEO-212: make every skip durable, in THIS transaction ───────────────
+    //
+    // `entityReviewQueue` rows are per-batch throwaways that the finalize
+    // phase deletes, so a skip that lived only there would survive exactly
+    // until the next fetch of the set — and the operator would be handed the
+    // same "CHECKLIST" header row to rule on again, forever. Recording it in
+    // `entityReviewSkips` is what makes the judgement stick;
+    // `resolveUnknownsAndStartBatch` reads this table before it enqueues
+    // anything.
+    //
+    // Written HERE, in the prelude mutation, rather than in a later phase or a
+    // scheduled follow-up, so it is atomic with the rest of the commit: a
+    // commit either lands with its skips recorded or does not land. A skip
+    // written outside the transaction could be lost while the cards it applied
+    // to were still committed, which is the one failure mode that costs the
+    // operator their work.
+    //
+    // Upsert, not insert: re-committing the same set after skipping the same
+    // junk again must leave ONE row (the index key is exactly
+    // (selectorOptionId, kind, nameNormalized)), refreshed to the latest
+    // decision rather than accumulating a row per commit. `skippedAt` moves
+    // forward, and `skippedByUserId` becomes whoever most recently confirmed
+    // it — both are audit fields, and "who last stood behind this skip" is the
+    // more useful answer than "who first did".
+    const skippedPlayerNames: string[] = [];
+    const skippedTeamNames: string[] = [];
+    for (const row of reviewRows) {
+      if (row.decision?.action !== "skip") continue;
+      const nameNormalized = norm(row.name);
+      const existingSkip = await ctx.db
+        .query("entityReviewSkips")
+        .withIndex("by_selector_option_and_kind_and_name", (q) =>
+          q
+            .eq("selectorOptionId", args.selectorOptionId)
+            .eq("kind", row.kind)
+            .eq("nameNormalized", nameNormalized),
+        )
+        .first();
+      if (existingSkip) {
+        await ctx.db.patch(existingSkip._id, {
+          skippedAt: Date.now(),
+          skippedByUserId: userId,
+        });
+      } else {
+        await ctx.db.insert("entityReviewSkips", {
+          selectorOptionId: args.selectorOptionId,
+          kind: row.kind,
+          nameNormalized,
+          name: row.name,
+          skippedAt: Date.now(),
+          skippedByUserId: userId,
+        });
+      }
+      // Handed back to the action so the finalize phase can retire the
+      // matching `pendingPlayerNames`/`pendingTeamNames` entries on custom
+      // cards — see the note there. A skipped name will NEVER resolve, so
+      // leaving it pending would re-prompt on every later fetch.
+      (row.kind === "player" ? skippedPlayerNames : skippedTeamNames).push(
+        row.name,
+      );
     }
 
     // Get-or-create a bare team row by name — used to resolve a newly
@@ -6667,7 +6825,13 @@ export const commitCardChecklistPrelude = internalMutation({
         continue;
       }
       const decision = reviewByKey.get(`player:${normalized}`)?.decision;
-      if (!decision) continue; // not reviewed — shouldn't happen; card keeps this name unresolved
+      // Not reviewed (shouldn't happen), or reviewed as "not a person"
+      // (NEO-212). Both leave the name out of `playerIdByName`, so the card
+      // keeps it as raw text and links to nothing — a skip is deliberately
+      // indistinguishable, at the card, from a name that was never resolved.
+      // The skip's durability comes from `entityReviewSkips` above, not from
+      // anything written here.
+      if (!decision || decision.action === "skip") continue;
       if (decision.action === "link") {
         if (decision.linkedPlayerId) {
           playerIdByName.set(name, decision.linkedPlayerId);
@@ -6688,34 +6852,71 @@ export const commitCardChecklistPrelude = internalMutation({
       // Merge the wizard's Wikidata preview career-teams with any the admin
       // added by hand in the review wizard (decision.manualCareerTeams). Both
       // are {name, fromYear, toYear?} — resolve every name to a real team id
-      // via get-or-create, then dedupe by teamId since two sources could name
-      // the same team. When they collide, the MANUAL entry wins: an admin
-      // adding an entry for a team Wikidata also returned is an explicit
-      // correction of that team's fromYear/toYear, so it must override the
-      // Wikidata years rather than be silently discarded. Wikidata entries are
-      // written into the map first, then manual entries `.set()` over any
-      // colliding teamId (keeping the map's original insertion order for that
-      // team, but with the manual years).
+      // via get-or-create, then key by `(teamId, fromYear)`.
+      //
+      // ── NEO-212: the key is the STINT, not the team ────────────────────────
+      //
+      // This used to be a `Map<teamId, years>`, which quietly destroyed the
+      // most interesting thing in a career: a player traded away and later
+      // re-signed by the same franchise has two P54 statements for that team,
+      // and the second one overwrote the first. What survived was one entry
+      // spanning whichever stint happened to come last — a timeline that was
+      // not merely incomplete but wrong about the years it did show.
+      //
+      // With `(teamId, fromYear)` the two behaviours the merge needs fall out
+      // of one rule:
+      //   - a manual entry with the SAME (teamId, fromYear) as a Wikidata
+      //     entry REPLACES it. That is the admin explicitly correcting the
+      //     years on a stint Wikidata also knows about ("2011–2018 should read
+      //     2011–2019"), so the manual `toYear` must win rather than be
+      //     silently discarded.
+      //   - a manual entry with a DIFFERENT fromYear APPENDS. That is the
+      //     admin adding a stint Wikidata missed entirely, at a team it does
+      //     know — the returning-player case, which the old key could not
+      //     express at all.
+      // Wikidata entries go in first, manual entries `.set()` over colliding
+      // keys, and the final array is ordered by `sortTeamYears` rather than by
+      // insertion, so the stored timeline is chronological regardless of which
+      // source contributed which stint.
       const manualCareerTeams =
         decision.action === "create" ? (decision.manualCareerTeams ?? []) : [];
-      const teamYearsById = new Map<
-        Id<"teams">,
-        { fromYear: number; toYear?: number }
+      // NEO-212: career teams the operator UNCHECKED in the wizard. Filtered
+      // BEFORE resolveTeamIdByName runs, and that ordering is the whole point:
+      // resolving a name is get-or-CREATE, so merely asking for the id of an
+      // excluded team would mint the very `teams` row the operator just
+      // rejected — a row nothing then points at, and which the next lookup of
+      // that name would silently adopt. Matched on the normalized name for the
+      // same reason every other name comparison here is: the exclusion list is
+      // built from UI labels and must not be defeated by punctuation.
+      const excludedCareerTeamNames = new Set(
+        (decision.action === "create"
+          ? (decision.excludedCareerTeamNames ?? [])
+          : []
+        ).map(norm),
+      );
+      const teamYearByKey = new Map<
+        string,
+        { teamId: Id<"teams">; fromYear: number; toYear?: number }
       >();
       for (const ct of enrichment?.careerTeams ?? []) {
+        if (excludedCareerTeamNames.has(norm(ct.name))) continue;
         const teamId = await resolveTeamIdByName(ct.name);
-        teamYearsById.set(teamId, { fromYear: ct.fromYear, toYear: ct.toYear });
+        teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
+          teamId,
+          fromYear: ct.fromYear,
+          toYear: ct.toYear,
+        });
       }
       for (const ct of manualCareerTeams) {
         const teamId = await resolveTeamIdByName(ct.name);
-        teamYearsById.set(teamId, { fromYear: ct.fromYear, toYear: ct.toYear });
+        teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
+          teamId,
+          fromYear: ct.fromYear,
+          toYear: ct.toYear,
+        });
       }
       const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> =
-        Array.from(teamYearsById.entries()).map(([teamId, years]) => ({
-          teamId,
-          fromYear: years.fromYear,
-          toYear: years.toYear,
-        }));
+        sortTeamYears(Array.from(teamYearByKey.values()));
       const id = await ctx.db.insert("players", {
         name: name.trim(),
         nameNormalized: normalized,
@@ -6752,7 +6953,9 @@ export const commitCardChecklistPrelude = internalMutation({
         continue;
       }
       const decision = reviewByKey.get(`team:${normalized}`)?.decision;
-      if (!decision) continue;
+      // Same as the player loop above — unreviewed or NEO-212 "not a team".
+      // The card keeps the raw name, nothing is created or linked.
+      if (!decision || decision.action === "skip") continue;
       if (decision.action === "link") {
         if (decision.linkedTeamId) {
           teamIdByName.set(name, decision.linkedTeamId);
@@ -6859,6 +7062,8 @@ export const commitCardChecklistPrelude = internalMutation({
       createdTeamIds,
       enrichmentTeamIds,
       reviewRowIds: reviewRows.map((r) => r._id),
+      skippedPlayerNames,
+      skippedTeamNames,
       inheritedFeatures: inheritedFeaturesOrUndefined,
       setNameAncestorId,
       setNameValue,
@@ -6882,6 +7087,8 @@ type CommitPrelude = {
   createdTeamIds: Array<Id<"teams">>;
   enrichmentTeamIds: Array<Id<"teams">>;
   reviewRowIds: Array<Id<"entityReviewQueue">>;
+  skippedPlayerNames: string[];
+  skippedTeamNames: string[];
   inheritedFeatures?: Record<string, string>;
   setNameAncestorId?: Id<"selectorOptions">;
   setNameValue?: string;
@@ -7362,6 +7569,12 @@ export const commitCardChecklistFinalize = internalMutation({
     ),
     resolvedPlayerNames: v.array(v.string()),
     resolvedTeamNames: v.array(v.string()),
+    // NEO-212: names the operator ruled "not a person / not a team" this
+    // commit (recorded in `entityReviewSkips` by the prelude). Treated exactly
+    // like a resolved name for the purpose of clearing custom cards' pending*
+    // entries below — see the note there.
+    skippedPlayerNames: v.array(v.string()),
+    skippedTeamNames: v.array(v.string()),
     reviewRowIds: v.array(v.id("entityReviewQueue")),
     enrichmentTeamIds: v.array(v.id("teams")),
     bscTeamEnrichmentIds: v.array(v.id("cardChecklist")),
@@ -7531,8 +7744,23 @@ export const commitCardChecklistFinalize = internalMutation({
     // or just created via the confirmed-new lists). Without this, every
     // subsequent fetchCardChecklist would keep re-prompting for the same
     // custom-card player names because they'd stay in pending* forever.
-    const resolvedPlayerNames = new Set(args.resolvedPlayerNames);
-    const resolvedTeamNames = new Set(args.resolvedTeamNames);
+    //
+    // NEO-212: a SKIPPED name is cleared by the same pass, on the same
+    // reasoning taken one step further. "Pending" means "waiting to become a
+    // players/teams row"; the operator has just ruled that this name never
+    // will be one, so it is not waiting for anything — it is settled, and the
+    // card keeps it as the free text it always was. Left pending it would be
+    // re-offered on every later fetch, which is exactly the loop
+    // `entityReviewSkips` exists to break, and the skip would only half-work:
+    // suppressed for marketplace names, still nagging for custom-card ones.
+    const resolvedPlayerNames = new Set([
+      ...args.resolvedPlayerNames,
+      ...args.skippedPlayerNames,
+    ]);
+    const resolvedTeamNames = new Set([
+      ...args.resolvedTeamNames,
+      ...args.skippedTeamNames,
+    ]);
     for (const existing of rows) {
       if (!existing.isCustom) continue;
       const patch: {
@@ -9019,6 +9247,8 @@ export const commitCardChecklist = action({
         })),
         resolvedPlayerNames: Array.from(playerIdByName.keys()),
         resolvedTeamNames: Array.from(teamIdByName.keys()),
+        skippedPlayerNames: prelude.skippedPlayerNames,
+        skippedTeamNames: prelude.skippedTeamNames,
         reviewRowIds: args.batchId ? prelude.reviewRowIds : [],
         enrichmentTeamIds: prelude.enrichmentTeamIds,
         bscTeamEnrichmentIds,

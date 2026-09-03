@@ -5,6 +5,11 @@ import { internal } from "../_generated/api";
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import { fetchEspnTeamInfo } from "./espn";
+// NEO-212: the SINGLE career-timeline ordering, shared with
+// commitCardChecklistPrelude in convex/selectorOptions.ts. Both paths write
+// `players.teamYears`; if they sorted differently the same player would read
+// back as a different timeline depending on which one created them.
+import { sortTeamYears } from "../../lib/players/team-tenure";
 
 /**
  * Wikidata SPARQL adapter — enriches players (HoF, career teams) and
@@ -269,8 +274,30 @@ async function findTeamQid(
  */
 export interface PlayerLookupResult {
   wikidataId: string;
+  /**
+   * Sorted earliest-stint-first (see `sortTeamYears`), and one entry PER
+   * STINT — a player who left a franchise and came back has two.
+   */
   careerTeams: Array<{ name: string; fromYear: number; toYear?: number }>;
   isHallOfFame?: boolean;
+  // ── NEO-212: player disambiguation context for the review wizard ──────────
+  //
+  // Wikidata routinely returns several entities for one card name ("Chris
+  // Johnson" is a running back, an outfielder and a British cyclist), and a
+  // bare label gave the operator nothing to choose on. All three are
+  // best-effort: a real but thinly-documented player has none of them, which
+  // is why each is optional rather than defaulted to a placeholder string.
+  //
+  // These are consumed only by the review-wizard path: `runEntityReviewLookup`
+  // spreads this whole result into `entityReviewQueue.enrichment` (whose
+  // validator carries all three), so nothing extra is needed to route them.
+  // `enrichPlayer` ignores them — `players` has no column for them, and adding
+  // one would be storing a Wikidata blurb as if it were NeonBinder card data.
+  /** Wikidata's English `schema:description` — "American football running back". */
+  description?: string;
+  birthYear?: number;
+  /** English Wikipedia article title, so the wizard can link out to it. */
+  enwikiTitle?: string;
 }
 
 export interface TeamLookupResult {
@@ -316,8 +343,15 @@ export async function lookupPlayerEnrichment(
   // patched in — the second outage of that exact class in this file.
   const hofQid = sport.wikidata?.hallOfFameQid;
 
+  // NEO-212: the three disambiguation fields are all OPTIONAL and all
+  // single-valued per entity, so they ride along on the existing membership ×
+  // award cross-product rather than costing another round trip. Variable names
+  // are deliberately NOT `?playerDescription`/`?playerLabel`-shaped: the label
+  // SERVICE below auto-binds any `?<var>Label`/`?<var>Description` whose
+  // prefix is another variable in scope, and colliding with that would make it
+  // overwrite our own bindings.
   const detailQuery = `
-    SELECT ?team ?teamLabel ?start ?end ?award WHERE {
+    SELECT ?team ?teamLabel ?start ?end ?award ?descr ?dob ?title WHERE {
       OPTIONAL {
         wd:${qid} p:P54 ?membership .
         ?membership ps:P54 ?team .
@@ -325,6 +359,16 @@ export async function lookupPlayerEnrichment(
         OPTIONAL { ?membership pq:P582 ?end . }
       }
       OPTIONAL { wd:${qid} wdt:P166 ?award . }
+      OPTIONAL {
+        wd:${qid} schema:description ?descr .
+        FILTER(LANG(?descr) = "en")
+      }
+      OPTIONAL { wd:${qid} wdt:P569 ?dob . }
+      OPTIONAL {
+        ?article schema:about wd:${qid} ;
+                 schema:isPartOf <https://en.wikipedia.org/> ;
+                 schema:name ?title .
+      }
       SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
     }
   `;
@@ -333,13 +377,28 @@ export async function lookupPlayerEnrichment(
 
   const careerTeams: Array<{ name: string; fromYear: number; toYear?: number }> = [];
   let isHallOfFame: boolean | undefined;
-  const seenTeams = new Set<string>();
+  let description: string | undefined;
+  let birthYear: number | undefined;
+  let enwikiTitle: string | undefined;
+  // NEO-212: keyed on the full STINT, not the team.
+  //
+  // The query returns the cross-product of memberships × awards, so a
+  // Hall-of-Famer with three teams and two awards yields six rows and each
+  // membership repeats. This set collapses that repetition — that is the only
+  // job it ever had. Keying it on the bare team QID also collapsed something
+  // real, though: a player traded away and later re-signed has TWO P54
+  // statements for one team, with different P580/P582 qualifiers, and the
+  // second one was silently dropped. Including the years in the key keeps the
+  // cross-product collapse (identical repeated rows still collide) while
+  // letting two genuinely distinct stints both through.
+  const seenStints = new Set<string>();
 
   for (const row of result.results.bindings) {
     if (row.team && row.teamLabel) {
       const teamWdId = qidFromIri(row.team.value);
-      if (!seenTeams.has(teamWdId)) {
-        seenTeams.add(teamWdId);
+      const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
+      if (!seenStints.has(stintKey)) {
+        seenStints.add(stintKey);
         const fromYear = yearFromBinding(row.start);
         if (fromYear !== undefined) {
           // Wikidata's label service returns the bare QID as the label
@@ -373,6 +432,13 @@ export async function lookupPlayerEnrichment(
     if (hofQid && row.award && qidFromIri(row.award.value) === hofQid) {
       isHallOfFame = true;
     }
+    // NEO-212: entity-level, so identical on every row of the cross-product —
+    // keep the first non-empty answer. Guarded on "still undefined" rather
+    // than assigned unconditionally so a later row (where an OPTIONAL happened
+    // to bind nothing) cannot blank a value an earlier row supplied.
+    if (description === undefined && row.descr?.value) description = row.descr.value;
+    if (birthYear === undefined) birthYear = yearFromBinding(row.dob);
+    if (enwikiTitle === undefined && row.title?.value) enwikiTitle = row.title.value;
   }
 
   // No HoF row matched, but the player IS in our HoF-aware sports — we
@@ -382,7 +448,18 @@ export async function lookupPlayerEnrichment(
     isHallOfFame = false;
   }
 
-  return { wikidataId: qid, careerTeams, isHallOfFame };
+  return {
+    wikidataId: qid,
+    // NEO-212: SPARQL binding order is not a career timeline — it is whatever
+    // order the endpoint happened to return the statements in. Sorted here so
+    // the wizard's preview, the committed `players.teamYears`, and
+    // `enrichPlayer`'s own write all present the same sequence.
+    careerTeams: sortTeamYears(careerTeams),
+    isHallOfFame,
+    ...(description !== undefined ? { description } : {}),
+    ...(birthYear !== undefined ? { birthYear } : {}),
+    ...(enwikiTitle !== undefined ? { enwikiTitle } : {}),
+  };
 }
 
 /**
@@ -496,7 +573,23 @@ export const enrichPlayer = internalAction({
     const result = await lookupPlayerEnrichment(player.name, sportCtx);
     if (!result) return null;
 
-    const teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [];
+    // NEO-212: the SAME `(teamId, fromYear)` key and the same ordering the
+    // review-wizard commit path uses (commitCardChecklistPrelude in
+    // convex/selectorOptions.ts). These two are the only writers of
+    // `players.teamYears`, and a player can be created by either one, so they
+    // have to agree on what counts as a duplicate stint and on the order the
+    // survivors are stored in — otherwise the same career reads back
+    // differently depending on which path happened to build it.
+    //
+    // Two different `name` strings CAN resolve to one teamId (Wikidata
+    // spellings differ across statements, and findOrCreateInternal folds on a
+    // normalized name), which is why the key is the resolved id and not the
+    // name. A repeat of the same `(teamId, fromYear)` is a genuine duplicate;
+    // a second stint at that team starting a different year is not.
+    const teamYearByKey = new Map<
+      string,
+      { teamId: Id<"teams">; fromYear: number; toYear?: number }
+    >();
     for (const ct of result.careerTeams) {
       const teamId = await ctx.runMutation(internal.teams.findOrCreateInternal, {
         name: ct.name,
@@ -504,8 +597,13 @@ export const enrichPlayer = internalAction({
         // can no longer land under a differently-cased duplicate.
         sportId: player.sportId,
       });
-      teamYears.push({ teamId, fromYear: ct.fromYear, toYear: ct.toYear });
+      teamYearByKey.set(`${teamId}|${ct.fromYear}`, {
+        teamId,
+        fromYear: ct.fromYear,
+        toYear: ct.toYear,
+      });
     }
+    const teamYears = sortTeamYears(Array.from(teamYearByKey.values()));
 
     await ctx.runMutation(internal.players.applyEnrichmentInternal, {
       id: args.playerId,
