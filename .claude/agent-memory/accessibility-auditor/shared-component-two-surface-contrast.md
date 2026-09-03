@@ -137,3 +137,29 @@ is an implicit contract on that string not changing in that state, editing
 locked tests to un-pin it is a legitimate option but raises the stakes of the
 change, and a partial fix (cover the untested states, document the blocked
 one) is a reasonable, low-risk middle ground when the full fix isn't free.
+
+## Second confirmed instance of "Enter-to-save bound directly to an input": `RenameEntityControl.tsx` (NEO-211)
+
+Same bug, same fix, different file. `RenameEntityControl`'s own `onKeyDown`
+(not a wrapper's) calls `commit()` on Enter, which sets `saving=true`
+synchronously, and the input had `disabled={saving}` — the focused field
+goes native-disabled and blurs to `<body>` for the duration of the
+`renameSelectorOption` mutation round-trip. Fixed identically:
+`readOnly={saving} aria-disabled={saving || undefined}`, with
+`aria-disabled:opacity-50 aria-disabled:cursor-not-allowed` added to the
+className to keep the same visual "busy" look the native `disabled:` variants
+used to provide (Tailwind's `aria-disabled:` variant selector works the same
+way `disabled:` does — matches `[aria-disabled="true"]`). **This is now two
+independent occurrences of the identical shape (`TitleFixer.tsx`'s title
+field, now `RenameEntityControl.tsx`'s rename field) — check any input whose
+OWN `onKeyDown` triggers a busy-setting async action by default, not just as
+a hunch.**
+
+A second, DIFFERENT focus bug lived in the same component: closing the editor
+(successful commit OR Escape-cancel) unmounts the `<input>` and swaps back to
+the pencil `<button>`, with nothing moving focus onto it — a plain instance
+of [[focus-park-pattern]], fixed with a `wasEditingRef`-guarded effect
+(`if (wasEditingRef.current && !editing) buttonRef.current?.focus()`) so it
+only fires on the true→false transition, never on the component's own
+initial mount (where `editing` starts false and there is nothing to restore
+focus FROM).
