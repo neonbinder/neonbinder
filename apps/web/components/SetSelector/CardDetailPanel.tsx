@@ -563,11 +563,30 @@ export default function CardDetailPanel({
                 <button
                   type="button"
                   onClick={() => preview.request(titleDirty)}
-                  aria-label="Regenerate card title"
+                  // a11y (2.5.3, audit fix): the visible text also becomes
+                  // "Rebuilding…"/"Replace?", neither a substring of a fully
+                  // static name. "Replace?" is kept as the fixed string on
+                  // purpose — this exact query
+                  // (`getByLabelText("Regenerate card title")`) is asserted
+                  // while `confirming` is true in
+                  // CardDetailPanel.titleLimits.test.tsx, so changing it here
+                  // would desync from that locked test. The confirm text
+                  // below (already wired via aria-describedby) covers the
+                  // gap for screen-reader users.
+                  aria-label={
+                    preview.loading ? "Regenerate card title — rebuilding" : "Regenerate card title"
+                  }
                   aria-describedby={
                     preview.confirming ? `${uid}-regen-confirm` : undefined
                   }
-                  className="rounded px-1 uppercase tracking-wide text-[#00B7FF] underline decoration-dotted hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+                  // a11y (1.4.3, audit fix): #00B7FF alone measures 2.28:1
+                  // against this drawer's light-mode `bg-white` (fails
+                  // 4.5:1) — this panel is genuinely bi-themed
+                  // (`bg-white dark:bg-gray-800`), unlike TitleFixer's
+                  // always-dark walker dialog. #0369A1 measures 5.93:1
+                  // against white; #00B7FF unchanged for dark mode (6.44:1
+                  // against gray-800).
+                  className="rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00B7FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
                 >
                   {preview.loading
                     ? "Rebuilding…"
@@ -602,7 +621,12 @@ export default function CardDetailPanel({
               <p
                 id={`${uid}-regen-confirm`}
                 role="status"
-                className="mt-1 text-[10px] text-[#00B7FF]"
+                aria-atomic="true"
+                // a11y (1.4.3, audit fix): same light/dark split as the
+                // Regenerate button above, same reason — this panel is
+                // bi-themed and #00B7FF alone fails 4.5:1 against its
+                // light-mode `bg-white`.
+                className="mt-1 text-[10px] text-[#0369A1] dark:text-[#00B7FF]"
               >
                 Regenerate again to replace the title you have typed.
               </p>
@@ -626,9 +650,18 @@ export default function CardDetailPanel({
                 {preview.chips.map((chip, idx) => (
                   <li
                     key={`${chip.label}-${chip.value}-${idx}`}
-                    className="rounded-full border border-gray-700 bg-gray-800/60 px-2 py-0.5 text-[10px] text-gray-200"
+                    // a11y (1.4.3, audit fix): this exact chip className,
+                    // unchanged, is also what TitleFixer.tsx renders — safe
+                    // there (always-dark surface) but not here. Composited
+                    // over this panel's light-mode `bg-white`, the original
+                    // `bg-gray-800/60 text-gray-200` measured 3.27:1 (fails
+                    // 4.5:1) and the label's `text-gray-400` measured 1.56:1
+                    // (fails badly). Light-mode values below measure 9.36:1
+                    // / 6.87:1 against their own `bg-gray-100`; dark-mode
+                    // values are the untouched originals.
+                    className="rounded-full border border-gray-300 bg-gray-100 dark:border-gray-700 dark:bg-gray-800/60 px-2 py-0.5 text-[10px] text-gray-700 dark:text-gray-200"
                   >
-                    <span className="mr-1 uppercase tracking-wide text-gray-400">
+                    <span className="mr-1 uppercase tracking-wide text-gray-600 dark:text-gray-400">
                       {chip.label}
                     </span>
                     {chip.value}

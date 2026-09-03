@@ -34,11 +34,36 @@ import {
  * `may clip in search`, and a full sentence in the alert. The colours below are
  * the app's existing roles — grey is neutral, pink (#FF2EB3) is the error
  * colour used for every inline field error in this directory — plus two warm
- * steps between them. They are fixed hexes, not Tailwind `dark:` pairs, because
- * the app renders `appearance="dark"` unconditionally while Tailwind's `dark:`
- * variant follows the OS colour scheme: a `dark:` pair renders its LIGHT half
- * on a dark surface for anyone whose system is in light mode (the same trap
- * documented on `BASE_INPUT` in components/primitives/Input.tsx).
+ * steps between them.
+ *
+ * ## Two surfaces, two colour strategies (a11y fix, NEO-101 audit)
+ *
+ * This component renders on two DIFFERENT kinds of surface, and one fixed set
+ * of hexes cannot be correct on both:
+ *
+ *   - `TitleFixer`'s dialog (`CardAttentionWalker`) hardcodes `bg-gray-900`
+ *     with no `dark:` qualifier anywhere in that file — it is unconditionally
+ *     dark, the same reasoning `BASE_INPUT` in components/primitives/Input.tsx
+ *     documents: a `dark:` pair would render its LIGHT half on that surface
+ *     for anyone whose OS is in light mode, since Tailwind's `dark:` variant
+ *     follows `prefers-color-scheme`, not this app's forced Radix
+ *     `appearance="dark"`. Fixed hexes are correct and required there.
+ *   - `CardDetailPanel`'s own drawer chrome is `bg-white dark:bg-gray-800` —
+ *     genuinely bi-themed, unlike the walker. The SAME fixed hexes measured
+ *     (WCAG relative-luminance) at 1.83–3.34:1 against white — all fail
+ *     4.5:1 — and the error tone even measures 4.40:1 against this drawer's
+ *     own `gray-800` (still fails, if narrowly). Verified: no forced `.dark`
+ *     class exists anywhere in `src/main.tsx`/`index.html`, so an operator
+ *     whose OS is in light mode really does render this drawer on white.
+ *
+ * `surface` picks which of the two applies. Default `"themed"` — safe with NO
+ * caller change for `CardDetailPanel`, which already uses `dark:` pairs
+ * elsewhere in the same file for exactly this reason (e.g. its own
+ * `text-[#C2178A] dark:text-[#FF6FCB]` error line, `text-gray-500
+ * dark:text-gray-400` secondary text — the light-mode halves here are chosen
+ * to match that existing precedent). `TitleFixer` passes `surface="dark"`
+ * explicitly, since its dialog is the one surface where a `dark:` pair would
+ * be the wrong, trap-prone choice.
  *
  * ## The bands are display truncation, not rules
  *
@@ -69,12 +94,36 @@ export type TitleLengthState = {
   alert: string | null;
 };
 
-const TONE_CLASS: Record<TitleLengthTone, string> = {
+/** Which ambient surface a caller renders this on. See the header note. */
+export type TitleLengthSurface = "themed" | "dark";
+
+/** Safe ONLY on an unconditionally-dark surface (TitleFixer's walker dialog). */
+const TONE_CLASS_DARK: Record<TitleLengthTone, string> = {
   ok: "text-gray-400",
   mobile: "text-[#FFB020]",
   search: "text-[#FF7A45]",
   over: "text-[#FF2EB3]",
 };
+
+/**
+ * Safe on a genuinely bi-themed surface (CardDetailPanel's `bg-white
+ * dark:bg-gray-800`). Light halves are new, chosen to clear 4.5:1 against
+ * white; dark halves reuse the values above unchanged (already verified safe
+ * against `gray-800`).
+ */
+const TONE_CLASS_THEMED: Record<TitleLengthTone, string> = {
+  ok: "text-gray-500 dark:text-gray-400",
+  mobile: "text-[#973C00] dark:text-[#FFB020]",
+  search: "text-[#A8431A] dark:text-[#FF7A45]",
+  // Reuses this app's own error-pink dark-split precedent verbatim (see
+  // CardDetailPanel.tsx's variation-parent error line) rather than inventing
+  // a third pink.
+  over: "text-[#C2178A] dark:text-[#FF6FCB]",
+};
+
+function toneClass(tone: TitleLengthTone, surface: TitleLengthSurface): string {
+  return surface === "dark" ? TONE_CLASS_DARK[tone] : TONE_CLASS_THEMED[tone];
+}
 
 /**
  * Classify a length against a cap.
@@ -135,14 +184,17 @@ export function TitleLengthMeter({
   length,
   max = LISTING_TITLE_MAX,
   soft = false,
+  surface = "themed",
 }: {
   length: number;
   max?: number;
   soft?: boolean;
+  /** Which ambient surface this renders on. Default is safe for CardDetailPanel; TitleFixer passes `"dark"`. */
+  surface?: TitleLengthSurface;
 }) {
   const state = titleLengthState(length, max, soft);
   return (
-    <span className={`flex items-center gap-1 tabular-nums ${TONE_CLASS[state.tone]}`}>
+    <span className={`flex items-center gap-1 tabular-nums ${toneClass(state.tone, surface)}`}>
       <span>
         {length}/{max}
       </span>
@@ -179,6 +231,7 @@ export function TitleLengthAlert({
   max = LISTING_TITLE_MAX,
   what = "Title",
   blocking = true,
+  surface = "themed",
 }: {
   id?: string;
   length: number;
@@ -187,6 +240,8 @@ export function TitleLengthAlert({
   what?: string;
   /** False for a warn-only field. */
   blocking?: boolean;
+  /** Which ambient surface this renders on. Default is safe for CardDetailPanel; TitleFixer passes `"dark"`. */
+  surface?: TitleLengthSurface;
 }) {
   const state = titleLengthState(length, max);
   if (!state.alert) return null;
@@ -194,7 +249,8 @@ export function TitleLengthAlert({
     <p
       id={id}
       role={blocking ? "alert" : "status"}
-      className="mt-1 text-[10px] text-[#FF2EB3]"
+      aria-atomic="true"
+      className={`mt-1 text-[10px] ${toneClass("over", surface)}`}
     >
       {what} is {state.alert}{" "}
       {blocking
@@ -209,6 +265,13 @@ export function TitleLengthAlert({
  * per-item reasons. Same type scale and colour as the counter's soft bands, so
  * "this needs a look" reads as one voice wherever it appears.
  */
-export function TitleFieldNote({ children }: { children: ReactNode }) {
-  return <p className="mt-1 text-[10px] text-[#FFB020]">{children}</p>;
+export function TitleFieldNote({
+  children,
+  surface = "themed",
+}: {
+  children: ReactNode;
+  /** Which ambient surface this renders on. Default is safe for CardDetailPanel; TitleFixer passes `"dark"`. */
+  surface?: TitleLengthSurface;
+}) {
+  return <p className={`mt-1 text-[10px] ${toneClass("mobile", surface)}`}>{children}</p>;
 }

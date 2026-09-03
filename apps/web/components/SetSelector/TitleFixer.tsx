@@ -47,12 +47,23 @@ import type { AttentionFixerProps } from "./cardAttentionRegistry";
  *
  * ## Enter, and what "disabled" means here
  *
- * Enter in the title field saves, matching every other keyboard-first dialog in
- * this directory. Save is `aria-disabled` rather than natively disabled while
- * the title is over the cap: native `disabled` removes it from the tab order,
- * and the alert saying WHY it is inert is reached through its
- * `aria-describedby` — the NEO-189 stranding finding, one level up. It is
- * guarded in the handler too, so being activatable costs nothing.
+ * Enter in either the title or the variation field saves, matching every
+ * other keyboard-first dialog in this directory. Save is `aria-disabled`
+ * rather than natively disabled while the title is over the cap: native
+ * `disabled` removes it from the tab order, and the alert saying WHY it is
+ * inert is reached through its `aria-describedby` — the NEO-189 stranding
+ * finding, one level up. It is guarded in the handler too, so being
+ * activatable costs nothing.
+ *
+ * The two text inputs get the same `aria-disabled`-not-`disabled` treatment
+ * while `busy` (paired with `readOnly` to still block edits) — audit fix,
+ * NEO-101: unlike `MissingTeamFixer`'s Enter handler, which lives on an outer
+ * wrapper that explicitly excludes INPUT/BUTTON targets, Enter here is bound
+ * to the input itself, so `save()`'s `setBusy(true)` would otherwise natively
+ * disable the very field that has focus mid-keystroke — the browser force-
+ * blurs a newly-disabled focused control to `<body>`, the same focus-park-
+ * pattern failure class this codebase has hit and fixed several times
+ * (NEO-152, NEO-189, NEO-102's own Fixer siblings).
  */
 export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
@@ -121,7 +132,10 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
         <h3 className="text-sm font-semibold text-gray-200">
           <span className="text-[#00D558]">#{row.cardNumber}</span> {row.cardName}
         </h3>
-        <ul className="mt-0.5 list-none text-xs text-gray-400">
+        {/* a11y (1.3.1): `list-style: none` strips the implicit list/listitem
+            role in Safari + VoiceOver. `role="list"` restores it so a screen
+            reader still announces "list, N items" for the reasons below. */}
+        <ul role="list" className="mt-0.5 list-none text-xs text-gray-400">
           {items.map((item) => (
             <li key={item.kind}>{attentionItemLabel(item)}</li>
           ))}
@@ -132,11 +146,23 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
         <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400">
           <span>Card title</span>
           <span className="flex items-center gap-2">
-            <TitleLengthMeter length={title.length} soft />
+            <TitleLengthMeter length={title.length} soft surface="dark" />
             <button
               type="button"
               onClick={() => preview.request(titleDirty)}
-              aria-label="Regenerate card title"
+              // a11y (2.5.3): the visible label cycles through "Rebuilding…"
+              // and "Replace?", neither of which is a substring of a fully
+              // static name — a voice-control user saying the visible word
+              // would not match. The "Replace?" case is left as the fixed
+              // string on purpose: CardDetailPanel's own copy of this button
+              // is asserted on by name in CardDetailPanel.titleLimits.test.tsx
+              // while `confirming` is true, so the two must keep matching
+              // names in that state. The confirm status text below (wired via
+              // aria-describedby) already tells a screen-reader user what a
+              // second click does either way.
+              aria-label={
+                preview.loading ? "Regenerate card title — rebuilding" : "Regenerate card title"
+              }
               aria-describedby={
                 preview.confirming ? `${uid}-regen-confirm` : undefined
               }
@@ -166,30 +192,45 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           }}
           // No maxLength: a pasted over-length title must stay visible to be
           // fixable. See the same note in CardDetailPanel.
-          className="w-full p-1.5 text-sm"
+          className={`w-full p-1.5 text-sm ${busy ? "opacity-60" : ""}`}
           // Anchored to the card number so it cannot collide with the drawer's
           // own "Card title" field in a selector — Maestro's `id:` matcher
           // takes a regex, so `Card title for #.*` still targets it.
           aria-label={`Card title for #${row.cardNumber}`}
           aria-invalid={titleState.over || undefined}
           aria-describedby={titleState.over ? titleAlertId : undefined}
-          disabled={busy}
+          // a11y (audit fix): native `disabled` here would strand focus. Enter
+          // in THIS field is what sets `busy` — the moment it goes native-
+          // disabled, the browser force-blurs the very input that had focus,
+          // straight to <body> (the codebase's recurring focus-park-pattern
+          // bug, see accessibility-auditor/focus-park-pattern.md). `readOnly`
+          // blocks edits without removing the field from the tab order;
+          // `aria-disabled` announces the state. The `canSave` guard in
+          // `save()` already makes a second Enter/click harmless, so nothing
+          // relies on the native attribute for correctness.
+          aria-disabled={busy || undefined}
+          readOnly={busy}
         />
-        <TitleLengthAlert id={titleAlertId} length={title.length} />
+        <TitleLengthAlert id={titleAlertId} length={title.length} surface="dark" />
         {preview.confirming && (
           <p
             id={`${uid}-regen-confirm`}
             role="status"
+            aria-atomic="true"
             className="mt-1 text-[10px] text-[#00B7FF]"
           >
             Regenerate again to replace the title you have typed.
           </p>
         )}
         {wasTruncated && (
-          <TitleFieldNote>Auto title was cut short — rewrite it</TitleFieldNote>
+          <TitleFieldNote surface="dark">
+            Auto title was cut short — rewrite it
+          </TitleFieldNote>
         )}
         {preview.dropped.length > 0 && (
-          <TitleFieldNote>Left out to fit: {preview.dropped.join(", ")}</TitleFieldNote>
+          <TitleFieldNote surface="dark">
+            Left out to fit: {preview.dropped.join(", ")}
+          </TitleFieldNote>
         )}
         {preview.chips.length > 0 && (
           <ul aria-label="Title built from" className="mt-1.5 flex flex-wrap gap-1">
@@ -212,19 +253,34 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
         <div>
           <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400">
             <span>Variation</span>
-            <TitleLengthMeter length={variation.length} max={ASPECT_VALUE_MAX} />
+            <TitleLengthMeter length={variation.length} max={ASPECT_VALUE_MAX} surface="dark" />
           </div>
           <Input
             bare
             type="text"
             value={variation}
             onChange={(e) => setVariation(e.target.value)}
-            className="w-full p-1.5 text-sm"
+            // a11y (audit fix): matches the title field's Enter handler —
+            // without this, an operator whose card was flagged ONLY for
+            // `aspectValueOverLimit` (this is the only field shown) had no
+            // keyboard way to save short of tabbing to the button, breaking
+            // this directory's "Enter confirms" convention (see TitleFixer's
+            // own header note, and CLAUDE.md's keyboard-first rule).
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              e.preventDefault();
+              void save();
+            }}
+            className={`w-full p-1.5 text-sm ${busy ? "opacity-60" : ""}`}
             aria-label={`Card variation for #${row.cardNumber}`}
             aria-describedby={
               variation.length > ASPECT_VALUE_MAX ? variationAlertId : undefined
             }
-            disabled={busy}
+            // a11y (audit fix): same reasoning as the title field above — this
+            // field can now also trigger `save()` on Enter while it holds
+            // focus, so native `disabled` here is the same stranding hazard.
+            aria-disabled={busy || undefined}
+            readOnly={busy}
           />
           <TitleLengthAlert
             id={variationAlertId}
@@ -232,6 +288,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             max={ASPECT_VALUE_MAX}
             what="Variation"
             blocking={false}
+            surface="dark"
           />
         </div>
       )}
