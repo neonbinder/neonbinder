@@ -507,9 +507,21 @@ export default function EntityReviewWizard({
           }
         }}
       >
-        <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl w-full max-w-2xl flex flex-col">
+        {/*
+          NEO-110 — THE FOOTER MUST NOT MOVE WHEN A LOOKUP LANDS.
+          The dialog's height is FIXED (see the body comment below for the whole
+          story). That, not the body's content, is what pins the footer: with a
+          definite height on this box and `flex-1 min-h-0` on the body, the
+          footer's viewport y is invariant for the life of the dialog.
+
+          `min(40rem, 100%)` — 100% resolves against the overlay's CONTENT box,
+          which is `inset-0` minus its `p-4`, so on the 1024×629 CI viewport this
+          is 629-32 = 597px and the dialog can never be clipped by the padding.
+          40rem (640px) caps it on a tall desktop.
+        */}
+        <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-xl w-full max-w-2xl h-[min(40rem,100%)] flex flex-col">
           {/* Header: progress counter (satisfies "show N remaining"). */}
-          <div className="px-6 py-4 border-b border-gray-700">
+          <div className="px-6 py-4 border-b border-gray-700 shrink-0">
             <h2
               id="entity-review-wizard-title"
               className="text-lg font-semibold text-gray-100"
@@ -523,53 +535,63 @@ export default function EntityReviewWizard({
           </div>
 
           {/*
-            NEO-110 — THE FOOTER MUST NOT MOVE WHEN A LOOKUP LANDS.
-            This body swaps between three wildly different heights: the
-            "Looking up N more names…" line (~20px) while every row is still
-            `pending`, the full item block once one resolves, and the
-            "All reviewed" line. Because the overlay centres the dialog
-            (`flex items-center`), a content-height jump moves the footer by
-            HALF the delta — measured at ~108px in CI run 30505189226.
+            NEO-110 — THE BODY ABSORBS EVERY HEIGHT CHANGE. It is `flex-1
+            min-h-0 overflow-y-auto` inside a FIXED-HEIGHT dialog, so it grows
+            and shrinks entirely within its own box and the footer below it
+            never moves. Do NOT put `min-h-*` / `max-h-*` back on this div: an
+            elastic body is precisely the defect, twice over.
 
-            That is not cosmetic. The bulk "Add All Remaining as New (N)" link
-            sat at y=380-396; 333ms later the item block had rendered and the
-            green "Add as New {kind}" button occupied y=383-414. A click aimed
-            at the bulk link landed on "Add as New Player" instead — deciding
-            ONE row rather than all of them, silently, for an entity the user
-            never reviewed. (Proven by pixel analysis of the failure
-            screenshot: the tap point (394,388) is #00D558.)
+            WHY THIS MATTERS. This body swaps between wildly different heights:
+            the "Looking up N more names…" line (~20px) while every row is still
+            `pending`, the full item block once one resolves, and the "All
+            reviewed" line. And within the item block the height keeps moving
+            for SECONDS after the dialog opens, as the Wikidata description, the
+            career-team checkboxes, the near-match panel and the "Will create N
+            new teams…" line each arrive on their own query. Because the overlay
+            centres the dialog (`flex items-center`), any content-height jump
+            used to move the footer by HALF the delta.
 
-            MEASURED from that failure screenshot: header 98→176, body 176→463
-            (287px) for a player row with "No Wikidata match found" plus the
-            manual career-team form. `min-h-80` (320px) covered that.
+            INCIDENT 1 (CI run 30505189226, ~108px). The bulk "Add All Remaining
+            as New (N)" link sat at y=380-396; 333ms later the item block had
+            rendered and the green "Add as New {kind}" button occupied y=383-414.
+            A click aimed at the bulk link landed on "Add as New Player" instead
+            — deciding ONE row rather than all of them, silently, for an entity
+            the user never reviewed. (Proven by pixel analysis of the failure
+            screenshot: the tap point (394,388) is #00D558.) The fix then was a
+            reserved minimum body height (`min-h-80`, later `min-h-[22rem]`),
+            which BOUNDED the movement to about (max-h − min-h)/2 without
+            eliminating it, and said so in this comment: "≈13px".
 
-            NEO-212 GREW THAT SAME STATE and the reservation moved with it. The
-            row now also carries the skip control, the near-match live region,
-            the "will create N teams" summary line once anything is staged, and
-            body text at `text-sm` rather than `text-xs`. That state measures
-            ~340px, so the reservation is now `min-h-[22rem]` (352px) — still
-            ~15px of headroom, and still BELOW `max-h-[60vh]` (377px on the
-            1024×629 CI viewport), which is the constraint that matters:
-            min-height beats max-height in CSS, so a reservation at or above
-            60vh would silently disable the scroll cap and let the dialog grow
-            past the viewport.
+            INCIDENT 2 (CI run 33817648830, the seed job, 11px) collected that
+            debt. On a real 2024 Topps Chrome fetch the first row is Shohei
+            Ohtani — Wikidata description, three career-team checkboxes, the
+            "Will create 3 new teams…" line. Maestro read the bulk link at
+            [194,521][386,537] and clicked its centre (290,529) 332ms later; by
+            then the row's async content had pushed the body from its `min-h`
+            floor (352px) to its `max-h-[60vh]` ceiling (377px) and the link had
+            moved to [194,532][386,548]. The click landed 3px above it, on
+            footer padding: no handler, no error, no bulkError, counter frozen
+            at "0 of 328 reviewed". The link is `text-xs` — only 16px tall — so
+            the "bounded" 13px was never actually a safe margin.
 
-            HONEST LIMIT, unchanged in kind and now larger in degree: this
-            bounds the movement, it does not eliminate it. An enrichment-rich
-            row (HoF badge, a long checkbox list of career teams, a near-match
-            panel) can exceed 352px, at which point the body grows to
-            `max-h-[60vh]` and turns into a scroll region. Worst-case residual
-            footer shift is therefore about (377-352)/2 ≈ 13px, versus the 108px
-            that caused the incident and the ~28px this file carried before.
-            Eliminating it entirely needs a fixed-height body (`h-[60vh]`),
-            which would put the item block behind an inner scrollbar that
-            Maestro's page-level scroll cannot drive — that trade-off is a
-            product call, tracked on NEO-110 rather than made silently here.
+            The fix is structural: a dialog with a definite height. There is no
+            longer a residual shift to bound, so there is no longer a number
+            here to get wrong.
 
-            min- (not fixed h-) is also why `checklist-fetch-wizard-add-career-team`
-            keeps working: the career-team controls stay in normal page flow.
+            THE TRADE-OFF THIS ACCEPTS, honestly stated. A fixed height means a
+            short body (all rows pending) renders in a taller box than it needs.
+            That is the point — a stable frame is what the operator and Maestro
+            both need — and it is strictly better than the alternative it
+            replaces: at 1024×629 the OLD `max-h-[60vh]` body was 375px while
+            the Ohtani row needed ~430px, so 55px of it (the row's own "Link to
+            Existing…" and "Skip — not a person" controls) was clipped into an
+            inner scroll region that Maestro's page-level scroll cannot drive.
+            The fixed height gives the body 597−79(header)−65(footer) = 453px on
+            that viewport, so the richest real row now fits with room to spare
+            and `checklist-fetch-wizard-add-career-team`'s controls stay
+            reachable. A row richer still simply scrolls — and the footer holds.
           */}
-          <div className="p-6 space-y-4 min-h-[22rem] max-h-[60vh] overflow-y-auto">
+          <div className="p-6 space-y-4 flex-1 min-h-0 overflow-y-auto">
             {bulkError && (
               <p role="alert" className="text-xs text-[#FF2EB3]">
                 {bulkError}
@@ -960,7 +982,7 @@ export default function EntityReviewWizard({
             )}
           </div>
 
-          <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between gap-3">
+          <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-4">
               {!allDecided && remaining > 0 && (
                 <>

@@ -795,43 +795,62 @@ describe("EntityReviewWizard — NEO-110 footer stability", () => {
   // that had just rendered into those coordinates (CI run 30505189226; the tap
   // point (394,388) is #00D558 in the failure screenshot).
   //
-  // The guard that prevents it is the body's reserved minimum height, so that
-  // is what these pin. A refactor that drops the reservation fails here — which
-  // is the point, since nothing else in the suite would notice.
+  // A reserved MINIMUM body height (`min-h-80`, then `min-h-[22rem]`) was the
+  // first fix. It only BOUNDED the movement to (max-h − min-h)/2, and the bound
+  // came due: CI run 33817648830 (the seed job) lost the same bulk click to an
+  // 11px shift, because the Ohtani row's Wikidata description, career-team
+  // checkboxes and "Will create 3 new teams…" line landed in the 332ms between
+  // Maestro reading the link at [194,521][386,537] and clicking its centre
+  // (290,529) — by which time the link was at [194,532][386,548] and the click
+  // hit footer padding. The link is `text-xs`, 16px tall; 13px was never a safe
+  // margin.
   //
-  // NEO-212 moved the reservation from `min-h-80` (320px) to `min-h-[22rem]`
-  // (352px): the same tallest state now also carries the skip control, the
-  // near-match live region and the "will create N teams" summary line, and body
-  // text moved from `text-xs` to `text-sm`. The UPPER bound asserted below is
-  // the other half of the contract and is why the value did not simply keep
-  // growing — min-height beats max-height in CSS, so a reservation at or above
-  // `max-h-[60vh]` (377px on the 1024×629 CI viewport) would silently disable
-  // the scroll cap and let the dialog grow past the viewport.
-  const MIN_BODY_HEIGHT_CLASS = "min-h-[22rem]";
+  // SO THE CONTRACT THESE PIN IS NOW STRUCTURAL, not a magic number: the dialog
+  // has a DEFINITE height and the body is the flex child that absorbs all of the
+  // change (`flex-1 min-h-0 overflow-y-auto`). Given those two facts the footer's
+  // y is invariant no matter what the body does, so there is no residual shift
+  // left to size. Re-adding `min-h-*`/`max-h-*` to the body — the shape that
+  // failed twice — fails the last test here, which is the point: nothing else in
+  // the suite would notice.
+  const DIALOG_HEIGHT_CLASS = "h-[min(40rem,100%)]";
 
-  function bodyRegion(): HTMLElement {
-    // Escaped for querySelector: the Tailwind arbitrary-value brackets are
-    // significant characters in a CSS selector.
-    const el = document.querySelector(".min-h-\\[22rem\\]");
-    if (!el) throw new Error(`wizard body region (${MIN_BODY_HEIGHT_CLASS}) not found`);
-    return el as HTMLElement;
+  /** The three-child panel: [header, body, footer]. Structure IS the contract. */
+  function panelRegions(): {
+    panel: HTMLElement;
+    header: HTMLElement;
+    body: HTMLElement;
+    footer: HTMLElement;
+  } {
+    const overlay = document.querySelector('[role="dialog"]');
+    if (!overlay) throw new Error("wizard overlay not found");
+    const panel = overlay.firstElementChild as HTMLElement | null;
+    if (!panel) throw new Error("wizard panel not found");
+    const [header, body, footer] = Array.from(panel.children) as HTMLElement[];
+    if (!header || !body || !footer) {
+      throw new Error(
+        `wizard panel must be header/body/footer; got ${panel.children.length} children`,
+      );
+    }
+    return { panel, header, body, footer };
   }
 
-  it("reserves a minimum body height while every row is still pending", () => {
+  it("gives the dialog a definite height while every row is still pending", () => {
     currentRows = [makeRow({ status: "pending" }), makeRow({ status: "pending" })];
     renderWizard();
 
     expect(screen.getByText(/Looking up 2 more names/)).toBeTruthy();
-    expect(bodyRegion().className).toContain(MIN_BODY_HEIGHT_CLASS);
+    const { panel } = panelRegions();
+    expect(panel.className).toContain(DIALOG_HEIGHT_CLASS);
+    expect(panel.className).toContain("flex-col");
   });
 
-  it("keeps the same reserved body height once an item block renders", () => {
+  it("keeps the same definite dialog height once an item block renders", () => {
     // The exact state transition that used to move the footer.
     currentRows = [makeRow({ status: "ready", name: "Resolved Player" })];
     renderWizard();
 
     expect(screen.getByText("Resolved Player")).toBeTruthy();
-    expect(bodyRegion().className).toContain(MIN_BODY_HEIGHT_CLASS);
+    expect(panelRegions().panel.className).toContain(DIALOG_HEIGHT_CLASS);
   });
 
   it("keeps it on the final all-decided step too", () => {
@@ -839,16 +858,45 @@ describe("EntityReviewWizard — NEO-110 footer stability", () => {
     renderWizard();
 
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
-    expect(bodyRegion().className).toContain(MIN_BODY_HEIGHT_CLASS);
+    expect(panelRegions().panel.className).toContain(DIALOG_HEIGHT_CLASS);
   });
 
-  it("bounds growth so tall content scrolls rather than overflowing the viewport", () => {
+  it("makes the body the only region that flexes, so the footer cannot move", () => {
     currentRows = [makeRow({ status: "ready" })];
     renderWizard();
 
-    const cls = bodyRegion().className;
-    expect(cls).toContain("overflow-y-auto");
-    expect(cls).toContain("max-h-[60vh]");
+    const { header, body, footer } = panelRegions();
+
+    // The body absorbs every height change and scrolls past the dialog height.
+    expect(body.className).toContain("flex-1");
+    expect(body.className).toContain("min-h-0");
+    expect(body.className).toContain("overflow-y-auto");
+
+    // …and must NOT reintroduce its own elastic height band. A `min-h-*` floor
+    // with a `max-h-*` ceiling on this div is exactly the shape that shipped
+    // both incidents. (`min-h-0` is the opposite of a floor — it is what lets a
+    // flex child shrink below its content and scroll — so it is allowed.)
+    const heightClasses = body.className
+      .split(/\s+/)
+      .filter((c) => /^(min|max)-h-/.test(c) && c !== "min-h-0");
+    expect(heightClasses).toEqual([]);
+
+    // Header and footer are fixed bookends — neither may be squeezed by the body.
+    expect(header.className).toContain("shrink-0");
+    expect(footer.className).toContain("shrink-0");
+  });
+
+  it("keeps the bulk buttons inside the footer, not the scrolling body", () => {
+    // If the bulk link ever migrated into the body it would move with the
+    // content again, whatever the dialog height says.
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    const { body, footer } = panelRegions();
+    const bulk = screen.getByRole("button", { name: /Add all remaining as new/i });
+
+    expect(footer.contains(bulk)).toBe(true);
+    expect(body.contains(bulk)).toBe(false);
   });
 });
 
