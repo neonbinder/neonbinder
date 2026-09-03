@@ -6,12 +6,34 @@ import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import {
-  hasOperatorExtras,
   slotIds,
   initialSlots,
   pruneEmptySides,
   setPrimarySlotId,
 } from "./platformSlots";
+// NEO-211: the shared matcher / rename guard / unlink rule. The same module
+// backs storeSelectorOptions, so the two stores cannot drift apart again.
+import {
+  PLATFORM_SIDES,
+  checkSelectorValue,
+  clearDeclinedIfLabelChanged,
+  planSelectorSync,
+  planValueRename,
+  selectorValueKey,
+  unlinkStalePrimary,
+  valuesDeepEqual,
+  type IncomingItem,
+} from "./selectorSyncMatch";
+import {
+  MAX_SYNC_ITEMS,
+  UNLINK_NOTICE_LIMIT,
+  annotateHasCards,
+  platformSideValidator,
+  unionChildren,
+  unlinkedEntryValidator,
+  type UnlinkedEntry,
+} from "./selectorSyncStore";
+
 
 // ===== LEVEL VALIDATOR =====
 const levelValidator = v.union(
@@ -971,6 +993,20 @@ function wireToIds(v: string | string[] | undefined): string[] {
   return Array.isArray(v) ? v : [v];
 }
 
+/**
+ * NEO-211 — additive, id-keyed store for the reconciled levels.
+ *
+ * Same rewrite as `storeSelectorOptions`, plus the two things only the
+ * reconciler has: per-id marketplace LABELS (what BSC/SL call the set, which
+ * is what `getSelectorSyncSuggestions` later reads), and `existingId` — the
+ * reconciliation modal knows which NB row a title belongs to, so a title
+ * edited in the modal becomes a RENAME of that row instead of the delete +
+ * empty re-insert it used to be.
+ *
+ * The delete pass is gone. A row upstream stops listing keeps its `_id`, its
+ * name, its children and its cards; only the marketplace pointer is removed,
+ * and only on a side the caller says it actually fetched.
+ */
 export const storeReconciledOptions = mutation({
   args: {
     level: levelValidator,
@@ -992,17 +1028,40 @@ export const storeReconciledOptions = mutation({
           sportlots: v.optional(v.record(v.string(), v.string())),
         })),
         metadata: metadataValidator,
+        /**
+         * NEO-211 E — the NB row this modal line is about, when the modal
+         * knows. Tier 0 of the matcher. Resolved ONLY against the sibling
+         * snapshot at this (level, parentId): a client cannot use it to reach
+         * a row somewhere else in the tree, and a miss falls through to the
+         * id/name tiers rather than failing.
+         */
+        existingId: v.optional(v.id("selectorOptions")),
       }),
     ),
+    /**
+     * Sides fetched SUCCESSFULLY. Absent = unlink nothing — an old SPA bundle
+     * mid-deploy has no way to say "SportLots was down", so silence has to
+     * mean silence rather than "infer it from what came back".
+     */
+    coveredSides: v.optional(v.array(platformSideValidator)),
   },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     optionsCount: v.number(),
+    unlinked: v.array(unlinkedEntryValidator),
+    unlinkedTotal: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, parentId, reconciledItems } = args;
+
+    if (reconciledItems.length > MAX_SYNC_ITEMS) {
+      throw new Error(
+        `storeReconciledOptions: ${reconciledItems.length} items exceeds the ` +
+          `${MAX_SYNC_ITEMS}-per-call limit`,
+      );
+    }
 
     // NEO-71-74: reconciledItems share one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every
@@ -1012,7 +1071,6 @@ export const storeReconciledOptions = mutation({
       ? (await ctx.db.get(parentId))?.features
       : undefined;
 
-    // Get existing options for this level and parent
     const existingOptions = await ctx.db
       .query("selectorOptions")
       .withIndex("by_level_and_parent", (q) =>
@@ -1020,20 +1078,122 @@ export const storeReconciledOptions = mutation({
       )
       .collect();
 
-    const existingByValue = new Map<string, (typeof existingOptions)[0]>();
-    for (const opt of existingOptions) {
-      existingByValue.set(opt.value.toLowerCase().trim(), opt);
+    const items: IncomingItem[] = reconciledItems.map((item) => {
+      const bsc = wireToIds(item.platformData.bsc)[0];
+      const sportlots = wireToIds(item.platformData.sportlots)[0];
+      return {
+        value: item.value,
+        ids: {
+          ...(bsc ? { bsc } : {}),
+          ...(sportlots ? { sportlots } : {}),
+        },
+        ...(item.existingId ? { existingId: item.existingId } : {}),
+      };
+    });
+
+    const plan = planSelectorSync({
+      existing: existingOptions,
+      items,
+      coveredSides: args.coveredSides,
+    });
+    if (plan.ambiguities.length > 0) {
+      console.warn(
+        `[storeReconciledOptions] withheld ${plan.ambiguities.length} item(s) ` +
+          `at level=${level}: ` +
+          JSON.stringify(plan.ambiguities.slice(0, 10)),
+      );
     }
 
-    const processedValues = new Set<string>();
-    const insertedIds: Id<"selectorOptions">[] = [];
+    type ExistingRow = (typeof existingOptions)[number];
+    type Working = {
+      row: ExistingRow;
+      value: string;
+      features?: Record<string, string>;
+      sportConfig?: ExistingRow["sportConfig"];
+      platformData: ExistingRow["platformData"];
+      platformLabels: ExistingRow["platformLabels"];
+      platformFacets: ExistingRow["platformFacets"];
+      platformSlotSeq: ExistingRow["platformSlotSeq"];
+      primaryPlatformId: ExistingRow["primaryPlatformId"];
+      declinedUpstreamLabels: ExistingRow["declinedUpstreamLabels"];
+      metadata: ExistingRow["metadata"];
+    };
+    const byRowId = new Map<string, ExistingRow>();
+    for (const row of existingOptions) byRowId.set(row._id, row);
+    const working = new Map<string, Working>();
+    const workingFor = (row: ExistingRow): Working => {
+      let w = working.get(row._id);
+      if (!w) {
+        w = {
+          row,
+          value: row.value,
+          features: row.features,
+          platformData: row.platformData,
+          platformLabels: row.platformLabels,
+          platformFacets: row.platformFacets,
+          platformSlotSeq: row.platformSlotSeq,
+          primaryPlatformId: row.primaryPlatformId,
+          declinedUpstreamLabels: row.declinedUpstreamLabels,
+          metadata: row.metadata,
+        };
+        working.set(row._id, w);
+      }
+      return w;
+    };
+    /** The clash check's view of sibling names, moving as renames land. */
+    const workingSiblings = () =>
+      existingOptions.map((r) => ({
+        _id: r._id as string,
+        value: working.get(r._id)?.value ?? r.value,
+      }));
 
-    for (const item of reconciledItems) {
-      const normalizedValue = item.value.toLowerCase().trim();
-      processedValues.add(normalizedValue);
+    const linkedIds: Id<"selectorOptions">[] = [];
 
-      const existing = existingByValue.get(normalizedValue);
-      if (existing) {
+    for (let i = 0; i < reconciledItems.length; i++) {
+      const item = reconciledItems[i];
+      const parsed = items[i];
+      const outcome = plan.outcomes[i];
+      if (outcome.kind === "withheld") continue;
+
+      if (outcome.kind === "matched") {
+        const row = byRowId.get(outcome.existingId)!;
+        const w = workingFor(row);
+
+        // NEO-211 E — a title edited inside the reconciliation modal renames
+        // the row it belongs to. ONLY on a tier-0 match: an id- or name-match
+        // is the sync recognising a row, not an operator asking for a new
+        // name, and the sync has never been allowed to write `value`.
+        if (
+          outcome.tier === 0 &&
+          selectorValueKey(item.value) !== selectorValueKey(w.value)
+        ) {
+          const renamePlan = planValueRename({
+            row: {
+              _id: row._id,
+              level: row.level,
+              value: w.value,
+              isCustom: row.isCustom,
+              features: w.features,
+              sportConfig: row.sportConfig,
+            },
+            nextValue: item.value,
+            siblings: workingSiblings(),
+          });
+          if (renamePlan.ok && !renamePlan.unchanged) {
+            w.value = renamePlan.value;
+            if (renamePlan.features) w.features = renamePlan.features;
+            if (renamePlan.sportConfig) w.sportConfig = renamePlan.sportConfig;
+          } else if (!renamePlan.ok) {
+            // Refused (protected variantType), clashing or invalid. The
+            // LINKAGE below still applies — refusing a name is not a reason to
+            // drop the marketplace mapping the operator just confirmed.
+            console.warn(
+              `[storeReconciledOptions] rename refused (${renamePlan.reason}) ` +
+                `for ${row._id} at level=${level}: ${renamePlan.message}`,
+            );
+          }
+        }
+
         // Refresh-without-clobber (NEO-6, reworked onto slots for NEO-137):
         // refresh only the PRIMARY SLOT's marketplace ID per side and keep
         // operator-attached extras untouched.
@@ -1043,148 +1203,215 @@ export const storeReconciledOptions = mutation({
         // re-slug changes the ID, not which set it is — and every card already
         // pointing at that slot must keep resolving. Retiring the key here
         // would orphan the whole checklist on a routine re-sync.
-        let working: {
-          platformData: typeof existing.platformData;
-          platformLabels: typeof existing.platformLabels;
-          platformSlotSeq: typeof existing.platformSlotSeq;
-        } = {
-          platformData: existing.platformData,
-          platformLabels: existing.platformLabels,
-          platformSlotSeq: existing.platformSlotSeq,
+        //
+        // NEO-211: a side with NO incoming id is no longer cleared here. That
+        // is now the unlink pass's job, and it only fires on a side the caller
+        // declared covered — so a SportLots outage cannot strip SL linkage off
+        // every row it touches.
+        const nextPrimary: { bsc?: string; sportlots?: string } = {
+          ...(w.primaryPlatformId ?? {}),
         };
-        const newPrimary: { bsc?: string; sportlots?: string } = {};
-
-        for (const side of ["bsc", "sportlots"] as const) {
-          const refreshedId = wireToIds(item.platformData[side])[0];
-          const label = refreshedId
-            ? item.platformLabels?.[side]?.[refreshedId]
-            : undefined;
-          const next = setPrimarySlotId(working, side, refreshedId, label);
-          working = {
-            platformData: next.platformData,
-            platformLabels: next.platformLabels,
-            platformSlotSeq: next.platformSlotSeq,
-          };
-          if (next.slot) newPrimary[side] = next.slot;
+        for (const side of PLATFORM_SIDES) {
+          const refreshedId = parsed.ids[side];
+          if (!refreshedId) continue;
+          const rawLabel = item.platformLabels?.[side]?.[refreshedId];
+          const labelCheck =
+            rawLabel === undefined ? undefined : checkSelectorValue(rawLabel);
+          const label =
+            labelCheck && labelCheck.ok ? labelCheck.value : undefined;
+          const next = setPrimarySlotId(w, side, refreshedId, label);
+          w.platformData = next.platformData;
+          w.platformLabels = next.platformLabels;
+          w.platformFacets = next.platformFacets;
+          w.platformSlotSeq = next.platformSlotSeq;
+          if (next.slot) nextPrimary[side] = next.slot;
+          // A decline is a decision about ONE label; a new label re-opens it.
+          const cleared = clearDeclinedIfLabelChanged(
+            w.declinedUpstreamLabels,
+            side,
+            label,
+          );
+          if (cleared.changed) w.declinedUpstreamLabels = cleared.next;
         }
+        w.primaryPlatformId =
+          Object.keys(nextPrimary).length > 0 ? nextPrimary : undefined;
 
-        const prunedData = pruneEmptySides({ ...working.platformData });
-        const prunedLabels = pruneEmptySides({ ...(working.platformLabels ?? {}) });
-
-        const patch: Record<string, unknown> = {
-          platformData: prunedData,
-          lastUpdated: Date.now(),
-        };
-        patch.platformLabels =
-          Object.keys(prunedLabels).length > 0 ? prunedLabels : undefined;
-        patch.platformSlotSeq =
-          working.platformSlotSeq &&
-          Object.keys(working.platformSlotSeq).length > 0
-            ? working.platformSlotSeq
-            : undefined;
-        // Always rewrite primaryPlatformId (or clear it). Convex patch is
-        // a shallow merge at the top level, so replacing the whole object
-        // also drops any side the reconciler no longer owns. Without this
-        // a removed primary would linger and pose as the primary on the
-        // next reconciliation pass.
-        patch.primaryPlatformId =
-          Object.keys(newPrimary).length > 0 ? newPrimary : undefined;
         if (item.metadata) {
-          patch.metadata = { ...(existing.metadata || {}), ...item.metadata };
-        }
-        await ctx.db.patch(existing._id, patch);
-        insertedIds.push(existing._id);
-      } else {
-        // Fresh insert: reconciler is the only source of IDs, so the slots it
-        // allocates are the primary on both sides.
-        const bscIds = wireToIds(item.platformData.bsc);
-        const slIds = wireToIds(item.platformData.sportlots);
-        const alloc = initialSlots({
-          bsc: bscIds.map((id) => ({
-            id,
-            ...(item.platformLabels?.bsc?.[id]
-              ? { label: item.platformLabels.bsc[id] }
-              : {}),
-          })),
-          sportlots: slIds.map((id) => ({
-            id,
-            ...(item.platformLabels?.sportlots?.[id]
-              ? { label: item.platformLabels.sportlots[id] }
-              : {}),
-          })),
-        });
-
-        const newPrimary: { bsc?: string; sportlots?: string } = {};
-        if (bscIds[0]) newPrimary.bsc = alloc.slotByIdBySide.bsc[bscIds[0]];
-        if (slIds[0]) {
-          newPrimary.sportlots = alloc.slotByIdBySide.sportlots[slIds[0]];
+          w.metadata = { ...(w.metadata || {}), ...item.metadata };
         }
 
-        const features = {
-          ...(parentFeatures ?? {}),
-          ...deriveOwnLevelFeatures(level, item.value, item.metadata),
-        };
-
-        const hasLabels =
-          Object.keys(alloc.platformLabels.bsc ?? {}).length > 0 ||
-          Object.keys(alloc.platformLabels.sportlots ?? {}).length > 0;
-
-        const id = await ctx.db.insert("selectorOptions", {
-          level,
-          value: item.value,
-          platformData: alloc.platformData,
-          ...(hasLabels ? { platformLabels: alloc.platformLabels } : {}),
-          ...(Object.keys(newPrimary).length > 0
-            ? { primaryPlatformId: newPrimary }
-            : {}),
-          ...(Object.keys(alloc.platformSlotSeq).length > 0
-            ? { platformSlotSeq: alloc.platformSlotSeq }
-            : {}),
-          parentId,
-          children: [],
-          metadata: item.metadata,
-          ...(Object.keys(features).length > 0 ? { features } : {}),
-          lastUpdated: Date.now(),
-        });
-        insertedIds.push(id);
+        linkedIds.push(row._id);
+        continue;
       }
-    }
 
-    // Delete old non-custom options that weren't in the reconciled set —
-    // but preserve any row carrying operator-attached extras (NEO-6).
-    // Reconciler-only rows are still deleted as before.
-    if (reconciledItems.length > 0) {
-      for (const existing of existingOptions) {
-        const normalizedValue = existing.value.toLowerCase().trim();
-        if (
-          !processedValues.has(normalizedValue) &&
-          !existing.isCustom &&
-          !hasOperatorExtras(existing)
-        ) {
-          await ctx.db.delete(existing._id);
-        }
-      }
-    }
-
-    // Update parent's children array — keep insertedIds, plus any existing
-    // row that wasn't deleted (custom rows OR operator-extras-preserved rows).
-    if (parentId && insertedIds.length > 0) {
-      const preservedIds = existingOptions
-        .filter(
-          (o) =>
-            !processedValues.has(o.value.toLowerCase().trim()) &&
-            (o.isCustom || hasOperatorExtras(o)),
-        )
-        .map((o) => o._id);
-      await ctx.db.patch(parentId, {
-        children: [...insertedIds, ...preservedIds],
+      // Fresh insert: reconciler is the only source of IDs, so the slots it
+      // allocates are the primary on both sides.
+      const bscIds = wireToIds(item.platformData.bsc);
+      const slIds = wireToIds(item.platformData.sportlots);
+      const alloc = initialSlots({
+        bsc: bscIds.map((id) => ({
+          id,
+          ...(item.platformLabels?.bsc?.[id]
+            ? { label: item.platformLabels.bsc[id] }
+            : {}),
+        })),
+        sportlots: slIds.map((id) => ({
+          id,
+          ...(item.platformLabels?.sportlots?.[id]
+            ? { label: item.platformLabels.sportlots[id] }
+            : {}),
+        })),
       });
+
+      const newPrimary: { bsc?: string; sportlots?: string } = {};
+      if (bscIds[0]) newPrimary.bsc = alloc.slotByIdBySide.bsc[bscIds[0]];
+      if (slIds[0]) {
+        newPrimary.sportlots = alloc.slotByIdBySide.sportlots[slIds[0]];
+      }
+
+      const features = {
+        ...(parentFeatures ?? {}),
+        ...deriveOwnLevelFeatures(level, item.value, item.metadata),
+      };
+
+      const hasLabels =
+        Object.keys(alloc.platformLabels.bsc ?? {}).length > 0 ||
+        Object.keys(alloc.platformLabels.sportlots ?? {}).length > 0;
+
+      const id = await ctx.db.insert("selectorOptions", {
+        level,
+        value: item.value,
+        platformData: alloc.platformData,
+        ...(hasLabels ? { platformLabels: alloc.platformLabels } : {}),
+        ...(Object.keys(newPrimary).length > 0
+          ? { primaryPlatformId: newPrimary }
+          : {}),
+        ...(Object.keys(alloc.platformSlotSeq).length > 0
+          ? { platformSlotSeq: alloc.platformSlotSeq }
+          : {}),
+        parentId,
+        children: [],
+        metadata: item.metadata,
+        ...(Object.keys(features).length > 0 ? { features } : {}),
+        lastUpdated: Date.now(),
+      });
+      linkedIds.push(id);
     }
+
+    // ── Unlink pass (NEO-211 D) ───────────────────────────────────────────
+    //
+    // Covered side + a primary id the fetch did not return = upstream dropped
+    // it. Detach that one slot, report it, touch nothing else. Operator extras
+    // stay: they are often ids from a DIFFERENT BSC facet than this level's
+    // fetch queries (NEO-189), so "this fetch did not mention it" is no
+    // evidence at all.
+    const unlinkedAll: UnlinkedEntry[] = [];
+    if (reconciledItems.length > 0) {
+      for (const side of plan.coveredSides) {
+        for (const row of existingOptions) {
+          if (row.isCustom) continue;
+          const w = workingFor(row);
+          const un = unlinkStalePrimary(w, side, plan.returnedIds[side]);
+          if (!un) continue;
+          w.platformData = un.platformData;
+          w.platformLabels = un.platformLabels;
+          w.platformFacets = un.platformFacets;
+          w.primaryPlatformId = un.primaryPlatformId;
+          unlinkedAll.push({ id: row._id, value: w.value, side });
+        }
+      }
+    }
+
+    // ── Write pass ────────────────────────────────────────────────────────
+    //
+    // NEO-85's write-if-changed guard, which this mutation never had: it used
+    // to patch every matched row unconditionally, bumping `lastUpdated` and so
+    // invalidating every query watching it — re-rendering and reflowing the
+    // SetSelector columns under Maestro's coordinate taps on a sync that
+    // changed nothing.
+    for (const w of working.values()) {
+      const prunedData = pruneEmptySides({ ...w.platformData });
+      const prunedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
+      const prunedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
+      const nextLabels =
+        Object.keys(prunedLabels).length > 0 ? prunedLabels : undefined;
+      const nextFacets =
+        Object.keys(prunedFacets).length > 0 ? prunedFacets : undefined;
+      const nextSlotSeq =
+        w.platformSlotSeq && Object.keys(w.platformSlotSeq).length > 0
+          ? w.platformSlotSeq
+          : undefined;
+
+      const patch: Record<string, unknown> = {};
+      if (w.value !== w.row.value) {
+        patch.value = w.value;
+        if (w.features) patch.features = w.features;
+        if (w.sportConfig) patch.sportConfig = w.sportConfig;
+      }
+      if (!valuesDeepEqual(prunedData, w.row.platformData)) {
+        patch.platformData = prunedData;
+      }
+      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
+        patch.platformLabels = nextLabels;
+      }
+      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
+        patch.platformFacets = nextFacets;
+      }
+      if (!valuesDeepEqual(nextSlotSeq ?? null, w.row.platformSlotSeq ?? null)) {
+        patch.platformSlotSeq = nextSlotSeq;
+      }
+      if (
+        !valuesDeepEqual(
+          w.primaryPlatformId ?? null,
+          w.row.primaryPlatformId ?? null,
+        )
+      ) {
+        patch.primaryPlatformId = w.primaryPlatformId;
+      }
+      if (
+        !valuesDeepEqual(
+          w.declinedUpstreamLabels ?? null,
+          w.row.declinedUpstreamLabels ?? null,
+        )
+      ) {
+        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
+      }
+      if (!valuesDeepEqual(w.metadata ?? null, w.row.metadata ?? null)) {
+        patch.metadata = w.metadata;
+      }
+
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(w.row._id, { ...patch, lastUpdated: Date.now() });
+      }
+    }
+
+    // `children` is a set-UNION now: it never loses a child, so a row the
+    // reconciler did not name keeps its place in the parent's cache.
+    if (parentId && linkedIds.length > 0) {
+      const parent = await ctx.db.get(parentId);
+      if (parent) {
+        const next = unionChildren(parent.children, [
+          ...linkedIds,
+          ...existingOptions.map((o) => o._id),
+        ]);
+        if (!valuesDeepEqual(parent.children ?? [], next)) {
+          await ctx.db.patch(parentId, { children: next });
+        }
+      }
+    }
+
+    const unlinked = await annotateHasCards(
+      ctx,
+      level,
+      unlinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
+    );
 
     return {
       success: true,
-      message: `Successfully stored ${insertedIds.length} reconciled ${level} options`,
-      optionsCount: insertedIds.length,
+      message: `Successfully stored ${linkedIds.length} reconciled ${level} options`,
+      optionsCount: linkedIds.length,
+      unlinked,
+      unlinkedTotal: unlinkedAll.length,
     };
   },
 });

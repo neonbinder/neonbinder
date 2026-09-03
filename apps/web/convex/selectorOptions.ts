@@ -57,6 +57,31 @@ import { runWithOccRetry } from "../lib/errors/occ-retry";
 // in one pipeline disagreeing about what counts as cosmetic.
 import { conflictingNames, nameKey } from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
+// NEO-211: the one matcher + the one value-validation path, shared with
+// setReconciliation.ts so review, write and suggestion can never disagree.
+import {
+  PLATFORM_SIDES,
+  checkSelectorValue,
+  valuesDeepEqual,
+  clearDeclinedIfLabelChanged,
+  planSelectorSync,
+  planValueRename,
+  refusesValueRename,
+  selectorValueKey,
+  unlinkStalePrimary,
+  VARIANT_TYPE_RENAME_MESSAGE,
+  VARIANT_TYPE_RENAME_REFUSED,
+  type IncomingItem,
+} from "./selectorSyncMatch";
+import {
+  MAX_SYNC_ITEMS,
+  UNLINK_NOTICE_LIMIT,
+  annotateHasCards,
+  platformSideValidator,
+  unionChildren,
+  unlinkedEntryValidator,
+  type UnlinkedEntry,
+} from "./selectorSyncStore";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { normalizePlayerName } from "./players";
@@ -946,48 +971,26 @@ export const getCardChecklist = query({
   },
 });
 
-// NEO-85: structural deep-equal for the small plain-value objects/arrays we
-// store on selectorOptions (platformData, children id arrays).
-// Leaves are string | number | boolean | null; containers are arrays and plain
-// objects. Used to skip no-op ctx.db.patch calls: in Convex, patching a row —
-// even with byte-identical data — invalidates every query that read it, which
-// re-renders and reflows the SetSelector columns under Maestro's coordinate
-// taps (the weeks-long dropped-tap flake). Order-sensitive for arrays; our
-// syncs write a deterministic order, so identical syncs compare equal.
-function valuesDeepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== typeof b) return false;
-  if (a === null || b === null) return a === b;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b)) return false;
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (!valuesDeepEqual(a[i], b[i])) return false;
-    }
-    return true;
-  }
-  if (typeof a === "object" && typeof b === "object") {
-    const aKeys = Object.keys(a as Record<string, unknown>);
-    const bKeys = Object.keys(b as Record<string, unknown>);
-    if (aKeys.length !== bKeys.length) return false;
-    for (const key of aKeys) {
-      if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
-      if (
-        !valuesDeepEqual(
-          (a as Record<string, unknown>)[key],
-          (b as Record<string, unknown>)[key],
-        )
-      ) {
-        return false;
-      }
-    }
-    return true;
-  }
-  return false;
-}
-
 // ===== MUTATIONS =====
 
+/**
+ * NEO-211 — additive, id-keyed sync for the aggregator levels.
+ *
+ * WHAT CHANGED, and why it is the whole ticket: this mutation used to end with
+ * a delete pass that removed every non-custom row the marketplace did not name
+ * in THIS call. Combined with matching purely on display value, that made an
+ * operator rename equivalent to "delete this set and everything under it, then
+ * insert an empty replacement" — the row's `_id` is what `cardChecklist`,
+ * child rows, `cardCrossListings`, `players.sportId` and `teams.sportId` all
+ * point at, and nothing re-parents. A single marketplace outage did the same
+ * thing to every row linked only to the side that failed.
+ *
+ * Now: rows are matched by marketplace ID first and name second, nothing is
+ * ever deleted, and a marketplace link is removed only when the caller
+ * explicitly says that side was fetched successfully (`coveredSides`) and the
+ * fetch did not return the id. Every removal is reported back so an admin sees
+ * it instead of discovering it later.
+ */
 export const storeSelectorOptions = mutation({
   args: {
     level: levelValidator,
@@ -1002,15 +1005,37 @@ export const storeSelectorOptions = mutation({
       }),
     ),
     parentId: v.optional(v.id("selectorOptions")),
+    /**
+     * The sides this call fetched SUCCESSFULLY. Absent = "I am not telling
+     * you", which means nothing is unlinked.
+     *
+     * A Convex deploy is a hard cutover and old SPA bundles stay live for
+     * minutes afterwards. An old bundle has no way to say "SportLots was
+     * down", so silence has to mean silence — inferring coverage from the
+     * items would let that bundle strip SL linkage off every row it touched
+     * during an outage. Coverage is then narrowed further to sides that
+     * actually carry an id in this batch (see `effectiveCoveredSides`).
+     */
+    coveredSides: v.optional(v.array(platformSideValidator)),
   },
   returns: v.object({
     success: v.boolean(),
     message: v.string(),
     optionsCount: v.number(),
+    /** Rows whose marketplace link was removed (NEO-211 D). Capped; see total. */
+    unlinked: v.array(unlinkedEntryValidator),
+    unlinkedTotal: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const { level, options, parentId } = args;
+
+    if (options.length > MAX_SYNC_ITEMS) {
+      throw new Error(
+        `storeSelectorOptions: ${options.length} options exceeds the ` +
+          `${MAX_SYNC_ITEMS}-per-call limit`,
+      );
+    }
 
     // NEO-71-74: every option in this batch shares one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every
@@ -1020,26 +1045,16 @@ export const storeSelectorOptions = mutation({
       ? (await ctx.db.get(parentId))?.features
       : undefined;
 
-    // Get existing non-custom options for this level and parent
+    // The sibling snapshot. This is the ONLY set of rows this call may touch —
+    // tier 0's client-supplied ids are resolved against it rather than through
+    // ctx.db.get, so a caller cannot steer a write at a row under a different
+    // parent or level.
     const existingOptions = await ctx.db
       .query("selectorOptions")
       .withIndex("by_level_and_parent", (q) =>
         q.eq("level", level).eq("parentId", parentId),
       )
       .collect();
-
-    // Build a map of existing options by normalized value
-    const existingByValue = new Map<
-      string,
-      (typeof existingOptions)[0]
-    >();
-    for (const opt of existingOptions) {
-      existingByValue.set(opt.value.toLowerCase().trim(), opt);
-    }
-
-    // Upsert: update existing, insert new
-    const processedValues = new Set<string>();
-    const insertedIds: Id<"selectorOptions">[] = [];
 
     // Levels where downstream fetches require a BSC slug. SL is excluded
     // — its adapter doesn't filter on setName and does its own DB lookup
@@ -1062,156 +1077,292 @@ export const storeSelectorOptions = mutation({
       );
     };
 
-    for (const option of options) {
-      const normalizedValue = option.value.toLowerCase().trim();
-      processedValues.add(normalizedValue);
+    // The wire still speaks marketplace IDs. These upper levels
+    // (sport/year/manufacturer/setName) carry exactly one per side.
+    const items: IncomingItem[] = options.map((option) => {
+      const bsc = wireToIds(option.platformData.bsc)[0];
+      const sportlots = wireToIds(option.platformData.sportlots)[0];
+      return {
+        value: option.value,
+        ids: {
+          ...(bsc ? { bsc } : {}),
+          ...(sportlots ? { sportlots } : {}),
+        },
+      };
+    });
 
-      // The wire still speaks marketplace IDs. These upper levels
-      // (sport/year/manufacturer/setName) carry exactly one per side.
-      const incomingBsc = wireToIds(option.platformData.bsc)[0];
-      const incomingSl = wireToIds(option.platformData.sportlots)[0];
+    const plan = planSelectorSync({
+      existing: existingOptions,
+      items,
+      coveredSides: args.coveredSides,
+    });
+    if (plan.ambiguities.length > 0) {
+      // Deliberately log-only: an ambiguity names sibling rows and is exactly
+      // the backend detail NEO-47 keeps out of reactive state.
+      console.warn(
+        `[storeSelectorOptions] withheld ${plan.ambiguities.length} item(s) ` +
+          `at level=${level}: ` +
+          JSON.stringify(plan.ambiguities.slice(0, 10)),
+      );
+    }
 
-      const existing = existingByValue.get(normalizedValue);
-      if (existing) {
+    // Working copies of the slot maps, one per row we touch. Built up across
+    // the match pass and the unlink pass, then diffed against what is stored
+    // so the NEO-85 write-if-changed guard still holds for both.
+    type Working = {
+      row: (typeof existingOptions)[number];
+      platformData: (typeof existingOptions)[number]["platformData"];
+      platformLabels: (typeof existingOptions)[number]["platformLabels"];
+      platformFacets: (typeof existingOptions)[number]["platformFacets"];
+      platformSlotSeq: (typeof existingOptions)[number]["platformSlotSeq"];
+      primaryPlatformId: (typeof existingOptions)[number]["primaryPlatformId"];
+      declinedUpstreamLabels: (typeof existingOptions)[number]["declinedUpstreamLabels"];
+      sportConfig?: (typeof existingOptions)[number]["sportConfig"];
+    };
+    const byRowId = new Map<string, (typeof existingOptions)[number]>();
+    for (const row of existingOptions) byRowId.set(row._id, row);
+    const working = new Map<string, Working>();
+    const workingFor = (row: (typeof existingOptions)[number]): Working => {
+      let w = working.get(row._id);
+      if (!w) {
+        w = {
+          row,
+          platformData: row.platformData,
+          platformLabels: row.platformLabels,
+          platformFacets: row.platformFacets,
+          platformSlotSeq: row.platformSlotSeq,
+          primaryPlatformId: row.primaryPlatformId,
+          declinedUpstreamLabels: row.declinedUpstreamLabels,
+        };
+        working.set(row._id, w);
+      }
+      return w;
+    };
+
+    const linkedIds: Id<"selectorOptions">[] = [];
+    const insertedIds: Id<"selectorOptions">[] = [];
+
+    for (let i = 0; i < options.length; i++) {
+      const option = options[i];
+      const item = items[i];
+      const outcome = plan.outcomes[i];
+      if (outcome.kind === "withheld") continue;
+
+      if (outcome.kind === "matched") {
+        const row = byRowId.get(outcome.existingId)!;
+        const w = workingFor(row);
         // NEO-137: refresh the PRIMARY SLOT's id per side rather than merging
         // raw ids. Reusing the slot key is what keeps this row's cards
         // resolving when a marketplace re-slugs a set — the id changes, the
-        // set does not. An absent incoming id leaves the side untouched here
-        // (unlike the reconciler, this generic sync never clears a mapping).
-        let working: {
-          platformData: typeof existing.platformData;
-          platformLabels: typeof existing.platformLabels;
-          platformSlotSeq: typeof existing.platformSlotSeq;
-        } = {
-          platformData: existing.platformData,
-          platformLabels: existing.platformLabels,
-          platformSlotSeq: existing.platformSlotSeq,
-        };
-        for (const [side, incoming] of [
-          ["bsc", incomingBsc],
-          ["sportlots", incomingSl],
-        ] as const) {
+        // set does not. A side with no incoming id is not touched here; it is
+        // handled by the unlink pass, which only fires on a covered side.
+        for (const side of PLATFORM_SIDES) {
+          const incoming = item.ids[side];
           if (!incoming) continue;
-          const next = setPrimarySlotId(working, side, incoming);
-          working = {
-            platformData: next.platformData,
-            platformLabels: next.platformLabels,
-            platformSlotSeq: next.platformSlotSeq,
-          };
+          // At these levels the item's display value IS the marketplace's own
+          // name for the set, so it is the label. Storing it is what lets
+          // `getSelectorSyncSuggestions` say "BSC calls this Topps" without a
+          // second fetch. Skip anything that would not survive validation
+          // rather than throwing the whole sync away over one bad name.
+          const labelCheck = checkSelectorValue(option.value);
+          const label = labelCheck.ok ? labelCheck.value : undefined;
+          const next = setPrimarySlotId(w, side, incoming, label);
+          w.platformData = next.platformData;
+          w.platformLabels = next.platformLabels;
+          w.platformFacets = next.platformFacets;
+          w.platformSlotSeq = next.platformSlotSeq;
+          // A decline is a decision about ONE label. If the marketplace now
+          // calls the set something else, the operator has not seen it yet.
+          const cleared = clearDeclinedIfLabelChanged(
+            w.declinedUpstreamLabels,
+            side,
+            label,
+          );
+          if (cleared.changed) w.declinedUpstreamLabels = cleared.next;
         }
-        const mergedPlatformData = pruneEmptySides({ ...working.platformData });
-        warnIfIncomplete(
-          existing._id,
-          option.value,
-          slotIds({ platformData: mergedPlatformData }, "bsc")[0],
-        );
 
-        // NEO-85: only patch when the merged data actually differs from what's
-        // stored. A no-op patch still invalidates every query that read this
-        // row, re-rendering + reflowing the SetSelector columns for nothing
-        // (forensics: `items-changed sameContent=true`). `lastUpdated` is a
-        // "data last changed" marker — never displayed or used for staleness
-        // (the FE "Last synced" reads cardChecklist.lastUpdated) — so skipping
-        // the bump on an unchanged sync is correct.
-        const platformDataChanged = !valuesDeepEqual(
-          mergedPlatformData,
-          existing.platformData,
-        );
-        const slotSeqChanged = !valuesDeepEqual(
-          working.platformSlotSeq ?? {},
-          existing.platformSlotSeq ?? {},
+        warnIfIncomplete(
+          row._id,
+          option.value,
+          slotIds({ platformData: w.platformData }, "bsc")[0],
         );
 
         // NEO-96: backfill sportConfig onto a sport row that predates it (or
         // whose earlier sync ran before defaults existed). Only ever ADDS —
         // never overwrites a config already on the row, so an operator edit
         // survives every subsequent sync.
-        const sportConfigBackfill =
-          level === "sport" && !existing.sportConfig
-            ? sportConfigDefaultsFor(option.value)
-            : undefined;
-
-        if (platformDataChanged || slotSeqChanged || sportConfigBackfill) {
-          await ctx.db.patch(existing._id, {
-            ...(platformDataChanged ? { platformData: mergedPlatformData } : {}),
-            ...(slotSeqChanged
-              ? { platformSlotSeq: working.platformSlotSeq }
-              : {}),
-            ...(sportConfigBackfill ? { sportConfig: sportConfigBackfill } : {}),
-            lastUpdated: Date.now(),
-          });
+        if (level === "sport" && !row.sportConfig) {
+          const backfill = sportConfigDefaultsFor(option.value);
+          if (backfill) w.sportConfig = backfill;
         }
-        // Always keep the row in the parent's children set, whether or not we
-        // patched it — skipping the patch must not drop it from the ordering.
-        insertedIds.push(existing._id);
-      } else {
-        warnIfIncomplete("new", option.value, incomingBsc);
-        const features = {
-          ...(parentFeatures ?? {}),
-          ...deriveOwnLevelFeatures(level, option.value),
-        };
-        // NEO-96: a sport row carries its own config from creation, so nothing
-        // downstream ever looks up SKU codes / QIDs / ESPN paths by display
-        // name again. Absent for an unmapped sport — callers degrade, see
-        // convex/sportConfig.ts.
-        const sportConfig =
-          level === "sport" ? sportConfigDefaultsFor(option.value) : undefined;
-        const alloc = initialSlots({
-          ...(incomingBsc ? { bsc: [{ id: incomingBsc }] } : {}),
-          ...(incomingSl ? { sportlots: [{ id: incomingSl }] } : {}),
-        });
-        const id = await ctx.db.insert("selectorOptions", {
-          level,
-          value: option.value,
-          platformData: alloc.platformData,
-          ...(Object.keys(alloc.platformSlotSeq).length > 0
-            ? { platformSlotSeq: alloc.platformSlotSeq }
-            : {}),
-          parentId,
-          children: [],
-          ...(Object.keys(features).length > 0 ? { features } : {}),
-          ...(sportConfig ? { sportConfig } : {}),
-          lastUpdated: Date.now(),
-        });
-        insertedIds.push(id);
+
+        linkedIds.push(row._id);
+        continue;
       }
+
+      // No match at any tier → insert. Unchanged from before, except that the
+      // marketplace's own name is now recorded as the slot label.
+      const incomingBsc = item.ids.bsc;
+      const incomingSl = item.ids.sportlots;
+      warnIfIncomplete("new", option.value, incomingBsc);
+      const features = {
+        ...(parentFeatures ?? {}),
+        ...deriveOwnLevelFeatures(level, option.value),
+      };
+      // NEO-96: a sport row carries its own config from creation, so nothing
+      // downstream ever looks up SKU codes / QIDs / ESPN paths by display
+      // name again. Absent for an unmapped sport — callers degrade, see
+      // convex/sportConfig.ts.
+      const sportConfig =
+        level === "sport" ? sportConfigDefaultsFor(option.value) : undefined;
+      const labelCheck = checkSelectorValue(option.value);
+      const label = labelCheck.ok ? labelCheck.value : undefined;
+      const alloc = initialSlots({
+        ...(incomingBsc
+          ? { bsc: [{ id: incomingBsc, ...(label ? { label } : {}) }] }
+          : {}),
+        ...(incomingSl
+          ? { sportlots: [{ id: incomingSl, ...(label ? { label } : {}) }] }
+          : {}),
+      });
+      const hasLabels =
+        Object.keys(alloc.platformLabels.bsc ?? {}).length > 0 ||
+        Object.keys(alloc.platformLabels.sportlots ?? {}).length > 0;
+      const id = await ctx.db.insert("selectorOptions", {
+        level,
+        value: option.value,
+        platformData: alloc.platformData,
+        ...(hasLabels ? { platformLabels: alloc.platformLabels } : {}),
+        ...(Object.keys(alloc.platformSlotSeq).length > 0
+          ? { platformSlotSeq: alloc.platformSlotSeq }
+          : {}),
+        parentId,
+        children: [],
+        ...(Object.keys(features).length > 0 ? { features } : {}),
+        ...(sportConfig ? { sportConfig } : {}),
+        lastUpdated: Date.now(),
+      });
+      insertedIds.push(id);
+      linkedIds.push(id);
     }
 
-    // Delete old non-custom options that weren't in the new set
-    // Only delete if we actually received new options — an empty sync should not wipe data
+    // ── Unlink pass (NEO-211 D) ───────────────────────────────────────────
+    //
+    // A side that was fetched successfully and did not return an id it used to
+    // return is upstream saying "this set is not ours any more". The NB row,
+    // its name, its children and its cards are untouched; only the marketplace
+    // pointer goes. Nothing is persisted to remember the event (Jason,
+    // 2026-09-03) — the admin is told, and the row heals itself if the set
+    // comes back under a new id, because tier 2 will re-attach it by name.
+    //
+    // Inside the `options.length > 0` guard the delete pass used to carry: an
+    // empty sync is not evidence of anything.
+    const unlinkedAll: UnlinkedEntry[] = [];
     if (options.length > 0) {
-      for (const existing of existingOptions) {
-        const normalizedValue = existing.value.toLowerCase().trim();
-        if (!processedValues.has(normalizedValue) && !existing.isCustom) {
-          await ctx.db.delete(existing._id);
+      for (const side of plan.coveredSides) {
+        for (const row of existingOptions) {
+          // Custom rows have no upstream that could have dropped them.
+          if (row.isCustom) continue;
+          const w = workingFor(row);
+          const un = unlinkStalePrimary(w, side, plan.returnedIds[side]);
+          if (!un) continue;
+          w.platformData = un.platformData;
+          w.platformLabels = un.platformLabels;
+          w.platformFacets = un.platformFacets;
+          w.primaryPlatformId = un.primaryPlatformId;
+          unlinkedAll.push({ id: row._id, value: row.value, side });
         }
       }
     }
 
-    // Update parent's children array
-    if (parentId && insertedIds.length > 0) {
-      // Get remaining custom options to include in children
-      const customIds = existingOptions
-        .filter(
-          (o) =>
-            o.isCustom &&
-            !processedValues.has(o.value.toLowerCase().trim()),
+    // ── Write pass ────────────────────────────────────────────────────────
+    //
+    // NEO-85: only patch when something actually differs from what's stored. A
+    // no-op patch still invalidates every query that read this row,
+    // re-rendering + reflowing the SetSelector columns for nothing (forensics:
+    // `items-changed sameContent=true`). `lastUpdated` is a "data last
+    // changed" marker — never displayed or used for staleness (the FE "Last
+    // synced" reads cardChecklist.lastUpdated) — so skipping the bump on an
+    // unchanged sync is correct. The unlink pass writes through the same
+    // guard, so re-running an identical sync reports nothing and patches
+    // nothing.
+    for (const w of working.values()) {
+      const mergedPlatformData = pruneEmptySides({ ...w.platformData });
+      const mergedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
+      const mergedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
+      const nextLabels =
+        Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined;
+      const nextFacets =
+        Object.keys(mergedFacets).length > 0 ? mergedFacets : undefined;
+
+      const patch: Record<string, unknown> = {};
+      if (!valuesDeepEqual(mergedPlatformData, w.row.platformData)) {
+        patch.platformData = mergedPlatformData;
+      }
+      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
+        patch.platformLabels = nextLabels;
+      }
+      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
+        patch.platformFacets = nextFacets;
+      }
+      if (
+        !valuesDeepEqual(
+          w.platformSlotSeq ?? {},
+          w.row.platformSlotSeq ?? {},
         )
-        .map((o) => o._id);
-      const newChildren = [...insertedIds, ...customIds];
-      // NEO-85: only rewrite children when the array actually changed (same
-      // ids, same order). A no-op rewrite invalidates every reader of the
-      // parent row for nothing.
-      const parent = await ctx.db.get(parentId);
-      if (parent && !valuesDeepEqual(parent.children ?? [], newChildren)) {
-        await ctx.db.patch(parentId, { children: newChildren });
+      ) {
+        patch.platformSlotSeq = w.platformSlotSeq;
+      }
+      if (
+        !valuesDeepEqual(
+          w.primaryPlatformId ?? null,
+          w.row.primaryPlatformId ?? null,
+        )
+      ) {
+        patch.primaryPlatformId = w.primaryPlatformId;
+      }
+      if (
+        !valuesDeepEqual(
+          w.declinedUpstreamLabels ?? null,
+          w.row.declinedUpstreamLabels ?? null,
+        )
+      ) {
+        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
+      }
+      if (w.sportConfig) patch.sportConfig = w.sportConfig;
+
+      if (Object.keys(patch).length > 0) {
+        await ctx.db.patch(w.row._id, { ...patch, lastUpdated: Date.now() });
       }
     }
+
+    // `children` is a set-UNION now (NEO-211 A.7): it never loses a child, so
+    // a row the sync did not name keeps its place in the parent's cache.
+    if (parentId && linkedIds.length > 0) {
+      const parent = await ctx.db.get(parentId);
+      if (parent) {
+        const next = unionChildren(parent.children, [
+          ...linkedIds,
+          ...existingOptions.map((o) => o._id),
+        ]);
+        if (!valuesDeepEqual(parent.children ?? [], next)) {
+          await ctx.db.patch(parentId, { children: next });
+        }
+      }
+    }
+
+    const unlinked = await annotateHasCards(
+      ctx,
+      level,
+      unlinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
+    );
 
     return {
       success: true,
-      message: `Successfully stored ${insertedIds.length} ${level} options`,
-      optionsCount: insertedIds.length,
+      message: `Successfully stored ${linkedIds.length} ${level} options`,
+      optionsCount: linkedIds.length,
+      unlinked,
+      unlinkedTotal: unlinkedAll.length,
     };
   },
 });
@@ -1324,11 +1475,6 @@ function assertCardBatchWithinLimits(cards: unknown[], fnName: string): void {
 // `platformLabels.<side>`. The mutations below are the only path operators
 // use to attach / detach / rename extras — they patch a single row, and
 // they refuse to touch the primary (which is owned by reconciliation).
-
-const platformSideValidator = v.union(
-  v.literal("bsc"),
-  v.literal("sportlots"),
-);
 
 /**
  * Attach one or more BSC/SL set IDs to an existing canonical row, with
@@ -1659,6 +1805,16 @@ export const renamePlatformLabel = mutation({
  * point of the NEO-96 work, and a rename must not silently remap a row to a
  * different marketplace set.
  */
+/**
+ * NEO-211 F — a non-custom `variantType` row's value is refused here.
+ *
+ * The value drives Base detection in SetSelector, `getBaseVariantBySet`, and
+ * the BSC checklist fetch's `variant` facet, so renaming one silently
+ * re-points a checklist at a different marketplace facet. Custom variantType
+ * rows are NB's own and stay renameable. The refusal is a ConvexError with a
+ * machine-readable `code` so the FE can hide the control rather than
+ * string-matching a message.
+ */
 export const renameSelectorOption = mutation({
   args: {
     id: v.id("selectorOptions"),
@@ -1673,63 +1829,34 @@ export const renameSelectorOption = mutation({
       throw new Error(`selectorOptions row not found: ${args.id}`);
     }
 
-    const trimmed = args.value.trim();
-    if (!trimmed) {
-      throw new Error("Name cannot be empty");
+    if (refusesValueRename(row)) {
+      throw new ConvexError({
+        code: VARIANT_TYPE_RENAME_REFUSED,
+        message: VARIANT_TYPE_RENAME_MESSAGE,
+      });
     }
 
-    const normalized = trimmed.toLowerCase();
-    if (normalized === row.value.toLowerCase().trim()) {
-      // A no-op rename (or a case-only change to the same word) should not
-      // churn `lastUpdated` — NEO-85: a redundant patch invalidates every query
-      // watching this row and reflows the SetSelector columns for nothing.
-      if (trimmed === row.value) {
-        return { success: true, message: "Unchanged" };
-      }
-    } else {
-      // Same normalized-compare rule addCustomSelectorOption uses, scoped to
-      // siblings: two rows under one parent must not share a display value, or
-      // the drill utils and the pickers can't tell them apart.
-      const siblings = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", row.level).eq("parentId", row.parentId),
-        )
-        .collect();
-      const clash = siblings.find(
-        (o) => o._id !== row._id && o.value.toLowerCase().trim() === normalized,
-      );
-      if (clash) {
-        throw new Error(
-          `Another ${row.level} here is already called "${clash.value}"`,
-        );
-      }
-    }
+    // Same normalized-compare rule addCustomSelectorOption uses, scoped to
+    // siblings. Read even for a no-op so the one shared rename path always
+    // sees the same inputs whichever caller reached it.
+    const siblings = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", row.level).eq("parentId", row.parentId),
+      )
+      .collect();
 
-    // `features` are derived FROM the value at insert
-    // (addCustomSelectorOption: deriveOwnLevelFeatures(level, value)), so a
-    // rename has to recompute them or the row keeps features derived from a
-    // name it no longer has. Existing explicitly-set keys win, matching the
-    // insert-time precedence (parent features < own-level derived).
-    const rederived = deriveOwnLevelFeatures(row.level, trimmed);
-    const features = { ...(row.features ?? {}), ...rederived };
-
-    // A sport's config is seeded from its display value at creation. Backfill
-    // it on rename ONLY when the row has none — never overwrite, so an
-    // operator's edits survive, and never clear it, so renaming "Baseball" to
-    // "MLB Baseball" keeps the SKU code and QIDs it already had.
-    const sportConfig =
-      row.level === "sport" && !row.sportConfig
-        ? sportConfigDefaultsFor(trimmed)
-        : undefined;
+    const plan = planValueRename({ row, nextValue: args.value, siblings });
+    if (!plan.ok) throw new Error(plan.message);
+    if (plan.unchanged) return { success: true, message: "Unchanged" };
 
     await ctx.db.patch(row._id, {
-      value: trimmed,
-      ...(Object.keys(features).length > 0 ? { features } : {}),
-      ...(sportConfig ? { sportConfig } : {}),
+      value: plan.value,
+      ...(plan.features ? { features: plan.features } : {}),
+      ...(plan.sportConfig ? { sportConfig: plan.sportConfig } : {}),
       lastUpdated: Date.now(),
     });
-    return { success: true, message: `Renamed to "${trimmed}"` };
+    return { success: true, message: `Renamed to "${plan.value}"` };
   },
 });
 
@@ -4050,14 +4177,25 @@ function withChildDeadline<T>(
 // Phase 1 routes the aggregator levels (sport/year/manufacturer/variantType);
 // setName + insert/parallel keep their existing path until Phases 2-3.
 
-/** Write/clear the transient per-(level,parentId) sync status. status omitted = clear (delete). */
+/**
+ * Write/clear the transient per-(level,parentId) sync status.
+ *
+ * `status` omitted = clear (delete). NEO-211 adds `"done"`: a sync that
+ * succeeded but left the admin a notice — links detached because upstream
+ * stopped listing them, and/or a platform that could not be reached while the
+ * other stored fine. The quiet happy path still deletes the row.
+ */
 export const setSelectorSyncStatus = internalMutation({
   args: {
     level: levelValidator,
     parentId: v.optional(v.id("selectorOptions")),
-    status: v.optional(v.union(v.literal("syncing"), v.literal("error"))),
+    status: v.optional(
+      v.union(v.literal("syncing"), v.literal("error"), v.literal("done")),
+    ),
     message: v.optional(v.string()),
     requestId: v.optional(v.string()),
+    unlinked: v.optional(v.array(unlinkedEntryValidator)),
+    unlinkedTotal: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -4071,10 +4209,15 @@ export const setSelectorSyncStatus = internalMutation({
       if (existing) await ctx.db.delete(existing._id);
       return null;
     }
+    // Every field is written on every call, including as `undefined`: a patch
+    // is a shallow merge, so a "syncing" row that inherited last run's
+    // `unlinked` list would show a stale notice for the whole next sync.
     const fields = {
       status: args.status,
       message: args.message,
       requestId: args.requestId,
+      unlinked: args.unlinked?.slice(0, UNLINK_NOTICE_LIMIT),
+      unlinkedTotal: args.unlinkedTotal,
       updatedAt: Date.now(),
     };
     if (existing) await ctx.db.patch(existing._id, fields);
@@ -4096,8 +4239,14 @@ export const getSelectorSyncStatus = query({
   },
   returns: v.union(
     v.object({
-      status: v.union(v.literal("syncing"), v.literal("error")),
+      status: v.union(
+        v.literal("syncing"),
+        v.literal("error"),
+        v.literal("done"),
+      ),
       message: v.optional(v.string()),
+      unlinked: v.optional(v.array(unlinkedEntryValidator)),
+      unlinkedTotal: v.optional(v.number()),
     }),
     v.null(),
   ),
@@ -4112,7 +4261,343 @@ export const getSelectorSyncStatus = query({
         q.eq("level", args.level).eq("parentId", args.parentId),
       )
       .first();
-    return row ? { status: row.status, message: row.message } : null;
+    return row
+      ? {
+          status: row.status,
+          message: row.message,
+          unlinked: row.unlinked,
+          unlinkedTotal: row.unlinkedTotal,
+        }
+      : null;
+  },
+});
+
+/**
+ * Dismiss a finished sync's notice (NEO-211 D).
+ *
+ * Only ever deletes a row in the `"done"` state. A `"syncing"` row is live
+ * state the action owns and an `"error"` row is the column's Retry affordance
+ * — letting a stray dismiss remove either would strand the column showing
+ * nothing while a sync is in flight, or silently hide a failure.
+ */
+export const dismissSelectorSyncNotice = mutation({
+  args: {
+    level: levelValidator,
+    parentId: v.optional(v.id("selectorOptions")),
+  },
+  returns: v.object({ dismissed: v.boolean() }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db
+      .query("selectorSyncStatus")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", args.level).eq("parentId", args.parentId),
+      )
+      .first();
+    if (!row || row.status !== "done") return { dismissed: false };
+    await ctx.db.delete(row._id);
+    return { dismissed: true };
+  },
+});
+
+// ─── NEO-211 C — rename suggestions as DERIVED STATE ────────────────────────
+//
+// "The marketplace renamed this set" needs no staging table and no pipeline.
+// Both stores already record what each marketplace calls the set, in
+// `platformLabels[side][primarySlot]`, and neither store has ever written
+// `value`. So the whole feature is a query over rows we already have: where
+// the stored label differs from NB's name, offer the label; nothing changes
+// until an admin accepts.
+//
+// Derived state is what makes this work identically at every level, with the
+// fire-and-forget `ensureSelectorOptions` design, and with two admins in the
+// tree at once (NEO-47): there is no queue to get out of sync with the data.
+
+/** Bound on one suggestions page — a column never shows more than this. */
+const MAX_SUGGESTIONS = 200;
+/** Bound on one apply call. Matches the review modal's page size. */
+const MAX_SUGGESTION_DECISIONS = 200;
+
+export const getSelectorSyncSuggestions = query({
+  args: {
+    level: levelValidator,
+    parentId: v.optional(v.id("selectorOptions")),
+  },
+  returns: v.array(
+    v.object({
+      existingId: v.id("selectorOptions"),
+      currentValue: v.string(),
+      suggestions: v.array(
+        v.object({
+          side: platformSideValidator,
+          label: v.string(),
+          /**
+           * True when the two names differ only in case, punctuation or
+           * whitespace — `nameKey`'s fold, the same one NEO-203's content diff
+           * uses to separate a reformatting from a rewrite. The modal can
+           * de-emphasise these; the matcher's own fold stays lower/trim so
+           * that "Gold /50" and "Gold 50" remain two different sets.
+           */
+          foldEqual: v.boolean(),
+        }),
+      ),
+      /** `lastUpdated` — apply refuses a decision taken against an older row. */
+      baseVersion: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    // One indexed sibling read. No ancestor walk: everything this answers is
+    // on the row itself, and a column re-runs this query reactively on every
+    // change in its own list.
+    const siblings = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", args.level).eq("parentId", args.parentId),
+      )
+      .take(MAX_SUGGESTIONS * 4);
+
+    const out: Array<{
+      existingId: Id<"selectorOptions">;
+      currentValue: string;
+      suggestions: Array<{
+        side: "bsc" | "sportlots";
+        label: string;
+        foldEqual: boolean;
+      }>;
+      baseVersion: number;
+    }> = [];
+
+    for (const row of siblings) {
+      if (out.length >= MAX_SUGGESTIONS) break;
+      // Never offer an Accept the server would refuse: a non-custom
+      // variantType row's value is load-bearing and cannot be renamed at all.
+      if (refusesValueRename(row)) continue;
+
+      const suggestions: Array<{
+        side: "bsc" | "sportlots";
+        label: string;
+        foldEqual: boolean;
+      }> = [];
+      for (const side of PLATFORM_SIDES) {
+        const slot = primarySlot(row, side);
+        if (!slot) continue;
+        const label = row.platformLabels?.[side]?.[slot];
+        if (!label) continue;
+        const labelKey = selectorValueKey(label);
+        if (labelKey === selectorValueKey(row.value)) continue;
+        // A label the operator already declined is not news. Stored and
+        // compared normalised so a re-cased label does not re-open a decision.
+        if (row.declinedUpstreamLabels?.[side] === labelKey) continue;
+        suggestions.push({
+          side,
+          label,
+          foldEqual: nameKey(label) === nameKey(row.value),
+        });
+      }
+      if (suggestions.length === 0) continue;
+      out.push({
+        existingId: row._id,
+        currentValue: row.value,
+        suggestions,
+        baseVersion: row.lastUpdated ?? 0,
+      });
+    }
+
+    return out;
+  },
+});
+
+/**
+ * Act on suggestions. Fail-closed in every direction:
+ *
+ *  - the label written is the one the SERVER reads off the row, never a string
+ *    the client sent — the args carry no label or value field at all, so a
+ *    caller cannot rename a set to anything it likes through this door;
+ *  - the target row must be a sibling at (level, parentId), resolved through
+ *    the same indexed read the query used, so a decision cannot reach a row
+ *    under a different parent;
+ *  - `baseVersion` is re-checked against the row IN this transaction, so a
+ *    decision taken against a row that has since moved is counted, not
+ *    written — including the second of two decisions on the same row in one
+ *    call;
+ *  - accept goes through the one shared rename path, which re-validates the
+ *    stored label, refuses non-custom variantType rows, and clash-checks
+ *    against the working set so two accepts folding to one name cannot both
+ *    land.
+ *
+ * Everything refused is COUNTED and returned. Nothing throws over one bad
+ * decision — an admin working through 40 rows should not lose 39 of them to
+ * the 40th.
+ */
+export const applySelectorSyncSuggestions = mutation({
+  args: {
+    level: levelValidator,
+    parentId: v.optional(v.id("selectorOptions")),
+    decisions: v.array(
+      v.object({
+        existingId: v.id("selectorOptions"),
+        baseVersion: v.number(),
+        side: platformSideValidator,
+        action: v.union(v.literal("accept"), v.literal("decline")),
+      }),
+    ),
+  },
+  returns: v.object({
+    applied: v.number(),
+    declined: v.number(),
+    stale: v.number(),
+    clashed: v.number(),
+    skipped: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    if (args.decisions.length > MAX_SUGGESTION_DECISIONS) {
+      throw new Error(
+        `applySelectorSyncSuggestions: ${args.decisions.length} decisions ` +
+          `exceeds the ${MAX_SUGGESTION_DECISIONS}-per-call limit`,
+      );
+    }
+
+    const siblings = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", args.level).eq("parentId", args.parentId),
+      )
+      .collect();
+    const byId = new Map(siblings.map((r) => [r._id as string, r]));
+
+    // The in-transaction working set. `value` moves as accepts land, and the
+    // clash check reads THIS rather than the original snapshot — otherwise two
+    // accepts that fold to the same name would both succeed and leave two
+    // siblings the pickers cannot tell apart.
+    const workingValue = new Map<string, string>(
+      siblings.map((r) => [r._id as string, r.value]),
+    );
+    const workingVersion = new Map<string, number>(
+      siblings.map((r) => [r._id as string, r.lastUpdated ?? 0]),
+    );
+    const workingDeclined = new Map<
+      string,
+      { bsc?: string; sportlots?: string } | undefined
+    >(siblings.map((r) => [r._id as string, r.declinedUpstreamLabels]));
+    const workingFeatures = new Map<
+      string,
+      Record<string, string> | undefined
+    >(siblings.map((r) => [r._id as string, r.features]));
+
+    let applied = 0;
+    let declined = 0;
+    let stale = 0;
+    let clashed = 0;
+    let skipped = 0;
+
+    for (const decision of args.decisions) {
+      const row = byId.get(decision.existingId);
+      if (!row) {
+        skipped++;
+        continue;
+      }
+      if ((workingVersion.get(row._id) ?? 0) !== decision.baseVersion) {
+        stale++;
+        continue;
+      }
+
+      // The label comes off the row, not off the wire.
+      const slot = primarySlot(row, decision.side);
+      const label = slot
+        ? row.platformLabels?.[decision.side]?.[slot]
+        : undefined;
+      if (!label) {
+        skipped++;
+        continue;
+      }
+      const labelKey = selectorValueKey(label);
+
+      if (decision.action === "decline") {
+        const current = workingDeclined.get(row._id);
+        if (current?.[decision.side] === labelKey) {
+          // Already declined — count it, but do not churn `lastUpdated` and
+          // reflow every column watching this row (NEO-85).
+          declined++;
+          continue;
+        }
+        const next = { ...(current ?? {}), [decision.side]: labelKey };
+        const now = Date.now();
+        await ctx.db.patch(row._id, {
+          declinedUpstreamLabels: next,
+          lastUpdated: now,
+        });
+        workingDeclined.set(row._id, next);
+        workingVersion.set(row._id, now);
+        declined++;
+        continue;
+      }
+
+      const plan = planValueRename({
+        row: {
+          _id: row._id,
+          level: row.level,
+          value: workingValue.get(row._id) ?? row.value,
+          isCustom: row.isCustom,
+          features: workingFeatures.get(row._id),
+          sportConfig: row.sportConfig,
+        },
+        nextValue: label,
+        siblings: siblings.map((r) => ({
+          _id: r._id as string,
+          value: workingValue.get(r._id) ?? r.value,
+        })),
+      });
+      if (!plan.ok) {
+        if (plan.reason === "clash") clashed++;
+        else skipped++;
+        continue;
+      }
+      if (plan.unchanged) {
+        skipped++;
+        continue;
+      }
+
+      // Accepting the label makes any earlier decline of it meaningless.
+      const currentDeclined = workingDeclined.get(row._id);
+      const cleared = { ...(currentDeclined ?? {}) };
+      delete cleared[decision.side];
+      const nextDeclined =
+        Object.keys(cleared).length > 0 ? cleared : undefined;
+
+      const now = Date.now();
+      await ctx.db.patch(row._id, {
+        value: plan.value,
+        ...(plan.features ? { features: plan.features } : {}),
+        ...(plan.sportConfig ? { sportConfig: plan.sportConfig } : {}),
+        ...(currentDeclined ? { declinedUpstreamLabels: nextDeclined } : {}),
+        lastUpdated: now,
+      });
+      workingValue.set(row._id, plan.value);
+      workingVersion.set(row._id, now);
+      workingDeclined.set(row._id, nextDeclined);
+      if (plan.features) workingFeatures.set(row._id, plan.features);
+      applied++;
+    }
+
+    // Structured line for the adapter/ops dashboard. Row ids and counts only —
+    // no label or display text, which is operator content, not telemetry.
+    console.log(
+      JSON.stringify({
+        msg: "selector_sync_suggestions_applied",
+        level: args.level,
+        parentId: args.parentId ?? null,
+        applied,
+        declined,
+        stale,
+        clashed,
+        skipped,
+        rowIds: args.decisions.slice(0, 25).map((d) => d.existingId),
+      }),
+    );
+
+    return { applied, declined, stale, clashed, skipped };
   },
 });
 
@@ -4120,6 +4605,36 @@ export const getSelectorSyncStatus = query({
 // raw sync/exception detail goes to console.error only, never into reactive
 // state (security audit, NEO-47).
 const SYNC_ERROR_MESSAGE = "Couldn't sync options — please try again.";
+
+/**
+ * NEO-211 B — what the admin is told when ONE marketplace failed and the other
+ * one stored fine.
+ *
+ * FIXED text per platform, built from the platform NAME only. The adapter's
+ * own message can carry a marketplace URL, a response body, or a credential
+ * hint, and `selectorSyncStatus.message` is reactive state served to the
+ * browser — the same reasoning that made SYNC_ERROR_MESSAGE a constant in
+ * NEO-47. The raw detail goes to console.error, joined on requestId.
+ */
+const PLATFORM_LABELS: Record<string, string> = {
+  bsc: "BuySportsCards",
+  sportlots: "SportLots",
+};
+
+export function partialSyncMessage(failedPlatforms: readonly string[]): string {
+  const names = failedPlatforms
+    // An unrecognised key is NOT echoed. The only keys this ever receives are
+    // "bsc" and "sportlots", but the fallback is what makes that a property of
+    // the function rather than of its callers — no adapter string can reach
+    // reactive state through here even if a future caller passes one.
+    .map((p) => PLATFORM_LABELS[p] ?? "A marketplace")
+    .sort()
+    .join(" and ");
+  return (
+    `${names} could not be reached, so nothing from ${names} was changed. ` +
+    `Everything the other marketplace returned was saved — retry to fill in the rest.`
+  );
+}
 
 /**
  * The single FE entry point to populate a column (NEO-47). An ACTION, not a
@@ -4203,7 +4718,13 @@ export const ensureSelectorOptions = action({
       // syncSetsAcrossManufacturers (BSC-only, manufacturer derived by
       // prefix-match — all that taxonomy-stitching stays inside that action,
       // below this door). Aggregator levels go through fetchAggregatedOptions.
-      let res: { success: boolean; message: string };
+      let res: {
+        success: boolean;
+        message: string;
+        unlinked: UnlinkedEntry[];
+        unlinkedTotal: number;
+        failedPlatforms: string[];
+      };
       if (level === "setName") {
         if (!yearId) {
           await ctx.runMutation(
@@ -4235,12 +4756,34 @@ export const ensureSelectorOptions = action({
           res.message,
         );
       }
+      // NEO-211: three terminal states, not two.
+      //
+      //   error → the whole sync failed; the column shows Retry (unchanged).
+      //   done  → it SUCCEEDED but left a notice: marketplace links removed
+      //           because upstream stopped listing them, and/or one platform
+      //           unreachable while the other stored fine. Not an error — data
+      //           was written, and offering Retry would imply it was not.
+      //   clear → success with nothing to say (today's behaviour).
+      const hasNotice =
+        res.unlinkedTotal > 0 || res.failedPlatforms.length > 0;
       await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
         level,
         parentId,
-        // success OR empty → clear (idle); a real failure → recoverable error.
         ...(res.success
-          ? {}
+          ? hasNotice
+            ? {
+                status: "done" as const,
+                ...(res.failedPlatforms.length > 0
+                  ? { message: partialSyncMessage(res.failedPlatforms) }
+                  : {}),
+                ...(res.unlinkedTotal > 0
+                  ? {
+                      unlinked: res.unlinked,
+                      unlinkedTotal: res.unlinkedTotal,
+                    }
+                  : {}),
+              }
+            : {}
           : { status: "error" as const, message: SYNC_ERROR_MESSAGE }),
       });
       return { ran: true, reason: res.success ? "synced" : "error" };
@@ -4261,6 +4804,26 @@ export const ensureSelectorOptions = action({
   },
 });
 
+/**
+ * What a level sync reports back. `ensureSelectorOptions` turns it into the
+ * column's reactive status, so both sync actions return the same shape.
+ */
+type AggregatedSyncResult = {
+  success: boolean;
+  message: string;
+  optionsCount: number;
+  unlinked: UnlinkedEntry[];
+  unlinkedTotal: number;
+  failedPlatforms: string[];
+};
+
+const EMPTY_SYNC_RESULT = {
+  optionsCount: 0,
+  unlinked: [] as UnlinkedEntry[],
+  unlinkedTotal: 0,
+  failedPlatforms: [] as string[],
+};
+
 export const fetchAggregatedOptions = action({
   args: {
     level: levelValidator,
@@ -4279,8 +4842,17 @@ export const fetchAggregatedOptions = action({
     success: v.boolean(),
     message: v.string(),
     optionsCount: v.number(),
+    /** NEO-211 D — rows whose marketplace link the store removed. */
+    unlinked: v.array(unlinkedEntryValidator),
+    unlinkedTotal: v.number(),
+    /**
+     * NEO-211 B — which sides came back with an error. Names only; the caller
+     * turns these into fixed user-safe text (`partialSyncMessage`). The raw
+     * adapter text never leaves the log.
+     */
+    failedPlatforms: v.array(v.string()),
   }),
-  handler: async (ctx, args): Promise<{ success: boolean; message: string; optionsCount: number }> => {
+  handler: async (ctx, args): Promise<AggregatedSyncResult> => {
     // Admin check is outside the try/catch so authorization errors surface
     // cleanly to the client instead of being rewritten as "Failed to fetch
     // options: Admin access required" by the generic catch below.
@@ -4344,10 +4916,10 @@ export const fetchAggregatedOptions = action({
             error_class: "skipped_custom_subtree",
           });
           return {
+            ...EMPTY_SYNC_RESULT,
             success: true,
             message:
               "Custom selector subtree — no marketplace options to aggregate.",
-            optionsCount: 0,
           };
         }
 
@@ -4403,11 +4975,7 @@ export const fetchAggregatedOptions = action({
           result_count: 0,
           error_class: "precondition_missing_slug",
         });
-        return {
-          success: false,
-          message: msg,
-          optionsCount: 0,
-        };
+        return { ...EMPTY_SYNC_RESULT, success: false, message: msg };
       }
 
       const allOptions: Array<{
@@ -4618,19 +5186,32 @@ export const fetchAggregatedOptions = action({
           ),
         });
         return {
+          ...EMPTY_SYNC_RESULT,
           success: false,
           message: `No ${level} options returned from any platform. Check that credentials are configured for BSC and SportLots.`,
-          optionsCount: 0,
+          failedPlatforms: Object.keys(platformErrors),
         };
       }
 
-      // 5. Store via mutation
-      const result: { success: boolean; message: string; optionsCount: number } = await ctx.runMutation(
+      // 5. Store via mutation.
+      //
+      // NEO-211 B: `coveredSides` is the sides that actually FETCHED. When
+      // SportLots errors and BSC does not, the BSC results are still stored
+      // additively — but SL linkage is left alone on every row, because a side
+      // that did not answer cannot be evidence that it dropped anything. When
+      // both answered, both are covered and a genuinely delisted set has its
+      // link removed and reported.
+      const coveredSides: Array<"bsc" | "sportlots"> = [];
+      if (!platformErrors.bsc) coveredSides.push("bsc");
+      if (!platformErrors.sportlots) coveredSides.push("sportlots");
+
+      const result = await ctx.runMutation(
         api.selectorOptions.storeSelectorOptions,
         {
           level,
           options: deduped,
           parentId,
+          coveredSides,
         },
       );
 
@@ -4674,6 +5255,9 @@ export const fetchAggregatedOptions = action({
         success: result.success,
         message: result.message + warningSuffix,
         optionsCount: result.optionsCount,
+        unlinked: result.unlinked,
+        unlinkedTotal: result.unlinkedTotal,
+        failedPlatforms: Object.keys(platformErrors),
       };
     } catch (error) {
       console.error(`[fetchAggregatedOptions] Error:`, error);
@@ -4694,9 +5278,9 @@ export const fetchAggregatedOptions = action({
         ),
       });
       return {
+        ...EMPTY_SYNC_RESULT,
         success: false,
         message: `Failed to fetch options: ${error instanceof Error ? error.message : "Unknown error"}`,
-        optionsCount: 0,
       };
     }
   },
@@ -4715,8 +5299,17 @@ export const syncSetsAcrossManufacturers = action({
     success: v.boolean(),
     message: v.string(),
     totalSets: v.number(),
+    // Same trailing shape as fetchAggregatedOptions so ensureSelectorOptions
+    // can drive the column's status from either without a branch.
+    optionsCount: v.number(),
+    unlinked: v.array(unlinkedEntryValidator),
+    unlinkedTotal: v.number(),
+    failedPlatforms: v.array(v.string()),
   }),
-  handler: async (ctx, args): Promise<{ success: boolean; message: string; totalSets: number }> => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<AggregatedSyncResult & { totalSets: number }> => {
     await requireAdmin(ctx);
     try {
       // 1. Build ancestor chain from yearId to get sport/year values + BSC slugs
@@ -4739,6 +5332,7 @@ export const syncSetsAcrossManufacturers = action({
       // 404 or return an unrelated superset.
       if (isCustomSubtree(chain)) {
         return {
+          ...EMPTY_SYNC_RESULT,
           success: true,
           message: "Custom sport/year — skipping BSC set sync.",
           totalSets: 0,
@@ -4748,7 +5342,12 @@ export const syncSetsAcrossManufacturers = action({
       const sportAncestor = chain.find((a: { level: string }) => a.level === "sport");
       const yearAncestor = chain.find((a: { level: string }) => a.level === "year");
       if (!sportAncestor || !yearAncestor) {
-        return { success: false, message: "Could not resolve sport/year ancestors", totalSets: 0 };
+        return {
+          ...EMPTY_SYNC_RESULT,
+          success: false,
+          message: "Could not resolve sport/year ancestors",
+          totalSets: 0,
+        };
       }
 
       // Build BSC filters (sport + year only)
@@ -4781,9 +5380,11 @@ export const syncSetsAcrossManufacturers = action({
 
       if (!bscResult.success || bscResult.options.length === 0) {
         return {
+          ...EMPTY_SYNC_RESULT,
           success: false,
           message: bscResult.message || "No sets returned from BSC",
           totalSets: 0,
+          failedPlatforms: ["bsc"],
         };
       }
 
@@ -4847,8 +5448,17 @@ export const syncSetsAcrossManufacturers = action({
         grouped.get(parentId)!.push(set);
       }
 
-      // 5. Store sets under each manufacturer
+      // 5. Store sets under each manufacturer.
+      //
+      // NEO-211 condition 6: NO `coveredSides` here, deliberately. BSC returns
+      // one flat set list which this action then BUCKETS by manufacturer-name
+      // prefix, so each per-bucket store call sees only a slice of what the
+      // fetch returned. Declaring BSC covered on a slice would make every set
+      // filed under a different manufacturer look delisted and strip its slug.
+      // The whole-year unlink belongs to a store call that sees the whole year,
+      // which this is not.
       let totalStored = 0;
+      const unlinkedAll: UnlinkedEntry[] = [];
       for (const [parentId, sets] of grouped) {
         const result = await ctx.runMutation(
           api.selectorOptions.storeSelectorOptions,
@@ -4862,6 +5472,7 @@ export const syncSetsAcrossManufacturers = action({
           },
         );
         totalStored += result.optionsCount;
+        unlinkedAll.push(...result.unlinked);
       }
 
       // Build summary
@@ -4876,10 +5487,15 @@ export const syncSetsAcrossManufacturers = action({
         success: true,
         message: `Distributed ${totalStored} sets across manufacturers (${summary.join(", ")})`,
         totalSets: totalStored,
+        optionsCount: totalStored,
+        unlinked: unlinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
+        unlinkedTotal: unlinkedAll.length,
+        failedPlatforms: [],
       };
     } catch (error) {
       console.error("[syncSetsAcrossManufacturers] Error:", error);
       return {
+        ...EMPTY_SYNC_RESULT,
         success: false,
         message: `Failed: ${error instanceof Error ? error.message : "Unknown error"}`,
         totalSets: 0,
@@ -8402,6 +9018,252 @@ const AUDIT_SAMPLE_LIMIT = 20;
  * SAFE TO DELETE once NEO-203 has been verified on prod. It has no callers in
  * the application and nothing depends on its shape.
  */
+/**
+ * NEO-211 G — size the id-keyed re-sync BEFORE it runs anywhere real.
+ *
+ * The new matcher prefers marketplace id over display name. That is strictly
+ * better going forward, but it only works on rows that HAVE an id: a row
+ * written before NEO-137, or one whose side never linked, falls through to the
+ * tier-2 name match. This query answers the three questions that decide
+ * whether the first forced sync after deploy is boring:
+ *
+ *  1. How many non-custom rows carry no id on a side? Those are the rows that
+ *     depend on tier 2 — if the marketplace also renamed them, they will
+ *     insert a sibling rather than match.
+ *  2. Do any siblings already fold to the same name? Tier 2 WITHHOLDS on those
+ *     (it never picks), so they are the rows that will silently not update.
+ *  3. Is any marketplace id held by more than one sibling? That is legal
+ *     (NEO-137 M:1) but tier 1 withholds on it, so those rows fall to tier 2
+ *     as well.
+ *
+ * Run against dev before merge and against prod before the first forced sync.
+ * Internal: it is an operator instrument, not a feature.
+ *
+ * A FULL-TABLE WALK, capped — none of these predicates is over an indexed key,
+ * and adding an index for a one-off pre-merge check would outlive the check.
+ * Asking for one row past the cap is how truncation is detected, and the report
+ * says so out loud rather than passing a partial scan off as a clean result.
+ */
+export const auditSelectorOptionsForResync = internalQuery({
+  args: {},
+  returns: v.object({
+    scanned: v.object({
+      selectorOptionRows: v.number(),
+      truncated: v.boolean(),
+    }),
+    byLevel: v.array(
+      v.object({
+        level: levelValidator,
+        rows: v.number(),
+        nonCustomRows: v.number(),
+        // (1) non-custom rows with no marketplace id on that side at all.
+        missingBsc: v.number(),
+        missingSportlots: v.number(),
+        // (2) sibling groups (same level+parent) where >1 row folds to one name.
+        valueCollisionGroups: v.number(),
+        // (3) (side, id, parent) combinations held by more than one sibling.
+        sharedMarketplaceIds: v.number(),
+      }),
+    ),
+    samples: v.object({
+      missingId: v.array(
+        v.object({
+          id: v.id("selectorOptions"),
+          level: levelValidator,
+          value: v.string(),
+          side: platformSideValidator,
+        }),
+      ),
+      valueCollision: v.array(
+        v.object({
+          level: levelValidator,
+          parentId: v.optional(v.id("selectorOptions")),
+          key: v.string(),
+          rowCount: v.number(),
+        }),
+      ),
+      sharedId: v.array(
+        v.object({
+          level: levelValidator,
+          parentId: v.optional(v.id("selectorOptions")),
+          side: platformSideValidator,
+          marketplaceId: v.string(),
+          rowCount: v.number(),
+        }),
+      ),
+    }),
+  }),
+  handler: async (ctx) => {
+    const nodeRows = await ctx.db
+      .query("selectorOptions")
+      .take(AUDIT_NODE_SCAN_LIMIT + 1);
+    const truncated = nodeRows.length > AUDIT_NODE_SCAN_LIMIT;
+    const nodes = truncated
+      ? nodeRows.slice(0, AUDIT_NODE_SCAN_LIMIT)
+      : nodeRows;
+
+    type LevelStats = {
+      level: Level;
+      rows: number;
+      nonCustomRows: number;
+      missingBsc: number;
+      missingSportlots: number;
+      valueCollisionGroups: number;
+      sharedMarketplaceIds: number;
+    };
+    const stats = new Map<Level, LevelStats>();
+    const statsFor = (level: Level): LevelStats => {
+      let s = stats.get(level);
+      if (!s) {
+        s = {
+          level,
+          rows: 0,
+          nonCustomRows: 0,
+          missingBsc: 0,
+          missingSportlots: 0,
+          valueCollisionGroups: 0,
+          sharedMarketplaceIds: 0,
+        };
+        stats.set(level, s);
+      }
+      return s;
+    };
+
+    const missingIdSamples: Array<{
+      id: Id<"selectorOptions">;
+      level: Level;
+      value: string;
+      side: "bsc" | "sportlots";
+    }> = [];
+
+    // Sibling group → what is in it. Keyed the way the matcher scopes itself:
+    // (level, parentId). A collision across two different parents is not a
+    // collision at all, because no store call ever sees both.
+    const groupKey = (row: Doc<"selectorOptions">) =>
+      `${row.level} ${row.parentId ?? ""}`;
+    const nameCounts = new Map<string, Map<string, number>>();
+    const idCounts = new Map<string, Map<string, number>>();
+
+    for (const node of nodes) {
+      const level = node.level as Level;
+      const s = statsFor(level);
+      s.rows++;
+      if (!node.isCustom) {
+        s.nonCustomRows++;
+        for (const side of ["bsc", "sportlots"] as const) {
+          if (slotIds(node, side).length > 0) continue;
+          if (side === "bsc") s.missingBsc++;
+          else s.missingSportlots++;
+          if (missingIdSamples.length < AUDIT_SAMPLE_LIMIT) {
+            missingIdSamples.push({
+              id: node._id,
+              level,
+              value: node.value,
+              side,
+            });
+          }
+        }
+      }
+
+      const gk = groupKey(node);
+      let names = nameCounts.get(gk);
+      if (!names) {
+        names = new Map();
+        nameCounts.set(gk, names);
+      }
+      const nk = selectorValueKey(node.value);
+      names.set(nk, (names.get(nk) ?? 0) + 1);
+
+      let ids = idCounts.get(gk);
+      if (!ids) {
+        ids = new Map();
+        idCounts.set(gk, ids);
+      }
+      for (const side of ["bsc", "sportlots"] as const) {
+        for (const id of slotIds(node, side)) {
+          const key = `${side} ${id}`;
+          ids.set(key, (ids.get(key) ?? 0) + 1);
+        }
+      }
+    }
+
+    // Re-derive the group's level/parent from the first row that produced it,
+    // so samples are addressable without re-walking the table.
+    const groupMeta = new Map<
+      string,
+      { level: Level; parentId?: Id<"selectorOptions"> }
+    >();
+    for (const node of nodes) {
+      const gk = groupKey(node);
+      if (!groupMeta.has(gk)) {
+        groupMeta.set(gk, {
+          level: node.level as Level,
+          ...(node.parentId ? { parentId: node.parentId } : {}),
+        });
+      }
+    }
+
+    const valueCollisionSamples: Array<{
+      level: Level;
+      parentId?: Id<"selectorOptions">;
+      key: string;
+      rowCount: number;
+    }> = [];
+    for (const [gk, names] of nameCounts) {
+      const meta = groupMeta.get(gk);
+      if (!meta) continue;
+      for (const [key, count] of names) {
+        if (count <= 1) continue;
+        statsFor(meta.level).valueCollisionGroups++;
+        if (valueCollisionSamples.length < AUDIT_SAMPLE_LIMIT) {
+          valueCollisionSamples.push({
+            level: meta.level,
+            ...(meta.parentId ? { parentId: meta.parentId } : {}),
+            key,
+            rowCount: count,
+          });
+        }
+      }
+    }
+
+    const sharedIdSamples: Array<{
+      level: Level;
+      parentId?: Id<"selectorOptions">;
+      side: "bsc" | "sportlots";
+      marketplaceId: string;
+      rowCount: number;
+    }> = [];
+    for (const [gk, ids] of idCounts) {
+      const meta = groupMeta.get(gk);
+      if (!meta) continue;
+      for (const [key, count] of ids) {
+        if (count <= 1) continue;
+        statsFor(meta.level).sharedMarketplaceIds++;
+        if (sharedIdSamples.length < AUDIT_SAMPLE_LIMIT) {
+          const [side, marketplaceId] = key.split(" ");
+          sharedIdSamples.push({
+            level: meta.level,
+            ...(meta.parentId ? { parentId: meta.parentId } : {}),
+            side: side as "bsc" | "sportlots",
+            marketplaceId,
+            rowCount: count,
+          });
+        }
+      }
+    }
+
+    return {
+      scanned: { selectorOptionRows: nodes.length, truncated },
+      byLevel: [...stats.values()],
+      samples: {
+        missingId: missingIdSamples,
+        valueCollision: valueCollisionSamples,
+        sharedId: sharedIdSamples,
+      },
+    };
+  },
+});
+
 export const auditChecklistDataForResync = internalQuery({
   args: {},
   returns: v.object({
