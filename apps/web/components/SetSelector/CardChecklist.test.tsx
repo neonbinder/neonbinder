@@ -102,6 +102,21 @@ vi.mock("react-virtuoso", () => ({
   }) => <div>{data.map((item, i) => <div key={i}>{itemContent(i, item)}</div>)}</div>,
 }));
 
+/**
+ * NEO-102 (CI round 2): the entity-review wizard is stubbed down to its Cancel
+ * button. Only ONE thing about it matters here — what CardChecklist's banner
+ * says after `onCancel` fires — and the real wizard would drag in the whole
+ * `entityReviewQueue` query/mutation surface to prove a fact about its parent.
+ * Its own behaviour is covered by EntityReviewWizard.test.tsx.
+ */
+vi.mock("./EntityReviewWizard", () => ({
+  default: ({ onCancel }: { onCancel: () => void }) => (
+    <button type="button" onClick={onCancel}>
+      Cancel entity review
+    </button>
+  ),
+}));
+
 const mockFetchChecklist = vi.fn();
 const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
@@ -567,6 +582,39 @@ async function commitZeroCandidatePath() {
   return rendered;
 }
 
+/**
+ * Drives the same zero-candidate route as `commitZeroCandidatePath`, but stops
+ * one step short: `resolveChecklistEntities` reports an unknown player, so the
+ * entity-review wizard opens instead of the commit running — and the operator
+ * cancels it. NOTHING is saved on this path, which is exactly why the banner
+ * it leaves behind must not offer to fix anything.
+ */
+async function cancelEntityReviewPath() {
+  state.liveCandidates = { ready: 0, total: 0, cards: [] };
+  mockResolveEntities.mockResolvedValue({
+    unknownPlayers: [{ name: "Unknown Guy" }],
+    unknownTeams: [],
+    batchId: "batch-1",
+  });
+  mockDiscardCandidates.mockResolvedValue(undefined);
+  let resolveFetch!: (value: unknown) => void;
+  mockFetchChecklist.mockImplementation(
+    () => new Promise((resolve) => (resolveFetch = resolve)),
+  );
+
+  const rendered = renderChecklist();
+  fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  await act(async () => {
+    resolveFetch({
+      success: true,
+      message: "Custom selector subtree — no marketplace data available.",
+      candidateCount: 0,
+    });
+  });
+  await waitFor(() => expect(mockResolveEntities).toHaveBeenCalledTimes(1));
+  return rendered;
+}
+
 describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -730,5 +778,43 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
 
     expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
     expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+  });
+
+  /**
+   * CI round 2 regression (flow `checklist-fetch-cancel-dialog`). The CTA was
+   * keyed off `syncNotice.tone === "status"` — which is EVERY routine notice,
+   * not just a commit. On a custom set holding a teamless card the cancel
+   * banner read "Fetch cancelled — no cards saved. 1 need attention — Fix them
+   * one at a time", offering to fix cards the operator had just declined to
+   * save, and breaking the flow's exact-text assertion on that element.
+   *
+   * The rule is structural, not textual: only the notice `runCommit` marks
+   * `kind: "committed"` carries the CTA.
+   */
+  it("leaves the cancelled-review banner exactly as written, with no attention CTA", async () => {
+    await cancelEntityReviewPath();
+    // Precondition: there IS something needing attention, so a tone-keyed CTA
+    // would have appeared here.
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention/ }).textContent,
+    ).toContain("1 need attention");
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel entity review" }));
+
+    // Exact match: `getByText` compares the element's whole text content, so a
+    // CTA appended inside the banner would fail this outright.
+    expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("does not offer the CTA on the pre-commit 'needs confirmation' notice either", async () => {
+    await cancelEntityReviewPath();
+
+    // The wizard is open and nothing has been committed yet.
+    expect(
+      screen.getByText("1 new players + 0 new teams need confirmation"),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
   });
 });

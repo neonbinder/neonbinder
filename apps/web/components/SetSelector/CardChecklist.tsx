@@ -194,6 +194,18 @@ export default function CardChecklist({
   const [syncNotice, setSyncNotice] = useState<{
     text: string;
     tone: "status" | "error";
+    /**
+     * NEO-102: which notice this is, structurally — NOT inferred from the
+     * text. Only the post-commit success notice ("Saved N cards." and its
+     * NEO-203 note variants) carries `"committed"`, and only that notice
+     * grows the attention call-to-action below. An earlier cut keyed the CTA
+     * off `tone === "status"`, which is every routine notice there is: after
+     * the operator cancelled the entity-review wizard on a set holding a
+     * teamless custom card, "Fetch cancelled — no cards saved." grew a CTA
+     * offering to fix cards that were never saved. Leave this undefined for
+     * every other notice.
+     */
+    kind?: "committed";
   } | null>(null);
   const setSyncMessage = useCallback(
     (text: string | null, tone: "status" | "error" = "status") => {
@@ -201,6 +213,14 @@ export default function CardChecklist({
     },
     [],
   );
+  /**
+   * The one setter that marks a notice as the result of a successful commit.
+   * Kept separate from `setSyncMessage` so no future call site can opt into
+   * the CTA by accident — reaching it means a commit actually landed.
+   */
+  const setCommittedMessage = useCallback((text: string) => {
+    setSyncNotice({ text, tone: "status", kind: "committed" });
+  }, []);
   const [showAddForm, setShowAddForm] = useState(false);
   // NEO-36: the add-card form fields are UNCONTROLLED (refs, read at submit)
   // rather than controlled React state. CardChecklist re-renders on every
@@ -620,7 +640,7 @@ export default function CardChecklist({
           `${result.unmatchedExistingCount} no longer listed upstream (kept).`,
         );
       }
-      setSyncMessage(
+      setCommittedMessage(
         [
           discardError
             ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
@@ -630,11 +650,11 @@ export default function CardChecklist({
       );
       // NEO-102: the commit itself never knows whether a card has a team — the
       // BSC team pass runs after it, and a BSC-linked card is not even flagged
-      // until that pass has been and gone. So nothing about attention is
-      // decided here. The banner this message lands in grows its own inline
-      // call-to-action for as long as `attentionCount > 0`, which the live
-      // subscription keeps current — including for rows flagged well after
-      // this handler returned.
+      // until that pass has been and gone. So no COUNT is decided here — only
+      // that this notice is the one allowed to carry the call-to-action
+      // (`setCommittedMessage`). The banner grows it for as long as
+      // `attentionCount > 0`, which the live subscription keeps current —
+      // including for rows flagged well after this handler returned.
     } catch (error) {
       // NEO-189: the commit is phased server-side and labels its failures with
       // the phase that broke ("prelude", "chunk 2/3 (cards 151-300 of 375)",
@@ -1184,12 +1204,18 @@ export default function CardChecklist({
 
                 Rendered inline in this banner because this is where the
                 operator is already looking the instant a commit lands, and
-                only on the `status` tone: the count is REACTIVE (the
+                ONLY on the notice `runCommit` marks `kind: "committed"` —
+                never on tone alone. Tone is far too broad: "Fetch cancelled —
+                no cards saved." is also a `status` notice, and a set holding
+                a teamless custom card turned that into an offer to fix cards
+                the operator had just declined to save. The tone still matters
+                for the live region itself: the count is REACTIVE (the
                 background BSC team pass keeps flagging rows for seconds
                 after the commit), and `aria-atomic` means every change
                 re-announces the whole region — polite in a role="status", but
                 assertively interrupting in the role="alert" a failure banner
-                becomes.
+                becomes, which is a second reason the CTA never appears on
+                one.
 
                 a11y: a real <button> inside the existing live region, so it
                 is in the tab order and announced with the region it belongs
@@ -1207,7 +1233,7 @@ export default function CardChecklist({
                 of that would leave no focus indicator at all. Hover changes
                 only the underline STYLE (no colour change, so contrast is
                 unchanged), and the UA focus ring is left in place. */}
-            {syncNotice.tone === "status" && attentionCount > 0 && (
+            {syncNotice.kind === "committed" && attentionCount > 0 && (
               <>
                 {" "}
                 <button
