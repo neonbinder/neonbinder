@@ -36,6 +36,13 @@ for slate-600; both need 4.5:1). **The fix used every time: swap to
 secondary color, just legible. Grep `text-slate-500\b` and `text-slate-600\b`
 in any new placeholder/print code as a first pass.
 
+Recurred again in `PlayerManagement.tsx` (NEO-212): the sport-name tag in the
+player master list uses `text-xs text-slate-500` (3.75:1, fails) while the
+sibling stint-count tag two lines below it in the same row already uses the
+correct `text-slate-400`, and so does `TeamManagement.tsx`'s equivalent tag —
+a one-off regression from the file's own established sibling pattern, not a
+new convention. Same fix: swap to `text-slate-400`.
+
 ## Opacity compounds this
 
 `opacity-60` (or similar) applied to a container pushes even *passing* colors
