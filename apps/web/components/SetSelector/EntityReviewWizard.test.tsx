@@ -1079,14 +1079,13 @@ describe("EntityReviewWizard — near matches", () => {
     currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
     renderWizard();
 
-    // Two nodes carry "Link to Mike Trout": the promoted primary button and the
-    // panel row it was promoted from. Both do the same thing.
+    // EXACTLY ONE control carries "Link to Mike Trout". The promoted primary
+    // button IS the exact panel row, so that row is filtered out of the panel —
+    // two controls sharing one accessible name is ambiguous to a screen reader
+    // reading the list and to a Maestro `tapOn` matching by it.
     const linkButtons = screen.getAllByLabelText("Link to Mike Trout");
-    expect(linkButtons.length).toBeGreaterThanOrEqual(2);
-    const green = linkButtons.find(
-      (el) => (el as HTMLElement).style.backgroundColor === GREEN,
-    );
-    expect(green).toBeTruthy();
+    expect(linkButtons).toHaveLength(1);
+    expect((linkButtons[0] as HTMLElement).style.backgroundColor).toBe(GREEN);
 
     // Create is still reachable AND still called "Add as New Player" — the
     // visible text changes, the accessible name does not.
@@ -1095,16 +1094,41 @@ describe("EntityReviewWizard — near matches", () => {
     expect((add as HTMLElement).style.backgroundColor).toBe("");
   });
 
+  it("EXACT: the OTHER matches stay listed in the panel", () => {
+    // Only the promoted row is filtered, and by id — a different entity is
+    // still a candidate the operator should see, whatever its confidence.
+    currentNearMatches = [
+      { _id: "p9", name: "Mike Trout", confidence: "exact" },
+      { _id: "p8", name: "Michael Trout", confidence: "close" },
+    ];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.getByText("Possible matches")).toBeTruthy();
+    expect(screen.getByLabelText("Link to Michael Trout")).toBeTruthy();
+  });
+
+  it("EXACT and nothing else: the panel disappears entirely", () => {
+    // Filtering the promoted row leaves [], which NearMatchPanel already
+    // renders as no panel at all — so the operator is not shown an empty
+    // "Possible matches" box whose only entry has moved up to the button.
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    renderWizard();
+
+    expect(screen.queryByText("Possible matches")).toBeNull();
+    expect(screen.getAllByLabelText("Link to Mike Trout")).toHaveLength(1);
+  });
+
   it("EXACT: the promoted button links to the exact match's id", async () => {
     const row = makeRow({ kind: "player", name: "Mike Trout", status: "ready" });
     currentNearMatches = [{ _id: "player_exact", name: "Mike Trout", confidence: "exact" }];
     currentRows = [row];
     renderWizard();
 
-    const green = screen
-      .getAllByLabelText("Link to Mike Trout")
-      .find((el) => (el as HTMLElement).style.backgroundColor === GREEN);
-    fireEvent.click(green as HTMLElement);
+    const green = screen.getByLabelText("Link to Mike Trout");
+    expect((green as HTMLElement).style.backgroundColor).toBe(GREEN);
+    fireEvent.click(green);
 
     await waitFor(() => {
       expect(mockRecordDecision).toHaveBeenCalledWith({

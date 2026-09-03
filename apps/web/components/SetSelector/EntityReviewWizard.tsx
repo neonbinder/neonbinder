@@ -71,6 +71,8 @@ import { deriveStagedTeamNames } from "./entity-review-staging";
  * {name}" to the green button; close matches leave create as the primary but
  * strip its green. The accessible name "Add as New {Player|Team}" survives all
  * three states — it is an E2E contract — even where the visible text does not.
+ * A promoted exact match is filtered OUT of the panel, so no two controls ever
+ * share the accessible name `Link to {name}`.
  *
  * Cancel only ever deletes this batch's entityReviewQueue rows
  * (cancelBatch) — players/teams/cardChecklist are never touched during
@@ -445,6 +447,25 @@ export default function EntityReviewWizard({
   const exactMatch = (nearMatches ?? []).find((m) => m.confidence === "exact") ?? null;
   const showExactHierarchy = hasExact(nearMatches) && exactMatch !== null;
   const hasCloseOnly = !showExactHierarchy && (nearMatches?.length ?? 0) > 0;
+  /**
+   * What the panel is left to show once the primary action has been promoted.
+   *
+   * When an exact match exists, the green button IS that row — same name, same
+   * id, same `Link to {name}` accessible name. Listing it again below would put
+   * two controls with one accessible name on screen: ambiguous to a screen
+   * reader reading the list, and ambiguous to a Maestro `tapOn` matching by it.
+   * So the promoted row is filtered out of the panel and appears exactly once,
+   * as the primary. Filtering by `_id` rather than by confidence is deliberate
+   * — any OTHER row is a genuinely different entity and still belongs in the
+   * list, whatever its confidence.
+   *
+   * If nothing else remains, this is `[]` and NearMatchPanel renders no panel
+   * at all (it already treats an empty list as nothing to show).
+   */
+  const panelMatches =
+    showExactHierarchy && nearMatches
+      ? nearMatches.filter((m) => m._id !== exactMatch._id)
+      : nearMatches;
   const remaining = total - decided;
 
   return createPortal(
@@ -697,12 +718,13 @@ export default function EntityReviewWizard({
                   Above the action row, and hidden while the link search is
                   open: both render a `Link to {name}` button per candidate, and
                   two lists of them on screen at once is an ambiguity for a
-                  screen reader and for Maestro alike.
+                  screen reader and for Maestro alike. `panelMatches`, not
+                  `nearMatches`, for the same reason one level down — see there.
                 */}
                 {!linkingOpen && (
                   <NearMatchPanel
                     kind={current.kind}
-                    matches={nearMatches}
+                    matches={panelMatches}
                     onPick={(id) => {
                       void handleLink(
                         current._id,
