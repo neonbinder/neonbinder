@@ -500,6 +500,26 @@ export default defineSchema({
     // separate follow-up ticket. Optional + additive — absent on legacy rows.
     listingTitle: v.optional(v.string()),
     listingDescription: v.optional(v.string()),
+    // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
+    // players) did not fit inside eBay's 80-character cap at creation time, so
+    // the generator cut it at a word boundary to keep room for the card number.
+    // The title is valid and listable — it is just missing identifying words a
+    // human should put back, which is why this drives a "needs attention" item
+    // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.
+    //
+    // Set ONLY at insert, from `assessListingTitle(...).coreFits === false`,
+    // and omitted entirely otherwise. CLEARED (patched to `undefined`) by any
+    // operator write of `listingTitle` through `updateCard`: once a human has
+    // authored the title, whether the machine's attempt fit is no longer a
+    // question anyone is asking.
+    //
+    // WHY IT IS STORED AT ALL, when nothing else about the write-once
+    // generation is: a stored row does not carry the player names or the set
+    // name the title was built from — those live behind `playerIds` and an
+    // ancestor walk — so "did the core fit?" cannot be re-derived from the row
+    // the way `titleOverLimit` (just measure the string) can. Recomputing it
+    // would mean re-resolving names for every row on every render.
+    listingTitleTruncated: v.optional(v.boolean()),
     // User-uploaded scans only — we do NOT mirror BSC image URLs into our
     // schema (their CDN, their quotas). Empty at fetch time.
     imageUrls: v.optional(v.object({

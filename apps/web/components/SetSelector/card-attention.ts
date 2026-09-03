@@ -25,6 +25,12 @@ import type { AttentionKind } from "../../convex/features/cardAttention";
  */
 export const ATTENTION_LABELS: Record<AttentionKind, string> = {
   missingTeam: "no team on this card yet",
+  // NEO-101. Worded as what is wrong rather than what to do — the fixer next
+  // to it is the instruction. The numbers are spelled out because an operator
+  // reading a badge has no other way to know which limit bit.
+  titleOverLimit: "title is over the 80-character limit",
+  titleTruncated: "auto-generated title was cut short",
+  aspectValueOverLimit: "variation text is over the 65-character limit",
 };
 
 /**

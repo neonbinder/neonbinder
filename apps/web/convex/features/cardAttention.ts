@@ -19,19 +19,40 @@
  * same way it already imports `expectedFeatures`) and lets a Convex query call
  * it server-side, with no chance of the two disagreeing.
  *
- * NEO-101 will add title/name kinds to `AttentionItem`. Keep this module free
- * of anything that would stop it running in the browser.
+ * NEO-101 added the three listing-title/aspect kinds below. Keep this module
+ * free of anything that would stop it running in the browser — its only import
+ * is `listingLimits.ts`, which is itself nothing but exported numbers.
  */
+
+import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 
 /**
  * One thing a card still needs from a human.
  *
- * A discriminated union of ONE member today, which is intentional — NEO-101's
- * title kinds land here, and a consumer written against `item.kind` keeps
- * working when they do. Nothing here carries a message string: how an item is
- * worded is a UI decision, and duplicating it server-side is how the two drift.
+ * Nothing here carries a message string: how an item is worded is a UI
+ * decision, and duplicating it server-side is how the two drift. The wording
+ * lives in `components/SetSelector/card-attention.ts` (`ATTENTION_LABELS`),
+ * which is a `Record<AttentionKind, string>` — so adding a member here without
+ * adding its label there does not typecheck, deliberately.
+ *
+ * The numeric payloads exist so a label or a fixer can state the actual
+ * measurement without re-measuring the row it was derived from.
  */
-export type AttentionItem = { kind: "missingTeam" };
+export type AttentionItem =
+  | { kind: "missingTeam" }
+  // NEO-101: the stored title is longer than eBay will accept. eBay REJECTS
+  // rather than truncating, so this one BLOCKS listing — the only way a row
+  // reaches this state is an operator edit made before `updateCard` gained its
+  // cap, since the generator cannot produce one.
+  | { kind: "titleOverLimit"; length: number }
+  // NEO-101: the auto-generated title's core was cut at a word boundary to fit
+  // (see `cardChecklist.listingTitleTruncated`). Listable as-is; a human should
+  // put the missing identifying words back.
+  | { kind: "titleTruncated" }
+  // NEO-101: an aspect-shaped field is longer than eBay's item-specific value
+  // limit. WARN ONLY — nothing blocks the write, because no NB field is yet
+  // proven to map verbatim onto an eBay aspect.
+  | { kind: "aspectValueOverLimit"; field: "cardVariation"; length: number };
 
 /** The discriminant alone, for keying label maps and fixer registries. */
 export type AttentionKind = AttentionItem["kind"];
@@ -75,6 +96,27 @@ export type AttentionCardRow = {
     bsc?: { ref: string };
     sportlots?: { ref: string };
   };
+  /**
+   * NEO-101 — the marketplace-agnostic listing title (see schema.ts). Measured,
+   * never parsed: `titleOverLimit` is just its length against the eBay cap.
+   */
+  listingTitle?: string;
+  /**
+   * NEO-101 — the generator had to cut the title's core at creation time.
+   *
+   * A STORED flag rather than a recomputation, unlike every other input here,
+   * and that asymmetry is deliberate: a row does not carry the player names or
+   * set name its title was built from, so "did the core fit?" cannot be
+   * re-derived from the row. `updateCard` clears it on any operator title
+   * write, so the item goes away the moment a human authors the title — which
+   * is the same self-clearing behaviour a recomputation would have given.
+   */
+  listingTitleTruncated?: boolean;
+  /**
+   * NEO-101/189 — NB's own per-card variation name. Read only for its length
+   * against eBay's item-specific value cap.
+   */
+  cardVariation?: string;
 };
 
 /**
@@ -114,6 +156,29 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const awaitingBscLookup = !!row.platformData?.bsc?.ref && !row.teamCheckDoneAt;
   if (!hasTeam && !row.teamNoneConfirmedAt && !awaitingBscLookup) {
     items.push({ kind: "missingTeam" });
+  }
+
+  // NEO-101 — the two title rules are MUTUALLY EXCLUSIVE by construction, not
+  // by coincidence. A row that is both over the limit and flagged truncated
+  // (an operator pasted an over-long title onto a row whose generated title had
+  // been cut, before `updateCard` gained its cap) has exactly one thing worth
+  // saying to a human: it is too long. Reporting "was cut short" alongside
+  // "is 94 characters" reads as a contradiction, and the over-limit fix
+  // subsumes the other one anyway — rewriting the title clears both.
+  const titleLength = row.listingTitle?.length ?? 0;
+  if (titleLength > LISTING_TITLE_MAX) {
+    items.push({ kind: "titleOverLimit", length: titleLength });
+  } else if (row.listingTitleTruncated) {
+    items.push({ kind: "titleTruncated" });
+  }
+
+  const variationLength = row.cardVariation?.length ?? 0;
+  if (variationLength > ASPECT_VALUE_MAX) {
+    items.push({
+      kind: "aspectValueOverLimit",
+      field: "cardVariation",
+      length: variationLength,
+    });
   }
 
   return items;
