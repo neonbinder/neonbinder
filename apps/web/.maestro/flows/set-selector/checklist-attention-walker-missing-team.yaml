@@ -82,9 +82,15 @@ tags:
 
 # ════════════════════════════════════════════════════════════════════════════
 # TWO CARDS, NEITHER WITH A TEAM — the walker's queue.
-# "Team (optional)" on the add form is left empty deliberately: it stores a
-# pending team NAME, not a teamOnCardIds link, so filling it would not answer
-# the question this feature asks.
+# "Team (optional)" on the add form is left empty deliberately, and since
+# NEO-208 that is the only way to build this queue from the form: the field is a
+# TeamPicker whose picked teams are written as real `teamOnCardIds` at creation,
+# so a card added WITH one is born linked, is not flagged `missingTeam`, and
+# would never reach the walker. (Before NEO-208 the field was free text that
+# became a `pendingTeamNames` string and produced no link, so filling it made no
+# difference to the badge — which is what this comment used to say. It would
+# now.) That a picked team really does keep a card out of this state is asserted
+# in the sibling flow, checklist-attention-badge-and-filter.yaml.
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn:

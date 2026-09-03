@@ -84,15 +84,24 @@ tags:
 #   siblings this flow never picks a team, so it needs no setup-seeded roster;
 #   the real Baseball ancestor is used only to match their shape.
 #
-# HOW FAR THIS RUNS LOCALLY (measured 2026-09-02, 3m31s to the wall)
+# HOW FAR THIS RUNS LOCALLY (re-measured 2026-09-03)
 #   Local E2E drives THIS branch's Vite bundle against SHARED DEV, which tracks
-#   main. Every rule this flow asserts is client-side (`deriveCardAttention`,
-#   the meter, the alert, the badge, the walker) and therefore works there — but
-#   `previewListingTitle` is a NEW Convex query, so the second Regenerate click
-#   makes `useQuery` throw and the SPA falls to its error boundary ("An error
-#   occurred. Please refresh the page." as the only node in the hierarchy).
-#   Everything up to and including both Regenerate taps is verified locally;
-#   from the rebuilt title onward needs the PR's own Convex preview.
+#   main. Two of this flow's inputs are ahead of that backend, so its local
+#   reach is bounded twice over:
+#     • NEO-208 (this branch): `addCustomCard` on shared dev has no
+#       `teamOnCardIds` argument, so the Submit below is rejected by Convex's
+#       argument validator and no card is created. Everything up to and
+#       including the picker — the form opening, "+ Add team", the popover, the
+#       "Add New York Yankees" option, the chip, the popover closing — is
+#       verified locally; the card's creation and every assertion downstream of
+#       it need the PR's own Convex preview.
+#     • NEO-101 (already on main's client but not its backend when this note
+#       was first written): `previewListingTitle` likewise only exists on the
+#       preview, so the second Regenerate click drops the SPA to its error
+#       boundary ("An error occurred. Please refresh the page." as the only node
+#       in the hierarchy) even on a run that got a card created.
+#   Nothing here is a timeout to inflate or a step to guard with `when:` — the
+#   flow is written for CI's preview and simply cannot complete against dev.
 # ════════════════════════════════════════════════════════════════════════════
 
 - launchApp
@@ -120,14 +129,33 @@ tags:
 # two NEO-102 flows do. A card with no team on file is flagged `missingTeam`,
 # and `pickAttentionFixer` hands a card to the fixer of its FIRST registered
 # kind — so a teamless card would open the MissingTeamFixer and this flow would
-# never reach the title question it exists for. The typed name lands in
-# `pendingTeamNames`, which `deriveCardAttention` counts as an answer already
-# given, so the only thing left to say about this card is its own length.
+# never reach the title question it exists for. Picking a team is what leaves
+# the card's own length as the only thing still to say about it.
+#
+# NEO-208 — that field is a PICKER now, not a textbox. The quick-add form's
+# free-text "Team" box is gone; in its place is the same TeamPicker the card
+# drawer and the walker's MissingTeamFixer use, so the picked team is a real
+# `teamOnCardIds` link written at CREATION. The card is born linked, which is
+# what `deriveCardAttention` reads — it no longer has to count an unresolved
+# typed name as an answer for this flow to work. (Before NEO-208 the typed name
+# landed in `pendingTeamNames`, rendered nowhere, and only counted as answered
+# by the rule's legacy clause. That path is not reachable from this form any
+# more.)
 #
 # FIXTURE SIZING — the generated title must FIT, and the names below are chosen
 # so it does. Titles now fill toward 80: this card generates
 #
 #   "2024 Topps tlf-<w>-<attempt> #101-<attempt> New York Yankees Baseball"
+#
+# NEO-208 leaves that string BYTE-IDENTICAL, which is why nothing below moved.
+# The generator takes one `teamNames: string[]`; `addCustomCard` now fills it
+# from the LINKED teams' stored names (`resolveTeamOnCardIdsForWrite` hands them
+# back from the rows it already read) instead of from the typed
+# `pendingTeamNames`, and `previewListingTitle` — the query behind Regenerate —
+# already preferred resolved team names over pending ones. The seeded team's
+# stored `name` is exactly "New York Yankees" (it is what the picker's own
+# "Add New York Yankees" option is named after), so both the creation title and
+# the regenerated one are unchanged, and so is the length arithmetic below.
 #
 # which measures 63-71 characters across the ATTEMPT_ID lengths the runners
 # produce (`<runner>-a<n>-<RANDOM>`, 7-11 chars; ~73 even if a runner index ever
@@ -151,9 +179,58 @@ tags:
 - inputText: "101-${ATTEMPT_ID}"
 - tapOn: "Player name"
 - inputText: "Title Cap ${ATTEMPT_ID}"
+
+# ── The team, through the quick-add form's TeamPicker (NEO-208) ──────────────
+# Same four handles the drawer's picker is driven by in team-picker.yaml: the
+# "+ Add team" trigger, the popover's search input, and the option row named
+# after the team. Typing the FULL name rather than "Yankees" is deliberate — the
+# candidate pool is every Baseball team, and other flows' player commits
+# get-or-create farm clubs in it mid-run, so a prefix match on the whole name is
+# the one query that cannot be crowded out of the popover's top-8 slice.
+#
+# SCROLL FIRST (R8), and this is not optional. On the 1024×629 CI viewport the
+# add-card form opens with its lower half below the fold — measured: the Players
+# input sits at y≈595, which puts the Team picker and the Add/Cancel row off
+# screen entirely. Maestro reads an off-screen element as ABSENT, so an
+# unscrolled `tapOn: "Add team"` fails with "Element not found: Id matching
+# regex: Add team" and looks exactly like a picker that never rendered. (It is
+# the same reason the Submit tap below scrolls.) centerElement lands the trigger
+# near y≈315, leaving the Card name input two rows above it and the Add/Cancel
+# row just below, so every handle this block needs is in one viewport.
+# R6 — the scroll IS the assertion that the picker rendered.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+    timeout: 10000
 - tapOn:
-    id: "Team"
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
 - inputText: "New York Yankees"
+- tapOn:
+    id: "Add New York Yankees"
+# The chip is the proof the pick landed. Unlike the drawer's picker this one is
+# not a draft — its value goes straight into `addCustomCard` on Submit.
+- assertVisible:
+    id: "Remove team New York Yankees"
+
+# Close the popover BEFORE reaching for Submit. It is `absolute top-full`, and
+# in this form the picker sits directly above the Add/Cancel row, so an open
+# popover covers "Submit new card" — the same occlusion the TeamPicker's own
+# outside-click effect was added for in MissingTeamFixer. A pointerdown anywhere
+# outside the picker closes it; the Card name input above is in the form and
+# outside the picker. Escape is NOT used: it is the walker's "defer this card"
+# and the drawer's "discard the draft", and this flow should not depend on which
+# handler happens to see it.
+- tapOn:
+    id: "Card name"
+- extendedWaitUntil:
+    notVisible:
+      id: "Search teams"
+    timeout: 7000
 
 # centerElement so Maestro's own scroll-before-tap has content to scroll to —
 # without it the CDP scroll returns nothing and the tap dies with
@@ -252,11 +329,18 @@ tags:
 #
 # The fill tail is the part worth pinning. Titles are built to fill toward 80
 # now, so after the core and the card number the generator keeps appending
-# while tokens fit — here the team the operator typed on the add-card form
-# (a custom card carries it in `pendingTeamNames`, and Regenerate reads the
-# same fallback the creation path does) and finally the sport, the weakest
-# token and the last one tried. A generator that stopped filling, or a
-# Regenerate that read different inputs from creation, fails on this line.
+# while tokens fit — here the team the operator PICKED on the add-card form and
+# finally the sport, the weakest token and the last one tried. A generator that
+# stopped filling, or a Regenerate that read different inputs from creation,
+# fails on this line.
+#
+# NEO-208 — where that team name comes from, on both sides of the comparison.
+# The picked team is a real `teamOnCardIds` link from the moment the card is
+# created, so the creation title reads the LINKED team's stored name and
+# `previewListingTitle` resolves the very same row. This line is therefore the
+# assertion that the two paths still agree; before NEO-208 they agreed on a
+# typed `pendingTeamNames` string instead, and the fallback that produced that
+# is still in both, for a legacy row.
 #
 # It is also the POSITIVE assertion that deliberately follows the wait above: a
 # `notVisible` passes on a page that has fallen to its error boundary, a
