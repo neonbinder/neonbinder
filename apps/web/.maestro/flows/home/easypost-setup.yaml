@@ -1,0 +1,64 @@
+# NEO-207 — a signed-out visitor can reach the EasyPost setup guide through
+# the link in the shipping-labels page's postage section, and the guide walks
+# the four steps in order. This is also the only E2E exercising that link, so
+# it doubles as a regression check that the postage section points somewhere.
+#
+# Public page, so no sign-in URL; clearState per R4 (see print-shop.yaml).
+url: ${APP_URL || "https://localhost:3000"}
+name: EasyPost Setup Guide Page
+tags:
+  - marketing
+  - home
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Neon Binder"
+
+# Landing grid → shipping-labels marketing page.
+- scrollUntilVisible:
+    element:
+      text: ".*Shipping Labels.*"
+    centerElement: true
+- tapOn:
+    text: ".*Shipping Labels.*"
+- assertVisible: "Print the Label, Ship the Card"
+
+# The postage section's guide link.
+- scrollUntilVisible:
+    element:
+      text: ".*grab your API key.*"
+    centerElement: true
+- tapOn:
+    text: ".*grab your API key.*"
+
+# The guide: hero, the four steps in order, and the trust section.
+- assertVisible: "Get Your EasyPost Key"
+- scrollUntilVisible:
+    element:
+      text: "Four Steps, One Time"
+- scrollUntilVisible:
+    element:
+      text: "Create a free EasyPost account"
+- scrollUntilVisible:
+    element:
+      text: "Add a payment method"
+- scrollUntilVisible:
+    element:
+      text: "Copy your Production API key"
+- scrollUntilVisible:
+    element:
+      text: "Paste it into Neon Binder"
+- scrollUntilVisible:
+    element:
+      text: "Good To Know"
+
+# CTA: verify Get Started button opens Clerk dialog
+- scrollUntilVisible:
+    element:
+      text: "Get Started"
+    centerElement: true
+- tapOn: "Get Started"
+- assertVisible: "Create your account"
+- tapOn:
+    point: "5%, 50%"
+- assertNotVisible: "Create your account"
