@@ -295,6 +295,81 @@ describe("updateCard listingTitle length cap (NEO-101)", () => {
     ).toBeUndefined();
   });
 
+  test("re-saving the SAME title leaves listingTitleTruncated intact", async () => {
+    // The defect this pins: `CardDetailPanel` sends `listingTitle` on EVERY
+    // save, touched or not. Clearing the flag merely because the field was
+    // PRESENT meant that adding a team or flipping RC silently retired the
+    // "auto title was cut short" item — the badge disappeared while the title
+    // was still missing the words the generator had to cut.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    const generated = "2024 Topps Chrome An Absurdly Long Player Full Name #17";
+    await asAdmin.run(async (ctx) => {
+      await ctx.db.patch(cardId, {
+        listingTitle: generated,
+        listingTitleTruncated: true,
+      });
+    });
+
+    // Exactly what the panel sends when the operator edited only the RC flag.
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      isRookie: true,
+      listingTitle: generated,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.isRookie).toBe(true);
+    expect(card.listingTitleTruncated).toBe(true);
+  });
+
+  test("a title identical after trimming counts as unchanged", async () => {
+    // The comparison is against the TRIMMED incoming value, so whitespace a
+    // textarea round-trip added is not mistaken for an operator rewrite.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    const generated = "2024 Topps Chrome Shohei Ohtani #17";
+    await asAdmin.run(async (ctx) => {
+      await ctx.db.patch(cardId, {
+        listingTitle: generated,
+        listingTitleTruncated: true,
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: `  ${generated}  `,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.listingTitleTruncated).toBe(true);
+  });
+
+  test("saving a CHANGED title clears listingTitleTruncated", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.run(async (ctx) => {
+      await ctx.db.patch(cardId, {
+        listingTitle: "2024 Topps Chrome An Absurdly Long Player Full Name #17",
+        listingTitleTruncated: true,
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "2024 Topps Chrome Shohei Ohtani #17",
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(
+      cards.find((c) => c._id === cardId)!.listingTitleTruncated,
+    ).toBeUndefined();
+  });
+
   test("a patch that does NOT touch the title leaves listingTitleTruncated alone", async () => {
     const { asAdmin, variantTypeId, cardId } = await seed();
     await asAdmin.run(async (ctx) => {

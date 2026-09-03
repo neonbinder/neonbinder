@@ -296,6 +296,34 @@ describe("assessListingTitle (NEO-101)", () => {
     expect(title.endsWith(" #1")).toBe(true);
   });
 
+  test("the hard-slice fallback never leaves an orphaned surrogate half", () => {
+    // Astral characters (emoji, and plenty of real scripts) are TWO UTF-16
+    // code units, and the fallback slice measures in code units — so the cut
+    // can land between the halves. A lone high surrogate is not a character:
+    // it renders as a replacement glyph and is not encodable as valid UTF-8
+    // once a marketplace adapter serialises the title.
+    const unbroken = "\u{1F600}".repeat(60); // 120 code units, zero spaces
+    const { title, coreFits } = assessListingTitle({
+      cardNumber: "1",
+      playerNames: [unbroken],
+    });
+
+    expect(coreFits).toBe(false);
+    expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+    expect(title.endsWith(" #1")).toBe(true);
+    // No code unit in the surrogate range survives on its own: spreading a
+    // string iterates by CODEPOINT, so a well-formed pair yields one 2-unit
+    // character and an orphan yields a 1-unit one still inside D800-DFFF.
+    for (const ch of title) {
+      const cp = ch.codePointAt(0)!;
+      expect(cp < 0xd800 || cp > 0xdfff).toBe(true);
+    }
+    // The whole title survives a UTF-8 round trip unchanged. An orphan would
+    // be replaced by U+FFFD here.
+    const roundTripped = new TextDecoder().decode(new TextEncoder().encode(title));
+    expect(roundTripped).toBe(title);
+  });
+
   test("no optional tokens present means nothing dropped and nothing invented", () => {
     expect(assessListingTitle({ cardNumber: "9" })).toEqual({
       title: "#9",

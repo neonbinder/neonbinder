@@ -222,6 +222,55 @@ describe("previewListingTitle (NEO-101)", () => {
     expect(preview.title).not.toContain("…");
   });
 
+  test("de-dupes and bounds the playerIds fan-out", async () => {
+    // `playerIds` is unvalidated on the row — `updateCard` takes it as full
+    // replacement with no cap and no de-duplication, unlike `teamOnCardIds`.
+    // A repeated id must not be read (or printed) twice, and a long array must
+    // not turn one query call into an unbounded sequential read walk.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, variantTypeId } = await seedSubtree(t);
+
+    const playerIds = await t.run(async (ctx) => {
+      const ids: Id<"players">[] = [];
+      for (let i = 0; i < 20; i++) {
+        ids.push(
+          await ctx.db.insert("players", {
+            name: `Player ${String(i).padStart(2, "0")}`,
+            nameNormalized: `player ${i}`,
+            sportId,
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ids;
+    });
+
+    // A repeated id resolves once.
+    const dupeCardId = await insertCard(t, variantTypeId, {
+      cardNumber: "1",
+      playerIds: [playerIds[0], playerIds[0], playerIds[1], playerIds[0]],
+    });
+    const dupePreview = await asAdmin.query(
+      api.selectorOptions.previewListingTitle,
+      { cardId: dupeCardId },
+    );
+    expect(dupePreview.inputs.playerNames).toEqual(["Player 00", "Player 01"]);
+
+    // A 20-id array reads at most the documented bound.
+    const wideCardId = await insertCard(t, variantTypeId, {
+      cardNumber: "2",
+      playerIds,
+    });
+    const widePreview = await asAdmin.query(
+      api.selectorOptions.previewListingTitle,
+      { cardId: wideCardId },
+    );
+    expect(widePreview.inputs.playerNames).toHaveLength(12);
+    expect(widePreview.inputs.playerNames[0]).toBe("Player 00");
+    expect(widePreview.title.length).toBeLessThanOrEqual(80);
+  });
+
   test("requires admin", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId } = await seedSubtree(t);

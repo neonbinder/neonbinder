@@ -164,7 +164,16 @@ function cutAtWordBoundary(text: string, maxLength: number): string {
   const window = text.slice(0, maxLength);
   const lastSpace = window.lastIndexOf(" ");
   if (lastSpace > 0) return window.slice(0, lastSpace).trimEnd();
-  return window.trimEnd();
+  // The fallback cuts at a UTF-16 code unit, which can land BETWEEN the two
+  // halves of a surrogate pair — an emoji, or any astral character — leaving an
+  // orphaned high surrogate on the end. That is not a character: it renders as
+  // a replacement glyph and is not encodable as valid UTF-8 once a marketplace
+  // adapter serialises the title. Drop it.
+  //
+  // Only this branch needs the check. The word-boundary branch above cuts at a
+  // space, and a space is never half of anything.
+  const hardCut = /[\uD800-\uDBFF]$/.test(window) ? window.slice(0, -1) : window;
+  return hardCut.trimEnd();
 }
 
 /**

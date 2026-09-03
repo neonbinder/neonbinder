@@ -1995,6 +1995,21 @@ export const updateCard = mutation({
     // The error message carries the CAP and the LENGTH and never the title
     // itself: this string travels through Convex's error path into Sentry and
     // the browser console, and row content has no business there.
+    // NEO-101 security follow-up: the two branches below both need the STORED
+    // row. Loaded lazily and at most once — the common `updateCard` call is a
+    // plain field patch that enters neither branch and must not pay for a read
+    // it never uses.
+    let storedCard: Doc<"cardChecklist"> | null = null;
+    let storedCardLoaded = false;
+    const loadStoredCard = async (): Promise<Doc<"cardChecklist">> => {
+      if (!storedCardLoaded) {
+        storedCard = await ctx.db.get(id);
+        storedCardLoaded = true;
+      }
+      if (!storedCard) throw new ConvexError("updateCard: no such card");
+      return storedCard;
+    };
+
     if (typeof filtered.listingTitle === "string") {
       const trimmedTitle = filtered.listingTitle.trim();
       if (trimmedTitle.length > LISTING_TITLE_MAX) {
@@ -2004,10 +2019,21 @@ export const updateCard = mutation({
       }
       filtered.listingTitle = trimmedTitle;
       // A human has now authored this title, so whether the GENERATOR's core
-      // fit is no longer a question anyone is asking. Cleared in the same
-      // patch, the same way a real team write retires `teamNoneConfirmedAt`
-      // below — `undefined` in a patch is how Convex deletes a field.
-      filtered.listingTitleTruncated = undefined;
+      // fit is no longer a question anyone is asking — `undefined` in a patch
+      // is how Convex deletes a field.
+      //
+      // ONLY WHEN THE TITLE ACTUALLY CHANGED, though. `CardDetailPanel` sends
+      // `listingTitle` on EVERY save, whether or not the operator touched it,
+      // so keying the clear off "present in args" meant adding a team or
+      // flipping RC silently retired the "auto title was cut short" item —
+      // the row stops being badged while the title is still missing the words
+      // the generator cut. Same discipline as the `teamNoneConfirmedAt`
+      // retirement below, which is likewise conditioned on the write being a
+      // real one rather than merely present.
+      const existingTitle = (await loadStoredCard()).listingTitle;
+      if (trimmedTitle !== existingTitle) {
+        filtered.listingTitleTruncated = undefined;
+      }
     }
 
     // NEO-101 deliberately does NOT cap `cardVariation` here, even though
@@ -2044,8 +2070,7 @@ export const updateCard = mutation({
         // already paid for elsewhere on this same mutation's write path
         // (`findSportForSelectorOption` mirrors the lookup
         // `applyBscTeamResolution` and the commit chunk already do).
-        const card = await ctx.db.get(id);
-        if (!card) throw new ConvexError("updateCard: no such card");
+        const card = await loadStoredCard();
         const sportId = await findSportForSelectorOption(
           ctx,
           card.selectorOptionId,
@@ -2160,8 +2185,31 @@ export const previewListingTitle = query({
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("previewListingTitle: no such card");
 
+    // NEO-101 security follow-up: BOUND AND DEDUPE the fan-out before reading
+    // anything. `playerIds` is an unvalidated array on the row — `updateCard`
+    // accepts it as full replacement with no cap and no de-duplication, unlike
+    // `teamOnCardIds` (see `MAX_CARD_TEAMS` there) — so a single call to this
+    // query could otherwise turn one card id into an unbounded sequential
+    // `ctx.db.get` walk. Deduping first also stops a row that repeats the same
+    // id from paying for it twice, and from printing the player twice.
+    //
+    // The cap is deliberately generous rather than tight: the widest real
+    // multi-player cards (League Leaders, rookie combos) run to a handful of
+    // names, and a title only has room for two or three of them anyway, so 12
+    // is well past anything legitimate while still being a hard bound.
+    //
+    // Not fixed by adding a `MAX_CARD_PLAYERS` to `updateCard` here: doing
+    // that properly means dedupe + cap + existence checks on the write path,
+    // which changes an input contract `CardDetailPanel` and the commit path
+    // both use, and that is its own decision rather than a preview query's to
+    // make. This bound is local and costs nothing.
+    const PREVIEW_PLAYER_LOOKUP_LIMIT = 12;
+    const previewPlayerIds = [...new Set(card.playerIds ?? [])].slice(
+      0,
+      PREVIEW_PLAYER_LOOKUP_LIMIT,
+    );
     const resolvedPlayerNames: string[] = [];
-    for (const playerId of card.playerIds ?? []) {
+    for (const playerId of previewPlayerIds) {
       const player = await ctx.db.get(playerId);
       // A dangling id is a data problem, not a reason to fail a preview —
       // skip it and let the chips show what actually resolved.
