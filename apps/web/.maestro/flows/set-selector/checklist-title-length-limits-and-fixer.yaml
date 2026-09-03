@@ -248,19 +248,54 @@ tags:
 # viewport-centre swipe lands on the BACKDROP and cannot drive the drawer's
 # inner scroll — the same wall variation-link-group-and-unlink.yaml documents.
 # Manual swipes at x=80% are inside the drawer. R8's centerElement does not
-# apply because scrollUntilVisible cannot be used here at all; the swipes are
-# followed by a hard visibility wait instead.
+# apply because scrollUntilVisible cannot be used here at all.
+#
+# THE STICKY-HEADER TRAP — why this is a pin-then-correct pair, not a swipe.
+#   CI run 33700877240 (runner 2) failed here, and the failure is worth spelling
+#   out because "assertVisible passed, the tap did nothing" is not a shape most
+#   flows have to think about. Two big swipes leave the drawer at its MAXIMUM
+#   scroll, and at max scroll "Card variation" sits at bounds [546,8][978,42] —
+#   underneath the drawer's own sticky header (the "Card #<n> CUSTOM" bar,
+#   y 0–50, which is INSIDE the drawer, not the app's page header). Maestro's
+#   assertVisible passed, because the input's layout bounds really are on
+#   screen; the tap at its centre (y≈25) then landed on the header, nothing was
+#   typed, the field still read its placeholder "e.g. Gold Refractor", and the
+#   flow died on the warn-alert assertion two steps later.
+#
+#   The fix leans on the one thing about this drawer that IS deterministic. At
+#   max scroll the variation input's y is fixed by the content BELOW it —
+#   Variation of, Players, Inherited from set, the image placeholder, all of
+#   constant height on this card — and NOT by anything above it (which grows
+#   when Regenerate adds its source chips). So: swipe THREE times to pin the
+#   drawer at that stable end position (the third is a no-op once it is there),
+#   then one measured swipe back DOWN by ~25% of the viewport (~157px), which
+#   lands the input around y≈165 — well clear of the 50px header and nowhere
+#   near the fold. The wait that follows is a re-assert AFTER the correction,
+#   not before it.
 #
 # The value is 71 characters — 6 past the aspect cap, and short enough that the
 # fixer can bring it back under by erasing from a mid-string caret (see there).
 # ════════════════════════════════════════════════════════════════════════════
 
+# Pin the drawer to the END of its scroll — a stable anchor, unlike "two swipes
+# from wherever we were".
 - swipe:
     start: "80%, 80%"
     end: "80%, 20%"
 - swipe:
     start: "80%, 80%"
     end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+
+# ...then back down by a measured amount, to lift the field out from under the
+# drawer's sticky header. duration is generous on purpose: a fast flick can pick
+# up momentum scrolling and overshoot the correction.
+- swipe:
+    start: "80%, 30%"
+    end: "80%, 55%"
+    duration: 400
 - extendedWaitUntil:
     visible:
       id: "Card variation"
@@ -341,8 +376,18 @@ tags:
 # is X" but "the field no longer reports itself over the cap", which is the same
 # thing the badge is derived from. 90 backspaces is more than the 71 characters
 # in there, so the only thing that survives is whatever sat after the caret.
+#
+# The drawer's sticky-header trap (see above) does NOT repeat here: the walker's
+# heading sits in a sibling ABOVE its scroll area rather than over it, so nothing
+# overlays this field. What COULD bite is the body's own `max-h-[70vh]` — a
+# fixer taller than ~437px would clip its lower half, and a clipped element
+# still reports layout bounds to Maestro's hit test. So assert the fixer's OWN
+# Save button first: it renders BELOW the variation input, so seeing it is
+# seeing that everything between is inside the visible body.
 # ════════════════════════════════════════════════════════════════════════════
 
+- assertVisible:
+    text: "Save \\(Enter\\)"
 - tapOn:
     id: "Card variation for #101-${ATTEMPT_ID}"
 - eraseText: 90
