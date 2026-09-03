@@ -76,13 +76,13 @@ describe("glossScanMessage", () => {
   /** The real first scan on the production letter this feature was built from. */
   it("explains USPS's alarming postmark wording", () => {
     expect(glossScanMessage("Origin Processing Cancellation of Postage")).toBe(
-      "Origin Processing Cancellation of Postage (postmarked — nothing was cancelled)",
+      "Origin Processing Cancellation of Postage (postmarked — the letter wasn't cancelled)",
     );
   });
 
   it("matches regardless of USPS's casing", () => {
     expect(glossScanMessage("origin processing cancellation of postage")).toContain(
-      "(postmarked — nothing was cancelled)",
+      "(postmarked — the letter wasn't cancelled)",
     );
   });
 

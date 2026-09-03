@@ -29,6 +29,7 @@ import {
   computeEasypostSignature,
   rewriteWeightForSignature,
 } from "./lib/easypostWebhookSignature";
+import { trackerFromEvent } from "./shipmentTracking";
 
 const modules = (
   import.meta as unknown as {
@@ -62,6 +63,18 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * The browser service's `GET /easypost/:key/webhooks` body.
+ *
+ * An ENVELOPE, `{ webhooks: [...] }` — not a bare array. Pinned through a
+ * helper because stubbing the wrong shape here is invisible: Convex read a
+ * bare array, so every list came back empty and reconcile-before-create
+ * silently did nothing while these tests still passed.
+ */
+function webhookListResponse(hooks: unknown[]): Response {
+  return jsonResponse({ webhooks: hooks });
 }
 
 /** An Express "no such route" 404 — HTML, not JSON. The old-revision signal. */
@@ -437,6 +450,59 @@ describe("findPurchaseForWebhook", () => {
   });
 });
 
+// ─── trackerFromEvent ────────────────────────────────────────────────────────
+
+describe("trackerFromEvent", () => {
+  test("null tracker id means no tracker at all", () => {
+    expect(trackerFromEvent({})).toBeNull();
+    expect(trackerFromEvent({ id: null, status: "in_transit" })).toBeNull();
+  });
+
+  test("an unparseable updated_at falls back to the newest scan time", () => {
+    const snapshot = trackerFromEvent({
+      id: "trk_1",
+      status: "in_transit",
+      updated_at: "not-a-date",
+      tracking_details: [
+        { message: "a", status: "in_transit", datetime: "2026-08-25T17:52:00Z" },
+        { message: "b", status: "in_transit", datetime: "2026-08-27T22:22:00Z" },
+      ],
+    });
+    expect(snapshot?.updatedAt).toBe(Date.parse("2026-08-27T22:22:00Z"));
+  });
+
+  test("an unparseable updated_at with no scans falls back to 0, never Date.now()", () => {
+    const snapshot = trackerFromEvent({
+      id: "trk_1",
+      status: "in_transit",
+      updated_at: "garbage",
+      tracking_details: [],
+    });
+    expect(snapshot?.updatedAt).toBe(0);
+  });
+
+  test("a null tracking_details is treated as no scans, not a crash", () => {
+    const snapshot = trackerFromEvent({
+      id: "trk_1",
+      status: "in_transit",
+      updated_at: "2026-08-25T17:52:00Z",
+      tracking_details: null,
+    });
+    expect(snapshot?.scans).toEqual([]);
+    expect(snapshot?.lastScanAt).toBeUndefined();
+  });
+
+  test("garbage est_delivery_date is dropped rather than stored as garbage", () => {
+    const snapshot = trackerFromEvent({
+      id: "trk_1",
+      status: "in_transit",
+      updated_at: "2026-08-25T17:52:00Z",
+      est_delivery_date: "whenever",
+    });
+    expect(snapshot?.estDeliveryAt).toBeUndefined();
+  });
+});
+
 // ─── the HTTP endpoint ───────────────────────────────────────────────────────
 
 describe("POST /webhooks/easypost/<token>", () => {
@@ -638,6 +704,229 @@ describe("POST /webhooks/easypost/<token>", () => {
     expect(await response.json()).toEqual({ ignored: true });
     expect((await readPurchase(t, theirs))?.trackingStatus).toBeUndefined();
   });
+
+  test("a token of the right LENGTH but the wrong CHARSET is a 404, not a lookup", async () => {
+    // `${TOKEN}X` and "not/a/token" (used above) are wrong-length. A forged
+    // token that happens to be exactly 43 characters but carries a char
+    // outside the base64url alphabet must be rejected by the shape check
+    // before ever reaching `getWebhookByToken` — a `.` or a space here is the
+    // adversarial case, not just "too short"/"too long".
+    const t = convexTest(schema, modules);
+    await seedWebhookRow(t);
+    const body = JSON.stringify({ description: "tracker.updated", result: trackerPayload() });
+    const signed = await signedEvent(body);
+
+    for (const bad of [
+      `${"A".repeat(42)}.`, // 43 chars, trailing dot
+      `${"A".repeat(21)} ${"A".repeat(21)}`, // 43 chars, embedded space
+      `${"A".repeat(42)}/`, // 43 chars, embedded slash
+    ]) {
+      expect(bad).toHaveLength(43);
+      const response = await post(t, bad, signed);
+      expect(response.status).toBe(404);
+    }
+  });
+
+  test("a body that is not JSON is a 400, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    await seedWebhookRow(t);
+
+    const body = "not json at all";
+    const response = await post(t, TOKEN, await signedEvent(body));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "bad_request" });
+    expect((await readPurchase(t, purchaseId))?.trackingStatus).toBeUndefined();
+  });
+
+  test("a top-level JSON array is ignored with 200, not a crash", async () => {
+    // `typeof [] === "object"` passes the "is this an object" guard, so a body
+    // that parses to an array falls through to `event.description` being
+    // `undefined` — which the description check must treat as "ignore",
+    // not throw trying to read `.result` off an array.
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    await seedWebhookRow(t);
+
+    const body = JSON.stringify([trackerPayload()]);
+    const response = await post(t, TOKEN, await signedEvent(body));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ignored: true });
+    expect((await readPurchase(t, purchaseId))?.trackingStatus).toBeUndefined();
+  });
+
+  test("an event with no `result` field at all is ignored with 200", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    await seedWebhookRow(t);
+
+    const body = JSON.stringify({ description: "tracker.updated" });
+    const response = await post(t, TOKEN, await signedEvent(body));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ignored: true });
+    expect((await readPurchase(t, purchaseId))?.trackingStatus).toBeUndefined();
+  });
+
+  test("a `tracker.created` event for a shipment with no purchase row at all is ignored with 200", async () => {
+    // Distinct from "one seller's token cannot reach another seller's row":
+    // here there is no row for this shipment id under ANY user, and the
+    // event kind is `tracker.created` rather than `.updated`.
+    const t = convexTest(schema, modules);
+    await seedWebhookRow(t);
+
+    const body = JSON.stringify({
+      description: "tracker.created",
+      result: trackerPayload({ shipment_id: "shp_never_bought_here" }),
+    });
+    const response = await post(t, TOKEN, await signedEvent(body));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ignored: true });
+    expect((await readWebhook(t))?.lastEventAt).toBeUndefined();
+  });
+
+  test("signature header variants are all rejected, none of them looked up as a match", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    await seedWebhookRow(t);
+
+    const body = JSON.stringify({ description: "tracker.updated", result: trackerPayload() });
+    const correct = await computeEasypostSignature(SECRET, rewriteWeightForSignature(body));
+    const hex = correct.slice("hmac-sha256-hex=".length);
+
+    // NOTE: a leading/trailing-whitespace variant is deliberately NOT in this
+    // list. The Fetch `Headers` object strips OWS (optional whitespace) around
+    // a header's value per spec BEFORE the handler ever sees it — confirmed
+    // empirically (`new Headers({x: " abc "}).get("x") === "abc"`) — so
+    // `" " + correct` reaches `constantTimeEqual` as `correct` itself and is
+    // (correctly) accepted. That is not a bypass: nothing attacker-controlled
+    // survives to the comparison. The two-signatures case below IS meaningful,
+    // because comma-joining is Headers' behaviour for a REPEATED header name,
+    // not for extra whitespace in a single value.
+    const variants = [
+      `sha256-hex=${hex}`, // wrong prefix
+      hex, // bare hex, no prefix at all
+      `hmac-sha256-hex=${hex.toUpperCase()}`, // uppercase hex
+      `${correct}extra`, // trailing garbage appended to an otherwise-correct value
+      `${correct}, ${correct}`, // two signatures, comma-joined (repeated header)
+    ];
+
+    for (const presented of variants) {
+      const response = await t.fetch(`/webhooks/easypost/${TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Hmac-Signature": presented },
+        body,
+      });
+      expect(response.status).toBe(401);
+    }
+    expect((await readPurchase(t, purchaseId))?.trackingStatus).toBeUndefined();
+  });
+
+  test("a repeated X-Hmac-Signature header (two literal header lines) is rejected", async () => {
+    const t = convexTest(schema, modules);
+    await seedPurchase(t);
+    await seedWebhookRow(t);
+
+    const body = JSON.stringify({ description: "tracker.updated", result: trackerPayload() });
+    const correct = await computeEasypostSignature(SECRET, rewriteWeightForSignature(body));
+
+    const headers = new Headers({ "Content-Type": "application/json" });
+    headers.append("X-Hmac-Signature", correct);
+    // A second, different value under the same header name — Fetch's Headers
+    // joins repeats with ", ", which must not happen to equal the expected
+    // single value.
+    headers.append("X-Hmac-Signature", "hmac-sha256-hex=" + "0".repeat(64));
+
+    const response = await t.fetch(`/webhooks/easypost/${TOKEN}`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    expect(response.status).toBe(401);
+  });
+
+  test("a declared Content-Length over the cap is 413 before the body is read", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    await seedWebhookRow(t);
+
+    // The actual body is tiny and would otherwise verify fine; only the
+    // DECLARED length is oversize, exercising the early-reject branch that
+    // never calls `req.text()`.
+    const body = JSON.stringify({ description: "tracker.updated", result: trackerPayload() });
+    const signed = await signedEvent(body);
+    const response = await t.fetch(`/webhooks/easypost/${TOKEN}`, {
+      method: "POST",
+      headers: { ...signed.headers, "Content-Length": String(300 * 1024) },
+      body: signed.body,
+    });
+
+    expect(response.status).toBe(413);
+    expect((await readPurchase(t, purchaseId))?.trackingStatus).toBeUndefined();
+  });
+
+  test("an unparseable updated_at never overwrites a row with a real timestamp", async () => {
+    // trackerFromEvent's fallback for a garbage updated_at with no scans in
+    // THIS event is 0 — which must lose to whatever real timestamp the row
+    // already has, exactly like an explicitly-older snapshot would.
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t, { trackerUpdatedAt: 5_000, trackingStatus: "delivered" });
+    await seedWebhookRow(t);
+
+    const body = JSON.stringify({
+      description: "tracker.updated",
+      result: trackerPayload({ updated_at: "not-a-real-date", tracking_details: [] }),
+    });
+    const response = await post(t, TOKEN, await signedEvent(body));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ applied: false, newScans: 0 });
+    const row = await readPurchase(t, purchaseId);
+    expect(row?.trackingStatus).toBe("delivered");
+    expect(row?.trackerUpdatedAt).toBe(5_000);
+  });
+
+  test("an unparseable updated_at still applies to a fresh row (0 beats -1)", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    await seedWebhookRow(t);
+
+    const body = JSON.stringify({
+      description: "tracker.updated",
+      result: trackerPayload({ updated_at: "not-a-real-date", tracking_details: [] }),
+    });
+    const response = await post(t, TOKEN, await signedEvent(body));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ applied: true, newScans: 0 });
+    const row = await readPurchase(t, purchaseId);
+    expect(row?.trackerUpdatedAt).toBe(0);
+  });
+
+  test("a 256 KB body does not hang — the weight rewrite is not catastrophic", async () => {
+    const t = convexTest(schema, modules);
+    await seedWebhookRow(t);
+
+    // A body near the cap, padded with digit runs that look like plausible
+    // (but non-matching) targets for backtracking: lots of `"weight":` decoys
+    // and long digit sequences that are NOT followed by `,` or `}`.
+    const filler = '{"weight": 123456789012345678901234567890123456789 padding ' .repeat(3000);
+    const body = JSON.stringify({
+      description: "tracker.updated",
+      result: trackerPayload({ status_detail: filler.slice(0, 200_000) }),
+    });
+    expect(new TextEncoder().encode(body).length).toBeLessThan(256 * 1024);
+
+    const start = Date.now();
+    const response = await post(t, TOKEN, await signedEvent(body));
+    const elapsedMs = Date.now() - start;
+
+    expect(response.status).toBe(200);
+    expect(elapsedMs).toBeLessThan(2_000);
+  });
 });
 
 // ─── getMyTrackingSetup ──────────────────────────────────────────────────────
@@ -707,7 +996,7 @@ describe("ensureWebhook", () => {
     const t = convexTest(schema, modules);
     const calls = recordingStub(async (url, init) => {
       if (String(url).endsWith("/webhooks") && init?.method === "GET") {
-        return jsonResponse([]);
+        return webhookListResponse([]);
       }
       if (String(url).endsWith("/webhooks") && init?.method === "POST") {
         return jsonResponse({ webhookId: "hook_new", mode: "production" });
@@ -760,7 +1049,7 @@ describe("ensureWebhook", () => {
     const ourUrl = `${PROD_SITE}/webhooks/easypost/${TOKEN}`;
     const calls = recordingStub(async (url, init) => {
       if (init?.method === "GET") {
-        return jsonResponse([{ webhookId: "hook_orphan", url: ourUrl, mode: "test" }]);
+        return webhookListResponse([{ webhookId: "hook_orphan", url: ourUrl, mode: "test" }]);
       }
       throw new Error(`unexpected fetch: ${init?.method} ${url}`);
     });
@@ -775,12 +1064,62 @@ describe("ensureWebhook", () => {
     expect(row?.url).toBe(ourUrl);
   });
 
+  test("adopting a hook EasyPost already disabled MIRRORS disabledAt, does not clear it", async () => {
+    // The comment on this branch is explicit: an adopted hook EasyPost has
+    // already disabled is not working, and the chip must not claim it is by
+    // treating a fresh adoption as automatically healthy.
+    const t = convexTest(schema, modules);
+    await seedWebhookRow(t, { lastAttemptAt: 0 });
+    const ourUrl = `${PROD_SITE}/webhooks/easypost/${TOKEN}`;
+    recordingStub(async (url, init) => {
+      if (init?.method === "GET") {
+        // The browser service already normalises EasyPost's `disabled_at` to
+        // ms before this reaches Convex (see `services/browser/.../easypost.ts`
+        // `listWebhooks`) — so the envelope carries `disabledAt` in ms, not the
+        // raw EasyPost field name or an ISO string.
+        return webhookListResponse([
+          { webhookId: "hook_orphan", url: ourUrl, mode: "test", disabledAt: 1_735_689_600_000 },
+        ]);
+      }
+      throw new Error(`unexpected fetch: ${init?.method} ${url}`);
+    });
+
+    expect(
+      await t.action(internal.shipmentTracking.ensureWebhook, { userId: USER }),
+    ).toEqual({ status: "adopted" });
+
+    const row = await readWebhook(t);
+    expect(row?.webhookId).toBe("hook_orphan");
+    expect(row?.disabledAt).toBe(1_735_689_600_000);
+  });
+
+  test("still adopts through the bare-array body an older browser revision sends", async () => {
+    // release.yml promotes the browser service before Convex, but a PREVIEW
+    // runs its own revision — so Convex can meet a service that answers with
+    // a bare array rather than today's `{ webhooks: [...] }` envelope. Both
+    // shapes must reconcile, or a deploy window silently registers duplicates.
+    const t = convexTest(schema, modules);
+    await seedWebhookRow(t, { lastAttemptAt: 0 });
+    const ourUrl = `${PROD_SITE}/webhooks/easypost/${TOKEN}`;
+    const calls = recordingStub(async (url, init) => {
+      if (init?.method === "GET") {
+        return jsonResponse([{ webhookId: "hook_orphan", url: ourUrl, mode: "test" }]);
+      }
+      throw new Error(`unexpected fetch: ${init?.method} ${url}`);
+    });
+
+    expect(
+      await t.action(internal.shipmentTracking.ensureWebhook, { userId: USER }),
+    ).toEqual({ status: "adopted" });
+    expect(calls.filter((c) => c.method === "POST")).toHaveLength(0);
+  });
+
   test("deletes a stale hook under our prefix, then registers", async () => {
     const t = convexTest(schema, modules);
     await seedWebhookRow(t, { lastAttemptAt: 0 });
     const calls = recordingStub(async (url, init) => {
       if (init?.method === "GET") {
-        return jsonResponse([
+        return webhookListResponse([
           { webhookId: "hook_stale", url: `${PROD_SITE}/webhooks/easypost/${"C".repeat(43)}` },
           // Someone else's hook on the same account — must NOT be touched.
           { webhookId: "hook_theirs", url: "https://example.com/their-hook" },
@@ -811,6 +1150,38 @@ describe("ensureWebhook", () => {
       await t.action(internal.shipmentTracking.ensureWebhook, { userId: USER }),
     ).toEqual({ status: "deferred" });
     expect(calls).toHaveLength(0);
+  });
+
+  test("retry gate boundary: deferred at 59 minutes, attempts again past 61", async () => {
+    const HOUR_MS = 60 * 60 * 1000;
+
+    const stillWaiting = convexTest(schema, modules);
+    await seedWebhookRow(stillWaiting, {
+      lastAttemptAt: Date.now() - (59 * 60 * 1000),
+      lastError: "unavailable",
+    });
+    const insideWindow = recordingStub(async () => {
+      throw new Error("must not call the browser service");
+    });
+    expect(
+      await stillWaiting.action(internal.shipmentTracking.ensureWebhook, { userId: USER }),
+    ).toEqual({ status: "deferred" });
+    expect(insideWindow).toHaveLength(0);
+    vi.unstubAllGlobals();
+
+    const readyAgain = convexTest(schema, modules);
+    await seedWebhookRow(readyAgain, {
+      lastAttemptAt: Date.now() - (HOUR_MS + 60 * 1000), // 61 minutes ago
+      lastError: "unavailable",
+    });
+    const outsideWindow = recordingStub(async (url, init) => {
+      if (init?.method === "GET") return webhookListResponse([]);
+      return jsonResponse({ webhookId: "hook_new", mode: "test" });
+    });
+    expect(
+      await readyAgain.action(internal.shipmentTracking.ensureWebhook, { userId: USER }),
+    ).toEqual({ status: "registered" });
+    expect(outsideWindow.some((c) => c.method === "GET")).toBe(true);
   });
 
   test("never registers from a preview deployment", async () => {
@@ -856,7 +1227,7 @@ describe("ensureWebhook", () => {
     const t = convexTest(schema, modules);
     await seedWebhookRow(t, { lastAttemptAt: 0 });
     stubFetch(async (url, init) => {
-      if (init?.method === "GET") return jsonResponse([]);
+      if (init?.method === "GET") return webhookListResponse([]);
       return jsonResponse({ error: "bad url" }, 400);
     });
 
@@ -913,6 +1284,37 @@ describe("removeWebhook", () => {
 
 // ─── the postage.ts call sites ───────────────────────────────────────────────
 
+describe("postage.easypostCreateWebhook", () => {
+  test("a 2xx response with no webhookId is treated as rejected, not a success", async () => {
+    // The browser service answering 2xx is not by itself proof of anything;
+    // `webhookId` is the field ensureWebhook patches onto the row, and a
+    // response missing it must not be read as "created with an empty id".
+    const t = convexTest(schema, modules);
+    stubFetch(async () => jsonResponse({ mode: "test" }));
+
+    const result = await t.action(internal.postage.easypostCreateWebhook, {
+      userId: USER,
+      url: `${PROD_SITE}/webhooks/easypost/${TOKEN}`,
+      secret: SECRET,
+    });
+
+    expect(result).toEqual({ ok: false, error: "rejected" });
+  });
+
+  test("a non-string webhookId (e.g. a number) is also treated as rejected", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch(async () => jsonResponse({ webhookId: 12345, mode: "test" }));
+
+    const result = await t.action(internal.postage.easypostCreateWebhook, {
+      userId: USER,
+      url: `${PROD_SITE}/webhooks/easypost/${TOKEN}`,
+      secret: SECRET,
+    });
+
+    expect(result).toEqual({ ok: false, error: "rejected" });
+  });
+});
+
 describe("postage.saveEasypostKey", () => {
   // Fake timers + `finishAllScheduledFunctions` is this repo's pattern for
   // draining a scheduled function (backfillCardFeatures.test.ts). Draining
@@ -925,7 +1327,7 @@ describe("postage.saveEasypostKey", () => {
     const t = convexTest(schema, modules);
     const calls = recordingStub(async (url, init) => {
       if (init?.method === "PUT") return jsonResponse({ success: true });
-      if (init?.method === "GET") return jsonResponse([]);
+      if (init?.method === "GET") return webhookListResponse([]);
       return jsonResponse({ webhookId: "hook_new", mode: "test" });
     });
 
@@ -1046,6 +1448,46 @@ describe("postage.refreshTracking", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("cooldown boundary: still in effect at 59.999s, cleared at exactly 60s", async () => {
+    // Pinned clock: the check is `now - lastRefreshAt < REFRESH_COOLDOWN_MS`
+    // (strictly less than), so `now` must be a value this test controls, not
+    // whatever `Date.now()` happens to be when the action actually runs —
+    // real elapsed test time between seeding and calling would make a
+    // millisecond-precise boundary flaky.
+    vi.useFakeTimers();
+    const now = 1_800_000_000_000;
+    vi.setSystemTime(now);
+
+    const stillCoolingDown = convexTest(schema, modules);
+    const purchaseId1 = await seedPurchase(stillCoolingDown, {
+      lastRefreshAt: now - 59_999,
+      trackingStatus: "in_transit",
+    });
+    const insideCalls = recordingStub(async () => {
+      throw new Error("must not call the browser service");
+    });
+    const insideResult = await stillCoolingDown
+      .withIdentity({ subject: USER })
+      .action(api.postage.refreshTracking, { purchaseId: purchaseId1 });
+    expect(insideResult.cooldown).toBe(true);
+    expect(insideCalls).toHaveLength(0);
+    vi.unstubAllGlobals();
+
+    const clear = convexTest(schema, modules);
+    const purchaseId2 = await seedPurchase(clear, {
+      lastRefreshAt: now - 60_000,
+      trackingStatus: "in_transit",
+    });
+    const outsideCalls = recordingStub(async () => jsonResponse(snapshotResponse));
+    const outsideResult = await clear
+      .withIdentity({ subject: USER })
+      .action(api.postage.refreshTracking, { purchaseId: purchaseId2 });
+    expect(outsideResult.cooldown).toBe(false);
+    expect(outsideCalls.length).toBeGreaterThan(0);
+
+    vi.useRealTimers();
+  });
+
   test("`no_tracker` becomes a sentence about USPS, not an error", async () => {
     const t = convexTest(schema, modules);
     const purchaseId = await seedPurchase(t);
@@ -1058,6 +1500,34 @@ describe("postage.refreshTracking", () => {
     ).rejects.toThrow(/hasn't scanned/);
   });
 
+  test("stamps the cooldown even when the shipment has no tracker yet", async () => {
+    // `no_tracker` is the ORDINARY state of a letter for hours after purchase,
+    // and it throws past the snapshot write — so stamping the cooldown only on
+    // the success path left the click loop this cooldown exists to stop wide
+    // open on the one status a seller is most likely to be clicking at. All
+    // /easypost/* calls share one 60/min bucket per seller with `buy`.
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    const calls = recordingStub(async () =>
+      jsonResponse({ error: "This shipment has no tracker yet", kind: "no_tracker" }, 409),
+    );
+
+    await expect(
+      t.withIdentity({ subject: USER }).action(api.postage.refreshTracking, { purchaseId }),
+    ).rejects.toThrow(/hasn't scanned/);
+
+    const row = await t.run(async (ctx: Ctx) => ctx.db.get(purchaseId));
+    expect(row?.lastRefreshAt).toBeGreaterThan(0);
+    expect(calls.filter((c) => c.url.includes("/tracker/"))).toHaveLength(1);
+
+    // ...and the next click inside the window does not reach EasyPost at all.
+    const second = await t
+      .withIdentity({ subject: USER })
+      .action(api.postage.refreshTracking, { purchaseId });
+    expect(second.cooldown).toBe(true);
+    expect(calls.filter((c) => c.url.includes("/tracker/"))).toHaveLength(1);
+  });
+
   test("another seller's purchase row is not found", async () => {
     const t = convexTest(schema, modules);
     const purchaseId = await seedPurchase(t, { userId: OTHER_USER });
@@ -1066,6 +1536,17 @@ describe("postage.refreshTracking", () => {
     await expect(
       t.withIdentity({ subject: USER }).action(api.postage.refreshTracking, { purchaseId }),
     ).rejects.toThrow(/wasn't found/);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("throws when the caller is not authenticated", async () => {
+    const t = convexTest(schema, modules);
+    const purchaseId = await seedPurchase(t);
+    const calls = recordingStub(async () => jsonResponse(snapshotResponse));
+
+    await expect(
+      t.action(api.postage.refreshTracking, { purchaseId }),
+    ).rejects.toThrow(/Not authenticated/);
     expect(calls).toHaveLength(0);
   });
 
@@ -1108,7 +1589,7 @@ describe("postage.buyLetterLabel", () => {
           },
         });
       }
-      if (init?.method === "GET") return jsonResponse([]);
+      if (init?.method === "GET") return webhookListResponse([]);
       return jsonResponse({ webhookId: "hook_new" });
     });
 

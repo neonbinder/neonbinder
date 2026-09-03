@@ -631,6 +631,61 @@ describe("validateWebhookUrl (the host allowlist)", () => {
     const mixed = "https://Acme-123.CONVEX.SITE/webhooks/easypost/T";
     assert.equal(validateWebhookUrl(mixed), mixed);
   });
+
+  // A punycode-encoded host is just an ordinary ASCII hostname to `URL` — it
+  // gets no special treatment, so one that does not end in ".convex.site"
+  // (encoded or not) is refused exactly like any other bad host.
+  it("rejects an IDN/punycode host that is not a convex.site subdomain", () => {
+    assert.equal(
+      validateWebhookUrl("https://xn--80ak6aa92e.com/webhooks/easypost/T"),
+      undefined,
+    );
+  });
+
+  // `URL` applies IDNA/UTS46 mapping to a Unicode hostname before this
+  // function ever sees `parsed.hostname` — a fullwidth homograph of "x" here
+  // maps down to plain ASCII "x" (NOT to a "xn--" punycode label), so the
+  // result IS the literal `x.convex.site` this control means to allow. This
+  // is not a bypass: the string the check approves and the string returned
+  // both round-trip to the exact same host under any spec-compliant URL
+  // parser (e.g. inside `fetch`), so nothing downstream can be pointed
+  // somewhere this check did not already sign off on.
+  it("accepts a fullwidth-Unicode homograph that normalises to a real convex.site host", () => {
+    const homograph = "https://ｘ.convex.site/webhooks/easypost/T"; // fullwidth "x"
+    assert.equal(new URL(homograph).hostname, "x.convex.site");
+    assert.equal(validateWebhookUrl(homograph), homograph);
+  });
+
+  // The same normalisation can also collapse a homograph down to the bare
+  // apex — and the apex rule (no subdomain) still refuses it. The control
+  // does not get fooled into treating a decorated apex as a subdomain.
+  it("still rejects the bare apex reached via a fullwidth-Unicode homograph", () => {
+    const homographApex = "https://ｃonvex.site/x"; // fullwidth "c" + "onvex.site"
+    assert.equal(new URL(homographApex).hostname, "convex.site");
+    assert.equal(validateWebhookUrl(homographApex), undefined);
+  });
+
+  // `URL#hostname` never includes the port, so an explicit port rides through
+  // the suffix check untouched. Pinned deliberately: the allowlist's job is
+  // the HOST (the control that stops this being an arbitrary-endpoint
+  // primitive), not the port, and a Convex site URL never legitimately
+  // carries one — this documents the current behaviour rather than a gap
+  // this function claims to close.
+  it("does not reject a convex.site url carrying an explicit port", () => {
+    const withPort = "https://x.convex.site:8080/webhooks/easypost/T";
+    assert.equal(validateWebhookUrl(withPort), withPort);
+  });
+
+  // A trailing dot is the DNS root label, and `URL` preserves it verbatim in
+  // `hostname`. ".convex.site." does not end with ".convex.site", so this is
+  // refused — over-strict is the safe direction for a control whose only job
+  // is keeping bad hosts out.
+  it("rejects a convex.site host with a trailing dot", () => {
+    assert.equal(
+      validateWebhookUrl("https://x.convex.site./webhooks/easypost/T"),
+      undefined,
+    );
+  });
 });
 
 describe("isValidWebhookSecret", () => {

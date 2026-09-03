@@ -83,6 +83,23 @@ describe("rewriteWeightForSignature", () => {
     ).toBe('{"weight": 3.0,"parcel":{"weight": 3.0},"n":1}');
   });
 
+  test("a 256 KB body full of near-miss digit runs completes fast — no catastrophic backtracking", () => {
+    // Adversarial shape: many `"weight":` occurrences whose digit run is long
+    // and NOT followed by a terminator (so the lookahead fails every time),
+    // which is exactly the pattern a naive backtracking regex chokes on.
+    const chunk = '"weight": ' + "1".repeat(500) + "9 "; // no trailing , or }
+    const body = "{" + chunk.repeat(500) + '"n":1}';
+    expect(new TextEncoder().encode(body).length).toBeGreaterThan(200_000);
+
+    const start = Date.now();
+    const rewritten = rewriteWeightForSignature(body);
+    const elapsedMs = Date.now() - start;
+
+    expect(elapsedMs).toBeLessThan(500);
+    // None of the near-misses matched (no terminator followed the digits).
+    expect(rewritten).toBe(body);
+  });
+
   test("the rewritten body is what node:crypto signs", async () => {
     const raw = '{"description":"tracker.updated","result":{"weight": 17}}';
     const rewritten = rewriteWeightForSignature(raw);

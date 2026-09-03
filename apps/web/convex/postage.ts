@@ -258,8 +258,21 @@ export const easypostListWebhooks = internalAction({
       return { ok: false as const, error: await registrationErrorFor(response) };
     }
 
+    // `GET /easypost/:key/webhooks` answers `{ webhooks: [...] }` — the
+    // envelope, not a bare array. Reading only the bare array made `hooks`
+    // ALWAYS empty, which silently turned reconcile-before-create off: nothing
+    // was ever adopted, no stale hook under our prefix was ever reaped, and a
+    // lost create response would have produced a second hook on the next
+    // attempt, delivering every event twice forever. The bare-array branch
+    // stays as a tolerance for an older browser revision, since `release.yml`
+    // promotes the browser service before Convex.
     const body = (await response.json()) as unknown;
-    const rows = Array.isArray(body) ? body : [];
+    const envelope = (body ?? {}) as { webhooks?: unknown };
+    const rows = Array.isArray(body)
+      ? body
+      : Array.isArray(envelope.webhooks)
+        ? envelope.webhooks
+        : [];
     const hooks = rows.flatMap((entry) => {
       const hook = (entry ?? {}) as Record<string, unknown>;
       const webhookId = typeof hook.webhookId === "string" ? hook.webhookId : "";
@@ -801,6 +814,17 @@ export const refreshTracking = action({
         cooldown: true,
       };
     }
+
+    // Stamped BEFORE the call, not only on the success path below. The
+    // ordinary state of a just-bought letter is `no_tracker` (409), which
+    // throws past the snapshot write — so stamping only there left the loop
+    // this cooldown exists to stop wide open on the one status a seller is
+    // most likely to be clicking at. Every attempt costs the same 60 s.
+    await ctx.runMutation(internal.shipmentTracking.stampRefreshAttempt, {
+      purchaseId: args.purchaseId,
+      userId,
+      at: now,
+    });
 
     const response = await browserFetch(
       `/easypost/${credKey(EASYPOST_SITE, userId)}/tracker/${encodeURIComponent(

@@ -4,6 +4,7 @@ import { useAction, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
+import CopyButton from "@/components/modules/CopyButton";
 import TrackingCode from "@/components/modules/TrackingCode";
 import { formatUsd } from "@/lib/format/money";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time/relative-time";
@@ -97,9 +98,13 @@ const TONE_CLASSES: Record<TrackingTone, string> = {
  * The backend stores an NB-authored enum rather than EasyPost's own error text,
  * because EasyPost echoes the rejected URL back and that URL carries the
  * seller's webhook token. So the sentence is written here, from the enum.
+ *
+ * `no_key` is deliberately absent: it is not a failure that needs explaining on
+ * top of the fix, it IS the fix ("Add your EasyPost key on your profile"), and
+ * pairing the two only said "EasyPost key" twice in a row. The chip below
+ * branches on it instead.
  */
 const SETUP_ERROR_HINTS: Record<string, string> = {
-  no_key: "We don't have an EasyPost key for you yet.",
   unauthorized: "EasyPost turned that key down — re-save it and we'll retry.",
   rejected: "EasyPost wouldn't accept our updates address. We'll try again.",
   unavailable: "Couldn't reach EasyPost. We'll try again on your next label.",
@@ -138,13 +143,23 @@ function ScanUpdatesChip() {
   }
 
   const hint = setup.lastError ? SETUP_ERROR_HINTS[setup.lastError] : undefined;
+  /**
+   * A seller who has never bought a label has nothing to "re-save" — that
+   * wording presupposed a save that never happened, and it was the FIRST thing
+   * a brand-new seller read. So the no-key state names the one action that
+   * exists, and every other state offers the two that do.
+   */
+  const noKey = setup.lastError === "no_key";
 
   return (
     <p className="text-sm">
       <span className="text-slate-400">Scan updates:</span>{" "}
       <span className="text-neon-yellow font-medium">not connected yet</span>{" "}
       <span className="text-slate-300">
-        {hint ? `${hint} ` : ""}Buy a label or re-save your EasyPost key on{" "}
+        {hint ? `${hint} ` : ""}
+        {noKey
+          ? "Add your EasyPost key on "
+          : "Buy a label or save your EasyPost key on "}
         {/* Deliberately not named "Shipping" or "Postage" in isolation: the
             visible words have to say where the seller is being sent, and
             /print/shipping is a different page with a similar name. */}
@@ -154,7 +169,7 @@ function ScanUpdatesChip() {
         >
           your profile
         </Link>
-        .
+        {noKey ? "." : " — either one turns scan updates on."}
       </span>
     </p>
   );
@@ -303,9 +318,9 @@ export default function LabelHistoryPage() {
             kind, and the honest version has to be on the page rather than in
             a support reply after the first "it never says delivered". */}
         <p className="text-sm text-slate-300">
-          What the scans tell you: USPS scans a letter as it runs the sorting
-          machines. Nothing scans it when you drop it off, and the last scan is
-          your buyer&apos;s own post office marking it{" "}
+          What the scans tell you: USPS scans a letter as it moves through their
+          sorting machines. Nothing scans it when you drop it off, and the last
+          scan is your buyer&apos;s own post office marking it{" "}
           <span className="font-medium">out for delivery</span> — no scan ever
           confirms the mailbox. That one is the finish line.
         </p>
@@ -356,6 +371,28 @@ export default function LabelHistoryPage() {
             const busy = reprintingId === row._id;
             const checking = checkingId === row._id;
             const recipient = row.toAddress.name || "this label";
+            // Every per-row control shows the same words on every row
+            // ("Reprint", "Copy", "Check for new scans"), so each one's
+            // accessible name has to say WHICH label. `recipient` alone does
+            // not: a seller who ships several orders to one buyer has several
+            // rows that legitimately share a name, and NEO-121's adversarial
+            // pass pinned the result — 25 rows, 25 identical accessible names,
+            // and no way for a screen-reader or voice-control user to address
+            // row 3 except by re-deriving its position from context.
+            //
+            // The purchase time alone is not enough either: `formatAbsoluteTime`
+            // is `toLocaleString()`, which stops at whole seconds, and labels
+            // bought in one sitting land inside the same second. The last four
+            // of the tracking number is the tie-break, and it is deliberately
+            // the *tracking* number rather than a row index — those four digits
+            // are printed on the label in the seller's hand, so the name is
+            // something they can match against the physical world instead of
+            // merely being unique.
+            //
+            // Visible text is untouched: this is the accessible name only, and
+            // every control keeps its visible words as the name's prefix
+            // (WCAG 2.5.3).
+            const rowLabel = `${recipient}, bought ${formatAbsoluteTime(row.purchasedAt)}, tracking …${row.trackingCode.slice(-4)}`;
             const status = describeTrackingStatus(row.trackingStatus);
             // Copied before sorting: the array on the row is Convex's, and
             // EasyPost's own ordering is not something to depend on. Oldest
@@ -397,14 +434,23 @@ export default function LabelHistoryPage() {
                     <button
                       type="button"
                       onClick={() => void handleCheckScans(row)}
-                      disabled={checking}
+                      // Also disabled while a reprint is running: both actions
+                      // write into this row's ONE shared role="status" region
+                      // and refocus the SAME heading when they settle. Without
+                      // this a seller could fire both at once, and whichever
+                      // resolves last would silently overwrite the other's
+                      // announcement — a reprint failure erased by "No new
+                      // scans yet." (WCAG 4.1.3).
+                      disabled={checking || busy}
                       // Every row shows the same words, so the accessible name
-                      // has to say WHICH label — and it keeps the visible text
-                      // as its prefix so voice input can address it (2.5.3).
+                      // has to say WHICH label — `rowLabel`, not the recipient
+                      // alone, because several rows can share one buyer. It
+                      // keeps the visible text as its prefix so voice input can
+                      // address it (2.5.3).
                       aria-label={
                         checking
-                          ? `Checking for new scans for ${recipient}`
-                          : `Check for new scans for ${recipient}`
+                          ? `Checking for new scans for ${rowLabel}`
+                          : `Check for new scans for ${rowLabel}`
                       }
                       className="rounded-md border border-slate-600 px-3 py-1.5 text-sm font-medium text-slate-200 transition-colors hover:border-slate-400 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-green-500"
                     >
@@ -422,10 +468,14 @@ export default function LabelHistoryPage() {
                       <button
                         type="button"
                         onClick={() => void handleReprint(row)}
-                        disabled={busy}
+                        // Same mutual exclusion as the check button above,
+                        // mirrored: a check in flight blocks reprint too.
+                        disabled={busy || checking}
                         // The visible word is "Reprint" on every row, so the
                         // accessible name has to say WHICH label — otherwise a
-                        // screen reader hears the same button 25 times.
+                        // screen reader hears the same button 25 times. Hence
+                        // `rowLabel`: the buyer's name repeats across rows, the
+                        // purchase time plus tracking suffix does not.
                         //
                         // It tracks the visible label rather than staying fixed
                         // (WCAG 2.5.3): once the button reads "Reprinting…", an
@@ -434,8 +484,8 @@ export default function LabelHistoryPage() {
                         // user's "click Reprinting" would not match anything.
                         aria-label={
                           busy
-                            ? `Reprinting the label for ${recipient}`
-                            : `Reprint the label for ${recipient}`
+                            ? `Reprinting the label for ${rowLabel}`
+                            : `Reprint the label for ${rowLabel}`
                         }
                         className="rounded-md border border-neon-teal/60 px-3 py-1.5 text-sm font-medium text-neon-teal transition-colors hover:border-neon-teal hover:bg-neon-teal/10 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-green-500"
                       >
@@ -477,7 +527,7 @@ export default function LabelHistoryPage() {
                     <dd className="text-slate-200">
                       <TrackingCode
                         trackingCode={row.trackingCode}
-                        copyLabel={`Copy the tracking number for ${recipient}`}
+                        copyLabel={`Copy the tracking number for ${rowLabel}`}
                       />
                       {/* EasyPost mints a public tracking page for every
                           tracker — the one thing the ticket said an aggregator
@@ -485,19 +535,46 @@ export default function LabelHistoryPage() {
                           well as server-side: the value arrives in a webhook
                           body, which is seller-forgeable. */}
                       {isHttpsUrl(row.publicTrackingUrl) && (
-                        <a
-                          href={row.publicTrackingUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="block text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
-                        >
-                          Public scan page
-                          {/* Visible arrow for sighted users, spelled out for
-                              everyone else — a link that steals the tab with
-                              no warning is WCAG 3.2.5. */}
-                          <span aria-hidden="true"> ↗</span>
-                          <span className="sr-only"> (opens in a new tab)</span>
-                        </a>
+                        <span className="block">
+                          <a
+                            href={row.publicTrackingUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+                          >
+                            Public scan page
+                            {/* Visible arrow for sighted users, spelled out for
+                                everyone else — a link that steals the tab with
+                                no warning is WCAG 3.2.5. */}
+                            <span aria-hidden="true"> ↗</span>
+                            <span className="sr-only">
+                              {" "}
+                              (opens in a new tab)
+                            </span>
+                          </a>{" "}
+                          {/* The link is the thing a seller sends a buyer, and
+                              a buyer cannot be sent a click. Same shared Copy
+                              control as the tracking number — its own status
+                              span rather than the row's shared one, so a copy
+                              result can never overwrite a reprint failure. */}
+                          <CopyButton
+                            value={row.publicTrackingUrl}
+                            copyLabel={`Copy the public scan page link for ${rowLabel}`}
+                            copiedMessage="Scan page link copied."
+                            // Not "select it and copy it": the URL is not on
+                            // screen, so the manual fallback has to be the one
+                            // that exists — open it and take it from the bar.
+                            failedMessage="Couldn't copy — open the link and copy it from your browser's address bar."
+                          />
+                          {/* track.easypost.com is not a domain a buyer
+                              recognises, and an unrecognised link from a
+                              stranger is one nobody clicks. Say what is on the
+                              other side before they have to guess. */}
+                          <span className="block text-xs text-slate-400">
+                            EasyPost&apos;s tracking page — same USPS scans, no
+                            login.
+                          </span>
+                        </span>
                       )}
                     </dd>
                   </div>
@@ -530,6 +607,18 @@ export default function LabelHistoryPage() {
                   )}
                 </dl>
 
+                {/* The idle state's other half. The pill says "no scans yet",
+                    which answers what is true but not what to do about it —
+                    and a seller staring at an empty row cannot tell a letter
+                    USPS has not touched from a feature that is broken. Copy
+                    only: nothing here measures how long it has actually been. */}
+                {scans.length === 0 && (
+                  <p className="mt-2 text-sm text-slate-400">
+                    First scan usually lands the day it&apos;s mailed. Been a
+                    few days? Hit Check.
+                  </p>
+                )}
+
                 {scans.length > 0 && (
                   <div className="mt-3">
                     <button
@@ -543,10 +632,18 @@ export default function LabelHistoryPage() {
                       aria-expanded={scansOpen}
                       aria-controls={scansId}
                       // Visible text first so it is a prefix of the accessible
-                      // name (2.5.3); the recipient is appended because 25 rows
-                      // would otherwise announce 25 identical buttons.
-                      aria-label={`${scansOpen ? "Hide" : "Show"} all scans (${scans.length}) for ${recipient}`}
-                      className="text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+                      // name (2.5.3); `rowLabel` is appended because 25 rows
+                      // would otherwise announce 25 identical buttons — and 25
+                      // rows for ONE buyer is the case the recipient name alone
+                      // could not tell apart.
+                      aria-label={`${scansOpen ? "Hide" : "Show"} all scans (${scans.length}) for ${rowLabel}`}
+                      // `p-2 -m-2`: the text alone is a ~20px-tall target,
+                      // under WCAG 2.5.8's 24px minimum, and this isn't a link
+                      // inline in a sentence (no inline-text exception). Same
+                      // padding-cancelled-by-negative-margin trick TrackingCode's
+                      // Copy button already uses — grows the hit area without
+                      // shifting layout.
+                      className="p-2 -m-2 text-sm text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
                     >
                       {scansOpen ? "Hide" : "Show"} all scans ({scans.length})
                     </button>
@@ -557,7 +654,7 @@ export default function LabelHistoryPage() {
                     <ol
                       id={scansId}
                       hidden={!scansOpen}
-                      aria-label={`USPS scans for ${recipient}`}
+                      aria-label={`USPS scans for ${rowLabel}`}
                       className="mt-2 space-y-1 border-l border-slate-800 pl-3 text-sm"
                     >
                       {scans.map((scan, index) => (

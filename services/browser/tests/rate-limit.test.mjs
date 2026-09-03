@@ -114,6 +114,28 @@ describe("credentialRateLimitKey — /easypost/* (NEO-121 fix)", () => {
     // The path wins; nothing depends on params being populated.
     assert.equal(credentialRateLimitKey(r), `cred:${easypostKey}`);
   });
+
+  // An empty key segment is not a real seller key. `keyFromPath` returns
+  // undefined for it (the falsy-candidate guard), and with no body fallback
+  // either this lands on the IP bucket — the same fallback keyless routes
+  // use, not a crash and not a bucket named "cred:".
+  it("falls back to the IP bucket for an empty key segment", () => {
+    const key = credentialRateLimitKey(req({ path: "/easypost//webhooks" }));
+    assert.equal(key.startsWith("cred:"), false);
+    assert.ok(key.length > 0);
+  });
+
+  // Unlike `/credentials/check` — a fixed route name in the key position that
+  // `keyFromPath` explicitly excludes — no `/easypost/*` route has a fixed
+  // second segment (see the function's own comment). So a seller's key that
+  // happens to look like a route name (or an ordinary caller path that just
+  // resembles one) is bucketed by that literal value like any other key,
+  // rather than being silently swallowed into a shared bucket the way
+  // `/credentials/check` is.
+  it("does not special-case an /easypost/* segment that looks like a route name", () => {
+    const key = credentialRateLimitKey(req({ path: "/easypost/check/rate" }));
+    assert.equal(key, "cred:check");
+  });
 });
 
 describe("credentialRateLimitKey — keyless requests", () => {

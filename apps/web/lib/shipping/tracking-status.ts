@@ -85,8 +85,12 @@ export function describeTrackingStatus(
  * the letter is in the mail. This is the single most alarming string in the
  * timeline and it is the FIRST one, so it gets the explanation inline rather
  * than in a legend nobody reads.
+ *
+ * The gloss names the letter rather than saying "nothing was cancelled":
+ * something WAS cancelled — the postage — and denying that outright reads as
+ * a contradiction of the very words above it.
  */
-const POSTMARK_GLOSS = " (postmarked — nothing was cancelled)";
+const POSTMARK_GLOSS = " (postmarked — the letter wasn't cancelled)";
 
 export function glossScanMessage(message: string): string {
   if (!message.toLowerCase().includes("cancellation of postage")) return message;

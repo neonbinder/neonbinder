@@ -681,6 +681,84 @@ describe("normalizeTracker", () => {
 
     assert.equal(normalizeTracker({ id: "trk_x", status: "unknown" }).updatedAt, 0);
   });
+
+  // `tracking_details: null` is a distinct shape from the field being absent
+  // entirely — `Array.isArray(null)` is false either way, but only a test
+  // pins that EasyPost sending an explicit null (rather than omitting the
+  // key) does not throw or otherwise behave differently.
+  it("survives tracking_details explicitly set to null", () => {
+    const snap = normalizeTracker({
+      id: "trk_x",
+      status: "pre_transit",
+      tracking_details: null,
+    });
+    assert.deepEqual(snap.scans, []);
+    assert.equal(snap.lastScanAt, undefined);
+  });
+
+  // `toMs` is `Date.parse`, which is UTC-based regardless of the offset a
+  // datetime string carries. A scan timestamped in a non-UTC offset must
+  // convert to the SAME instant as its UTC-normalised equivalent, not to the
+  // wall-clock number with the offset stripped.
+  it("normalises an offset datetime (non-UTC) to the correct UTC instant", () => {
+    const snap = normalizeTracker({
+      ...LETTER_TRACKER,
+      tracking_details: [
+        {
+          message: "Origin Processing",
+          status: "in_transit",
+          // 17:52:00 -07:00 is 2026-08-26T00:52:00Z.
+          datetime: "2026-08-25T17:52:00-07:00",
+        },
+      ],
+    });
+    assert.equal(snap.scans.length, 1);
+    assert.equal(snap.scans[0].at, ms("2026-08-26T00:52:00Z"));
+    assert.equal(snap.scans[0].at, Date.parse("2026-08-25T17:52:00-07:00"));
+  });
+
+  // Two scans that share a datetime and message are not deduplicated — they
+  // are kept as-is, in stable input order for equal sort keys. This pins that
+  // behavior explicitly: a future change to dedupe (or not) should have to
+  // touch this test, not discover the gap in production.
+  it("keeps duplicate scans (same datetime and message) rather than deduping", () => {
+    const dupe = {
+      message: "Origin Processing",
+      status: "in_transit",
+      datetime: "2026-08-25T17:52:00Z",
+    };
+    const snap = normalizeTracker({
+      id: "trk_x",
+      status: "in_transit",
+      tracking_details: [dupe, { ...dupe }],
+    });
+    assert.equal(snap.scans.length, 2);
+    assert.deepEqual(
+      snap.scans.map((s) => [s.at, s.message]),
+      [
+        [ms("2026-08-25T17:52:00Z"), "Origin Processing"],
+        [ms("2026-08-25T17:52:00Z"), "Origin Processing"],
+      ],
+    );
+  });
+
+  // Distinct from "present but all null" (already covered above) — this is
+  // the key missing from the scan object entirely, which the `?? {}`
+  // fallback exists for.
+  it("treats a scan with no tracking_location key at all like an all-null one", () => {
+    const snap = normalizeTracker({
+      id: "trk_x",
+      status: "in_transit",
+      tracking_details: [
+        { message: "Scan", status: "in_transit", datetime: "2026-08-25T17:52:00Z" },
+      ],
+    });
+    assert.equal(snap.scans.length, 1);
+    assert.equal(snap.scans[0].city, undefined);
+    assert.equal(snap.scans[0].state, undefined);
+    assert.equal(snap.scans[0].zip, undefined);
+    assert.equal(snap.scans[0].country, undefined);
+  });
 });
 
 describe("redactWebhookToken", () => {
@@ -708,6 +786,24 @@ describe("redactWebhookToken", () => {
   it("leaves a message with no webhook url alone", () => {
     assert.equal(redactWebhookToken("Address not found"), "Address not found");
     assert.equal(redactWebhookToken(""), "");
+  });
+
+  // The token-matching class is `[^/\s]+`, which has no way to know where a
+  // token ends and a query string begins — both live in the same slash-free
+  // segment. The whole thing is swallowed into `<token>`. That is the safe
+  // direction (over-redaction, never under-), but it is worth pinning: a
+  // narrower regex meant to "preserve the query string" would UNDER-redact
+  // instead, which is the actual hazard this function exists to avoid.
+  it("swallows a query string appended after the token, rather than leaking it", () => {
+    const out = redactWebhookToken(
+      "Webhook URL https://acme.convex.site/webhooks/easypost/TOKEN123?foo=bar failed",
+    );
+    assert.equal(out.includes("TOKEN123"), false);
+    assert.equal(out.includes("foo=bar"), false);
+    assert.equal(
+      out,
+      "Webhook URL https://acme.convex.site/webhooks/easypost/<token> failed",
+    );
   });
 });
 

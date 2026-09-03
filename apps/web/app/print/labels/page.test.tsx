@@ -40,6 +40,7 @@ vi.mock("@/lib/print/print-html", async (importOriginal) => ({
 import { useAction, useQuery } from "convex/react";
 import { getFunctionName, type FunctionReference } from "convex/server";
 import { printHtmlDocument } from "@/lib/print/print-html";
+import { formatAbsoluteTime } from "@/lib/time/relative-time";
 import LabelHistoryPage from "./page";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -405,10 +406,49 @@ describe("the Scan updates chip", () => {
     renderPage([makeRow()], { connected: false, pending: false });
     const chip = screen.getByText(/scan updates:/i).parentElement;
     expect(chip?.textContent).toMatch(/not connected yet/i);
-    expect(chip?.textContent).toMatch(/buy a label or re-save your easypost key/i);
+    expect(chip?.textContent).toMatch(/buy a label or save your easypost key/i);
+    expect(chip?.textContent).toMatch(/either one turns scan updates on/i);
+    // "re-save" presupposed a save that never happened. A seller reading this
+    // chip has, by definition, never had a working key.
+    expect(chip?.textContent).not.toMatch(/re-save/i);
     expect(
       screen.getByRole("link", { name: /your profile/i }).getAttribute("href"),
     ).toBe("/profile/postage");
+  });
+
+  /**
+   * The brand-new-seller state, and the one the old copy got wrong twice over:
+   * it told a seller with no key at all to "re-save" it, and paired that with a
+   * hint saying we do not have one yet. One action, stated once.
+   */
+  it("tells a seller with no key to add one, without offering to re-save it", () => {
+    renderPage([makeRow()], {
+      connected: false,
+      pending: false,
+      lastError: "no_key",
+    });
+    const chip = screen.getByText(/scan updates:/i).parentElement;
+    expect(chip?.textContent).toMatch(/add your easypost key on your profile\./i);
+    expect(chip?.textContent).not.toMatch(/re-save/i);
+    // No second route offered: buying a label is not available to a seller
+    // whose key is what is missing.
+    expect(chip?.textContent).not.toMatch(/buy a label/i);
+    expect(
+      screen.getByRole("link", { name: /your profile/i }).getAttribute("href"),
+    ).toBe("/profile/postage");
+  });
+
+  /**
+   * `lastError` undefined — the webhook simply has not been attempted yet,
+   * which is every seller before their first label. No hint sentence exists for
+   * it, so the action sentence is the whole message and has to stand alone.
+   */
+  it("still says what to do when there is no error to explain", () => {
+    renderPage([makeRow()], { connected: false, pending: false });
+    const chip = screen.getByText(/scan updates:/i).parentElement;
+    expect(chip?.textContent).toMatch(
+      /not connected yet\s*Buy a label or save your EasyPost key on\s*your profile\s*— either one turns scan updates on\./i,
+    );
   });
 
   it("adds the hint for the specific failure", () => {
@@ -446,6 +486,17 @@ describe("the status pill", () => {
 
   it("says no scans yet for a row bought before tracking existed", () => {
     renderPage([bareRow()]);
+    expect(screen.getByText("Label printed — no scans yet")).toBeTruthy();
+  });
+
+  /**
+   * `describeTrackingStatus` is unit-tested to fall back for any value outside
+   * EasyPost's enum; this pins that the PAGE actually renders that fallback
+   * pill for a status it has never seen — e.g. a value EasyPost adds after
+   * this code ships — rather than crashing or rendering an empty pill.
+   */
+  it("falls back to the no-scans pill for a status outside EasyPost's known enum, without crashing", () => {
+    renderPage([makeRow({ trackingStatus: "a_future_easypost_status" })]);
     expect(screen.getByText("Label printed — no scans yet")).toBeTruthy();
   });
 
@@ -502,6 +553,100 @@ describe("the newest scan line", () => {
   it("shows no scan line at all on a row that has none", () => {
     renderPage([bareRow()]);
     expect(screen.queryByText("Latest scan")).toBeNull();
+  });
+
+  /**
+   * "Label printed — no scans yet" is true but not actionable: it does not say
+   * whether to wait or to go looking. The hint answers that, in copy only —
+   * nothing here measures how long it has actually been, so it must never claim
+   * to.
+   */
+  it("tells a seller with no scans yet what to expect and when to press Check", () => {
+    renderPage([bareRow()]);
+    expect(
+      screen.getByText(/first scan usually lands the day it's mailed/i),
+    ).toBeTruthy();
+    expect(screen.getByText(/been a few days\? hit check/i)).toBeTruthy();
+  });
+
+  it("drops the hint the moment a scan exists", () => {
+    renderPage([makeRow()]);
+    expect(screen.queryByText(/first scan usually lands/i)).toBeNull();
+  });
+
+  /**
+   * `row.scans` can be entirely absent (a row bought before NEO-121, or before
+   * any webhook fired) or present-but-empty (a row NEO-121 wrote with no scans
+   * recorded yet). The component reads it as `row.scans ?? []`, so both must
+   * land a seller in the exact same "no scans yet" state — a divergence here
+   * would mean one of the two code paths that produce this shape renders
+   * differently for no product reason.
+   */
+  it("renders the identical no-scans state whether `scans` is absent or an empty array", () => {
+    const { unmount } = renderPage([bareRow()]);
+    expect(screen.queryByText("Latest scan")).toBeNull();
+    expect(
+      screen.getByText(/first scan usually lands the day it's mailed/i),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /all scans/i }),
+    ).toBeNull();
+    unmount();
+
+    renderPage([bareRow({ scans: [] })]);
+    expect(screen.queryByText("Latest scan")).toBeNull();
+    expect(
+      screen.getByText(/first scan usually lands the day it's mailed/i),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /all scans/i }),
+    ).toBeNull();
+  });
+});
+
+describe("a scan with neither city nor state", () => {
+  /**
+   * `formatScanPlace` is unit-tested to return "" when both halves are
+   * missing; this pins that the PAGE actually drops the separator around the
+   * empty string rather than rendering "Some Message ·  · 2d ago" or the
+   * literal word "undefined" — the two failure modes a naive template string
+   * would produce.
+   */
+  it("shows the message and age with no stray separator or the literal word 'undefined'", () => {
+    const now = Date.now();
+    renderPage([
+      makeRow({
+        scans: [
+          { at: now - DAY, status: "in_transit", message: "In Transit" },
+        ],
+      }),
+    ]);
+
+    const text = latestScanText();
+    expect(text).toContain("In Transit");
+    expect(text).toContain("1d ago");
+    expect(text).not.toContain("undefined");
+    // No back-to-back separators, and no separator immediately before "In
+    // Transit" (which would read as a leading "· In Transit").
+    expect(text).not.toMatch(/·\s*·/);
+    expect(text?.trim().startsWith("·")).toBe(false);
+  });
+
+  it("shows the same in the expanded timeline row", () => {
+    const now = Date.now();
+    renderPage([
+      makeRow({
+        scans: [
+          { at: now - DAY, status: "in_transit", message: "In Transit" },
+        ],
+      }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: /show all scans/i }));
+
+    const item = within(timeline()).getByRole("listitem");
+    expect(item.textContent).toContain("In Transit");
+    expect(item.textContent).not.toContain("undefined");
+    expect(item.textContent).not.toMatch(/·\s*·/);
   });
 });
 
@@ -574,7 +719,7 @@ describe("the scan timeline", () => {
     renderPage([makeRow()]);
     fireEvent.click(screen.getByRole("button", { name: /show all scans/i }));
     expect(timeline().textContent).toContain(
-      "Origin Processing Cancellation of Postage (postmarked — nothing was cancelled)",
+      "Origin Processing Cancellation of Postage (postmarked — the letter wasn't cancelled)",
     );
   });
 
@@ -705,6 +850,60 @@ describe("checking for new scans", () => {
       ),
     );
   });
+
+  /**
+   * Reprint and Check share ONE role="status" region per row and refocus the
+   * SAME heading when they settle (see the `disabled` comment in page.tsx).
+   * Without cross-disabling, a seller could fire both for the same row and
+   * whichever settled last would silently overwrite the other's announcement
+   * — e.g. a reprint failure erased by "No new scans yet." (WCAG 4.1.3).
+   */
+  it("blocks a check while that row's reprint is in flight, and vice versa", async () => {
+    let releaseReprint: (value: { labelUrl: string }) => void = () => {};
+    refreshMock.mockReturnValue(
+      new Promise<{ labelUrl: string }>((resolve) => {
+        releaseReprint = resolve;
+      }),
+    );
+    renderPage([makeRow()]);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /reprint the label for jane buyer/i }),
+    );
+
+    // The check button for the SAME row is disabled while the reprint runs,
+    // even though `checking` itself is still false.
+    const checkButton = await screen.findByRole("button", {
+      name: /check for new scans for jane buyer/i,
+    });
+    expect((checkButton as HTMLButtonElement).disabled).toBe(true);
+
+    releaseReprint({ labelUrl: "https://easypost.example/fresh.png" });
+    await vi.waitFor(() =>
+      expect((checkButton as HTMLButtonElement).disabled).toBe(false),
+    );
+
+    // And the reverse: a check in flight blocks that row's reprint button.
+    let releaseCheck: (value: { newScans: number; cooldown: boolean }) => void =
+      () => {};
+    refreshTrackingMock.mockReturnValue(
+      new Promise<{ newScans: number; cooldown: boolean }>((resolve) => {
+        releaseCheck = resolve;
+      }),
+    );
+
+    fireEvent.click(checkButton);
+
+    const reprintButton = screen.getByRole("button", {
+      name: /reprint the label for jane buyer/i,
+    });
+    expect((reprintButton as HTMLButtonElement).disabled).toBe(true);
+
+    releaseCheck({ newScans: 0, cooldown: false });
+    await vi.waitFor(() =>
+      expect((reprintButton as HTMLButtonElement).disabled).toBe(false),
+    );
+  });
 });
 
 describe("the public scan page link", () => {
@@ -738,5 +937,240 @@ describe("the public scan page link", () => {
   it("renders no link on a row that never got one", () => {
     renderPage([bareRow()]);
     expect(screen.queryByRole("link", { name: /public scan page/i })).toBeNull();
+  });
+
+  /**
+   * track.easypost.com is not a domain a buyer recognises, and an unrecognised
+   * link from a stranger is one nobody clicks. The caption is what makes the
+   * link sendable.
+   */
+  it("says what is on the other side of the link", () => {
+    renderPage([makeRow()]);
+    expect(
+      screen.getByText(/easypost's tracking page — same usps scans, no login\./i),
+    ).toBeTruthy();
+  });
+
+  it("renders no caption where there is no link", () => {
+    renderPage([bareRow()]);
+    expect(screen.queryByText(/same usps scans, no login/i)).toBeNull();
+  });
+
+  /** NEO-119 again, on the copy the reviewer asked for: not dim grey. */
+  it("does not paint the caption in the contrast-failing grey", () => {
+    renderPage([makeRow()]);
+    expect(
+      screen.getByText(/same usps scans, no login/i).className,
+    ).not.toContain("text-slate-500");
+  });
+});
+
+/**
+ * A link a seller cannot hand to a buyer is a link they cannot use: the buyer
+ * is not sitting at this screen, and the URL itself is never shown. The button
+ * is the shared CopyButton — the same one the tracking number uses — so the
+ * denied-clipboard branch is covered here as well as in its own test.
+ */
+describe("copying the public scan page link", () => {
+  const writeText = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+  });
+
+  it("copies the URL, not the words on screen", async () => {
+    writeText.mockResolvedValue(undefined);
+    renderPage([makeRow()]);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /^Copy the public scan page link for Jane Buyer,/,
+      }),
+    );
+
+    expect(await screen.findByText("Scan page link copied.")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith(
+      "https://track.easypost.com/djE6dHJrX2ZpeHR1cmVfMDAx",
+    );
+  });
+
+  /**
+   * The clipboard refuses silently (permissions policy, iframe, insecure
+   * context). The fallback cannot be "select it and copy it" the way the
+   * tracking number's is — the URL is not on screen — so it names the one route
+   * that exists.
+   */
+  it("names a manual route when the clipboard is denied", async () => {
+    writeText.mockRejectedValue(new Error("denied"));
+    renderPage([makeRow()]);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /^Copy the public scan page link for Jane Buyer,/,
+      }),
+    );
+
+    expect(
+      await screen.findByText(/open the link and copy it from your browser/i),
+    ).toBeTruthy();
+  });
+
+  /**
+   * Per-row live-region rule: the row's ONE shared role="status" carries
+   * reprint and scan-check results, and a copy announcement routed there could
+   * erase a reprint failure (WCAG 4.1.3). The copy control announces in its own
+   * region instead — the row's stays empty.
+   */
+  it("announces in its own region, leaving the row's shared one untouched", async () => {
+    writeText.mockResolvedValue(undefined);
+    renderPage([makeRow()]);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /^Copy the public scan page link for Jane Buyer,/,
+      }),
+    );
+    await screen.findByText("Scan page link copied.");
+
+    const row = screen.getByRole("listitem");
+    const regions = within(row).getAllByRole("status");
+    // The row-level region is the last one: it is rendered after the dl and
+    // after the timeline disclosure.
+    expect(regions[regions.length - 1].textContent).toBe("");
+  });
+
+  it("names the recipient, so 25 identical buttons are distinguishable", () => {
+    renderPage([
+      makeRow(),
+      makeRow({
+        _id: "purchase_2",
+        trackingCode: "9400100000000000000002",
+        toAddress: { ...baseRow().toAddress, name: "Sam Seller" },
+      }),
+    ]);
+    expect(
+      screen.getByRole("button", {
+        name: /^Copy the public scan page link for Sam Seller,/,
+      }),
+    ).toBeTruthy();
+  });
+
+  it("offers no copy button where there is no link", () => {
+    renderPage([bareRow()]);
+    expect(
+      screen.queryByRole("button", { name: /copy the public scan page link/i }),
+    ).toBeNull();
+  });
+});
+
+describe("25 rows that share one recipient name", () => {
+  /**
+   * The case a seller actually hits, and the one `row.toAddress.name` alone
+   * could not survive: the SAME buyer bought several labels, so several rows
+   * legitimately share one name. NEO-121's adversarial pass pinned the result —
+   * every per-row control (Reprint, Check for new scans, both Copy buttons, the
+   * scans disclosure) computed a byte-identical accessible name, so a
+   * screen-reader or voice-control user could not address "row 3" by name at
+   * all, only by re-deriving its position from context.
+   *
+   * The disambiguator is purchase time plus the last four of the tracking
+   * number, and BOTH halves are load-bearing. This fixture proves the second
+   * half: every row is bought at the same instant, which is the batch-purchase
+   * case `formatAbsoluteTime` cannot resolve on its own — it is a
+   * `toLocaleString()`, so it stops at whole seconds.
+   */
+  const SAME_INSTANT = Date.now() - 10 * DAY;
+
+  function oneBuyerTwentyFiveLabels() {
+    return Array.from({ length: 25 }, (_, i) =>
+      makeRow({
+        _id: `purchase_${i}`,
+        trackingCode: `94001000000000000000${String(i).padStart(2, "0")}`,
+        // Both explicit, even though they match makeRow()'s defaults: the point
+        // of the fixture is that the recipient AND the purchase second are
+        // shared across all 25 rows.
+        toAddress: { ...baseRow().toAddress, name: "Jane Buyer" },
+        purchasedAt: SAME_INSTANT,
+      }),
+    );
+  }
+
+  it("gives every per-row control a name of its own", () => {
+    renderPage(oneBuyerTwentyFiveLabels());
+
+    for (const pattern of [
+      /^Check for new scans for Jane Buyer,/,
+      /^Reprint the label for Jane Buyer,/,
+      /^Copy the tracking number for Jane Buyer,/,
+      /^Copy the public scan page link for Jane Buyer,/,
+      /^Show all scans \(4\) for Jane Buyer,/,
+    ]) {
+      const names = screen
+        .getAllByRole("button", { name: pattern })
+        .map((el) => el.getAttribute("aria-label") ?? "");
+      // Asserted as one object so a failure says WHICH control family broke and
+      // whether it broke by count or by collision.
+      expect({
+        control: pattern.source,
+        rendered: names.length,
+        distinct: new Set(names).size,
+      }).toEqual({ control: pattern.source, rendered: 25, distinct: 25 });
+    }
+  });
+
+  /**
+   * The timeline is a named list, not a button, and 25 lists all announcing
+   * "USPS scans for Jane Buyer" would be the same defect wearing a different
+   * role.
+   *
+   * Read off the attribute rather than through `getAllByRole(..., { name })`:
+   * each timeline starts collapsed behind its disclosure, and accname returns
+   * the empty string for a hidden node, so a role+name query cannot see these
+   * at all until something clicks 25 buttons. The attribute is what will be
+   * computed the moment the seller opens one.
+   */
+  it("gives every row's scan timeline a name of its own", () => {
+    renderPage(oneBuyerTwentyFiveLabels());
+
+    const names = screen
+      .getAllByRole("listitem")
+      .map((row) => row.querySelector("ol")?.getAttribute("aria-label") ?? "");
+    expect(names).toHaveLength(25);
+    expect(new Set(names).size).toBe(25);
+    expect(names.every((n) => n.startsWith("USPS scans for Jane Buyer,"))).toBe(
+      true,
+    );
+  });
+
+  /** The exact wording, so the format is a decision and not an accident. */
+  it("names a row by its purchase time and the last four of its tracking number", () => {
+    renderPage(oneBuyerTwentyFiveLabels());
+
+    expect(
+      screen.getByRole("button", {
+        name: `Check for new scans for Jane Buyer, bought ${formatAbsoluteTime(SAME_INSTANT)}, tracking …0007`,
+      }),
+    ).toBeTruthy();
+  });
+
+  /**
+   * Accessible names only. The visible heading still reads the buyer's name and
+   * nothing else — a tracking suffix shouted on all 25 rows would be a worse
+   * page for a sighted seller, and the row's own Purchased and Tracking fields
+   * already carry both halves in full, in view, underneath it.
+   */
+  it("leaves the visible row text alone", () => {
+    renderPage(oneBuyerTwentyFiveLabels());
+
+    expect(
+      screen.getAllByRole("heading", { level: 3, name: "Jane Buyer" }),
+    ).toHaveLength(25);
+    expect(
+      screen.getAllByRole("button", { name: /^Reprint the label for/ })[0]
+        .textContent,
+    ).toBe("Reprint");
   });
 });

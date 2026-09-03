@@ -322,6 +322,55 @@ describe("recordLabelPurchase", () => {
     expect(rows[0].purchasedAt).toBeGreaterThanOrEqual(before);
     expect(rows[0].purchasedAt).toBeLessThanOrEqual(after);
   });
+
+  test("with no `tracker` argument, stores none of the NEO-121 fields at all", async () => {
+    // `sanitizeSnapshot` is skipped entirely when `tracker` is omitted — this
+    // pins that an omitted tracker does not even leave `undefined` markers on
+    // the row (which would be indistinguishable from "webhook hasn't fired
+    // yet" in practice, but is worth pinning as the actual, intentional shape).
+    const t = convexTest(schema, modules);
+    await t.mutation(internal.shipping.recordLabelPurchase, purchaseArgs());
+
+    const row = (
+      await t.run(async (ctx) =>
+        ctx.db.query("labelPurchases").withIndex("by_user", (q) => q.eq("userId", USER)).collect(),
+      )
+    )[0];
+    expect(row.trackerId).toBeUndefined();
+    expect(row.trackingStatus).toBeUndefined();
+    expect(row.scans).toBeUndefined();
+    expect("trackerId" in row).toBe(false);
+  });
+
+  test("a `tracker` argument is sanitised through the SAME rules the webhook uses", async () => {
+    // Insert and patch are two different Convex write shapes over one
+    // sanitiser (`sanitizeSnapshot` + `withoutUndefined`) — this proves the
+    // insert path actually applies truncation and the https-only rule, not
+    // just that it compiles.
+    const t = convexTest(schema, modules);
+    const longMessage = "x".repeat(500);
+
+    await t.mutation(internal.shipping.recordLabelPurchase, {
+      ...purchaseArgs(),
+      tracker: {
+        trackerId: "trk_insert_path",
+        status: "in_transit",
+        updatedAt: 1_000,
+        publicTrackingUrl: "http://not-https.example/track", // must be dropped
+        scans: [{ at: 900, status: "in_transit", message: longMessage }],
+      },
+    });
+
+    const row = (
+      await t.run(async (ctx) =>
+        ctx.db.query("labelPurchases").withIndex("by_user", (q) => q.eq("userId", USER)).collect(),
+      )
+    )[0];
+    expect(row.trackerId).toBe("trk_insert_path");
+    expect(row.trackingStatus).toBe("in_transit");
+    expect(row.publicTrackingUrl).toBeUndefined();
+    expect(row.scans?.[0].message).toHaveLength(200);
+  });
 });
 
 describe("listMyLabelPurchases", () => {

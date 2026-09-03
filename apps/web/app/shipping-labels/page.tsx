@@ -345,7 +345,7 @@ export default function ShippingLabelsPage() {
                   <span className="text-neon-blue font-bold text-xl">▸</span>
                   <div>
                     <h4 className="font-semibold text-slate-300">Tracking, Copied, Done</h4>
-                    <p>Every purchase hands you a tracking number with a copy button, ready to paste back to your buyer. Label History then shows the USPS sorting scans as they land, right up to your buyer&apos;s post office marking it out for delivery.</p>
+                    <p>Every purchase hands you a tracking number with a copy button, ready to paste back to your buyer. Then Label History picks up the story — every USPS sorting scan, right up to &quot;out for delivery.&quot;</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">

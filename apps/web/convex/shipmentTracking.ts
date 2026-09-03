@@ -253,7 +253,12 @@ export const getWebhookByToken = internalQuery({
     const row = await ctx.db
       .query("easypostWebhooks")
       .withIndex("by_token", (q) => q.eq("urlToken", args.urlToken))
-      .unique();
+      // `.first()`, same reasoning as findPurchaseForWebhook below: a
+      // duplicate token can only be a bug (256 bits of randomness), but a
+      // `.unique()` throw here would surface to EasyPost as a failed delivery
+      // on every retry until it disables the hook. Serve the row; a duplicate
+      // is a defect to fix, not a reason to drop the seller's scans.
+      .first();
     if (!row) return null;
     return { _id: row._id, userId: row.userId, secret: row.secret };
   },
@@ -430,6 +435,41 @@ export const applyTrackerSnapshot = internalMutation({
     await ctx.db.patch(args.purchaseId, clean);
 
     return { applied: true, newScans };
+  },
+});
+
+/**
+ * Stamp the refresh cooldown BEFORE the outbound call, not after it.
+ *
+ * `applyTrackerSnapshot`'s `refreshedAt` only reaches the row when EasyPost
+ * answered with a tracker. The common early state of a bought letter is the
+ * opposite — the browser route answers 409 `no_tracker` for hours after a
+ * purchase — and on that path `refreshTracking` throws before any stamp, so
+ * the cooldown never engaged and a click loop could ask EasyPost without
+ * limit. That is the exact failure the cooldown exists to prevent: all
+ * `/easypost/*` calls share one 60/min bucket per seller, so a loop on this
+ * button can 429 the seller's own buy path.
+ *
+ * Stamped on the ATTEMPT, so every outcome — tracker, `no_tracker`, service
+ * failure — costs the same 60 seconds. Ownership is re-asserted here for the
+ * same reason it is in `applyTrackerSnapshot`: a write that trusts a caller's
+ * ownership check must prove it again.
+ */
+export const stampRefreshAttempt = internalMutation({
+  args: {
+    purchaseId: v.id("labelPurchases"),
+    userId: v.string(),
+    at: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await ctx.db.get(args.purchaseId);
+    if (!row) return null;
+    if (row.userId !== args.userId) {
+      throw new Error("stampRefreshAttempt: purchase row belongs to another user");
+    }
+    await ctx.db.patch(args.purchaseId, { lastRefreshAt: args.at });
+    return null;
   },
 });
 
