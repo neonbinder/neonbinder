@@ -116,16 +116,6 @@ const NO_SYNC_DECISIONS: SyncReviewResult = {
   conflictResolutions: [],
 };
 
-/**
- * NEO-102 — how long after a commit the walker may still auto-open.
- *
- * The background BSC team pass writes `teamCheckDoneAt` for the freshly
- * committed cards over the seconds following the commit, and only then can a
- * card be known to have no team. Long enough to catch that; short enough that
- * the modal cannot appear over unrelated work.
- */
-const POST_COMMIT_ATTENTION_GRACE_MS = 15_000;
-
 export default function CardChecklist({
   variantId,
   sourceChips,
@@ -276,34 +266,28 @@ export default function CardChecklist({
   // own cards. Local to this component — nothing above needs it.
   const [hideCrossListed, setHideCrossListed] = useState(false);
   /**
-   * NEO-102 — the post-commit "needs attention" pass.
+   * NEO-102 — the "needs attention" pass.
    *
    * `attentionOnly` filters the grid down to the flagged rows (same Chip
-   * pattern as the cross-release toggle). The other two drive the walker, and
-   * they are separate on purpose:
+   * pattern as the cross-release toggle). `walkerOpenedByHand` is the ONLY
+   * thing that opens the walker: the operator pressed one of its two
+   * buttons (the header row's "Fix them one at a time", or the post-commit
+   * banner's inline call-to-action).
    *
-   *  - `walkerOpenedByHand` — the operator pressed the header button.
-   *  - `attentionArmed` — a commit just landed, so the walker MAY open itself.
-   *
-   * Whether the walker is actually open is then DERIVED (`walkerOpen`, below)
-   * rather than stored, because the trigger is not the commit — it is the
-   * count going non-zero, which happens later. A BSC-linked card is not
-   * flagged until `processBscTeamEnrichmentQueue` has been and gone (one
-   * detail request every 300ms), so at the instant a commit resolves the
-   * answer for a BSC set is still "nothing needs attention". Deriving the
-   * open state means the arm can wait for the real answer without an effect
-   * that watches the count and calls setState — which is a cascading-render
-   * pattern the lint rule rightly rejects, and which would need the state and
-   * the count to be kept in agreement by hand.
-   *
-   * The arm is disarmed by a timer started in the commit handler (not an
-   * effect) so it cannot fire minutes later on top of unrelated work, and by
-   * the walker's own close.
+   * Nothing opens the walker on its own. An earlier revision armed it on a
+   * commit and let a derived `walkerOpen` pop the modal the moment the
+   * background BSC team pass flagged its first row. That is an interruption
+   * the operator never asked for: it lands over whatever they moved on to
+   * (it needed an `activeElement` guard just to avoid stealing focus mid
+   * keystroke), and it broke every flow that commits and then touches the
+   * grid, because the modal's `fixed inset-0` overlay swallowed the next
+   * click. The count is instead advertised REACTIVELY — the banner CTA and
+   * the header chip both read `attentionCount` off the live subscription, so
+   * rows the BSC pass flags seconds after the commit still get announced,
+   * without taking the screen.
    */
   const [attentionOnly, setAttentionOnly] = useState(false);
   const [walkerOpenedByHand, setWalkerOpenedByHand] = useState(false);
-  const [attentionArmed, setAttentionArmed] = useState(false);
-  const attentionArmTimer = useRef<number | null>(null);
   const [showCrossListingModal, setShowCrossListingModal] = useState(false);
 
   // Reset filter + close the detail panel when the variant changes — chips and
@@ -646,19 +630,11 @@ export default function CardChecklist({
       );
       // NEO-102: the commit itself never knows whether a card has a team — the
       // BSC team pass runs after it, and a BSC-linked card is not even flagged
-      // until that pass has been and gone. So arm here and let `walkerOpen`
-      // derive the rest. The status line above is deliberately unchanged; the
-      // walker is the disclosure.
-      //
-      // The disarm timer is started HERE, in the handler, rather than in an
-      // effect — an effect that watched the count and set state would be the
-      // cascading-render pattern the lint rule rejects.
-      setAttentionArmed(true);
-      if (attentionArmTimer.current !== null) clearTimeout(attentionArmTimer.current);
-      attentionArmTimer.current = window.setTimeout(() => {
-        setAttentionArmed(false);
-        attentionArmTimer.current = null;
-      }, POST_COMMIT_ATTENTION_GRACE_MS);
+      // until that pass has been and gone. So nothing about attention is
+      // decided here. The banner this message lands in grows its own inline
+      // call-to-action for as long as `attentionCount > 0`, which the live
+      // subscription keeps current — including for rows flagged well after
+      // this handler returned.
     } catch (error) {
       // NEO-189: the commit is phased server-side and labels its failures with
       // the phase that broke ("prelude", "chunk 2/3 (cards 151-300 of 375)",
@@ -788,58 +764,20 @@ export default function CardChecklist({
   );
 
   /**
-   * Is the walker open? Derived, never stored — see the state block above.
+   * NEO-102 — the single entry point into the walker.
    *
-   * The armed half reads the live count, so a commit that flags nothing yet
-   * opens nothing, and the walker appears by itself the moment the background
-   * BSC team pass stamps the first card it could not answer for.
-   *
-   * One consequence worth naming: on the ARMED path, answering the last card
-   * takes the count to zero and the dialog closes itself rather than showing
-   * the walker's all-clear step. That is the right end to an interruption the
-   * operator did not ask for — the job is done, so the modal gets out of the
-   * way. Opened by hand it stays put and says "All clear", because there the
-   * operator asked to be in it.
-   *
-   * a11y (audit fix): the armed path must not steal focus out of an active
-   * text field. This component re-renders on every `getCardChecklist`
-   * subscription tick, and the background BSC pass landing is exactly such a
-   * tick — with nothing guarding it, a commit's grace window could pop this
-   * modal open, and move focus into it, while the operator is mid-keystroke
-   * in the Add Card form or a card's detail panel, with no warning. Reading
-   * `document.activeElement` here is read-only and advisory (it can only ever
-   * SUPPRESS an auto-open, never cause one), and it evaluates once per actual
-   * render, not per keystroke, because the Add Card fields are deliberately
-   * uncontrolled (NEO-36) and typing in them does not re-render this
-   * component. The manual entry point (the header chip + "Fix them one at a
-   * time") stays available regardless, so nothing is hidden — worst case the
-   * operator opens it themselves once they are done typing, instead of the
-   * 15s window auto-opening it for them.
+   * Both buttons that offer it (the header row's "Fix them one at a time" and
+   * the post-commit banner's inline CTA) call this, so there is exactly one
+   * way the dialog can come up and it is always a deliberate press.
    */
-  const typingElsewhere =
-    attentionArmed &&
-    (document.activeElement instanceof HTMLInputElement ||
-      document.activeElement instanceof HTMLTextAreaElement);
-  const walkerOpen =
-    walkerOpenedByHand || (attentionArmed && attentionCount > 0 && !typingElsewhere);
+  const openAttentionWalker = useCallback(() => {
+    setWalkerOpenedByHand(true);
+  }, []);
 
   /** Both paths out of the walker: the operator is done, or deferred the rest. */
   const closeAttentionWalker = useCallback(() => {
     setWalkerOpenedByHand(false);
-    setAttentionArmed(false);
-    if (attentionArmTimer.current !== null) {
-      clearTimeout(attentionArmTimer.current);
-      attentionArmTimer.current = null;
-    }
   }, []);
-
-  // Only a cleanup: a commit's disarm timer must not outlive the component.
-  useEffect(
-    () => () => {
-      if (attentionArmTimer.current !== null) clearTimeout(attentionArmTimer.current);
-    },
-    [],
-  );
 
   const sortedCards = useMemo(() => {
     if (!cards) return [];
@@ -1241,6 +1179,46 @@ export default function CardChecklist({
             }
           >
             {syncNotice.text}
+            {/* NEO-102 — the post-commit call-to-action, in place of the
+                walker opening itself.
+
+                Rendered inline in this banner because this is where the
+                operator is already looking the instant a commit lands, and
+                only on the `status` tone: the count is REACTIVE (the
+                background BSC team pass keeps flagging rows for seconds
+                after the commit), and `aria-atomic` means every change
+                re-announces the whole region — polite in a role="status", but
+                assertively interrupting in the role="alert" a failure banner
+                becomes.
+
+                a11y: a real <button> inside the existing live region, so it
+                is in the tab order and announced with the region it belongs
+                to. Its visible text IS its accessible name — no aria-label —
+                which keeps it distinct from the header row's button and
+                satisfies 2.5.3 trivially. The header row's own sr-only
+                role="status" line still carries the count when no banner is
+                showing, which is most of the time.
+
+                a11y (1.4.3 / 1.4.11): deliberately NOT the header button's
+                `hover:text-[#00D558] focus:outline-none` treatment. Neon
+                green measures 1.65:1 against this banner's `bg-blue-100`
+                light background, so recolouring the text on hover/focus
+                would drop it below 4.5:1, and suppressing the outline on top
+                of that would leave no focus indicator at all. Hover changes
+                only the underline STYLE (no colour change, so contrast is
+                unchanged), and the UA focus ring is left in place. */}
+            {syncNotice.tone === "status" && attentionCount > 0 && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={openAttentionWalker}
+                  className="rounded-sm font-semibold underline decoration-dotted hover:decoration-solid"
+                >
+                  {`${attentionCount} need attention — Fix them one at a time`}
+                </button>
+              </>
+            )}
           </div>
         )}
 
@@ -1299,7 +1277,7 @@ export default function CardChecklist({
             {attentionCount > 0 && (
               <button
                 type="button"
-                onClick={() => setWalkerOpenedByHand(true)}
+                onClick={openAttentionWalker}
                 aria-label={`Fix cards needing attention one at a time (${attentionCount})`}
                 // a11y (1.4.3): same gray-400-with-no-dark:-variant fix as the
                 // label above.
@@ -1398,18 +1376,22 @@ export default function CardChecklist({
         />
       )}
 
-      {/* NEO-102 — the post-commit attention pass. Kept mounted only while
-          open; it takes the FULL row list and derives its own queue, so rows
-          arriving from the background BSC pass join it without the walker
-          losing the card on screen. */}
-      {walkerOpen && cards && (
+      {/* NEO-102 — the attention pass. Opened only by hand (header row or the
+          post-commit banner's CTA), and kept mounted only while open; it
+          takes the FULL row list and derives its own queue, so rows arriving
+          from the background BSC pass join it without the walker losing the
+          card on screen. */}
+      {walkerOpenedByHand && cards && (
         <CardAttentionWalker
           isOpen
           cards={cards}
           sportId={ancestorSportId}
-          // a11y: see syncButtonRef's own comment — this can open across an
-          // async gap after a commit, so its own activeElement-at-mount
-          // capture cannot be trusted.
+          // a11y: the durable restore target, because the control that opened
+          // this may not survive the sitting — both entry points unmount at
+          // `attentionCount === 0`, which is exactly the state the walker is
+          // in when the operator closes it from the all-clear step. Restoring
+          // to the walker's own activeElement-at-mount capture would then be
+          // restoring to a detached node. This Sync button is always mounted.
           restoreFocusRef={syncButtonRef}
           onClose={closeAttentionWalker}
         />

@@ -38,6 +38,14 @@ export {
  * asked — which is the actual bug (10 such cards in dev's 2026 Topps base,
  * every one a League Leaders multi-player card).
  *
+ * "After the commit" is about when the question becomes ANSWERABLE, not about
+ * this dialog appearing on its own — it never does. `CardChecklist` mounts it
+ * only when the operator presses one of its two buttons: the header row's
+ * "Fix them one at a time", or the post-commit banner's inline CTA. An
+ * earlier revision opened it automatically inside a grace window after a
+ * commit; that put a `fixed inset-0` overlay over whatever the operator did
+ * next, and it is gone.
+ *
  * ## The queue is derived, not held
  *
  * There is no queue array in state. The presented card is
@@ -95,10 +103,13 @@ export default function CardAttentionWalker({
   /** Escape, the Close button, and the all-clear step all end here. Nothing is lost. */
   onClose: () => void;
   /**
-   * a11y: the durable control this was opened from. The walker can open
-   * automatically after a commit, across an async gap from whatever the
-   * operator last touched, so its own activeElement-at-mount capture cannot be
-   * trusted — same reasoning as SyncReviewModal's prop of the same name.
+   * a11y: a durable control to restore focus to on close. The walker is only
+   * ever opened by hand, but neither of its two triggers survives the sitting
+   * — both the header row's button and the post-commit banner's CTA are
+   * rendered only while `attentionCount > 0`, so answering the last card
+   * unmounts the very element the walker's own activeElement-at-mount capture
+   * would restore to. The parent passes something that is always mounted
+   * instead — same reasoning as SyncReviewModal's prop of the same name.
    */
   restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {

@@ -530,6 +530,43 @@ function settledCard(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * Renders and drives a commit all the way through, via the ZERO-CANDIDATE
+ * path: the fetch short-circuits (`candidateCount: 0`), the client skips the
+ * pairing dialog and runs straight through resolveEntities → runCommit. It is
+ * the shortest route to a landed commit, which is what puts the post-commit
+ * banner — and its attention call-to-action — on screen.
+ *
+ * Set `state.cards` before calling; the commit mock does not change them (the
+ * live `getCardChecklist` subscription is what the count reads).
+ */
+async function commitZeroCandidatePath() {
+  state.liveCandidates = { ready: 0, total: 0, cards: [] };
+  mockResolveEntities.mockResolvedValue({
+    unknownPlayers: [],
+    unknownTeams: [],
+    batchId: undefined,
+  });
+  mockCommitChecklist.mockResolvedValue({ count: 2 });
+  mockDiscardCandidates.mockResolvedValue(undefined);
+  let resolveFetch!: (value: unknown) => void;
+  mockFetchChecklist.mockImplementation(
+    () => new Promise((resolve) => (resolveFetch = resolve)),
+  );
+
+  const rendered = renderChecklist();
+  fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  await act(async () => {
+    resolveFetch({
+      success: true,
+      message: "Custom selector subtree — no marketplace data available.",
+      candidateCount: 0,
+    });
+  });
+  await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+  return rendered;
+}
+
 describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -595,59 +632,17 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
     );
   });
 
-  it("does not open the walker on its own without a commit", () => {
+  it("does not open the walker on its own", () => {
     renderChecklist();
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("opens the walker on its own once a commit has landed and something is flagged", async () => {
-    // The zero-candidate path: the fetch short-circuits, the client skips the
-    // pairing dialog and runs straight through resolveEntities → runCommit.
-    // Shortest route to a completed commit.
-    state.liveCandidates = { ready: 0, total: 0, cards: [] };
-    mockResolveEntities.mockResolvedValue({
-      unknownPlayers: [],
-      unknownTeams: [],
-      batchId: undefined,
-    });
-    mockCommitChecklist.mockResolvedValue({ count: 2 });
-    mockDiscardCandidates.mockResolvedValue(undefined);
-    let resolveFetch!: (value: unknown) => void;
-    mockFetchChecklist.mockImplementation(
-      () => new Promise((resolve) => (resolveFetch = resolve)),
-    );
-
-    renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
-    await act(async () => {
-      resolveFetch({
-        success: true,
-        message: "Custom selector subtree — no marketplace data available.",
-        candidateCount: 0,
-      });
-    });
-
-    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-    // The commit's own status line is deliberately unchanged — the walker is
-    // the disclosure, not a longer sentence in the banner.
-    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("Cards Needing Attention");
-  });
-
   /**
-   * `walkerOpen` is derived (`walkerOpenedByHand || (attentionArmed &&
-   * attentionCount > 0)`, see the note above its declaration in
-   * CardChecklist.tsx) specifically so the two ways in only agree on the
-   * count going non-zero and disagree on what happens when it goes back to
-   * zero: opened BY HAND, the walker stays up and says "All clear" (the
-   * operator asked to be in it); ARMED by a commit, it closes itself the
-   * instant the count returns to zero (the job the interruption was for is
-   * done, so the modal should get out of the way). Nothing in
-   * CardAttentionWalker.test.tsx exercises this — that file drives the
-   * walker directly with `isOpen` pinned true, never through the parent's
-   * derivation — so it is exactly the seam a change to either boolean could
-   * break silently.
+   * `walkerOpenedByHand` is the only thing that mounts the walker — see the
+   * state block in CardChecklist.tsx. Nothing in
+   * CardAttentionWalker.test.tsx exercises this seam: that file drives the
+   * walker directly with `isOpen` pinned true, never through the parent, so
+   * a change that reintroduced an automatic open would go unnoticed there.
    */
   it("opened BY HAND, stays open and shows All clear once the last flagged row is fixed elsewhere", () => {
     const { rerender } = renderChecklist();
@@ -672,32 +667,58 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
     expect(screen.getByText(/All clear/)).toBeTruthy();
   });
 
-  it("ARMED by a commit, closes itself (no All-clear step) once the last flagged row is fixed elsewhere", async () => {
-    state.liveCandidates = { ready: 0, total: 0, cards: [] };
-    mockResolveEntities.mockResolvedValue({
-      unknownPlayers: [],
-      unknownTeams: [],
-      batchId: undefined,
-    });
-    mockCommitChecklist.mockResolvedValue({ count: 2 });
-    mockDiscardCandidates.mockResolvedValue(undefined);
-    let resolveFetch!: (value: unknown) => void;
-    mockFetchChecklist.mockImplementation(
-      () => new Promise((resolve) => (resolveFetch = resolve)),
-    );
+  /**
+   * NEO-102 regression — the walker used to ARM itself on a completed commit
+   * and open across the grid the moment the background BSC team pass flagged
+   * a row. Two E2E flows (checklist-fetch-unknown-entities-link-existing,
+   * checklist-fetch-wizard-add-career-team) commit a custom set whose one
+   * card has no team, so it was flagged immediately and the walker's
+   * `fixed inset-0` overlay swallowed the flow's next tap on the grid. The
+   * commit now says what needs attention and offers the walker; it does not
+   * take the screen.
+   */
+  it("after a commit, does NOT open the walker — it offers it in the banner instead", async () => {
+    await commitZeroCandidatePath();
 
-    const { rerender } = renderChecklist();
-    fireEvent.click(screen.getByLabelText("Sync card checklist"));
-    await act(async () => {
-      resolveFetch({
-        success: true,
-        message: "Custom selector subtree — no marketplace data available.",
-        candidateCount: 0,
-      });
-    });
-    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
-    await screen.findByRole("dialog"); // armed itself open, per the test above
+    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Fix them one at a time/ }),
+    ).toBeTruthy();
+  });
 
+  it("the banner CTA carries the live count", async () => {
+    state.cards = [attentionCard(), attentionCard({ _id: "card-c", cardNumber: "3" })];
+    await commitZeroCandidatePath();
+
+    expect(
+      screen.getByRole("button", { name: "2 need attention — Fix them one at a time" }),
+    ).toBeTruthy();
+  });
+
+  it("clicking the banner CTA opens the walker", async () => {
+    await commitZeroCandidatePath();
+
+    fireEvent.click(screen.getByRole("button", { name: /Fix them one at a time/ }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog.textContent).toContain("Cards Needing Attention");
+  });
+
+  it("the banner CTA is absent when the commit flagged nothing", async () => {
+    state.cards = [settledCard()];
+    await commitZeroCandidatePath();
+
+    // The banner itself is there — only the call-to-action half is not.
+    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+  });
+
+  it("the banner CTA disappears once the count reaches zero", async () => {
+    const { rerender } = await commitZeroCandidatePath();
+    expect(screen.getByRole("button", { name: /Fix them one at a time/ })).toBeTruthy();
+
+    // The BSC pass (or another tab) answers the one flagged card.
     state.cards = [settledCard()];
     rerender(
       <CardChecklist
@@ -707,72 +728,7 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
       />,
     );
 
-    // Gets out of the way instead of showing "All clear" for a dialog the
-    // operator never asked to open.
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  /**
-   * The arm is disarmed by a timer (`POST_COMMIT_ATTENTION_GRACE_MS`, 15s)
-   * started in the commit handler, specifically so a card the BSC pass flags
-   * long after the operator has moved on to unrelated work does not suddenly
-   * pop the walker open on top of them. Nothing else in this file exercises
-   * the timer actually firing.
-   */
-  it("the arm expires after the grace period; a row flagged after that does not open the walker on its own", async () => {
-    vi.useFakeTimers();
-    try {
-      // Nothing flagged at the instant the commit lands — the common
-      // BSC-linked case, where the queue is still going to run.
-      state.cards = [settledCard()];
-      state.liveCandidates = { ready: 0, total: 0, cards: [] };
-      mockResolveEntities.mockResolvedValue({
-        unknownPlayers: [],
-        unknownTeams: [],
-        batchId: undefined,
-      });
-      mockCommitChecklist.mockResolvedValue({ count: 1 });
-      mockDiscardCandidates.mockResolvedValue(undefined);
-      mockFetchChecklist.mockResolvedValue({
-        success: true,
-        message: "Custom selector subtree — no marketplace data available.",
-        candidateCount: 0,
-      });
-
-      const { rerender } = renderChecklist();
-      await act(async () => {
-        fireEvent.click(screen.getByLabelText("Sync card checklist"));
-        await vi.advanceTimersByTimeAsync(0);
-      });
-
-      expect(mockCommitChecklist).toHaveBeenCalledTimes(1);
-      expect(screen.queryByRole("dialog")).toBeNull(); // nothing flagged yet
-
-      // Past the grace window, with nothing having appeared while it ran.
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(15_001);
-      });
-
-      // The BSC pass finally lands a flagged card — too late; the arm has
-      // already expired, so this must not pop the walker open unattended.
-      state.cards = [attentionCard()];
-      act(() => {
-        rerender(
-          <CardChecklist
-            variantId={VARIANT_ID}
-            sourceChips={{}}
-            sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-          />,
-        );
-      });
-
-      expect(screen.queryByRole("dialog")).toBeNull();
-      // The card still counts, and is still reachable by hand.
-      expect(
-        screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
-      ).toBeTruthy();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
   });
 });
