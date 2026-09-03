@@ -274,6 +274,36 @@ describe("TeamPicker", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  // NEO-102: Escape was the only close, and the popover is `absolute top-full
+  // w-64 z-10` — inside MissingTeamFixer that puts it over "Save & Next
+  // (Enter)" and "No team on this card", and Escape there means "defer this
+  // card" (CardAttentionWalker owns it). So an operator who opened the picker
+  // could not uncover the buttons they needed next.
+  it("a pointerdown outside the picker closes the popover without selecting anything", () => {
+    currentCandidates = [makeTeam("t1", "Boston Red Sox")];
+    const { onChange } = renderPicker();
+    openPopover();
+    expect(screen.getByRole("listbox")).toBeTruthy();
+
+    fireEvent.pointerDown(document.body);
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("a pointerdown INSIDE the picker leaves the popover open", () => {
+    // The multi-team path: picking a match keeps the popover open on purpose
+    // (see addChip), so the close must not fire for pointers landing on the
+    // picker's own options, input or chips.
+    currentCandidates = [makeTeam("t1", "Boston Red Sox")];
+    renderPicker();
+    openPopover();
+
+    fireEvent.pointerDown(screen.getByLabelText("Add Boston Red Sox"));
+
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
   it("Backspace on an empty query removes the last chip", () => {
     currentSelectedRows = [
       makeTeam("t1", "Boston Red Sox"),

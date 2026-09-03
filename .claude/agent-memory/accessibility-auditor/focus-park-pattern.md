@@ -63,3 +63,40 @@ handling — see [[live-region-role-pattern]]. review-grid.tsx had a `role=alert
 region for failures but nothing telling a screen-reader user an action
 *succeeded*; visible DOM restructuring (a card moving between lists) is not
 narrated by AT on its own (WCAG 4.1.3).
+
+## The native-`disabled`-on-the-just-clicked-button bug keeps recurring, one button at a time (NEO-102, 2026-09-02)
+
+NEO-189 found and fixed this on `CardPairingModal`'s Confirm button; the fix
+(swap native `disabled` for `aria-disabled`, since the FIRST needs the
+button to disable while STILL being reachable — a caller mid-background-fetch
+case) was applied there and to `MissingTeamFixer`'s own Save button when that
+component was built. But `MissingTeamFixer`'s SECOND button, "No team on this
+card" (which also sets the same `busy` flag its own click triggers), still
+used plain `disabled={busy}` — same file, same session's own prior fix
+sitting right next to it, missed anyway. This is worth calling out as its own
+checklist item because it keeps recurring **per-button, not per-component**:
+fixing one busy-gated button in a dialog does not imply its siblings got the
+same treatment. **When auditing any dialog with a `busy`/`pending` flag that
+multiple buttons key off of, check EVERY button individually** — grep for
+`disabled={` (not `aria-disabled={`) near any button whose own `onClick` is
+what sets that flag.
+
+## A DERIVED "may I steal focus" gate belongs on an auto-triggered interruption — CardChecklist's post-commit walker (NEO-102, 2026-09-02)
+
+`CardAttentionWalker` can open itself automatically (no operator click) for
+up to 15s after a commit, once the background BSC pass flags a card — a
+genuinely different case from every other entry in this file, because
+nothing DISABLED or UNMOUNTED the operator's current control; the interrupt
+is generated entirely by a REACTIVE SUBSCRIPTION UPDATE unrelated to
+whatever they're doing. Nothing in the original code checked whether the
+operator was mid-task before yanking focus into the new dialog. Fix: read
+`document.activeElement` at the moment the auto-open condition would
+otherwise fire and suppress the open (but NOT the underlying state — the
+manual entry point stays available) when it's a text input/textarea. This
+reads `document.activeElement` inside a component body rather than an
+effect, which is fine here specifically because it can only ever SUPPRESS a
+state transition, never cause one — an impure read that's advisory-only and
+one-directional is a materially different risk than one that drives a
+`setState` cascade. **Any future "arm now, auto-open later on a live
+condition" feature in this codebase should get the same guard** — check for
+one whenever a dialog can mount itself with no antecedent user click.

@@ -1,0 +1,289 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist attention — a card with no team is badged, counted, and filterable"
+tags:
+  - set-selector
+  - regression
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE feature (NEO-102): a stored checklist card that carries NO team is
+# surfaced to the operator — an amber "needs attention" mark on its own row, a
+# header chip counting how many rows are in that state, and a filter that
+# collapses the grid to just those rows.
+#
+# WHAT THIS PROVES
+#   `deriveCardAttention` (convex/features/cardAttention.ts) is a pure rule the
+#   browser runs on every getCardChecklist row: flag it when `teamOnCardIds` is
+#   empty, no operator has confirmed "no team", and the card is not still
+#   waiting on the automatic BSC team lookup. This flow builds that state by
+#   hand — two custom cards with no team — then proves all three surfaces move
+#   together:
+#     • both rows badged, chip reads "2 need attention";
+#     • give ONE of them a real team through the card drawer's TeamPicker;
+#     • that row's badge disappears, the chip drops to "1 need attention", the
+#       other row keeps its badge;
+#     • the chip filters the grid down to the still-flagged row and back.
+#   The count is asserted as an EXACT number, so a rule that over- or
+#   under-flags fails here rather than reading as "some badge exists" (R2).
+#
+# WHAT THIS DELIBERATELY DOES NOT COVER (see the sibling flow / unit tests)
+#   • The walker and its missing-team fixer — that is
+#     `checklist-attention-walker-missing-team.yaml`.
+#   • Clause 3 of the rule ("a BSC-linked card is not badged until
+#     teamCheckDoneAt lands"). No E2E flow can reach it: a BSC-linked card
+#     only exists on a REAL marketplace set, which is read-only (R7a), and a
+#     per-worker custom subtree is short-circuited before any marketplace call
+#     (isCustomSubtree, NEO-22) so its cards never carry a BSC ref. The clause
+#     is unit-covered in convex/features/cardAttention.test.ts. The same wall
+#     is documented at length in checklist-bsc-team-enrichment.yaml's header.
+#
+# R7a / DATA ISOLATION — writes go to a PER-WORKER, PER-ATTEMPT CUSTOM SET
+#   `cna-${WORKER_INDEX}-${ATTEMPT_ID}` under the REAL Baseball / 2024 / Topps
+#   ancestors (registered in .maestro/SET-REGISTRY.md). Two reasons for that
+#   exact shape:
+#     • The real Sport ancestor keeps sport="baseball", so setup.yaml's seeded
+#       New York Yankees is in TeamPicker's sport-scoped candidate pool. A
+#       synthetic "E2E Test Sport N" would return "No matches." for Yankees.
+#     • A custom Set node makes the subtree custom, so no BSC/SL call fires and
+#       nothing shared is read or written.
+#   The set name carries ATTEMPT_ID because this flow asserts an EXACT
+#   attention COUNT: a fresh, empty checklist is the only way that number can
+#   be known. A reused set would inherit a failed attempt's leftover rows and
+#   the count assertion would be a coin flip.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ════════════════════════════════════════════════════════════════════════════
+# DRILL to this attempt's private custom set (R9 — the drill util owns this).
+# Baseball → 2024 → Topps → cna-<worker>-<attempt> → Insert → Base.
+# Returns with the CardChecklist open and "Open add card form" in viewport.
+# ════════════════════════════════════════════════════════════════════════════
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "cna-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ════════════════════════════════════════════════════════════════════════════
+# CARD 1 — #701, added with NO team.
+#
+# The add-card form's "Team (optional)" field is left empty on purpose. Note
+# that filling it would NOT change the outcome: that field stores a PENDING
+# TEAM NAME (`teams: [...]` → pendingTeamNames) and only becomes a
+# `teamOnCardIds` link after a sync + unknown-entities confirmation, and the
+# attention rule reads the link, not the pending name. Leaving it empty is the
+# honest way to say "this card has no team".
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
+
+# The card-number input is autofocused — type straight into it.
+- inputText: "701-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Attn Alpha ${ATTEMPT_ID}"
+
+# Submit sits at the bottom of the add-card form; centerElement drives it to
+# mid-viewport so Maestro's own scroll-before-tap has content to scroll to
+# (without it the CDP scroll returns nothing and the tap crashes with
+# "null cannot be cast to non-null type kotlin.Int").
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Submit new card"
+
+# Virtuoso only renders rows near the current scroll position, so the new row
+# is not in the DOM yet — scroll to materialise it rather than waiting on its
+# text. centerElement matches the component's own scrollToIndex({align:
+# "center"}) so the two scroll authorities agree and the row's bounds are
+# stable when read.
+- scrollUntilVisible:
+    element:
+      id: "Edit card 701-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# ════════════════════════════════════════════════════════════════════════════
+# CARD 2 — #702, also with no team.
+# Added inline rather than through util-add-custom-card: that util's first act
+# is a full re-drill of all six EntitySelector levels, and we are already
+# standing on the checklist those levels lead to (the same reasoning, and the
+# same measured cost, as variation-link-group-and-unlink.yaml).
+# direction: UP — the add-card button sits ABOVE the checklist and the scroll
+# above left the list scrolled DOWN to #701's row.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+- inputText: "702-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Attn Bravo ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Submit new card"
+- scrollUntilVisible:
+    element:
+      id: "Edit card 702-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE BADGE — both teamless rows carry the attention mark.
+#
+# The mark is a single amber "!" glyph, so its MEANING lives in its accessible
+# name: "Card <number> needs attention: no team on this card yet". That is what
+# an operator's screen reader says and what Maestro matches on (aria-label →
+# `id:`). Asserting the per-card name rather than a generic marker is what
+# makes this specific to THESE rows.
+#
+# R6 — the scrollUntilVisible IS the assertion for #701; a badge that never
+# appears fails the scroll loudly. No redundant assertVisible follows it.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Card 701-${ATTEMPT_ID} needs attention: no team on this card yet"
+    centerElement: true
+    timeout: 10000
+- assertVisible:
+    id: "Card 702-${ATTEMPT_ID} needs attention: no team on this card yet"
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE HEADER CHIP — an exact count, plus the walker's entry point.
+# The chip renders the number as its own label; the walker link beside it is
+# the "fix them" affordance (exercised by the sibling walker flow).
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      text: "2 need attention"
+    direction: UP
+    centerElement: true
+    timeout: 10000
+- assertVisible: "Fix them one at a time"
+
+# ════════════════════════════════════════════════════════════════════════════
+# ANSWER ONE CARD — give #702 a real team through the card drawer's TeamPicker.
+#
+# This is the "the badge goes away because the ROW changed" half of the rule:
+# nothing clears a flag by hand, the card simply stops satisfying
+# deriveCardAttention once teamOnCardIds is non-empty.
+#
+# Teams is position 2 in the drawer body, so no in-drawer swipe is needed.
+# New York Yankees is seeded for Baseball by the setup track, which is why this
+# flow drills the real Baseball ancestor (see the isolation note at the top).
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 702-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Edit card 702-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
+
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- inputText: "Yankees"
+- assertVisible:
+    id: "Add New York Yankees"
+- tapOn:
+    id: "Add New York Yankees"
+
+# The chip proves the pick landed in the drawer's draft. Teams are part of that
+# draft — they only reach the card on Save (unlike per-row features, which
+# persist immediately). Tapping "Card name" first parks the caret on a field
+# ABOVE the picker; do NOT press Escape to close the popover — Escape reaches
+# the panel's own keydown handler and discards the unsaved draft.
+- assertVisible:
+    id: "Remove team New York Yankees"
+- tapOn:
+    id: "Card name"
+- tapOn:
+    id: "Save card edit"
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE COUNT MOVES — and only for the card that was answered.
+# ════════════════════════════════════════════════════════════════════════════
+
+- extendedWaitUntil:
+    notVisible:
+      id: "Card 702-${ATTEMPT_ID} needs attention: no team on this card yet"
+    timeout: 7000
+- assertVisible:
+    id: "Card 701-${ATTEMPT_ID} needs attention: no team on this card yet"
+- assertVisible: "1 need attention"
+# The row now shows the team it was given — the reason its badge went away.
+- assertVisible:
+    text: ".*Yankees.*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# THE FILTER — the chip collapses the grid to the flagged rows, and back.
+# Its accessible name carries the on/off state, so the two taps target
+# different names — which is also what proves the toggle actually toggled.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      id: "Show only cards needing attention"
+    direction: UP
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Show only cards needing attention"
+
+- extendedWaitUntil:
+    notVisible: "Attn Bravo ${ATTEMPT_ID}"
+    timeout: 7000
+- assertVisible: "Attn Alpha ${ATTEMPT_ID}"
+
+- tapOn:
+    id: "Show only cards needing attention \\(on\\)"
+- extendedWaitUntil:
+    visible: "Attn Bravo ${ATTEMPT_ID}"
+    timeout: 7000

@@ -1,0 +1,314 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Attention walker — answering a card's missing team, one card at a time"
+tags:
+  - set-selector
+  - regression
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE feature (NEO-102): the "Fix them one at a time" walker lets an
+# operator answer the missing-team question on each flagged card, and each of
+# its three answers behaves differently.
+#
+#   • SKIP  — defers. Nothing is written: the card keeps its badge and comes
+#             back the next time the walker opens.
+#   • A TEAM — picked in the multi-select TeamPicker and saved with
+#             "Save & Next". The badge goes away because the ROW changed
+#             (teamOnCardIds is now non-empty), not because anything cleared a
+#             flag by hand.
+#   • NO TEAM — "No team on this card" is an ANSWER, not an abandonment. It is
+#             server-stamped (confirmCardNoTeam), so the card must still be
+#             un-flagged after a full reload — that is the assertion this flow
+#             exists for, and the one thing that distinguishes a real
+#             persisted decision from a local UI toggle.
+#
+# The walker's counter ("N cards need attention · k fixed") is asserted at each
+# step, so a walker that advances without recording anything, or records
+# without advancing, fails here (R2).
+#
+# ORDER IS DETERMINISTIC, NOT ASSUMED
+#   getCardChecklist returns its rows already sorted by compareCardNumbers, and
+#   the walker pins the first flagged row of that list at mount. So with #801
+#   and #802 both flagged, the walker opens on #801 — and every step below
+#   names the card it expects in the Skip button's accessible name
+#   ("Skip card <number> for now"), so a walker that presents the wrong card
+#   fails immediately instead of silently answering someone else's question.
+#
+# NOT COVERED HERE — and why
+#   • The post-commit banner CTA ("K need attention — Fix them one at a time").
+#     It only renders after a commitCardChecklist, which needs a real
+#     marketplace fetch; a custom subtree never fetches (isCustomSubtree,
+#     NEO-22) and the real sets are read-only (R7a). Component-covered in
+#     CardChecklist.test.tsx. (The walker never opens on its own — an earlier
+#     auto-open was removed after it swallowed taps in two wizard flows.)
+#   • The preselected suggestion chips. They come from the card's PLAYERS'
+#     career years, and a custom card added through the add-card form has
+#     pending player NAMES, not linked player rows with careers — so there is
+#     nothing to suggest from. Reaching a linked player with career history
+#     means the entity-review wizard (checklist-fetch-wizard-add-career-team),
+#     a different feature and a 3.5-minute path. Unit/component-covered.
+#   • Escape-to-defer as a literal keypress. maestro-web's pressKey maps only
+#     Enter and Backspace (CdpWebDriver.mapToSeleniumKey throws on anything
+#     else), so Escape cannot be driven from a flow at all. The walker's
+#     "Close (Esc)" / "Done (Esc)" button runs the SAME onClose handler, and
+#     that is what this flow taps; the key binding itself is component-covered.
+#
+# R7a / DATA ISOLATION — per-worker, per-attempt custom set
+#   `cnw-${WORKER_INDEX}-${ATTEMPT_ID}` under the REAL Baseball / 2024 / Topps
+#   ancestors (registered in .maestro/SET-REGISTRY.md). The real Sport ancestor
+#   keeps sport="baseball" so TeamPicker's sport-scoped list contains the
+#   setup-seeded New York Yankees; the custom Set node makes the subtree custom
+#   so no marketplace call fires. ATTEMPT_ID keeps the walker's queue exactly
+#   the two cards this attempt created — a leftover row from a failed attempt
+#   would put an unexpected card in front of the operator and every
+#   card-specific assertion below would fail for the wrong reason.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# R9 — the drill util owns the six-level navigation.
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "cnw-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ════════════════════════════════════════════════════════════════════════════
+# TWO CARDS, NEITHER WITH A TEAM — the walker's queue.
+# "Team (optional)" on the add form is left empty deliberately: it stores a
+# pending team NAME, not a teamOnCardIds link, so filling it would not answer
+# the question this feature asks.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
+- inputText: "801-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Walker Alpha ${ATTEMPT_ID}"
+# centerElement so Maestro's own scroll-before-tap has content to scroll to —
+# without it the CDP scroll returns nothing and the tap dies with
+# "null cannot be cast to non-null type kotlin.Int".
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Submit new card"
+- scrollUntilVisible:
+    element:
+      id: "Edit card 801-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# Second card, added inline rather than through util-add-custom-card: that
+# util's first act is a full six-level re-drill, and we are already standing on
+# the checklist it leads to (same reasoning and same measured cost as
+# variation-link-group-and-unlink.yaml). direction: UP because the add-card
+# button sits ABOVE the list, which is currently scrolled down to #801's row.
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+- inputText: "802-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Walker Bravo ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Submit new card"
+- scrollUntilVisible:
+    element:
+      id: "Edit card 802-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 15000
+
+# ════════════════════════════════════════════════════════════════════════════
+# OPEN THE WALKER from the header. Centering the chip row also parks the two
+# card rows just below it, in view — which is what makes the badge assertions
+# after each close meaningful rather than trivially-absent (an off-screen
+# element reads as ABSENT to Maestro). Nothing scrolls the window from here on;
+# the walker is a fixed z-50 portal, so its controls are tapped directly.
+# ════════════════════════════════════════════════════════════════════════════
+
+- scrollUntilVisible:
+    element:
+      text: "2 need attention"
+    direction: UP
+    centerElement: true
+    timeout: 10000
+- tapOn: "Fix them one at a time"
+
+- extendedWaitUntil:
+    visible: "Cards Needing Attention"
+    timeout: 7000
+# The walker opened on the LOWEST-numbered flagged card, and its own counter
+# agrees with the header chip. The "." matches the middot separator.
+- assertVisible:
+    id: "Skip card 801-${ATTEMPT_ID} for now"
+- assertVisible:
+    text: ".*2 cards need attention . 0 fixed.*"
+# The fixer body rendered for this card: a custom card carries pending player
+# NAMES rather than linked player rows, so there is nothing to suggest from and
+# nothing preselected — the operator has to answer it themselves.
+- assertVisible: "No players on this card."
+- assertVisible: "Pick at least one team, or record that this card has none."
+
+# ════════════════════════════════════════════════════════════════════════════
+# ANSWER 1 — SKIP #801. Deferring advances to the next card and writes nothing.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn:
+    id: "Skip card 801-${ATTEMPT_ID} for now"
+- extendedWaitUntil:
+    visible:
+      id: "Skip card 802-${ATTEMPT_ID} for now"
+    timeout: 7000
+# One card left in this sitting, and NOTHING has been fixed — a skip is not a
+# write, so the "fixed" half of the counter must not have moved.
+- assertVisible:
+    text: ".*1 card needs attention . 0 fixed.*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# ANSWER 2 — "No team on this card" for #802. The explicit, recordable answer.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn: "No team on this card"
+- extendedWaitUntil:
+    visible: "All clear — nothing on this checklist needs attention."
+    timeout: 7000
+- assertVisible:
+    text: ".*0 cards need attention . 1 fixed.*"
+# The footer button says "Done" rather than "Close" once nothing is left.
+- tapOn: "Done (Esc)"
+- extendedWaitUntil:
+    notVisible: "Cards Needing Attention"
+    timeout: 7000
+
+# Back on the grid: #802 is answered and un-flagged, #801 was only DEFERRED and
+# keeps its badge, and the header count is back to the truth.
+- extendedWaitUntil:
+    notVisible:
+      id: "Card 802-${ATTEMPT_ID} needs attention: no team on this card yet"
+    timeout: 7000
+- assertVisible:
+    id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+- assertVisible: "1 need attention"
+
+# ════════════════════════════════════════════════════════════════════════════
+# ANSWER 3 — a real team for #801, through the walker's own TeamPicker.
+# Re-opening also proves the skip was session-only: #801 is back in the queue.
+# ════════════════════════════════════════════════════════════════════════════
+
+- tapOn: "Fix them one at a time"
+- extendedWaitUntil:
+    visible:
+      id: "Skip card 801-${ATTEMPT_ID} for now"
+    timeout: 7000
+- assertVisible:
+    text: ".*1 card needs attention . 0 fixed.*"
+
+# The same picker the card drawer uses, including its typeahead. New York
+# Yankees is seeded for Baseball by the setup track — which is why this flow
+# drills the real Baseball ancestor (see the isolation note at the top).
+- tapOn:
+    id: "Add team"
+- assertVisible:
+    id: "Search teams"
+- tapOn:
+    id: "Search teams"
+- inputText: "Yankees"
+- assertVisible:
+    id: "Add New York Yankees"
+- tapOn:
+    id: "Add New York Yankees"
+# Wait for the chip to carry the resolved NAME before tapping Save. Two
+# reasons: it proves the pick landed, and the chip's width is what pushes the
+# still-open typeahead popover clear of the Save button's centre. TeamPicker
+# closes its popover only on Escape (which maestro-web cannot send, and which
+# this dialog treats as "defer" anyway), so the popover is still open here —
+# see the product finding filed with NEO-102.
+- extendedWaitUntil:
+    visible:
+      id: "Remove team New York Yankees"
+    timeout: 7000
+- tapOn:
+    text: ".*Save & Next.*"
+
+- extendedWaitUntil:
+    visible: "All clear — nothing on this checklist needs attention."
+    timeout: 7000
+- assertVisible:
+    text: ".*0 cards need attention . 1 fixed.*"
+- tapOn: "Done (Esc)"
+- extendedWaitUntil:
+    notVisible: "Cards Needing Attention"
+    timeout: 7000
+
+# Nothing on this checklist needs attention any more, so the whole header row
+# — count chip and walker link — is gone, and #801 shows the team it was given.
+- extendedWaitUntil:
+    notVisible:
+      id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+    timeout: 7000
+- assertNotVisible: "Fix them one at a time"
+- assertVisible:
+    text: ".*Yankees.*"
+
+# ════════════════════════════════════════════════════════════════════════════
+# RELOAD — the answers were written to the server, not just to this tab.
+#
+# This is the whole point of the "no team" answer being a stamped column rather
+# than a UI state: re-drilling reloads the page and re-reads every row from
+# Convex. If confirmCardNoTeam had not stamped #802, its badge would be back
+# here — which is exactly the bug the feature exists to fix, one field over.
+# ════════════════════════════════════════════════════════════════════════════
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "cnw-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+- scrollUntilVisible:
+    element:
+      text: "Walker Bravo ${ATTEMPT_ID}"
+    centerElement: true
+    timeout: 15000
+- assertVisible: "Walker Alpha ${ATTEMPT_ID}"
+- assertNotVisible:
+    id: "Card 802-${ATTEMPT_ID} needs attention: no team on this card yet"
+- assertNotVisible:
+    id: "Card 801-${ATTEMPT_ID} needs attention: no team on this card yet"
+- assertNotVisible: "Fix them one at a time"

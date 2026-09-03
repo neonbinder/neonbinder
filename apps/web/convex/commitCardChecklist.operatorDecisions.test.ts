@@ -14,6 +14,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { MAX_OPERATOR_DELETE_IDS } from "./selectorOptions";
+import { normalizeTeamName } from "./teams";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 
@@ -75,6 +76,10 @@ function card(opts: {
   attributes?: string[];
   isVariation?: boolean;
   cardVariation?: string;
+  /** NEO-102: team NAMES as the wire carries them. The prelude resolves each
+   *  against the `teams` table; a name with no row and no review decision
+   *  resolves to nothing, exactly as in production. */
+  teams?: string[];
 }) {
   const platformData: {
     bsc?: { ref: string };
@@ -86,7 +91,7 @@ function card(opts: {
     cardNumber: opts.cardNumber,
     cardName: opts.cardName,
     team: undefined,
-    teams: [],
+    teams: opts.teams ?? [],
     players: [],
     // No `?? []` fallback: an unset `attributes` must stay undefined on
     // insert so the applyFields re-diff test can pin the un-set baseline.
@@ -448,5 +453,241 @@ describe("commitCardChecklist — ref collisions", () => {
     expect(inserted.cardName).toBe("Second");
     expect(inserted.platformData?.bsc?.ref).toBe("ref-A");
     expect(inserted.attributes).toContain("ref-collision");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-102 — a re-sync and the operator's "this card carries no team"
+// ---------------------------------------------------------------------------
+
+/**
+ * `cardChecklist.teamNoneConfirmedAt` is the operator's answer to "which team
+ * is printed on this card?" being "none". The commit path never SETS it —
+ * that is `cardChecklist.confirmCardNoTeam`'s job alone — and retires it in
+ * exactly one circumstance: a non-empty `teamOnCardIds` actually got written
+ * in the same transaction, which means it came through the `applyFields` +
+ * `baseVersion` gate and survived the server-side re-diff.
+ *
+ * That single condition is what makes the two dangerous cases safe. A
+ * LINKAGE-ONLY re-sync — the common one, and the entire reason this phase runs
+ * — must not touch it, and neither must a sync whose card simply carries no
+ * teams: an empty upstream answer is not evidence against a human's answer, it
+ * is what produced the question in the first place.
+ */
+async function scheduledBscEnqueueCount(
+  t: ReturnType<typeof convexTest>,
+): Promise<number> {
+  const names = await t.run(async (ctx) => {
+    const rows = await (
+      ctx as unknown as {
+        db: {
+          system: {
+            query: (n: string) => {
+              collect: () => Promise<Array<{ name: string }>>;
+            };
+          };
+        };
+      }
+    ).db.system.query("_scheduled_functions").collect();
+    return rows.map((r) => r.name);
+  });
+  return names.filter((n) =>
+    n.includes("processBscTeamEnrichmentQueue"),
+  ).length;
+}
+
+describe("commitCardChecklist — NEO-102 no-team confirmation", () => {
+  test("a reviewed sync that writes a real team retires the confirmation in the same patch", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+
+    // The team has to already exist for the prelude to resolve the wire name
+    // to an id — an unknown name with no review decision resolves to nothing.
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "New York Yankees",
+        // The real normalizer token-SORTS, so a hand-written "new york
+        // yankees" would never match what the prelude looks up.
+        nameNormalized: normalizeTeamName("New York Yankees"),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Leaders", bscRef: "R1" })],
+    });
+    const inserted = (await storedRows(t, leafId))[0];
+    expect(inserted.teamOnCardIds).toBeUndefined();
+
+    await asAdmin.mutation(api.cardChecklist.confirmCardNoTeam, {
+      cardId: inserted._id,
+    });
+    const confirmed = (await storedRows(t, leafId))[0];
+    expect(confirmed.teamNoneConfirmedAt).toBeTypeOf("number");
+    // `confirmCardNoTeam` leaves `lastUpdated` alone, which is what keeps the
+    // review the operator is about to accept from going stale.
+    expect(confirmed.lastUpdated).toBe(inserted.lastUpdated);
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({
+          cardNumber: "1",
+          cardName: "Leaders",
+          bscRef: "R1",
+          teams: ["New York Yankees"],
+          applyFields: ["teamOnCardIds"],
+          baseVersion: confirmed.lastUpdated,
+        }),
+      ],
+    });
+
+    const after = (await storedRows(t, leafId))[0];
+    expect(after.teamOnCardIds).toHaveLength(1);
+    // The flag must never contradict the teams on the row.
+    expect(after.teamNoneConfirmedAt).toBeUndefined();
+    expect(after.teamNoneConfirmedByUserId).toBeUndefined();
+  });
+
+  test("a linkage-only re-sync carrying no teams leaves the confirmation standing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Leaders", bscRef: "R1" })],
+    });
+    const inserted = (await storedRows(t, leafId))[0];
+    await asAdmin.mutation(api.cardChecklist.confirmCardNoTeam, {
+      cardId: inserted._id,
+    });
+    const stamp = (await storedRows(t, leafId))[0].teamNoneConfirmedAt;
+
+    // Exactly what a re-sync of an unchanged upstream set looks like: fresh
+    // linkage, no accepted content, no teams on the wire.
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Leaders", bscRef: "R1" })],
+    });
+
+    const after = (await storedRows(t, leafId))[0];
+    expect(after.teamNoneConfirmedAt).toBe(stamp);
+    expect(after.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
+  });
+
+  test("a STALE decision naming teamOnCardIds writes neither the team nor the clear, and is reported", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "New York Yankees",
+        // The real normalizer token-SORTS, so a hand-written "new york
+        // yankees" would never match what the prelude looks up.
+        nameNormalized: normalizeTeamName("New York Yankees"),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Leaders", bscRef: "R1" })],
+    });
+    const inserted = (await storedRows(t, leafId))[0];
+    await asAdmin.mutation(api.cardChecklist.confirmCardNoTeam, {
+      cardId: inserted._id,
+    });
+    const stamp = (await storedRows(t, leafId))[0].teamNoneConfirmedAt;
+
+    // The row moved between the operator seeing the diff and this commit.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(inserted._id, {
+        lastUpdated: inserted.lastUpdated + 1000,
+      });
+    });
+
+    const result = await asAdmin.action(
+      api.selectorOptions.commitCardChecklist,
+      {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          card({
+            cardNumber: "1",
+            cardName: "Leaders",
+            bscRef: "R1",
+            teams: ["New York Yankees"],
+            applyFields: ["teamOnCardIds"],
+            baseVersion: inserted.lastUpdated, // now stale
+          }),
+        ],
+      },
+    );
+
+    expect(result.staleDecisions).toBe(1);
+    const after = (await storedRows(t, leafId))[0];
+    // ONE gate for both halves: no team written, and therefore no clear.
+    // Writing the clear alone would leave the card with no team and no
+    // confirmation — silently re-opening a question the operator answered.
+    expect(after.teamOnCardIds).toBeUndefined();
+    expect(after.teamNoneConfirmedAt).toBe(stamp);
+  });
+
+  test("the existing-row BSC enqueue skips a none-confirmed card", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Leaders", bscRef: "R1" })],
+    });
+    // The insert branch enqueued it: a brand-new BSC-linked card with no team
+    // is exactly what that queue is for.
+    expect(await scheduledBscEnqueueCount(t)).toBe(1);
+
+    const inserted = (await storedRows(t, leafId))[0];
+    await asAdmin.mutation(api.cardChecklist.confirmCardNoTeam, {
+      cardId: inserted._id,
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", cardName: "Leaders", bscRef: "R1" })],
+    });
+
+    // Still 1. The re-sync did not queue a second live BSC request to
+    // re-derive a team a human already ruled on.
+    expect(await scheduledBscEnqueueCount(t)).toBe(1);
+  });
+
+  test("without the confirmation, the same re-sync DOES enqueue again", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+
+    for (let i = 0; i < 2; i++) {
+      await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card({ cardNumber: "1", cardName: "Leaders", bscRef: "R1" })],
+      });
+    }
+
+    // The control for the test above: two commits, two enqueues. So it is the
+    // confirmation doing the suppressing there, not some other guard.
+    expect(await scheduledBscEnqueueCount(t)).toBe(2);
   });
 });

@@ -55,6 +55,7 @@ import { runWithOccRetry } from "../lib/errors/occ-retry";
 import { conflictingNames, nameKey } from "../lib/cards/card-name";
 import { sportConfigDefaultsFor } from "./sportConfig";
 import { findSportForSelectorOption } from "./cardChecklist";
+import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
@@ -842,6 +843,18 @@ export const getCardChecklist = query({
       // NEO-90: set once the BSC per-card team-enrichment queue has
       // checked this card, regardless of outcome (see schema.ts).
       teamCheckDoneAt: v.optional(v.number()),
+      // NEO-102: the two halves of "does this card still need a human to
+      // settle its team?". Returned because the checklist derives that badge
+      // client-side through `features/cardAttention.ts` — the same pure
+      // function a server-side caller would use — and `teamCheckDoneAt` above
+      // is only half the answer.
+      teamNoneConfirmedAt: v.optional(v.number()),
+      // Audit only; the UI reads nothing from it. It is here because Convex
+      // validates `returns` STRICTLY — see the note on `variationOfCardId`
+      // below — so a field the table carries and this list omits throws
+      // `Object contains extra field` for every row that has it. This query is
+      // `requireAdmin`, and the value is an admin's own Clerk subject.
+      teamNoneConfirmedByUserId: v.optional(v.string()),
       attributes: v.optional(v.array(v.string())),
       isRookie: v.optional(v.boolean()),
       isRelic: v.optional(v.boolean()),
@@ -1945,6 +1958,81 @@ export const updateCard = mutation({
       if (value !== undefined) {
         filtered[key] = value;
       }
+    }
+    // NEO-102 security follow-up: `teamOnCardIds` arrives from two admin
+    // clients — the card detail panel's TeamPicker and the attention walker's
+    // MissingTeamFixer — and the 8-team cap the fixer enforces is UI only.
+    // An admin calling this mutation directly (or a future caller that
+    // forgets the client-side cap) must not be able to write an unbounded
+    // array, a pile of duplicate ids, or an id that doesn't resolve to a real
+    // team. Dedupe first (preserving the caller's order — the array is
+    // display order, not just a set) so a client that double-submits the same
+    // chip doesn't get counted twice against the cap.
+    if (Array.isArray(filtered.teamOnCardIds)) {
+      const requested = filtered.teamOnCardIds as Array<Id<"teams">>;
+      const deduped: Array<Id<"teams">> = [];
+      const seen = new Set<string>();
+      for (const teamId of requested) {
+        if (seen.has(teamId)) continue;
+        seen.add(teamId);
+        deduped.push(teamId);
+      }
+      if (deduped.length > MAX_CARD_TEAMS) {
+        throw new ConvexError(
+          `A card can carry at most ${MAX_CARD_TEAMS} teams.`,
+        );
+      }
+      if (deduped.length > 0) {
+        // Cheap: the card's own row plus one indexed ancestor walk, both
+        // already paid for elsewhere on this same mutation's write path
+        // (`findSportForSelectorOption` mirrors the lookup
+        // `applyBscTeamResolution` and the commit chunk already do).
+        const card = await ctx.db.get(id);
+        if (!card) throw new ConvexError("updateCard: no such card");
+        const sportId = await findSportForSelectorOption(
+          ctx,
+          card.selectorOptionId,
+        );
+        const teamRows = await Promise.all(
+          deduped.map((teamId) => ctx.db.get(teamId)),
+        );
+        for (let i = 0; i < deduped.length; i++) {
+          const team = teamRows[i];
+          if (!team) {
+            throw new ConvexError("One of the selected teams no longer exists.");
+          }
+          // Only enforced when the card's own sport is resolvable — an
+          // orphaned ancestor chain (see the ambiguous-row note on
+          // `findSportForSelectorOption`) must not turn an otherwise-valid
+          // team edit into a hard failure.
+          if (sportId && team.sportId !== sportId) {
+            throw new ConvexError(
+              `"${team.name}" is not a team in this card's sport.`,
+            );
+          }
+        }
+      }
+      filtered.teamOnCardIds = deduped;
+    }
+
+    // NEO-102: giving this card a real team RETIRES the operator's "no team"
+    // confirmation, in the same patch, so the two can never contradict each
+    // other on the row.
+    //
+    // DERIVED from the write, never accepted as an argument. Note that this
+    // mutation patches a filtered SPREAD of its own args — adding
+    // `teamNoneConfirmedAt` to the validator above would make a
+    // review-suppression timestamp directly settable by any admin client,
+    // which is exactly what the schema comment forbids. Patching `undefined`
+    // is how Convex deletes a field.
+    //
+    // Only a NON-EMPTY write clears it. `teamOnCardIds: []` is the operator
+    // unlinking every team, which leaves the card teamless and the
+    // confirmation still true.
+    const writtenTeamIds = filtered.teamOnCardIds;
+    if (Array.isArray(writtenTeamIds) && writtenTeamIds.length > 0) {
+      filtered.teamNoneConfirmedAt = undefined;
+      filtered.teamNoneConfirmedByUserId = undefined;
     }
     if (Object.keys(filtered).length > 0) {
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
@@ -6567,8 +6655,41 @@ export const commitCardChecklistChunk = internalMutation({
         }
         if (Object.keys(contentPatch).length > 0) contentAppliedCount++;
 
+        // ── NEO-102: the operator's "no team" confirmation ─────────────────
+        //
+        // Retired only when a NON-EMPTY `teamOnCardIds` is ACTUALLY written in
+        // this transaction — i.e. when it came through the `applyFields` +
+        // `baseVersion` gate above and survived the server-side re-diff. That
+        // is the same one gate, not a second one: no `applyFields` entry, a
+        // stale `baseVersion`, or a value that re-diffed as unchanged all mean
+        // nothing was written and the flag is left exactly as it stands.
+        //
+        // Which also settles the two cases that would otherwise be wrong:
+        // a LINKAGE-ONLY refresh (the common re-sync, and the whole reason
+        // this phase runs) never touches the flag, and a sync whose card
+        // carries no teams never touches it either — an empty upstream answer
+        // is not evidence against a human's answer, it is what produced the
+        // question. Nothing in the commit path ever SETS the flag; that is
+        // `cardChecklist.confirmCardNoTeam`'s job alone.
+        const teamIdsWritten = Array.isArray(contentPatch.teamOnCardIds)
+          ? (contentPatch.teamOnCardIds as Array<Id<"teams">>)
+          : undefined;
+        const retireNoneConfirmed =
+          existing.teamNoneConfirmedAt !== undefined &&
+          teamIdsWritten !== undefined &&
+          teamIdsWritten.length > 0;
+
         await ctx.db.patch(existing._id, {
           ...contentPatch,
+          // Patching `undefined` is how Convex deletes a field. Spread only
+          // when it applies, so an untouched row's patch is byte-identical to
+          // what it was before this feature existed.
+          ...(retireNoneConfirmed
+            ? {
+                teamNoneConfirmedAt: undefined,
+                teamNoneConfirmedByUserId: undefined,
+              }
+            : {}),
           // Linkage is ALWAYS refreshed — routing a marketplace's update to
           // the row linked to it is the whole reason this sync exists, and it
           // is not content NeonBinder owns.
@@ -6588,10 +6709,19 @@ export const commitCardChecklistChunk = internalMutation({
           contentPatch.teamOnCardIds !== undefined
             ? card.teamOnCardIds
             : existing.teamOnCardIds;
+        // NEO-102: and never re-derive a team for a card an operator settled
+        // as teamless. Read off what the row will HAVE after this patch, like
+        // `effectiveTeamIds` above — a commit that just retired the flag
+        // (because it wrote real teams) is not suppressed by it, and one that
+        // left it standing is.
+        const noneConfirmedAfter = retireNoneConfirmed
+          ? undefined
+          : existing.teamNoneConfirmedAt;
         if (
           mergedPlatformData.bsc &&
           (!effectiveTeamIds || effectiveTeamIds.length === 0) &&
-          !existing.teamCheckDoneAt
+          !existing.teamCheckDoneAt &&
+          !noneConfirmedAfter
         ) {
           bscTeamEnrichmentIds.push(existing._id);
         }

@@ -23,6 +23,8 @@ import ChecklistSourceFilter, {
   type SourceFilter,
 } from "./ChecklistSourceFilter";
 import CrossListingImportModal from "./CrossListingImportModal";
+import CardAttentionWalker from "./CardAttentionWalker";
+import { needsAttention } from "./card-attention";
 import { Input } from "../primitives/Input";
 
 
@@ -192,6 +194,18 @@ export default function CardChecklist({
   const [syncNotice, setSyncNotice] = useState<{
     text: string;
     tone: "status" | "error";
+    /**
+     * NEO-102: which notice this is, structurally — NOT inferred from the
+     * text. Only the post-commit success notice ("Saved N cards." and its
+     * NEO-203 note variants) carries `"committed"`, and only that notice
+     * grows the attention call-to-action below. An earlier cut keyed the CTA
+     * off `tone === "status"`, which is every routine notice there is: after
+     * the operator cancelled the entity-review wizard on a set holding a
+     * teamless custom card, "Fetch cancelled — no cards saved." grew a CTA
+     * offering to fix cards that were never saved. Leave this undefined for
+     * every other notice.
+     */
+    kind?: "committed";
   } | null>(null);
   const setSyncMessage = useCallback(
     (text: string | null, tone: "status" | "error" = "status") => {
@@ -199,6 +213,14 @@ export default function CardChecklist({
     },
     [],
   );
+  /**
+   * The one setter that marks a notice as the result of a successful commit.
+   * Kept separate from `setSyncMessage` so no future call site can opt into
+   * the CTA by accident — reaching it means a commit actually landed.
+   */
+  const setCommittedMessage = useCallback((text: string) => {
+    setSyncNotice({ text, tone: "status", kind: "committed" });
+  }, []);
   const [showAddForm, setShowAddForm] = useState(false);
   // NEO-36: the add-card form fields are UNCONTROLLED (refs, read at submit)
   // rather than controlled React state. CardChecklist re-renders on every
@@ -263,6 +285,29 @@ export default function CardChecklist({
   // NEO-21: let the operator collapse the checklist back to just this set's
   // own cards. Local to this component — nothing above needs it.
   const [hideCrossListed, setHideCrossListed] = useState(false);
+  /**
+   * NEO-102 — the "needs attention" pass.
+   *
+   * `attentionOnly` filters the grid down to the flagged rows (same Chip
+   * pattern as the cross-release toggle). `walkerOpenedByHand` is the ONLY
+   * thing that opens the walker: the operator pressed one of its two
+   * buttons (the header row's "Fix them one at a time", or the post-commit
+   * banner's inline call-to-action).
+   *
+   * Nothing opens the walker on its own. An earlier revision armed it on a
+   * commit and let a derived `walkerOpen` pop the modal the moment the
+   * background BSC team pass flagged its first row. That is an interruption
+   * the operator never asked for: it lands over whatever they moved on to
+   * (it needed an `activeElement` guard just to avoid stealing focus mid
+   * keystroke), and it broke every flow that commits and then touches the
+   * grid, because the modal's `fixed inset-0` overlay swallowed the next
+   * click. The count is instead advertised REACTIVELY — the banner CTA and
+   * the header chip both read `attentionCount` off the live subscription, so
+   * rows the BSC pass flags seconds after the commit still get announced,
+   * without taking the screen.
+   */
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [walkerOpenedByHand, setWalkerOpenedByHand] = useState(false);
   const [showCrossListingModal, setShowCrossListingModal] = useState(false);
 
   // Reset filter + close the detail panel when the variant changes — chips and
@@ -595,7 +640,7 @@ export default function CardChecklist({
           `${result.unmatchedExistingCount} no longer listed upstream (kept).`,
         );
       }
-      setSyncMessage(
+      setCommittedMessage(
         [
           discardError
             ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
@@ -603,6 +648,13 @@ export default function CardChecklist({
           ...notes,
         ].join(" "),
       );
+      // NEO-102: the commit itself never knows whether a card has a team — the
+      // BSC team pass runs after it, and a BSC-linked card is not even flagged
+      // until that pass has been and gone. So no COUNT is decided here — only
+      // that this notice is the one allowed to carry the call-to-action
+      // (`setCommittedMessage`). The banner grows it for as long as
+      // `attentionCount > 0`, which the live subscription keeps current —
+      // including for rows flagged well after this handler returned.
     } catch (error) {
       // NEO-189: the commit is phased server-side and labels its failures with
       // the phase that broke ("prelude", "chunk 2/3 (cards 151-300 of 375)",
@@ -720,6 +772,33 @@ export default function CardChecklist({
     });
   }, []);
 
+  /**
+   * NEO-102 — how many stored rows need a human, derived (see
+   * card-attention.ts). Recomputed from the live subscription, so fixing a
+   * card in the walker drops the count without anything having to invalidate
+   * it.
+   */
+  const attentionCount = useMemo(
+    () => (cards ?? []).filter((c) => needsAttention(c)).length,
+    [cards],
+  );
+
+  /**
+   * NEO-102 — the single entry point into the walker.
+   *
+   * Both buttons that offer it (the header row's "Fix them one at a time" and
+   * the post-commit banner's inline CTA) call this, so there is exactly one
+   * way the dialog can come up and it is always a deliberate press.
+   */
+  const openAttentionWalker = useCallback(() => {
+    setWalkerOpenedByHand(true);
+  }, []);
+
+  /** Both paths out of the walker: the operator is done, or deferred the rest. */
+  const closeAttentionWalker = useCallback(() => {
+    setWalkerOpenedByHand(false);
+  }, []);
+
   const sortedCards = useMemo(() => {
     if (!cards) return [];
     return [...cards]
@@ -737,10 +816,15 @@ export default function CardChecklist({
           return false;
         }
         if (hideCrossListed && c.isCrossListed) return false;
+        // NEO-102: same shape as the two filters above — one predicate, no
+        // separate list. A variation whose parent is filtered out still
+        // renders at top level, which is what keeps a flagged variation
+        // reachable while this filter is on.
+        if (attentionOnly && !needsAttention(c)) return false;
         return true;
       })
       .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
-  }, [cards, sourceFilter, hideCrossListed]);
+  }, [cards, sourceFilter, hideCrossListed, attentionOnly]);
 
   // NEO-189 — variations hang off their parent instead of sitting flat in the
   // scroll.
@@ -1115,6 +1199,52 @@ export default function CardChecklist({
             }
           >
             {syncNotice.text}
+            {/* NEO-102 — the post-commit call-to-action, in place of the
+                walker opening itself.
+
+                Rendered inline in this banner because this is where the
+                operator is already looking the instant a commit lands, and
+                ONLY on the notice `runCommit` marks `kind: "committed"` —
+                never on tone alone. Tone is far too broad: "Fetch cancelled —
+                no cards saved." is also a `status` notice, and a set holding
+                a teamless custom card turned that into an offer to fix cards
+                the operator had just declined to save. The tone still matters
+                for the live region itself: the count is REACTIVE (the
+                background BSC team pass keeps flagging rows for seconds
+                after the commit), and `aria-atomic` means every change
+                re-announces the whole region — polite in a role="status", but
+                assertively interrupting in the role="alert" a failure banner
+                becomes, which is a second reason the CTA never appears on
+                one.
+
+                a11y: a real <button> inside the existing live region, so it
+                is in the tab order and announced with the region it belongs
+                to. Its visible text IS its accessible name — no aria-label —
+                which keeps it distinct from the header row's button and
+                satisfies 2.5.3 trivially. The header row's own sr-only
+                role="status" line still carries the count when no banner is
+                showing, which is most of the time.
+
+                a11y (1.4.3 / 1.4.11): deliberately NOT the header button's
+                `hover:text-[#00D558] focus:outline-none` treatment. Neon
+                green measures 1.65:1 against this banner's `bg-blue-100`
+                light background, so recolouring the text on hover/focus
+                would drop it below 4.5:1, and suppressing the outline on top
+                of that would leave no focus indicator at all. Hover changes
+                only the underline STYLE (no colour change, so contrast is
+                unchanged), and the UA focus ring is left in place. */}
+            {syncNotice.kind === "committed" && attentionCount > 0 && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={openAttentionWalker}
+                  className="rounded-sm font-semibold underline decoration-dotted hover:decoration-solid"
+                >
+                  {`${attentionCount} need attention — Fix them one at a time`}
+                </button>
+              </>
+            )}
           </div>
         )}
 
@@ -1138,6 +1268,66 @@ export default function CardChecklist({
               active={hideCrossListed}
               onClick={() => setHideCrossListed((v) => !v)}
             />
+          </div>
+        )}
+
+        {/* NEO-102 — the set-level attention row. Only rendered when there is
+            something to say (or the filter is on and has emptied the grid, so
+            the operator always has the control that got them there).
+
+            Two controls, deliberately, because they answer two questions: the
+            Chip filters the grid to the flagged rows ("which ones?"), and the
+            link opens the walker ("fix them"). Overloading one control would
+            make it impossible to look at the list without being put into a
+            modal. */}
+        {(attentionCount > 0 || attentionOnly) && (
+          <div className="flex items-center gap-2 flex-wrap mb-3">
+            {/* a11y (1.4.3): text-gray-400 with no dark: variant measures
+                2.60:1 against this container's light-mode bg-white (needs
+                4.5:1). text-gray-500 dark:text-gray-400 is the pairing this
+                same file already uses for secondary text that must survive
+                both themes (see the `lastSynced` line above) — 4.84:1 light /
+                6.82:1 dark, both pass. The sibling "Cross-release" label a few
+                lines up has the identical (unfixed) defect; out of scope here
+                since it predates this commit — flagged in the audit report. */}
+            <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide w-24 shrink-0">
+              Attention
+            </span>
+            <Chip
+              label={`${attentionCount} need attention`}
+              ariaLabel={`Show only cards needing attention${attentionOnly ? " (on)" : ""}`}
+              title="Cards with a question nobody has answered yet — start with no team on the card"
+              active={attentionOnly}
+              onClick={() => setAttentionOnly((v) => !v)}
+            />
+            {attentionCount > 0 && (
+              <button
+                type="button"
+                onClick={openAttentionWalker}
+                aria-label={`Fix cards needing attention one at a time (${attentionCount})`}
+                // a11y (1.4.3): same gray-400-with-no-dark:-variant fix as the
+                // label above.
+                className="text-xs text-gray-500 dark:text-gray-400 underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+              >
+                Fix them one at a time
+              </button>
+            )}
+            {/*
+              The chip's own label changes silently — a screen reader is never
+              told that the count went from 5 to 4 when a card is fixed. This
+              is the live region that says it. Visually hidden because the chip
+              beside it already carries the number on screen; saying it twice
+              would be clutter, and saying it nowhere would be a regression.
+
+              role="status" with no explicit aria-live, per
+              accessibility-auditor/live-region-role-pattern.md: the role
+              already implies a polite live region, and this line never
+              switches to role="alert".
+            */}
+            <p className="sr-only" role="status">
+              {attentionCount} {attentionCount === 1 ? "card needs" : "cards need"}{" "}
+              attention on this checklist
+            </p>
           </div>
         )}
 
@@ -1209,6 +1399,27 @@ export default function CardChecklist({
           onNext={() => selectByIndex(selectedIndex + 1)}
           hasPrev={selectedIndex > 0}
           hasNext={selectedIndex >= 0 && selectedIndex < displayRows.length - 1}
+        />
+      )}
+
+      {/* NEO-102 — the attention pass. Opened only by hand (header row or the
+          post-commit banner's CTA), and kept mounted only while open; it
+          takes the FULL row list and derives its own queue, so rows arriving
+          from the background BSC pass join it without the walker losing the
+          card on screen. */}
+      {walkerOpenedByHand && cards && (
+        <CardAttentionWalker
+          isOpen
+          cards={cards}
+          sportId={ancestorSportId}
+          // a11y: the durable restore target, because the control that opened
+          // this may not survive the sitting — both entry points unmount at
+          // `attentionCount === 0`, which is exactly the state the walker is
+          // in when the operator closes it from the all-clear step. Restoring
+          // to the walker's own activeElement-at-mount capture would then be
+          // restoring to a detached node. This Sync button is always mounted.
+          restoreFocusRef={syncButtonRef}
+          onClose={closeAttentionWalker}
         />
       )}
 
