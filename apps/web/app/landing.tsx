@@ -1,7 +1,7 @@
 import { SignInButton, SignUpButton } from "@clerk/clerk-react";
 import { useNavigate } from "react-router";
 import { NeonHeader, PullingLogo } from "../components/primitives";
-import { BindersIcon } from "../components/icons";
+import { BindersIcon, NinePocketIcon } from "../components/icons";
 
 export default function LandingPage() {
   const navigate = useNavigate();
@@ -97,9 +97,15 @@ export default function LandingPage() {
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8 mb-16">
             <button
               onClick={handleBindersClick}
-              className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-green-500 dark:hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-green-500 dark:hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="mb-4">
+              {/* Two alignment guards on these cards: every icon box is pinned
+                  to the same 60px height (emoji glyphs and SVGs render at
+                  different natural heights), and each button is flex-col
+                  because Chrome vertically centers a <button>'s content —
+                  grid-stretched cards with shorter text would otherwise sag
+                  toward the middle. */}
+              <div className="mb-4 h-[60px] flex items-center">
                 <BindersIcon size={60} />
               </div>
               <h3 className="text-xl font-semibold mb-2">
@@ -111,9 +117,9 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handleAiIdentificationClick}
-              className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-purple-500 dark:hover:border-purple-500 hover:shadow-lg hover:shadow-purple-500/20 transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-purple-500 dark:hover:border-purple-500 hover:shadow-lg hover:shadow-purple-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4">🤖</div>
+              <div className="text-4xl mb-4 h-[60px] flex items-center">🤖</div>
               <h3 className="text-xl font-semibold mb-2">AI-Based Card Identification</h3>
               <p className="text-slate-600 dark:text-slate-400">
                 Our AI matches your photos against verified manufacturer databases automatically, taking the guesswork out of cataloging and ensuring accurate collection data.
@@ -121,9 +127,9 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handleManagingInventoryClick}
-              className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-blue-500 dark:hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/20 transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-blue-500 dark:hover:border-blue-500 hover:shadow-lg hover:shadow-blue-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4">🌐</div>
+              <div className="text-4xl mb-4 h-[60px] flex items-center">🌐</div>
               <h3 className="text-xl font-semibold mb-2">Manage Multiple Inventory Sites</h3>
               <p className="text-slate-600 dark:text-slate-400">
                 Track inventory across eBay, BuySportsCards, MySlabs, MyCardPost, and SportLots all in one place. Coming soon for sellers.
@@ -131,9 +137,9 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handleShippingLabelsClick}
-              className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-teal-400 dark:hover:border-teal-400 hover:shadow-lg hover:shadow-teal-400/20 transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-teal-400 dark:hover:border-teal-400 hover:shadow-lg hover:shadow-teal-400/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4">📦</div>
+              <div className="text-4xl mb-4 h-[60px] flex items-center">📦</div>
               <h3 className="text-xl font-semibold mb-2">Shipping Labels & PWE Postage</h3>
               <p className="text-slate-600 dark:text-slate-400">
                 Print a clean 4×6 label for free, or buy real USPS letter postage for a plain white envelope — about 80¢, tracking number included.
@@ -141,9 +147,9 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handlePrintShopClick}
-              className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-pink-500 dark:hover:border-pink-500 hover:shadow-lg hover:shadow-pink-500/20 transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-pink-500 dark:hover:border-pink-500 hover:shadow-lg hover:shadow-pink-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4">🏷️</div>
+              <div className="text-4xl mb-4 h-[60px] flex items-center">🏷️</div>
               <h3 className="text-xl font-semibold mb-2">Spine Labels in Team Colors</h3>
               <p className="text-slate-600 dark:text-slate-400">
                 Type a player&apos;s name, get their team colors automatically, and print binder-spine labels in bold athletic fonts. Your shelf never looked so rad.
@@ -151,9 +157,11 @@ export default function LandingPage() {
             </button>
             <button
               onClick={handlePrintShopClick}
-              className="p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-green-500 dark:hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 transition-all cursor-pointer text-left"
+              className="flex flex-col p-6 rounded-lg bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-green-500 dark:hover:border-green-500 hover:shadow-lg hover:shadow-green-500/20 transition-all cursor-pointer text-left"
             >
-              <div className="text-4xl mb-4">🃏</div>
+              <div className="mb-4 h-[60px] flex items-center">
+                <NinePocketIcon size={54} />
+              </div>
               <h3 className="text-xl font-semibold mb-2">9-Pocket Placeholder Sheets</h3>
               <p className="text-slate-600 dark:text-slate-400">
                 Sold it? Slabbed it? Off at grading? Print true-size placeholders from your own scans, so the binder still shows every card you pulled.
