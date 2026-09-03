@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 import {
   BookOpenIcon,
+  ClockIcon,
   QrCodeIcon,
   Squares2X2Icon,
   TagIcon,
@@ -33,6 +34,12 @@ const TOOL_DETAILS: Record<
       "Address a package and print a 4″ × 6″ label with your return address filled in.",
     icon: TagIcon,
     accent: "text-neon-teal group-hover:border-neon-teal/50",
+  },
+  "/print/labels": {
+    description:
+      "Reprint a label you already paid for — your 25 most recent purchases, with their tracking numbers.",
+    icon: ClockIcon,
+    accent: "text-neon-green group-hover:border-neon-green/50",
   },
   "/print/qr": {
     description:

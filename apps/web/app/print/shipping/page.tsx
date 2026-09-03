@@ -1,5 +1,3 @@
-"use client";
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useAction, useQuery } from "convex/react";
@@ -18,6 +16,7 @@ import {
 import { parseAddressText } from "@/lib/shipping/parse-address";
 import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
 import { printHtmlDocument } from "@/lib/print/print-html";
+import { formatUsd } from "@/lib/format/money";
 import { sellerMessage } from "@/lib/shipping/postage-error";
 import PurchasedTracking from "@/components/modules/PurchasedTracking";
 
@@ -53,10 +52,6 @@ const WEIGHT_OPTIONS = [
   { oz: 2, hint: "~5–10 cards, or a toploader" },
   { oz: 3, hint: "a thicker envelope" },
 ] as const;
-
-function formatUsd(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
 
 /** What quoteLetterRate returns; buying uses the quoted ids, never a re-rate. */
 type LetterQuote = FunctionReturnType<typeof api.postage.quoteLetterRate>;
@@ -98,6 +93,13 @@ export default function ShippingLabelsPage() {
   const [lastPurchase, setLastPurchase] = useState<{
     name: string;
     trackingCode: string;
+    /**
+     * NEO-213 — whether the purchase made it into Label History. False means
+     * the money moved and the record write did not land, so this label is NOT
+     * reprintable later: the page has to say so while the seller is still
+     * looking at it, rather than promise a history entry that isn't there.
+     */
+    historySaved: boolean;
   } | null>(null);
   /**
    * Staleness token for in-flight rate requests. Bumped whenever the address
@@ -307,9 +309,11 @@ export default function ShippingLabelsPage() {
    * artwork rather than our own render: that PNG carries the postage indicia
    * and the barcode, and it is what makes the envelope mailable.
    *
-   * If the purchase succeeds but printing fails, the label is still bought and
-   * still reprintable from history — so that case says so instead of implying
-   * the money came back.
+   * If the purchase succeeds but printing fails, the label is still bought —
+   * so that case says so instead of implying the money came back, and points
+   * at Label History when the purchase actually landed there. `historySaved`
+   * is what decides that: a history write that failed must not be advertised
+   * as a reprint the seller can come back for (NEO-213).
    */
   const handleBuyPostage = useCallback(async () => {
     const quote = quotes[weightOz];
@@ -325,7 +329,11 @@ export default function ShippingLabelsPage() {
       });
       // The purchase exists from here on, whatever printing does next — the
       // tracking note must show on the print-failure path too.
-      setLastPurchase({ name: to.name, trackingCode: bought.trackingCode });
+      setLastPurchase({
+        name: to.name,
+        trackingCode: bought.trackingCode,
+        historySaved: bought.historySaved,
+      });
 
       try {
         await printHtmlDocument({
@@ -348,8 +356,14 @@ export default function ShippingLabelsPage() {
         rateRequestRef.current += 1;
         setQuotes({});
         setBoughtAwaitingEdit(true);
+        // Two different situations, and only one of them has a second chance
+        // in it (NEO-213). Promising "reprint it from Label History" for a
+        // purchase whose history write failed sends the seller to an empty
+        // page days later, by which time the label URL is gone too.
         setPostageError(
-          "The label was bought but the print dialog didn't open. It's saved — reprint it from your label history.",
+          bought.historySaved
+            ? "The label was bought but the print dialog didn't open. It's saved to your Label History — reprint it from there."
+            : "The label was bought but the print dialog didn't open, and it couldn't be saved to your Label History. The postage is real — copy the tracking number below and print the label from your EasyPost account.",
         );
         return;
       }
@@ -736,12 +750,45 @@ export default function ShippingLabelsPage() {
           />
         )}
 
+        {/* NEO-213 — the label printed but never reached Label History, so this
+            is the last moment it can be recovered. Always mounted so the
+            announcement is reliable; empty in the normal case.
+
+            Suppressed while `boughtAwaitingEdit` is set, because that is the
+            print-FAILURE path and the alert below already carries the same news
+            with the right framing — two messages saying "not saved" would read
+            as two separate problems. */}
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-sm text-neon-yellow text-center"
+        >
+          {lastPurchase && !lastPurchase.historySaved && !boughtAwaitingEdit
+            ? "Heads up — the label's ready, but it couldn't be saved to your Label History. Print or save it now; it won't be reprintable from here."
+            : ""}
+        </p>
+
         {/* Always mounted so the announcement is reliable. Postage failures are
             seller-actionable ("address not found", "insufficient funds"), so the
             message from EasyPost is surfaced rather than flattened. */}
         <p role="alert" className="text-sm text-neon-pink text-center">
           {postageError}
         </p>
+
+        {/* The alert above is a string, and a link inside a live region is not
+            reachable as one anyway — a screen reader announces its text, not
+            its role. So the route out is a static link beside it, rendered only
+            when the message actually names Label History. */}
+        {boughtAwaitingEdit && lastPurchase?.historySaved && (
+          <p className="text-sm text-center">
+            <Link
+              to="/print/labels"
+              className="text-neon-teal hover:text-neon-teal/80 underline focus:outline-none focus:ring-2 focus:ring-green-500 rounded-sm"
+            >
+              Go to Label History
+            </Link>
+          </p>
+        )}
 
         {/* Always mounted: a live region inserted at the same moment its text
             appears is unreliably announced (notably VoiceOver). */}

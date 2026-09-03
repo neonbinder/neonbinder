@@ -51,6 +51,7 @@ import PipelineRuns from "@/app/pipeline-runs/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
 import PrintHub from "@/app/print/page";
+import PrintLabelHistory from "@/app/print/labels/page";
 import PrintPlaceholders from "@/app/print/placeholders/page";
 import PrintQrCode from "@/app/print/qr/page";
 import PrintShipping from "@/app/print/shipping/page";
@@ -156,6 +157,11 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
               <Route path="/print" element={<PrintLayout />}>
                 <Route index element={<PrintHub />} />
                 <Route path="shipping" element={<PrintShipping />} />
+                {/* NEO-213 — reprint a label already bought on /print/shipping.
+                    Note the legacy top-level /labels below is the SHIPPING
+                    redirect and predates this route; they are different pages
+                    and the redirect deliberately stays where it points. */}
+                <Route path="labels" element={<PrintLabelHistory />} />
                 <Route path="qr" element={<PrintQrCode />} />
                 <Route path="placeholders" element={<PrintPlaceholders />} />
                 <Route path="spine-label" element={<PrintSpineLabel />} />
