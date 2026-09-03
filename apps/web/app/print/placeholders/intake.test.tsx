@@ -207,7 +207,14 @@ describe("CardIntake", () => {
       jobId: "job-1234abcd",
       entryIndex: 0,
     });
-    expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull();
+    // Race: `jobId` reaches the DOM through react-router's setSearchParams,
+    // which commits through the router's own external store rather than in
+    // the same batch as the local `setNotice` update the counter text above
+    // just waited on — under load its render can land a tick later, so this
+    // heading needs its own wait rather than following the counter's for free.
+    expect(
+      await screen.findByRole("heading", { name: /Your cards/ }),
+    ).not.toBeNull();
   });
 
   it("says why a session could not be started", async () => {
@@ -416,8 +423,12 @@ describe("CardIntake", () => {
     await waitFor(() =>
       expect(mocks.fns[REFS.close]).toHaveBeenCalledWith({ jobId: "job-1234abcd" }),
     );
+    // Race: `closeStream` is recorded on the mock the instant it's invoked,
+    // before its resolved promise's continuation runs — so the waitFor above
+    // can settle before the `setNotice` call that follows `await closeStream`
+    // has actually committed this text.
     expect(
-      screen.getByText(
+      await screen.findByText(
         "Session closed. Processing and pairing finish on their own.",
       ),
     ).not.toBeNull();
