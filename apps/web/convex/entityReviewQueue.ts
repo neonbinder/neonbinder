@@ -37,6 +37,11 @@ const enrichmentValidator = v.object({
     toYear: v.optional(v.number()),
   }))),
   isHallOfFame: v.optional(v.boolean()),
+  // NEO-212: player-only disambiguation context from Wikidata. See the
+  // entityReviewQueue.enrichment comment in schema.ts.
+  description: v.optional(v.string()),
+  birthYear: v.optional(v.number()),
+  enwikiTitle: v.optional(v.string()),
   league: v.optional(v.string()),
   city: v.optional(v.string()),
   yearsActive: v.optional(v.object({
@@ -63,12 +68,18 @@ const decisionValidator = v.union(
   v.object({
     action: v.literal("create"),
     manualCareerTeams: v.optional(v.array(manualCareerTeamValidator)),
+    // NEO-212: Wikidata career-team labels the admin unchecked in the wizard.
+    // Commit must not create team rows for these. See schema.ts.
+    excludedCareerTeamNames: v.optional(v.array(v.string())),
   }),
   v.object({
     action: v.literal("link"),
     linkedPlayerId: v.optional(v.id("players")),
     linkedTeamId: v.optional(v.id("teams")),
   }),
+  // NEO-212: "not a person / not a team" — the card keeps the raw name, and
+  // nothing is created or linked. See schema.ts.
+  v.object({ action: v.literal("skip") }),
 );
 
 // Earliest plausible year for a career-team entry — 1869 (first openly
