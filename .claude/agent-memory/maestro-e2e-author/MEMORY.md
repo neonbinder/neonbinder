@@ -12,3 +12,4 @@
 - [Negative asserts pass on a dead page](patterns_negative_asserts_pass_on_a_dead_page.md) — an error-boundary page satisfies every notVisible; always follow one with a positive assert
 - [Card drawer's sticky header swallows taps](patterns_card_drawer_sticky_header_swallows_taps.md) — assertVisible passes under it; pin the drawer to max scroll then correct back down ~157px
 - [Title fixture arithmetic](patterns_title_fixture_arithmetic.md) — esbuild-bundle the generator and CALL it; a flow's PLAYER_NAME goes to Card name, never into the title
+- [Native <select> option taps](patterns_native_select_option_taps.md) — options appear only when the select is focused; the synthetic tap resolves by index against the FIRST select in the DOM, so drive a select only when it is the page's only one

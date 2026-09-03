@@ -1,0 +1,256 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Player Management — add a player by hand and record two stints at one team"
+tags:
+  - regression
+  - admin
+---
+# R1 — Single feature: /admin/players (NEO-212) lets an operator ADD a player
+# by hand and RECORD that player's career history, including two separate
+# stints at the SAME team, and both survive a reload in year order.
+#
+# That one sentence is deliberately the whole flow. The sibling admin screen is
+# split across two flows (team-management-filter for the master side,
+# team-management-edit-a-team for the detail side) because the teams table has
+# no row any flow may create; here the flow creates its OWN row, so the master
+# and detail halves are one continuous user story and splitting them would mean
+# creating two throwaway players instead of one.
+#
+# SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
+# redirecting to /admin/players. No in-body login, no credential step. Nothing
+# else in the suite touches /admin/players, and nothing else creates a player
+# by hand, so this duplicates no existing flow.
+#
+# THE FIXTURE IT LEANS ON: "New York Yankees" (Baseball), seeded by setup.yaml's
+# "Seed Test Teams" (convex/teams.ts#seedTestTeams). Used by its FULL name for
+# the same reason team-management-edit-a-team gives at length — `teams` is a
+# GLOBAL table and concurrent workers get-or-create farm clubs ("Gulf Coast
+# League Yankees"), so the bare "Yankees" is not a safe handle.
+#
+# R2 — this cannot go green without the feature working:
+#   * the create button is targeted by its own accessible name, "Create player
+#     <this run's name>", so it cannot be satisfied by some other button;
+#   * "Added <name>." is the mutation's own INSERTED confirmation — the screen
+#     says "That player already exists — opened it." instead when it merely
+#     found a row, so a create that silently deduped fails here;
+#   * "Sport: Baseball" in the panel proves the row was created under the sport
+#     that was picked, not under a blank or wrong one;
+#   * the two stints are asserted by RELATIVE POSITION (the later stint BELOW
+#     the earlier one), which is the acceptance criterion — a screen that
+#     rendered both but in insertion order fails;
+#   * every one of those assertions is repeated after a full page reload, which
+#     is what separates "the form still holds what I typed" from "the database
+#     holds it".
+# There are no `when:` branches and no conditional runFlow, so there is no path
+# through this file that reaches the end without exercising the feature.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
+# mid-flow reload (30s, matching team-management-edit-a-team's identical
+# openLink). No marketplace is touched, so nothing here earns a long timeout.
+#
+# R7 / R7a — NOT destructive, and it writes to NO shared row:
+#   * players are global rows, so this flow CREATES its own, named
+#     "PM-<worker>-<attempt>" — unique per worker AND per attempt, so eight
+#     concurrent runners and a retry can never land on the same row. Nothing
+#     pre-existing is edited.
+#   * the Yankees row is READ ONLY: the flow picks it out of the team
+#     typeahead by its exact name, which means TeamPicker offers no "+ Create"
+#     row at all (an exact match suppresses it), and `teams.findOrCreate` is
+#     never called.
+#   * no set, checklist, card or variant is touched anywhere, so this flow owns
+#     no entry in SET-REGISTRY.md — that registry governs sets, and this flow
+#     creates none.
+#   * "Re-enrich from Wikidata" is NEVER tapped: it is a live outbound call to
+#     a third party from CI, the same reason team-management-edit-a-team never
+#     taps "Discover".
+#
+# R8 — every scroll that precedes a tap centers its target: the 1024x629
+# headless viewport puts the career-history editor and the Save button below
+# the fold once the detail panel is open.
+
+- launchApp
+
+# Wait for the COUNTER, not the "Player Management" heading. The heading paints
+# while the player list is still loading. Unlike the teams screen, the filter
+# input DOES exist during loading here — so the heading is not just early, it is
+# actively misleading: typing then would go into a box whose list has not
+# arrived. The counter renders only once the query resolves, which is also when
+# the filter takes focus.
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# The runner injects ATTEMPT_ID ("w<worker>-a<attempt>-<random>"). This gives a
+# standalone local run a fallback, and only when unset — a runner-injected value
+# is preserved. Same idiom as parallel-grouping-cancel-discards.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+# ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
+# Not decoration, and not an assertion about filtering (team-management-filter
+# owns that behaviour on the sibling screen). This is a PRECONDITION for the
+# next step: every player row prints its sport beside the name, so with rows on
+# screen the word "Baseball" is on the page a hundred times over and the sport
+# picker below could not be identified by what it says. A name nothing can match
+# clears the list, and then "Baseball" belongs to the picker alone.
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+# The counter agreeing at zero is the other half — past two characters this
+# screen switches to server search and the counter recomposes as "{n} matches",
+# so a leading 0 here can only mean the search ran and found nothing.
+- assertVisible: "0 matches"
+
+# ── PICK THE SPORT ──────────────────────────────────────────────────────────
+# Chosen on the LIST's sport picker rather than inside the add form, and that is
+# a deliberate mechanical choice, not a preference. Maestro reaches a native
+# picker's choices by their position within their own picker, and it resolves
+# that position against the FIRST picker in the page — so while the add form is
+# open there are two pickers on screen and a choice made in the form's picker
+# lands in the list's instead. With the form closed the list's picker is the only
+# one on the page and the choice is unambiguous. The add form then opens with
+# this sport already chosen, which is exactly what the screen promises.
+- tapOn: "All sports"
+- tapOn: "Baseball"
+# The picker now READS "Baseball" — a direct read of what it holds. The list is
+# still empty (see above), so nothing else on the page can be answering here.
+- assertVisible: "Baseball"
+
+# ── ADD THE PLAYER ──────────────────────────────────────────────────────────
+- tapOn: "Add player"
+- assertVisible: "Add a player"
+
+- tapOn: "New player name"
+- inputText: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The green button names the player it is about to create, so this tap cannot
+# land on any other button, and it only appears at all when no player of that
+# name already exists — the screen demotes it to "Create anyway" behind an
+# "Open <name>" button when one does.
+- scrollUntilVisible:
+    element:
+      id: "Create player PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+- tapOn:
+    id: "Create player PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# "Added <name>." is said ONLY for a row that was inserted. A create that found
+# an existing row instead says "That player already exists — opened it.", so
+# this is the assertion that the hand-entry actually created something.
+- extendedWaitUntil:
+    visible: ".*Added PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 7000
+
+# The new player's own panel is now open — these two lines exist nowhere else on
+# the screen. The sport line proves the row was created under the sport that was
+# picked; the empty-state line proves we are starting from no career history, so
+# the two stints added below are unambiguously ours.
+- assertVisible: ".*Sport: Baseball.*"
+- assertVisible: "No stints recorded yet."
+
+# ── STINT 1 — THE LATER ONE, ADDED FIRST ────────────────────────────────────
+# Deliberately out of chronological order. Adding 2010–2012 before 2001–2005 is
+# what makes the ordering assertion below mean something: if the screen simply
+# listed stints as they were typed, the flow would fail.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "New York Yankees"
+- tapOn:
+    id: "Add New York Yankees"
+
+# Moving to the year boxes also dismisses the still-open team typeahead — it
+# closes on any press outside itself, and the year boxes sit beside the picker
+# rather than under the popover, so the press reaches them.
+- tapOn: ".*Stint from year.*"
+- inputText: "2010"
+- tapOn: ".*Stint to year.*"
+- inputText: "2012"
+- tapOn: "Add stint"
+- assertVisible: ".*New York Yankees · 2010–2012.*"
+
+# ── STINT 2 — THE EARLIER ONE, AT THE SAME TEAM ─────────────────────────────
+# Two stints at one franchise is the case the feature exists for (traded away,
+# re-signed later). The team picker was cleared by the add above, so it is
+# reopened and the same team picked again.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "New York Yankees"
+- tapOn:
+    id: "Add New York Yankees"
+- tapOn: ".*Stint from year.*"
+- inputText: "2001"
+- tapOn: ".*Stint to year.*"
+- inputText: "2005"
+- tapOn: "Add stint"
+
+# THE ORDERING ASSERTION. One assertion, both facts: both stints are on screen,
+# and the 2001 stint is ABOVE the 2010 stint even though it was entered second.
+- assertVisible:
+    text: ".*New York Yankees · 2010–2012.*"
+    below:
+      text: ".*New York Yankees · 2001–2005.*"
+
+# ── SAVE ────────────────────────────────────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+- tapOn: "Save"
+# The confirmation names the player, so this proves the save targeted THIS row.
+- extendedWaitUntil:
+    visible: ".*Saved PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 7000
+
+# ── IT PERSISTED, AND IT PERSISTED IN ORDER ─────────────────────────────────
+# A reload is what separates the form still holding what was typed from the
+# database holding it. 30s matches the identical openLink in
+# team-management-edit-a-team — a full SPA reload and re-auth, not a UI wait.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/players
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 30000
+
+- tapOn: "Filter players"
+- inputText: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible: ".*matches.*"
+    timeout: 7000
+
+# The list itself reports the career history it just read back. Nothing is
+# selected yet on a freshly reloaded page, so this can only be coming from a
+# row in the list, not from a detail panel.
+- assertVisible: ".*2 stints.*"
+
+# Open the row. Anchored below the counter because maestro reports an input's
+# current value as its text, so the filter box — which now holds this exact name
+# — answers to the same string; the counter renders between the box and the
+# list, so "below the counter" is a list row and only a list row.
+- tapOn:
+    text: "PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    below:
+      text: ".*matches.*"
+
+# Bring the saved career history into view. The scroll IS the check that the
+# earlier stint came back (R6 — no redundant assertVisible of it here)...
+- scrollUntilVisible:
+    element:
+      text: ".*New York Yankees · 2001–2005.*"
+    centerElement: true
+# ...and this asserts the OTHER stint, still below it. Same single assertion as
+# before the reload, which is the whole point: the order is a property of the
+# stored data, not of the draft that was on screen when Save was pressed.
+- assertVisible:
+    text: ".*New York Yankees · 2010–2012.*"
+    below:
+      text: ".*New York Yankees · 2001–2005.*"
