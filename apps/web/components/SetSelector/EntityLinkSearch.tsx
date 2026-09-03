@@ -6,14 +6,39 @@ import { Input } from "../primitives/Input";
 
 /**
  * NEO-92: single-select existing-player/team search for the review wizard's
- * "Link to Existing…" action. Modeled on PlayerPicker/TeamPicker's
- * list+client-filter typeahead (bulk fetch + substring/prefix-ranked filter,
- * capped to 8 results) but single-select and chip-free — the wizard only
+ * "Link to Existing…" action. Single-select and chip-free — the wizard only
  * ever needs to pick exactly one existing row to link this reviewed name to.
  *
  * Unlike PlayerPicker/TeamPicker, there is no "+ Create" escape hatch here —
  * the wizard's own "Add as New" action already covers that case.
+ *
+ * NEO-212: this used to be `players.list`/`teams.list` with `limit: 500` and a
+ * client-side substring filter, the same 500-row pattern
+ * `PlayerAutocomplete` (NEO-147) exists to stop re-implementing. Two things
+ * were wrong with it, and only the second is about speed:
+ *
+ *  1. **It could not find what it claimed to search.** 500 is a cap, not a
+ *     total. On a sport with more players than that, the row you needed was
+ *     simply absent from the list, the search said "no match", and the operator
+ *     created a duplicate of a player we already had — the exact failure this
+ *     whole ticket is about. The search index has no such horizon.
+ *  2. It shipped 500 documents to the browser to render at most 8 of them.
+ *
+ * The debounce is the same 200ms and for the same reason as
+ * `PlayerAutocomplete`: Convex opens one reactive subscription per distinct
+ * argument set, so an undebounced field opens one per keystroke.
+ *
+ * Ranking stays client-side over the returned page. The search index orders by
+ * relevance, but "starts with what I typed" is what a typeahead user expects to
+ * see first, and re-sorting 25 rows in the browser is free.
  */
+
+/** See `PlayerAutocomplete`'s SEARCH_DEBOUNCE_MS — same value, same reasoning. */
+const SEARCH_DEBOUNCE_MS = 200;
+
+/** How many ranked results the list shows. Unchanged from the pre-NEO-212 cap. */
+const MAX_RESULTS = 8;
+
 export default function EntityLinkSearch({
   kind,
   sportId,
@@ -26,19 +51,31 @@ export default function EntityLinkSearch({
   onSelect: (id: Id<"players"> | Id<"teams">, name: string) => void;
   onCancel: () => void;
 }) {
-  const players = useQuery(
-    api.players.list,
-    kind === "player" ? { sportId, limit: 500 } : "skip",
-  );
-  const teams = useQuery(
-    api.teams.list,
-    kind === "team" ? { sportId, limit: 500 } : "skip",
-  );
-  const candidates = kind === "player" ? players : teams;
-
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const trimmed = debouncedQuery.trim();
+
+  // Both hooks are always called (React's rules), with the irrelevant one
+  // "skip"ped — the same shape EntityReviewWizard uses for its near-match
+  // queries. A blank query also skips: `players.search`/`teams.search` return
+  // [] for one anyway, so there is no reason to open a subscription at all.
+  const players = useQuery(
+    api.players.search,
+    kind === "player" && trimmed ? { query: trimmed, sportId } : "skip",
+  );
+  const teams = useQuery(
+    api.teams.search,
+    kind === "team" && trimmed ? { query: trimmed, sportId } : "skip",
+  );
+  const candidates = kind === "player" ? players : teams;
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
@@ -51,20 +88,25 @@ export default function EntityLinkSearch({
 
   const matches = useMemo(() => {
     if (!candidates) return [];
-    const q = query.trim().toLowerCase();
-    return candidates
-      .filter((c) => !q || c.name.toLowerCase().includes(q))
+    const q = trimmed.toLowerCase();
+    return [...candidates]
       .sort((a, b) => {
-        if (!q) return a.name.localeCompare(b.name);
         const aPrefix = a.name.toLowerCase().startsWith(q) ? 0 : 1;
         const bPrefix = b.name.toLowerCase().startsWith(q) ? 0 : 1;
         if (aPrefix !== bPrefix) return aPrefix - bPrefix;
         return a.name.localeCompare(b.name);
       })
-      .slice(0, 8);
-  }, [candidates, query]);
+      .slice(0, MAX_RESULTS);
+  }, [candidates, trimmed]);
 
   const label = kind === "player" ? "player" : "team";
+
+  // Three distinct empty states, and conflating any two of them is how a
+  // typeahead lies: nothing typed yet, a search in flight, and a search that
+  // genuinely found nothing. Only the third is "No matches".
+  const idle = trimmed === "";
+  const searching = !idle && candidates === undefined;
+  const empty = !idle && !searching && matches.length === 0;
 
   return (
     <div
@@ -99,14 +141,11 @@ export default function EntityLinkSearch({
         className="w-full p-1.5 text-sm"
       />
 
-      {!candidates && (
-        <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>
+      {idle && (
+        <div className="text-xs text-gray-500 px-2 py-1">Type to search</div>
       )}
-      {candidates && matches.length === 0 && (
-        <div className="text-xs text-gray-500 px-2 py-1">
-          No matching {label}s found.
-        </div>
-      )}
+      {searching && <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>}
+      {empty && <div className="text-xs text-gray-500 px-2 py-1">No matches</div>}
       {matches.map((m, idx) => (
         <button
           key={m._id}
