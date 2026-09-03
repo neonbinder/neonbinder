@@ -140,7 +140,7 @@ describe("EntityColumn — suggestions affordance (NEO-211 plan C)", () => {
     fireEvent.click(screen.getByText("1 suggestion"));
 
     fireEvent.click(
-      screen.getByLabelText('Rename "TCG" to "Topps" (from BSC)'),
+      screen.getByLabelText('Accept — rename "TCG" to "Topps" (from BSC)'),
     );
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Apply decisions"));
@@ -173,7 +173,7 @@ describe("EntityColumn — suggestions affordance (NEO-211 plan C)", () => {
     });
     await renderColumn();
     fireEvent.click(screen.getByText("1 suggestion"));
-    fireEvent.click(screen.getByLabelText('Rename "TCG" to "Topps" (from BSC)'));
+    fireEvent.click(screen.getByLabelText('Accept — rename "TCG" to "Topps" (from BSC)'));
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Apply decisions"));
     });
@@ -247,6 +247,43 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     // Optimistically gone locally too, so the box disappears on click rather
     // than on round-trip.
     expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
+  });
+
+  it("parks focus on the column when Dismiss unmounts itself", async () => {
+    // a11y: Dismiss removes the box it lives in, so nothing sibling takes
+    // focus and the browser drops it to <body> — a keyboard user restarts from
+    // the top of the document. Same guarded park the two sync forms use.
+    state.status = doneWithUnlinked;
+    const { container } = await renderColumn();
+    const dismiss = screen.getByLabelText("Dismiss notice");
+    dismiss.focus();
+    expect(document.activeElement).toBe(dismiss);
+
+    await act(async () => {
+      fireEvent.click(dismiss);
+    });
+
+    const column = container.firstElementChild as HTMLElement;
+    expect(document.activeElement).toBe(column);
+    // Programmatic target only — it must not become a tab stop.
+    expect(column.getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("does NOT steal focus when the notice clears with focus elsewhere", async () => {
+    // A background sync can clear this notice at any moment with nobody having
+    // touched Dismiss. Yanking focus out of whatever the operator moved to
+    // would be worse than the stranding this fixes.
+    state.status = doneWithUnlinked;
+    const { rerender } = await renderColumn();
+    const syncBtn = screen.getByText("Sync Sets");
+    syncBtn.focus();
+
+    state.status = null;
+    await act(async () => {
+      rerender(<EntityColumn {...setProps} />);
+    });
+
+    expect(document.activeElement).toBe(syncBtn);
   });
 
   /**

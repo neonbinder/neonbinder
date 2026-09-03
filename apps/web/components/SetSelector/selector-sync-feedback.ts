@@ -53,13 +53,24 @@ export const SIDE_LABEL: Record<SyncSide, string> = {
  *
  * An outage message is the one place an admin may be about to go look at a
  * marketplace's status page or open a support ticket, so it spells the platform
- * out. Falls back to the raw key, which covers `fetchRawOptions`' third
- * `platform` value, `"internal"`, without a third hardcoded string.
+ * out.
  */
 export const PLATFORM_DISPLAY_NAME: Record<string, string> = {
   bsc: "BuySportsCards",
   sportlots: "SportLots",
 };
+
+/**
+ * What an UNRECOGNISED `platform` key is called.
+ *
+ * `fetchRawOptions` also emits `"internal"` (a thrown exception or a
+ * precondition failure), and its outer catch can attribute a failure to no
+ * marketplace at all. Echoing the raw key would leak an implementation detail
+ * into the DOM and, worse, make "is this string safe to render" a property of
+ * every CALLER rather than of this module. Mirrors the backend's own
+ * `partialSyncMessage`, which maps unknown keys the same way.
+ */
+export const UNKNOWN_PLATFORM_LABEL = "A marketplace";
 
 export type FetchPlatformError = { platform: string; message: string };
 
@@ -105,7 +116,7 @@ export function planSinglePlatformStore(
   const failedLabels: string[] = [];
   const seen = new Set<string>();
   for (const e of errors) {
-    const label = PLATFORM_DISPLAY_NAME[e.platform] ?? e.platform;
+    const label = PLATFORM_DISPLAY_NAME[e.platform] ?? UNKNOWN_PLATFORM_LABEL;
     if (!seen.has(label)) {
       seen.add(label);
       failedLabels.push(label);
@@ -170,8 +181,14 @@ export function blockedMessageFromErrors(
  * stops being the case.
  */
 export function coveredSidesFromErrors(
-  errors: readonly FetchPlatformError[],
-): SyncSide[] {
+  errors: readonly FetchPlatformError[] | undefined,
+): SyncSide[] | undefined {
+  // Undefined input is NOT "no errors" — it is "we no longer know what the
+  // fetch reported". Returning both sides there would fail OPEN: the store
+  // takes `coveredSides` as positive evidence that a marketplace was reached
+  // and had nothing, and would unlink on a side we cannot vouch for. Omitting
+  // the arg entirely means unlink nothing, which is the safe answer.
+  if (!errors) return undefined;
   const failed = new Set<SyncSide>();
   for (const e of errors) {
     const side = toSyncSide(e.platform);
@@ -340,4 +357,95 @@ export function unlinkNoticeText(
   return buildUnlinkedNotices(unlinked, level, options)
     .map((n) => n.text)
     .join(" · ");
+}
+
+// ---------------------------------------------------------------------------
+// What the marketplace actually returned
+// ---------------------------------------------------------------------------
+
+/**
+ * The shape `returnedIdsFromFetch` reads. Declared structurally rather than
+ * importing `ReconciliationModal`'s types, so this module stays free of
+ * component imports and a test can hand it a literal.
+ */
+export type FetchedOptionUniverse = {
+  bscOptions?: ReadonlyArray<{ platformValue: string }>;
+  slOptions?: ReadonlyArray<{ platformValue: string }>;
+  unmatchedBsc?: ReadonlyArray<{ platformValue: string }>;
+  unmatchedSl?: ReadonlyArray<{ platformValue: string }>;
+  autoMatched?: ReadonlyArray<{
+    bsc: { platformValue: string };
+    sl: { platformValue: string };
+  }>;
+};
+
+/**
+ * Every marketplace id the FETCH returned, per side.
+ *
+ * ## Why the store cannot infer this from the items it is sent
+ *
+ * The store's job on an id-keyed re-sync is to answer "which of NB's links did
+ * this marketplace stop listing" — and it was answering it from the
+ * `reconciledItems` the form sends. On the reconciliation path those items are
+ * not what the marketplace returned; they are **what the operator confirmed**,
+ * and the two differ in both directions:
+ *
+ *   - A restored row is always present in the modal's output whether or not the
+ *     marketplace still lists it, so a genuinely delisted set could never be
+ *     unlinked. The feature silently did nothing.
+ *   - A row the operator DISBANDED or detached vanishes from the output while
+ *     the marketplace is still listing it happily — so the store unlinked it and
+ *     told the admin "No longer listed on BSC", which is simply false.
+ *
+ * The fetch result is the only honest source for that question, so it is sent
+ * separately. Derive this from the fetch, NEVER from the modal's output.
+ *
+ * The union across `*Options`, `unmatched*` and `autoMatched` is defensive:
+ * `bscOptions` is already the full list today and the other two are partitions
+ * of it, but that is a property of `computeMatches` rather than a promise, and
+ * an id missing from this set is a false "no longer listed" notice.
+ */
+export function returnedIdsFromFetch(result: FetchedOptionUniverse): {
+  bsc: string[];
+  sportlots: string[];
+} {
+  const bsc = new Set<string>();
+  const sportlots = new Set<string>();
+  for (const o of result.bscOptions ?? []) bsc.add(o.platformValue);
+  for (const o of result.unmatchedBsc ?? []) bsc.add(o.platformValue);
+  for (const o of result.slOptions ?? []) sportlots.add(o.platformValue);
+  for (const o of result.unmatchedSl ?? []) sportlots.add(o.platformValue);
+  for (const m of result.autoMatched ?? []) {
+    bsc.add(m.bsc.platformValue);
+    sportlots.add(m.sl.platformValue);
+  }
+  // Both keys always present, an empty array included: `[]` is the meaningful
+  // statement "this side was asked and returned nothing", which is exactly what
+  // licenses an unlink. Omitting the key would mean "no information".
+  return { bsc: [...bsc], sportlots: [...sportlots] };
+}
+
+/**
+ * Attribute the server's scalar `unlinkedTotal` to a side, when it can be.
+ *
+ * The store truncates `unlinked` to `UNLINK_NOTICE_LIMIT` (50) because that list
+ * is shipped to every subscribed column, and reports the true count separately.
+ * Without this a 312-row unlink renders as "50 sets", which is not a smaller
+ * truth — it is a wrong one, and it under-reports exactly the case the operator
+ * most needs to see.
+ *
+ * The total is ONE number across both sides, so it can only be attributed when
+ * a single side is involved — the common case, one marketplace dropping a batch.
+ * With both sides present we fall back to counting the sample rather than
+ * inventing a split.
+ */
+export function totalsBySideFor(
+  unlinked: readonly UnlinkedEntry[],
+  unlinkedTotal: number | undefined,
+): Partial<Record<SyncSide, number>> | undefined {
+  if (typeof unlinkedTotal !== "number" || unlinked.length === 0) return undefined;
+  const sides = new Set(unlinked.map((u) => u.side));
+  if (sides.size !== 1) return undefined;
+  const [only] = [...sides];
+  return { [only]: unlinkedTotal } as Partial<Record<SyncSide, number>>;
 }

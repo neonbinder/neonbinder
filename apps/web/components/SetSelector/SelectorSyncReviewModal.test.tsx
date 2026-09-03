@@ -193,12 +193,14 @@ function renderModal(rows: SelectorSyncSuggestion[] = [BOTH_SIDES]) {
 function sideRow(label: string) {
   // Each side's Accept/Decline pair is disambiguated by its aria-label, exactly
   // as the E2E author will have to do when a column shows more than one row.
+  // Labels lead with the visible word ("Accept —" / "Decline —") so the
+  // accessible name still contains the button's own visible text (WCAG 2.5.3).
   return {
     accept: screen.getByLabelText(
-      `Rename "TCG" to "${label}" (from ${label === "Topps" ? "BSC" : "SportLots"})`,
+      `Accept — rename "TCG" to "${label}" (from ${label === "Topps" ? "BSC" : "SportLots"})`,
     ),
     decline: screen.getByLabelText(
-      `Keep "TCG"; stop suggesting ${
+      `Decline — keep "TCG"; stop suggesting ${
         label === "Topps" ? "BSC" : "SportLots"
       }'s "${label}"`,
     ),
@@ -237,6 +239,43 @@ describe("SelectorSyncReviewModal — the dialog", () => {
           side: "sportlots",
           action: "decline",
         },
+      ],
+    });
+  });
+
+  it("cycles accept -> decline -> off for one side, and Apply reflects only the final state", () => {
+    const { onConfirm } = renderModal();
+    const { accept, decline } = sideRow("Topps");
+
+    fireEvent.click(accept);
+    expect(accept.getAttribute("aria-pressed")).toBe("true");
+    expect(decline.getAttribute("aria-pressed")).toBe("false");
+
+    // Clicking Decline while Accept is pressed must SWITCH, not accumulate —
+    // a side is one choice, never both at once.
+    fireEvent.click(decline);
+    expect(accept.getAttribute("aria-pressed")).toBe("false");
+    expect(decline.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("0 to accept · 1 to decline")).toBeTruthy();
+
+    // Pressing the now-pressed Decline again returns to the resting,
+    // undecided third state.
+    fireEvent.click(decline);
+    expect(accept.getAttribute("aria-pressed")).toBe("false");
+    expect(decline.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByText("0 to accept · 0 to decline")).toBeTruthy();
+
+    // Nothing decided on this side; the OTHER side (SportLots) is still
+    // untouched from its seeded undecided state, so Apply stays disabled.
+    expect(
+      screen.getByLabelText("Apply decisions").hasAttribute("disabled"),
+    ).toBe(true);
+
+    fireEvent.click(accept);
+    fireEvent.click(screen.getByLabelText("Apply decisions"));
+    expect(onConfirm).toHaveBeenCalledWith({
+      decisions: [
+        { existingId: id(1), baseVersion: 1000, side: "bsc", action: "accept" },
       ],
     });
   });

@@ -17,6 +17,8 @@ import { describe, expect, it } from "vitest";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
+  returnedIdsFromFetch,
+  totalsBySideFor,
   coveredSidesFromErrors,
   joinLabels,
   levelLabelPlural,
@@ -51,7 +53,16 @@ describe("planSinglePlatformStore", () => {
     const plan = planSinglePlatformStore([
       { platform: "internal", message: "boom" },
     ]);
-    expect(plan.kind).toBe("blocked");
+    expect(plan).toEqual({ kind: "blocked", failedLabels: ["A marketplace"] });
+  });
+
+  it("never echoes an unrecognised platform key into the copy", () => {
+    // Making this a property of the FUNCTION rather than of its callers is the
+    // point: no caller can leak a key through here by passing a new one.
+    const plan = planSinglePlatformStore([
+      { platform: "some-internal-service", message: "x" },
+    ]);
+    expect(JSON.stringify(plan)).not.toContain("some-internal-service");
   });
 
   it("carries no adapter text out — only our own platform names", () => {
@@ -84,6 +95,119 @@ describe("planSinglePlatformStore", () => {
       "BuySportsCards and SportLots",
     );
   });
+
+  it("names BOTH sides directly, not only through blockedMessageFromErrors", () => {
+    const plan = planSinglePlatformStore([
+      { platform: "bsc", message: "503" },
+      { platform: "sportlots", message: "ECONNRESET" },
+    ]);
+    expect(plan).toEqual({
+      kind: "blocked",
+      failedLabels: ["BuySportsCards", "SportLots"],
+    });
+  });
+
+  it("de-duplicates the SAME platform appearing more than once in errors", () => {
+    // The wire shape allows repeats (e.g. a retry that failed twice); the
+    // alert must still say "BuySportsCards" once, not "BuySportsCards and
+    // BuySportsCards".
+    const plan = planSinglePlatformStore([
+      { platform: "bsc", message: "first failure" },
+      { platform: "bsc", message: "second failure" },
+    ]);
+    expect(plan).toEqual({ kind: "blocked", failedLabels: ["BuySportsCards"] });
+  });
+
+  it("calls a platform outside bsc/sportlots 'A marketplace', never by key", () => {
+    // This test previously pinned an echo of the raw key. The security re-check
+    // changed the rule: `fetchRawOptions` also emits "internal", and its outer
+    // catch can attribute a failure to no marketplace at all, so echoing the key
+    // puts an implementation detail in the DOM and makes "is this safe to
+    // render" a property of every caller. The backend's own partialSyncMessage
+    // maps unknown keys the same way.
+    const plan = planSinglePlatformStore([
+      { platform: "ebay", message: "not a real side yet" },
+    ]) as Extract<ReturnType<typeof planSinglePlatformStore>, { kind: "blocked" }>;
+    expect(plan.kind).toBe("blocked");
+    expect(plan.failedLabels).toEqual(["A marketplace"]);
+  });
+
+  it("collapses several unknown platforms into one 'A marketplace'", () => {
+    // They all render to the same label, so the alert must not read
+    // "A marketplace and A marketplace".
+    const plan = planSinglePlatformStore([
+      { platform: "internal", message: "x" },
+      { platform: "ebay", message: "y" },
+    ]) as Extract<ReturnType<typeof planSinglePlatformStore>, { kind: "blocked" }>;
+    expect(plan.failedLabels).toEqual(["A marketplace"]);
+  });
+});
+
+describe("totalsBySideFor", () => {
+  // The store truncates `unlinked` to a 50-row sample (UNLINK_NOTICE_LIMIT) and
+  // reports the real count separately. Rendering the sample size would not be a
+  // smaller truth — it would be a wrong one.
+  it("attributes the scalar total when only one side is involved", () => {
+    expect(
+      totalsBySideFor([{ id: "a", value: "A", side: "bsc" }], 312),
+    ).toEqual({ bsc: 312 });
+  });
+
+  it("declines to invent a split when both sides unlinked", () => {
+    expect(
+      totalsBySideFor(
+        [
+          { id: "a", value: "A", side: "bsc" },
+          { id: "b", value: "B", side: "sportlots" },
+        ],
+        312,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("is undefined with no total or no sample", () => {
+    expect(totalsBySideFor([{ id: "a", value: "A", side: "bsc" }], undefined)).toBeUndefined();
+    expect(totalsBySideFor([], 5)).toBeUndefined();
+  });
+});
+
+describe("returnedIdsFromFetch", () => {
+  // The store cannot answer "what did the marketplace stop listing" from the
+  // items the FORM sends — those are what the operator confirmed. See the
+  // helper's own note; these pin the union it derives instead.
+  it("unions the plain lists with both halves of every auto-matched pair", () => {
+    expect(
+      returnedIdsFromFetch({
+        bscOptions: [{ platformValue: "b1" }],
+        slOptions: [{ platformValue: "s1" }],
+        unmatchedBsc: [{ platformValue: "b2" }],
+        unmatchedSl: [{ platformValue: "s2" }],
+        autoMatched: [
+          { bsc: { platformValue: "b3" }, sl: { platformValue: "s3" } },
+        ],
+      }),
+    ).toEqual({ bsc: ["b1", "b2", "b3"], sportlots: ["s1", "s2", "s3"] });
+  });
+
+  it("de-dupes, since the partitions overlap the full lists today", () => {
+    expect(
+      returnedIdsFromFetch({
+        bscOptions: [{ platformValue: "b1" }, { platformValue: "b2" }],
+        unmatchedBsc: [{ platformValue: "b1" }],
+        autoMatched: [
+          { bsc: { platformValue: "b2" }, sl: { platformValue: "s1" } },
+        ],
+      }),
+    ).toEqual({ bsc: ["b1", "b2"], sportlots: ["s1"] });
+  });
+
+  it("reports an untouched side as [], not as a missing key", () => {
+    // `[]` says "asked, returned nothing" — which is what licenses an unlink.
+    // Omitting the key would say "no information" and unlink nothing.
+    const ids = returnedIdsFromFetch({ bscOptions: [{ platformValue: "b1" }] });
+    expect(ids.sportlots).toEqual([]);
+    expect(Object.keys(ids).sort()).toEqual(["bsc", "sportlots"]);
+  });
 });
 
 describe("blockedMessageFromErrors", () => {
@@ -104,6 +228,14 @@ describe("blockedMessageFromErrors", () => {
 });
 
 describe("coveredSidesFromErrors", () => {
+  it("returns undefined for an ABSENT result, so the arg is omitted", () => {
+    // Fails closed. `[]` means "no errors"; undefined means "we no longer know
+    // what the fetch reported", and claiming both sides were reached there
+    // would license an unlink on a side we cannot vouch for.
+    expect(coveredSidesFromErrors(undefined)).toBeUndefined();
+    expect(coveredSidesFromErrors([])).toEqual(["bsc", "sportlots"]);
+  });
+
   it("excludes a side that reported an error", () => {
     expect(
       coveredSidesFromErrors([{ platform: "bsc", message: "503" }]),
@@ -211,5 +343,78 @@ describe("buildUnlinkedNotices", () => {
   it("says nothing at all when nothing was unlinked", () => {
     expect(buildUnlinkedNotices([], "setName")).toEqual([]);
     expect(unlinkNoticeText([], "setName")).toBe("");
+  });
+
+  it("a single entry reads as a plain list, no 'and N more'", () => {
+    const text = unlinkNoticeText([unlinked({ id: "a", value: "Solo" })], "setName");
+    expect(text).toBe("No longer listed on BSC: 1 set — Solo");
+  });
+
+  it("exactly at the name limit: no trailing 'and N more'", () => {
+    // Two names fit under the column's default limit — this is the boundary
+    // between "spell them all out" and "start collapsing".
+    const text = unlinkNoticeText(
+      [unlinked({ id: "a", value: "A" }), unlinked({ id: "b", value: "B" })],
+      "setName",
+    );
+    expect(text).toBe("No longer listed on BSC: 2 sets — A, B");
+  });
+
+  it("one over the limit: the first hidden entry tips into 'and 1 more'", () => {
+    const text = unlinkNoticeText(
+      [
+        unlinked({ id: "a", value: "A" }),
+        unlinked({ id: "b", value: "B" }),
+        unlinked({ id: "c", value: "C" }),
+      ],
+      "setName",
+    );
+    expect(text).toBe("No longer listed on BSC: 3 sets — A, B, and 1 more");
+  });
+
+  it("seven entries, default column budget", () => {
+    const text = unlinkNoticeText(
+      Array.from({ length: 7 }, (_, i) =>
+        unlinked({ id: `r${i}`, value: `Set ${i}` }),
+      ),
+      "setName",
+    );
+    expect(text).toBe(
+      "No longer listed on BSC: 7 sets — Set 0, Set 1, and 5 more",
+    );
+  });
+
+  it("seven entries, toast budget — more names fit before collapsing", () => {
+    const text = unlinkNoticeText(
+      Array.from({ length: 7 }, (_, i) =>
+        unlinked({ id: `r${i}`, value: `Set ${i}` }),
+      ),
+      "setName",
+      { maxNames: UNLINKED_NAME_LIMIT_TOAST },
+    );
+    expect(text).toBe(
+      "No longer listed on BSC: 7 sets — Set 0, Set 1, Set 2, and 4 more",
+    );
+  });
+
+  it("seven entries split across BOTH sides in one call", () => {
+    const entries = [
+      ...Array.from({ length: 4 }, (_, i) =>
+        unlinked({ id: `b${i}`, value: `BSC Set ${i}`, side: "bsc" as const }),
+      ),
+      ...Array.from({ length: 3 }, (_, i) =>
+        unlinked({
+          id: `s${i}`,
+          value: `SL Set ${i}`,
+          side: "sportlots" as const,
+        }),
+      ),
+    ];
+    const notices = buildUnlinkedNotices(entries, "setName");
+    expect(notices).toHaveLength(2);
+    expect(notices[0].side).toBe("bsc");
+    expect(notices[0].count).toBe(4);
+    expect(notices[1].side).toBe("sportlots");
+    expect(notices[1].count).toBe(3);
   });
 });

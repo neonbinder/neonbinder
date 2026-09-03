@@ -11,7 +11,7 @@
  * First component tests for this file.
  */
 
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -94,6 +94,8 @@ describe("ParallelForm — single-platform store (NEO-211 plan B)", () => {
     const args = mockStore.mock.calls[0][0];
     expect(args.level).toBe("parallel");
     expect(args.coveredSides).toEqual(["bsc", "sportlots"]);
+    // NEO-211 F1: the empty side arrives as [] — "asked, returned nothing".
+    expect(args.returnedIds).toEqual({ bsc: ["gold"], sportlots: [] });
     expect(onDone).toHaveBeenCalled();
   });
 
@@ -110,6 +112,46 @@ describe("ParallelForm — single-platform store (NEO-211 plan B)", () => {
     expect(mockStore).not.toHaveBeenCalled();
     expect(screen.getByText("Retry")).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe("ParallelForm — reconciliation confirm (NEO-211 F1)", () => {
+  const BSC_A = { value: "Gold", platformValue: "bsc-gold" };
+  const SL_A = { value: "Gold", platformValue: "sl-gold" };
+  const BSC_B = { value: "Silver", platformValue: "bsc-silver" };
+  const SL_B = { value: "Silver", platformValue: "sl-silver" };
+
+  it("sends the fetch's id universe, not the operator's confirmed rows", async () => {
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [BSC_A, BSC_B],
+      slOptions: [SL_A, SL_B],
+      autoMatched: [
+        { displayName: "Gold", bsc: BSC_A, sl: SL_A, confidence: 0.9 },
+        { displayName: "Silver", bsc: BSC_B, sl: SL_B, confidence: 0.9 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+      message: "BSC: 2, SL: 2",
+    });
+    await renderForm();
+
+    fireEvent.click(await screen.findByLabelText("Remove set Gold"));
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save 1 sets/));
+    });
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(args.reconciledItems).toHaveLength(1);
+    // The disbanded row's ids are still in returnedIds, so the store cannot
+    // read its absence from reconciledItems as "delisted".
+    expect(args.returnedIds).toEqual({
+      bsc: ["bsc-gold", "bsc-silver"],
+      sportlots: ["sl-gold", "sl-silver"],
+    });
   });
 });
 
@@ -135,6 +177,26 @@ describe("ParallelForm — both adapters empty (NEO-211)", () => {
     expect(screen.getByText("Retry")).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
     expect(mockStore).not.toHaveBeenCalled();
+  });
+});
+
+describe("ParallelForm — failed fetch copy (NEO-211 F3)", () => {
+  it("renders neither the URL nor the raw message", async () => {
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly([{ platform: "bsc", message: "boom" }]),
+      success: false,
+      bscOptions: [],
+      message:
+        "Failed to fetch options: GET https://api.buysportscards.com/x?token=SECRET 500",
+    });
+    await renderForm();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).not.toContain("buysportscards.com");
+    expect(alert.textContent).not.toContain("SECRET");
+    expect(alert.textContent).toBe(
+      "Sync failed: could not load parallels. BuySportsCards failed, nothing was changed.",
+    );
   });
 });
 

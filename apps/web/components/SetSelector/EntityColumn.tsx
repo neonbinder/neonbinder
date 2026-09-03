@@ -128,6 +128,9 @@ export default function EntityColumn({
   // set of unlinked ids is what actually distinguishes one report from another.
   const [dismissedNoticeKey, setDismissedNoticeKey] = useState<string | null>(null);
   const [dismissingNotice, setDismissingNotice] = useState(false);
+  // a11y: tracks the notice going visible→hidden, so focus can be parked when
+  // the control that had it unmounts. See the effect below.
+  const hadNoticeRef = useRef(false);
   // Reuses SetAttributesPanel's fixed-position toast verbatim rather than
   // inventing a second mechanism — the column may well have scrolled out of
   // view by the time a background sync lands its unlink report.
@@ -397,6 +400,24 @@ export default function EntityColumn({
     return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on the status transition only; doneUnlinked is derived from the same row
   }, [syncStatus?.status, level]);
+
+  // a11y: clicking the notice's Dismiss unmounts the whole box — Dismiss
+  // included — and nothing else takes focus, so the browser drops it to <body>
+  // and a keyboard user restarts from the top of the document. Park it on the
+  // column container instead, which is where they were.
+  //
+  // Same guarded shape the two forms use: keyed on the notice's own
+  // visible→hidden transition, and only when focus ACTUALLY landed on <body>.
+  // Without that second check this would steal focus from wherever the operator
+  // legitimately moved next — a background sync can clear this notice at any
+  // moment, with nobody having touched Dismiss at all.
+  useEffect(() => {
+    const hadNotice = hadNoticeRef.current;
+    hadNoticeRef.current = noticeVisible;
+    if (hadNotice && !noticeVisible && document.activeElement === document.body) {
+      containerRef.current?.focus();
+    }
+  }, [noticeVisible]);
 
   // Auto-sync: when this column is visible, not frozen by interaction, in idle
   // mode, the items query has resolved to an empty list, and we haven't already
@@ -707,7 +728,10 @@ export default function EntityColumn({
   return (
     <div
       ref={containerRef}
-      className="min-w-[260px] max-w-[340px] flex-shrink-0 flex flex-col gap-4"
+      // a11y: -1 keeps it out of the tab order while still being a valid
+      // programmatic focus target for the park above.
+      tabIndex={-1}
+      className="min-w-[260px] max-w-[340px] flex-shrink-0 flex flex-col gap-4 focus:outline-none"
     >
       {selector}
       {useEnsureSync

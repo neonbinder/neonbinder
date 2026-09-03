@@ -116,6 +116,13 @@ describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
     // The point of coveredSides: SportLots was REACHED and had nothing, so the
     // store is allowed to act on rows linked to it. Absent, it unlinks nothing.
     expect(args.coveredSides).toEqual(["bsc", "sportlots"]);
+    // NEO-211 F1: what the FETCH returned, per side. The empty side comes
+    // through as [] — "asked, returned nothing" — which is the statement that
+    // licenses unlinking its rows.
+    expect(args.returnedIds).toEqual({
+      bsc: ["team-canada"],
+      sportlots: [],
+    });
     expect(args.reconciledItems).toHaveLength(1);
     // Nothing to report, so the panel closes as it always did.
     expect(onDone).toHaveBeenCalled();
@@ -179,6 +186,74 @@ describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
   });
 });
 
+describe("VariantForm — reconciliation confirm (NEO-211 F1)", () => {
+  // Both sides populated → the modal opens instead of the direct store.
+  const BSC_ITEM = { value: "Team Canada", platformValue: "bsc-tc" };
+  const SL_ITEM = { value: "Team Canada", platformValue: "884412" };
+  const BSC_TWO = { value: "Team USA", platformValue: "bsc-usa" };
+  const SL_TWO = { value: "Team USA", platformValue: "884413" };
+
+  function bothSides() {
+    return {
+      success: true,
+      bscOptions: [BSC_ITEM, BSC_TWO],
+      slOptions: [SL_ITEM, SL_TWO],
+      autoMatched: [
+        { displayName: "Team Canada", bsc: BSC_ITEM, sl: SL_ITEM, confidence: 0.9 },
+        { displayName: "Team USA", bsc: BSC_TWO, sl: SL_TWO, confidence: 0.9 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+      message: "BSC: 2, SL: 2",
+    };
+  }
+
+  it("sends the fetch's id universe even when the operator DISBANDED the row", async () => {
+    // THE F1 case. The store used to infer "what the marketplace returned" from
+    // `reconciledItems` — but those are what the OPERATOR confirmed. Disbanding
+    // a row removes it from that list while the marketplace is still listing it
+    // happily, so the store unlinked it and told the admin "No longer listed on
+    // BSC", which was simply false. returnedIds is the honest source.
+    mockFetchRawOptions.mockResolvedValue(bothSides());
+    await renderForm();
+
+    // Both auto-matches arrive as Ready sets. Disband one; the other still
+    // saves, so Save stays enabled (it is disabled at zero sets).
+    fireEvent.click(await screen.findByLabelText("Remove set Team Canada"));
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save 1 sets/));
+    });
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    // The disbanded row is NOT in what the operator confirmed...
+    expect(args.reconciledItems).toHaveLength(1);
+    expect(args.reconciledItems[0].value).toBe("Team USA");
+    // ...but its ids WERE returned by both marketplaces, so it must not be
+    // unlinked and the admin must not be told it was delisted.
+    expect(args.returnedIds).toEqual({
+      bsc: ["bsc-tc", "bsc-usa"],
+      sportlots: ["884412", "884413"],
+    });
+    expect(args.coveredSides).toEqual(["bsc", "sportlots"]);
+  });
+
+  it("omits coveredSides entirely rather than claiming both sides were fine", async () => {
+    // coveredSidesFromErrors fails closed on an absent fetch result; this pins
+    // that the confirm path spreads it rather than assigning undefined.
+    mockFetchRawOptions.mockResolvedValue(bothSides());
+    await renderForm();
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 2 sets/));
+    });
+    const args = mockStore.mock.calls[0][0];
+    expect(args.coveredSides).toEqual(["bsc", "sportlots"]);
+    expect(args.returnedIds.bsc).toEqual(["bsc-tc", "bsc-usa"]);
+  });
+});
+
 describe("VariantForm — both adapters empty (NEO-211)", () => {
   it("keeps the alert and Retry mounted instead of closing the panel", async () => {
     // This branch used to call onDone() — which returns EntityColumn to idle and
@@ -219,6 +294,27 @@ describe("VariantForm — both adapters empty (NEO-211)", () => {
     expect(onDone).toHaveBeenCalled();
   });
 
+  it("renders neither the URL nor the message of a failed fetch (F3)", async () => {
+    // `result.message` on the !success path is fetchRawOptions' OUTER-CATCH
+    // string, which embeds the thrown exception — an adapter response body, a
+    // marketplace URL, or a credential hint.
+    mockFetchRawOptions.mockResolvedValue({
+      ...bothEmpty([{ platform: "sportlots", message: "boom" }]),
+      success: false,
+      message:
+        "Failed to fetch options: GET https://api.sportlots.com/x?key=SECRET 500",
+    });
+    await renderForm();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).not.toContain("sportlots.com");
+    expect(alert.textContent).not.toContain("SECRET");
+    expect(alert.textContent).not.toContain("Failed to fetch options");
+    expect(alert.textContent).toBe(
+      "Sync failed: could not load variants. SportLots failed, nothing was changed.",
+    );
+  });
+
   it("does not leak either adapter's error text", async () => {
     mockFetchRawOptions.mockResolvedValue(
       bothEmpty([
@@ -251,6 +347,24 @@ describe("VariantForm — unlink notice (NEO-211 plan D)", () => {
     expect(notice.textContent).toContain("Team Canada");
     // A detach the operator has not seen is a silent data change.
     expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("reports the server's TRUE count, not the size of its 50-row sample", async () => {
+    // The store truncates `unlinked`; `unlinkedTotal` carries the real number.
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [
+        { id: "r1", value: "Team Canada", side: "sportlots" },
+        { id: "r2", value: "Series 2", side: "sportlots" },
+      ],
+      unlinkedTotal: 312,
+    });
+    await renderForm();
+
+    const notice = await screen.findByText(/No longer listed on SportLots/);
+    expect(notice.textContent).toContain("312 inserts");
+    expect(notice.textContent).toContain("and 310 more");
   });
 
   it("flags a row that still has cards under it", async () => {

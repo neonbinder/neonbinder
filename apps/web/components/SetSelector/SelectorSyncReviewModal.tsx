@@ -273,10 +273,15 @@ function SuggestionSideRow({
     onChoose(choice === value ? undefined : value);
 
   const pill = (active: boolean) =>
-    `text-xs px-2 py-0.5 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-[#00B7FF] disabled:opacity-50 ${
+    // py-1 (not py-0.5): text-xs's 1rem line-height plus 0.5rem/side vertical
+    // padding plus the 1px border clears WCAG 2.5.8's 24px minimum target size;
+    // py-0.5 landed at ~22px. border-gray-500 (not -600): -600 measures 2.35:1
+    // against this dialog's bg-gray-900 — fails 1.4.11's 3:1 non-text minimum;
+    // -500 measures 3.67:1.
+    `text-xs px-2 py-1 rounded border transition-colors focus:outline-none focus:ring-2 focus:ring-[#00B7FF] disabled:opacity-50 ${
       active
         ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558] font-semibold"
-        : "border-gray-600 text-gray-300 hover:border-gray-400"
+        : "border-gray-500 text-gray-300 hover:border-gray-400"
     }`;
 
   return (
@@ -297,7 +302,12 @@ function SuggestionSideRow({
           type="button"
           disabled={disabled}
           aria-pressed={choice === "accept"}
-          aria-label={`Rename "${row.currentValue}" to "${entry.label}" (from ${sideName})`}
+          // WCAG 2.5.3 Label in Name: the visible word ("Accept") has to be a
+          // substring of the accessible name, or a speech-input user saying
+          // "click Accept" has nothing to match. Leads with it, then appends
+          // the per-row context an aria-label already needs to disambiguate
+          // rows sharing the same two words.
+          aria-label={`Accept — rename "${row.currentValue}" to "${entry.label}" (from ${sideName})`}
           onClick={() => toggle("accept")}
           className={pill(choice === "accept")}
         >
@@ -307,7 +317,7 @@ function SuggestionSideRow({
           type="button"
           disabled={disabled}
           aria-pressed={choice === "decline"}
-          aria-label={`Keep "${row.currentValue}"; stop suggesting ${sideName}'s "${entry.label}"`}
+          aria-label={`Decline — keep "${row.currentValue}"; stop suggesting ${sideName}'s "${entry.label}"`}
           onClick={() => toggle("decline")}
           className={pill(choice === "decline")}
         >
@@ -370,6 +380,16 @@ export default function SelectorSyncReviewModal({
     };
   }, [isOpen, restoreFocusRef]);
 
+  // `saving` disables every button in the dialog at once (Apply, Close, both
+  // bulk actions, every per-side pill) — including whichever one the operator
+  // just clicked, which the browser force-blurs to <body> the instant it goes
+  // native-disabled. Park focus on the dialog itself so it isn't stranded for
+  // the duration of the Apply round-trip. Matches the codebase's established
+  // busy-flag focus-park pattern (confirm-dialog.tsx).
+  useEffect(() => {
+    if (saving) dialogRef.current?.focus();
+  }, [saving]);
+
   const summary = useMemo(
     () => summariseChoices(suggestions, choices),
     [suggestions, choices],
@@ -412,6 +432,10 @@ export default function SelectorSyncReviewModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="selector-sync-suggestions-heading"
+        // A valid landing spot for the busy-park effect above: -1 keeps it out
+        // of the normal Tab order while still being programmatically
+        // focusable, and aria-labelledby already gives it an accessible name.
+        tabIndex={-1}
         ref={dialogRef}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
@@ -447,7 +471,11 @@ export default function SelectorSyncReviewModal({
               Name Suggestions{columnLabel ? ` — ${columnLabel}` : ""}
             </h2>
             {breadcrumb && (
-              <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
+              // text-gray-400, not -500: this dialog is unconditionally
+              // bg-gray-900 (no dark: split), and gray-500 measures 3.67:1
+              // against it — fails WCAG 1.4.3's 4.5:1. gray-400 clears it
+              // (6.82:1).
+              <p className="text-xs text-gray-400 mt-0.5 truncate" title={breadcrumb}>
                 {breadcrumb}
               </p>
             )}
