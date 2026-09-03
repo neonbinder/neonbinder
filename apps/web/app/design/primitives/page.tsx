@@ -1,5 +1,3 @@
-"use client";
-
 import React, { useState } from "react";
 import {
   Button,
@@ -27,6 +25,7 @@ import {
   ScrollListItem,
   Poster,
   Autocomplete,
+  CopyButton,
 } from "../../../components/primitives";
 
 /**
@@ -438,6 +437,45 @@ export default function PrimitivesPage() {
                 </tr>
               </tbody>
             </table>
+          </section>
+
+          {/* CopyButton Section */}
+          <section>
+            <h2 className="text-2xl font-semibold text-slate-900 mb-8">
+              Copy Button
+            </h2>
+            <p className="text-sm text-slate-600 mb-6 max-w-2xl">
+              The one clipboard affordance (NEO-212, G10). Icon-only and
+              fixed-size so it can sit inline beside a name without the row
+              reflowing when it is pressed — the glyph swaps, the box does not.
+              Its accessible name is <InlineCode>Copy {"{label}"}</InlineCode>,
+              so a page full of them stays distinguishable to a screen reader.
+              Deny the clipboard in devtools to see the failure branch: it says
+              to select the text and copy by hand rather than doing nothing.
+            </p>
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-900">Ken Griffey Jr.</span>
+                <CopyButton value="Ken Griffey Jr." label="player name" />
+                <span className="text-xs text-slate-500">
+                  size=&quot;sm&quot; (default, 24x24 — the WCAG 2.2 SC 2.5.8
+                  floor)
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-900">
+                  1993 Topps Finest Refractor #199
+                </span>
+                <CopyButton
+                  value="1993 Topps Finest Refractor #199"
+                  label="card title"
+                  size="md"
+                />
+                <span className="text-xs text-slate-500">
+                  size=&quot;md&quot; (32x32)
+                </span>
+              </div>
+            </div>
           </section>
 
           {/* Utility Components Section */}

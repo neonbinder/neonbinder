@@ -28,3 +28,5 @@ export { Poster } from "./Poster";
 export { ErrorAlert } from "./ErrorAlert";
 export { Autocomplete } from "./Autocomplete";
 export type { AutocompleteProps } from "./Autocomplete";
+export { CopyButton } from "./CopyButton";
+export type { CopyButtonProps } from "./CopyButton";
