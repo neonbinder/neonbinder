@@ -36,6 +36,9 @@ tags:
 #   2. Teams (TeamPicker)
 #   3. Features editor (collapsed "Show features editor" button)
 #   4. Card title  ← visible near top; no scroll needed after header
+#      (NEO-101 added a "62/80" counter + "Regenerate" to its label row and an
+#      over-cap alert BELOW the input — the input itself did not move, and its
+#      aria-label is still "Card title".)
 #   5. Card description
 #   6. Attributes chips (Toggle RC / AU / RELIC / SP / SSP / NUM)  ← may need scroll
 #   7. grid[ Print run | Autographed dropdown ]  (Autographed is always-visible
@@ -133,13 +136,24 @@ tags:
 # reopen, which still proves listingTitle editing round-trips to the DB (R2)
 # without depending on a clean-slate exact match we can no longer produce (there
 # is no reliable full-clear of a mid-caret pre-filled input in maestro-web).
+#
+# NEO-101 — WHY THE MARKER IS SHORT ("T101-${ATTEMPT_ID}", ~10 chars):
+# listingTitle now has a HARD 80-character cap. Over it, `updateCard` throws and
+# the drawer's Save button goes aria-disabled — so a marker long enough to push
+# the concatenated value past 80 does not fail this flow's ASSERTION, it fails
+# the flow at the Save step, several actions later and for a reason that reads
+# like a product bug. The old marker ("2024 Topps Chrome NEO-25 Test Title …",
+# ~47 chars) inserted into the ~32-char auto title landed at 79–80: passing by
+# one character, and only until a pre-filled title got any longer. The marker's
+# only job is to be UNIQUE per attempt, and 10 characters does that with ~40
+# characters of headroom against the cap. Keep it short if you change it.
 # ============================================================
 
 - assertVisible:
     id: "Card title"
 - tapOn:
     id: "Card title"
-- inputText: "2024 Topps Chrome NEO-25 Test Title ${ATTEMPT_ID}"
+- inputText: "T101-${ATTEMPT_ID}"
 
 - assertVisible:
     id: "Card description"
@@ -281,7 +295,7 @@ tags:
 # edit did NOT persist — the marker would be absent on reopen.
 - assertVisible:
     id: "Card title"
-    text: ".*2024 Topps Chrome NEO-25 Test Title ${ATTEMPT_ID}.*"
+    text: ".*T101-${ATTEMPT_ID}.*"
 
 # The RC chip should be active (aria-pressed="true"). Attributes are at
 # position 6 — below Card title — so scroll down to bring the row into view.

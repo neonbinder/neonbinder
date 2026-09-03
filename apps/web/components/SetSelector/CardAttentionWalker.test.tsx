@@ -214,20 +214,37 @@ describe("attentionFixers registry", () => {
     expect(Fixer).toBe(attentionFixers.missingTeam);
   });
 
+  it("resolves all three of NEO-101's title kinds to the one title fixer", () => {
+    // One component for three kinds is the deliberate choice: they are the same
+    // field with different reasons, so a card flagged for two of them is asked
+    // once. See TitleFixer's own file for the reasoning.
+    for (const kind of [
+      "titleOverLimit",
+      "titleTruncated",
+      "aspectValueOverLimit",
+    ] as const) {
+      const { Fixer } = pickAttentionFixer([{ kind }] as unknown as AttentionItem[]);
+      expect(Fixer).toBe(attentionFixers.titleOverLimit);
+      expect(Fixer).toBeDefined();
+    }
+  });
+
   it("returns no fixer for an unregistered kind, without throwing", () => {
-    // NEO-101 appends kinds to the union; a bundle older than the row that
-    // carries one must degrade, not crash. Cast because the kind does not
-    // exist in THIS bundle's union — which is precisely the case under test.
-    const unknown = [{ kind: "titleOverLimit" }] as unknown as AttentionItem[];
+    // A bundle older than the row that carries a kind must degrade, not crash.
+    // The stand-in has to be a kind NOTHING registers — this test used
+    // `titleOverLimit` until NEO-101 registered it, at which point it passed
+    // for the wrong reason. Cast because the kind does not exist in THIS
+    // bundle's union, which is precisely the case under test.
+    const unknown = [{ kind: "somethingFromTheFuture" }] as unknown as AttentionItem[];
     const { item, Fixer } = pickAttentionFixer(unknown);
     expect(Fixer).toBeUndefined();
-    expect(item).toEqual({ kind: "titleOverLimit" });
+    expect(item).toEqual({ kind: "somethingFromTheFuture" });
     expect(unfixableReason(item)).toContain("no fixer for it");
   });
 
   it("skips past an unregistered kind to one it can fix", () => {
     const mixed = [
-      { kind: "titleOverLimit" },
+      { kind: "somethingFromTheFuture" },
       { kind: "missingTeam" },
     ] as unknown as AttentionItem[];
     const { item, Fixer } = pickAttentionFixer(mixed);

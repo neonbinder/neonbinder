@@ -2,11 +2,14 @@
  * NEO-102 — `CardAttentionWalker` against an attention kind this bundle has no
  * fixer for.
  *
- * This is a real state, not a hypothetical: NEO-101 appends
+ * This is a real state, not a hypothetical: NEO-101 appended
  * `titleOverLimit` / `titleTruncated` / `aspectValueOverLimit` to the same
  * `AttentionItem` union, and a Convex deploy is a hard cutover — a browser
- * holding an older SPA bundle will read rows flagged for kinds its registry
- * does not know. It must render no fixer body (nothing that could write the
+ * holding an older SPA bundle reads rows flagged for kinds its registry does
+ * not know. The stand-in kind below therefore has to be one NOTHING registers:
+ * this file originally used `titleOverLimit`, and NEO-101 registering it turned
+ * the test green for the wrong reason (a real fixer rendered) until the kind was
+ * swapped for a fabricated future one. It must render no fixer body (nothing that could write the
  * wrong thing) while keeping Skip and Close reachable, rather than throwing
  * inside a modal the operator then cannot leave.
  *
@@ -39,10 +42,13 @@ vi.mock("convex/react", () => ({
 }));
 
 // A kind from a future deploy: flagged by the server, unknown to this bundle.
+// Deliberately NOT a kind any current registry entry claims — see the note
+// above. If a future ticket ever registers a fixer for `somethingFromTheFuture`
+// (it should not), change this string, not the assertions.
 vi.mock("./card-attention", () => ({
-  deriveCardAttention: () => [{ kind: "titleOverLimit" }],
+  deriveCardAttention: () => [{ kind: "somethingFromTheFuture" }],
   needsAttention: () => true,
-  attentionItemLabel: () => "has a title over the marketplace limit",
+  attentionItemLabel: () => "needs something this app version cannot do",
   ATTENTION_LABELS: {},
 }));
 

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { generateListingTitle, generateListingDescription } from "./generateListing";
+import {
+  assessListingTitle,
+  generateListingTitle,
+  generateListingDescription,
+} from "./generateListing";
+import { LISTING_TITLE_MAX } from "./listingLimits";
 
 describe("generateListingTitle", () => {
   test("full base card gets core tokens + RC", () => {
@@ -133,8 +138,266 @@ describe("generateListingTitle", () => {
       setName: "Chrome",
     });
     expect(title.length).toBeLessThanOrEqual(80);
-    expect(title).toContain("…");
+    // NEO-101: the "…" this used to assert is gone — an ellipsis in a live
+    // eBay title reads to a buyer as a broken listing. The cut is at a whole
+    // word instead.
+    expect(title).not.toContain("…");
+    expect(title).toBe(
+      "2024 Topps Chrome An Absurdly Long Player Full Name That Alone Exceeds #99999",
+    );
     expect(title.endsWith("#99999")).toBe(true);
+  });
+});
+
+// ===========================================================================
+// NEO-101 — the cap, the new token priority, and the assessment
+// ===========================================================================
+
+describe("assessListingTitle (NEO-101)", () => {
+  const BASE = {
+    cardNumber: "50",
+    playerNames: ["Elly De La Cruz"],
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Chrome",
+  };
+
+  test("reports the title, that the core fit, and nothing dropped, for a card that fits easily", () => {
+    expect(assessListingTitle({ ...BASE, isRookie: true })).toEqual({
+      title: "2024 Topps Chrome Elly De La Cruz #50 RC",
+      coreFits: true,
+      dropped: [],
+    });
+  });
+
+  test("generateListingTitle is exactly assessListingTitle's title", () => {
+    const inputs = { ...BASE, isRookie: true, autographed: "On Card" };
+    expect(generateListingTitle(inputs)).toBe(assessListingTitle(inputs).title);
+  });
+
+  test("cardVariation goes into the title VERBATIM, not parsed", () => {
+    // The `;`-separated shape some rows carry is an artefact of how the string
+    // was authored, not a schema. Splitting on it would be re-introducing the
+    // marketplace vocabulary NEO-189 removed.
+    const { title } = assessListingTitle({
+      ...BASE,
+      cardVariation: "Image Variation; Wearing sunglasses",
+    });
+    expect(title).toBe(
+      "2024 Topps Chrome Elly De La Cruz #50 Image Variation; Wearing sunglasses",
+    );
+  });
+
+  test("optional tokens come out in the agreed priority order", () => {
+    // Jason, 2026-09-02: AUTO -> RELIC -> parallel -> /printRun ->
+    // cardVariation -> RC -> SP/SSP. This is NOT the old order (which led with
+    // parallel and trailed with /printRun), so this test is the record of the
+    // decision as much as it is a check.
+    const { title, dropped } = assessListingTitle({
+      cardNumber: "1",
+      playerNames: ["A Player"],
+      year: "2024",
+      autographed: "On Card",
+      isRelic: true,
+      parallelName: "Gold",
+      printRun: 25,
+      cardVariation: "Action",
+      isRookie: true,
+      shortPrint: "SSP",
+    });
+    expect(title).toBe("2024 A Player #1 AUTO RELIC Gold /25 Action RC SSP");
+    expect(dropped).toEqual([]);
+  });
+
+  test("a parallelName that IS the cardVariation is not printed twice", () => {
+    // Not a contrived case: `deriveCardObservedFeatures` copies a card's
+    // `cardVariation` into `features.parallelName` (NEO-189), so both insert
+    // call sites hand the generator the same string in two fields. Before the
+    // de-dup this titled as "... #300b Image Variation Image Variation".
+    const { title, dropped } = assessListingTitle({
+      cardNumber: "300b",
+      playerNames: ["Julio Rodriguez"],
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Chrome",
+      parallelName: "Image Variation",
+      cardVariation: "Image Variation",
+    });
+    expect(title).toBe("2024 Topps Chrome Julio Rodriguez #300b Image Variation");
+    // A duplicate is not "dropped" — it is right there in the title.
+    expect(dropped).toEqual([]);
+  });
+
+  test("de-duplication ignores case and surrounding whitespace", () => {
+    const { title } = assessListingTitle({
+      cardNumber: "1",
+      parallelName: "  Gold Refractor ",
+      cardVariation: "gold refractor",
+    });
+    expect(title).toBe("#1 Gold Refractor");
+  });
+
+  test('parallelName "Base" is not a token, in any casing', () => {
+    for (const parallelName of ["Base", "base", "  BASE  "]) {
+      expect(assessListingTitle({ ...BASE, parallelName }).title).toBe(
+        "2024 Topps Chrome Elly De La Cruz #50",
+      );
+    }
+  });
+
+  test("a token that does not fit is SKIPPED, and later, shorter tokens still land", () => {
+    // The old loop `break`ed on the first miss, so one long variation name
+    // silently swallowed the three-character RC sitting behind it even though
+    // RC fit perfectly well. Priority decides who wins a contested character,
+    // not who is allowed to be considered at all.
+    const longVariation = "A Preposterously Long Photo Variation Description";
+    const { title, coreFits, dropped } = assessListingTitle({
+      ...BASE,
+      cardVariation: longVariation,
+      isRookie: true,
+      shortPrint: "SP",
+    });
+    expect(coreFits).toBe(true);
+    expect(dropped).toEqual([longVariation]);
+    expect(title).toBe("2024 Topps Chrome Elly De La Cruz #50 RC SP");
+    expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+  });
+
+  test("the core is cut at a whole word, never mid-word, and never with an ellipsis", () => {
+    const { title, coreFits } = assessListingTitle({
+      cardNumber: "7",
+      playerNames: ["Wenceslaus Bartholomew Fitzwilliam-Harrington III"],
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Chrome Sapphire Edition Refractor Selections",
+    });
+    expect(coreFits).toBe(false);
+    expect(title).not.toContain("…");
+    expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+    expect(title.endsWith(" #7")).toBe(true);
+    // Every surviving word of the prefix is a WHOLE word from the source.
+    const source =
+      "2024 Topps Chrome Sapphire Edition Refractor Selections Wenceslaus Bartholomew Fitzwilliam-Harrington III";
+    const sourceWords = new Set(source.split(" "));
+    for (const word of title.slice(0, -" #7".length).split(" ")) {
+      expect(sourceWords.has(word)).toBe(true);
+    }
+  });
+
+  test("a single unbroken token longer than the budget falls back to a hard slice", () => {
+    // No whitespace to cut at. Returning nothing at all would be worse than a
+    // mid-"word" cut of a string that is not really a word.
+    const { title, coreFits } = assessListingTitle({
+      cardNumber: "1",
+      playerNames: ["X".repeat(120)],
+    });
+    expect(coreFits).toBe(false);
+    expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+    expect(title.endsWith(" #1")).toBe(true);
+  });
+
+  test("no optional tokens present means nothing dropped and nothing invented", () => {
+    expect(assessListingTitle({ cardNumber: "9" })).toEqual({
+      title: "#9",
+      coreFits: true,
+      dropped: [],
+    });
+  });
+});
+
+describe("generateListingTitle invariants — fuzz (NEO-101)", () => {
+  // A deterministic PRNG, so a failure is reproducible from the seed printed
+  // in the assertion message rather than being a Heisenbug in CI.
+  function mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  const WORDS = [
+    "Chrome",
+    "Sapphire",
+    "Update",
+    "Heritage",
+    "Refractor",
+    "Superfractor",
+    "Rodriguez",
+    "Fitzwilliam-Harrington",
+    "Elly",
+    "De",
+    "La",
+    "Cruz",
+    "Extraordinarily",
+    "Photographic",
+    "Variation",
+  ];
+
+  test("for any inputs: <= 80 chars, and the card number is present and never cut", () => {
+    const rand = mulberry32(20260902);
+    const pick = <T,>(list: T[]): T => list[Math.floor(rand() * list.length)];
+    const words = (n: number) =>
+      Array.from({ length: n }, () => pick(WORDS)).join(" ");
+
+    for (let i = 0; i < 2000; i++) {
+      // Card numbers stay within real-world shape (BSC/SportLots numbers are a
+      // handful of characters; sku.ts already caps its own copy at 10). The
+      // guarantee is "the number is never the thing that gets cut", which is
+      // only expressible while `#<number>` itself fits inside the cap.
+      const cardNumber = `${Math.floor(rand() * 100000)}${
+        rand() < 0.25 ? pick(["a", "b", "c", "SP"]) : ""
+      }`;
+      const inputs = {
+        cardNumber,
+        // Long multi-player lists — a League Leaders / rookie-combo card.
+        playerNames:
+          rand() < 0.15
+            ? undefined
+            : Array.from({ length: 1 + Math.floor(rand() * 4) }, () =>
+                words(1 + Math.floor(rand() * 4)),
+              ),
+        year: rand() < 0.1 ? undefined : String(1950 + Math.floor(rand() * 80)),
+        manufacturer: rand() < 0.1 ? undefined : words(1 + Math.floor(rand() * 5)),
+        // Long set / insert names.
+        setName: rand() < 0.1 ? undefined : words(1 + Math.floor(rand() * 8)),
+        parallelName: rand() < 0.4 ? "Base" : words(1 + Math.floor(rand() * 5)),
+        isRookie: rand() < 0.5,
+        isRelic: rand() < 0.3,
+        autographed: rand() < 0.3 ? "On Card" : "None",
+        shortPrint: pick(["None", "SP", "SSP"]),
+        // Huge print runs, including ones that are themselves long strings.
+        printRun:
+          rand() < 0.5 ? undefined : Math.floor(rand() * 10 ** (1 + Math.floor(rand() * 12))),
+        // Long variation strings.
+        cardVariation: rand() < 0.5 ? undefined : words(1 + Math.floor(rand() * 10)),
+      };
+
+      const { title, coreFits, dropped } = assessListingTitle(inputs);
+      const context = JSON.stringify(inputs);
+
+      expect(title.length, context).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+      expect(title, context).not.toContain("…");
+      // The card number is present, and it is the end of the title or is
+      // followed only by optional tokens.
+      const marker = `#${cardNumber}`;
+      expect(title.endsWith(marker) || title.includes(`${marker} `), context).toBe(
+        true,
+      );
+      // A dropped token really would not have fitted. Tokens are only ever
+      // appended after a drop, so the final title is at least as long as the
+      // one the token was measured against — if it does not fit now, it did
+      // not fit then either.
+      for (const token of dropped) {
+        expect(
+          title.length + 1 + token.length,
+          `${context} :: dropped ${token}`,
+        ).toBeGreaterThan(LISTING_TITLE_MAX);
+      }
+      expect(typeof coreFits, context).toBe("boolean");
+    }
   });
 });
 
@@ -224,6 +487,43 @@ describe("generateListingDescription", () => {
     });
     expect(desc).toBe("2026 Topps Heritage card of Colson Montgomery, #390.");
     expect(desc).not.toContain("Topps Topps");
+  });
+
+  test("NEO-101: cardVariation gets its own line, verbatim and uncapped", () => {
+    const desc = generateListingDescription({
+      cardNumber: "300b",
+      playerNames: ["Julio Rodriguez"],
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Chrome",
+      cardVariation: "Image Variation; Wearing sunglasses",
+      shortPrint: "SP",
+    });
+    expect(desc.split("\n")).toEqual([
+      "2024 Topps Chrome card of Julio Rodriguez, #300b.",
+      "Variation: Image Variation; Wearing sunglasses.",
+      "Short Print (SP).",
+    ]);
+  });
+
+  test("NEO-101: a variation that already ends in a full stop does not get a second one", () => {
+    const desc = generateListingDescription({
+      cardNumber: "1",
+      cardVariation: "Bat on shoulder.",
+    });
+    expect(desc).toContain("Variation: Bat on shoulder.");
+    expect(desc).not.toContain("shoulder..");
+  });
+
+  test("NEO-101: a variation far too long for the title still states itself in full here", () => {
+    // The description has no cap (eBay takes ~500k of HTML), so unlike the
+    // title nothing is dropped — this is where the dropped token goes.
+    const variation = "A ".repeat(60) + "Variation";
+    const desc = generateListingDescription({ cardNumber: "1", cardVariation: variation });
+    expect(desc).toContain(variation);
+    expect(generateListingTitle({ cardNumber: "1", cardVariation: variation })).toBe(
+      "#1",
+    );
   });
 
   test("autographed None does not add an autograph sentence", () => {

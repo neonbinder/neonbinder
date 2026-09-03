@@ -187,3 +187,147 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.autographType).toBeUndefined();
   });
 });
+
+/**
+ * NEO-101 — the hard title cap at the write path.
+ *
+ * `updateCard` is the single mutation every operator title edit goes through
+ * (card detail panel, attention walker's title fixer), so it is the whole
+ * enforcement surface: there is no eBay publish path yet, and the panel's own
+ * counter is UI only. eBay REJECTS an over-length title rather than truncating
+ * it, so an unbounded write here is a listing that fails months later.
+ */
+describe("updateCard listingTitle length cap (NEO-101)", () => {
+  test("81 characters is rejected, and the error names the cap and the length", async () => {
+    const { asAdmin, cardId } = await seed();
+    const tooLong = "x".repeat(81);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: tooLong,
+      }),
+    ).rejects.toThrow(/81 characters/);
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: tooLong,
+      }),
+    ).rejects.toThrow(/limit is 80/);
+  });
+
+  test("the rejection message never carries the title text itself", async () => {
+    // This string travels through Convex's error path into Sentry and the
+    // browser console. Row content has no business there — the operator can
+    // already see their own title in the field they typed it into.
+    const { asAdmin, cardId } = await seed();
+    const secret = "SUPERSECRETCARDTITLETOKEN";
+    const tooLong = `${secret}${"x".repeat(81 - secret.length)}`;
+    expect(tooLong).toHaveLength(81);
+
+    let message = "";
+    try {
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: tooLong,
+      });
+      throw new Error("expected updateCard to reject an 81-character title");
+    } catch (error) {
+      message = String(error);
+    }
+    expect(message).not.toContain(secret);
+    expect(message).not.toContain(tooLong);
+    expect(message).toContain("81");
+  });
+
+  test("exactly 80 characters is accepted", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    const atCap = "y".repeat(80);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: atCap,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.listingTitle).toBe(atCap);
+  });
+
+  test("the title is trimmed, and trimming is what the cap measures", async () => {
+    // Trailing whitespace an operator cannot see must be neither stored nor
+    // counted against them: an 80-character title with a stray trailing space
+    // is an 80-character title.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    const atCap = "z".repeat(80);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: `   ${atCap}   `,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.listingTitle).toBe(atCap);
+  });
+
+  test("writing a title CLEARS listingTitleTruncated", async () => {
+    // The flag answers "did the GENERATOR's core fit?". Once a human has
+    // authored the title, nobody is asking that any more — and leaving it set
+    // would badge the card forever.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.run(async (ctx) => {
+      await ctx.db.patch(cardId, { listingTitleTruncated: true });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "2024 Topps Chrome Shohei Ohtani #17",
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(
+      cards.find((c) => c._id === cardId)!.listingTitleTruncated,
+    ).toBeUndefined();
+  });
+
+  test("a patch that does NOT touch the title leaves listingTitleTruncated alone", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.run(async (ctx) => {
+      await ctx.db.patch(cardId, { listingTitleTruncated: true });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      printRun: 25,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.listingTitleTruncated).toBe(true);
+  });
+
+  test("cardVariation over the 65-char aspect limit is ACCEPTED — warn only", async () => {
+    // Deliberate: no NB field is yet proven to map verbatim onto an eBay
+    // aspect, and hard-blocking an operator edit on that guess is the
+    // over-structuring NEO-189 rolled back. `features/cardAttention.ts` raises
+    // `aspectValueOverLimit` instead.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    const longVariation = "v".repeat(120);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      cardVariation: longVariation,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.cardVariation).toBe(longVariation);
+  });
+});

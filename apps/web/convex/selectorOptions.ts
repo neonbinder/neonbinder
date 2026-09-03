@@ -31,9 +31,11 @@ import {
   validateFeatureValue,
 } from "./features/deriveCardFeatures";
 import {
-  generateListingTitle,
+  assessListingTitle,
   generateListingDescription,
+  type ListingCardInputs,
 } from "./features/generateListing";
+import { LISTING_TITLE_MAX } from "./features/listingLimits";
 import { generateSku } from "./sku";
 import {
   cardNumberStem,
@@ -871,6 +873,12 @@ export const getCardChecklist = query({
       // NEO-25: marketplace-agnostic listing strings (see schema.ts).
       listingTitle: v.optional(v.string()),
       listingDescription: v.optional(v.string()),
+      // NEO-101: the generated title's core was cut to fit at creation time
+      // (see schema.ts). Returned because the checklist derives the
+      // `titleTruncated` attention item client-side through
+      // `features/cardAttention.ts`, and unlike `titleOverLimit` this one
+      // cannot be measured off the title string.
+      listingTitleTruncated: v.optional(v.boolean()),
       imageUrls: v.optional(v.object({
         front: v.optional(v.string()),
         back: v.optional(v.string()),
@@ -1855,7 +1863,7 @@ export const addCustomCard = mutation({
     // via commitCardChecklist) — the operator typed a real name, so it's
     // the right thing to show regardless of reconciliation state.
     const setNameValue = await findSetNameValue(ctx, parentNode);
-    const listingInputs = {
+    const listingInputs: ListingCardInputs = {
       cardNumber: args.cardNumber,
       playerNames: pendingPlayerNames,
       year: mergedFeatures.season,
@@ -1866,7 +1874,17 @@ export const addCustomCard = mutation({
       isRelic: (args.attributes ?? []).includes("RELIC"),
       autographed: mergedFeatures.autographed,
       shortPrint: mergedFeatures.shortPrint,
+      // NEO-101: the add-custom-card form has no print-run field either (see
+      // `cardVariation` below); both arrive later through `updateCard`.
+      printRun: undefined,
+      // NEO-101: named explicitly even though it is always absent here — the
+      // add-custom-card form has no variation field, so a custom card acquires
+      // its `cardVariation` later via `updateCard` (which never regenerates the
+      // title; write-once). Spelled out so this stays visibly the same input
+      // shape as the commit insert branch below.
+      cardVariation: undefined,
     };
+    const listingTitle = assessListingTitle(listingInputs);
 
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
     // below assigns the correct natural-cardNumber position. This way a
@@ -1889,8 +1907,12 @@ export const addCustomCard = mutation({
         ? { pendingTeamNames }
         : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-      listingTitle: generateListingTitle(listingInputs),
+      listingTitle: listingTitle.title,
       listingDescription: generateListingDescription(listingInputs),
+      // NEO-101: recorded only when the core actually had to be cut — the
+      // field is absent, not `false`, on the overwhelming majority of rows
+      // that fit fine (mean real title length is 34 characters).
+      ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
@@ -1959,6 +1981,41 @@ export const updateCard = mutation({
         filtered[key] = value;
       }
     }
+    // NEO-101: the hard title cap, enforced HERE because this is the single
+    // mutation every operator title edit goes through — the card detail panel
+    // and the attention walker's title fixer both land on it, and the panel's
+    // own counter is UI only. eBay REJECTS an over-length title rather than
+    // truncating it (see features/listingLimits.ts), so an unbounded write
+    // here is a listing that fails months later, at re-list time, across a
+    // whole hand-built set at once.
+    //
+    // Trim first, so trailing whitespace an operator could not see is neither
+    // stored nor counted against them.
+    //
+    // The error message carries the CAP and the LENGTH and never the title
+    // itself: this string travels through Convex's error path into Sentry and
+    // the browser console, and row content has no business there.
+    if (typeof filtered.listingTitle === "string") {
+      const trimmedTitle = filtered.listingTitle.trim();
+      if (trimmedTitle.length > LISTING_TITLE_MAX) {
+        throw new ConvexError(
+          `Listing title is ${trimmedTitle.length} characters; the limit is ${LISTING_TITLE_MAX}.`,
+        );
+      }
+      filtered.listingTitle = trimmedTitle;
+      // A human has now authored this title, so whether the GENERATOR's core
+      // fit is no longer a question anyone is asking. Cleared in the same
+      // patch, the same way a real team write retires `teamNoneConfirmedAt`
+      // below — `undefined` in a patch is how Convex deletes a field.
+      filtered.listingTitleTruncated = undefined;
+    }
+
+    // NEO-101 deliberately does NOT cap `cardVariation` here, even though
+    // eBay's aspect-value limit is 65. No NB field is yet proven to map
+    // verbatim onto an eBay item specific, and hard-blocking an operator edit
+    // on that guess is the over-structuring NEO-189 rolled back. It surfaces
+    // as a warn-only `aspectValueOverLimit` attention item instead.
+
     // NEO-102 security follow-up: `teamOnCardIds` arrives from two admin
     // clients — the card detail panel's TeamPicker and the attention walker's
     // MissingTeamFixer — and the 8-team cap the fixer enforces is UI only.
@@ -2038,6 +2095,104 @@ export const updateCard = mutation({
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
     }
     return null;
+  },
+});
+
+/**
+ * NEO-101 — what the generator WOULD title this stored card today, plus the
+ * inputs it would use.
+ *
+ * Read-only, and it stores nothing. Two consumers, both in the card detail
+ * panel / attention walker: a **Regenerate** button that resets the title draft
+ * to this, and the labelled source chips (year, set, players, #, flags,
+ * variation) that show an operator WHICH facts the machine had — so when a
+ * title has to be shortened by hand, they can see what is safe to drop rather
+ * than guessing.
+ *
+ * ## Why a query and not a client-side call
+ *
+ * `assessListingTitle` is pure and the SPA could call it directly — but the
+ * inputs are not on the row. Player NAMES live behind `playerIds`, and the set
+ * name is an ancestor walk. Resolving those client-side would mean a second
+ * round of queries per card and a second place that can disagree with what the
+ * insert branch actually did.
+ *
+ * ## Kept in step with the insert branch by hand
+ *
+ * The field mapping below MIRRORS `commitCardChecklistChunk`'s insert branch
+ * (search `listingInputs` in this file) — same six feature keys, same
+ * `findSetNameValue` ancestor walk, same verbatim `cardVariation`. It is NOT
+ * shared code: the commit reads a merged features snapshot it computed a few
+ * lines earlier for a card that does not exist yet, this reads a stored row's
+ * own `features`. Folding those into one helper would mean a parameter object
+ * with the same shape as `ListingCardInputs` itself, which is the thing being
+ * built. **If you change one, change the other.**
+ *
+ * The one real difference is `playerNames`: a committed card has resolved
+ * `playerIds`, a custom card added by hand may still only have
+ * `pendingPlayerNames` (the names an operator typed, not yet reconciled to
+ * `players` rows). Both are the operator's answer, so both are used — resolved
+ * ids first, pending names as the fallback, exactly as `addCustomCard` does.
+ */
+export const previewListingTitle = query({
+  args: { cardId: v.id("cardChecklist") },
+  returns: v.object({
+    title: v.string(),
+    coreFits: v.boolean(),
+    dropped: v.array(v.string()),
+    inputs: v.object({
+      cardNumber: v.string(),
+      playerNames: v.array(v.string()),
+      year: v.optional(v.string()),
+      manufacturer: v.optional(v.string()),
+      setName: v.optional(v.string()),
+      parallelName: v.optional(v.string()),
+      isRookie: v.optional(v.boolean()),
+      isRelic: v.optional(v.boolean()),
+      autographed: v.optional(v.string()),
+      shortPrint: v.optional(v.string()),
+      printRun: v.optional(v.number()),
+      cardVariation: v.optional(v.string()),
+    }),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const card = await ctx.db.get(args.cardId);
+    if (!card) throw new ConvexError("previewListingTitle: no such card");
+
+    const resolvedPlayerNames: string[] = [];
+    for (const playerId of card.playerIds ?? []) {
+      const player = await ctx.db.get(playerId);
+      // A dangling id is a data problem, not a reason to fail a preview —
+      // skip it and let the chips show what actually resolved.
+      if (player) resolvedPlayerNames.push(player.name);
+    }
+    const playerNames =
+      resolvedPlayerNames.length > 0
+        ? resolvedPlayerNames
+        : (card.pendingPlayerNames ?? []);
+
+    const features: Record<string, string> = card.features ?? {};
+    const parentNode = await ctx.db.get(card.selectorOptionId);
+    const setNameValue = await findSetNameValue(ctx, parentNode);
+
+    const inputs: ListingCardInputs = {
+      cardNumber: card.cardNumber,
+      playerNames,
+      year: features.season,
+      manufacturer: features.manufacturer,
+      setName: setNameValue,
+      parallelName: features.parallelName,
+      isRookie: card.isRookie,
+      isRelic: card.isRelic,
+      autographed: features.autographed,
+      shortPrint: features.shortPrint,
+      printRun: card.printRun,
+      cardVariation: card.cardVariation,
+    };
+
+    const { title, coreFits, dropped } = assessListingTitle(inputs);
+    return { title, coreFits, dropped, inputs: { ...inputs, playerNames } };
   },
 });
 
@@ -6757,7 +6912,7 @@ export const commitCardChecklistChunk = internalMutation({
         // NEO-24/71-74: write-once listing title/description, generated
         // once here at creation time, then freely editable afterward (same
         // model as every other default this session).
-        const listingInputs = {
+        const listingInputs: ListingCardInputs = {
           cardNumber: card.cardNumber,
           playerNames,
           year: mergedFeatures.season,
@@ -6767,8 +6922,19 @@ export const commitCardChecklistChunk = internalMutation({
           isRookie: card.isRookie,
           isRelic: card.isRelic,
           autographed: mergedFeatures.autographed,
+          // NEO-101: `printRun` was in the generator's token list from the
+          // start but was never actually passed from here, so no synced card
+          // has ever had `/99` in its title while `previewListingTitle`'s
+          // Regenerate would put one there. Passed now, so creation and
+          // regeneration agree.
+          printRun: card.printRun,
           shortPrint: mergedFeatures.shortPrint,
+          // NEO-101/189: NB's own per-card variation name, used verbatim in
+          // both the title (as an optional token) and the description. Same
+          // value written to the row's `cardVariation` column below.
+          cardVariation: card.cardVariation,
         };
+        const listingTitle = assessListingTitle(listingInputs);
 
         const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
           selectorOptionId: args.selectorOptionId,
@@ -6787,8 +6953,10 @@ export const commitCardChecklistChunk = internalMutation({
           // NEO-24: inherit ancestor + derive per-card on insert. Existing
           // rows are owned by the propagation engine; never clobbered here.
           ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-          listingTitle: generateListingTitle(listingInputs),
+          listingTitle: listingTitle.title,
           listingDescription: generateListingDescription(listingInputs),
+          // NEO-101: only when the core was actually cut (see schema.ts).
+          ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
           sortOrder: card.sortOrder,
           lastUpdated: Date.now(),
         });

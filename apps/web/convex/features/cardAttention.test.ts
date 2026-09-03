@@ -144,6 +144,137 @@ describe("deriveCardAttention — missingTeam", () => {
   });
 });
 
+// ===========================================================================
+// NEO-101 — the listing-length kinds
+// ===========================================================================
+//
+// A row that HAS a team is used throughout, so `missingTeam` stays out of the
+// way and each assertion is about exactly one rule.
+
+const HAS_TEAM = { teamOnCardIds: ["team_1"] } as const;
+
+describe("deriveCardAttention — titleOverLimit", () => {
+  test("a title at exactly the cap is fine; one character more is not", () => {
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(80) }),
+    ).toEqual([]);
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(81) }),
+    ).toEqual([{ kind: "titleOverLimit", length: 81 }]);
+  });
+
+  test("carries the measured length so the label need not re-measure", () => {
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, listingTitle: "x".repeat(94) }),
+    ).toEqual([{ kind: "titleOverLimit", length: 94 }]);
+  });
+
+  test("an absent or empty title is not over the limit", () => {
+    expect(deriveCardAttention({ ...HAS_TEAM })).toEqual([]);
+    expect(deriveCardAttention({ ...HAS_TEAM, listingTitle: "" })).toEqual([]);
+  });
+});
+
+describe("deriveCardAttention — titleTruncated", () => {
+  test("fires on the stored flag alone", () => {
+    expect(
+      deriveCardAttention({
+        ...HAS_TEAM,
+        listingTitle: "2024 Topps Chrome An Absurdly Long Player Full Name #1",
+        listingTitleTruncated: true,
+      }),
+    ).toEqual([{ kind: "titleTruncated" }]);
+  });
+
+  test("clears once the flag is gone — which is what an operator title write does", () => {
+    // `updateCard` patches `listingTitleTruncated: undefined` on any title
+    // write, so this is the after state of a human rewriting the title. The
+    // item clears by construction; nothing has to remember to retract it.
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, listingTitle: "A hand-written title" }),
+    ).toEqual([]);
+  });
+
+  test("`false` is the same as absent", () => {
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, listingTitleTruncated: false }),
+    ).toEqual([]);
+  });
+
+  test("an over-limit title suppresses it — the two are mutually exclusive", () => {
+    // Both true is reachable (an operator pasted an over-long title onto a row
+    // whose generated title had been cut, before updateCard gained its cap).
+    // "is 94 characters" and "was cut short" read as a contradiction, and
+    // rewriting the title fixes both, so only the blocking one is reported.
+    expect(
+      deriveCardAttention({
+        ...HAS_TEAM,
+        listingTitle: "x".repeat(94),
+        listingTitleTruncated: true,
+      }),
+    ).toEqual([{ kind: "titleOverLimit", length: 94 }]);
+  });
+});
+
+describe("deriveCardAttention — aspectValueOverLimit", () => {
+  test("a cardVariation at exactly 65 is fine; 66 is flagged", () => {
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(65) }),
+    ).toEqual([]);
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(66) }),
+    ).toEqual([
+      { kind: "aspectValueOverLimit", field: "cardVariation", length: 66 },
+    ]);
+  });
+
+  test("names the field, so a future second aspect field does not need a second kind", () => {
+    const [item] = deriveCardAttention({
+      ...HAS_TEAM,
+      cardVariation: "v".repeat(100),
+    });
+    expect(item).toEqual({
+      kind: "aspectValueOverLimit",
+      field: "cardVariation",
+      length: 100,
+    });
+  });
+
+  test("warn-only: an over-length variation is a real stored value, not a rejected one", () => {
+    // `updateCard` deliberately does NOT cap cardVariation — see the note
+    // there. This item existing at all is the whole enforcement.
+    expect(
+      deriveCardAttention({ ...HAS_TEAM, cardVariation: "v".repeat(200) }),
+    ).toHaveLength(1);
+  });
+});
+
+describe("deriveCardAttention — kinds compose", () => {
+  test("one row can owe a human several different things at once", () => {
+    expect(
+      deriveCardAttention({
+        platformData: {},
+        listingTitle: "x".repeat(120),
+        cardVariation: "v".repeat(90),
+      }),
+    ).toEqual([
+      { kind: "missingTeam" },
+      { kind: "titleOverLimit", length: 120 },
+      { kind: "aspectValueOverLimit", field: "cardVariation", length: 90 },
+    ]);
+  });
+
+  test("a fully-settled row owes nothing", () => {
+    expect(
+      deriveCardAttention({
+        ...HAS_TEAM,
+        listingTitle: "2024 Topps Chrome Elly De La Cruz #50 RC",
+        cardVariation: "Image Variation; Wearing sunglasses",
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe("needsAttention", () => {
   test("agrees with deriveCardAttention", () => {
     const rows: Array<Parameters<typeof deriveCardAttention>[0]> = [
@@ -154,6 +285,11 @@ describe("needsAttention", () => {
       { teamNoneConfirmedAt: 1 },
       { pendingTeamNames: ["Savannah Bananas"] },
       { pendingTeamNames: [] },
+      // NEO-101 kinds, on rows that are otherwise settled.
+      { ...HAS_TEAM, listingTitle: "x".repeat(81) },
+      { ...HAS_TEAM, listingTitleTruncated: true },
+      { ...HAS_TEAM, cardVariation: "v".repeat(66) },
+      { ...HAS_TEAM, listingTitle: "x".repeat(80), cardVariation: "v".repeat(65) },
     ];
     for (const row of rows) {
       expect(needsAttention(row)).toBe(deriveCardAttention(row).length > 0);
