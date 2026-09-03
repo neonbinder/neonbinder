@@ -5,6 +5,15 @@ import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { primarySlot, slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
+import UnlinkedNotice from "./UnlinkedNotice";
+import {
+  blockedMessageFromErrors,
+  buildUnlinkedNotices,
+  coveredSidesFromErrors,
+  partialFailureMessage,
+  planSinglePlatformStore,
+  type UnlinkedEntry,
+} from "./selector-sync-feedback";
 
 type RawOptionsResult = {
   success: boolean;
@@ -41,6 +50,10 @@ export default function VariantForm({
   const [message, setMessage] = useState<string | null>(null);
   const [showReconciliation, setShowReconciliation] = useState(false);
   const [reconciliationData, setReconciliationData] = useState<RawOptionsResult | null>(null);
+  // NEO-211 (plan D): rows whose marketplace link the store just detached
+  // because that side was reached and no longer lists them. The rows themselves
+  // survive — this is the only place the admin is told it happened.
+  const [unlinked, setUnlinked] = useState<UnlinkedEntry[]>([]);
   const triggered = useRef(false);
 
   const sportValue = ancestorChain?.find((a: { level: string }) => a.level === "sport")?.value;
@@ -123,22 +136,31 @@ export default function VariantForm({
         return;
       }
 
-      // Defensive: if both adapters returned no options AND at least one
-      // reported an error, surface a visible error AND return EntityColumn
-      // to idle so the panel-header actions ("Group Parallels", etc.) are
-      // reachable. The auto-synced-key set prevents this from immediately
-      // re-firing; the user (or test) can re-trigger sync explicitly via
-      // the sync button.
+      // Both adapters came back empty AND at least one reported an error, so
+      // nothing is known about either side. Surface it and write nothing.
+      //
+      // Deliberately NO onDone() here (NEO-211). onDone returns EntityColumn to
+      // idle, which unmounts this form — taking the alert AND its Retry button
+      // with it, so the operator was told nothing and had no way to re-run. The
+      // original reason for calling it was to make the panel-header actions
+      // ("Group Parallels") reachable again; they still are, one Cancel click
+      // away in this panel's own footer, which is a far better trade than an
+      // invisible failure. Partial-failure visibility is acceptance #2 of the
+      // ticket, and it cannot be delivered by a message that never renders.
+      //
+      // The copy is built entirely from OUR strings — the adapter's own
+      // `message` is deliberately not interpolated, per the same rule as the
+      // partial-failure branch below: marketplace response text is untrusted
+      // third-party output and never becomes user-facing error copy here.
       if (
         result.bscOptions.length === 0 &&
         result.slOptions.length === 0 &&
         result.errors.length > 0
       ) {
-        const detail = result.errors
-          .map((e) => `${e.platform}: ${e.message}`)
-          .join("; ");
-        setMessage(`${SYNC_FAILED_PREFIX}. ${detail}`);
-        onDone?.();
+        setMessage(
+          blockedMessageFromErrors(SYNC_FAILED_PREFIX, result.errors) ??
+            `${SYNC_FAILED_PREFIX}.`,
+        );
         return;
       }
 
@@ -148,7 +170,22 @@ export default function VariantForm({
         setShowReconciliation(true);
         setMessage(result.message || null);
       } else {
-        // Only one platform has data — store directly
+        // Only ONE platform has data. Storing that is a claim about BOTH sides:
+        // the store may act on rows linked to the side that came back empty. So
+        // the empty side has to have been genuinely REACHED and genuinely empty.
+        //
+        // NEO-211 (plan B): if any adapter errored, we know nothing about the
+        // empty side, so write nothing at all and name the platform that failed.
+        // Deliberately NOT calling onDone() here — onDone returns EntityColumn
+        // to idle mode, which unmounts this form and takes the alert (and its
+        // Retry button) with it. The operator has to be able to see that their
+        // data was left alone and to re-run the sync.
+        const plan = planSinglePlatformStore(result.errors);
+        if (plan.kind === "blocked") {
+          setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
+          return;
+        }
+
         const items = [
           ...result.bscOptions.map((o: PlatformItem) => ({
             value: o.value,
@@ -160,18 +197,28 @@ export default function VariantForm({
           })),
         ];
 
+        let unlinkedRows: UnlinkedEntry[] = [];
         if (items.length > 0) {
-          await storeReconciledOptions({
+          const stored = await storeReconciledOptions({
             level: "insert",
             parentId: variantTypeId,
             reconciledItems: items,
+            // Both sides were reached (plan.kind === "store" proves it), so the
+            // store is allowed to detach links on the side that returned
+            // nothing. Without this the mutation infers coverage from the items
+            // it was handed and would never touch the empty side at all.
+            coveredSides: plan.coveredSides,
           });
+          unlinkedRows = stored?.unlinked ?? [];
         }
 
+        setUnlinked(unlinkedRows);
         setMessage(
           result.message || `Stored ${items.length} variants (single platform)`,
         );
-        onDone?.();
+        // A detach the operator has not seen is a silent data change. Hold the
+        // panel open so the notice renders; they close it themselves.
+        if (unlinkedRows.length === 0) onDone?.();
       }
     } catch (error) {
       setMessage(
@@ -183,7 +230,7 @@ export default function VariantForm({
   };
 
   const handleReconciliationConfirm = async (result: ReconciledResult) => {
-    await storeReconciledOptions({
+    const stored = await storeReconciledOptions({
       level: "insert",
       parentId: variantTypeId,
       reconciledItems: result.items.map((item) => ({
@@ -194,10 +241,21 @@ export default function VariantForm({
         // the slots are indistinguishable ids downstream.
         platformLabels: item.platformLabels,
         metadata: item.metadata,
+        // NEO-211 (plan E): the NB row this modal row IS. With it the store
+        // treats a title edit as a rename of that row, keeping its _id and its
+        // whole subtree; without it, a rename was delete-and-reinsert.
+        existingId: item.existingId,
       })),
+      // Every side that answered. Both did here (the modal only opens when both
+      // returned rows), but deriving it keeps the guarantee honest.
+      coveredSides: coveredSidesFromErrors(reconciliationData?.errors ?? []),
     });
     setShowReconciliation(false);
-    onDone?.();
+    const unlinkedRows = stored?.unlinked ?? [];
+    setUnlinked(unlinkedRows);
+    // Same rule as the single-platform path: a silent detach is not acceptable,
+    // so the panel stays up to carry the notice.
+    if (unlinkedRows.length === 0) onDone?.();
   };
 
   useEffect(() => {
@@ -236,6 +294,17 @@ export default function VariantForm({
               message.startsWith(SYNC_FAILED_PREFIX));
           return (
             <>
+              {/* NEO-211 (plan D): rows the marketplace stopped listing. The
+                  rows are still ours — only the marketplace link went away —
+                  so this is a notice, not an error, and it sits above the
+                  outcome message it explains. */}
+              {!showReconciliation && (
+                <UnlinkedNotice
+                  notices={buildUnlinkedNotices(unlinked, "insert")}
+                  onDismiss={() => setUnlinked([])}
+                />
+              )}
+
               {message && !showReconciliation && (
                 <div
                   role={isError ? "alert" : undefined}
@@ -304,6 +373,9 @@ export default function VariantForm({
           usedSlPlatformValues={usedIdentifiers?.slPlatformValues}
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
           existingRows={existingVariantRows?.map((r) => ({
+            // NEO-211 (plan E): carried through the modal so a rename inside it
+            // stays a rename of THIS row.
+            existingId: r._id,
             value: r.value,
             // The modal speaks marketplace IDs, not slots.
             platformData: {

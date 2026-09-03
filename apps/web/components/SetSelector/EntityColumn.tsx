@@ -5,6 +5,19 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import SelectorSyncReviewModal, {
+  MAX_DECISIONS_PER_CALL,
+  type SelectorSyncSuggestion,
+} from "./SelectorSyncReviewModal";
+import UnlinkedNotice from "./UnlinkedNotice";
+import {
+  buildUnlinkedNotices,
+  levelLabelPlural,
+  unlinkNoticeText,
+  UNLINKED_NAME_LIMIT_TOAST,
+  type SyncSide,
+  type UnlinkedEntry,
+} from "./selector-sync-feedback";
 
 type Level =
   | "sport"
@@ -102,6 +115,23 @@ export default function EntityColumn({
   // click also flips hasInteracted true (which otherwise suppresses the panel —
   // see newPathContent). Reset the moment the reactive status leaves "syncing".
   const [selfRequestedSync, setSelfRequestedSync] = useState(false);
+  // NEO-211 (plan C): the marketplace-renamed-this review dialog, and the
+  // post-apply outcome line it leaves behind.
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [applyingSuggestions, setApplyingSuggestions] = useState(false);
+  const [suggestionOutcome, setSuggestionOutcome] = useState<string | null>(null);
+  // NEO-211 (plan D): which "no longer listed" notice this session has already
+  // read, keyed by the notice's CONTENT. Keyed rather than a bare boolean so a
+  // later sync's fresh notice at the same (level, parentId) is never suppressed
+  // by an old dismissal — content rather than a timestamp because
+  // `getSelectorSyncStatus` does not expose the row's `updatedAt`, and the
+  // set of unlinked ids is what actually distinguishes one report from another.
+  const [dismissedNoticeKey, setDismissedNoticeKey] = useState<string | null>(null);
+  const [dismissingNotice, setDismissingNotice] = useState(false);
+  // Reuses SetAttributesPanel's fixed-position toast verbatim rather than
+  // inventing a second mechanism — the column may well have scrolled out of
+  // view by the time a background sync lands its unlink report.
+  const [toast, setToast] = useState<string | null>(null);
 
   // Unique per-instance class for the custom-entry input so Maestro web's
   // inputText resolves to THIS column's box. Maestro's createXPathFromElement
@@ -111,6 +141,9 @@ export default function EntityColumn({
   const fieldClass = useFieldTestClass();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // a11y: the pill the suggestions dialog was opened from, so focus comes back
+  // to it on close rather than dropping to <body>.
+  const suggestionsBtnRef = useRef<HTMLButtonElement | null>(null);
   // NEO-71-74 follow-up: always start false, regardless of this column's
   // isVisible prop at mount. Columns 6/7 (Variant / Variant of Variant) are
   // conditionally MOUNTED (not just conditionally rendered null like columns
@@ -157,6 +190,31 @@ export default function EntityColumn({
   );
   const ensureOptions = useAction(
     api.selectorOptions.ensureSelectorOptions,
+  );
+
+  // NEO-211 (plan C): derived state, not a pipeline — this just compares the
+  // marketplace label the store already recorded against our own value. Wired
+  // for ALL seven levels: `idleButtons` below is shared by the useEnsureSync
+  // path and the legacy renderForm path, so levels 6-7 get it too.
+  const rawSuggestions = useQuery(
+    api.selectorOptions.getSelectorSyncSuggestions,
+    level ? { level, parentId } : "skip",
+  );
+  // Shape-guarded rather than trusted: this column subscribes to several
+  // queries and a row without an `existingId` is not something this UI can act
+  // on, so it is not something it should count in "N suggestions" either.
+  const suggestions: SelectorSyncSuggestion[] | undefined = Array.isArray(
+    rawSuggestions,
+  )
+    ? (rawSuggestions as SelectorSyncSuggestion[]).filter(
+        (s) => s && typeof s.existingId === "string" && Array.isArray(s.suggestions),
+      )
+    : undefined;
+  const applySuggestions = useMutation(
+    api.selectorOptions.applySelectorSyncSuggestions,
+  );
+  const dismissNotice = useMutation(
+    api.selectorOptions.dismissSelectorSyncNotice,
   );
   const ensuredRef = useRef<Set<string>>(new Set());
 
@@ -289,6 +347,50 @@ export default function EntityColumn({
     if (syncStatus?.status !== "syncing") setSelfRequestedSync(false);
   }, [syncStatus?.status]);
 
+  // NEO-211 (plan D): the "sync done, and here is what it detached" state.
+  // `status: "done"` is only ever written when there is something to report —
+  // a clean sync still deletes its status row — so this branch and the
+  // `error` / `syncing` branches are mutually exclusive by construction.
+  const doneUnlinked: UnlinkedEntry[] =
+    syncStatus?.status === "done" && Array.isArray(syncStatus.unlinked)
+      ? (syncStatus.unlinked as UnlinkedEntry[])
+      : [];
+  const noticeKey = doneUnlinked
+    .map((u) => `${u.side}:${u.id}`)
+    .join("|");
+  const noticeVisible = doneUnlinked.length > 0 && noticeKey !== dismissedNoticeKey;
+  // `unlinkedTotal` is one scalar across both sides, so it can only be
+  // attributed when a single side is involved — which is the common case (one
+  // marketplace dropped a batch). With both sides present we fall back to
+  // counting what we were sent rather than inventing a split.
+  const unlinkedTotals: Partial<Record<SyncSide, number>> | undefined = (() => {
+    const total = syncStatus?.unlinkedTotal;
+    if (typeof total !== "number" || doneUnlinked.length === 0) return undefined;
+    const sides = new Set(doneUnlinked.map((u) => u.side));
+    if (sides.size !== 1) return undefined;
+    const [only] = [...sides];
+    return { [only]: total } as Partial<Record<SyncSide, number>>;
+  })();
+
+  // Toast once, on the transition INTO "done" — not on every re-render of a
+  // done row, or a re-subscribe would re-announce a sync from an hour ago.
+  const prevSyncStatusRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevSyncStatusRef.current;
+    prevSyncStatusRef.current = syncStatus?.status;
+    if (prev === "done" || syncStatus?.status !== "done") return;
+    if (doneUnlinked.length === 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- announces a completed background sync; there is no event to hang it off
+    setToast(
+      unlinkNoticeText(doneUnlinked, level, {
+        maxNames: UNLINKED_NAME_LIMIT_TOAST,
+      }),
+    );
+    const id = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on the status transition only; doneUnlinked is derived from the same row
+  }, [syncStatus?.status, level]);
+
   // Auto-sync: when this column is visible, not frozen by interaction, in idle
   // mode, the items query has resolved to an empty list, and we haven't already
   // auto-synced this (level, parentId) — switch to sync mode. The form itself
@@ -330,6 +432,69 @@ export default function EntityColumn({
 
   const handleFormDone = () => {
     setMode("idle");
+  };
+
+  // NEO-211 (plan D): dismiss clears the SERVER's notice, not just this
+  // session's view. The status row is shared, so a purely local dismiss would
+  // leave the notice waiting for this admin on every re-subscribe — and the
+  // contract puts the clear on the server so it survives a reload. The local
+  // stamp is optimism, so the box goes away on click instead of on round-trip.
+  const handleDismissNotice = async () => {
+    if (!level || dismissingNotice) return;
+    setDismissedNoticeKey(noticeKey);
+    setDismissingNotice(true);
+    try {
+      await dismissNotice({ level, parentId });
+    } catch {
+      // A failed dismiss is not worth an error box: the notice is informational
+      // and the local stamp already hid it for this session. It will come back
+      // on reload, which is the honest outcome of the write not landing.
+    } finally {
+      setDismissingNotice(false);
+    }
+  };
+
+  // NEO-211 (plan C): the only path that turns a suggestion into a write.
+  const handleApplySuggestions = async (decisions: Array<{
+    existingId: GenericId<"selectorOptions">;
+    baseVersion: number;
+    side: "bsc" | "sportlots";
+    action: "accept" | "decline";
+  }>) => {
+    if (!level) return;
+    // The server caps a batch. Slicing and SAYING SO beats having the mutation
+    // reject all 300 decisions because the operator was thorough.
+    const truncated = decisions.length > MAX_DECISIONS_PER_CALL;
+    const batch = truncated
+      ? decisions.slice(0, MAX_DECISIONS_PER_CALL)
+      : decisions;
+    setApplyingSuggestions(true);
+    try {
+      const result = await applySuggestions({ level, parentId, decisions: batch });
+      const parts: string[] = [];
+      if (result?.applied) parts.push(`${result.applied} renamed`);
+      if (result?.declined) parts.push(`${result.declined} declined`);
+      // Every degraded outcome is named. A decision that silently did not take
+      // is the one failure mode this whole feature exists to avoid.
+      if (result?.stale) parts.push(`${result.stale} changed just now`);
+      if (result?.clashed) parts.push(`${result.clashed} clashed with a sibling name`);
+      if (result?.skipped) parts.push(`${result.skipped} skipped`);
+      if (truncated) {
+        parts.push(
+          `${decisions.length - MAX_DECISIONS_PER_CALL} not sent — reopen to finish`,
+        );
+      }
+      setSuggestionOutcome(
+        parts.length > 0 ? parts.join(" · ") : "Nothing to apply.",
+      );
+      setShowSuggestions(false);
+    } catch (error) {
+      setSuggestionOutcome(
+        error instanceof Error ? error.message : "Couldn't apply decisions.",
+      );
+    } finally {
+      setApplyingSuggestions(false);
+    }
   };
 
   const handleCustomSubmit = async () => {
@@ -407,9 +572,41 @@ export default function EntityColumn({
     </div>
   );
 
+  // NEO-211 (plan C). Deliberately a PILL, not a NeonButton: a full-size
+  // green/blue button next to Sync would read as a second primary action and
+  // compete for the thumb in the mobile card-show workflow this column already
+  // has to survive. Amber reuses CardAttentionBadge's already-contrast-checked
+  // palette for the same reason it does — this is an unanswered question, not a
+  // destructive or confirmed state, and green and pink are both spoken for.
+  //
+  // Rendered only when the query has RESOLVED to a non-empty list: no ghost
+  // "0 suggestions" flash while loading, and no dialog that opens with nothing
+  // in it (the `needsSyncReview` precedent). Visible text is the bare count so
+  // Maestro can assert or tap on "1 suggestion" with no id lookup.
+  const suggestionsPill =
+    suggestions && suggestions.length > 0 ? (
+      <button
+        type="button"
+        ref={suggestionsBtnRef}
+        onClick={() => {
+          setSuggestionOutcome(null);
+          setShowSuggestions(true);
+        }}
+        aria-label={`${suggestions.length} naming suggestion${
+          suggestions.length === 1 ? "" : "s"
+        } from marketplaces — review`}
+        className="text-xs px-2.5 py-1 rounded-full border border-amber-700 dark:border-amber-400/70 bg-amber-400/15 text-amber-800 dark:text-amber-300 focus:outline-none focus:ring-2 focus:ring-[#00B7FF]"
+      >
+        {suggestions.length} suggestion{suggestions.length === 1 ? "" : "s"}
+      </button>
+    ) : null;
+
   const idleButtons = (onSync: () => void) => (
-    <div className="flex gap-2">
+    <div className="flex gap-2 items-center flex-wrap">
       <NeonButton onClick={onSync}>{addButtonText}</NeonButton>
+      {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
+          still sits last. */}
+      {suggestionsPill}
       {level && (
         <NeonButton
           secondary
@@ -478,6 +675,25 @@ export default function EntityColumn({
             {syncStatus.message || "Couldn't sync options."}
           </div>
         )}
+        {/* NEO-211 (plan B, server half): one side failed but the other stored,
+            so the sync is "done" and NOT an error — yet the operator still has
+            to know a marketplace was not reached, or they will read the column
+            as complete. The server writes this string; it is rendered verbatim
+            and never rebuilt from adapter output here. */}
+        {syncStatus?.status === "done" && syncStatus.message && (
+          <div className="p-3 mb-1 bg-amber-400/10 border border-amber-700/60 dark:border-amber-400/40 rounded-md text-amber-800 dark:text-amber-300 text-sm">
+            {syncStatus.message}
+          </div>
+        )}
+        {noticeVisible && (
+          <UnlinkedNotice
+            notices={buildUnlinkedNotices(doneUnlinked, level, {
+              totalsBySide: unlinkedTotals,
+            })}
+            dismissing={dismissingNotice}
+            onDismiss={handleDismissNotice}
+          />
+        )}
         {idleButtons(forceSync)}
       </>
     );
@@ -496,6 +712,42 @@ export default function EntityColumn({
           : mode === "custom"
             ? customForm
             : idleButtons(() => setMode("sync"))}
+
+      {/* Non-blocking: the dialog has already closed, the rows are still live-
+          queried, and a stale/clashed decision is something to look at again,
+          not something to acknowledge. */}
+      {suggestionOutcome && (
+        <p className="text-xs text-gray-400" role="status">
+          {suggestionOutcome}
+        </p>
+      )}
+
+      {showSuggestions && suggestions && (
+        <SelectorSyncReviewModal
+          isOpen
+          level={level}
+          parentId={parentId}
+          columnLabel={levelLabelPlural(level)}
+          suggestions={suggestions}
+          saving={applyingSuggestions}
+          restoreFocusRef={suggestionsBtnRef}
+          onClose={() => setShowSuggestions(false)}
+          onConfirm={(result) => void handleApplySuggestions(result.decisions)}
+        />
+      )}
+
+      {toast && (
+        // SetAttributesPanel's pattern verbatim (NEO-47): fixed in the viewport,
+        // because a background sync can land while this column is scrolled well
+        // off-screen and an in-flow banner would announce to nobody.
+        <div
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-amber-400/60 rounded text-xs text-amber-300 shadow-lg"
+          role="status"
+          aria-live="polite"
+        >
+          {toast}
+        </div>
+      )}
     </div>
   );
 }

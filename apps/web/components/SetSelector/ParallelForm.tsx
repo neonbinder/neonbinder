@@ -5,6 +5,15 @@ import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { slotIds } from "../../convex/platformSlots";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
+import UnlinkedNotice from "./UnlinkedNotice";
+import {
+  blockedMessageFromErrors,
+  buildUnlinkedNotices,
+  coveredSidesFromErrors,
+  partialFailureMessage,
+  planSinglePlatformStore,
+  type UnlinkedEntry,
+} from "./selector-sync-feedback";
 
 type RawOptionsResult = {
   success: boolean;
@@ -41,6 +50,10 @@ export default function ParallelForm({
   const [message, setMessage] = useState<string | null>(null);
   const [showReconciliation, setShowReconciliation] = useState(false);
   const [reconciliationData, setReconciliationData] = useState<RawOptionsResult | null>(null);
+  // NEO-211 (plan D): rows whose marketplace link the store just detached
+  // because that side was reached and no longer lists them. The rows themselves
+  // survive — this is the only place the admin is told it happened.
+  const [unlinked, setUnlinked] = useState<UnlinkedEntry[]>([]);
   const triggered = useRef(false);
 
   const sportValue = ancestorChain?.find((a: { level: string }) => a.level === "sport")?.value;
@@ -89,19 +102,19 @@ export default function ParallelForm({
         return;
       }
 
-      // Defensive empty-with-errors guard — see VariantForm.doSync for the
-      // full rationale. Surface the error AND return to idle so the panel-
-      // header actions remain reachable.
+      // Both adapters came back empty with at least one error — see
+      // VariantForm.doSync for the full rationale, including why this path
+      // deliberately does NOT call onDone (NEO-211: it would unmount the form
+      // and destroy the alert and its Retry button).
       if (
         result.bscOptions.length === 0 &&
         result.slOptions.length === 0 &&
         result.errors.length > 0
       ) {
-        const detail = result.errors
-          .map((e) => `${e.platform}: ${e.message}`)
-          .join("; ");
-        setMessage(`${SYNC_FAILED_PREFIX}. ${detail}`);
-        onDone?.();
+        setMessage(
+          blockedMessageFromErrors(SYNC_FAILED_PREFIX, result.errors) ??
+            `${SYNC_FAILED_PREFIX}.`,
+        );
         return;
       }
 
@@ -110,6 +123,17 @@ export default function ParallelForm({
         setShowReconciliation(true);
         setMessage(result.message || null);
       } else {
+        // Only ONE platform has data — see VariantForm.doSync for the full
+        // rationale. NEO-211 (plan B): storing a one-sided result is a claim
+        // about the OTHER side too, so an adapter error means write nothing and
+        // name the platform. No onDone() on this path: it would unmount the
+        // form and take the alert and its Retry button with it.
+        const plan = planSinglePlatformStore(result.errors);
+        if (plan.kind === "blocked") {
+          setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
+          return;
+        }
+
         const items = [
           ...result.bscOptions.map((o: PlatformItem) => ({
             value: o.value,
@@ -121,18 +145,24 @@ export default function ParallelForm({
           })),
         ];
 
+        let unlinkedRows: UnlinkedEntry[] = [];
         if (items.length > 0) {
-          await storeReconciledOptions({
+          const stored = await storeReconciledOptions({
             level: "parallel",
             parentId: insertId,
             reconciledItems: items,
+            // Both sides were reached, so the store may act on the empty one.
+            coveredSides: plan.coveredSides,
           });
+          unlinkedRows = stored?.unlinked ?? [];
         }
 
+        setUnlinked(unlinkedRows);
         setMessage(
           result.message || `Stored ${items.length} parallels (single platform)`,
         );
-        onDone?.();
+        // Hold the panel open while there is a detach to report.
+        if (unlinkedRows.length === 0) onDone?.();
       }
     } catch (error) {
       setMessage(
@@ -144,7 +174,7 @@ export default function ParallelForm({
   };
 
   const handleReconciliationConfirm = async (result: ReconciledResult) => {
-    await storeReconciledOptions({
+    const stored = await storeReconciledOptions({
       level: "parallel",
       parentId: insertId,
       reconciledItems: result.items.map((item) => ({
@@ -155,10 +185,16 @@ export default function ParallelForm({
         // the slots are indistinguishable ids downstream.
         platformLabels: item.platformLabels,
         metadata: item.metadata,
+        // NEO-211 (plan E): the NB row this modal row IS, so a title edit here
+        // renames that row instead of deleting and reinserting it.
+        existingId: item.existingId,
       })),
+      coveredSides: coveredSidesFromErrors(reconciliationData?.errors ?? []),
     });
     setShowReconciliation(false);
-    onDone?.();
+    const unlinkedRows = stored?.unlinked ?? [];
+    setUnlinked(unlinkedRows);
+    if (unlinkedRows.length === 0) onDone?.();
   };
 
   useEffect(() => {
@@ -188,6 +224,16 @@ export default function ParallelForm({
               message.startsWith(SYNC_FAILED_PREFIX));
           return (
             <>
+              {/* NEO-211 (plan D): rows the marketplace stopped listing. The
+                  rows are still ours — only the link went away — so this is a
+                  notice, not an error. */}
+              {!showReconciliation && (
+                <UnlinkedNotice
+                  notices={buildUnlinkedNotices(unlinked, "parallel")}
+                  onDismiss={() => setUnlinked([])}
+                />
+              )}
+
               {message && !showReconciliation && (
                 <div
                   role={isError ? "alert" : undefined}
@@ -237,6 +283,9 @@ export default function ParallelForm({
           usedSlPlatformValues={usedIdentifiers?.slPlatformValues}
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
           existingRows={existingParallelRows.map((r) => ({
+            // NEO-211 (plan E): carried through so a rename in the modal stays
+            // a rename of THIS row.
+            existingId: r._id,
             value: r.value,
             // The modal speaks marketplace IDs, not slots (NEO-137).
             platformData: {

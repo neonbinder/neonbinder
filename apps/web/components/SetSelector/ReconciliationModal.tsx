@@ -18,6 +18,7 @@ import { CSS } from "@dnd-kit/utilities";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { Input } from "../primitives/Input";
+import type { Id } from "../../convex/_generated/dataModel";
 
 // ===== TYPES =====
 
@@ -56,6 +57,16 @@ export type ItemMetadata = {
 export type ReadySet = {
   /** Stable local key. Not persisted — `title` is the identity on save. */
   key: string;
+  /**
+   * NEO-211 (plan E): the `selectorOptions` row this set ALREADY is, when it was
+   * seeded from `existingRows`. Absent for a set the operator just built here.
+   *
+   * Before this, the modal had no notion of `_id` at all and `title` WAS the
+   * identity on save — so editing a title in this dialog was a delete of the old
+   * row and an insert of a new one, taking the row's children, its checklist and
+   * every cross-listing pointed at it. Carrying the id makes that edit a rename.
+   */
+  existingId?: Id<"selectorOptions">;
   /** The NeonBinder set name. Operator-editable; this is our data. */
   title: string;
   bsc: PlatformItem[];
@@ -108,6 +119,12 @@ type ReconciliationAction =
 
 export type ReconciledResult = {
   items: Array<{
+    /**
+     * NEO-211 (plan E): present when this item came from an existing NB row.
+     * The store treats it as the tier-0 match, so a title changed in this dialog
+     * renames that row rather than replacing it.
+     */
+    existingId?: Id<"selectorOptions">;
     value: string;
     // Arrays, not single ids: a set maps to 0-N per side. The mutation has
     // accepted `string | string[]` all along and allocates one slot per
@@ -317,6 +334,10 @@ type ReconciliationModalProps = {
   // modal's matched / keptBsc / keptSl sections so re-running a sync
   // preserves prior reconciliation work instead of starting fresh.
   existingRows?: Array<{
+    /** The row's own `_id` — see `ReadySet.existingId`. Optional so callers
+     *  that predate NEO-211 (and the tests that construct rows by hand) keep
+     *  working; without it a title edit is still delete-and-insert. */
+    existingId?: Id<"selectorOptions">;
     value: string;
     platformData: { bsc?: string | string[]; sportlots?: string | string[] };
     metadata?: ItemMetadata;
@@ -696,6 +717,7 @@ export default function ReconciliationModal({
       if (bscIds.length === 0 && slIds.length === 0) continue;
       ready.push({
         key: `set-${seq++}`,
+        existingId: row.existingId,
         title: row.value,
         bsc: bscIds.map(
           (id) => bscByPv.get(id) ?? { value: row.value, platformValue: id },
@@ -995,6 +1017,9 @@ export default function ReconciliationModal({
         for (const i of set.sl) slLabels[i.platformValue] = i.value;
 
         return {
+          // Undefined for a set built in this dialog, which is exactly right:
+          // the store then falls through to its id/value matcher.
+          existingId: set.existingId,
           value: set.title.trim() || set.bsc[0]?.value || set.sl[0]?.value || "",
           platformData: {
             ...(set.bsc.length > 0

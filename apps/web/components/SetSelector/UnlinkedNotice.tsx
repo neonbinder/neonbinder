@@ -1,0 +1,83 @@
+import type { UnlinkedNotice as Notice } from "./selector-sync-feedback";
+
+/**
+ * NEO-211 (plan D) — "the marketplace stopped listing these".
+ *
+ * Jason, 2026-09-03: "just remove BSC from the platform data and alert the user
+ * that it was done. No need to track it in the DB." So there is no flag, no
+ * staging row and no second screen: the store detaches the link, reports what it
+ * detached, and this is the report. Nothing here is recoverable from the
+ * database afterwards, which is exactly why it must not be possible to miss.
+ *
+ * ## Not an error, and not a delete
+ *
+ * The row, its name and its entire subtree are untouched — only that one
+ * marketplace's link went away, and a later sync that returns the set under a
+ * new id re-links it by name. So this is AMBER — the same "an unanswered
+ * question, nothing broke" register as the suggestions pill and
+ * `CardAttentionBadge` — never pink (destructive) or blue (neutral info): an
+ * admin who reads "No longer listed on BSC" as "I lost my sets" has been told
+ * the wrong thing, and one who scrolls past it as chrome has been told nothing.
+ *
+ * `role="status"` (implying `aria-live="polite"`) rather than `role="alert"`,
+ * for the same reason: it is worth announcing when it appears, but it does not
+ * interrupt. At levels 1-5 `EntityColumn` additionally fires the codebase's
+ * existing toast pattern (`SetAttributesPanel`'s fixed-position `role="status"`
+ * banner) on the syncing→done transition, because that column may well have
+ * scrolled out of view by the time the sync lands.
+ *
+ * ## Dismissable, and the column stays usable behind it
+ *
+ * Rendered inline above the column's own controls rather than as an overlay:
+ * the operator is mid-data-entry, and a modal for "an id changed upstream" would
+ * be a stop sign in front of a signpost. Dismissal is per-surface — the column
+ * calls the server's dismiss mutation so it does not come back on every
+ * re-subscribe; the forms just drop their local copy.
+ *
+ * ## Maestro
+ *
+ * Deliberately contains no bare word "Custom": `custom-entry-survives-resync`
+ * asserts `text: "Custom"` positioned `rightOf` a row, and a second match in the
+ * same column is a resolution hazard.
+ */
+export default function UnlinkedNotice({
+  notices,
+  onDismiss,
+  dismissing,
+}: {
+  notices: Notice[];
+  onDismiss: () => void;
+  /** Server round-trip in flight (column path); locks the button. */
+  dismissing?: boolean;
+}) {
+  if (notices.length === 0) return null;
+
+  return (
+    <div
+      role="status"
+      className="p-3 mb-1 bg-amber-400/10 border border-amber-700/60 dark:border-amber-400/40 rounded-md text-amber-800 dark:text-amber-300 text-sm flex items-start justify-between gap-2"
+    >
+      <div className="min-w-0 space-y-1">
+        {notices.map((n) => (
+          <p key={n.side} className="break-words">
+            {n.text}
+          </p>
+        ))}
+        {/* The reassurance is the point of the notice, not decoration on it:
+            "no longer listed" reads as "deleted" unless we say otherwise. */}
+        <p className="text-xs opacity-80">
+          These are still yours — only the marketplace link was removed.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        disabled={dismissing}
+        aria-label="Dismiss notice"
+        className="shrink-0 text-xs underline hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00B7FF] rounded px-1 disabled:opacity-50"
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
