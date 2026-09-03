@@ -1,0 +1,455 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+# NO COLON IN THIS NAME — Maestro derives the failure-screenshot FILENAME from the
+# flow name and actions/upload-artifact rejects a path containing a colon, which
+# fails the whole runner job after the flows themselves passed. Em dashes and
+# commas only (see checklist-fetch-wizard-add-career-team.yaml for the incident).
+name: "Checklist — review wizard skips an event-titled name as 'not a person', skips the rest in bulk, creates no player, and never asks again"
+tags:
+  - set-selector
+  - regression
+---
+# R1 — ONE FEATURE: the NEO-212 "Skip — not a person" decision in the entity
+# review wizard (Confirm New Players & Teams), its footer twin "Skip Remaining
+# (N)", and the fact that a skip is DURABLE for the set.
+#
+# The user story in one sentence: a checklist's player column is full of things
+# that are not people — event titles, "CHECKLIST" header rows, sponsor text — and
+# before this the operator's only ways out were to mint a junk player row into a
+# globally-shared table or to cancel the whole batch. Skip is the third way out,
+# and it has to STICK: a skip an operator has to repeat on every re-sync is not a
+# decision, it is a chore.
+#
+# R2 — HARD ASSERTIONS, no silent fall-through. Every claim below fails loudly:
+#
+#   (a) THE WIZARD OFFERS THE SKIP, AND ON *OUR* NAME.
+#       Three event-titled "players" are put on one custom card, so the wizard
+#       opens with exactly three undecided rows — asserted by the footer reading
+#       "Skip Remaining (3)" (that count is `total - decided`, so 3 proves both
+#       that all three names arrived AND that nothing is pre-decided). The
+#       per-row control is then asserted BOTH by its visible label
+#       ("Skip — not a person", what the operator actually reads) and by its
+#       aria-label carrying THIS attempt's unique name — so a wizard that opened
+#       on somebody else's row could not satisfy it.
+#
+#   (b) THE PER-ROW SKIP ACTUALLY RECORDS A DECISION.
+#       After one tap the SAME footer control must read "Skip Remaining (2)".
+#       That is `total - decided` moving 3 → 2: exactly one row decided, none
+#       created. A skip button that rendered but recorded nothing would leave it
+#       at (3) and this wait would fail.
+#
+#   (c) "Skip Remaining" CLEARS THE REST IN ONE ACTION.
+#       Tapping it must take the wizard to its final step — "Confirm & Save"
+#       renders ONLY when every row is decided (allDecided), so its appearance is
+#       the assertion that both remaining rows were decided by that one tap.
+#
+#   (d) THE COMMIT CREATES NO PLAYER.
+#       After Confirm & Save, the card's PlayerPicker is opened and searched for
+#       the skipped name: the "+ Create" option (aria "Create player <name>")
+#       renders ONLY when NO case-insensitive exact match exists
+#       (PlayerPicker.showCreateOption). Its presence therefore PROVES no player
+#       entity was minted for that name. Had the skip fallen through to "create",
+#       the exact match would suppress "+ Create" and this assert would fail.
+#
+#   (e) THE SKIP IS DURABLE — the wizard never asks again.
+#       A SECOND custom card carrying the SAME skipped name is added and the set
+#       is re-synced. The wizard must NOT reappear; the sync must run straight
+#       through to its committed notice.
+#
+#       WHY THE SECOND CARD IS LOAD-BEARING AND NOT BUSY-WORK: commit's finalize
+#       pass retires a skipped name from the custom card's `pendingPlayerNames`
+#       (selectorOptions.ts, "NEO-212: a SKIPPED name is cleared by the same
+#       pass"). So simply re-syncing the ORIGINAL card would offer the wizard no
+#       candidate at all, and the durability assert would pass without
+#       `entityReviewSkips` ever being read — a green test of nothing. Re-adding
+#       the name puts it back in front of the fetch as a live candidate, so the
+#       ONLY thing that can keep the wizard shut is the durable skip record
+#       (`findSkippedEntityNames`, consulted by resolveUnknownsAndStartBatch
+#       BEFORE the players-existence check). Remove that record and this step
+#       goes red.
+#
+# R3 — DEDUP: "Add as New" is covered by checklist-keyboard-only-dialog,
+#   "Link to Existing" by checklist-fetch-unknown-entities-link-existing, and the
+#   manual career-team mini-form by checklist-fetch-wizard-add-career-team. This
+#   flow uniquely covers the THIRD decision (skip), its bulk twin, and skip
+#   durability. Navigation reuses util-drill-to-custom (R9) — no hand-rolled drill.
+#
+# R5 — WAITS: 7s default everywhere except (i) cold sign-in (45s), (ii) the
+#   fetch/commit round-trips, which on this custom subtree still cross Convex and
+#   the wizard's live Wikidata preview lookups, matching the budgets its two
+#   sibling wizard flows already use.
+#
+# R7 / R7a — DATA ISOLATION: everything happens on a PER-WORKER CUSTOM SET,
+#   skp-${WORKER_INDEX}, registered in SET-REGISTRY.md. A custom Set node makes
+#   the whole subtree custom (isCustomSubtree → BSC/SL skipped, NEO-22), so the
+#   wizard can only ever open from THIS worker's own custom cards' pending names —
+#   never a shared marketplace fetch — and the selectorOptionId is private, so no
+#   concurrent runner can seed this batch. That matters more here than in the
+#   sibling flows: `entityReviewSkips` rows are keyed by (selectorOptionId, kind,
+#   name), so a skip written on a SHARED set would suppress that name in every
+#   other runner's wizard too. The real Baseball/2024/Topps ancestors are kept so
+#   fetchCardChecklist still derives sport="baseball" and entity lookups behave as
+#   on a real set. Nothing on a real marketplace set is read or written.
+#   Both test cards are deleted at the end.
+#
+# NOTE — no separate `smoke` variant, same reasoning as its sibling wizard flows:
+#   reaching this feature REQUIRES the full fetch → wizard path, so there is no
+#   fast happy-path subset that qualifies as a smoke test.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# DRILL TO THIS WORKER'S PRIVATE CUSTOM SET UNDER REAL Baseball/2024/Topps
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "skp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+# ============================================================
+# STEP 1 — PRIVATE SELF-HEAL PRE-CLEAN (this worker's own subtree only)
+# Sync once BEFORE adding this attempt's cards. If a wizard opens, it can only be
+# leftover debris from THIS worker's own prior failed attempt (the subtree is
+# private — no other runner can write here), so bulk-confirm every pre-existing
+# unknown ("Add All Remaining as New" → Confirm & Save) to commit and clear it.
+# That guarantees the exact "(3)" / "(2)" counts asserted below describe THIS
+# attempt's three names and nothing else. On the clean first-attempt path the
+# subtree is empty → the sync just commits "Saved 0 cards" (no wizard) — a quick
+# custom-subtree round-trip, no BSC/SL.
+#
+# The Sync control (aria "Sync card checklist") is the empty-state "Fetch from
+# Marketplaces" button when the checklist is empty, or the header "Refresh"
+# button when debris cards exist — exactly one renders, so the aria-label is
+# unambiguous. centerElement (R8) keeps it clear of the sticky binder-header.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+    timeout: 60000
+- runFlow:
+    when:
+      visible: "Confirm New Players & Teams"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              text: ".*Add All Remaining as New.*"
+          commands:
+            - tapOn:
+                text: ".*Add All Remaining as New.*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm & Save.*"
+          timeout: 30000
+      - tapOn:
+          text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 120000
+
+# ============================================================
+# STEP 2 — ADD THE CARD WHOSE "PLAYERS" ARE NOT PEOPLE
+# One custom card whose Players field carries THREE comma-separated event titles.
+# CardChecklist.handleAddCard splits that field on commas into addCustomCard's
+# `players`, which land in cardChecklist.pendingPlayerNames — so the next sync
+# surfaces exactly three unknown player rows. Three (not one) is deliberate: the
+# feature under test needs one row to skip individually and at least two left
+# over for "Skip Remaining" to act on.
+#
+# The names are per-attempt unique (${ATTEMPT_ID}) so a retry never observes its
+# own prior debris, and are single tokens with no spaces so they read back
+# cleanly in an aria-label regex.
+# ============================================================
+
+- tapOn: "Add Card"
+# "Player name" is the card-name input's placeholder; it renders once the
+# autoFocused "#" (Card number) input is present.
+- extendedWaitUntil:
+    visible: "Player name"
+- inputText: "8004-${ATTEMPT_ID}"
+# Address inputs by aria-label (Maestro's `id:` = accessibility identifier);
+# the placeholders overlap ("Player name" vs "Player(s) — comma separated,
+# optional") so a text matcher cannot disambiguate them (NEO-13).
+- tapOn:
+    id: "Card name"
+- inputText: "Skip Main Card ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: "Player(s) — comma separated, optional"
+    centerElement: true
+- tapOn:
+    id: "Players"
+- inputText: "Apollo17Lands-${ATTEMPT_ID}, MoonLanding-${ATTEMPT_ID}, Skylab-${ATTEMPT_ID}"
+- assertVisible:
+    text: ".*Apollo17Lands-${ATTEMPT_ID}.*Skylab-${ATTEMPT_ID}.*"
+- scrollUntilVisible:
+    element:
+      text: "Add"
+    centerElement: true
+- tapOn:
+    text: "Add"
+- scrollUntilVisible:
+    element:
+      text: "Skip Main Card ${ATTEMPT_ID}"
+    timeout: 15000
+
+# ============================================================
+# STEP 3 — SYNC AND OPEN THE WIZARD ON THE THREE NON-PEOPLE
+# The custom card exists → the checklist header shows the "Refresh" button (aria
+# "Sync card checklist"). Scroll UP to "Add Card" (its flex-row sibling) and
+# centre it so the Sync button lands clear of the sticky binder-header.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- extendedWaitUntil:
+    visible:
+      id: "Sync card checklist"
+- tapOn:
+    id: "Sync card checklist"
+- extendedWaitUntil:
+    visible:
+      text: "Confirm New Players & Teams"
+    timeout: 60000
+
+# R2(a) PRECONDITION — exactly three undecided rows. The footer control's count
+# is `total - decided`, so "(3)" proves all three names reached the batch and
+# none is pre-decided. Everything the two count assertions below claim rests on
+# this baseline. (30s: the batch rows are written by the fetch action.)
+- extendedWaitUntil:
+    visible:
+      text: ".*Skip Remaining \\(3\\).*"
+    timeout: 30000
+
+# ============================================================
+# STEP 4 — THE FEATURE, PART ONE: SKIP ONE ROW AS "NOT A PERSON"
+# The wizard presents ONE row at a time and only once that row's background
+# Wikidata preview lookup has completed or errored — a live external round-trip,
+# so 30s (outside the 7s UI budget). Which of the three surfaces first depends on
+# which lookup lands first, so the control is matched by the attempt marker every
+# one of our names carries rather than by a fixed name.
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Skip .*${ATTEMPT_ID}.*not a person"
+    timeout: 30000
+# What the operator actually READS on the control. Matched with "." in place of
+# the em dash to keep a literal non-ASCII character out of the matcher (same
+# idiom as the en-dash chips in checklist-fetch-wizard-add-career-team). This is
+# not a duplicate of the wait above: that one proves the control is bound to OUR
+# row (aria-label), this one proves the label the user sees says what it does.
+- assertVisible:
+    text: "Skip . not a person"
+- tapOn:
+    id: "Skip .*${ATTEMPT_ID}.*not a person"
+
+# R2(b) THE CORE ASSERT FOR THE PER-ROW SKIP — the same footer control must now
+# read "(2)". `total - decided` moving 3 → 2 means exactly one row was decided by
+# that tap. A control that rendered but recorded nothing leaves it at (3) here.
+- extendedWaitUntil:
+    visible:
+      text: ".*Skip Remaining \\(2\\).*"
+
+# ============================================================
+# STEP 5 — THE FEATURE, PART TWO: "SKIP REMAINING" CLEARS THE REST
+# R2(c): "Confirm & Save" renders ONLY when every row carries a decision
+# (allDecided), so its appearance after this one tap IS the assertion that both
+# remaining rows were skipped by it. 30s — this is a decision write per row.
+# ============================================================
+
+- tapOn:
+    text: ".*Skip Remaining \\(2\\).*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 30000
+- tapOn:
+    text: ".*Confirm & Save.*"
+# The positive terminal signal: the wizard closed AND the commit landed. (Waiting
+# on the modal vanishing instead would race the "Saving..." state — NEO-163.)
+# "Saved 0 cards" on a custom subtree, which carries no marketplace cards.
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 30000
+
+# ============================================================
+# STEP 6 — R2(d): PROVE THE COMMIT MINTED NO PLAYER
+# Open the card's drawer, reach its PlayerPicker, and search the skipped name.
+# "+ Create" (aria "Create player Apollo17Lands-…") renders ONLY when no exact
+# match exists, so its presence proves no player entity was created for that
+# name. Had the skip fallen through to a create, the exact match would suppress
+# "+ Create" and this assert would fail.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Edit card 8004-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 15000
+- tapOn:
+    id: "Edit card 8004-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 15000
+# The drawer is right-anchored (~480px wide); a viewport-centre scroll drives the
+# BACKDROP instead, so its inner scroll is driven by manual swipes at x=80% —
+# same idiom as player-picker-create-custom-card / link-existing.
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- tapOn:
+    id: "Add player"
+- tapOn:
+    id: "Search players"
+- inputText: "Apollo17Lands-${ATTEMPT_ID}"
+- assertVisible:
+    id: "Create player Apollo17Lands-${ATTEMPT_ID}"
+
+# Leave without creating anything — Cancel discards the picker and the drawer.
+- tapOn:
+    id: "Cancel card edit"
+- assertNotVisible:
+    id: "Card name"
+
+# ============================================================
+# STEP 7 — R2(e): THE SKIP IS DURABLE ACROSS A RE-SYNC
+# Put the skipped name back in front of the fetch on a SECOND custom card (see
+# the header for why re-syncing the first card would prove nothing — commit
+# retires a skipped name from that card's pendingPlayerNames), then sync again.
+# The wizard must stay shut, because resolveUnknownsAndStartBatch drops the name
+# via findSkippedEntityNames before it is ever counted as unknown.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- tapOn: "Add Card"
+- extendedWaitUntil:
+    visible: "Player name"
+- inputText: "8005-${ATTEMPT_ID}"
+- tapOn:
+    id: "Card name"
+- inputText: "Skip Redo Card ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: "Player(s) — comma separated, optional"
+    centerElement: true
+- tapOn:
+    id: "Players"
+- inputText: "Apollo17Lands-${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      text: "Add"
+    centerElement: true
+- tapOn:
+    text: "Add"
+- scrollUntilVisible:
+    element:
+      text: "Skip Redo Card ${ATTEMPT_ID}"
+    timeout: 15000
+
+- scrollUntilVisible:
+    element:
+      text: "Add Card"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+- extendedWaitUntil:
+    visible:
+      id: "Sync card checklist"
+- tapOn:
+    id: "Sync card checklist"
+# Step 5's "Saved N cards" notice is STILL on screen at this point, and the
+# durability check below waits for exactly that string. handleSync clears the
+# notice synchronously when the sync starts, so waiting for it to vanish is what
+# separates the OLD notice from the new one — without this gate the wait below
+# would satisfy itself instantly on the stale notice and the whole durability
+# assertion would be a false pass. Not dead time (R10): it resolves as soon as
+# the sync begins, and it is the only marker that it did.
+- extendedWaitUntil:
+    notVisible:
+      text: ".*Saved [0-9]+ cards.*"
+# Whichever terminal state this sync reaches, it reaches it here.
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
+    timeout: 60000
+# THE DURABILITY ASSERT — the operator is not asked about the skipped name again.
+- assertNotVisible: "Confirm New Players & Teams"
+# ...and the positive half, because a crashed page satisfies every notVisible
+# vacuously: the sync really did run through to its committed notice.
+- assertVisible:
+    text: ".*Saved [0-9]+ cards.*"
+
+# ============================================================
+# CLEANUP — delete both test cards so the subtree stays clean for the next run
+# (R7: this flow leaves no state behind that a later flow could trip over; the
+# two `entityReviewSkips` rows it writes are keyed to attempt-unique names on
+# this worker's own private set and can never match anything again).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 8005-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 8005-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 8005-${ATTEMPT_ID}"
+- assertNotVisible: "Skip Redo Card ${ATTEMPT_ID}"
+
+- scrollUntilVisible:
+    element:
+      id: "Delete card 8004-${ATTEMPT_ID}"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 10000
+- tapOn:
+    id: "Delete card 8004-${ATTEMPT_ID}"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 8004-${ATTEMPT_ID}"
+- assertNotVisible: "Skip Main Card ${ATTEMPT_ID}"
