@@ -410,10 +410,12 @@ describe("GET /easypost/:key/label/:shipmentId", () => {
     assert.equal(clientCalls.length, 0);
   });
 
+  // Well-formed but absurdly long: this is the length cap on its own, not the
+  // format check picking it up by accident.
   it("400s on a shipment id longer than any real one", async () => {
     store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
     const res = await fetch(
-      `${baseUrl}/easypost/${easypostKey}/label/${"x".repeat(101)}`,
+      `${baseUrl}/easypost/${easypostKey}/label/shp_${"x".repeat(101)}`,
     );
 
     assert.equal(res.status, 400);
@@ -422,14 +424,30 @@ describe("GET /easypost/:key/label/:shipmentId", () => {
     assert.equal(clientCalls.length, 0);
   });
 
-  it("400s on a whitespace-only shipment id", async () => {
-    store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
-    const res = await fetch(`${baseUrl}/easypost/${easypostKey}/label/%20%20`);
+  // The shipment id is stored via a client-reachable path, so it comes back to
+  // this route caller-authored. Every one of these is a shape EasyPost could
+  // never have issued, and none of them may reach the seller's stored key.
+  for (const [label, rawId] of [
+    ["a whitespace-only shipment id", "  "],
+    ["an id with no shp_ prefix", "not-a-shipment"],
+    ["a traversal attempt", "shp_../.."],
+    ["an encoded traversal attempt", "shp_%2e%2e%2f"],
+    ["an id carrying a query string", "shp_test?foo=bar"],
+    ["an id with a wrong-case prefix", "SHP_test"],
+    ["the bare prefix with no id", "shp_"],
+  ]) {
+    it(`400s on ${label}`, async () => {
+      store.set(easypostKey, { username: "user_2abc", password: placeholderApiKey });
+      const res = await fetch(
+        `${baseUrl}/easypost/${easypostKey}/label/${encodeURIComponent(rawId)}`,
+      );
 
-    assert.equal(res.status, 400);
-    assert.deepEqual(await res.json(), { error: "Invalid shipmentId" });
-    assert.equal(clientCalls.length, 0);
-  });
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "Invalid shipmentId" });
+      // Rejected before the stored key was ever read.
+      assert.equal(clientCalls.length, 0);
+    });
+  }
 
   it("404s when no key is saved", async () => {
     const res = await fetch(`${baseUrl}/easypost/${easypostKey}/label/shp_test`);

@@ -237,9 +237,18 @@ const TO_ADDRESS = {
   country: "US",
 };
 
-/** The arguments recordLabelPurchase takes, with per-call fields overridable. */
-function purchaseArgs(overrides: Partial<{ trackingCode: string }> = {}) {
+/**
+ * The arguments recordLabelPurchase takes, with per-call fields overridable.
+ *
+ * `userId` is one of them because the mutation is internal and takes the owner
+ * explicitly (NEO-213) — the caller is an action that already verified the
+ * subject, so there is no identity for the mutation itself to read.
+ */
+function purchaseArgs(
+  overrides: Partial<{ userId: string; trackingCode: string }> = {},
+) {
   return {
+    userId: USER,
     easypostShipmentId: "shp_test_0001",
     trackingCode: "9400100000000000000001",
     costCents: 78,
@@ -258,27 +267,37 @@ async function seedPurchase(
 ) {
   return await t.run(async (ctx) =>
     ctx.db.insert("labelPurchases", {
-      ...purchaseArgs({ trackingCode }),
-      userId,
+      ...purchaseArgs({ userId, trackingCode }),
       purchasedAt: 1,
     }),
   );
 }
 
+// Internal (NEO-213): a public write here was a way to MINT the ownership proof
+// that `getLabelPurchaseForUser` checks — file a row under your own userId
+// carrying someone else's shipment id, then "reprint" it. Only the purchase
+// action writes rows now, and it passes the subject it verified.
 describe("recordLabelPurchase", () => {
-  test("rejects an unauthenticated record", async () => {
+  test("files the row under the userId it is given", async () => {
     const t = convexTest(schema, modules);
-    await expect(
-      t.mutation(api.shipping.recordLabelPurchase, purchaseArgs()),
-    ).rejects.toThrow("Not authenticated");
+    // No identity anywhere in this call — the owner is an argument, and the
+    // caller (postage.buyLetterLabel) is what proves it.
+    await t.mutation(
+      internal.shipping.recordLabelPurchase,
+      purchaseArgs({ userId: OTHER_USER }),
+    );
+
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("labelPurchases").collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].userId).toBe(OTHER_USER);
   });
 
   test("stores every field, and stamps purchasedAt server-side", async () => {
     const t = convexTest(schema, modules);
     const before = Date.now();
-    await t
-      .withIdentity({ subject: USER })
-      .mutation(api.shipping.recordLabelPurchase, purchaseArgs());
+    await t.mutation(internal.shipping.recordLabelPurchase, purchaseArgs());
     const after = Date.now();
 
     const rows = await t.run(async (ctx) =>
@@ -315,15 +334,16 @@ describe("listMyLabelPurchases", () => {
 
   test("returns newest first", async () => {
     const t = convexTest(schema, modules);
-    const asUser = t.withIdentity({ subject: USER });
     for (const code of ["first", "second", "third"]) {
-      await asUser.mutation(
-        api.shipping.recordLabelPurchase,
+      await t.mutation(
+        internal.shipping.recordLabelPurchase,
         purchaseArgs({ trackingCode: code }),
       );
     }
 
-    const rows = await asUser.query(api.shipping.listMyLabelPurchases, {});
+    const rows = await t
+      .withIdentity({ subject: USER })
+      .query(api.shipping.listMyLabelPurchases, {});
     expect(rows.map((r) => r.trackingCode)).toEqual(["third", "second", "first"]);
   });
 
@@ -333,15 +353,16 @@ describe("listMyLabelPurchases", () => {
   // likely to be reprinting.
   test("caps at 25, dropping the oldest", async () => {
     const t = convexTest(schema, modules);
-    const asUser = t.withIdentity({ subject: USER });
     for (let i = 1; i <= 26; i++) {
-      await asUser.mutation(
-        api.shipping.recordLabelPurchase,
+      await t.mutation(
+        internal.shipping.recordLabelPurchase,
         purchaseArgs({ trackingCode: `label-${String(i).padStart(2, "0")}` }),
       );
     }
 
-    const rows = await asUser.query(api.shipping.listMyLabelPurchases, {});
+    const rows = await t
+      .withIdentity({ subject: USER })
+      .query(api.shipping.listMyLabelPurchases, {});
     expect(rows).toHaveLength(25);
     const codes = rows.map((r) => r.trackingCode);
     expect(codes[0]).toBe("label-26");
@@ -351,18 +372,14 @@ describe("listMyLabelPurchases", () => {
 
   test("shows each seller only their own purchases", async () => {
     const t = convexTest(schema, modules);
-    await t
-      .withIdentity({ subject: USER })
-      .mutation(
-        api.shipping.recordLabelPurchase,
-        purchaseArgs({ trackingCode: "mine" }),
-      );
-    await t
-      .withIdentity({ subject: OTHER_USER })
-      .mutation(
-        api.shipping.recordLabelPurchase,
-        purchaseArgs({ trackingCode: "theirs" }),
-      );
+    await t.mutation(
+      internal.shipping.recordLabelPurchase,
+      purchaseArgs({ userId: USER, trackingCode: "mine" }),
+    );
+    await t.mutation(
+      internal.shipping.recordLabelPurchase,
+      purchaseArgs({ userId: OTHER_USER, trackingCode: "theirs" }),
+    );
 
     const mine = await t
       .withIdentity({ subject: USER })

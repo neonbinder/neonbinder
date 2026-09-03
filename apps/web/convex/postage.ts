@@ -303,7 +303,12 @@ export const buyLetterLabel = action({
     // separate mutation whose failure is logged, not thrown.
     let historySaved = false;
     try {
-      await ctx.runMutation(api.shipping.recordLabelPurchase, {
+      await ctx.runMutation(internal.shipping.recordLabelPurchase, {
+        // Internal, so the row's owner is passed rather than re-derived: the
+        // subject this action already verified. A public write here would let a
+        // seller file a purchase row naming someone else's shipment id, which
+        // `refreshLabelUrl` below would then accept as proof of ownership.
+        userId,
         easypostShipmentId: bought.shipmentId,
         trackingCode: bought.trackingCode,
         costCents: bought.amountCents,
@@ -341,6 +346,11 @@ export const buyLetterLabel = action({
  * service checks only that the credential key is theirs, not the shipment.
  * Missing and not-yours produce the same message on purpose: a distinct
  * "not yours" would confirm the id exists.
+ *
+ * The row is trustworthy because only `internal.shipping.recordLabelPurchase`
+ * can write one, from the purchase above. If that write ever becomes reachable
+ * from a client, this ownership check stops meaning anything: a seller would
+ * simply file a row of their own carrying someone else's shipment id.
  *
  * **The 180-day wall.** EasyPost deletes label images 180 days after purchase.
  * Past that the shipment still resolves but has no retrievable label, and there

@@ -23,7 +23,11 @@ vi.mock("convex/react", () => ({
   useAction: vi.fn(),
 }));
 
-vi.mock("@/lib/print/print-html", () => ({
+// Only the print CALL is faked. `imageBodyHtml` stays real so the body these
+// tests assert on is the markup the seller would actually print, escaping and
+// https check included (NEO-213).
+vi.mock("@/lib/print/print-html", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/print/print-html")>()),
   printHtmlDocument: vi.fn(),
 }));
 
@@ -191,10 +195,12 @@ describe("LabelHistoryPage", () => {
       screen.getByRole("button", { name: /reprint the label for jane buyer/i }),
     );
 
-    // Matched on the FULL reprint label: the row's copy button is also named
-    // after the recipient, so a bare /jane buyer/ matches two controls.
+    // Matched on the FULL label: the row's copy button is also named after the
+    // recipient, so a bare /jane buyer/ matches two controls. The busy name is
+    // "Reprinting…", not "Reprint…" — the accessible name tracks the visible
+    // text so voice input can still address the button while it runs (2.5.3).
     const busy = await screen.findByRole("button", {
-      name: /reprint the label for jane buyer/i,
+      name: /reprinting the label for jane buyer/i,
     });
     expect(busy.textContent).toBe("Reprinting…");
     expect((busy as HTMLButtonElement).disabled).toBe(true);

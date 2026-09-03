@@ -7,7 +7,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import TrackingCode from "@/components/modules/TrackingCode";
 import { formatUsd } from "@/lib/format/money";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/time/relative-time";
-import { printHtmlDocument } from "@/lib/print/print-html";
+import { imageBodyHtml, printHtmlDocument } from "@/lib/print/print-html";
 import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
 import { sellerMessage } from "@/lib/shipping/postage-error";
 
@@ -85,7 +85,13 @@ export default function LabelHistoryPage() {
           // Sized to the page rather than left at natural size, exactly as the
           // original purchase print does: EasyPost's 6x4 PNG is a known aspect
           // ratio, and letting it overflow clips the barcode a carrier scans.
-          bodyHtml: `<img src="${labelUrl}" alt="" style="width:${DEFAULT_LABEL_FORMAT.widthIn}in;height:${DEFAULT_LABEL_FORMAT.heightIn}in;display:block">`,
+          // The URL is escaped and scheme-checked by the helper — it comes from
+          // EasyPost and lands in a same-origin iframe.
+          bodyHtml: imageBodyHtml({
+            src: labelUrl,
+            widthIn: DEFAULT_LABEL_FORMAT.widthIn,
+            heightIn: DEFAULT_LABEL_FORMAT.heightIn,
+          }),
           css: "",
           page: {
             widthIn: DEFAULT_LABEL_FORMAT.widthIn,
@@ -143,7 +149,7 @@ export default function LabelHistoryPage() {
           is not off-screen, it is not loaded. Say so rather than let a seller
           conclude an older label was never saved. */}
       {purchases !== undefined && purchases.length >= HISTORY_LIMIT && (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-slate-400">
           Showing your {HISTORY_LIMIT} most recent label purchases.
         </p>
       )}
@@ -181,7 +187,7 @@ export default function LabelHistoryPage() {
                     {expired ? (
                       // No button: EasyPost has deleted the image, so the only
                       // thing a press could produce is a failure message.
-                      <span className="text-xs text-slate-500">
+                      <span className="text-xs text-slate-400">
                         Label expired — EasyPost keeps labels for 180 days
                       </span>
                     ) : (
@@ -192,8 +198,18 @@ export default function LabelHistoryPage() {
                         // The visible word is "Reprint" on every row, so the
                         // accessible name has to say WHICH label — otherwise a
                         // screen reader hears the same button 25 times.
-                        aria-label={`Reprint the label for ${recipient}`}
-                        className="rounded-md border border-neon-teal/40 px-3 py-1.5 text-sm font-medium text-neon-teal transition-colors hover:border-neon-teal hover:bg-neon-teal/10 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-green-500"
+                        //
+                        // It tracks the visible label rather than staying fixed
+                        // (WCAG 2.5.3): once the button reads "Reprinting…", an
+                        // accessible name still saying "Reprint the label for…"
+                        // no longer contains the visible text, so a voice-input
+                        // user's "click Reprinting" would not match anything.
+                        aria-label={
+                          busy
+                            ? `Reprinting the label for ${recipient}`
+                            : `Reprint the label for ${recipient}`
+                        }
+                        className="rounded-md border border-neon-teal/60 px-3 py-1.5 text-sm font-medium text-neon-teal transition-colors hover:border-neon-teal hover:bg-neon-teal/10 disabled:opacity-40 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-green-500"
                       >
                         {busy ? "Reprinting…" : "Reprint"}
                       </button>

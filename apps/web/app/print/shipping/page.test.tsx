@@ -27,7 +27,11 @@ vi.mock("convex/react", () => ({
   useAction: vi.fn(),
 }));
 
-vi.mock("@/lib/print/print-html", () => ({
+// Only the print CALL is faked. `imageBodyHtml` stays real, so a label URL that
+// would be refused (non-https) or escaped still behaves here as it does in the
+// browser (NEO-213).
+vi.mock("@/lib/print/print-html", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/print/print-html")>()),
   printHtmlDocument: vi.fn(),
 }));
 

@@ -52,6 +52,21 @@ const MAX_KEY_LENGTH = 256;
 const MAX_SHIPMENT_ID_LENGTH = 100;
 
 /**
+ * The format check the cap above deliberately is not: `shp_` + alphanumerics,
+ * which is every id EasyPost mints.
+ *
+ * This id is not ours. It is stored via a client-reachable path, so by the time
+ * it comes back as `:shipmentId` it is caller-authored and gets treated as
+ * untrusted input, not as something the system minted. Traversal was already
+ * contained by the double encoding: Express decodes the segment once, and
+ * `retrieveLabel` re-encodes it with encodeURIComponent before interpolating,
+ * so a `../` cannot climb out of `/shipments/` upstream. This closes the
+ * residual — an id that EasyPost could never have issued is refused here,
+ * before the seller's stored key is read, instead of being spent on a request.
+ */
+const SHIPMENT_ID_PATTERN = /^shp_[A-Za-z0-9]+$/;
+
+/**
  * The slice of SecretsManagerService these routes use. Injectable so the tests
  * can mount the router over an in-memory store (see routes/credentials.ts).
  */
@@ -278,7 +293,11 @@ export function createEasypostRouter(
       if (rejectNonEasypostKey(req.params.key, res)) return;
 
       const shipmentId = (req.params.shipmentId ?? "").trim();
-      if (!shipmentId || shipmentId.length > MAX_SHIPMENT_ID_LENGTH) {
+      if (
+        !shipmentId ||
+        shipmentId.length > MAX_SHIPMENT_ID_LENGTH ||
+        !SHIPMENT_ID_PATTERN.test(shipmentId)
+      ) {
         res.status(400).json({ error: "Invalid shipmentId" });
         return;
       }

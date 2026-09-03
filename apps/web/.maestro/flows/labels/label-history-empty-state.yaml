@@ -1,0 +1,109 @@
+# R1 — Single feature (NEO-213): a seller can FIND the new Label History tool in
+# the Print Shop, and — having bought no postage — it tells them there is nothing
+# to reprint instead of showing an empty list or a broken page.
+#
+# WHY THE EMPTY STATE IS THE ASSERTABLE HALF
+# The populated list can only exist after a real EasyPost purchase, and buying
+# postage in CI is forbidden (print-label.yaml and get-postage-rate.yaml both
+# stop short of "Buy postage" for exactly that reason — a production key would
+# spend the seller's money on every run, forever). So the row rendering, the
+# Reprint action and the 180-day expiry note are covered by app/print/labels/
+# page.test.tsx, where a purchase is free to fabricate. What only an E2E can
+# prove is that the route is wired, reachable from the hub, and that a seller
+# with no purchases lands somewhere that makes sense.
+#
+# NO PRINT, NO PURCHASE (repo law): there is no Reprint button in this branch, so
+# nothing here can reach window.print() — whose native dialog blocks every
+# further browser event and wedges the runner — and nothing here can spend money.
+#
+# NO EASYPOST KEY NEEDED: the page reads shipping.listMyLabelPurchases, a plain
+# Convex query. Unlike get-postage-rate.yaml this flow does NOT need
+# DEV_EASYPOST_API_KEY, which is why it can carry the `labels` tag and run in the
+# normal suite.
+#
+# SELF-CONTAINED (R4): the entry URL signs in as the isolated `new-profile`
+# account for this worker and that is the whole handshake — no in-body login.
+#
+# WHY NO /testing/reset HOP (R10): the sibling flows in this directory route
+# through it, but resetMyTestState (convex/testing.ts) deletes exactly three
+# per-user tables — publicProfiles, userProfiles, prizePool — and labelPurchases
+# is not one of them. It could not clear a purchase if one existed, so adding the
+# hop would buy this flow nothing but a round-trip. What actually makes the empty
+# state deterministic is that NOTHING in the suite ever buys postage, on any
+# account, by design. (The one way to break that is a human buying a real label
+# while signed in as a worker's new-profile account against shared dev — and no
+# reset step could undo that either.)
+#
+# Entry URL: sign in as the new-profile account and land on the Print Shop hub.
+# `account=new-profile` and `worker` are TOP-LEVEL sign-in query params.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/print&account=new-profile&worker=${WORKER_INDEX || "0"}
+name: Print Shop — Label History empty state
+tags:
+  - labels
+---
+# Step 1: open the app at the signed-in Print Shop hub.
+- launchApp
+- extendedWaitUntil:
+    visible: "Print Shop"
+    timeout: 45000
+
+# Step 2: the hub has to ADVERTISE the new tool, not just route to it — bare
+# /print lists the tools precisely because the sub-tab strip is names with no
+# room to say what each one does.
+#
+# We match the card's DESCRIPTION rather than its "Label History" heading on
+# purpose: that heading text is rendered twice on this page (the sub-nav tab and
+# the card title), so asserting it would prove neither exists — Maestro would be
+# satisfied by whichever it found first. The description belongs to the card
+# alone. Scrolling to it is also the tap target: the <Link> wraps both the
+# heading and this sentence, so a tap here follows the card.
+#
+# centerElement (R8) because this is a scroll-to-tap — the tool grid is five
+# cards in two columns and the row a card lands in shifts as tools are added.
+# The scroll IS the assertion that the hub card exists (R6) — no trailing
+# assertVisible of the same text.
+- scrollUntilVisible:
+    element:
+      text: ".*Reprint a label you already paid for.*"
+    centerElement: true
+- tapOn:
+    text: ".*Reprint a label you already paid for.*"
+
+# Step 3: we are on the tool's own tab. This sentence exists only on
+# /print/labels, so it — not the "Label History" heading, which the sub-nav tab
+# also carries — is what proves the tap actually landed on the new route and
+# that the route is mounted.
+- extendedWaitUntil:
+    visible: ".*newest first. Reprint one without paying for it twice.*"
+    timeout: 10000
+
+# Step 4: THE FEATURE. With no purchases the page says so in the seller's terms
+# and points at where labels come from, instead of rendering an empty box.
+#
+# This assert is what makes the flow fail if the feature breaks (R2): it renders
+# only once the purchases query has RESOLVED to an empty list — while the query
+# is in flight the page shows "Digging through the shoebox…" instead, so a page
+# that never loads its data cannot satisfy it.
+#
+# Matched around the em dash rather than through it, so the assertion does not
+# hinge on a punctuation character surviving the hierarchy round-trip.
+- assertVisible: ".*No labels yet.*nothing to reprint.*"
+
+# The empty state also has to be actionable — a dead end that says "no labels"
+# and nothing else leaves the seller with no idea how to get one. This paragraph
+# carries the link back to Shipping.
+#
+# We do NOT follow that link: /print/shipping renders one of two different pages
+# depending on whether this account happens to have a saved return address, which
+# is not something this flow controls — and both of those branches are already
+# owned by print-label.yaml and no-return-address-empty-state.yaml (R3).
+- assertVisible: ".*Buy postage over on.*"
+
+# Step 5: and it really is the EMPTY branch, not a list that happens to be
+# scrolled past. Every purchase row carries a "Reprint" button; Maestro text
+# matches are anchored to the whole text node, so this matches the button label
+# alone and not the "Reprint one without paying for it twice." sentence above.
+# Placed AFTER the positive asserts deliberately: a negative assert on its own is
+# satisfied by any dead page.
+- assertNotVisible: "Reprint"

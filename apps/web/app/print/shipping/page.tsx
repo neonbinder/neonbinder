@@ -15,7 +15,7 @@ import {
 } from "@/lib/shipping/address";
 import { parseAddressText } from "@/lib/shipping/parse-address";
 import { DEFAULT_LABEL_FORMAT } from "@/lib/shipping/label-formats";
-import { printHtmlDocument } from "@/lib/print/print-html";
+import { imageBodyHtml, printHtmlDocument } from "@/lib/print/print-html";
 import { formatUsd } from "@/lib/format/money";
 import { sellerMessage } from "@/lib/shipping/postage-error";
 import PurchasedTracking from "@/components/modules/PurchasedTracking";
@@ -340,8 +340,14 @@ export default function ShippingLabelsPage() {
           title: `Postage label — ${to.name || "label"}`,
           // Sized to the page rather than left at natural size: EasyPost's 6x4
           // PNG is a known aspect ratio, and letting it overflow would clip the
-          // barcode a carrier has to scan.
-          bodyHtml: `<img src="${bought.labelUrl}" alt="" style="width:${DEFAULT_LABEL_FORMAT.widthIn}in;height:${DEFAULT_LABEL_FORMAT.heightIn}in;display:block">`,
+          // barcode a carrier has to scan. The URL is EasyPost's, not ours, and
+          // the print iframe is same-origin — the helper escapes it and refuses
+          // anything that is not https.
+          bodyHtml: imageBodyHtml({
+            src: bought.labelUrl,
+            widthIn: DEFAULT_LABEL_FORMAT.widthIn,
+            heightIn: DEFAULT_LABEL_FORMAT.heightIn,
+          }),
           css: "",
           page: {
             widthIn: DEFAULT_LABEL_FORMAT.widthIn,
