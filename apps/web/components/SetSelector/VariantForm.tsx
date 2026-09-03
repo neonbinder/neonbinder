@@ -5,7 +5,7 @@ import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { primarySlot, slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
-import UnlinkedNotice from "./UnlinkedNotice";
+import SyncDoneNotice from "./SyncDoneNotice";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
@@ -299,7 +299,7 @@ export default function VariantForm({
                   so this is a notice, not an error, and it sits above the
                   outcome message it explains. */}
               {!showReconciliation && (
-                <UnlinkedNotice
+                <SyncDoneNotice
                   notices={buildUnlinkedNotices(unlinked, "insert")}
                   onDismiss={() => setUnlinked([])}
                 />

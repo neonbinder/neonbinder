@@ -9,7 +9,7 @@ import SelectorSyncReviewModal, {
   MAX_DECISIONS_PER_CALL,
   type SelectorSyncSuggestion,
 } from "./SelectorSyncReviewModal";
-import UnlinkedNotice from "./UnlinkedNotice";
+import SyncDoneNotice from "./SyncDoneNotice";
 import {
   buildUnlinkedNotices,
   levelLabelPlural,
@@ -355,10 +355,17 @@ export default function EntityColumn({
     syncStatus?.status === "done" && Array.isArray(syncStatus.unlinked)
       ? (syncStatus.unlinked as UnlinkedEntry[])
       : [];
-  const noticeKey = doneUnlinked
+  // A "done" row carries a partial-failure `message`, an `unlinked` list, or
+  // both — the backend writes it whenever EITHER is non-empty (a clean sync
+  // still deletes the row). All three shapes are one dismissable surface.
+  const doneMessage =
+    syncStatus?.status === "done" ? syncStatus.message : undefined;
+  const noticeKey = `${doneMessage ?? ""}::${doneUnlinked
     .map((u) => `${u.side}:${u.id}`)
-    .join("|");
-  const noticeVisible = doneUnlinked.length > 0 && noticeKey !== dismissedNoticeKey;
+    .join("|")}`;
+  const noticeVisible =
+    (!!doneMessage || doneUnlinked.length > 0) &&
+    noticeKey !== dismissedNoticeKey;
   // `unlinkedTotal` is one scalar across both sides, so it can only be
   // attributed when a single side is involved — which is the common case (one
   // marketplace dropped a batch). With both sides present we fall back to
@@ -675,18 +682,16 @@ export default function EntityColumn({
             {syncStatus.message || "Couldn't sync options."}
           </div>
         )}
-        {/* NEO-211 (plan B, server half): one side failed but the other stored,
-            so the sync is "done" and NOT an error — yet the operator still has
-            to know a marketplace was not reached, or they will read the column
-            as complete. The server writes this string; it is rendered verbatim
-            and never rebuilt from adapter output here. */}
-        {syncStatus?.status === "done" && syncStatus.message && (
-          <div className="p-3 mb-1 bg-amber-400/10 border border-amber-700/60 dark:border-amber-400/40 rounded-md text-amber-800 dark:text-amber-300 text-sm">
-            {syncStatus.message}
-          </div>
-        )}
+        {/* NEO-211 (plans B + D). `message` is the partial-failure case: one
+            side failed but the other stored, so the sync is "done" and NOT an
+            error — yet the operator still has to know a marketplace was not
+            reached, or they will read the column as complete. It is a fixed
+            server-composed string, rendered verbatim and never rebuilt here.
+            Either half can arrive without the other, so both share one box and
+            one Dismiss. */}
         {noticeVisible && (
-          <UnlinkedNotice
+          <SyncDoneNotice
+            message={doneMessage}
             notices={buildUnlinkedNotices(doneUnlinked, level, {
               totalsBySide: unlinkedTotals,
             })}

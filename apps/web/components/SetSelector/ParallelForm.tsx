@@ -5,7 +5,7 @@ import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { slotIds } from "../../convex/platformSlots";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
-import UnlinkedNotice from "./UnlinkedNotice";
+import SyncDoneNotice from "./SyncDoneNotice";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
@@ -228,7 +228,7 @@ export default function ParallelForm({
                   rows are still ours — only the link went away — so this is a
                   notice, not an error. */}
               {!showReconciliation && (
-                <UnlinkedNotice
+                <SyncDoneNotice
                   notices={buildUnlinkedNotices(unlinked, "parallel")}
                   onDismiss={() => setUnlinked([])}
                 />

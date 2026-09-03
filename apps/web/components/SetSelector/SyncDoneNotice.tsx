@@ -1,7 +1,24 @@
 import type { UnlinkedNotice as Notice } from "./selector-sync-feedback";
 
 /**
- * NEO-211 (plan D) — "the marketplace stopped listing these".
+ * NEO-211 (plans B + D) — everything a FINISHED sync still has to tell you.
+ *
+ * Two different things land here, because the backend folds them into one
+ * `status: "done"` row and either can arrive without the other:
+ *
+ *   `message`  — one marketplace could not be reached while the other stored
+ *                fine (plan B). A FIXED server-composed string; rendered
+ *                verbatim, never rebuilt here.
+ *   `notices`  — links this sync detached because a reached marketplace no
+ *                longer lists those rows (plan D).
+ *
+ * They share one box and ONE dismiss control deliberately. A message-only done
+ * row is the common partial-failure case, and giving it no way to clear itself
+ * would leave a permanent banner over the column; giving each half its own
+ * Dismiss would put two of them side by side in a 260-340px column for the case
+ * where both arrive together.
+ *
+ * ## "The marketplace stopped listing these"
  *
  * Jason, 2026-09-03: "just remove BSC from the platform data and alert the user
  * that it was done. No need to track it in the DB." So there is no flag, no
@@ -40,17 +57,20 @@ import type { UnlinkedNotice as Notice } from "./selector-sync-feedback";
  * asserts `text: "Custom"` positioned `rightOf` a row, and a second match in the
  * same column is a resolution hazard.
  */
-export default function UnlinkedNotice({
+export default function SyncDoneNotice({
+  message,
   notices,
   onDismiss,
   dismissing,
 }: {
+  /** Server-composed partial-failure text. Rendered verbatim. */
+  message?: string;
   notices: Notice[];
   onDismiss: () => void;
   /** Server round-trip in flight (column path); locks the button. */
   dismissing?: boolean;
 }) {
-  if (notices.length === 0) return null;
+  if (!message && notices.length === 0) return null;
 
   return (
     <div
@@ -58,16 +78,21 @@ export default function UnlinkedNotice({
       className="p-3 mb-1 bg-amber-400/10 border border-amber-700/60 dark:border-amber-400/40 rounded-md text-amber-800 dark:text-amber-300 text-sm flex items-start justify-between gap-2"
     >
       <div className="min-w-0 space-y-1">
+        {message && <p className="break-words">{message}</p>}
         {notices.map((n) => (
           <p key={n.side} className="break-words">
             {n.text}
           </p>
         ))}
-        {/* The reassurance is the point of the notice, not decoration on it:
-            "no longer listed" reads as "deleted" unless we say otherwise. */}
-        <p className="text-xs opacity-80">
-          These are still yours — only the marketplace link was removed.
-        </p>
+        {/* The reassurance is the point of the unlink notice, not decoration on
+            it: "no longer listed" reads as "deleted" unless we say otherwise.
+            Scoped to the unlink half — it makes no sense over a message that is
+            only reporting an unreachable marketplace. */}
+        {notices.length > 0 && (
+          <p className="text-xs opacity-80">
+            These are still yours — only the marketplace link was removed.
+          </p>
+        )}
       </div>
       <button
         type="button"

@@ -249,18 +249,72 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
   });
 
-  it("carries the server's per-platform failure text verbatim", async () => {
-    // One side failed while the other stored: the sync is "done", not an error,
-    // but the operator would otherwise read the column as complete.
-    state.status = {
-      status: "done",
-      message: "SportLots could not be reached; its links were left alone.",
-      unlinked: [],
-    };
-    await renderColumn();
-    expect(
-      screen.getByText("SportLots could not be reached; its links were left alone."),
-    ).toBeTruthy();
+  /**
+   * The PARTIAL-failure shape: `ensureSelectorOptions` writes `status: "done"`
+   * with a fixed `partialSyncMessage` and NO unlinked entries when one
+   * marketplace was unreachable and the other stored fine. A total failure
+   * stays `status: "error"`. This row is the common case of the two, and it
+   * used to render as a permanent banner with no way to clear it.
+   */
+  describe("message-only done (partial platform failure)", () => {
+    const PARTIAL =
+      "SportLots could not be reached, so nothing from SportLots was changed. " +
+      "Everything the other marketplace returned was saved — retry to fill in the rest.";
+    const messageOnly = { status: "done", message: PARTIAL, unlinked: [] };
+
+    it("renders the server's fixed string verbatim with nothing unlinked", async () => {
+      // Without this the operator reads the column as complete.
+      state.status = messageOnly;
+      await renderColumn();
+      expect(noticeBox().textContent).toContain(PARTIAL);
+    });
+
+    it("omits the unlink reassurance, which would make no sense here", async () => {
+      state.status = messageOnly;
+      await renderColumn();
+      expect(noticeBox().textContent).not.toContain("still yours");
+      expect(noticeBox().textContent).not.toContain("No longer listed");
+    });
+
+    it("is dismissable, and clears the row on the server", async () => {
+      state.status = messageOnly;
+      await renderColumn();
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Dismiss notice"));
+      });
+      expect(mockDismiss).toHaveBeenCalledWith({
+        level: "setName",
+        parentId: undefined,
+      });
+      expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
+    });
+
+    it("fires NO toast — there is nothing unlinked to announce", async () => {
+      // The toast exists to catch an unlink landing while the column is
+      // scrolled away. A partial failure is already visible in the column the
+      // operator just triggered the sync from.
+      state.status = messageOnly;
+      await renderColumn();
+      expect(document.querySelector('[aria-live="polite"]')).toBeNull();
+    });
+
+    it("still shows both halves when a sync partially failed AND unlinked", async () => {
+      state.status = { ...messageOnly, unlinked: doneWithUnlinked.unlinked };
+      await renderColumn();
+      const text = noticeBox().textContent ?? "";
+      expect(text).toContain(PARTIAL);
+      expect(text).toContain("No longer listed on BSC: 2 sets");
+      // One box, one Dismiss — not two stacked in a 260-340px column.
+      expect(screen.getAllByLabelText("Dismiss notice")).toHaveLength(1);
+    });
+
+    it("leaves a total failure on the error path, with Retry semantics intact", async () => {
+      state.status = { status: "error", message: "Couldn't sync options." };
+      await renderColumn();
+      expect(screen.getByText("Couldn't sync options.")).toBeTruthy();
+      // An error row is not dismissable — Sync is the way out.
+      expect(screen.queryByLabelText("Dismiss notice")).toBeNull();
+    });
   });
 
   it("never uses the bare word 'Custom' in the notice", async () => {
