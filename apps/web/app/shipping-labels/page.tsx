@@ -1,18 +1,20 @@
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import { SignUpButton } from "@clerk/clerk-react";
 
 /**
- * NEO-118 — public marketing page for the shipping-label feature.
+ * NEO-118 / NEO-207 — public marketing page for the shipping-label feature.
  *
  * Structure follows app/managing-inventory/page.tsx, the established template
  * for these pages: sticky header with Back, hero, alternating two-column
  * sections pairing an inline SVG in a gradient tile with `▸` bullets, then a
  * sign-up CTA.
  *
- * Copy covers only what the feature does today. Postage and address validation
- * are on the roadmap but are deliberately absent here — printed postage depends
- * on an authorized USPS payment account, so it is not a date we can promise on
- * a marketing page.
+ * Copy covers only what the feature does today. NEO-118 deliberately omitted
+ * postage; NEO-120 shipped it (EasyPost, USPS First-Class letters, address
+ * verification during rating), so the postage section below replaced that
+ * omission. Still deliberately absent, because neither exists in the UI yet:
+ * label purchase history, and any marketplace-order integration — the seller
+ * addresses each envelope by hand. Do not promise either here.
  */
 export default function ShippingLabelsPage() {
   const navigate = useNavigate();
@@ -43,10 +45,11 @@ export default function ShippingLabelsPage() {
             </h1>
             <p className="text-xl text-slate-400 mb-8">
               Stop hand-writing envelopes. Type where it&apos;s going, hit
-              print, slap it on.
+              print, slap it on. Want real postage on there too? One more
+              button.
             </p>
             <p className="text-lg font-semibold text-neon-teal mt-6">
-              Free during beta
+              Labels are free during beta — postage costs what USPS charges
             </p>
           </div>
 
@@ -266,12 +269,108 @@ export default function ShippingLabelsPage() {
             </div>
           </div>
 
+          {/* Section 4: Buy the postage too (NEO-120) */}
+          <div className="grid md:grid-cols-2 gap-12 items-center mb-20">
+            <div className="md:order-2">
+              <div className="bg-gradient-to-br from-neon-blue/10 to-neon-green/10 rounded-2xl p-12 border border-neon-blue/30 aspect-square flex items-center justify-center">
+                <svg
+                  viewBox="0 0 200 200"
+                  width="200"
+                  height="200"
+                  fill="none"
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true"
+                >
+                  {/* PWE with printed indicia where the stamp would go */}
+                  <rect x="25" y="55" width="150" height="95" rx="5" stroke="#00C2FF" strokeWidth="3" />
+                  {/* Indicia box, top-right */}
+                  <rect x="128" y="65" width="38" height="30" rx="2" stroke="#00D558" strokeWidth="2" strokeDasharray="4 3" />
+                  <text x="147" y="79" textAnchor="middle" fill="#00D558" fontSize="9" fontWeight="bold">
+                    USPS
+                  </text>
+                  <text x="147" y="90" textAnchor="middle" fill="#00D558" fontSize="9" fontWeight="bold">
+                    $0.80
+                  </text>
+                  {/* Delivery address block */}
+                  <line x1="62" y1="108" x2="138" y2="108" stroke="#00C2FF" strokeWidth="3" strokeLinecap="round" />
+                  <line x1="55" y1="120" x2="145" y2="120" stroke="#00C2FF" strokeWidth="3" strokeLinecap="round" />
+                  <line x1="70" y1="132" x2="130" y2="132" stroke="#00C2FF" strokeWidth="3" strokeLinecap="round" />
+                  {/* Tracking barcode along the bottom */}
+                  {[38, 43, 50, 56, 60, 67, 73, 78, 85, 91, 96, 103, 109, 114, 121, 127, 132, 139, 145, 150, 157].map(
+                    (x, i) => (
+                      <line
+                        key={x}
+                        x1={x}
+                        y1="160"
+                        x2={x}
+                        y2="172"
+                        stroke="#00D558"
+                        strokeWidth={i % 3 === 0 ? "3" : "1.5"}
+                      />
+                    ),
+                  )}
+                  <text x="100" y="188" textAnchor="middle" fill="#00C2FF" fontSize="9" fontWeight="bold">
+                    POSTAGE + TRACKING
+                  </text>
+                </svg>
+              </div>
+            </div>
+            <div className="md:order-1">
+              <h2 className="text-4xl font-bold mb-4 text-neon-blue">
+                Buy The Postage Too
+              </h2>
+              <p className="text-lg text-slate-300 mb-6">
+                Connect your own EasyPost account and the same page prices real
+                USPS First-Class letter postage for a plain white envelope —
+                about $0.80 for a 1oz PWE, a little less than a stamp. Print
+                the stamped label, drop the envelope in the mailbox, done.
+              </p>
+              <div className="space-y-4 text-slate-400">
+                <div className="flex items-start gap-3">
+                  <span className="text-neon-blue font-bold text-xl">▸</span>
+                  <div>
+                    <h4 className="font-semibold text-slate-300">Letter Rates, Not Package Rates</h4>
+                    <p>A PWE ships as a First-Class letter, with 1, 2, and 3oz tiers priced up front — every weight shows its real price before you pick one.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="text-neon-blue font-bold text-xl">▸</span>
+                  <div>
+                    <h4 className="font-semibold text-slate-300">Verified Before You&apos;re Charged</h4>
+                    <p>USPS checks the buyer&apos;s address while the label is priced, so an undeliverable address fails before any money moves. The buy button always shows the exact amount it will charge.</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <span className="text-neon-blue font-bold text-xl">▸</span>
+                  <div>
+                    <h4 className="font-semibold text-slate-300">Tracking, Copied, Done</h4>
+                    <p>Every purchase hands you a tracking number with a copy button, ready to paste back to your buyer.</p>
+                  </div>
+                </div>
+              </div>
+              {/* The link is its own block, not inline in the paragraph:
+                  Maestro taps the matched element's center, and an inline
+                  link's position inside a wrapped paragraph depends on the
+                  runner's font metrics — it missed on CI Linux while passing
+                  on macOS. A standalone link is tappable everywhere. */}
+              <p className="text-slate-400 mt-6">
+                New to EasyPost? Setting up takes about five minutes, once.
+              </p>
+              <Link
+                to="/easypost-setup"
+                className="inline-block mt-2 text-neon-blue underline hover:text-neon-teal"
+              >
+                Follow the EasyPost setup guide →
+              </Link>
+            </div>
+          </div>
+
           {/* CTA Section */}
           <div className="text-center py-16 border-t border-slate-800">
             <h2 className="text-3xl font-bold mb-4">Ready to Ship Faster?</h2>
             <p className="text-lg text-slate-400 mb-8 max-w-2xl mx-auto">
-              Save your return address once and print a clean 4×6 label for
-              every card you sell. Free during beta.
+              Save your return address once, print a clean 4×6 label for every
+              card you sell, and buy the postage without leaving the page.
             </p>
             <SignUpButton mode="modal">
               <button className="px-8 py-4 rounded-lg bg-neon-green hover:bg-neon-green/85 text-black text-lg font-semibold transition-colors">

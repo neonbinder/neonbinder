@@ -40,6 +40,10 @@ tags:
 - scrollUntilVisible:
     element:
       text: "Fits Any 4.6 Label Printer"
+# NEO-207 — the postage section added when NEO-120 shipped.
+- scrollUntilVisible:
+    element:
+      text: "Buy The Postage Too"
 
 # CTA: verify Get Started button opens Clerk dialog
 - scrollUntilVisible:

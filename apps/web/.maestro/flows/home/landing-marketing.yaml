@@ -12,7 +12,9 @@ tags:
     element:
       text: ".*Free Tier.*"
 
-# Feature detail sections (4-up grid — NEO-118 added the shipping-label card)
+# Feature detail sections (6-up grid — NEO-118 added the shipping-label card,
+# NEO-207 the two Print Shop cards). Two rows on desktop now, so the later
+# cards need scrolls rather than bare assertVisible on the 1024x629 viewport.
 - scrollUntilVisible:
     element:
       text: ".*Collection Tracking.*"
@@ -20,8 +22,14 @@ tags:
     text: ".*AI-Based Card Identification.*"
 - assertVisible:
     text: ".*Inventory.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Shipping Labels.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Spine Labels in Team Colors.*"
 - assertVisible:
-    text: ".*Shipping Labels.*"
+    text: ".*9-Pocket Placeholder Sheets.*"
 
 # How It Works section
 - scrollUntilVisible:
