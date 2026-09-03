@@ -143,12 +143,30 @@ tags:
 # the concatenated value past 80 does not fail this flow's ASSERTION, it fails
 # the flow at the Save step, several actions later and for a reason that reads
 # like a product bug. The old marker ("2024 Topps Chrome NEO-25 Test Title …",
-# ~47 chars) landed the value at 79–80. The arithmetic today: the auto title is
-# "2026 Topps cd-0 Detail Panel Test <id> #888-<id>" ≈ 40 + 2·len(ATTEMPT_ID),
-# plus the marker 1 + len(ATTEMPT_ID). With an 11-char ATTEMPT_ID (runner r0–r7)
-# that is 74/80; a two-digit runner id adds 3 → 77. The marker's only job is to
-# be UNIQUE per attempt. Keep it short, and shorten PLAYER_NAME above before
-# ever lengthening it.
+# ~47 chars) landed the value at 79–80.
+#
+# THE ARITHMETIC, recomputed against the fill-toward-80 generator by running
+# `assessListingTitle` on this flow's exact fixture:
+#
+#   "2026 Topps cd-0 #888-<attempt> E2E Test Sport 0"     45–49 chars
+#   + the marker "T<attempt>"                             8–12 chars
+#   ─────────────────────────────────────────────────────────────────
+#                                                         ≤ 61 / 80
+#
+# PLAYER_NAME IS NOT IN THE TITLE, and that is the part worth knowing before
+# doing this sum by eye. `util-add-custom-card` types PLAYER_NAME into the
+# **Card name** field (whose placeholder happens to read "Player name"); the
+# generator's `playerNames` come from the SEPARATE "Players" field, which the
+# util leaves empty, so they arrive as `pendingPlayerNames: []`. The card's
+# display name never reaches the title. What the title DOES now carry, since
+# titles fill toward 80, is the sport ancestor's value — "E2E Test Sport N",
+# 16 characters of it — appended as the last filler token. That is already in
+# the numbers above.
+#
+# So there are ~19 characters of headroom, not the 6 an eyeball estimate
+# suggests. The marker's only job is to be UNIQUE per attempt: keep it short,
+# and re-run the sum (not a guess) if the fixture, the set name, or the sport
+# name ever grows.
 # ============================================================
 
 - assertVisible:

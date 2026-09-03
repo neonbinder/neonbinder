@@ -123,6 +123,21 @@ tags:
 # never reach the title question it exists for. The typed name lands in
 # `pendingTeamNames`, which `deriveCardAttention` counts as an answer already
 # given, so the only thing left to say about this card is its own length.
+#
+# FIXTURE SIZING — the generated title must FIT, and the names below are chosen
+# so it does. Titles now fill toward 80: this card generates
+#
+#   "2024 Topps tlf-<w>-<attempt> #101-<attempt> New York Yankees Baseball"
+#
+# which measures 63-71 characters across the ATTEMPT_ID lengths the runners
+# produce (`<runner>-a<n>-<RANDOM>`, 7-11 chars; ~73 even if a runner index ever
+# went to two digits). That headroom is not cosmetic. If the CORE overflowed,
+# the generator would cut it at a word boundary and stamp
+# `listingTitleTruncated`, which adds a SECOND attention item to this card - and
+# the walker's fixer would then state two reasons where every assertion below
+# expects exactly one. Keep the player and card names short if you change them;
+# the padding typed into the drawer is what exceeds the cap here, never the
+# fixture.
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn:
@@ -229,14 +244,27 @@ tags:
       id: "Card title"
       text: ".*NEO101PAD.*"
     timeout: 7000
-# What is left is a real title ending in this card's number — the one token the
-# generator never drops. This POSITIVE assertion is deliberately the one that
-# follows the wait: a `notVisible` passes on a page that has fallen to its error
-# boundary, a `visible` does not, so a broken regenerate fails here rather than
-# reading as "the padding went away".
+# What is left is the whole rebuilt title, asserted as its exact SHAPE rather
+# than as "contains the card number":
+#
+#   2024 Topps <this attempt's set>  #101-<attempt>  New York Yankees  Baseball
+#   └─────── core ───────────────┘  └── number ──┘  └──── fill tail ─────┘
+#
+# The fill tail is the part worth pinning. Titles are built to fill toward 80
+# now, so after the core and the card number the generator keeps appending
+# while tokens fit — here the team the operator typed on the add-card form
+# (a custom card carries it in `pendingTeamNames`, and Regenerate reads the
+# same fallback the creation path does) and finally the sport, the weakest
+# token and the last one tried. A generator that stopped filling, or a
+# Regenerate that read different inputs from creation, fails on this line.
+#
+# It is also the POSITIVE assertion that deliberately follows the wait above: a
+# `notVisible` passes on a page that has fallen to its error boundary, a
+# `visible` does not, so a broken regenerate fails here rather than reading as
+# "the padding went away".
 - assertVisible:
     id: "Card title"
-    text: ".*#101-${ATTEMPT_ID}"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} New York Yankees Baseball"
 # ...and it fits, so the refusal is lifted.
 - assertNotVisible: ".*Shorten it before saving.*"
 
@@ -358,14 +386,14 @@ tags:
 # The reason it is asking, in the operator's words.
 - assertVisible: "variation text is over the 65-character limit"
 
-# The fixer's title field is pre-filled from the STORED row, so this is also the
-# proof that the regenerated title reached the server: the padding never came
-# back and the card number is still on the end. Its accessible name is anchored
-# to the card number precisely so it cannot be confused with the drawer's own
-# "Card title" field.
+# The fixer's title field is pre-filled from the STORED row, so this is the
+# proof that the regenerated title reached the server intact — same exact shape
+# as the drawer showed, fill tail and all, with no padding anywhere in it. Its
+# accessible name is anchored to the card number precisely so it cannot be
+# confused with the drawer's own "Card title" field.
 - assertVisible:
     id: "Card title for #101-${ATTEMPT_ID}"
-    text: ".*#101-${ATTEMPT_ID}"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} New York Yankees Baseball"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE FIX — shorten the variation until the field stops complaining, then save.
