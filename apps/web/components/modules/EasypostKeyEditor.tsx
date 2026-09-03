@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router";
 import { useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import NeonButton from "./NeonButton";
@@ -158,6 +159,14 @@ export default function EasypostKeyEditor() {
         <p id="easypost-key-hint" className="text-xs text-slate-400 mt-1">
           Find it in EasyPost under Account Settings → API Keys. Use a Production
           key to buy real postage; a Test key prices labels without charging.
+          First time?{" "}
+          <Link
+            to="/easypost-setup"
+            className="underline text-slate-300 hover:text-neon-teal"
+          >
+            Follow the setup guide
+          </Link>
+          .
         </p>
       </div>
 

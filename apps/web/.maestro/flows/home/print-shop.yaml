@@ -1,0 +1,54 @@
+# NEO-207 — a signed-out visitor can reach the Print Shop marketing page from
+# either of its two landing-grid cards (spine labels / placeholder sheets —
+# both navigate to /print-shop), read the three feature sections, and be
+# offered a sign-up.
+#
+# Public page, so no sign-in URL. clearState forces the signed-out state on
+# purpose: "/" bounces a signed-in user straight to /dashboard, and the "Get
+# Started" CTA only opens the Clerk sign-up modal for a visitor who has no
+# account yet.
+url: ${APP_URL || "https://localhost:3000"}
+name: Print Shop Feature Page
+tags:
+  - marketing
+  - home
+---
+- launchApp:
+    clearState: true
+- assertVisible: "Neon Binder"
+
+# The spine-labels card sits in the second grid row, below the fold on the
+# 1024x629 headless viewport — centered before the tap.
+- scrollUntilVisible:
+    element:
+      text: ".*Spine Labels in Team Colors.*"
+    centerElement: true
+- tapOn:
+    text: ".*Spine Labels in Team Colors.*"
+
+# The page's own promise, then its three feature sections.
+- assertVisible: "The Print Shop"
+- scrollUntilVisible:
+    element:
+      text: "Spine Labels In Team Colors"
+- scrollUntilVisible:
+    element:
+      text: "Hold Their Spot In The Binder"
+- scrollUntilVisible:
+    element:
+      text: "Print, Cut, Slide In"
+
+# CTA: verify Get Started button opens Clerk dialog
+- scrollUntilVisible:
+    element:
+      text: "Get Started"
+    centerElement: true
+- tapOn: "Get Started"
+- assertVisible: "Create your account"
+
+# Dismiss dialog and navigate back to home
+- tapOn:
+    point: "5%, 50%"
+- assertNotVisible: "Create your account"
+- tapOn: "Back"
+- assertVisible: "Sign In"

@@ -24,6 +24,8 @@ import BinderTracking from "@/app/binder-tracking/page";
 import AiCardIdentification from "@/app/ai-card-identification/page";
 import ManagingInventory from "@/app/managing-inventory/page";
 import ShippingLabelsMarketing from "@/app/shipping-labels/page";
+import PrintShopMarketing from "@/app/print-shop/page";
+import EasypostSetup from "@/app/easypost-setup/page";
 import SignInPage from "@/app/signin/[[...sign-in]]/page";
 import SignUpPage from "@/app/sign-up/[[...sign-up]]/page";
 import PublicProfile from "@/app/u/[username]/page";
@@ -99,6 +101,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             path="/shipping-labels"
             element={<ShippingLabelsMarketing />}
           />
+          <Route path="/print-shop" element={<PrintShopMarketing />} />
+          <Route path="/easypost-setup" element={<EasypostSetup />} />
           <Route path="/signin/*" element={<SignInPage />} />
           <Route path="/sign-up/*" element={<SignUpPage />} />
           <Route path="/u/:username/sale" element={<SalePage />} />
