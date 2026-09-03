@@ -1,6 +1,6 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import type { Id } from "./_generated/dataModel";
 
@@ -19,6 +19,45 @@ export function normalizePlayerName(raw: string): string {
     .filter(Boolean)
     .sort()
     .join(" ");
+}
+
+/**
+ * One career stint: a player on a team from `fromYear` until `toYear`
+ * (open-ended while they are still there). Mirrors the `players.teamYears`
+ * element shape in the schema.
+ */
+export type PlayerTeamYear = {
+  teamId: Id<"teams">;
+  fromYear: number;
+  toYear?: number;
+};
+
+/**
+ * NEO-212: canonical ordering for `players.teamYears` — `fromYear` ascending,
+ * then an open-ended stint last among stints that started the same year
+ * (`toYear ?? Infinity`).
+ *
+ * Stored sorted rather than sorted on render, so every consumer — the admin
+ * editor, the card detail chips, a future spine label — reads the same career
+ * timeline without each re-deriving it, and a diff of the row is readable.
+ *
+ * Deliberately NOT a dedupe by `teamId`: two separate stints at one franchise
+ * (a player traded away and re-signed later) are real and common, and
+ * collapsing them would destroy the very history this field exists to record.
+ * Only an exact `(teamId, fromYear)` repeat is rejected, and that is the
+ * caller's job — this helper only orders.
+ *
+ * Pure and exported so it can be tested directly, and because a later package
+ * is expected to move it to a shared lib alongside the other career-history
+ * helpers. Returns a new array; the input is not mutated.
+ */
+export function sortTeamYears<T extends { fromYear: number; toYear?: number }>(
+  stints: readonly T[],
+): T[] {
+  return [...stints].sort((a, b) => {
+    if (a.fromYear !== b.fromYear) return a.fromYear - b.fromYear;
+    return (a.toYear ?? Infinity) - (b.toYear ?? Infinity);
+  });
 }
 
 /**
@@ -402,6 +441,398 @@ export const enrichFromWikidata = action({
     } catch (error) {
       console.error("[players.enrichFromWikidata] failed:", error);
     }
+    return null;
+  },
+});
+
+// ===========================================================================
+// NEO-212 — Player Management (/admin/players)
+//
+// The three functions below back the admin Players page, a mirror of
+// /admin/teams. They are the only human-driven writers of `players` rows, and
+// they are the reason `applyEnrichmentInternal`'s docstring above now has a
+// live answer to its own "if a player editor is ever added" caveat — see the
+// note on `savePlayerFields`.
+//
+// User-facing failures throw `ConvexError`, not bare `Error`. Convex replaces a
+// plain `Error`'s message with "Server Error" in a deployed backend, and the
+// NAME_TAKEN message below is *load-bearing UI data* (the page turns it into a
+// link to the colliding player), so it has to survive the trip. Same choice
+// `teams.findOrCreate` made in NEO-208.
+// ===========================================================================
+
+/**
+ * Hard ceiling on rows returned by `listForManagement`.
+ *
+ * Lower than `teams`' 2000 on purpose: there are one or two orders of
+ * magnitude more players than teams, and unlike the team screen this page has
+ * a real server-side search (`players.search`) to fall back on, so the full
+ * list only ever has to be a starting point rather than the whole dataset.
+ */
+const PLAYER_MANAGEMENT_CAP = 500;
+
+/**
+ * Bound on an operator-typed player name — same value and same reasoning as
+ * `teams.MAX_TEAM_NAME_LENGTH`. Over-length is refused rather than trimmed:
+ * silently storing something other than what was typed is how a mangled name
+ * becomes canonical for every listing title and spine label downstream.
+ */
+const MAX_PLAYER_NAME_LENGTH = 120;
+
+/** A Wikidata entity id. The only form `externalIds.wikidataId` may hold. */
+const WIKIDATA_QID = /^Q\d+$/;
+
+/**
+ * Earliest plausible career year. Baseball's first professional league (the
+ * National Association) formed in 1871; 1850 leaves room for the pre-league
+ * amateur era without admitting an obvious typo like `195` or `19999`.
+ */
+const MIN_CAREER_YEAR = 1850;
+
+/**
+ * NEO-212: the whole player list, for the Player Management page.
+ *
+ * This is the "nothing typed yet" view, and only that. The page switches to
+ * `players.search` — the `search_name` index — the moment the admin types a
+ * character, so this query never has to be the thing that finds a specific
+ * player among tens of thousands. That is what lets it stay a capped `.take()`
+ * rather than becoming a paginated browse.
+ *
+ * `truncated` is reported rather than silently dropped, for the same reason
+ * `teams.listForManagement` reports it: a list that quietly stops at the cap
+ * reads as "that is all the players", which is the kind of wrong the operator
+ * cannot see. Here it is not a distant scale worry — 500 is a number a real
+ * deployment passes early — so the flag is load-bearing from day one, and the
+ * page uses it to say "keep typing" instead of implying completeness.
+ *
+ * `createdByUserId` is stripped by `toPublicPlayer`, exactly as in every other
+ * public query in this file. Admin-gated, but that is not a licence to leak the
+ * audit field: the validator is what enforces it and the validator is public.
+ */
+export const listForManagement = query({
+  args: {
+    sportId: v.optional(v.id("selectorOptions")),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({
+    players: v.array(playerDocPublicValidator),
+    totalCount: v.number(),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    // The cap is a ceiling, not a suggestion: a caller passing 10_000 gets 500.
+    const limit = Math.max(
+      1,
+      Math.min(args.limit ?? PLAYER_MANAGEMENT_CAP, PLAYER_MANAGEMENT_CAP),
+    );
+
+    // limit + 1 is the truncation probe — one row past the cap is how we learn
+    // there is more without paying for a count of the whole table.
+    const rows = args.sportId
+      ? await ctx.db
+          .query("players")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+          .take(limit + 1)
+      : await ctx.db.query("players").take(limit + 1);
+
+    const truncated = rows.length > limit;
+    const players = rows.slice(0, limit).map(toPublicPlayer);
+    players.sort((a, b) => a.name.localeCompare(b.name));
+
+    return { players, totalCount: players.length, truncated };
+  },
+});
+
+/**
+ * NEO-212: admin quick-add for a player, the counterpart of `teams.findOrCreate`.
+ *
+ * Separate from `findOrCreate` above rather than a widening of it, because the
+ * two have genuinely different contracts and NEO-208 already drew that line:
+ * `findOrCreate` is the signed-in reconciler the checklist commit path calls
+ * per confirmed BSC name, and it deliberately schedules no enrichment, so it
+ * adds no cost vector an open caller could drive. This one is admin-only and
+ * DOES enqueue a pooled Wikidata lookup, which is precisely why it could not
+ * simply be the same function with a flag.
+ *
+ * Idempotent, and that is a correctness requirement rather than a convenience:
+ * players are globally-shared rows keyed on (normalized name, sport), so a
+ * double-submitted form must resolve to the existing row instead of creating a
+ * second Mike Trout. `created` tells the page which happened, so it can say
+ * "already here" and jump to the row rather than claiming a creation.
+ */
+export const createByAdmin = mutation({
+  args: {
+    name: v.string(),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.object({
+    id: v.id("players"),
+    created: v.boolean(),
+  }),
+  handler: async (ctx, args): Promise<{ id: Id<"players">; created: boolean }> => {
+    const userId = await requireAdmin(ctx);
+
+    const name = args.name.trim();
+    if (name.length === 0) {
+      throw new ConvexError("A player name is required.");
+    }
+    if (name.length > MAX_PLAYER_NAME_LENGTH) {
+      // The LENGTH, never the name: this string reaches Sentry and the browser
+      // console through Convex's error path.
+      throw new ConvexError(
+        `A player name is ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
+    }
+
+    // `sportId` is a bare `v.id("selectorOptions")` — the validator proves it
+    // is an id in that table, not that it points at a SPORT. A player hung off,
+    // say, a variantType row is unreachable by every query that matters
+    // (`list`, `search` and `findByNameAndSport` all key on the sport row id),
+    // so it would be an orphan. Same check `teams.findOrCreate` makes.
+    const sportRow = await ctx.db.get(args.sportId);
+    if (!sportRow || sportRow.level !== "sport") {
+      throw new ConvexError("A player must be created under a sport.");
+    }
+
+    const nameNormalized = normalizePlayerName(name);
+    // The compound index, not `by_name_normalized` + a client-side sport
+    // filter: a common surname matches across every sport we track, and the
+    // narrow read is the difference on a table this size.
+    const existing = await ctx.db
+      .query("players")
+      .withIndex("by_name_normalized_and_sport_id", (q) =>
+        q.eq("nameNormalized", nameNormalized).eq("sportId", args.sportId),
+      )
+      .first();
+    // NOT enqueued — see the creation-only note on the insert below.
+    if (existing) return { id: existing._id, created: false };
+
+    const id = await ctx.db.insert("players", {
+      name,
+      nameNormalized,
+      sportId: args.sportId,
+      createdByUserId: userId,
+      lastUpdated: Date.now(),
+    });
+
+    // An audit trail for a shared-row creation an operator triggers from a
+    // form. Structured JSON, not concatenation — the name is operator input and
+    // must not be able to shape a log line.
+    console.log(
+      JSON.stringify({ msg: "player_created", playerId: id, sportId: args.sportId, userId }),
+    );
+
+    /**
+     * Enrich the player we just INSERTED, and only that.
+     *
+     * The early `return { id: existing._id, created: false }` above is what
+     * makes this honour `enqueueEnrichment`'s CREATION-ONLY contract (see the
+     * contract note in `wikidataPool.ts`): a player this mutation FOUND leaves
+     * without being enqueued. Jason, 2026-09-02: "if the player is already
+     * known we should not try to look up the data again."
+     *
+     * No `force` — that flag belongs to `enrichFromWikidata`, the human "this
+     * answer is wrong, look again" remedy. This is an automatic caller and
+     * automatic callers never set it.
+     *
+     * Scheduled rather than awaited inline because enrichment is a network
+     * round-trip and this is a mutation — the same reason `teams.findOrCreate`
+     * schedules its own.
+     */
+    await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEnrichment, {
+      playerIds: [id],
+    });
+
+    return { id, created: true };
+  },
+});
+
+/**
+ * NEO-212: manual field entry for the player editor — the counterpart of
+ * `teams.saveTeamFields`.
+ *
+ * ## This is the editor `applyEnrichmentInternal` warned about
+ *
+ * That function's docstring justifies its blind full write by observing that
+ * `players` has no hand-editor, so there is no human input for a gap-fill rule
+ * to protect. This function is that editor, and the caveat it names ("if a
+ * player editor is ever added, this needs the `teams` treatment") now applies.
+ *
+ * It is NOT resolved here, deliberately: `enrichPlayer`'s creation-only guard
+ * (NEO-203, pinned by convex/enrichmentCreationOnly.test.ts) means an
+ * automatic lookup never fires for a player carrying career teams, a
+ * Hall-of-Fame answer, or a Wikidata id — which is every player this function
+ * has touched. The only path that still reaches `applyEnrichmentInternal` for
+ * an edited row is `enrichFromWikidata`, the admin's own explicit "look this
+ * up again", whose entire purpose is to replace the stored answer. Overwriting
+ * on that path is the request, not a bug.
+ *
+ * ## Field semantics
+ *
+ * Omitting a field leaves it alone. `wikidataId: null` clears it — the same
+ * optional-and-clearable shape `saveTeamFields` uses, and for the same reason:
+ * "" and "unset" are different states, and only one of them is a valid QID.
+ *
+ * `name` changes rewrite `nameNormalized` too, or the row becomes invisible to
+ * every `by_name_normalized` lookup that resolves checklist names back onto it
+ * — silently, and only discovered later as a duplicate player.
+ *
+ * `createdByUserId` is never touched. It is an audit field; an edit is not a
+ * re-creation and rewriting it would erase who actually introduced the row.
+ */
+export const savePlayerFields = mutation({
+  args: {
+    id: v.id("players"),
+    name: v.optional(v.string()),
+    isHallOfFame: v.optional(v.boolean()),
+    /** `null` clears `externalIds.wikidataId`; a string must be a `Q<digits>` id. */
+    wikidataId: v.optional(v.union(v.string(), v.null())),
+    /**
+     * The player's whole career history, replaced wholesale. An empty array is
+     * a legitimate value and clears it — "this player has no recorded stints"
+     * is a real answer, distinct from "nobody has said".
+     */
+    teamYears: v.optional(
+      v.array(
+        v.object({
+          teamId: v.id("teams"),
+          fromYear: v.number(),
+          toYear: v.optional(v.number()),
+        }),
+      ),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    const existing = await ctx.db.get(args.id);
+    if (!existing) throw new ConvexError("Player not found");
+
+    const patch: {
+      name?: string;
+      nameNormalized?: string;
+      isHallOfFame?: boolean;
+      externalIds?: { wikidataId?: string };
+      teamYears?: PlayerTeamYear[];
+      lastUpdated: number;
+    } = { lastUpdated: Date.now() };
+
+    if (args.name !== undefined) {
+      const trimmed = args.name.trim();
+      if (trimmed.length === 0) {
+        throw new ConvexError("A player name is required.");
+      }
+      if (trimmed.length > MAX_PLAYER_NAME_LENGTH) {
+        throw new ConvexError(
+          `A player name is ${trimmed.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+      const nameNormalized = normalizePlayerName(trimmed);
+
+      // A rename onto an existing (normalized name, sport) key would create the
+      // exact duplicate the whole normalization scheme exists to prevent, and
+      // the two rows could then never be told apart by any lookup. Refuse, and
+      // hand the page the OTHER row's id so it can offer "go to that player"
+      // instead of leaving the operator to search for it.
+      //
+      // The message carries an id and the name the operator just typed —
+      // nothing else. No PII beyond what they supplied, and specifically not
+      // the other row's `createdByUserId`.
+      const collision = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", nameNormalized).eq("sportId", existing.sportId),
+        )
+        .first();
+      if (collision && collision._id !== args.id) {
+        throw new ConvexError(`NAME_TAKEN:${collision._id}`);
+      }
+
+      patch.name = trimmed;
+      patch.nameNormalized = nameNormalized;
+    }
+
+    if (args.isHallOfFame !== undefined) {
+      patch.isHallOfFame = args.isHallOfFame;
+    }
+
+    if (args.wikidataId !== undefined) {
+      const rest: { wikidataId?: string } = { ...(existing.externalIds ?? {}) };
+      if (args.wikidataId === null) {
+        delete rest.wikidataId;
+      } else {
+        const qid = args.wikidataId.trim();
+        // Validated at the write, not just in the UI. A malformed id is worse
+        // than a missing one: `enrichPlayer` treats ANY stored `wikidataId` as
+        // "already enriched" and skips the row forever, so a typo here silently
+        // opts a player out of enrichment.
+        if (!WIKIDATA_QID.test(qid)) {
+          throw new ConvexError(`Not a Wikidata entity id: ${qid}`);
+        }
+        rest.wikidataId = qid;
+      }
+      // Drop the container entirely once it holds nothing, so a cleared row is
+      // indistinguishable from one that never had an id.
+      patch.externalIds = Object.keys(rest).length > 0 ? rest : undefined;
+    }
+
+    if (args.teamYears !== undefined) {
+      // The upper bound is next year, not this one: a card printed in the
+      // autumn routinely carries the following season, and refusing that would
+      // make the editor wrong every winter.
+      const maxYear = new Date().getFullYear() + 1;
+      const seen = new Set<string>();
+
+      for (const stint of args.teamYears) {
+        const team = await ctx.db.get(stint.teamId);
+        if (!team) {
+          throw new ConvexError("A career stint points at a team that no longer exists.");
+        }
+        // A cross-sport stint is not a harmless oddity: `teams.list` and every
+        // picker scope by sport, so the stint would render as a dangling id the
+        // operator cannot see, let alone fix.
+        if (team.sportId !== existing.sportId) {
+          throw new ConvexError(
+            `A career stint names a team from another sport: ${team.name}.`,
+          );
+        }
+
+        if (!Number.isInteger(stint.fromYear) || stint.fromYear < MIN_CAREER_YEAR || stint.fromYear > maxYear) {
+          throw new ConvexError(
+            `A career start year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
+          );
+        }
+        if (stint.toYear !== undefined) {
+          if (!Number.isInteger(stint.toYear) || stint.toYear < MIN_CAREER_YEAR || stint.toYear > maxYear) {
+            throw new ConvexError(
+              `A career end year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
+            );
+          }
+          if (stint.toYear < stint.fromYear) {
+            throw new ConvexError("A career stint cannot end before it starts.");
+          }
+        }
+
+        // Duplicate detection is on (teamId, fromYear), NOT on teamId: two
+        // stints at one franchise are real history — traded away, re-signed
+        // later — and collapsing them is data loss. Only a literal repeat of
+        // the same stint is refused. See `sortTeamYears`.
+        const key = `${stint.teamId}:${stint.fromYear}`;
+        if (seen.has(key)) {
+          throw new ConvexError(
+            `${team.name} is listed twice starting in ${stint.fromYear}.`,
+          );
+        }
+        seen.add(key);
+      }
+
+      patch.teamYears = sortTeamYears(args.teamYears);
+    }
+
+    await ctx.db.patch(args.id, patch);
     return null;
   },
 });
