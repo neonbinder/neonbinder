@@ -1,6 +1,6 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import { findOrCreateLeague, resolveDefaultLeagueId } from "./leagues";
@@ -86,6 +86,18 @@ export const findByNameAndSport = query({
   },
 });
 
+/**
+ * NEO-208 security condition — a bound on an operator-typed team name.
+ *
+ * A real franchise name is nowhere near this long. The cap exists because this
+ * mutation is the one place a human string becomes a globally-shared `teams`
+ * row that spine labels, listing titles and every picker then render, and
+ * because an over-long name is now also what a Wikidata lookup gets pointed
+ * at. Over-length is refused rather than trimmed: silently storing something
+ * other than what was typed is how a mangled name gets treated as canonical.
+ */
+const MAX_TEAM_NAME_LENGTH = 120;
+
 export const findOrCreate = mutation({
   args: {
     name: v.string(),
@@ -93,22 +105,58 @@ export const findOrCreate = mutation({
   },
   returns: v.id("teams"),
   handler: async (ctx, args): Promise<Id<"teams">> => {
-    // NEO-154: this was the one unauthenticated write primitive left after the
-    // myFunctions deletion — anyone who could reach the deployment URL could
-    // insert team rows. Its `players.findOrCreate` twin has always had this
-    // check; teams.ts simply never grew one.
-    await requireSignedIn(ctx);
+    // NEO-154 gave this its first auth check at all — it was the one
+    // unauthenticated write primitive left after the myFunctions deletion, so
+    // anyone who could reach the deployment URL could insert team rows.
+    //
+    // NEO-208 raised it from `requireSignedIn` to `requireAdmin`, on the
+    // security review of this ticket. Two reasons, and the second is new:
+    // sign-up is open, so "signed in" is not a meaningful bound on who may
+    // create shared rows; and the insert branch below now SCHEDULES a Wikidata
+    // enrichment, so a signed-in caller could enqueue unbounded pooled lookup
+    // work. `wikidataPool` caps concurrency, not total queued work. Every
+    // caller of this mutation is admin tooling already — `TeamPicker`, and so
+    // every screen under `components/SetSelector/` — so nothing legitimate
+    // loses access. `findOrCreateInternal` below is unchanged and remains the
+    // path for server-side callers.
+    const userId = await requireAdmin(ctx);
 
-    const normalized = normalizeTeamName(args.name);
+    const name = args.name.trim();
+    if (name.length === 0) {
+      throw new ConvexError("A team name is required.");
+    }
+    if (name.length > MAX_TEAM_NAME_LENGTH) {
+      // The LENGTH, never the name: this string reaches Sentry and the browser
+      // console through Convex's error path.
+      throw new ConvexError(
+        `A team name is ${name.length} characters; the limit is ${MAX_TEAM_NAME_LENGTH}.`,
+      );
+    }
+
+    // NEO-208 security condition: `sportId` is a bare `v.id("selectorOptions")`
+    // — the validator proves it is an id in that table, not that it points at
+    // a SPORT. A team hung off, say, a variantType row is unreachable by every
+    // query that matters (`teams.list` and `findByNameAndSport` both key on
+    // the sport row id, and `findSportForSelectorOption` only ever yields a
+    // `level === "sport"` row), so it would be an orphan with a league
+    // attached — the same class of unfindable row the old `sport ?? ""`
+    // fallback produced before NEO-96.
+    const sportRow = await ctx.db.get(args.sportId);
+    if (!sportRow || sportRow.level !== "sport") {
+      throw new ConvexError("A team must be created under a sport.");
+    }
+
+    const normalized = normalizeTeamName(name);
     const matches = await ctx.db
       .query("teams")
       .withIndex("by_name_normalized", (q) => q.eq("nameNormalized", normalized))
       .collect();
     const existing = matches.find((t) => t.sportId === args.sportId);
+    // NOT enqueued — see the creation-only note on the insert below.
     if (existing) return existing._id;
 
-    return await ctx.db.insert("teams", {
-      name: args.name.trim(),
+    const id = await ctx.db.insert("teams", {
+      name,
       nameNormalized: normalized,
       sportId: args.sportId,
       // NEO-156: every creation path attaches a league. Undefined when the
@@ -117,6 +165,41 @@ export const findOrCreate = mutation({
       leagueId: await resolveDefaultLeagueId(ctx, args.sportId),
       lastUpdated: Date.now(),
     });
+
+    // NEO-208 security condition: an audit trail for a shared-row creation an
+    // operator can trigger from a typeahead. Structured JSON, not concatenation
+    // — the name is operator input and must not be able to shape a log line.
+    console.log(
+      JSON.stringify({ msg: "team_created", teamId: id, sportId: args.sportId, userId }),
+    );
+
+    /**
+     * NEO-208 — enrich the team we just INSERTED, and only that.
+     *
+     * This was the one team-creation path in the product with no enrichment at
+     * all. A team the review wizard creates arrives already enriched
+     * (`processEntityReviewQueue` → `lookupTeamEnrichment` runs before the
+     * insert); a career team the commit prelude invents is enqueued by
+     * `commitCardChecklistFinalize` from `prelude.enrichmentTeamIds` (see
+     * `selectorOptions.ts`, `resolveTeamIdByName`). A team born HERE — from
+     * the drawer's picker, the attention walker's fixer, and since NEO-208 the
+     * quick-add form — stayed bare forever, and `teams.colors` is what spine
+     * labels read, so "bare forever" is user-visible.
+     *
+     * The early `return existing._id` above is what makes this honour
+     * `enqueueEnrichment`'s CREATION-ONLY contract (see the contract note in
+     * `wikidataPool.ts`): a team this mutation FOUND leaves without being
+     * enqueued. Jason, 2026-09-02: "the enrichment writes should only fire if
+     * the team is new. We should never be firing that on an update. Team data
+     * generally doesn't change." Scheduled rather than awaited inline because
+     * enrichment is a network round-trip and this is a mutation — the same
+     * reason the prelude collects ids and lets finalize enqueue them.
+     */
+    await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEnrichment, {
+      teamIds: [id],
+    });
+
+    return id;
   },
 });
 

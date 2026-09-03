@@ -127,6 +127,11 @@ export const findOrCreate = mutation({
   },
   returns: v.id("players"),
   handler: async (ctx, args): Promise<Id<"players">> => {
+    // NEO-208 deliberately left this at signed-in while raising its
+    // `teams.findOrCreate` twin to admin: that one now schedules a pooled
+    // Wikidata enrichment on its insert branch, so it gained a cost vector an
+    // open caller could drive. This one adds no enqueue and no new cost, so
+    // widening the gate here would be scope the ticket did not earn.
     const userId = await getCurrentUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 

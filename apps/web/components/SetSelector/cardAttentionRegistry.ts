@@ -57,10 +57,15 @@ export type CardChecklistRow = {
   teamCheckDoneAt?: number;
   teamNoneConfirmedAt?: number;
   /**
-   * NEO-102: names typed into the add-card form's "Team (optional)" field that
-   * no `teams` row exists for yet. `deriveCardAttention` counts a non-empty
-   * list as HAVING a team — leave this off the row and every hand-added card
-   * with a typed team gets badged "no team" and walked.
+   * NEO-102: team names an operator typed that no `teams` row exists for yet.
+   * `deriveCardAttention` counts a non-empty list as HAVING a team — leave
+   * this off the row and every card carrying a typed team gets badged "no
+   * team" and walked.
+   *
+   * NEO-208: the quick-add form used to write these (it had a free-text Team
+   * box) and now sends real `teamOnCardIds` instead, so this is legacy state
+   * the product no longer creates — see the field note in
+   * convex/features/cardAttention.ts.
    */
   pendingTeamNames?: string[];
   /**

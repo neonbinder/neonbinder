@@ -100,10 +100,15 @@ describe("deriveCardAttention — missingTeam", () => {
   });
 
   test("a custom card with a PENDING team name is not flagged", () => {
-    // The add-card form's "Team (optional)" field writes the typed name to
-    // `pendingTeamNames` and leaves `teamOnCardIds` empty until the next sync
-    // resolves it. Reading only `teamOnCardIds` badged that card "no team" and
-    // sent the walker to ask the operator for the team they had just typed.
+    // A typed name lands in `pendingTeamNames` and leaves `teamOnCardIds`
+    // empty until the next sync resolves it. Reading only `teamOnCardIds`
+    // badged that card "no team" and sent the walker to ask the operator for
+    // the team they had just typed.
+    //
+    // NEO-208 changed the PRODUCER (the quick-add form sends real ids now, so
+    // no new row is born pending) and deliberately not the RULE: rows written
+    // before that, and an old SPA bundle's `addCustomCard.teams`, still land
+    // here and are still answered.
     expect(
       deriveCardAttention({
         teamOnCardIds: [],

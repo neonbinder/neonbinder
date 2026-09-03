@@ -33,6 +33,8 @@ const modules = (import.meta as unknown as {
 }).glob("./**/*.*s");
 
 const SIGNED_IN = { subject: "user" };
+/** NEO-208: `teams.findOrCreate` is admin-only now — see its test below. */
+const ADMIN = { subject: "admin", role: "admin" };
 
 async function seedSport(t: ReturnType<typeof convexTest>): Promise<Id<"selectorOptions">> {
   return t.run(async (ctx) =>
@@ -114,11 +116,37 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     ).rejects.toThrow(/Not authenticated/);
   });
 
-  test("teams.findOrCreate still works for a signed-in caller", async () => {
+  /**
+   * NEO-208 raised this one gate from signed-in to ADMIN, on this ticket's
+   * security review, and the reason is a change in what the mutation costs
+   * rather than a change of mind about taxonomy reads.
+   *
+   * Its insert branch now schedules a pooled Wikidata enrichment
+   * (`wikidataPool.enqueueEnrichment`), and that pool caps CONCURRENCY, not
+   * total queued work. Sign-up is open, so "signed in" is not a bound on who
+   * may create globally-shared `teams` rows, let alone on how much outbound
+   * lookup work they can enqueue. Every caller is admin tooling already
+   * (`TeamPicker`, and so every screen under `components/SetSelector/`), so
+   * nothing legitimate lost access.
+   *
+   * `players.findOrCreate` deliberately stayed at signed-in: it gained no
+   * enqueue, so it gained no cost vector. See the comment at its handler.
+   */
+  test("teams.findOrCreate rejects a signed-in NON-ADMIN caller", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(
+      t
+        .withIdentity(SIGNED_IN)
+        .mutation(api.teams.findOrCreate, { name: "Real FC", sportId }),
+    ).rejects.toThrow(/Admin access required/);
+  });
+
+  test("teams.findOrCreate works for an admin caller", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const id = await t
-      .withIdentity(SIGNED_IN)
+      .withIdentity(ADMIN)
       .mutation(api.teams.findOrCreate, { name: "Real FC", sportId });
     expect(id).toBeDefined();
   });

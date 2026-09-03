@@ -296,8 +296,16 @@ export async function lookupPlayerEnrichment(
 ): Promise<PlayerLookupResult | null> {
   const qid = await findPlayerQid(name, sport.wikidata?.sportQid);
   if (!qid) {
+    // NEO-208 security condition: structured, not concatenated. `name` is
+    // operator-typed free text (the quick-add form, the review wizard, the
+    // pickers), and a raw interpolation lets it inject newlines and
+    // log-shaped text into the deployment log a human then reads.
     console.log(
-      `[wikidata.lookupPlayerEnrichment] no Wikidata match for ${name} (${sport.label})`,
+      JSON.stringify({
+        msg: "wikidata_player_no_match",
+        name,
+        sport: sport.label,
+      }),
     );
     return null;
   }
@@ -343,9 +351,14 @@ export async function lookupPlayerEnrichment(
           // backfill once an English label appears upstream.
           const labelLooksLikeQid = /^Q\d+$/.test(row.teamLabel.value);
           if (labelLooksLikeQid) {
+            // NEO-208: structured for the same reason as the no-match log
+            // above — `name` is operator input.
             console.warn(
-              `[wikidata.lookupPlayerEnrichment] skipped team membership for ${name}: ` +
-              `Wikidata entity ${teamWdId} has no en label (label service returned QID).`,
+              JSON.stringify({
+                msg: "wikidata_player_team_membership_skipped_no_en_label",
+                name,
+                teamWdId,
+              }),
             );
           } else {
             careerTeams.push({
@@ -532,7 +545,18 @@ export async function lookupTeamEnrichment(
   const qid = await findTeamQid(name, sport.wikidata?.sportQid);
   if (!qid) {
     if (!espnInfo) {
-      console.log(`[wikidata.lookupTeamEnrichment] no match for ${name} (${sport}) on either source`);
+      // NEO-208: structured for the same reason as the player no-match log
+      // above. This one also fixes a latent defect the concatenation hid —
+      // it interpolated the whole `sport` CONTEXT OBJECT, so every one of
+      // these lines has read "(...[object Object])" rather than naming a
+      // sport.
+      console.log(
+        JSON.stringify({
+          msg: "wikidata_team_no_match",
+          name,
+          sport: sport.label,
+        }),
+      );
       return null;
     }
     return {

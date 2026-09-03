@@ -23,7 +23,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
-import { MAX_CARD_TEAMS } from "./features/cardAttention";
+import { deriveCardAttention, MAX_CARD_TEAMS } from "./features/cardAttention";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 
@@ -343,6 +343,96 @@ describe("updateCard and the no-team confirmation", () => {
     const row = await getCard(t, cardId);
     expect(row!.cardName).toBe("Renamed");
     expect(row!.teamNoneConfirmedAt).toBe(1_700_000_000_000);
+  });
+
+  /**
+   * NEO-208 — the SAME patch also retires a typed team name.
+   *
+   * `pendingTeamNames` means "the operator named a team no `teams` row existed
+   * for"; linking a real team is that same intent, answered. Leaving both on
+   * the row would print the team twice — once resolved, once as
+   * "(unconfirmed)" in the row sub-line and the drawer — and would leave the
+   * next sync's resolve pass chasing a name nobody is waiting on.
+   */
+  test("writing a NON-EMPTY teamOnCardIds also clears pendingTeamNames", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await insertTeam(t, sportId, "Boston Red Sox");
+    const cardId = await insertCard(t, leafId);
+    await t.run(async (ctx) =>
+      ctx.db.patch(cardId, { pendingTeamNames: ["Bosten Red Sox"] }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: [teamId],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([teamId]);
+    expect(row!.pendingTeamNames).toBeUndefined();
+  });
+
+  test("writing an EMPTY teamOnCardIds leaves pendingTeamNames alone", async () => {
+    // Unlinking every team leaves the typed name as the only thing the row
+    // still knows about its team — dropping it here would destroy the
+    // operator's answer as a side effect of an unrelated edit.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await insertTeam(t, sportId, "Boston Red Sox");
+    const cardId = await insertCard(t, leafId, { teamOnCardIds: [teamId] });
+    await t.run(async (ctx) =>
+      ctx.db.patch(cardId, { pendingTeamNames: ["Bosten Red Sox"] }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: [],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([]);
+    expect(row!.pendingTeamNames).toEqual(["Bosten Red Sox"]);
+  });
+
+  test("an edit that does not mention teams leaves pendingTeamNames alone", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+    const cardId = await insertCard(t, leafId);
+    await t.run(async (ctx) =>
+      ctx.db.patch(cardId, { pendingTeamNames: ["Bosten Red Sox"] }),
+    );
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      cardName: "Renamed",
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.pendingTeamNames).toEqual(["Bosten Red Sox"]);
+  });
+
+  test("pendingTeamNames is not settable through updateCard's args", async () => {
+    // Same discipline as the two no-team fields above: the clear is DERIVED
+    // from the write. A validator entry would make it directly settable,
+    // which would let a client fabricate "the operator typed this".
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+    const cardId = await insertCard(t, leafId);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        pendingTeamNames: ["Invented"],
+      } as never),
+    ).rejects.toThrow();
+
+    const row = await getCard(t, cardId);
+    expect(row!.pendingTeamNames).toBeUndefined();
   });
 
   test("neither field is settable through updateCard's args", async () => {
@@ -724,5 +814,400 @@ describe("suggestedTeamsForCard", () => {
     await expect(
       t.query(api.cardChecklist.suggestedTeamsForCard, { cardId }),
     ).rejects.toThrow(/Not authenticated/);
+  });
+});
+
+// ===========================================================================
+// NEO-208 — addCustomCard accepts real team ids
+// ===========================================================================
+
+/**
+ * The quick-add form used to send `teams: [typedName]`, which landed in
+ * `pendingTeamNames` — a column NOTHING rendered. The operator watched their
+ * typed team vanish and the row stayed badged "no team on this card yet". It
+ * now sends `teamOnCardIds` from a real `TeamPicker`, so a hand-added card is
+ * born LINKED.
+ *
+ * The validation is not a second implementation: `addCustomCard` and
+ * `updateCard` share `resolveTeamOnCardIdsForWrite`, so the born-with-a-team
+ * path accepts exactly what the given-one-later path accepts. That sharing is
+ * what these tests are really pinning — the cases below deliberately mirror
+ * the `updateCard — team validation` block above, and a divergence shows up as
+ * one block passing and the other failing.
+ */
+const allCards = (t: ReturnType<typeof convexTest>) =>
+  t.run(async (ctx) => ctx.db.query("cardChecklist").collect());
+
+describe("addCustomCard — team ids (NEO-208)", () => {
+  test("writes the picked teams as teamOnCardIds, and no pending names", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+    const mets = await insertTeam(t, sportId, "New York Mets");
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "501",
+      cardName: "Subway Series",
+      teamOnCardIds: [yankees, mets],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([yankees, mets]);
+    expect(row!.pendingTeamNames).toBeUndefined();
+  });
+
+  test("a card born linked needs no attention — which is the whole point", async () => {
+    // `deriveCardAttention` is unchanged by this ticket; what changed is that
+    // the quick-add path now satisfies its FIRST clause (a real team) instead
+    // of its pending-name clause. Asserted through the derivation so the two
+    // halves of NEO-208 are pinned together: a linked card is not badged, and
+    // it is not badged for the honest reason.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "502",
+      cardName: "Aaron Judge",
+      teamOnCardIds: [yankees],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(deriveCardAttention(row!)).toEqual([]);
+  });
+
+  test("sends neither field and the card is correctly left needing a team", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "503",
+      cardName: "Unknown Team Guy",
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toBeUndefined();
+    expect(row!.pendingTeamNames).toBeUndefined();
+    expect(deriveCardAttention(row!)).toEqual([{ kind: "missingTeam" }]);
+  });
+
+  test("rejects an id that resolves to no team, and writes NO card at all", async () => {
+    // Validated before the insert, so a bad id cannot leave a half-created
+    // card behind for the operator to find and wonder about.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const dangling = await insertTeam(t, sportId, "Deleted Team");
+    await t.run(async (ctx) => ctx.db.delete(dangling));
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "504",
+        cardName: "Nope",
+        teamOnCardIds: [dangling],
+      }),
+    ).rejects.toThrow(/no longer exists/);
+
+    expect(await allCards(t)).toHaveLength(0);
+  });
+
+  test("rejects a team from another sport, and writes NO card at all", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t); // Baseball
+    const basketballSportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Basketball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const lakers = await insertTeam(t, basketballSportId, "Los Angeles Lakers");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "505",
+        cardName: "Nope",
+        teamOnCardIds: [lakers],
+      }),
+    ).rejects.toThrow(/not a team in this card's sport/);
+
+    expect(await allCards(t)).toHaveLength(0);
+  });
+
+  test("dedupes duplicate ids before writing, preserving first-seen order", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+    const redSox = await insertTeam(t, sportId, "Boston Red Sox");
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "506",
+      cardName: "Rivalry",
+      teamOnCardIds: [yankees, redSox, yankees],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([yankees, redSox]);
+  });
+
+  test("rejects more teams than MAX_CARD_TEAMS, and writes NO card at all", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const teamIds = await Promise.all(
+      Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) =>
+        insertTeam(t, sportId, `Team ${i + 1}`),
+      ),
+    );
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "507",
+        cardName: "Too Many",
+        teamOnCardIds: teamIds,
+      }),
+    ).rejects.toThrow(/at most 8 teams/);
+
+    expect(await allCards(t)).toHaveLength(0);
+  });
+
+  test("a duplicate-heavy list that dedupes UNDER the cap is accepted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "508",
+      cardName: "Same Chip Nine Times",
+      teamOnCardIds: Array.from({ length: MAX_CARD_TEAMS + 1 }, () => yankees),
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([yankees]);
+  });
+
+  test("an OLD SPA bundle's `teams` name array still lands in pendingTeamNames", async () => {
+    // A Vercel deploy does not reload anybody's browser, so a tab holding the
+    // pre-NEO-208 bundle keeps sending typed names for a while. It must keep
+    // behaving exactly as it did — the names park in `pendingTeamNames` and
+    // the next sync's resolve pass turns them into links.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "509",
+      cardName: "Legacy Client Card",
+      teams: ["  New York Yankees  ", "", "   "],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.pendingTeamNames).toEqual(["New York Yankees"]);
+    expect(row!.teamOnCardIds).toBeUndefined();
+    // Still counted as answered, so the row is not badged — the rule
+    // `deriveCardAttention` has always applied to these.
+    expect(deriveCardAttention(row!)).toEqual([]);
+  });
+
+  test("ids WIN over a typed name when a caller sends both, and the row says its team once", async () => {
+    // No client sends both. The rule exists so a future one cannot produce a
+    // row that states its team twice — the same rule `updateCard` applies
+    // when it retires `pendingTeamNames` on a real link.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "510",
+      cardName: "Both Shapes",
+      teams: ["Yankess"],
+      teamOnCardIds: [yankees],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.teamOnCardIds).toEqual([yankees]);
+    expect(row!.pendingTeamNames).toBeUndefined();
+  });
+});
+
+describe("addCustomCard — the generated listing title/description name the LINKED teams", () => {
+  test("uses the linked teams' STORED names, not a typed string", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t);
+    const yankees = await insertTeam(t, sportId, "New York Yankees");
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "511",
+      cardName: "Aaron Judge",
+      teamOnCardIds: [yankees],
+    });
+
+    const row = await getCard(t, cardId);
+    // The generator's write-once title/description are the visible payoff of
+    // the ids: before this, a hand-added card's title could only say what the
+    // operator typed, misspellings and all.
+    expect(row!.listingTitle).toContain("New York Yankees");
+    expect(row!.listingDescription).toContain("Team: New York Yankees.");
+  });
+
+  test("falls back to the pending names for an old-client write", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "512",
+      cardName: "Legacy Client Card",
+      teams: ["Savannah Bananas"],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.listingTitle).toContain("Savannah Bananas");
+    expect(row!.listingDescription).toContain("Team: Savannah Bananas.");
+  });
+});
+
+// ===========================================================================
+// NEO-208 security review — the free-text name args are BOUNDED
+// ===========================================================================
+
+/**
+ * `addCustomCard`'s `players` / `teams` args are operator free text that lands
+ * on a row several screens then render (the listing-title generator, the
+ * entity-review wizard, the row sub-line). Nothing bounded them.
+ *
+ * Both limits refuse rather than trim: quietly storing something other than
+ * what was sent is how a mangled name gets confirmed as correct in the wizard.
+ */
+describe("addCustomCard — pending name bounds", () => {
+  test("rejects more typed team names than the cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "520",
+        cardName: "Too Many Names",
+        teams: Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) => `Team ${i}`),
+      }),
+    ).rejects.toThrow(/at most 8 team names/);
+
+    expect(await allCards(t)).toHaveLength(0);
+  });
+
+  test("rejects more typed player names than the cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "521",
+        cardName: "Too Many Names",
+        players: Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) => `Player ${i}`),
+      }),
+    ).rejects.toThrow(/at most 8 player names/);
+
+    expect(await allCards(t)).toHaveLength(0);
+  });
+
+  test("rejects an over-long name without quoting it back", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+    const essay = "z".repeat(121);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "522",
+        cardName: "Essay",
+        teams: [essay],
+      }),
+    ).rejects.toThrow(/121 characters; the limit is 120/);
+
+    // The message carries the LENGTH, never the content: it travels through
+    // Convex's error path into Sentry and the browser console. Asserted by
+    // reading the thrown value directly rather than through a negated
+    // `rejects` matcher, which passes vacuously if nothing is thrown.
+    let thrown: unknown;
+    try {
+      await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: leafId,
+        cardNumber: "522",
+        cardName: "Essay",
+        teams: [essay],
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    const serialized = `${(thrown as Error)?.message ?? ""} ${JSON.stringify(thrown)}`;
+    // Non-vacuous: the length IS in there, so the absence of the content below
+    // is a real observation about the same string.
+    expect(serialized).toContain("the limit is 120");
+    expect(serialized).not.toContain("zzzz");
+
+    expect(await allCards(t)).toHaveLength(0);
+  });
+
+  test("a name AT the cap is accepted — the bound is not off by one", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+    const atCap = "z".repeat(120);
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "523",
+      cardName: "At Cap",
+      teams: [atCap],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.pendingTeamNames).toEqual([atCap]);
+  });
+
+  test("whitespace is trimmed BEFORE the length check", async () => {
+    // Otherwise an operator who pastes a padded name gets refused for
+    // characters that were never going to be stored.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { leafId } = await seedTree(t);
+    const padded = `   ${"z".repeat(120)}   `;
+
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "524",
+      cardName: "Padded",
+      teams: [padded],
+    });
+
+    const row = await getCard(t, cardId);
+    expect(row!.pendingTeamNames).toEqual(["z".repeat(120)]);
   });
 });
