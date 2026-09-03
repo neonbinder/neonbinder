@@ -20,7 +20,7 @@
  * its own spy.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Not mocked: the real class, because `userFacingMessage` narrows on
@@ -460,6 +460,13 @@ describe("TeamPicker", () => {
     expect(alert.textContent).toContain(
       "A team name is 130 characters; the limit is 120.",
     );
+    // NEO-208: the popover this alert lives in must still be THIS popover —
+    // still open, with the typed name still in the box — not a fresh one
+    // the operator had to reopen after it silently closed underneath them.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe(longName);
     // The failed create must not look like it half-worked.
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -481,6 +488,12 @@ describe("TeamPicker", () => {
     expect(alert.textContent).toContain(
       "A team must be created under a sport.",
     );
+    // NEO-208: still the same open popover — see the identical assertion on
+    // the length-cap refusal above for why this matters.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe("Savannah Bananas");
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -501,6 +514,9 @@ describe("TeamPicker", () => {
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("Could not create team.");
     expect(alert.textContent).not.toContain("kaboom");
+    // NEO-208: still the same open popover — see the identical assertion on
+    // the length-cap refusal above for why this matters.
+    expect(screen.getByRole("listbox")).toBeTruthy();
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -524,5 +540,90 @@ describe("TeamPicker", () => {
     await waitFor(() => {
       expect(screen.queryByRole("alert")).toBeNull();
     });
+    // NEO-208: still the same open popover throughout — the whole point of
+    // "clears on next keystroke" is that a keystroke, not a silent
+    // close/reopen, is what made the message go away.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  // NEO-208 regression — the popover used to close itself out from under a
+  // refused create.
+  //
+  // Mechanism: the "+ Create" button has focus at the moment it's clicked
+  // (a real click focuses the element it lands on). The old `showCreateOption
+  // = ... && !creating && ...` unmounted that exact button the instant
+  // `creating` flipped true, so focus fell out of the picker's subtree onto
+  // <body>. `handleRootBlur` exists to close the popover on precisely that
+  // signal — "focus left the root", the Tab-out case it was built for — so
+  // it fired mid-request and closed the popover, clearing `createError`
+  // along with it, before the awaited `findOrCreate` had even rejected. The
+  // refusal then landed in state on an already-closed popover: invisible
+  // until the operator reopened it, which is what the manual tester saw.
+  //
+  // jsdom does not reproduce the browser half of this on its own: removing a
+  // focused node moves `document.activeElement` to <body> (confirmed via a
+  // throwaway repro against this file), but — unlike a real browser's
+  // synchronous "unfocusing steps" — it does not dispatch the blur/focusout
+  // event that `handleRootBlur` listens for. So this test fires that
+  // `focusOut` by hand as a stand-in for the real browser's dispatch, which
+  // is also what makes it a fair test of the fix: the guard added to
+  // `handleRootBlur` (`if (!popoverOpen || creating) return`) must swallow
+  // this even when the event arrives, not merely rely on the button no
+  // longer unmounting to prevent the event from ever firing.
+  it("regression: a rejected create keeps the popover open with the refusal visible, not silently closed by the Tab-out guard", async () => {
+    const longName = "x".repeat(130);
+    currentCandidates = [];
+    let rejectPending: (err: unknown) => void = () => {};
+    mockFindOrCreate.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectPending = reject;
+        }),
+    );
+    const { container, onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    // Let the popover's own open-time autofocus-input effect land first —
+    // it's queued on its own `setTimeout(0)` from the same click that opens
+    // the popover, and without waiting for it here it can win a later timer
+    // race and re-steal focus into the search box, masking what's under
+    // test (same reasoning as the identical wait in CardChecklist.test.tsx's
+    // Tab-out regression test).
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Search teams")),
+    );
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: longName },
+    });
+    const createButton = screen.getByLabelText(`Create team ${longName}`);
+    createButton.focus();
+    fireEvent.click(createButton);
+
+    // Stand-in for the browser's synchronous blur-on-removal — see the
+    // block comment above.
+    const root = container.querySelector(
+      '[aria-label="Team picker"]',
+    ) as HTMLElement;
+    fireEvent.focusOut(root);
+
+    await act(async () => {
+      rejectPending(
+        new ConvexError("A team name is 130 characters; the limit is 120."),
+      );
+      // Flush both the `handleRootBlur` and `createAndAdd`-catch
+      // `setTimeout(0)`s.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain(
+      "A team name is 130 characters; the limit is 120.",
+    );
+    expect(
+      (screen.getByLabelText("Search teams") as HTMLInputElement).value,
+    ).toBe(longName);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

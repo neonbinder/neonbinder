@@ -181,12 +181,29 @@ export default function TeamPicker({
 
   // NEO-96: no sport row → no create. A team must reference a real sport; the
   // old `sport ?? ""` fallback produced orphaned rows.
+  //
+  // NEO-208 (focus-park-pattern fix): deliberately NOT gated on `!creating`
+  // anymore. This row used to unmount the instant `creating` flipped true,
+  // which yanked focus off the "+ Create" button (it had focus — a click
+  // just landed on it) onto <body>. `handleRootBlur` below exists to close
+  // the popover on exactly that signal ("focus left the root"), so it fired
+  // mid-request and closed the popover — clearing `createError` along with
+  // it — before the awaited `findOrCreate` had even rejected. The refusal
+  // then landed in state on an already-closed popover, invisible until the
+  // next open. Keeping this row mounted (see the button below, which swaps
+  // to a "Creating…" `aria-disabled` state instead of unmounting) means
+  // focus never leaves the root, so `handleRootBlur` never fires and the
+  // popover is still open — with `createError` still live — by the time the
+  // mutation settles either way.
   const showCreateOption =
-    query.trim().length > 0 && !hasExactMatch && !creating && !!sportId;
+    query.trim().length > 0 && !hasExactMatch && !!sportId;
 
   const createAndAdd = async () => {
     const name = query.trim();
-    if (!name || disabled) return;
+    // `creating` guard: re-entry protection now that the button stays
+    // mounted (and clickable — see aria-disabled, not disabled, below) for
+    // the duration of the request instead of unmounting.
+    if (!name || disabled || creating) return;
     setCreating(true);
     setCreateError(null);
     try {
@@ -199,6 +216,11 @@ export default function TeamPicker({
       // "[CONVEX M(...)] [Request ID: ...]" noise. The query is left alone, so
       // the "+ Create" row stays available for a retry after a fix.
       setCreateError(userFacingMessage(err, "Could not create team."));
+      // Refocus the input (not the create row, which is what a retry needs
+      // to reread the reason next to): the button that had focus is a
+      // "+ Create" affordance the operator likely wants to edit past, not
+      // press again verbatim.
+      setTimeout(() => inputRef.current?.focus(), 0);
     } finally {
       setCreating(false);
     }
@@ -254,7 +276,12 @@ export default function TeamPicker({
    * pressed.
    */
   const handleRootBlur = () => {
-    if (!popoverOpen) return;
+    // NEO-208: while a create request is in flight the "+ Create" row stays
+    // mounted (see `showCreateOption`), so this should not normally fire at
+    // all — but guard it explicitly anyway, since the belt-and-suspenders
+    // is cheap and a future change to the row's mount behavior shouldn't be
+    // able to reopen the same race silently.
+    if (!popoverOpen || creating) return;
     setTimeout(() => {
       if (rootRef.current?.contains(document.activeElement)) return;
       setPopoverOpen(false);
@@ -418,7 +445,16 @@ export default function TeamPicker({
             {showCreateOption && (
               <button
                 type="button"
-                disabled={creating}
+                // NEO-208: `aria-disabled`, not `disabled` — the row stays
+                // mounted and focusable for the duration of the request (see
+                // `showCreateOption` above). Native `disabled` here would
+                // reproduce the exact bug this fixes: the browser force-blurs
+                // a disabled element that has focus, straight to <body>,
+                // which is the same focus-park pattern already documented on
+                // `TitleFixer`'s Save button. The `creating` guard inside
+                // `createAndAdd` is what actually blocks a second submit —
+                // this is only the announcement.
+                aria-disabled={creating || undefined}
                 onClick={() => void createAndAdd()}
                 onMouseEnter={() => setHighlightIdx(matches.length)}
                 aria-label={`Create team ${query.trim()}`}
