@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
+import { userFacingMessage } from "../../lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 
 /**
@@ -75,6 +76,26 @@ export default function TeamPicker({
   const [query, setQuery] = useState("");
   const [highlightIdx, setHighlightIdx] = useState(0);
   const [creating, setCreating] = useState(false);
+  /**
+   * NEO-208 — the reason the last "+ Create" attempt was refused, shown
+   * inline beside the search input.
+   *
+   * `teams.findOrCreate` grew two refusals in NEO-208 (a name over the
+   * length cap, and a `sportId` that is a real `selectorOptions` id but not
+   * a SPORT row) on top of the empty-name one. This handler used to be a
+   * bare try/finally, so each of those landed as a silent no-op — the
+   * "Creating…" label flipped back and nothing appeared — plus an unhandled
+   * rejection in the console. The operator's next move differs per reason
+   * (shorten the name vs. re-open the panel under a sport), so the reason
+   * has to be on screen.
+   *
+   * Safe to render verbatim: every one of those messages carries a LENGTH or
+   * a category, never the typed content — see the comments on the throws in
+   * `convex/teams.ts`. Anything that is not a ConvexError gets the generic
+   * fallback instead, because production redacts a plain Error to "Server
+   * Error" (see `userFacingMessage`).
+   */
+  const [createError, setCreateError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -115,6 +136,7 @@ export default function TeamPicker({
       if (rootRef.current?.contains(e.target as Node)) return;
       setPopoverOpen(false);
       setQuery("");
+      setCreateError(null);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
@@ -166,10 +188,17 @@ export default function TeamPicker({
     const name = query.trim();
     if (!name || disabled) return;
     setCreating(true);
+    setCreateError(null);
     try {
       if (!sportId) return;
       const id = await findOrCreate({ name, sportId });
       addChip(id);
+    } catch (err) {
+      // Read the ConvexError's `data`, never `.message`: production redacts a
+      // plain Error, and a surviving message arrives wrapped in
+      // "[CONVEX M(...)] [Request ID: ...]" noise. The query is left alone, so
+      // the "+ Create" row stays available for a retry after a fix.
+      setCreateError(userFacingMessage(err, "Could not create team."));
     } finally {
       setCreating(false);
     }
@@ -194,6 +223,7 @@ export default function TeamPicker({
   const closePopover = () => {
     setPopoverOpen(false);
     setQuery("");
+    setCreateError(null);
     // Return focus to the trigger so Tab order stays predictable.
     setTimeout(() => triggerRef.current?.focus(), 0);
   };
@@ -229,6 +259,7 @@ export default function TeamPicker({
       if (rootRef.current?.contains(document.activeElement)) return;
       setPopoverOpen(false);
       setQuery("");
+      setCreateError(null);
     }, 0);
   };
 
@@ -292,7 +323,13 @@ export default function TeamPicker({
               value={query}
               placeholder="Search or add a team..."
               aria-label="Search teams"
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                // The refusal described the name that was in this box; the
+                // next keystroke makes it stale, so it goes away with the
+                // query it was about.
+                setCreateError(null);
+                setQuery(e.target.value);
+              }}
               onKeyDown={(e) => {
                 const rowCount = matches.length + (showCreateOption ? 1 : 0);
                 if (e.key === "Escape") {
@@ -325,6 +362,22 @@ export default function TeamPicker({
               }}
               className="w-full p-1.5 text-sm"
             />
+
+            {createError && (
+              // a11y: NOT the brand `#FF2EB3` used for destructive affordances
+              // elsewhere — measured against this popover's own
+              // `bg-white dark:bg-gray-800` that hex is 3.34:1 / 4.4:1, both
+              // under WCAG 1.4.3's 4.5:1 floor for normal text. This pair is
+              // the same-hue darkened/lightened variant CardDetailPanel's
+              // `parentError` already uses on the identical backgrounds:
+              // 5.55:1 on white, 5.87:1 on dark:bg-gray-800.
+              <p
+                role="alert"
+                className="px-2 py-1 text-xs text-[#C2178A] dark:text-[#FF6FCB]"
+              >
+                {createError}
+              </p>
+            )}
 
             {!candidates && (
               <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>

@@ -511,4 +511,32 @@ describe("CardDetailPanel — NEO-208 pending team names", () => {
     expect(screen.queryByText("(unconfirmed)")).toBeNull();
     expect(screen.queryByText(/resolves at the next sync/)).toBeNull();
   });
+
+  it("renders duplicate pending names without a React key warning", () => {
+    // `pendingTeamNames` is not deduplicated, and rows written before NEO-208
+    // can carry the same typed name twice. The list was keyed on the name
+    // itself, so React saw duplicate sibling keys — a dev-mode warning, and
+    // mis-reconciliation of the second entry. The key is index-qualified now.
+    //
+    // Non-throwing spy deliberately: a spy that throws on console output turns
+    // a warning into a worker-level failure in the shared fork pool.
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map((a) => String(a)).join(" "));
+      });
+
+    try {
+      renderPanel({
+        card: makeCard({ pendingTeamNames: ["Yankees", "Yankees"] }),
+      });
+
+      expect(screen.getAllByText("Yankees")).toHaveLength(2);
+      expect(screen.getAllByText("(unconfirmed)")).toHaveLength(2);
+      expect(errors.filter((e) => e.includes("same key"))).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

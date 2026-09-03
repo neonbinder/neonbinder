@@ -556,8 +556,16 @@ export default function CardDetailPanel({
             {(card.pendingTeamNames?.length ?? 0) > 0 && (
               <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
                 <div className="flex flex-wrap gap-x-2">
-                  {card.pendingTeamNames!.map((name) => (
-                    <span key={name}>
+                  {/* Index-qualified key, not the name itself: `pendingTeamNames`
+                      is not deduplicated, and legacy rows written before
+                      NEO-208 can carry the same typed name twice. A bare
+                      `key={name}` then hands React duplicate sibling keys —
+                      a dev-mode warning, and the second entry silently
+                      dropped/mis-reconciled in the render. This list is
+                      read-only and never reordered, so the index is a stable
+                      identity here. */}
+                  {card.pendingTeamNames!.map((name, index) => (
+                    <span key={`${index}-${name}`}>
                       {name}{" "}
                       {/* a11y: this MUST stay `text-gray-500 dark:text-gray-400`
                           (the container's own pair, two lines up) and never the

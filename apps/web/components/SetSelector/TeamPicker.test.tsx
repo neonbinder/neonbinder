@@ -23,6 +23,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Not mocked: the real class, because `userFacingMessage` narrows on
+// `instanceof ConvexError` and that is the whole point of the tests below.
+import { ConvexError } from "convex/values";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -425,5 +428,101 @@ describe("TeamPicker", () => {
 
     expect(screen.queryByLabelText("Create team Savannah Bananas")).toBeNull();
     expect(mockFindOrCreate).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-208 — a refused create is visible, not a silent no-op
+  //
+  // `teams.findOrCreate` grew two refusals in NEO-208 (a name over the length
+  // cap; a `sportId` that is a real `selectorOptions` id but not a sport row).
+  // `createAndAdd` was a bare try/finally, so both landed as nothing happening
+  // plus an unhandled rejection — the "Creating…" label flipped back and the
+  // operator had no idea why no chip appeared.
+  // -------------------------------------------------------------------------
+
+  it("shows the server's reason inline and adds no chip when the name is over the cap", async () => {
+    const longName = "x".repeat(130);
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(
+      // Verbatim shape of the real throw: a LENGTH, never the typed name —
+      // which is why it is safe to render.
+      new ConvexError("A team name is 130 characters; the limit is 120."),
+    );
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: longName },
+    });
+    fireEvent.click(screen.getByLabelText(`Create team ${longName}`));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "A team name is 130 characters; the limit is 120.",
+    );
+    // The failed create must not look like it half-worked.
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("shows the non-sport refusal inline too", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError("A team must be created under a sport."),
+    );
+    const { onChange } = renderPicker({ sportId: OTHER_SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "A team must be created under a sport.",
+    );
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a generic message for a non-ConvexError failure", async () => {
+    // A plain Error is redacted to "Server Error" in production and its
+    // `.message` arrives wrapped in "[CONVEX M(...)] [Request ID: ...]" noise,
+    // so nothing from it is shown.
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(new Error("kaboom at teams.ts:141"));
+    const { onChange } = renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+    fireEvent.click(screen.getByLabelText("Create team Savannah Bananas"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Could not create team.");
+    expect(alert.textContent).not.toContain("kaboom");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("clears the message on the next keystroke", async () => {
+    currentCandidates = [];
+    mockFindOrCreate.mockRejectedValue(
+      new ConvexError("A team name is 130 characters; the limit is 120."),
+    );
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    const input = screen.getByLabelText("Search teams");
+    fireEvent.change(input, { target: { value: "x".repeat(130) } });
+    fireEvent.click(screen.getByLabelText(`Create team ${"x".repeat(130)}`));
+    await screen.findByRole("alert");
+
+    // The message described the name that was in the box; editing it makes the
+    // message stale, so it goes away with the query it was about.
+    fireEvent.change(input, { target: { value: "Savannah Bananas" } });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
   });
 });
