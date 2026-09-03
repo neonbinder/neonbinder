@@ -431,6 +431,56 @@ describe("storeSelectorOptions is additive", () => {
     expect(parent?.children).toContain(customId);
     expect(parent?.children).toContain(bowman._id);
   });
+
+  test("a cross-side conflict (bsc and sportlots ids pointing at DIFFERENT rows) is withheld — nothing destructive", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [
+        { value: "Topps", platformData: { bsc: "t1" } },
+        { value: "Bowman", platformData: { sportlots: "sb1" } },
+      ],
+      coveredSides: ["bsc", "sportlots"],
+    });
+    const before = await rowsUnder(t, "setName", parentId);
+    const topps = before.find((r) => r.value === "Topps")!;
+    const bowman = before.find((r) => r.value === "Bowman")!;
+
+    // Upstream now believes these are ONE set — the wire item carries both
+    // ids — but NB has them as two separate rows. A second, unrelated item in
+    // the same batch proves the rest of the sync still lands normally.
+    const res = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [
+        { value: "Merged Somehow", platformData: { bsc: "t1", sportlots: "sb1" } },
+        { value: "Chrome", platformData: { bsc: "c1" } },
+      ],
+      coveredSides: ["bsc", "sportlots"],
+    });
+
+    const after = await rowsUnder(t, "setName", parentId);
+    // No merge, no third row for the conflicting item, no deletion of either
+    // side of the conflict — only the unrelated "Chrome" item lands.
+    expect(after.map((r) => r.value).sort()).toEqual([
+      "Bowman",
+      "Chrome",
+      "Topps",
+    ]);
+    const toppsAfter = after.find((r) => r._id === topps._id)!;
+    const bowmanAfter = after.find((r) => r._id === bowman._id)!;
+    expect(toppsAfter.lastUpdated).toBe(topps.lastUpdated);
+    expect(toppsAfter.platformData.bsc).toEqual({ b0: "t1" });
+    expect(bowmanAfter.lastUpdated).toBe(bowman.lastUpdated);
+    expect(bowmanAfter.platformData.sportlots).toEqual({ s0: "sb1" });
+    // The withheld item is not silently reported as unlinked either — nothing
+    // about either row's linkage changed.
+    expect(res.unlinked).toEqual([]);
+  });
 });
 
 // ===========================================================================
@@ -621,7 +671,7 @@ describe("storeReconciledOptions is additive", () => {
     expect(untouchedLevel?.lastUpdated).toBe(SENTINEL);
   });
 
-  test("one row can be claimed by only one item — the second inserts", async () => {
+  test("one row can be claimed by only one item — the second is WITHHELD", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = admin(t);
     const parentId = await insertParent(t);
@@ -655,13 +705,13 @@ describe("storeReconciledOptions is additive", () => {
       ],
     });
 
+    // Nothing is inserted for the second claim. Inserting would put a second
+    // row sharing this parent under a name the matcher then has to withhold on
+    // forever — one malformed batch permanently disabling name matching here.
     const after = await rowsUnder(t, "insert", parentId);
-    expect(after).toHaveLength(2);
-    const original = after.find((r) => r._id === id)!;
-    expect(original.platformData.bsc).toEqual({ b0: "chrome-1" });
-    const other = after.find((r) => r._id !== id)!;
-    expect(other.value).toBe("Chrome Refractors");
-    expect(other.platformData.bsc).toEqual({ b0: "chrome-2" });
+    expect(after).toHaveLength(1);
+    expect(after[0]._id).toBe(id);
+    expect(after[0].platformData.bsc).toEqual({ b0: "chrome-1" });
   });
 
   test("a title edited in the modal renames the row it names (tier 0 only)", async () => {
@@ -806,5 +856,429 @@ describe("storeReconciledOptions is additive", () => {
     const after = await rowsUnder(t, "insert", parentId);
     expect(after.map((r) => r.value).sort()).toEqual(["Drop Me", "Keep Me"]);
     expect(res.unlinked.map((u) => u.value)).toEqual(["Drop Me"]);
+  });
+
+  test("an OLD-shaped call (no coveredSides, no existingId) during a one-side-missing batch is additive-only", async () => {
+    // Exactly the args shape origin/main's VariantForm/ParallelForm built
+    // before NEO-211: no `coveredSides`, and every reconciled item carries
+    // only ONE side's id (the pre-fix single-platform branch never populated
+    // the other side's `platformData` key at all — see `bscOnly`/`bothEmpty`
+    // fixtures in VariantForm.test.tsx). This is the release-safety property:
+    // an old SPA bundle mid-deploy must not be ABLE to unlink or delete
+    // anything, no matter what it sends.
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      coveredSides: ["bsc", "sportlots"],
+      reconciledItems: [
+        {
+          value: "Chrome Update",
+          platformData: { bsc: "chrome-1", sportlots: "sl-chrome-1" },
+          metadata: undefined,
+        },
+        {
+          value: "Refractors",
+          platformData: { bsc: "chrome-2", sportlots: "sl-chrome-2" },
+          metadata: undefined,
+        },
+      ],
+    });
+    const before = await rowsUnder(t, "insert", parentId);
+    const chrome = before.find((r) => r.value === "Chrome Update")!;
+    const refractors = before.find((r) => r.value === "Refractors")!;
+
+    // The OLD shape: only bsc ids on the wire, no coveredSides at all.
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId,
+        reconciledItems: [
+          {
+            value: "Chrome Update",
+            platformData: { bsc: "chrome-1" },
+            metadata: undefined,
+          },
+          { value: "Brand New", platformData: { bsc: "new-1" }, metadata: undefined },
+        ],
+      },
+    );
+
+    expect(res.unlinked).toEqual([]);
+    const after = await rowsUnder(t, "insert", parentId);
+    // Additive insert landed; nothing was deleted.
+    expect(after.map((r) => r.value).sort()).toEqual([
+      "Brand New",
+      "Chrome Update",
+      "Refractors",
+    ]);
+    const chromeAfter = after.find((r) => r._id === chrome._id)!;
+    // Matched row's OTHER side (sportlots, absent from this call entirely) is
+    // untouched — silence must not be read as "SportLots dropped it".
+    expect(chromeAfter.platformData.sportlots).toEqual({ s0: "sl-chrome-1" });
+    // The row this batch never mentioned at all is completely untouched too.
+    const refractorsAfter = after.find((r) => r._id === refractors._id)!;
+    expect(refractorsAfter.lastUpdated).toBe(refractors.lastUpdated);
+    expect(refractorsAfter.platformData).toEqual(refractors.platformData);
+  });
+});
+
+// ===========================================================================
+// NEO-211 F1 — the unlink universe is the FETCH, not the operator's list
+// ===========================================================================
+
+describe("returnedIds separates what upstream listed from what the operator confirmed", () => {
+  /**
+   * `ReconciliationModal` seeds EVERY existing row into Ready, so
+   * `reconciledItems` is the operator's confirmed set — not the marketplace's.
+   * Deriving the unlink universe from the items therefore gets both directions
+   * wrong, and each direction has a test below.
+   */
+  async function seedTwo(t: ReturnType<typeof convexTest>) {
+    const parentId = await insertParent(t);
+    const asAdmin = admin(t);
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      reconciledItems: [
+        { value: "Still Listed", platformData: { bsc: "live" }, metadata: undefined },
+        { value: "Delisted", platformData: { bsc: "gone" }, metadata: undefined },
+      ],
+    });
+    const rows = await rowsUnder(t, "insert", parentId);
+    return {
+      parentId,
+      live: rows.find((r) => r.value === "Still Listed")!,
+      gone: rows.find((r) => r.value === "Delisted")!,
+    };
+  }
+
+  test("a restored row whose id upstream no longer returns IS unlinked", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const { parentId, gone } = await seedTwo(t);
+
+    // The modal restored both rows into Ready, so both are in the items —
+    // including the one BSC has actually dropped. Only `returnedIds` knows.
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId,
+        coveredSides: ["bsc"],
+        returnedIds: { bsc: ["live"] },
+        reconciledItems: [
+          { value: "Still Listed", platformData: { bsc: "live" }, metadata: undefined },
+          { value: "Delisted", platformData: { bsc: "gone" }, metadata: undefined },
+        ],
+      },
+    );
+
+    expect(res.unlinked.map((u) => u.value)).toEqual(["Delisted"]);
+    const after = await t.run(async (ctx) => ctx.db.get(gone._id));
+    expect(after?.platformData.bsc).toBeUndefined();
+    expect(after?.value).toBe("Delisted");
+  });
+
+  test("a row the OPERATOR disbanded is not reported as delisted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const { parentId, gone } = await seedTwo(t);
+
+    // The operator removed "Delisted" from the modal. BSC still lists its id.
+    // Saying "no longer listed on BSC" here would be a false statement about
+    // the marketplace, made to the very person who just did it.
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId,
+        coveredSides: ["bsc"],
+        returnedIds: { bsc: ["live", "gone"] },
+        reconciledItems: [
+          { value: "Still Listed", platformData: { bsc: "live" }, metadata: undefined },
+        ],
+      },
+    );
+
+    expect(res.unlinked).toEqual([]);
+    expect(res.unlinkedTotal).toBe(0);
+    const after = await t.run(async (ctx) => ctx.db.get(gone._id));
+    expect(after?.platformData.bsc).toEqual({ b0: "gone" });
+  });
+
+  test("an explicitly EMPTY returned list means that side is not covered", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const { parentId, gone, live } = await seedTwo(t);
+
+    // BSC answered with nothing. That is not evidence it dropped everything —
+    // it is far more likely a filter or an auth problem upstream.
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId,
+        coveredSides: ["bsc"],
+        returnedIds: { bsc: [] },
+        reconciledItems: [
+          { value: "Still Listed", platformData: { bsc: "live" }, metadata: undefined },
+        ],
+      },
+    );
+
+    expect(res.unlinked).toEqual([]);
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(gone._id)))?.platformData.bsc,
+    ).toEqual({ b0: "gone" });
+    expect(
+      (await t.run(async (ctx) => ctx.db.get(live._id)))?.platformData.bsc,
+    ).toEqual({ b0: "live" });
+  });
+
+  test("refuses an oversized returned-id list rather than walking it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+    // The unlink pass consults this Set once per sibling row, so an unbounded
+    // client-supplied array is transaction time nobody asked for.
+    await expect(
+      asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+        level: "setName",
+        parentId,
+        options: [{ value: "Topps", platformData: { bsc: "t1" } }],
+        coveredSides: ["bsc"],
+        returnedIds: { bsc: Array.from({ length: 2001 }, (_, i) => `id-${i}`) },
+      }),
+    ).rejects.toThrow(/over the 2000 limit/);
+  });
+
+  test("a dedupe collision cannot make a live id look delisted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "Topps", platformData: { bsc: "t1" } }],
+      coveredSides: ["bsc"],
+    });
+
+    // `fetchAggregatedOptions` folds two same-named marketplace options into
+    // one entry and keeps the LAST id per side, so "t1" disappears from the
+    // options it hands the store even though BSC returned it. The raw fetch
+    // list is what the store must judge staleness against.
+    const res = await asAdmin.mutation(
+      api.selectorOptions.storeSelectorOptions,
+      {
+        level: "setName",
+        parentId,
+        options: [{ value: "Topps", platformData: { bsc: "t2" } }],
+        coveredSides: ["bsc"],
+        returnedIds: { bsc: ["t1", "t2"] },
+      },
+    );
+
+    // "t1" came back, so nothing is unlinked and nothing is rebound — the row
+    // simply is not free for a name match while its id is live.
+    expect(res.unlinked).toEqual([]);
+    expect(res.relinked).toEqual([]);
+    const rows = await rowsUnder(t, "setName", parentId);
+    expect(rows.find((r) => r.value === "Topps")?.platformData.bsc).toEqual({
+      b0: "t1",
+    });
+  });
+
+  test("storeSelectorOptions honours returnedIds the same way", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [
+        { value: "Topps", platformData: { bsc: "t1" } },
+        { value: "Bowman", platformData: { bsc: "b1" } },
+      ],
+      coveredSides: ["bsc"],
+    });
+
+    const res = await asAdmin.mutation(
+      api.selectorOptions.storeSelectorOptions,
+      {
+        level: "setName",
+        parentId,
+        options: [{ value: "Topps", platformData: { bsc: "t1" } }],
+        coveredSides: ["bsc"],
+        returnedIds: { bsc: ["t1", "b1"] },
+      },
+    );
+
+    // Bowman is missing from the options but the fetch DID return its slug, so
+    // its absence says nothing about BSC.
+    expect(res.unlinked).toEqual([]);
+    const rows = await rowsUnder(t, "setName", parentId);
+    expect(
+      rows.find((r) => r.value === "Bowman")?.platformData.bsc,
+    ).toEqual({ b0: "b1" });
+  });
+});
+
+// ===========================================================================
+// NEO-211 F4 — nothing writes `value` unvalidated
+// ===========================================================================
+
+describe("marketplace strings are validated before they become row names", () => {
+  const CONTROL = "Topps\nSeries 1";
+  const TOO_LONG = "x".repeat(300);
+
+  test("storeSelectorOptions skips an unnameable option and keeps the rest", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    const res = await asAdmin.mutation(
+      api.selectorOptions.storeSelectorOptions,
+      {
+        level: "setName",
+        parentId,
+        options: [
+          { value: "Topps", platformData: { bsc: "t1" } },
+          { value: CONTROL, platformData: { bsc: "c1" } },
+          { value: TOO_LONG, platformData: { bsc: "l1" } },
+        ],
+        coveredSides: ["bsc"],
+      },
+    );
+
+    const rows = await rowsUnder(t, "setName", parentId);
+    expect(rows.map((r) => r.value)).toEqual(["Topps"]);
+    expect(res.optionsCount).toBe(1);
+  });
+
+  test("storeReconciledOptions skips an unnameable item and a bad label", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId,
+      reconciledItems: [
+        { value: CONTROL, platformData: { bsc: "c1" }, metadata: undefined },
+        {
+          value: "Chrome Update",
+          platformData: { bsc: "ok-1" },
+          // A label written by an older build, or by a path predating the
+          // label check. `assertValidSlotLabel` would THROW on this inside
+          // initialSlots and lose every item after it in the batch.
+          platformLabels: { bsc: { "ok-1": TOO_LONG } },
+          metadata: undefined,
+        },
+      ],
+    });
+
+    const rows = await rowsUnder(t, "insert", parentId);
+    expect(rows.map((r) => r.value)).toEqual(["Chrome Update"]);
+    // The id still attaches; only the unusable label is dropped.
+    expect(rows[0].platformData.bsc).toEqual({ b0: "ok-1" });
+    expect(rows[0].platformLabels?.bsc?.b0).toBeUndefined();
+  });
+
+  test("an inserted value is trimmed on the way in", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "  Topps  ", platformData: { bsc: "t1" } }],
+      coveredSides: ["bsc"],
+    });
+    const rows = await rowsUnder(t, "setName", parentId);
+    expect(rows[0].value).toBe("Topps");
+  });
+});
+
+// ===========================================================================
+// NEO-211 — a re-slug rebinding is reported
+// ===========================================================================
+
+describe("relinked", () => {
+  test("a name-tier rebind onto a new id is reported, and only then", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "Bowman", platformData: { bsc: "b1" } }],
+      coveredSides: ["bsc"],
+    });
+    const [bowman] = await rowsUnder(t, "setName", parentId);
+
+    const res = await asAdmin.mutation(
+      api.selectorOptions.storeSelectorOptions,
+      {
+        level: "setName",
+        parentId,
+        options: [{ value: "Bowman", platformData: { bsc: "b1-reslugged" } }],
+        coveredSides: ["bsc"],
+      },
+    );
+
+    // The slot key is reused so nothing orphans — but every card under this
+    // row now points at a different marketplace set, which is not something to
+    // do silently.
+    expect(res.relinked).toEqual([
+      { id: bowman._id, value: "Bowman", side: "bsc" },
+    ]);
+    expect(res.relinkedTotal).toBe(1);
+
+    // An identical re-sync rebinds nothing.
+    const again = await asAdmin.mutation(
+      api.selectorOptions.storeSelectorOptions,
+      {
+        level: "setName",
+        parentId,
+        options: [{ value: "Bowman", platformData: { bsc: "b1-reslugged" } }],
+        coveredSides: ["bsc"],
+      },
+    );
+    expect(again.relinked).toEqual([]);
+  });
+
+  test("an id-tier match is not a relink even when the row was renamed", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [{ value: "Topps", platformData: { bsc: "t1" } }],
+      coveredSides: ["bsc"],
+    });
+    const [created] = await rowsUnder(t, "setName", parentId);
+    await asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
+      id: created._id,
+      value: "TCG",
+    });
+
+    const res = await asAdmin.mutation(
+      api.selectorOptions.storeSelectorOptions,
+      {
+        level: "setName",
+        parentId,
+        options: [{ value: "Topps", platformData: { bsc: "t1" } }],
+        coveredSides: ["bsc"],
+      },
+    );
+    // Same id, same set, nothing rebound.
+    expect(res.relinked).toEqual([]);
   });
 });

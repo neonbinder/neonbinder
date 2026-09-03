@@ -52,6 +52,43 @@ export const platformSideValidator = v.union(
  * you spent an evening entering 400 cards into lost its BSC link". Only
  * populated at levels that can hold a checklist.
  */
+/**
+ * NEO-211 F1 — what the FETCH returned, as opposed to what the caller is
+ * asking us to store.
+ *
+ * On the `ReconciliationModal` path those are different lists: the modal seeds
+ * every existing row into Ready, so `reconciledItems` is the operator's
+ * confirmed set, not the marketplace's. Without this the unlink pass both
+ * misses a genuinely delisted set and reports an operator's own DISBAND as
+ * "no longer listed on BSC".
+ *
+ * Capped at MAX_RETURNED_IDS per side — an unbounded client-supplied array
+ * feeding a Set the unlink pass consults per row is a transaction-time bomb.
+ */
+export const MAX_RETURNED_IDS = 2000;
+
+export const returnedIdsValidator = v.object({
+  bsc: v.optional(v.array(v.string())),
+  sportlots: v.optional(v.array(v.string())),
+});
+
+/** Throws when either side exceeds the cap. Call before planning. */
+export function assertReturnedIdsWithinLimits(
+  returnedIds: { bsc?: string[]; sportlots?: string[] } | undefined,
+  fnName: string,
+): void {
+  if (!returnedIds) return;
+  for (const side of ["bsc", "sportlots"] as const) {
+    const ids = returnedIds[side];
+    if (ids && ids.length > MAX_RETURNED_IDS) {
+      throw new Error(
+        `${fnName}: returnedIds.${side} has ${ids.length} entries, over the ` +
+          `${MAX_RETURNED_IDS} limit`,
+      );
+    }
+  }
+}
+
 export const unlinkedEntryValidator = v.object({
   id: v.id("selectorOptions"),
   value: v.string(),
@@ -59,6 +96,12 @@ export const unlinkedEntryValidator = v.object({
   hasCards: v.optional(v.boolean()),
 });
 
+/**
+ * NEO-211 — a row whose marketplace link CHANGED this run: detached
+ * (`unlinked`) or rebound to a new id for the same set (`relinked`, the
+ * re-slug heal). Same shape, two lists; `hasCards` is only populated on the
+ * unlink side, where "did this cost someone a checklist?" is the question.
+ */
 export type UnlinkedEntry = {
   id: Id<"selectorOptions">;
   value: string;

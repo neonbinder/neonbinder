@@ -158,6 +158,19 @@ export function checkSelectorValue(raw: string): SelectorValueCheck {
       reason: "Name cannot contain line breaks or control characters",
     };
   }
+  // Zero-width and invisible characters are worse than control codes here,
+  // because nothing renders them: a label carrying a ZWSP is VISUALLY
+  // identical to one without, yet it is a different string, folds to a
+  // different `selectorValueKey`, and so slips past the sibling-clash check to
+  // produce two rows an operator cannot tell apart in any picker. They survive
+  // `.trim()` too — none of them is Unicode White_Space. A marketplace label
+  // or a copy-paste is all it takes.
+  if (/[\u200B-\u200D\u2060\uFEFF]/.test(trimmed)) {
+    return {
+      ok: false,
+      reason: "Name cannot contain zero-width or invisible characters",
+    };
+  }
   return { ok: true, value: trimmed };
 }
 
@@ -239,6 +252,52 @@ export type SelectorSyncPlan<TId extends string = string> = {
 };
 
 /**
+ * What the FETCH returned, per side.
+ *
+ * NEO-211 F1: this is NOT the same thing as "the ids in the items", and on the
+ * reconciler path the difference is the whole ballgame. `ReconciliationModal`
+ * seeds every existing row into Ready, so the items are what the OPERATOR
+ * confirmed, not what the marketplace listed. Deriving the unlink universe
+ * from them gets both directions wrong:
+ *
+ *   • a set BSC genuinely delisted is still in the items (the modal restored
+ *     it), so it would never be unlinked; and
+ *   • a row the operator DISBANDED is absent from the items, so it would be
+ *     unlinked and reported to that same operator as "no longer listed on
+ *     BSC" — a statement about the marketplace that is simply false.
+ *
+ * So the caller passes the fetch's own id list when it has one. The items are
+ * the fallback for callers that do not (the aggregator path, where items ARE
+ * the fetch, and any old SPA bundle).
+ */
+export function resolveReturnedIds(
+  items: readonly IncomingItem[],
+  declared: { bsc?: readonly string[]; sportlots?: readonly string[] } | undefined,
+): Record<PlatformSide, Set<string>> {
+  const out: Record<PlatformSide, Set<string>> = {
+    bsc: new Set<string>(),
+    sportlots: new Set<string>(),
+  };
+  if (declared) {
+    // Wholesale: a side the caller omitted gets an EMPTY universe, which by
+    // the narrowing rule below means that side is not covered at all. Falling
+    // back to the items for the omitted side would quietly re-introduce the
+    // bug this argument exists to fix.
+    for (const side of PLATFORM_SIDES) {
+      for (const id of declared[side] ?? []) if (id) out[side].add(id);
+    }
+    return out;
+  }
+  for (const item of items) {
+    for (const side of PLATFORM_SIDES) {
+      const id = item.ids[side];
+      if (id) out[side].add(id);
+    }
+  }
+  return out;
+}
+
+/**
  * Which sides this run may unlink on.
  *
  * **Absent `coveredSides` means unlink NOTHING.** A Convex deploy is a hard
@@ -247,24 +306,18 @@ export type SelectorSyncPlan<TId extends string = string> = {
  * not fetched". Defaulting to "infer it from the items" would make that bundle
  * strip SportLots linkage off every row it touched. Silence means silence.
  *
- * Coverage is then NARROWING-only: a side the caller claims to cover but that
- * carries no id anywhere in the batch is dropped, because a batch with no ids
- * on a side is not evidence that upstream stopped listing anything.
+ * Coverage is then NARROWING-only: a side the caller claims to cover but whose
+ * returned-id universe is empty is dropped, because "the fetch returned
+ * nothing on this side" is not evidence that upstream dropped everything.
  */
 export function effectiveCoveredSides(
-  items: readonly IncomingItem[],
+  returnedIds: Record<PlatformSide, Set<string>>,
   declared: readonly PlatformSide[] | undefined,
 ): PlatformSide[] {
   if (!declared || declared.length === 0) return [];
-  const present = new Set<PlatformSide>();
-  for (const item of items) {
-    for (const side of PLATFORM_SIDES) {
-      if (item.ids[side]) present.add(side);
-    }
-  }
   const out: PlatformSide[] = [];
   for (const side of PLATFORM_SIDES) {
-    if (declared.includes(side) && present.has(side)) out.push(side);
+    if (declared.includes(side) && returnedIds[side].size > 0) out.push(side);
   }
   return out;
 }
@@ -298,21 +351,13 @@ export function planSelectorSync<TId extends string>(args: {
   existing: readonly MatchableRow<TId>[];
   items: readonly IncomingItem[];
   coveredSides?: readonly PlatformSide[];
+  /** What the FETCH returned. Falls back to the items when absent — see above. */
+  returnedIds?: { bsc?: readonly string[]; sportlots?: readonly string[] };
 }): SelectorSyncPlan<TId> {
   const { existing, items } = args;
 
-  const returnedIds: Record<PlatformSide, Set<string>> = {
-    bsc: new Set<string>(),
-    sportlots: new Set<string>(),
-  };
-  for (const item of items) {
-    for (const side of PLATFORM_SIDES) {
-      const id = item.ids[side];
-      if (id) returnedIds[side].add(id);
-    }
-  }
-
-  const coveredSides = effectiveCoveredSides(items, args.coveredSides);
+  const returnedIds = resolveReturnedIds(items, args.returnedIds);
+  const coveredSides = effectiveCoveredSides(returnedIds, args.coveredSides);
   const ambiguities: MatchAmbiguity[] = [];
 
   // Sibling indexes.
@@ -342,31 +387,39 @@ export function planSelectorSync<TId extends string>(args: {
     }
   }
 
-  /** A row already claimed by an earlier item in this same batch. */
+  /** A row already claimed by another item in this same batch. */
   const claimed = new Set<TId>();
-  const outcomes: Array<MatchOutcome<TId>> = [];
+  const outcomes: Array<MatchOutcome<TId> | undefined> = items.map(
+    () => undefined,
+  );
+  /** A tier-1 problem that must still withhold the item if tier 2 finds nothing. */
+  const carriedReason: Array<string | undefined> = items.map(() => undefined);
 
-  for (const item of items) {
-    const key = selectorValueKey(item.value);
-    let withheld: string | undefined;
+  // ── Pass 1 — identity: tier 0, then tier 1 ─────────────────────────────
+  //
+  // NEO-211 F5: identity claims are resolved for the WHOLE batch before any
+  // name match is attempted. Interleaving them made the result depend on item
+  // ORDER — a name match earlier in the list could claim the very row that a
+  // later item's marketplace id identified, and the id is the stronger signal
+  // by construction.
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
 
-    // ── Tier 0 — client-supplied existingId, sibling-scoped ────────────────
     if (item.existingId) {
       const row = byRowId.get(item.existingId);
       if (row) {
         if (claimed.has(row._id)) {
-          // Two modal rows pointing at one NB row. The second is a new set as
-          // far as we can tell; inserting it is additive and reversible,
-          // folding it into the first would silently merge two titles.
-          ambiguities.push({
-            item: item.value,
-            reason: "existingId already claimed by an earlier item",
-          });
-          outcomes.push({ kind: "insert" });
-          continue;
+          // NEO-211 F2: withhold, do NOT insert. An insert here creates a
+          // second sibling with this row's name, and from then on tier 2 at
+          // this parent withholds forever — one bad batch permanently
+          // disables name matching for that set.
+          const reason = "existingId already claimed in this batch";
+          ambiguities.push({ item: item.value, reason });
+          outcomes[i] = { kind: "withheld", reason };
+        } else {
+          claimed.add(row._id);
+          outcomes[i] = { kind: "matched", existingId: row._id, tier: 0 };
         }
-        claimed.add(row._id);
-        outcomes.push({ kind: "matched", existingId: row._id, tier: 0 });
         continue;
       }
       // Not a sibling at this (level, parentId) — a stale id, a deleted row,
@@ -378,7 +431,6 @@ export function planSelectorSync<TId extends string>(args: {
       });
     }
 
-    // ── Tier 1 — marketplace id → the sibling holding it ───────────────────
     const tier1 = new Set<MatchableRow<TId>>();
     for (const side of PLATFORM_SIDES) {
       const id = item.ids[side];
@@ -387,81 +439,97 @@ export function planSelectorSync<TId extends string>(args: {
       if (!holders || holders.length === 0) continue;
       if (holders.length > 1) {
         // NEO-137 M:1 is legal, so this is not corruption — it just is not
-        // evidence of which row the update belongs to.
-        withheld = `${side} id is held by ${holders.length} sibling rows`;
+        // evidence of which row the update belongs to. NEO-211 F7: reported
+        // whether or not the OTHER side goes on to resolve cleanly, because
+        // an id sitting on two rows is worth knowing about either way.
+        const reason = `${side} id is held by ${holders.length} sibling rows`;
+        ambiguities.push({ item: item.value, reason });
+        carriedReason[i] = reason;
         continue;
       }
       tier1.add(holders[0]);
     }
+
     if (tier1.size === 1) {
       const row = [...tier1][0];
       if (claimed.has(row._id)) {
-        ambiguities.push({
-          item: item.value,
-          reason: "two incoming items resolve to one row by marketplace id",
-        });
-        outcomes.push({
-          kind: "withheld",
-          reason: "row already claimed in this batch",
-        });
-        continue;
+        const reason = "two incoming items resolve to one row by marketplace id";
+        ambiguities.push({ item: item.value, reason });
+        outcomes[i] = { kind: "withheld", reason };
+      } else {
+        claimed.add(row._id);
+        outcomes[i] = { kind: "matched", existingId: row._id, tier: 1 };
       }
-      claimed.add(row._id);
-      outcomes.push({ kind: "matched", existingId: row._id, tier: 1 });
       continue;
     }
     if (tier1.size > 1) {
       // BSC says row A, SportLots says row B. Upstream believes these are one
       // set; NB has them as two. Merging rows is not something a sync gets to
       // decide, and picking a side would silently move a marketplace link.
-      withheld = "bsc and sportlots ids resolve to different rows";
+      const reason = "bsc and sportlots ids resolve to different rows";
+      ambiguities.push({ item: item.value, reason });
+      carriedReason[i] = reason;
     }
+  }
 
-    // ── Tier 2 — normalised display value against FREE siblings ────────────
-    const sameName = byKey.get(key) ?? [];
+  // ── Pass 2 — name, over whatever pass 1 left unclaimed ─────────────────
+  for (let i = 0; i < items.length; i++) {
+    if (outcomes[i]) continue;
+    const item = items[i];
+    let withheld = carriedReason[i];
+
+    const sameName = byKey.get(selectorValueKey(item.value)) ?? [];
+    const sidesCarried = PLATFORM_SIDES.filter((s) => item.ids[s]);
+
     if (sameName.length > 1) {
       // Two siblings already fold to one name. Nothing here can say which of
       // them upstream means, and picking would attach a marketplace id to a
       // coin-flip.
       withheld = `${sameName.length} sibling rows share this name`;
+      ambiguities.push({ item: item.value, reason: withheld });
     } else if (sameName.length === 1) {
       const row = sameName[0];
-      const sidesCarried = PLATFORM_SIDES.filter((s) => item.ids[s]);
-      const free = sidesCarried.every((side) =>
-        isSideFreeForNameMatch(row, side, returnedIds[side]),
-      );
-      if (!free) {
+      if (sidesCarried.length === 0) {
+        // NEO-211 F6: an item with no marketplace id at all has nothing to
+        // attach, so a name match would be a pure no-op that nonetheless
+        // CLAIMS the row — hiding it from a later item that does carry its id,
+        // and (on the reconciler path) letting a stray modal line silently
+        // adopt an existing set. The only legitimately id-less rows are custom
+        // ones, and those arrive through addCustomSelectorOption, not here.
+        withheld = "item carries no marketplace id to attach";
+        ambiguities.push({ item: item.value, reason: withheld });
+      } else if (
+        !sidesCarried.every((side) =>
+          isSideFreeForNameMatch(row, side, returnedIds[side]),
+        )
+      ) {
         // The name matches but the row is currently, legitimately bound to a
         // different id upstream still lists. Inserting a same-named sibling
         // would break the one-name-per-parent rule every picker relies on.
         withheld = "name matches a row already linked to a different live id";
+        ambiguities.push({ item: item.value, reason: withheld });
       } else if (claimed.has(row._id)) {
+        withheld = "row already claimed in this batch";
         ambiguities.push({
           item: item.value,
           reason: "two incoming items fold to one existing row",
         });
-        outcomes.push({
-          kind: "withheld",
-          reason: "row already claimed in this batch",
-        });
-        continue;
       } else {
         claimed.add(row._id);
-        outcomes.push({ kind: "matched", existingId: row._id, tier: 2 });
+        outcomes[i] = { kind: "matched", existingId: row._id, tier: 2 };
         continue;
       }
     }
 
-    if (withheld) {
-      ambiguities.push({ item: item.value, reason: withheld });
-      outcomes.push({ kind: "withheld", reason: withheld });
-      continue;
-    }
-
-    outcomes.push({ kind: "insert" });
+    outcomes[i] = withheld ? { kind: "withheld", reason: withheld } : { kind: "insert" };
   }
 
-  return { outcomes, coveredSides, returnedIds, ambiguities };
+  return {
+    outcomes: outcomes as Array<MatchOutcome<TId>>,
+    coveredSides,
+    returnedIds,
+    ambiguities,
+  };
 }
 
 // ───────────────────────────────────────────────────────────────────────────

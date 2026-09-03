@@ -66,6 +66,7 @@ import {
   clearDeclinedIfLabelChanged,
   planSelectorSync,
   planValueRename,
+  resolveReturnedIds,
   refusesValueRename,
   selectorValueKey,
   unlinkStalePrimary,
@@ -77,7 +78,9 @@ import {
   MAX_SYNC_ITEMS,
   UNLINK_NOTICE_LIMIT,
   annotateHasCards,
+  assertReturnedIdsWithinLimits,
   platformSideValidator,
+  returnedIdsValidator,
   unionChildren,
   unlinkedEntryValidator,
   type UnlinkedEntry,
@@ -103,6 +106,7 @@ import {
   idForSlot,
   initialSlots,
   isSlotKeyForSide,
+  primaryId,
   primarySlot,
   pruneEmptySides,
   setPrimarySlotId,
@@ -1017,6 +1021,13 @@ export const storeSelectorOptions = mutation({
      * actually carry an id in this batch (see `effectiveCoveredSides`).
      */
     coveredSides: v.optional(v.array(platformSideValidator)),
+    /**
+     * NEO-211 F1 — the ids the FETCH returned, per side. On the reconciler
+     * path this is NOT the same list as `options`; see the validator's note.
+     * Absent → derived from the options, which is correct for the aggregator
+     * path (there the options ARE the fetch) and for old SPA bundles.
+     */
+    returnedIds: v.optional(returnedIdsValidator),
   },
   returns: v.object({
     success: v.boolean(),
@@ -1025,6 +1036,14 @@ export const storeSelectorOptions = mutation({
     /** Rows whose marketplace link was removed (NEO-211 D). Capped; see total. */
     unlinked: v.array(unlinkedEntryValidator),
     unlinkedTotal: v.number(),
+    /**
+     * Rows whose primary id on a side was REPLACED by a different one for the
+     * same set — a marketplace re-slug healed by the name tier. Not a loss (the
+     * slot key is reused, so every card on it keeps resolving), but it is a
+     * silent rebinding of every card under that row, so it is reported.
+     */
+    relinked: v.array(unlinkedEntryValidator),
+    relinkedTotal: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1036,6 +1055,7 @@ export const storeSelectorOptions = mutation({
           `${MAX_SYNC_ITEMS}-per-call limit`,
       );
     }
+    assertReturnedIdsWithinLimits(args.returnedIds, "storeSelectorOptions");
 
     // NEO-71-74: every option in this batch shares one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every
@@ -1095,6 +1115,7 @@ export const storeSelectorOptions = mutation({
       existing: existingOptions,
       items,
       coveredSides: args.coveredSides,
+      returnedIds: args.returnedIds,
     });
     if (plan.ambiguities.length > 0) {
       // Deliberately log-only: an ambiguity names sibling rows and is exactly
@@ -1140,7 +1161,7 @@ export const storeSelectorOptions = mutation({
     };
 
     const linkedIds: Id<"selectorOptions">[] = [];
-    const insertedIds: Id<"selectorOptions">[] = [];
+    const relinkedAll: UnlinkedEntry[] = [];
 
     for (let i = 0; i < options.length; i++) {
       const option = options[i];
@@ -1159,6 +1180,18 @@ export const storeSelectorOptions = mutation({
         for (const side of PLATFORM_SIDES) {
           const incoming = item.ids[side];
           if (!incoming) continue;
+          // A name-tier match that lands on a DIFFERENT id than the row held
+          // is the re-slug heal. The slot key is reused, so nothing orphans —
+          // but every card under this row is now attributed to a different
+          // marketplace set, and that must not be silent.
+          const previousId = primaryId(w, side);
+          if (
+            outcome.tier === 2 &&
+            previousId !== undefined &&
+            previousId !== incoming
+          ) {
+            relinkedAll.push({ id: row._id, value: row.value, side });
+          }
           // At these levels the item's display value IS the marketplace's own
           // name for the set, so it is the label. Storing it is what lets
           // `getSelectorSyncSuggestions` say "BSC calls this Topps" without a
@@ -1201,36 +1234,45 @@ export const storeSelectorOptions = mutation({
       }
 
       // No match at any tier → insert. Unchanged from before, except that the
-      // marketplace's own name is now recorded as the slot label.
+      // marketplace's own name is now recorded as the slot label — and that
+      // the value is VALIDATED first (NEO-211 F4). Every other path that
+      // writes `value` has been through `checkSelectorValue` since NEO-211;
+      // insert was the one door still taking a marketplace string unchecked,
+      // so an upstream name carrying a newline or 4 KB of markup would become
+      // a row name no rename could later fix.
+      const valueCheck = checkSelectorValue(option.value);
+      if (!valueCheck.ok) {
+        console.warn(
+          `[storeSelectorOptions] skipped an unnameable option at ` +
+            `level=${level}: ${valueCheck.reason}`,
+        );
+        continue;
+      }
+      const insertValue = valueCheck.value;
       const incomingBsc = item.ids.bsc;
       const incomingSl = item.ids.sportlots;
-      warnIfIncomplete("new", option.value, incomingBsc);
+      warnIfIncomplete("new", insertValue, incomingBsc);
       const features = {
         ...(parentFeatures ?? {}),
-        ...deriveOwnLevelFeatures(level, option.value),
+        ...deriveOwnLevelFeatures(level, insertValue),
       };
       // NEO-96: a sport row carries its own config from creation, so nothing
       // downstream ever looks up SKU codes / QIDs / ESPN paths by display
       // name again. Absent for an unmapped sport — callers degrade, see
       // convex/sportConfig.ts.
       const sportConfig =
-        level === "sport" ? sportConfigDefaultsFor(option.value) : undefined;
-      const labelCheck = checkSelectorValue(option.value);
-      const label = labelCheck.ok ? labelCheck.value : undefined;
+        level === "sport" ? sportConfigDefaultsFor(insertValue) : undefined;
+      const label = insertValue;
       const alloc = initialSlots({
-        ...(incomingBsc
-          ? { bsc: [{ id: incomingBsc, ...(label ? { label } : {}) }] }
-          : {}),
-        ...(incomingSl
-          ? { sportlots: [{ id: incomingSl, ...(label ? { label } : {}) }] }
-          : {}),
+        ...(incomingBsc ? { bsc: [{ id: incomingBsc, label }] } : {}),
+        ...(incomingSl ? { sportlots: [{ id: incomingSl, label }] } : {}),
       });
       const hasLabels =
         Object.keys(alloc.platformLabels.bsc ?? {}).length > 0 ||
         Object.keys(alloc.platformLabels.sportlots ?? {}).length > 0;
       const id = await ctx.db.insert("selectorOptions", {
         level,
-        value: option.value,
+        value: insertValue,
         platformData: alloc.platformData,
         ...(hasLabels ? { platformLabels: alloc.platformLabels } : {}),
         ...(Object.keys(alloc.platformSlotSeq).length > 0
@@ -1242,7 +1284,6 @@ export const storeSelectorOptions = mutation({
         ...(sportConfig ? { sportConfig } : {}),
         lastUpdated: Date.now(),
       });
-      insertedIds.push(id);
       linkedIds.push(id);
     }
 
@@ -1356,6 +1397,17 @@ export const storeSelectorOptions = mutation({
       level,
       unlinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
     );
+    if (relinkedAll.length > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "selector_sync_relinked",
+          level,
+          parentId: parentId ?? null,
+          count: relinkedAll.length,
+          rowIds: relinkedAll.slice(0, 25).map((r) => r.id),
+        }),
+      );
+    }
 
     return {
       success: true,
@@ -1363,6 +1415,8 @@ export const storeSelectorOptions = mutation({
       optionsCount: linkedIds.length,
       unlinked,
       unlinkedTotal: unlinkedAll.length,
+      relinked: relinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
+      relinkedTotal: relinkedAll.length,
     };
   },
 });
@@ -4417,10 +4471,12 @@ export const getSelectorSyncSuggestions = query({
  *  - the target row must be a sibling at (level, parentId), resolved through
  *    the same indexed read the query used, so a decision cannot reach a row
  *    under a different parent;
- *  - `baseVersion` is re-checked against the row IN this transaction, so a
- *    decision taken against a row that has since moved is counted, not
- *    written — including the second of two decisions on the same row in one
- *    call;
+ *  - `baseVersion` is re-checked against the version each row carried when
+ *    this call STARTED, so a decision taken against a row somebody ELSE has
+ *    moved since the modal read it is counted, not written. Deliberately not
+ *    re-read as the loop writes: a row can disagree with both marketplaces,
+ *    and accepting one side while declining the other in one Apply click is
+ *    the ordinary case, not a conflict;
  *  - accept goes through the one shared rename path, which re-validates the
  *    stored label, refuses non-custom variantType rows, and clash-checks
  *    against the working set so two accepts folding to one name cannot both
@@ -4467,15 +4523,25 @@ export const applySelectorSyncSuggestions = mutation({
       .collect();
     const byId = new Map(siblings.map((r) => [r._id as string, r]));
 
+    // The version each row had when this call STARTED.
+    //
+    // Staleness means "someone else moved this row since the modal read it",
+    // and the only honest baseline for that is the state before we touched
+    // anything. Comparing against a version this loop keeps bumping made every
+    // second decision on a row read stale — including the accept-one-side +
+    // decline-the-other pair the review modal explicitly invites, and even an
+    // exact repeat of a decision. That is our own write being reported to the
+    // admin as somebody else's concurrent edit.
+    const originalVersion = new Map<string, number>(
+      siblings.map((r) => [r._id as string, r.lastUpdated ?? 0]),
+    );
+
     // The in-transaction working set. `value` moves as accepts land, and the
     // clash check reads THIS rather than the original snapshot — otherwise two
     // accepts that fold to the same name would both succeed and leave two
     // siblings the pickers cannot tell apart.
     const workingValue = new Map<string, string>(
       siblings.map((r) => [r._id as string, r.value]),
-    );
-    const workingVersion = new Map<string, number>(
-      siblings.map((r) => [r._id as string, r.lastUpdated ?? 0]),
     );
     const workingDeclined = new Map<
       string,
@@ -4498,7 +4564,7 @@ export const applySelectorSyncSuggestions = mutation({
         skipped++;
         continue;
       }
-      if ((workingVersion.get(row._id) ?? 0) !== decision.baseVersion) {
+      if ((originalVersion.get(row._id) ?? 0) !== decision.baseVersion) {
         stale++;
         continue;
       }
@@ -4529,7 +4595,6 @@ export const applySelectorSyncSuggestions = mutation({
           lastUpdated: now,
         });
         workingDeclined.set(row._id, next);
-        workingVersion.set(row._id, now);
         declined++;
         continue;
       }
@@ -4575,7 +4640,6 @@ export const applySelectorSyncSuggestions = mutation({
         lastUpdated: now,
       });
       workingValue.set(row._id, plan.value);
-      workingVersion.set(row._id, now);
       workingDeclined.set(row._id, nextDeclined);
       if (plan.features) workingFeatures.set(row._id, plan.features);
       applied++;
@@ -5205,6 +5269,25 @@ export const fetchAggregatedOptions = action({
       if (!platformErrors.bsc) coveredSides.push("bsc");
       if (!platformErrors.sportlots) coveredSides.push("sportlots");
 
+      // …and `returnedIds` comes from the RAW adapter results, not from
+      // `deduped`. The dedupe above folds two options with the same normalised
+      // name into one entry and keeps only the last id per side, so an id the
+      // marketplace really did return can vanish from the list the store sees.
+      // Deriving the unlink universe from `deduped` would then read that as
+      // "upstream dropped it" and detach a live link.
+      const fetchedIds: { bsc: string[]; sportlots: string[] } = {
+        bsc: [],
+        sportlots: [],
+      };
+      for (const option of allOptions) {
+        const bsc = option.platformData.bsc;
+        if (Array.isArray(bsc)) fetchedIds.bsc.push(...bsc);
+        else if (bsc) fetchedIds.bsc.push(bsc);
+        if (option.platformData.sportlots) {
+          fetchedIds.sportlots.push(option.platformData.sportlots);
+        }
+      }
+
       const result = await ctx.runMutation(
         api.selectorOptions.storeSelectorOptions,
         {
@@ -5212,6 +5295,10 @@ export const fetchAggregatedOptions = action({
           options: deduped,
           parentId,
           coveredSides,
+          returnedIds: {
+            bsc: [...new Set(fetchedIds.bsc)],
+            sportlots: [...new Set(fetchedIds.sportlots)],
+          },
         },
       );
 

@@ -8,6 +8,7 @@ import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import {
   slotIds,
   initialSlots,
+  primaryId,
   pruneEmptySides,
   setPrimarySlotId,
 } from "./platformSlots";
@@ -19,6 +20,7 @@ import {
   clearDeclinedIfLabelChanged,
   planSelectorSync,
   planValueRename,
+  resolveReturnedIds,
   selectorValueKey,
   unlinkStalePrimary,
   valuesDeepEqual,
@@ -28,7 +30,9 @@ import {
   MAX_SYNC_ITEMS,
   UNLINK_NOTICE_LIMIT,
   annotateHasCards,
+  assertReturnedIdsWithinLimits,
   platformSideValidator,
+  returnedIdsValidator,
   unionChildren,
   unlinkedEntryValidator,
   type UnlinkedEntry,
@@ -1044,6 +1048,17 @@ export const storeReconciledOptions = mutation({
      * mean silence rather than "infer it from what came back".
      */
     coveredSides: v.optional(v.array(platformSideValidator)),
+    /**
+     * NEO-211 F1 — the ids the FETCH returned, per side.
+     *
+     * On this path it is NOT `reconciledItems`. `ReconciliationModal` seeds
+     * every existing row into Ready, so the items are the OPERATOR's confirmed
+     * set: a genuinely delisted row is still among them (so it would never be
+     * unlinked), and a row the operator DISBANDED is absent from them (so it
+     * would be unlinked and reported back to that operator as "no longer
+     * listed on BSC", which is false). Pass the fetch's own id list.
+     */
+    returnedIds: v.optional(returnedIdsValidator),
   },
   returns: v.object({
     success: v.boolean(),
@@ -1051,6 +1066,9 @@ export const storeReconciledOptions = mutation({
     optionsCount: v.number(),
     unlinked: v.array(unlinkedEntryValidator),
     unlinkedTotal: v.number(),
+    /** Rows rebound to a new id for the same set (a marketplace re-slug). */
+    relinked: v.array(unlinkedEntryValidator),
+    relinkedTotal: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1062,6 +1080,7 @@ export const storeReconciledOptions = mutation({
           `${MAX_SYNC_ITEMS}-per-call limit`,
       );
     }
+    assertReturnedIdsWithinLimits(args.returnedIds, "storeReconciledOptions");
 
     // NEO-71-74: reconciledItems share one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every
@@ -1095,6 +1114,7 @@ export const storeReconciledOptions = mutation({
       existing: existingOptions,
       items,
       coveredSides: args.coveredSides,
+      returnedIds: args.returnedIds,
     });
     if (plan.ambiguities.length > 0) {
       console.warn(
@@ -1148,6 +1168,7 @@ export const storeReconciledOptions = mutation({
       }));
 
     const linkedIds: Id<"selectorOptions">[] = [];
+    const relinkedAll: UnlinkedEntry[] = [];
 
     for (let i = 0; i < reconciledItems.length; i++) {
       const item = reconciledItems[i];
@@ -1214,6 +1235,18 @@ export const storeReconciledOptions = mutation({
         for (const side of PLATFORM_SIDES) {
           const refreshedId = parsed.ids[side];
           if (!refreshedId) continue;
+          // Name-tier rebinding onto a different id is the re-slug heal: the
+          // slot key is reused so nothing orphans, but every card under this
+          // row now points at a different marketplace set. Reported, never
+          // silent.
+          const previousId = primaryId(w, side);
+          if (
+            outcome.tier === 2 &&
+            previousId !== undefined &&
+            previousId !== refreshedId
+          ) {
+            relinkedAll.push({ id: row._id, value: w.value, side });
+          }
           const rawLabel = item.platformLabels?.[side]?.[refreshedId];
           const labelCheck =
             rawLabel === undefined ? undefined : checkSelectorValue(rawLabel);
@@ -1246,21 +1279,33 @@ export const storeReconciledOptions = mutation({
 
       // Fresh insert: reconciler is the only source of IDs, so the slots it
       // allocates are the primary on both sides.
+      //
+      // NEO-211 F4: the value and the labels are VALIDATED here, exactly as
+      // the match path four lines up already validates its labels. This was
+      // the last door writing a marketplace string straight into a row name —
+      // an upstream title with a newline or 4 KB of markup would have become a
+      // name no rename could fix (and `assertValidSlotLabel` would have thrown
+      // mid-batch on the label, losing every item after it).
+      const valueCheck = checkSelectorValue(item.value);
+      if (!valueCheck.ok) {
+        console.warn(
+          `[storeReconciledOptions] skipped an unnameable item at ` +
+            `level=${level}: ${valueCheck.reason}`,
+        );
+        continue;
+      }
+      const insertValue = valueCheck.value;
+      const safeLabel = (side: "bsc" | "sportlots", id: string) => {
+        const raw = item.platformLabels?.[side]?.[id];
+        if (raw === undefined) return {};
+        const checked = checkSelectorValue(raw);
+        return checked.ok ? { label: checked.value } : {};
+      };
       const bscIds = wireToIds(item.platformData.bsc);
       const slIds = wireToIds(item.platformData.sportlots);
       const alloc = initialSlots({
-        bsc: bscIds.map((id) => ({
-          id,
-          ...(item.platformLabels?.bsc?.[id]
-            ? { label: item.platformLabels.bsc[id] }
-            : {}),
-        })),
-        sportlots: slIds.map((id) => ({
-          id,
-          ...(item.platformLabels?.sportlots?.[id]
-            ? { label: item.platformLabels.sportlots[id] }
-            : {}),
-        })),
+        bsc: bscIds.map((id) => ({ id, ...safeLabel("bsc", id) })),
+        sportlots: slIds.map((id) => ({ id, ...safeLabel("sportlots", id) })),
       });
 
       const newPrimary: { bsc?: string; sportlots?: string } = {};
@@ -1271,7 +1316,7 @@ export const storeReconciledOptions = mutation({
 
       const features = {
         ...(parentFeatures ?? {}),
-        ...deriveOwnLevelFeatures(level, item.value, item.metadata),
+        ...deriveOwnLevelFeatures(level, insertValue, item.metadata),
       };
 
       const hasLabels =
@@ -1280,7 +1325,7 @@ export const storeReconciledOptions = mutation({
 
       const id = await ctx.db.insert("selectorOptions", {
         level,
-        value: item.value,
+        value: insertValue,
         platformData: alloc.platformData,
         ...(hasLabels ? { platformLabels: alloc.platformLabels } : {}),
         ...(Object.keys(newPrimary).length > 0
@@ -1406,12 +1451,26 @@ export const storeReconciledOptions = mutation({
       unlinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
     );
 
+    if (relinkedAll.length > 0) {
+      console.log(
+        JSON.stringify({
+          msg: "selector_sync_relinked",
+          level,
+          parentId: parentId ?? null,
+          count: relinkedAll.length,
+          rowIds: relinkedAll.slice(0, 25).map((r) => r.id),
+        }),
+      );
+    }
+
     return {
       success: true,
       message: `Successfully stored ${linkedIds.length} reconciled ${level} options`,
       optionsCount: linkedIds.length,
       unlinked,
       unlinkedTotal: unlinkedAll.length,
+      relinked: relinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
+      relinkedTotal: relinkedAll.length,
     };
   },
 });
