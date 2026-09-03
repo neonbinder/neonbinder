@@ -148,6 +148,21 @@ function AddPlayerForm({
   // one needs the ROW as well, to name the button, and the find narrows the
   // type where the predicate could not.
   const exact = (matches ?? []).find((m) => m.confidence === "exact");
+  /**
+   * What the panel still has to show once the primary action has been promoted.
+   *
+   * Mirrors EntityReviewWizard's `panelMatches` deliberately: when an exact
+   * match exists the primary button IS that row — same id, same `Open {name}`
+   * accessible name — so listing it again below puts two controls with one
+   * accessible name on screen, which is ambiguous to a screen reader reading
+   * the list and to a Maestro `tapOn` matching by it. Filtered by `_id`, not by
+   * confidence: any OTHER row is a genuinely different player and still belongs
+   * in the list. If nothing else remains this is `[]`, which the panel already
+   * renders as no panel at all.
+   */
+  const panelMatches = exact
+    ? (matches ?? []).filter((m) => m._id !== exact._id)
+    : matches;
   const canCreate = trimmed.length > 0 && sportId.length > 0 && !busy;
 
   const create = async () => {
@@ -210,7 +225,7 @@ function AddPlayerForm({
 
       <NearMatchPanel
         kind="player"
-        matches={matches}
+        matches={panelMatches}
         // Not "Link to": this button opens the row for editing, it does not
         // link anything to anything.
         pickLabel={(n) => `Open ${n}`}
@@ -225,33 +240,39 @@ function AddPlayerForm({
           away — a genuine second player with the same name is real (two Ken
           Griffeys), so this must never be a block. */}
       <div className="flex flex-wrap items-center gap-3">
-        {exact ? (
-          <>
-            <NeonButton
-              type="button"
-              onClick={() => onCreated(exact._id as Id<"players">)}
-            >
-              Open {exact.name}
-            </NeonButton>
-            <button
-              type="button"
-              onClick={() => void create()}
-              disabled={!canCreate}
-              aria-label={`Create player ${trimmed} anyway`}
-              className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {busy ? "Adding…" : "Create anyway"}
-            </button>
-          </>
-        ) : (
-          <NeonButton
+        {/*
+          ONE primary button element across both states (NEO-212 a11y).
+          `nearMatches` lands ~300ms after the operator stops typing, so `exact`
+          can appear while the create button already HAS focus — and a ternary
+          swapping which element renders here unmounts the focused node, sending
+          focus to <body> so the next Tab restarts at the top of the page (WCAG
+          2.2 SC 3.2.2 / 2.4.3). Label, handler and enablement are props on a
+          single element, so React patches the node and focus survives.
+        */}
+        <NeonButton
+          type="button"
+          onClick={() => {
+            if (exact) {
+              onCreated(exact._id as Id<"players">);
+              return;
+            }
+            void create();
+          }}
+          disabled={exact ? false : !canCreate}
+          aria-label={exact ? undefined : `Create player ${trimmed}`}
+        >
+          {exact ? `Open ${exact.name}` : busy ? "Adding…" : "Create player"}
+        </NeonButton>
+        {exact && (
+          <button
             type="button"
             onClick={() => void create()}
             disabled={!canCreate}
-            aria-label={`Create player ${trimmed}`}
+            aria-label={`Create player ${trimmed} anyway`}
+            className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {busy ? "Adding…" : "Create player"}
-          </NeonButton>
+            {busy ? "Adding…" : "Create anyway"}
+          </button>
         )}
         <NeonButton type="button" cancel onClick={onCancel} disabled={busy}>
           Cancel
@@ -453,7 +474,10 @@ function PlayerDetail({
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center gap-2">
-        <h4 className="text-lg font-semibold">{player.name}</h4>
+        {/* NEO-212 (a11y): h3, not h4. Nothing on this screen renders an
+            <h3> above it, so an <h4> here skipped a level and a screen reader
+            navigating by heading gets a broken outline (WCAG 2.2 SC 1.3.1). */}
+        <h3 className="text-lg font-semibold">{player.name}</h3>
         <CopyButton value={player.name} label="player name" />
         {qid &&
           (qidUrl ? (
@@ -587,7 +611,17 @@ function PlayerDetail({
               onChange={(e) => setPendingTo(e.target.value)}
             />
           </div>
-          <NeonButton type="button" secondary onClick={addStint}>
+          {/* NEO-212 (a11y): NeonButton's `secondary` paints white on #00C2FF
+              — 2.07:1, under SC 1.4.3's 4.5:1 floor. The primitive is shared by
+              the whole app so it is not repainted here; this call site
+              overrides only the foreground through the `style` passthrough
+              NeonButton already spreads last (black on #00C2FF is 10.2:1). */}
+          <NeonButton
+            type="button"
+            secondary
+            style={{ color: "#000000" }}
+            onClick={addStint}
+          >
             Add stint
           </NeonButton>
         </div>
@@ -759,7 +793,13 @@ export default function PlayerManagement() {
             ))}
           </select>
         </div>
-        <p className="text-xs text-slate-400 pb-2">{counter}</p>
+        {/* NEO-212 (a11y): the counter is the only feedback that a filter or
+            a sport change did anything — silent for a screen-reader user until
+            it was a live region. Text format unchanged: the E2E flow waits on
+            "0 matches". */}
+        <p role="status" aria-live="polite" className="text-xs text-slate-400 pb-2">
+          {counter}
+        </p>
         <NeonButton
           type="button"
           onClick={() => {
@@ -802,12 +842,21 @@ export default function PlayerManagement() {
                       }`}
                     >
                       <span className="flex-1 truncate">{player.name}</span>
-                      <span className="text-xs text-slate-500">
+                      {/* NEO-212 (a11y): slate-400, not slate-500 — #64748b on
+                          the slate-950 row is 4.0:1, under SC 1.4.3's 4.5:1
+                          floor for this size. slate-400 clears it. */}
+                      <span className="text-xs text-slate-400">
                         {sportNameById.get(player.sportId as string) ?? ""}
                       </span>
+                      {/* NEO-212 (a11y): `title` is a mouse-hover affordance
+                          and nothing else — it is not announced reliably and
+                          never on touch or keyboard. The aria-label puts the
+                          expansion into the row's accessible name, so "HoF"
+                          and "Q…" are not two unexplained glyphs. */}
                       {player.isHallOfFame && (
                         <span
                           className="text-xs text-neon-orange"
+                          aria-label="Hall of Fame"
                           title="Hall of Fame"
                         >
                           HoF
@@ -821,6 +870,7 @@ export default function PlayerManagement() {
                       {qid && (
                         <span
                           className="text-xs text-neon-teal"
+                          aria-label={`Wikidata ${qid}`}
                           title={`Wikidata ${qid}`}
                         >
                           Q…

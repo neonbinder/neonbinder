@@ -30,9 +30,14 @@
  *   9. The third decision — "Skip — not a person/team" per row, and
  *      "Skip Remaining (N)" in the footer beside the bulk create.
  *  10. Near matches and the action hierarchy. THE LABEL "Add as New
- *      {Player|Team}" IS AN E2E CONTRACT and is asserted present in all three
- *      match states, including the exact-match state where the visible text
- *      reads "Add as New anyway" instead.
+ *      {Player|Team}" IS AN E2E CONTRACT and is asserted present in the two
+ *      states any Maestro flow can reach (no match, close-only). In the
+ *      exact-match state the primary becomes "Link to {name}" and creation
+ *      demotes to a text link whose visible text and accessible name are the
+ *      same string, "Add as New {Player|Team} anyway" — no aria-label override
+ *      (WCAG 2.2 SC 2.5.3). That state needs an exact near match, which no
+ *      flow produces. The primary is ONE element across both states so focus
+ *      survives the async swap.
  *  11. Wikidata career teams as unchecked-able proposals, and the
  *      `excludedCareerTeamNames` they produce.
  *  12. The "Will create N new teams · M already exist" summary.
@@ -1069,6 +1074,10 @@ describe("EntityReviewWizard — near matches", () => {
     expect(add.textContent).toBe("Add as New Player");
     expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
     expect((add as HTMLElement).style.backgroundColor).not.toBe(GREEN);
+    // NeonButton's own `secondary` foreground is white — 2.07:1 on #00C2FF.
+    // The call site overrides it to black (10.2:1) rather than repainting the
+    // shared primitive; assert the override is actually applied.
+    expect((add as HTMLElement).style.color).toBe("#000000");
   });
 
   it("EXACT: the green button becomes 'Link to {name}' and create demotes to a text link", () => {
@@ -1087,11 +1096,14 @@ describe("EntityReviewWizard — near matches", () => {
     expect(linkButtons).toHaveLength(1);
     expect((linkButtons[0] as HTMLElement).style.backgroundColor).toBe(GREEN);
 
-    // Create is still reachable AND still called "Add as New Player" — the
-    // visible text changes, the accessible name does not.
-    const add = screen.getByLabelText("Add as New Player");
-    expect(add.textContent).toBe("Add as New anyway");
+    // Create is still reachable, as a text link whose accessible name IS its
+    // visible text — no aria-label sitting over words the operator can read.
+    const add = screen.getByRole("button", { name: "Add as New Player anyway" });
+    expect(add.textContent).toBe("Add as New Player anyway");
+    expect(add.getAttribute("aria-label")).toBeNull();
     expect((add as HTMLElement).style.backgroundColor).toBe("");
+    // And the old mismatched name is gone.
+    expect(screen.queryByLabelText("Add as New Player")).toBeNull();
   });
 
   it("EXACT: the OTHER matches stay listed in the panel", () => {
@@ -1157,7 +1169,9 @@ describe("EntityReviewWizard — near matches", () => {
     fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2011" } });
     fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
 
-    fireEvent.click(screen.getByLabelText("Add as New Player"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add as New Player anyway" }),
+    );
 
     await waitFor(() => {
       expect(mockRecordDecision).toHaveBeenCalledWith({
@@ -1628,5 +1642,126 @@ describe("EntityReviewWizard — decision seam", () => {
       "skip",
       "link",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — accessibility fixes from the WCAG 2.2 AA audit
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — accessibility", () => {
+  it("keeps focus on the primary action when the near-match result flips to exact", () => {
+    // The near-match query resolves while the row is already on screen, so this
+    // swap can land under a keyboard user who has tabbed to the primary. One
+    // element in one slot means React patches it; a ternary between two
+    // elements would unmount the focused node and drop focus to <body>.
+    const props = () => (
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        cardCount={3}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    currentNearMatches = [
+      { _id: "p9", name: "Michael Trout", confidence: "close" },
+    ];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    // A NEW element each render: React bails out of re-rendering an element
+    // that is referentially identical to the previous one.
+    const { rerender } = render(props());
+
+    const primary = screen.getByRole("button", { name: "Add as New Player" });
+    (primary as HTMLElement).focus();
+    expect(document.activeElement).toBe(primary);
+
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    rerender(props());
+
+    // The same node, now relabelled — not a remount, and not <body>.
+    expect(screen.getByRole("button", { name: "Link to Mike Trout" })).toBe(
+      primary,
+    );
+    expect(document.activeElement).toBe(primary);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("keeps focus on the primary when the exact match disappears again", () => {
+    // The reverse edge: a debounce landing a fresh, emptier result set.
+    const props = () => (
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        cardCount={3}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+
+    currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    const { rerender } = render(props());
+
+    const primary = screen.getByRole("button", { name: "Link to Mike Trout" });
+    (primary as HTMLElement).focus();
+
+    currentNearMatches = [];
+    rerender(props());
+
+    expect(document.activeElement).toBe(primary);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(
+      screen.getByRole("button", { name: "Add as New Player" }),
+    ).toBe(primary);
+  });
+
+  it("groups the Wikidata career-team checkboxes under their own prompt", () => {
+    currentRows = [
+      makeRow({
+        kind: "player",
+        name: "Mike Trout",
+        status: "ready",
+        enrichment: {
+          careerTeams: [
+            { name: "Los Angeles Angels", fromYear: 2011 },
+            { name: "Arkansas Travelers", fromYear: 2010, toYear: 2011 },
+          ],
+        },
+      }),
+    ];
+    renderWizard();
+
+    const group = screen.getByRole("group", {
+      name: "Career teams to create with this player:",
+    });
+    expect(
+      group.querySelectorAll('input[type="checkbox"]'),
+    ).toHaveLength(2);
+  });
+
+  it("keeps the row heading's accessible name to just the entity name", () => {
+    // The CopyButton and the kind/sport tag used to live INSIDE the <h3>, so
+    // heading navigation announced "Mike Trout Copy name (Player · Baseball)".
+    currentRows = [
+      makeRow({
+        kind: "player",
+        name: "Mike Trout",
+        sportValue: "Baseball",
+        status: "ready",
+      }),
+    ];
+    renderWizard();
+
+    const heading = screen.getByRole("heading", { level: 3, name: "Mike Trout" });
+    expect(heading.textContent).toBe("Mike Trout");
+    expect(heading.querySelector("button")).toBeNull();
+    // Both are still on screen — moved beside the heading, not removed.
+    expect(screen.getByText(/\(Player · Baseball\)/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy name" })).toBeTruthy();
   });
 });

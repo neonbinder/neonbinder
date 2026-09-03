@@ -21,7 +21,9 @@
  * `confidence: "exact"` means the normalized name is identical — the operator
  * is almost certainly looking at the row they were about to re-create. Sorting
  * it to the top and labelling it "same name" is the difference between the
- * panel being a warning and it being a list.
+ * panel being a warning and it being a list. That tag is part of the row's
+ * ACCESSIBLE NAME (`{pickLabel} — same name`), not decoration beside it: a
+ * warning only a sighted operator receives is not a warning.
  */
 
 /** One candidate row. Deliberately structural, not `Doc<"players">`: the panel
@@ -101,14 +103,26 @@ export function NearMatchPanel({
                 <button
                   type="button"
                   onClick={() => onPick(match._id, match.name)}
-                  aria-label={pickLabel(match.name)}
+                  // NEO-212 (a11y): the badge is IN the accessible name. An
+                  // aria-label of just `pickLabel(name)` overrode the button's
+                  // content, so "same name" — the single most decision-relevant
+                  // thing on the row, and the reason this panel exists — was
+                  // visible to sighted operators and invisible to everyone
+                  // else (WCAG 2.2 SC 1.3.1). The badge itself is aria-hidden
+                  // so it is not announced twice.
+                  aria-label={`${pickLabel(match.name)}${
+                    match.confidence === "exact" ? " — same name" : ""
+                  }`}
                   // min-h-6 keeps the row on the WCAG 2.2 SC 2.5.8 24px floor
                   // even when the name wraps to a single short line.
                   className="flex min-h-6 w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-slate-200 transition-colors hover:bg-neon-blue/10 focus:outline-none focus:ring-2 focus:ring-neon-blue"
                 >
                   <span className="flex-1 truncate">{match.name}</span>
                   {match.confidence === "exact" && (
-                    <span className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue">
+                    <span
+                      aria-hidden="true"
+                      className="shrink-0 rounded bg-neon-blue/20 px-1.5 py-0.5 text-xs text-neon-blue"
+                    >
                       same name
                     </span>
                   )}

@@ -293,8 +293,15 @@ describe("CareerTeamEntry — 'Did you mean' prompt", () => {
 
     typeName("NY Yankees");
 
-    const hint = screen.getByRole("button", { name: "Use New York Yankees" });
+    // The accessible name IS the visible text — the old `aria-label="Use
+    // {name}"` shared not one word with what the operator could read, so a
+    // voice-control user saying it matched nothing (WCAG 2.2 SC 2.5.3).
+    const hint = screen.getByRole("button", {
+      name: "Did you mean New York Yankees?",
+    });
     expect(hint.textContent).toBe("Did you mean New York Yankees?");
+    expect(hint.getAttribute("aria-label")).toBeNull();
+    expect(screen.queryByLabelText("Use New York Yankees")).toBeNull();
 
     fireEvent.click(hint);
     expect((screen.getByLabelText("Career team name") as HTMLInputElement).value).toBe(
@@ -309,7 +316,9 @@ describe("CareerTeamEntry — 'Did you mean' prompt", () => {
 
     typeName("NY Yankees");
 
-    expect(screen.getByRole("button", { name: "Use New York Yankees" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Did you mean New York Yankees?" }),
+    ).toBeTruthy();
   });
 
   it("stays silent when the typed name EXACTLY matches something in play", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
@@ -74,8 +74,12 @@ import { deriveStagedTeamNames } from "./entity-review-staging";
  * panel shows the soft matches, and the PRIMARY action changes shape with
  * them: an exact match demotes create to a text link and promotes "Link to
  * {name}" to the green button; close matches leave create as the primary but
- * strip its green. The accessible name "Add as New {Player|Team}" survives all
- * three states — it is an E2E contract — even where the visible text does not.
+ * strip its green. "Add as New {Player|Team}" is an E2E contract and is the
+ * accessible name of the primary in both no-match and close-only states; in the
+ * exact state that primary becomes "Link to {name}" and creation survives as a
+ * text link reading "Add as New {Player|Team} anyway" — visible text and
+ * accessible name identical, no aria-label override (WCAG 2.2 SC 2.5.3). No
+ * Maestro flow reaches the exact state (they all type unique nonsense names).
  * A promoted exact match is filtered OUT of the panel, so no two controls ever
  * share the accessible name `Link to {name}`.
  *
@@ -173,6 +177,12 @@ export default function EntityReviewWizard({
   // the counter didn't move. Surface it instead.
   const [bulkError, setBulkError] = useState<string | null>(null);
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
+  /**
+   * NEO-212 (a11y): the id the career-team checkbox group points at. A bare
+   * <ul> of checkboxes has no name, so a screen reader entering it announces
+   * "Include career team X" with no clue what the list as a whole is for.
+   */
+  const careerTeamsLabelId = useId();
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
@@ -568,8 +578,17 @@ export default function EntityReviewWizard({
             {current ? (
               <>
                 <div>
-                  <h3 className="text-sm font-semibold text-gray-200">
-                    {current.name}{" "}
+                  {/* NEO-212 (a11y): the CopyButton and the kind/sport tag sit
+                      BESIDE the heading, not inside it. Inside, they became
+                      part of the heading's accessible name — "Mike Trout Copy
+                      name (Player · Baseball)" — which is what a screen
+                      reader reads out when navigating by heading, and what a
+                      heading-level test has to match. Same shape as
+                      PlayerManagement's detail header. */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold text-gray-200">
+                      {current.name}
+                    </h3>
                     {/* NEO-212 (audit G10): these names are copied out into
                         Wikidata, Google and the marketplaces constantly during
                         review, and a name inside a modal is fiddly to select by
@@ -578,11 +597,11 @@ export default function EntityReviewWizard({
                       value={current.name}
                       label="name"
                       className="align-middle"
-                    />{" "}
+                    />
                     <span className="text-xs font-normal text-gray-400">
                       ({kindLabel(current.kind)} · {current.sportValue})
                     </span>
-                  </h3>
+                  </div>
 
                   {/* NEO-212: the operator's escape hatch when the enrichment
                       below is not enough to tell two people apart — the source
@@ -661,9 +680,17 @@ export default function EntityReviewWizard({
                               by default because the common case is that they
                               are right.
                             */}
-                            <p className="text-xs text-gray-400">
+                            <p id={careerTeamsLabelId} className="text-xs text-gray-400">
                               Career teams to create with this player:
                             </p>
+                            {/* NEO-212 (a11y): role="group" + aria-labelledby
+                                so the checkboxes are announced as one named
+                                set. Without it a screen reader lands on
+                                "Include career team Angels, checkbox" with no
+                                indication these are proposals about to be
+                                created. The <ul> keeps its list semantics
+                                inside the group rather than being relabelled. */}
+                            <div role="group" aria-labelledby={careerTeamsLabelId}>
                             <ul className="space-y-1">
                               {sortedCareerTeams.map((ct) => {
                                 const label = `${ct.name} (${ct.fromYear}–${
@@ -687,6 +714,7 @@ export default function EntityReviewWizard({
                                 );
                               })}
                             </ul>
+                            </div>
                           </>
                         ) : (
                           <p>No career-team history found.</p>
@@ -807,50 +835,80 @@ export default function EntityReviewWizard({
                       </div>
                     )}
 
-                    {showExactHierarchy ? (
-                      <>
-                        <NeonButton
-                          aria-label={`Link to ${exactMatch.name}`}
-                          onClick={() => {
-                            void handleLink(
-                              current._id,
-                              current.kind,
-                              exactMatch._id as Id<"players"> | Id<"teams">,
-                            );
-                          }}
-                        >
-                          Link to {exactMatch.name}
-                        </NeonButton>
-                        {/*
-                          Demoted to a text link, but the ACCESSIBLE NAME is
-                          unchanged — "Add as New Player" is an E2E contract and
-                          a rename here would be a silent break. The visible
-                          text says "anyway" because that is what it now means:
-                          a row with this exact name already exists and the
-                          operator is overriding.
-                        */}
-                        <button
-                          type="button"
-                          aria-label={`Add as New ${kindLabel(current.kind)}`}
-                          onClick={() =>
-                            void handleCreate(
-                              current._id,
-                              current.kind === "player" ? stagedCareerTeams : undefined,
-                              current.kind === "player" ? excludedForCurrent : undefined,
-                            )
-                          }
-                          className="self-start text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted"
-                        >
-                          Add as New anyway
-                        </button>
-                      </>
-                    ) : (
+                    {/*
+                      ONE primary button element, one JSX slot, both states.
+
+                      `nearMatches` resolves asynchronously while this row is on
+                      screen, so `showExactHierarchy` can flip UNDER a keyboard
+                      user who has already tabbed to the primary action. A
+                      ternary that swaps WHICH element renders here unmounts the
+                      focused node and focus falls to <body> — the operator's
+                      next Tab restarts at the top of the document, mid-review
+                      (WCAG 2.2 SC 3.2.2 / 2.4.3). Label, handler and variant
+                      are props on a single element instead, so React patches
+                      the same DOM node and focus survives the swap.
+                    */}
+                    <NeonButton
                       // Close-but-not-exact matches keep the label and lose the
                       // green: still the primary action, no longer the one the
                       // eye lands on before it has read the panel above.
-                      <NeonButton
-                        secondary={hasCloseOnly}
-                        aria-label={`Add as New ${kindLabel(current.kind)}`}
+                      secondary={!showExactHierarchy && hasCloseOnly}
+                      // NEO-212 (a11y): NeonButton's `secondary` paints white
+                      // on #00C2FF — 2.07:1, well under SC 1.4.3's 4.5:1. That
+                      // is a defect in the shared primitive and fixing it there
+                      // would repaint every `secondary` button in the app, so
+                      // this call site overrides only the foreground through
+                      // the `style` passthrough NeonButton already spreads
+                      // last. Black on #00C2FF is 10.2:1, and the blue/green
+                      // distinction that carries the demotion is untouched.
+                      style={
+                        !showExactHierarchy && hasCloseOnly
+                          ? { color: "#000000" }
+                          : undefined
+                      }
+                      aria-label={
+                        showExactHierarchy && exactMatch
+                          ? `Link to ${exactMatch.name}`
+                          : `Add as New ${kindLabel(current.kind)}`
+                      }
+                      onClick={() => {
+                        if (showExactHierarchy && exactMatch) {
+                          void handleLink(
+                            current._id,
+                            current.kind,
+                            exactMatch._id as Id<"players"> | Id<"teams">,
+                          );
+                          return;
+                        }
+                        void handleCreate(
+                          current._id,
+                          current.kind === "player" ? stagedCareerTeams : undefined,
+                          current.kind === "player" ? excludedForCurrent : undefined,
+                        );
+                      }}
+                    >
+                      {showExactHierarchy && exactMatch
+                        ? `Link to ${exactMatch.name}`
+                        : `Add as New ${kindLabel(current.kind)}`}
+                    </NeonButton>
+                    {/*
+                      Demoted to a text link when an exact match exists — and
+                      the visible text and the accessible name are now THE SAME
+                      STRING. They were not: an `aria-label="Add as New Player"`
+                      sat over the visible "Add as New anyway", so a
+                      voice-control user saying the words they could read
+                      matched nothing (WCAG 2.2 SC 2.5.3, label in name).
+                      Removing the override makes the name the text.
+
+                      Safe for E2E: this branch renders ONLY when an exact
+                      near match exists, and every Maestro flow that reaches
+                      this wizard types a unique nonsense name that matches
+                      nothing, so they all run the branch above — where the
+                      accessible name is still exactly "Add as New Player".
+                    */}
+                    {showExactHierarchy && (
+                      <button
+                        type="button"
                         onClick={() =>
                           void handleCreate(
                             current._id,
@@ -858,9 +916,10 @@ export default function EntityReviewWizard({
                             current.kind === "player" ? excludedForCurrent : undefined,
                           )
                         }
+                        className="self-start text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted"
                       >
-                        Add as New {kindLabel(current.kind)}
-                      </NeonButton>
+                        Add as New {kindLabel(current.kind)} anyway
+                      </button>
                     )}
 
                     <div className="flex items-center gap-4">

@@ -155,6 +155,38 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     ref,
   ) => {
     const fieldClass = useFieldTestClass();
+
+    /**
+     * NEO-212 (a11y) — the helper/error line is ASSOCIATED with the field, not
+     * merely printed under it.
+     *
+     * A `<p>` below an input is a visual convention; nothing in the
+     * accessibility tree connects the two, so a screen-reader user who tabs
+     * into a field with "That name is already taken" beneath it hears only the
+     * label. `aria-describedby` makes the message part of what is announced on
+     * focus (WCAG 2.2 SC 1.3.1 / 3.3.2), and `aria-invalid` marks the field
+     * itself as errored (SC 3.3.1) so it is reachable by an "errors" rotor.
+     *
+     * The id goes on the `<p>`, never on the `<input>` — Maestro derives
+     * `resource-id` from `node.id || node.ariaLabel`, so an id on the field
+     * would clobber every `tapOn id: "<aria-label>"` selector in the suite (see
+     * the header note). `useId` is stable across renders and unique per
+     * instance, which is all the association needs.
+     *
+     * Bare mode renders no message at all, so it gets neither attribute: its
+     * contract is "the lone <input>, markup unchanged".
+     */
+    const messageId = React.useId();
+    const hasMessage = !bare && Boolean(error || helperText);
+    const describedBy =
+      [props["aria-describedby"], hasMessage ? messageId : null]
+        .filter(Boolean)
+        .join(" ") || undefined;
+    // Emitted only when there IS an error: `aria-invalid="false"` is the ARIA
+    // default, so spelling it out on every input in the app would be pure
+    // markup noise with no behavioural difference.
+    const ariaInvalid = !bare && error ? true : props["aria-invalid"];
+
     const inputClasses = [
       fieldClass(fieldKey),
       BASE_INPUT,
@@ -173,6 +205,8 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         reactive={reactive}
         className={inputClasses}
         disabled={props.disabled || state === "disabled"}
+        aria-describedby={describedBy}
+        aria-invalid={ariaInvalid}
       />
     ) : (
       <input
@@ -180,6 +214,8 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         ref={ref}
         className={inputClasses}
         disabled={props.disabled || state === "disabled"}
+        aria-describedby={describedBy}
+        aria-invalid={ariaInvalid}
       />
     );
 
@@ -256,6 +292,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         {labelled}
         {(helperText || error) && (
           <p
+            id={messageId}
             className={`text-sm ${error ? "text-[#FF2EB3]" : "text-slate-400"}`}
           >
             {error || helperText}

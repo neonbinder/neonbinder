@@ -396,14 +396,15 @@ describe("PlayerManagement — the add form", () => {
       target: { value: "Ken Griffey Jr." },
     });
 
-    // Two `Open Ken Griffey Jr.` buttons deliberately: the panel row and the
-    // promoted primary action. They perform the same thing, so whichever an
-    // operator (or a Maestro tap) reaches first is correct — [0] is the panel
-    // row, [1] the green button.
+    // EXACTLY ONE `Open Ken Griffey Jr.` control. The promoted primary IS the
+    // exact panel row, so that row is filtered out of the panel — two controls
+    // sharing one accessible name is ambiguous to a screen reader reading the
+    // list and to a Maestro `tapOn` matching by it. Same rule the wizard
+    // already applies to `Link to {name}`.
     await waitFor(() =>
       expect(
         screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
-      ).toHaveLength(2),
+      ).toHaveLength(1),
     );
     expect(
       screen.getByLabelText("Create player Ken Griffey Jr. anyway"),
@@ -414,11 +415,11 @@ describe("PlayerManagement — the add form", () => {
 
     // The green button opens the row rather than creating a second one.
     fireEvent.click(
-      screen.getAllByRole("button", { name: "Open Ken Griffey Jr." })[1],
+      screen.getByRole("button", { name: "Open Ken Griffey Jr." }),
     );
     expect(mockCreateByAdmin).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("heading", { level: 4, name: "Ken Griffey Jr." }),
+      screen.getByRole("heading", { level: 3, name: "Ken Griffey Jr." }),
     ).toBeTruthy();
   });
 
@@ -467,7 +468,7 @@ describe("PlayerManagement — the add form", () => {
     // The form closed onto the new row rather than leaving the operator to
     // find it.
     expect(
-      screen.getByRole("heading", { level: 4, name: "Mike Trout" }),
+      screen.getByRole("heading", { level: 3, name: "Mike Trout" }),
     ).toBeTruthy();
   });
 
@@ -571,7 +572,9 @@ describe("PlayerManagement — the detail panel", () => {
     render(<PlayerManagement />);
     selectGriffey();
 
-    fireEvent.click(screen.getByLabelText("Hall of Fame"));
+    // By role: the list's "HoF" badge now carries aria-label="Hall of Fame"
+    // too (NEO-212 a11y), so a bare label lookup is ambiguous.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
@@ -607,7 +610,7 @@ describe("PlayerManagement — the detail panel", () => {
       screen.getByRole("button", { name: "Open the existing player" }),
     );
     expect(
-      screen.getByRole("heading", { level: 4, name: "Mike Trout" }),
+      screen.getByRole("heading", { level: 3, name: "Mike Trout" }),
     ).toBeTruthy();
   });
 
@@ -672,5 +675,105 @@ describe("PlayerManagement — the detail panel", () => {
     expect(
       (screen.getByLabelText("Player name") as HTMLInputElement).value,
     ).toBe("Mike Trout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-212 — accessibility fixes from the WCAG 2.2 AA audit
+// ---------------------------------------------------------------------------
+
+describe("PlayerManagement — accessibility", () => {
+  it("filters the promoted exact row out of the panel but keeps the others", async () => {
+    nearMatches = [
+      { _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "exact" },
+      { _id: "p-griffey-sr", name: "Ken Griffey", confidence: "close" },
+    ];
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr." },
+    });
+
+    // The promoted row appears exactly once, as the primary button...
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Open Ken Griffey Jr." }),
+      ).toHaveLength(1),
+    );
+    // ...and a genuinely different player is still listed for the operator.
+    expect(screen.getByText("Possible matches")).toBeTruthy();
+    expect(screen.getByLabelText("Open Ken Griffey")).toBeTruthy();
+  });
+
+  it("keeps focus on the primary action when an exact match arrives", async () => {
+    // `nearMatches` lands ~300ms after typing stops, so the primary can swap
+    // roles while it already has focus. One element, props toggled — React
+    // patches it instead of remounting, and focus does not fall to <body>.
+    nearMatches = undefined;
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr." },
+    });
+
+    const primary = screen.getByRole("button", {
+      name: "Create player Ken Griffey Jr.",
+    });
+    primary.focus();
+    expect(document.activeElement).toBe(primary);
+
+    nearMatches = [
+      { _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "exact" },
+    ];
+    // Any state change re-runs the mocked useQuery and re-renders the form.
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr. " },
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Open Ken Griffey Jr." }),
+      ).toBe(primary),
+    );
+    expect(document.activeElement).toBe(primary);
+    expect(document.activeElement?.tagName).toBe("BUTTON");
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("announces the result counter as it changes", () => {
+    // The counter is the only feedback a filter did anything. Silent for a
+    // screen-reader user until it was a live region; the E2E flow waits on the
+    // text, so the FORMAT must not move.
+    render(<PlayerManagement />);
+    const counter = screen.getByText("3 of 3 players");
+    expect(counter.getAttribute("role")).toBe("status");
+    expect(counter.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("expands the HoF and Wikidata glyphs for assistive tech", () => {
+    // `title` is a mouse-hover affordance: not announced reliably, and never on
+    // touch or keyboard. Both glyphs carry the expansion as an aria-label too.
+    render(<PlayerManagement />);
+    const hof = screen.getByText("HoF");
+    expect(hof.getAttribute("aria-label")).toBe("Hall of Fame");
+    expect(hof.getAttribute("title")).toBe("Hall of Fame");
+
+    const qid = screen.getByText("Q…");
+    expect(qid.getAttribute("aria-label")).toBe("Wikidata Q313256");
+    expect(qid.getAttribute("title")).toBe("Wikidata Q313256");
+  });
+
+  it("renders the row's sport tag at a contrast-passing slate", () => {
+    // happy-dom performs no layout and resolves no Tailwind, so the class that
+    // produces the colour is the only observable — same idiom the wizard's
+    // readability block uses. slate-500 on the row is 4.0:1, under SC 1.4.3.
+    render(<PlayerManagement />);
+    // Scoped to the row: "Baseball" is also an <option> in the sport filter.
+    const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
+    const tag = Array.from(row.querySelectorAll("span")).find(
+      (el) => el.textContent === "Baseball",
+    );
+    expect(tag?.className).toContain("text-slate-400");
+    expect(tag?.className).not.toContain("text-slate-500");
   });
 });

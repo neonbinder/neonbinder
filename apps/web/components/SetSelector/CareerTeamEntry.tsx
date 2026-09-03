@@ -286,9 +286,12 @@ export default function CareerTeamEntry({
 
       {didYouMean && (
         <p className="text-xs text-gray-400">
+          {/* NEO-212 (a11y): no aria-label. The visible text IS the name, so
+              an "Use {name}" override replaced a readable label with one that
+              shares none of its words — a voice-control user saying "Did you
+              mean New York Yankees" matched nothing (WCAG 2.2 SC 2.5.3). */}
           <button
             type="button"
-            aria-label={`Use ${didYouMean}`}
             onClick={() => pickSuggestion(didYouMean)}
             className="text-[#00B7FF] underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
           >

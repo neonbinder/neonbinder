@@ -10,7 +10,9 @@
  *    asserted verbatim rather than left to the caller.
  *  - **Exact matches sort first and are tagged.** An exact normalized-name
  *    match is the duplicate the panel exists to prevent; buried three rows down
- *    it may as well not be there.
+ *    it may as well not be there. The tag is part of the row's ACCESSIBLE NAME,
+ *    not just a visible badge — a warning only sighted operators receive is
+ *    not a warning.
  *  - **Nothing renders when there is nothing to show** — no empty "Possible
  *    matches" heading flickering while a query is in flight.
  *  - **`hasExact` is exported**, because the caller (not this panel) owns the
@@ -78,13 +80,21 @@ describe("NearMatchPanel", () => {
     const names = screen
       .getAllByRole("button")
       .map((b) => b.getAttribute("aria-label"));
+    // The tag is IN the exact row's accessible name. An aria-label of just
+    // `Link to {name}` overrode the content, so "same name" — the one thing on
+    // the row that says "this is the duplicate you were about to make" — never
+    // reached a screen reader (WCAG 2.2 SC 1.3.1).
     expect(names).toEqual([
-      "Link to Ken Griffey Jr.",
+      "Link to Ken Griffey Jr. — same name",
       "Link to Ken Griffey",
     ]);
 
-    // Only the exact row carries the tag.
-    expect(screen.getAllByText("same name")).toHaveLength(1);
+    // Only the exact row carries the tag...
+    const badges = screen.getAllByText("same name");
+    expect(badges).toHaveLength(1);
+    // ...and it is hidden from AT, so it is announced once (via the name
+    // above), not twice.
+    expect(badges[0].getAttribute("aria-hidden")).toBe("true");
   });
 
   it("names the list by kind", () => {
@@ -97,17 +107,20 @@ describe("NearMatchPanel", () => {
     expect(screen.getByRole("list", { name: "Possible team matches" })).toBeTruthy();
   });
 
-  it("uses a caller-supplied pick label", () => {
+  it("uses a caller-supplied pick label, and still suffixes the exact tag", () => {
     render(
       <NearMatchPanel
         kind="player"
-        matches={[exact]}
+        matches={[close, exact]}
         onPick={vi.fn()}
         pickLabel={(n) => `Open ${n}`}
       />,
     );
-    expect(screen.getByLabelText("Open Ken Griffey Jr.")).toBeTruthy();
-    expect(screen.queryByLabelText("Link to Ken Griffey Jr.")).toBeNull();
+    // The suffix rides on whatever the caller's wording is; a close row is
+    // left exactly as the caller named it.
+    expect(screen.getByLabelText("Open Ken Griffey Jr. — same name")).toBeTruthy();
+    expect(screen.getByLabelText("Open Ken Griffey")).toBeTruthy();
+    expect(screen.queryByLabelText(/^Link to /)).toBeNull();
   });
 
   it("hands the picked id AND name back", () => {
