@@ -82,6 +82,14 @@ vi.mock("../../convex/_generated/api", () => ({
       suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
       confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
     },
+    // NEO-212: SkippedNamesPanel, mounted unconditionally under the sync
+    // notice. It renders nothing unless the set has skips, but the references
+    // still have to resolve — hence these entries even for the many tests
+    // below that never look at it.
+    entityReviewSkips: {
+      listForSet: "entityReviewSkips.listForSet",
+      clearSkip: "entityReviewSkips.clearSkip",
+    },
   },
 }));
 
@@ -146,12 +154,24 @@ const state: {
    * so every pre-existing test in this file is untouched.
    */
   teams: Array<{ _id: string; name: string }>;
+  /**
+   * NEO-212: rows for `entityReviewSkips.listForSet`. `[]` — no skips — is the
+   * state every pre-existing test in this file runs in, and SkippedNamesPanel
+   * renders nothing for it, so the checklist is visually unchanged for them.
+   */
+  skippedNames: Array<{
+    _id: string;
+    kind: "player" | "team";
+    name: string;
+    skippedAt: number;
+  }>;
 } = {
   cards: [],
   variantRow: { value: "Test Set" },
   ancestorChain: [],
   liveCandidates: null,
   teams: [],
+  skippedNames: [],
 };
 
 vi.mock("convex/react", () => ({
@@ -164,6 +184,7 @@ vi.mock("convex/react", () => ({
     // resolved-but-empty, which is the "no career history" shape.
     if (ref === "cardChecklist.suggestedTeamsForCard") return [];
     if (ref === "teams.getManyByIds" || ref === "teams.list") return state.teams;
+    if (ref === "entityReviewSkips.listForSet") return state.skippedNames;
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
   },
@@ -1358,5 +1379,47 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     });
 
     expect(screen.getByLabelText("Search teams")).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-212 — the checklist mounts `SkippedNamesPanel` with its own variant id.
+ *
+ * Only the wiring is pinned here: that the panel appears for a set WITH skips
+ * and stays entirely absent for one without, scoped to the right set. The
+ * panel's own list, undo, announcement and failure handling are covered by
+ * SkippedNamesPanel.test.tsx.
+ */
+describe("CardChecklist — NEO-212 skipped-names disclosure", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.skippedNames = [];
+  });
+
+  it("shows nothing when the set has no skipped names", () => {
+    renderChecklist();
+    expect(screen.queryByText(/Skipped names/)).toBeNull();
+  });
+
+  it("shows the disclosure, with its count, when the set has skipped names", () => {
+    state.skippedNames = [
+      {
+        _id: "skip-1",
+        kind: "player",
+        name: "Checklist",
+        skippedAt: Date.parse("2026-09-03T12:00:00Z"),
+      },
+    ];
+    renderChecklist();
+
+    expect(
+      screen.getByLabelText("Skipped names (1) — not players or teams"),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Unskip Checklist")).toBeTruthy();
   });
 });
