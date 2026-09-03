@@ -8,6 +8,7 @@ import {
   nameTokens,
   rankPlayerCandidates,
 } from "./lib/entityNearMatch";
+import { sortTeamYears } from "../lib/players/team-tenure";
 
 /**
  * Lowercase + collapse whitespace + strip punctuation + token-sort. Used
@@ -36,34 +37,6 @@ export type PlayerTeamYear = {
   fromYear: number;
   toYear?: number;
 };
-
-/**
- * NEO-212: canonical ordering for `players.teamYears` — `fromYear` ascending,
- * then an open-ended stint last among stints that started the same year
- * (`toYear ?? Infinity`).
- *
- * Stored sorted rather than sorted on render, so every consumer — the admin
- * editor, the card detail chips, a future spine label — reads the same career
- * timeline without each re-deriving it, and a diff of the row is readable.
- *
- * Deliberately NOT a dedupe by `teamId`: two separate stints at one franchise
- * (a player traded away and re-signed later) are real and common, and
- * collapsing them would destroy the very history this field exists to record.
- * Only an exact `(teamId, fromYear)` repeat is rejected, and that is the
- * caller's job — this helper only orders.
- *
- * Pure and exported so it can be tested directly, and because a later package
- * is expected to move it to a shared lib alongside the other career-history
- * helpers. Returns a new array; the input is not mutated.
- */
-export function sortTeamYears<T extends { fromYear: number; toYear?: number }>(
-  stints: readonly T[],
-): T[] {
-  return [...stints].sort((a, b) => {
-    if (a.fromYear !== b.fromYear) return a.fromYear - b.fromYear;
-    return (a.toYear ?? Infinity) - (b.toYear ?? Infinity);
-  });
-}
 
 /**
  * Players are intentionally globally-shared rows: a single (name, sport)

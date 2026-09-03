@@ -26,7 +26,8 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
-import { normalizePlayerName, sortTeamYears } from "./players";
+import { normalizePlayerName } from "./players";
+import { sortTeamYears } from "../lib/players/team-tenure";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
