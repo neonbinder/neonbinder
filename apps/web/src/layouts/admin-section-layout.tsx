@@ -28,6 +28,9 @@ import { NavLink, Outlet } from "react-router";
 
 export const SECTIONS = [
   { label: "Set Builder", path: "/admin/set-builder" },
+  // NEO-212. Sits before Teams rather than after, so the two entity tools read
+  // in the order the data does: a card names a player, the player names teams.
+  { label: "Players", path: "/admin/players" },
   { label: "Teams", path: "/admin/teams" },
   // NEO-170's operator view. Landed as a top-level tab while this section
   // didn't exist yet; its page header planned the move here all along.
