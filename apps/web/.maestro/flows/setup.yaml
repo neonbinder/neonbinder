@@ -188,6 +188,14 @@ tags:
     visible:
       text: ".*Seed complete.*"
     timeout: 15000
+# NEO-210: dismiss the "Seed complete" banner. It sits above the selector
+# cascade and pushes every column ~60px further down the 629px viewport; that
+# is what left the filtered "2024" row half under the fold on two CI runs
+# (33700420070, 33750702257). Optional so a banner that already auto-cleared
+# does not fail the seed.
+- tapOn:
+    text: "Dismiss"
+    optional: true
 
 - scrollUntilVisible:
     element:
@@ -208,9 +216,19 @@ tags:
 # Columns lay out horizontally — bring this column's search input into the
 # viewport before tapping (10s is the tight ceiling; the sync wait above is the
 # warm cost, this scroll is pure layout).
+# NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
+# follows uses a `below:` RELATIVE selector (the filtered row and the search
+# input both read "2024", so relationship is the only unambiguous handle — see
+# util-drill-to-custom's NEO-46 note). Maestro resolves `below:` from element
+# bounds and throws "null cannot be cast to non-null type kotlin.Int" when the
+# candidate row is clipped by the viewport. A plain scrollUntilVisible stops
+# the moment the INPUT is in view, which on the 1024x629 headless viewport
+# parks the row beneath it under the fold; centering the input puts the row
+# mid-screen instead.
 - scrollUntilVisible:
     element:
       text: ".*Search years.*"
+    centerElement: true
     timeout: 10000
 - tapOn:
     text: ".*Search years.*"
@@ -227,9 +245,19 @@ tags:
 - extendedWaitUntil:
     visible: ".*Search manufacturers.*"
     timeout: 45000
+# NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
+# follows uses a `below:` RELATIVE selector (the filtered row and the search
+# input both read "Topps", so relationship is the only unambiguous handle — see
+# util-drill-to-custom's NEO-46 note). Maestro resolves `below:` from element
+# bounds and throws "null cannot be cast to non-null type kotlin.Int" when the
+# candidate row is clipped by the viewport. A plain scrollUntilVisible stops
+# the moment the INPUT is in view, which on the 1024x629 headless viewport
+# parks the row beneath it under the fold; centering the input puts the row
+# mid-screen instead.
 - scrollUntilVisible:
     element:
       text: ".*Search manufacturers.*"
+    centerElement: true
     timeout: 10000
 - tapOn:
     text: ".*Search manufacturers.*"
@@ -248,9 +276,19 @@ tags:
 - extendedWaitUntil:
     visible: ".*Search sets.*"
     timeout: 45000
+# NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
+# follows uses a `below:` RELATIVE selector (the filtered row and the search
+# input both read "Topps Chrome", so relationship is the only unambiguous handle — see
+# util-drill-to-custom's NEO-46 note). Maestro resolves `below:` from element
+# bounds and throws "null cannot be cast to non-null type kotlin.Int" when the
+# candidate row is clipped by the viewport. A plain scrollUntilVisible stops
+# the moment the INPUT is in view, which on the 1024x629 headless viewport
+# parks the row beneath it under the fold; centering the input puts the row
+# mid-screen instead.
 - scrollUntilVisible:
     element:
       text: ".*Search sets.*"
+    centerElement: true
     timeout: 10000
 - tapOn:
     text: ".*Search sets.*"
