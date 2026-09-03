@@ -251,6 +251,54 @@ describe("attentionFixers registry", () => {
     expect(item).toEqual({ kind: "missingTeam" });
     expect(Fixer).toBe(attentionFixers.missingTeam);
   });
+
+  it("a card flagged for BOTH missingTeam and a title kind picks whichever is FIRST in the row's own item order", () => {
+    // Both kinds are registered (to different components), so this is not the
+    // "skip past what nothing can fix" case above — it is the tie-break rule
+    // itself: `pickAttentionFixer` takes the first item its registry knows,
+    // in the order `deriveCardAttention` produced them, never a fixed
+    // priority between kinds. `deriveCardAttention` happens to push
+    // `missingTeam` before the title kinds (see cardAttention.ts), so this
+    // pins the CONSEQUENCE of that ordering as observed through the registry,
+    // not the ordering itself (which is cardAttention.test.ts's job).
+    const missingTeamFirst = [
+      { kind: "missingTeam" },
+      { kind: "titleOverLimit", length: 94 },
+    ] as AttentionItem[];
+    const first = pickAttentionFixer(missingTeamFirst);
+    expect(first.item).toEqual({ kind: "missingTeam" });
+    expect(first.Fixer).toBe(attentionFixers.missingTeam);
+
+    // Reversing the array (not a real `deriveCardAttention` output today, but
+    // the registry itself must not hard-code which kind "wins" — a fixer
+    // module reordering a future item list must change this outcome too)
+    // proves the choice tracks ARRAY ORDER, not a kind name comparison.
+    const titleFirst = [
+      { kind: "titleOverLimit", length: 94 },
+      { kind: "missingTeam" },
+    ] as AttentionItem[];
+    const second = pickAttentionFixer(titleFirst);
+    expect(second.item).toEqual({ kind: "titleOverLimit", length: 94 });
+    expect(second.Fixer).toBe(attentionFixers.titleOverLimit);
+  });
+
+  it("end to end: a REAL row missing a team with an over-limit title routes to MissingTeamFixer first", () => {
+    // Not a hand-built item array — the actual `deriveCardAttention` output
+    // for one row, fed straight into `pickAttentionFixer`. This is the case
+    // the walker itself hits: a fresh custom card with no team yet, whose
+    // operator also pasted an over-length title before saving.
+    const row = {
+      teamOnCardIds: [],
+      platformData: {},
+      listingTitle: "x".repeat(94),
+    };
+    const items = deriveCardAttention(row);
+    expect(items.map((i) => i.kind)).toEqual(["missingTeam", "titleOverLimit"]);
+
+    const { item, Fixer } = pickAttentionFixer(items);
+    expect(item).toEqual({ kind: "missingTeam" });
+    expect(Fixer).toBe(attentionFixers.missingTeam);
+  });
 });
 
 // ---------------------------------------------------------------------------

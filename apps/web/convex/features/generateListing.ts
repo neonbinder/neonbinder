@@ -148,6 +148,28 @@ function optionalTokens(inputs: ListingCardInputs): string[] {
 }
 
 /**
+ * Drop a trailing " & " CONNECTOR left with nothing after it once a word-
+ * boundary cut lands right after it.
+ *
+ * `playerNames` joins with " & " (see `assessListingTitle`), and a cut that
+ * keeps the space-then-`&` but not the player name that followed it produces
+ * `"Aaron Judge &"` — a title reading `2024 Topps ... Aaron Judge & #17`,
+ * which promises a second player and then does not deliver one. The word-
+ * boundary cut treats `&` as a whole word because it is one token between
+ * spaces; it just is not a REAL word on its own. Looping (rather than a
+ * single strip) covers the degenerate case of a corePrefix that is nothing
+ * but repeated connectors, though that never happens on real data.
+ */
+function dropDanglingConnector(text: string): string {
+  let result = text;
+  while (result === "&" || result.endsWith(" &")) {
+    const priorSpace = result.lastIndexOf(" ");
+    result = priorSpace > 0 ? result.slice(0, priorSpace).trimEnd() : "";
+  }
+  return result;
+}
+
+/**
  * Cut `text` to at most `maxLength` characters at the last WHOLE-WORD boundary
  * that fits.
  *
@@ -163,7 +185,7 @@ function cutAtWordBoundary(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   const window = text.slice(0, maxLength);
   const lastSpace = window.lastIndexOf(" ");
-  if (lastSpace > 0) return window.slice(0, lastSpace).trimEnd();
+  if (lastSpace > 0) return dropDanglingConnector(window.slice(0, lastSpace).trimEnd());
   // The fallback cuts at a UTF-16 code unit, which can land BETWEEN the two
   // halves of a surrogate pair — an emoji, or any astral character — leaving an
   // orphaned high surrogate on the end. That is not a character: it renders as

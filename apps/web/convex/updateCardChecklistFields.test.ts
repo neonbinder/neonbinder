@@ -405,4 +405,50 @@ describe("updateCard listingTitle length cap (NEO-101)", () => {
     });
     expect(cards.find((c) => c._id === cardId)!.cardVariation).toBe(longVariation);
   });
+
+  test("a whitespace-only title trims to empty and clears the field, same as sending \"\"", async () => {
+    // Trim happens BEFORE the field is stored, so "   " is not a 3-character
+    // title that happens to be invisible — it is the same write as "", which
+    // the panel already treats as "clear the title" (see the round-trip
+    // describe block above). Nothing about the cap logic should special-case
+    // whitespace: 0 <= 80 either way, so it is never the REJECTED path, only
+    // the "what gets stored" one.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "A real title",
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "    ",
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.listingTitle).toBe("");
+  });
+
+  test("clearing to whitespace-only clears listingTitleTruncated too — it is a changed title", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.run(async (ctx) => {
+      await ctx.db.patch(cardId, {
+        listingTitle: "2024 Topps Chrome An Absurdly Long Player Full Name #17",
+        listingTitleTruncated: true,
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "   ",
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.listingTitle).toBe("");
+    expect(card.listingTitleTruncated).toBeUndefined();
+  });
 });

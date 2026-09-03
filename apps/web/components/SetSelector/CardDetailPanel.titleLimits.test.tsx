@@ -144,6 +144,23 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     expect(saveButton().getAttribute("aria-disabled")).toBeNull();
   });
 
+  it("exactly 80 characters (at the cap) does not alert and leaves Save enabled", () => {
+    renderPanel(makeCard({ listingTitle: titleOfLength(80) }));
+
+    expect(screen.getByText("80/80")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("exactly 81 characters (one past the cap) alerts and blocks Save", () => {
+    renderPanel(makeCard({ listingTitle: titleOfLength(81) }));
+
+    expect(screen.getByText("81/80")).toBeTruthy();
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("1 over the 80-character limit");
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
+  });
+
   it("blocks Save over the cap, explains why in an alert, and keeps the button reachable", async () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(84) }));
 
@@ -255,6 +272,12 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
     expect(screen.getByText("Auto title was cut short — rewrite it")).toBeTruthy();
+  });
+
+  it("cardVariation at exactly 65 is fine; 66 warns — the boundary itself, not just an over-by-5 case", () => {
+    renderPanel(makeCard({ listingTitle: "fine", cardVariation: "y".repeat(65) }));
+    expect(screen.getByText("65/65")).toBeTruthy();
+    expect(screen.queryByText(/Variation is/)).toBeNull();
   });
 
   it("counts the variation against 65 and warns without blocking Save", async () => {

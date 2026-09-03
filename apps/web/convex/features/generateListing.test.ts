@@ -324,6 +324,45 @@ describe("assessListingTitle (NEO-101)", () => {
     expect(roundTripped).toBe(title);
   });
 
+  test("a word-boundary cut never leaves a dangling ' & ' connector on a multi-player core", () => {
+    // playerNames join with " & " (see the header note). A cut that keeps the
+    // space-then-"&" but loses the player it was joining to produces
+    // "Aaron Judge &" — a title reading "... Aaron Judge & #17" that promises
+    // a second player and does not deliver one. `&` is a whole word between
+    // two spaces, so the plain word-boundary rule alone treats it as a safe
+    // place to stop; this pins that it keeps looking instead.
+    //
+    // The card number is padded to force `maxPrefixLen` to land exactly where
+    // the naive cut used to stop right after "&" — this is not a contrived
+    // string, it is the precise boundary condition, reproduced with a long
+    // card number standing in for "core overflowed the budget by exactly this
+    // much" (a long insert-set name would land here just as easily).
+    const cardNumber = "9".repeat(64);
+    const { title, coreFits } = assessListingTitle({
+      cardNumber,
+      playerNames: ["Aaron Judge", "Ohtani"],
+    });
+
+    expect(coreFits).toBe(false);
+    expect(title).not.toMatch(/&(\s|$)/);
+    expect(title).toBe(`Aaron Judge #${cardNumber}`);
+    expect(title.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+  });
+
+  test("the dangling-connector guard degrades a core that is nothing but connectors to empty, not a crash or an infinite loop", () => {
+    // Degenerate input a real card can never produce (player names are free
+    // text an operator or a marketplace sync supplied), included because
+    // `dropDanglingConnector` LOOPS and must terminate on a core built
+    // entirely from the "&" it strips, rather than spin.
+    const cardNumber = "9".repeat(70);
+    const { title, coreFits } = assessListingTitle({
+      cardNumber,
+      playerNames: ["&", "&", "&", "&", "&"],
+    });
+    expect(coreFits).toBe(false);
+    expect(title).toBe(`#${cardNumber}`);
+  });
+
   test("no optional tokens present means nothing dropped and nothing invented", () => {
     expect(assessListingTitle({ cardNumber: "9" })).toEqual({
       title: "#9",
@@ -408,6 +447,15 @@ describe("generateListingTitle invariants — fuzz (NEO-101)", () => {
 
       expect(title.length, context).toBeLessThanOrEqual(LISTING_TITLE_MAX);
       expect(title, context).not.toContain("…");
+      // A word-boundary cut on a multi-player core must never strand the
+      // " & " join connector with nothing after it (the dangling-ampersand
+      // regression pinned above) — checked here across the whole fuzzed
+      // space, not just the one hand-built boundary case. A legitimate
+      // multi-player title always has a real word between "&" and the card
+      // number (`... & Ohtani #1`), so "&" landing directly against the
+      // reserved " #<number>" marker is unambiguously the dangling case, not
+      // a false positive on an ordinary join.
+      expect(title, context).not.toContain(`& #${cardNumber}`);
       // The card number is present, and it is the end of the title or is
       // followed only by optional tokens.
       const marker = `#${cardNumber}`;
