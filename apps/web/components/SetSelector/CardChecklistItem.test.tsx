@@ -360,3 +360,88 @@ describe("CardChecklistItem — NEO-102 attention mark", () => {
     expect(withMark).toBeGreaterThan(withoutMark);
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-208 — unresolved typed team names in the sub-line
+//
+// `pendingTeamNames` was read by `deriveCardAttention` and rendered NOWHERE:
+// a row could carry a team name that appeared on no screen while its badge
+// stayed off, which read to the operator as the name having been dropped.
+//
+// The geometry constraint is the reason these are text and not chips. A row
+// that changes size re-measures the Virtuoso list and reflows every row below
+// it — the long-standing dropped-tap flake. Pending names LEAVE a row
+// (updateCard clears them the moment a real team is linked) exactly as an
+// enrichment-resolved team ARRIVES on one, so this is precisely the content
+// that must not move a row.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklistItem — NEO-208 pending team names", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("appends a typed team name as '<name> (unconfirmed)'", () => {
+    renderItem({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
+    expect(screen.getByText("Savannah Bananas (unconfirmed)")).toBeTruthy();
+  });
+
+  it("renders one entry per pending name, in order, inside the ONE sub-line", () => {
+    const { container } = renderItem({
+      card: makeCard({ pendingTeamNames: ["Yankees", "Mets"] }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe(
+      "Yankees (unconfirmed) · Mets (unconfirmed)",
+    );
+  });
+
+  it("puts pending names AFTER the other sub-line parts they follow, not on a line of their own", () => {
+    // Composed into the same join as everything else, so the assertion is on
+    // the whole line: one truncated row of text, whatever it contains.
+    const { container } = renderItem({
+      card: makeCard({ pendingTeamNames: ["Yankees"], printRun: 99 }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("Yankees (unconfirmed) · /99");
+  });
+
+  it("renders exactly ONE sub-line element whether or not pending names are present", () => {
+    // The geometry pin. A refactor that gave pending names their own line —
+    // the obvious way to make them more prominent — fails here, which is the
+    // point, since nothing else in the suite would notice.
+    const { unmount } = renderItem();
+    const without = document.querySelectorAll(".truncate.min-h-\\[1rem\\]").length;
+    unmount();
+
+    renderItem({
+      card: makeCard({ pendingTeamNames: ["Yankees", "Mets", "Red Sox"] }),
+    });
+    const with_ = document.querySelectorAll(".truncate.min-h-\\[1rem\\]").length;
+
+    expect(without).toBe(1);
+    expect(with_).toBe(1);
+  });
+
+  it("renders pending names as TEXT — never an anchor or a button", () => {
+    // There is no action to offer: the name is retired server-side when a real
+    // team is saved. A control here would also add a tab stop per row to a
+    // virtualized list.
+    renderItem({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
+    const node = screen.getByText("Savannah Bananas (unconfirmed)");
+    expect(node.closest("a")).toBeNull();
+    expect(node.closest("button")).toBeNull();
+  });
+
+  it("does not mark a row whose only team answer is a pending name", () => {
+    // `deriveCardAttention` is unchanged by NEO-208 — a typed name is still an
+    // answer. This pins that the new rendering did not come with a rule change.
+    renderItem({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
+    expect(screen.queryByLabelText(/needs attention/)).toBeNull();
+  });
+
+  it("shows nothing extra when there are no pending names", () => {
+    renderItem();
+    expect(screen.queryByText(/unconfirmed/)).toBeNull();
+  });
+});

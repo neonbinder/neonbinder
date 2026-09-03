@@ -122,6 +122,11 @@ const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
 const mockDiffChecklist = vi.fn();
 const mockDiscardCandidates = vi.fn();
+// NEO-208: the quick-add form's mutation. It was already listed in the `api`
+// mock above but never routed to a spy, because nothing exercised the form —
+// it had no component test at all before this ticket.
+const mockAddCustomCard = vi.fn();
+const mockFindOrCreateTeam = vi.fn();
 
 // Mutable holders read lazily by the mocked hooks at call time — same shape
 // as EntityColumn.ensure-sync.test.tsx's `state`.
@@ -130,11 +135,23 @@ const state: {
   variantRow: unknown;
   ancestorChain: unknown;
   liveCandidates: unknown;
+  /**
+   * NEO-208: the `teams` table, for the REAL `TeamPicker` now living in the
+   * quick-add form. Serves both `teams.list` (the typeahead's candidate pool)
+   * and `teams.getManyByIds` (the chip labels) — the mocked `useQuery` ignores
+   * arguments, and returning the same rows for both is exactly right here:
+   * every id the picker can hold came from this pool.
+   *
+   * Defaults to `[]`, which is what the mock returned unconditionally before,
+   * so every pre-existing test in this file is untouched.
+   */
+  teams: Array<{ _id: string; name: string }>;
 } = {
   cards: [],
   variantRow: { value: "Test Set" },
   ancestorChain: [],
   liveCandidates: null,
+  teams: [],
 };
 
 vi.mock("convex/react", () => ({
@@ -146,12 +163,14 @@ vi.mock("convex/react", () => ({
     // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
     // resolved-but-empty, which is the "no career history" shape.
     if (ref === "cardChecklist.suggestedTeamsForCard") return [];
-    if (ref === "teams.getManyByIds" || ref === "teams.list") return [];
+    if (ref === "teams.getManyByIds" || ref === "teams.list") return state.teams;
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
   },
   useMutation: (ref: string) => {
     if (ref === "discardCandidates") return mockDiscardCandidates;
+    if (ref === "addCustomCard") return mockAddCustomCard;
+    if (ref === "teams.findOrCreate") return mockFindOrCreateTeam;
     return vi.fn();
   },
   useAction: (ref: string) => {
@@ -816,5 +835,364 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
       screen.getByText("1 new players + 0 new teams need confirmation"),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-208 — the quick-add form's Team field
+//
+// This is the FIRST component coverage the quick-add form has ever had, which
+// is most of why NEO-208 shipped as a bug: the old free-text Team box wrote
+// `addCustomCard({ teams: [typedName] })` → `pendingTeamNames`, a column
+// nothing rendered, and no test looked at either end of that.
+//
+// The form now uses the REAL `TeamPicker` — the same component the card drawer
+// and the attention walker's fixer use — deliberately un-stubbed here. Two
+// things depend on the real one: the picker's value is React STATE in
+// CardChecklist and has to survive the reactive `getCardChecklist` re-renders
+// that broke controlled inputs in NEO-36, and the aria-labels Maestro drives
+// ("Add team", "Search teams", "Add <name>") are the real component's.
+// ---------------------------------------------------------------------------
+
+const YANKEES = { _id: "team-yankees", name: "New York Yankees" };
+const METS = { _id: "team-mets", name: "New York Mets" };
+
+/** Open the form and return its container element. */
+function openAddForm(): HTMLElement {
+  fireEvent.click(screen.getByLabelText("Open add card form"));
+  const heading = screen.getByRole("heading", { name: "Add Card" });
+  return heading.parentElement as HTMLElement;
+}
+
+/** Pick a team through the real picker's popover, by its display name. */
+function pickTeam(name: string) {
+  fireEvent.click(screen.getByLabelText("Add team"));
+  fireEvent.click(screen.getByLabelText(`Add ${name}`));
+}
+
+function fillCardNumber(value: string) {
+  fireEvent.change(screen.getByLabelText("Card number"), {
+    target: { value },
+  });
+}
+
+describe("CardChecklist — NEO-208 quick-add Team picker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [YANKEES, METS];
+    mockAddCustomCard.mockResolvedValue("new-card-1");
+  });
+
+  it("renders a TeamPicker, not a free-text Team box", () => {
+    renderChecklist();
+    openAddForm();
+
+    // The old field's accessible name. Its absence is the regression pin: a
+    // revert to the textbox brings this label back.
+    expect(screen.queryByLabelText("Team")).toBeNull();
+    expect(screen.getByLabelText("Team picker")).toBeTruthy();
+    expect(screen.getByLabelText("Add team")).toBeTruthy();
+  });
+
+  it("keeps the field's reserved Maestro marker class on the picker's wrapper", () => {
+    // Maestro's web driver re-finds a tapped element by an XPath built from
+    // its class (see useFieldTestClass). The picker is not an <input>, but the
+    // "team" key stays claimed so no other field in this form can be handed
+    // it, and the class stays a stable handle for scoping a query to this box.
+    const form = (() => {
+      renderChecklist();
+      return openAddForm();
+    })();
+
+    // Read the base off a field that still exists, rather than hardcoding a
+    // `useId()` value. (Note the sanitizer drops the capital in a camelCase
+    // key, so the players field is the unambiguous one to read.)
+    const playersMarker = screen
+      .getByLabelText("Players")
+      .className.split(/\s+/)
+      .find((c) => /^mb-field-.+-players$/.test(c))!;
+    const base = playersMarker.replace(/-players$/, "");
+
+    const wrapper = form.querySelector(`.${base}-team`);
+    expect(wrapper).toBeTruthy();
+    expect(wrapper!.contains(screen.getByLabelText("Team picker"))).toBe(true);
+  });
+
+  it("sends the picked ids as teamOnCardIds, and no `teams` name array", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("501");
+    pickTeam("New York Yankees");
+    pickTeam("New York Mets");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard).toHaveBeenCalledTimes(1);
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.teamOnCardIds).toEqual([YANKEES._id, METS._id]);
+    // The legacy free-text shape must not ride along — a row carrying both
+    // would state its team twice (see addCustomCard).
+    expect(args).not.toHaveProperty("teams");
+  });
+
+  it("sends NEITHER teamOnCardIds nor teams when no team was picked", async () => {
+    // "No answer about teams" is what leaves the card correctly badged as
+    // needing one. An empty array would read as a deliberate "no team".
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("502");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args).not.toHaveProperty("teamOnCardIds");
+    expect(args).not.toHaveProperty("teams");
+  });
+
+  it("still forwards the other fields unchanged", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("503");
+    fireEvent.change(screen.getByLabelText("Card name"), {
+      target: { value: "Subway Series" },
+    });
+    fireEvent.change(screen.getByLabelText("Players"), {
+      target: { value: "Aaron Judge, Francisco Lindor" },
+    });
+    pickTeam("New York Yankees");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+      cardNumber: "503",
+      cardName: "Subway Series",
+      players: ["Aaron Judge", "Francisco Lindor"],
+      teamOnCardIds: [YANKEES._id],
+    });
+  });
+
+  /**
+   * The NEO-36 pin, and the reason the picker's value is allowed to be React
+   * state at all.
+   *
+   * That ticket found controlled TEXT inputs being wiped by reactive
+   * `getCardChecklist` re-renders: a keystroke and a re-render race, and the
+   * re-render wins with the stale value. A picker has no such window — its
+   * value changes only in whole chips, one discrete setState each — so state
+   * is safe here. This test is what proves it rather than asserting it, by
+   * driving exactly the event that broke the text fields: new query data
+   * arriving underneath an open form.
+   */
+  it("keeps the picked chips across a re-render with new getCardChecklist data", async () => {
+    const { rerender } = renderChecklist();
+    openAddForm();
+    fillCardNumber("504");
+    pickTeam("New York Yankees");
+
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+
+    // A background sync lands: `getCardChecklist` answers with rows it did not
+    // have before, and CardChecklist re-renders under the operator.
+    state.cards = [settledCard()];
+    rerender(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      />,
+    );
+
+    // The form is still open and the chip is still on it.
+    expect(screen.getByRole("heading", { name: "Add Card" })).toBeTruthy();
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+
+    // And it is still what gets submitted — the value the operator can see.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0].teamOnCardIds).toEqual([
+      YANKEES._id,
+    ]);
+  });
+
+  it("resets the picker when the form is cancelled", () => {
+    // The text fields reset by being unmounted; the picker is React state and
+    // does not, so a cancelled card's team must be cleared explicitly or it
+    // silently rides along on the next one.
+    renderChecklist();
+    openAddForm();
+    pickTeam("New York Yankees");
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Cancel new card"));
+    openAddForm();
+
+    expect(screen.queryByLabelText("Team: New York Yankees")).toBeNull();
+  });
+
+  it("resets the picker on OPEN too, not only on cancel", () => {
+    // Belt for the same failure from the other side: whatever route hid the
+    // form, opening it is a fresh card.
+    renderChecklist();
+    openAddForm();
+    pickTeam("New York Yankees");
+    fireEvent.click(screen.getByLabelText("Cancel new card"));
+
+    openAddForm();
+    expect(screen.queryByLabelText(/^Team: /)).toBeNull();
+    expect(screen.queryByLabelText(/^Remove team /)).toBeNull();
+  });
+
+  it("closes the form and clears the picker after a successful add", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("505");
+    pickTeam("New York Yankees");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(screen.queryByRole("heading", { name: "Add Card" })).toBeNull();
+
+    openAddForm();
+    expect(screen.queryByLabelText("Team: New York Yankees")).toBeNull();
+  });
+
+  it("submits nothing at all without a card number", async () => {
+    renderChecklist();
+    openAddForm();
+    pickTeam("New York Yankees");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard).not.toHaveBeenCalled();
+    // And the form stays open with the team still picked, so the operator
+    // fixes the one missing field rather than re-entering everything.
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+  });
+
+  it("keeps autoFocus on the card number field", () => {
+    // The form's whole point is speed: an operator adding twenty cards types
+    // a number, tabs, types a name. Whatever the Team field became, the
+    // landing point must not move.
+    renderChecklist();
+    openAddForm();
+
+    expect(document.activeElement).toBe(screen.getByLabelText("Card number"));
+  });
+
+  it("keeps the keyboard order: number, name, players, then the team picker", () => {
+    const form = (() => {
+      renderChecklist();
+      return openAddForm();
+    })();
+
+    const focusables = Array.from(
+      form.querySelectorAll<HTMLElement>("input, button"),
+    ).map((el) => el.getAttribute("aria-label"));
+
+    expect(focusables).toEqual([
+      "Card number",
+      "Card name",
+      "Players",
+      "Add team",
+      "Submit new card",
+      "Cancel new card",
+    ]);
+  });
+
+  it("dedupes ids before sending, even though the picker refuses a duplicate chip", () => {
+    // Belt on the client side of a server-side dedupe. `TeamPicker.addChip`
+    // already refuses a repeat, so this asserts the property rather than
+    // trying to force the picker into an impossible state.
+    renderChecklist();
+    openAddForm();
+    pickTeam("New York Yankees");
+    // Re-open the popover and confirm the picked team is out of the pool, so
+    // no second chip is reachable from the UI at all.
+    fireEvent.click(screen.getByLabelText("Add team"));
+    expect(screen.queryByLabelText("Add New York Yankees")).toBeNull();
+    expect(screen.getByLabelText("Add New York Mets")).toBeTruthy();
+  });
+
+  it("lets a chip be removed again before submitting", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("506");
+    pickTeam("New York Yankees");
+    fireEvent.click(screen.getByLabelText("Remove team New York Yankees"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty(
+      "teamOnCardIds",
+    );
+  });
+
+  it("leaves the form open when the mutation fails, so nothing typed is lost", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockAddCustomCard.mockRejectedValue(new Error("server said no"));
+
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("507");
+    pickTeam("New York Yankees");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+
+    expect(screen.getByRole("heading", { name: "Add Card" })).toBeTruthy();
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("passes the ancestor chain's sport to the picker, so the typeahead is scoped", () => {
+    // `sportId` is what filters the candidate pool AND what tags a team the
+    // operator creates from the popover. Without it the picker lists the whole
+    // teams table and its "+ Create" option is disabled — which is what a
+    // sport-less row should get, and is asserted separately below.
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText("Add team"));
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+
+    expect(
+      screen.getByLabelText('Create team Savannah Bananas'),
+    ).toBeTruthy();
+  });
+
+  it("cannot create a team from a row with no sport ancestor", () => {
+    state.ancestorChain = [
+      { _id: VARIANT_ID, level: "variantType", value: "Base" },
+    ];
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(screen.getByLabelText("Add team"));
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Savannah Bananas" },
+    });
+
+    // NEO-96: a team must reference a real sport row. No sport, no create.
+    expect(screen.queryByLabelText(/^Create team /)).toBeNull();
   });
 });

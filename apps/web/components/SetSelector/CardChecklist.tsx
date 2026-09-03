@@ -26,6 +26,7 @@ import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
 import { needsAttention } from "./card-attention";
 import { Input } from "../primitives/Input";
+import TeamPicker from "./TeamPicker";
 
 
 type CardChecklistProps = {
@@ -222,9 +223,9 @@ export default function CardChecklist({
     setSyncNotice({ text, tone: "status", kind: "committed" });
   }, []);
   const [showAddForm, setShowAddForm] = useState(false);
-  // NEO-36: the add-card form fields are UNCONTROLLED (refs, read at submit)
-  // rather than controlled React state. CardChecklist re-renders on every
-  // reactive getCardChecklist update; under parallel-worker load those
+  // NEO-36: the add-card form's TEXT fields are UNCONTROLLED (refs, read at
+  // submit) rather than controlled React state. CardChecklist re-renders on
+  // every reactive getCardChecklist update; under parallel-worker load those
   // externally-triggered re-renders contend with — and reset — controlled
   // inputs, intermittently wiping the last-typed field (the player) before it
   // commits to state, so handleAddCard submitted the card without it. React
@@ -235,8 +236,31 @@ export default function CardChecklist({
   // the UnknownEntitiesDialog on the next fetch.
   const cardNumberRef = useRef<HTMLInputElement>(null);
   const cardNameRef = useRef<HTMLInputElement>(null);
-  const teamRef = useRef<HTMLInputElement>(null);
   const playersRef = useRef<HTMLInputElement>(null);
+  /**
+   * NEO-208 — the quick-add form's picked teams. React STATE, not a ref, and
+   * that is the one place this form deviates from the NEO-36 rule above.
+   *
+   * The rule exists because of a race between a KEYSTROKE and a re-render: a
+   * controlled text input renders `value={state}`, so a reactive
+   * `getCardChecklist` update landing between a keypress and its state commit
+   * re-rendered the field back to the stale value and silently ate the
+   * character. A picker has no such window — its value changes only in whole
+   * chips, from a click or an Enter inside the popover, and each of those is a
+   * single discrete `setState`. There is never a half-typed value living only
+   * in the DOM for a re-render to overwrite, and React state survives
+   * re-renders by definition (only a REMOUNT clears it, and this form's
+   * container is not remounted by a query update).
+   *
+   * A ref would not work here anyway: the chips have to re-render when they
+   * change, which is exactly what a ref does not do.
+   *
+   * Reset at both edges of the form's life — opening it and cancelling it —
+   * because the text fields reset by being unmounted and this must not
+   * silently carry a previous card's teams into the next one. See
+   * `openAddForm` / `closeAddForm`.
+   */
+  const [addFormTeamIds, setAddFormTeamIds] = useState<Array<Id<"teams">>>([]);
   /**
    * a11y (NEO-203 audit follow-up) — the durable "restore focus here" target
    * for `SyncReviewModal`. That modal mounts only after `handlePairingConfirm`
@@ -681,6 +705,22 @@ export default function CardChecklist({
     setPendingPreview(null);
   };
 
+  /**
+   * NEO-208 — the two edges of the quick-add form's life. The text fields
+   * reset by being unmounted; `addFormTeamIds` is React state and does not, so
+   * both entry and exit clear it explicitly. Every path that hides the form
+   * goes through `closeAddForm` (open, cancel, successful submit) so a picked
+   * team can never survive into the next card.
+   */
+  const openAddForm = useCallback(() => {
+    setAddFormTeamIds([]);
+    setShowAddForm(true);
+  }, []);
+  const closeAddForm = useCallback(() => {
+    setShowAddForm(false);
+    setAddFormTeamIds([]);
+  }, []);
+
   const handleAddCard = async () => {
     // Read the live DOM values at submit (uncontrolled inputs) — see NEO-36
     // note above. This is immune to re-render timing: the value submitted is
@@ -691,23 +731,31 @@ export default function CardChecklist({
       .split(",")
       .map((n) => n.trim())
       .filter((n) => n.length > 0);
-    const teamTrimmed = (teamRef.current?.value ?? "").trim();
     const cardName = (cardNameRef.current?.value ?? "").trim();
+    // NEO-208: dedupe here as well as server-side. `TeamPicker.addChip`
+    // already refuses a duplicate, so this is belt — but the mutation's own
+    // dedupe is what the row is written from, and sending a clean array keeps
+    // the two from ever disagreeing about which chip the operator meant.
+    const teamOnCardIds = [...new Set(addFormTeamIds)];
     try {
       const newId = await addCustomCard({
         selectorOptionId: variantId,
         cardNumber,
         cardName: cardName || `Card #${cardNumber}`,
-        // NEO-26: legacy `team: string` arg removed. The team string
-        // is surfaced via `teams` → pendingTeamNames → UnknownEntitiesDialog
-        // confirmation on the next sync, which materializes a teams
-        // entity link via `teamOnCardIds[]`.
         ...(players.length > 0 ? { players } : {}),
-        ...(teamTrimmed ? { teams: [teamTrimmed] } : {}),
+        // NEO-208: the picked teams as real `teams` ids, so the card is born
+        // LINKED. This replaces the old free-text Team box, whose typed name
+        // became `pendingTeamNames` and then rendered NOWHERE until the next
+        // sync happened to resolve it — the invisibility this ticket fixes.
+        // Nothing is sent when the picker is empty: an absent `teamOnCardIds`
+        // and an absent `teams` together mean "no answer about teams", which
+        // is what leaves the card correctly badged as needing one. Note we
+        // never send the legacy `teams` name array from here any more.
+        ...(teamOnCardIds.length > 0 ? { teamOnCardIds } : {}),
       });
       // Closing the form unmounts it; the uncontrolled inputs reset to empty
-      // on the next open, so no manual field clearing is needed.
-      setShowAddForm(false);
+      // on the next open, and `closeAddForm` clears the picker.
+      closeAddForm();
       newCardIdRef.current = newId;
     } catch (error) {
       console.error("Failed to add card:", error);
@@ -1065,7 +1113,7 @@ export default function CardChecklist({
           {!showAddForm && (
             <div className="flex gap-2">
               <NeonButton
-                onClick={() => setShowAddForm(true)}
+                onClick={openAddForm}
                 aria-label="Open add card form"
               >
                 Add Card
@@ -1127,21 +1175,48 @@ export default function CardChecklist({
               placeholder="Player(s) — comma separated, optional"
               aria-label="Players"
             />
-            <Input
-              bare
-              type="text"
-              ref={teamRef}
-              className={`${fieldClass("team")} w-full p-2 text-sm`}
-              placeholder="Team (optional)"
-              aria-label="Team"
-            />
+            {/* NEO-208 — the same TeamPicker the card drawer and the
+                attention walker's fixer use, in place of the free-text "Team
+                (optional)" box. A typed name used to land in
+                `pendingTeamNames`, which NOTHING rendered: the operator saw
+                their team vanish and the row still badged "no team on this
+                card yet". The picker's ids make the card born linked.
+
+                The wrapper keeps the field's reserved `fieldClass("team")`
+                marker even though the picker is not an <input>: Maestro's web
+                driver re-finds a tapped element by an XPath built from its
+                class (see useFieldTestClass), the "team" key stays claimed so
+                no other field in this form can be handed it, and the class is
+                a stable handle for a flow that needs to scope a query to this
+                field's box. Keyboard order is unchanged — the picker's own
+                "+ Add team" trigger takes the tab stop the textbox had, and
+                the card-number field above still holds autoFocus. */}
+            <div className={`${fieldClass("team")} w-full`}>
+              {/* The only labelled field in this form, and deliberately so:
+                  every other one is a text box whose placeholder says what it
+                  is, which a picker has no equivalent of. It also carries the
+                  "(optional)" the old box's placeholder did — leaving a card
+                  teamless is a legitimate answer, just not a silent one (the
+                  row is then badged, per deriveCardAttention). Matches the card
+                  drawer's Teams label so the two read as the same field.
+                  No `htmlFor`: the picker is a chip row, not one input, and its
+                  controls carry their own aria-labels. */}
+              <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+                Team (optional)
+              </label>
+              <TeamPicker
+                value={addFormTeamIds}
+                onChange={setAddFormTeamIds}
+                sportId={ancestorSportId}
+              />
+            </div>
             <div className="flex gap-2">
               <NeonButton onClick={handleAddCard} aria-label="Submit new card">
                 Add
               </NeonButton>
               <NeonButton
                 cancel
-                onClick={() => setShowAddForm(false)}
+                onClick={closeAddForm}
                 aria-label="Cancel new card"
               >
                 Cancel

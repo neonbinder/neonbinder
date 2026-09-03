@@ -398,3 +398,117 @@ describe("CardDetailPanel — Variation of", () => {
     expect(mockSetVariationParent).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-208 — unresolved typed team names, read-only above the picker
+//
+// `pendingTeamNames` rendered nowhere in this drawer before this ticket: an
+// operator opening a card whose team they had typed saw an empty Teams picker
+// and no explanation.
+//
+// It sits ABOVE the picker rather than inside it because a `TeamPicker` chip is
+// a real `teams._id` the rest of the product can act on; putting a bare string
+// among them would be claiming a link that does not exist. And it is not part
+// of the panel's draft state: the server retires it, derived from a real team
+// write (`updateCard` clears it in the same patch as a non-empty
+// `teamOnCardIds`), so there is nothing here to edit or delete by hand.
+// ---------------------------------------------------------------------------
+
+describe("CardDetailPanel — NEO-208 pending team names", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(undefined);
+    mockSetCardFeature.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("shows each unresolved name, marked", () => {
+    renderPanel({
+      card: makeCard({ pendingTeamNames: ["Savannah Bananas", "Yankees"] }),
+    });
+
+    expect(screen.getByText("Savannah Bananas")).toBeTruthy();
+    expect(screen.getByText("Yankees")).toBeTruthy();
+    expect(screen.getAllByText("(unconfirmed)")).toHaveLength(2);
+  });
+
+  it("says what will happen to the name — the two ways it resolves", () => {
+    renderPanel({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
+
+    expect(
+      screen.getByText(
+        /resolves at the next sync, or pick a team to replace it/,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("renders the names as TEXT — never an anchor or a button", () => {
+    // There is no action to offer, so there is no control. Offering one would
+    // imply a delete/edit path that does not exist server-side.
+    renderPanel({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
+    const node = screen.getByText("Savannah Bananas");
+    expect(node.closest("a")).toBeNull();
+    expect(node.closest("button")).toBeNull();
+  });
+
+  it("renders them ABOVE the picker, not among its chips", () => {
+    const { container } = renderPanel({
+      card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }),
+    });
+
+    const pending = screen.getByText("Savannah Bananas");
+    const picker = screen.getByLabelText("Team picker (stub)");
+    // Document order: the read-only list precedes the picker.
+    expect(
+      pending.compareDocumentPosition(picker) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // And it is genuinely outside the picker's subtree.
+    expect(picker.contains(pending)).toBe(false);
+    expect(container).toBeTruthy();
+  });
+
+  it("does not mark the panel dirty — it is not draft state", () => {
+    // Nothing about a pending name is editable here, so merely opening a card
+    // that has one must not arm the discard bar. Closing goes straight
+    // through, exactly as it does on a card with no pending names.
+    const { onClose } = renderPanel({
+      card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }),
+    });
+
+    fireEvent.click(screen.getByLabelText("Close card detail"));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Discard unsaved changes?")).toBeNull();
+  });
+
+  it("never sends pendingTeamNames back through updateCard", async () => {
+    // The clear is DERIVED server-side from the team write. A client that sent
+    // the field would be fabricating "the operator typed this", and the
+    // mutation's validator rejects it outright.
+    renderPanel({ card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }) });
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add team"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Save card edit"));
+    });
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard.mock.calls[0][0]).not.toHaveProperty(
+      "pendingTeamNames",
+    );
+    // And the team write that retires it server-side did go out.
+    expect(mockUpdateCard.mock.calls[0][0].teamOnCardIds).toEqual(["team-new"]);
+  });
+
+  it("shows nothing when there are no pending names", () => {
+    renderPanel({ card: makeCard() });
+    expect(screen.queryByText("(unconfirmed)")).toBeNull();
+    expect(screen.queryByText(/resolves at the next sync/)).toBeNull();
+  });
+});

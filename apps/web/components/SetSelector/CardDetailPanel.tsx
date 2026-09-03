@@ -76,6 +76,22 @@ type CardDetailCard = {
   cardName: string;
   playerIds?: Array<Id<"players">>;
   teamOnCardIds?: Array<Id<"teams">>;
+  /**
+   * NEO-208 — team names an operator typed that no `teams` row exists for yet.
+   *
+   * Read-only here, and shown above the picker rather than folded into it: a
+   * chip in `TeamPicker` is a real `teams._id` the rest of the product can act
+   * on, and putting a bare string among them would be claiming a link that
+   * does not exist. The drawer's job is to make the name VISIBLE (it rendered
+   * nowhere before this ticket) and to say what will happen to it.
+   *
+   * Not part of this panel's draft state or dirty-tracking. It is retired by
+   * the server, derived from a real team write — see `updateCard`, which
+   * clears it in the same patch as a non-empty `teamOnCardIds`. So an operator
+   * "replaces" a pending name by picking a team and saving; there is nothing
+   * here for them to edit or delete directly.
+   */
+  pendingTeamNames?: string[];
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -530,6 +546,31 @@ export default function CardDetailPanel({
             <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               Teams
             </label>
+            {/* NEO-208 — unresolved typed names, above the picker and
+                read-only. TEXT ONLY, never an anchor or a button: there is no
+                action to offer. The name is retired server-side when a real
+                team is saved (updateCard clears `pendingTeamNames` in the same
+                patch as a non-empty `teamOnCardIds`), so the two things that
+                can happen to it are stated in the hint rather than wired to a
+                control the operator would have to find. */}
+            {(card.pendingTeamNames?.length ?? 0) > 0 && (
+              <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                <div className="flex flex-wrap gap-x-2">
+                  {card.pendingTeamNames!.map((name) => (
+                    <span key={name}>
+                      {name}{" "}
+                      <span className="text-gray-400 dark:text-gray-500">
+                        (unconfirmed)
+                      </span>
+                    </span>
+                  ))}
+                </div>
+                <p className="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">
+                  Typed on the card before it was linked — resolves at the next
+                  sync, or pick a team to replace it.
+                </p>
+              </div>
+            )}
             <TeamPicker value={teamIds} onChange={setTeamIds} sportId={ancestorSportId} />
           </div>
 
