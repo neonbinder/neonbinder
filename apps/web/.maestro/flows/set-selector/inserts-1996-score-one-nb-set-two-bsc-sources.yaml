@@ -668,3 +668,239 @@ tags:
     text: ".*NB203-${ATTEMPT_ID}.*"
     below:
       text: "BSC source"
+
+# ============================================================
+# STEP 8 — A RENAMED INSERT ROW SURVIVES A FORCED "Sync Inserts", AND THE
+#          MARKETPLACE NAMES IT DISAGREES WITH ARRIVE AS DECLINABLE
+#          SUGGESTIONS (NEO-211)
+#
+# STEP 7 proved NeonBinder owns its CARD content across a re-sync. This proves
+# the same rule one level up, for the SET ROW itself — which is a different
+# mutation (`storeReconciledOptions`, not the checklist commit) and a different
+# failure mode.
+#
+# WHAT USED TO HAPPEN. `storeReconciledOptions` matched incoming marketplace
+# sets to existing rows by their DISPLAY VALUE and then deleted every non-custom
+# row the fetch had not named. A row renamed away from its marketplace label was
+# therefore unrecognisable on the next sync: deleted, re-inserted empty, and its
+# card checklist orphaned — all 220 of them, since `cardChecklist` rows point at
+# the row by `_id` and nothing re-parents. NEO-211 makes the match id-keyed
+# (tier 0 is the row's own `_id`, threaded through the reconcile modal) and
+# removes the delete pass entirely.
+#
+# WHY IT RIDES ON THIS FLOW, same argument as STEP 7. The expensive part is
+# having a committed, two-BSC-source insert row to re-sync at all — and
+# SET-REGISTRY.md's sole-writer rule forbids a second flow from building one on
+# 1996 Score. The marginal cost here is one insert-level reconcile.
+#
+# DECLINE, not accept. The Hockey flow
+# (set-rename-survives-resync-and-suggests-bsc-name.yaml) covers Accept end to
+# end; the other half of the dialog is the decision that writes NOTHING to the
+# name and stops the marketplace asking again. Both halves are covered live,
+# neither twice.
+#
+# WHAT THIS LEAVES BEHIND. The insert row keeps its NB211 marker name — the
+# same convention STEP 7 already uses for the first card's NB203 marker, and
+# recorded in SET-REGISTRY.md. Renaming it back would cost another round of
+# panel scrolling for no additional coverage: the assertion that matters is that
+# the name we chose is still the name on the row.
+#
+# ── 8a. RENAME THE INSERT ROW ────────────────────────────────────
+# The insert row has been the deepest selection since STEP 3, so
+# SetAttributesPanel is already pointed at it and no re-drill is needed. The
+# pencil lives in that panel's header; see rename-selector-option.yaml for the
+# control's mechanics (the input opens EMPTY, so there is nothing to erase).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Rename Dugout Collection Artists Proofs"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Rename Dugout Collection Artists Proofs"
+- extendedWaitUntil:
+    visible:
+      id: "Edit name for Dugout Collection Artists Proofs"
+    timeout: 7000
+- tapOn:
+    id: "Edit name for Dugout Collection Artists Proofs"
+    waitToSettleTimeoutMs: 250
+- inputText: "Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}"
+- pressKey: Enter
+
+# HARD PRECONDITION. The panel header renders the CURRENTLY SELECTED row, so
+# this proves the rename landed on the row we mean AND that the selection still
+# resolves to it. Everything below is meaningless without it.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
+    centerElement: true
+    timeout: 10000
+
+# ============================================================
+# 8b. FORCE THE INSERT-LEVEL RE-SYNC
+#
+# "Sync Inserts" re-runs `fetchRawOptions` and re-opens the reconcile dialog
+# with our previously-saved rows restored as Ready sets — each carrying its own
+# `_id` and OUR title, not the marketplace's. Saving with no edits is therefore
+# the purest form of the question: does a full re-sync leave the row alone?
+#
+# 240s matches STEP 1's sanctioned ceiling for the same live BSC + SportLots
+# insert fetch. R5 marketplace exception.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Sync Inserts"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Sync Inserts"
+
+- extendedWaitUntil:
+    visible: "Reconcile Inserts"
+    timeout: 240000
+
+# Our row came back as a Ready set under OUR name — the reconcile modal's own
+# half of the id-keyed contract. If it had been rebuilt from the marketplace
+# items instead, this row would be titled "…Series 2" again.
+- tapOn:
+    id: "Filter NeonBinder sets"
+    waitToSettleTimeoutMs: 250
+- inputText: "NB211-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible:
+      text: ".*Ready \\(1 of [0-9]+\\).*"
+    timeout: 10000
+- assertVisible:
+    id: "NeonBinder set name for Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}"
+
+# Save with NO edits. Filtering first is what pulls the footer above the fold —
+# the dialog body is its own overflow-y-auto scroller and Maestro scrolls the
+# PAGE, not that container (see STEP 1's note).
+- scrollUntilVisible:
+    element:
+      text: ".*Save [0-9]+ sets.*"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    text: ".*Save [0-9]+ sets.*"
+- extendedWaitUntil:
+    notVisible: "Reconcile Inserts"
+    timeout: 60000
+
+# ============================================================
+# 8c. THE ROW SURVIVED, STILL ALONE AND STILL OURS
+#
+# RE-DRILL FIRST, same reason as STEP 2: saving leaves the columns row at the
+# horizontal offset the dialog was opened from, and Maestro has no horizontal
+# scroll to recover it. The re-drill also makes this a fresh read from Convex
+# rather than a re-render of state the dialog left behind.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "1996"
+      MANUFACTURER: "Score"
+      SET: "Score"
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Insert"
+
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 60000
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Artist"
+
+# THE ACCEPTANCE CRITERION at set-row level: our name, on a row that is still
+# the ONLY Artist's Proofs row. A delete-and-reinsert would show BSC's two
+# series names back as two separate rows.
+- extendedWaitUntil:
+    visible:
+      text: ".*Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
+      below:
+        id: "Search inserts"
+    timeout: 20000
+- assertNotVisible:
+    text: ".*Artist.s Proofs Series [12].*"
+
+# ============================================================
+# 8d. DECLINE BOTH MARKETPLACE NAMES
+#
+# Our name now disagrees with BOTH sides — BSC calls this row one of its two
+# series, SportLots calls it the combined set — so the column offers a
+# suggestion per side. Nothing has been written to `value`; the dialog is the
+# only door from a suggestion to a rename, and Decline is the door marked
+# "never ask me this again".
+#
+# The affordance's count is matched loosely ON PURPOSE. The reconciler names a
+# Ready set from its BSC item, and several of 1996 Score's other inserts
+# legitimately carry a SportLots label that differs — so the COLUMN's total is a
+# property of the marketplace data, not of this flow. Every assertion that has
+# to be exact is scoped to OUR row instead, via the unique NB211 marker in each
+# accessible name, and to the footer tally, which counts only decisions this
+# flow pressed.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: ".*naming suggestions? from marketplaces — review"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: ".*naming suggestions? from marketplaces — review"
+
+- extendedWaitUntil:
+    visible: "Name Suggestions — Inserts"
+    timeout: 7000
+
+# Both side badges, for OUR row. The SportLots label is a fixed fact of the
+# fixture (one combined set); which of BSC's two series holds the primary slot
+# is not, so that one is matched on its shape.
+- assertVisible:
+    text: ".*SportLots: Dugout Collection Artists Proofs.*"
+- assertVisible:
+    text: ".*BSC: Dugout Collection Artist.s Proofs Series [12].*"
+
+# `id:` is a full-string REGEX in Maestro, so the marketplace label is left as
+# `.*` while the row half — the part that must not be ambiguous — is pinned to
+# this attempt's marker.
+- tapOn:
+    id: "Keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting BSC's \".*\""
+- tapOn:
+    id: "Keep \"Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}\"; stop suggesting SportLots's \".*\""
+
+# The running total is the only feedback that the presses registered, and it is
+# exact: two declines, nothing accepted. A stray accept here would rename the
+# row, which is the one outcome this step exists to rule out.
+- assertVisible: "0 to accept · 2 to decline"
+
+- tapOn:
+    id: "Apply decisions"
+
+# The outcome line is the SERVER's own tally, so it proves the declines were
+# written rather than counted as stale or skipped.
+- extendedWaitUntil:
+    visible: "2 declined"
+    timeout: 7000
+
+# AND THE NAME IS STILL OURS. A decline records the label we refused; it must
+# never touch `value`.
+- assertVisible:
+    text: ".*Dugout Collection Artists Proofs NB211-${ATTEMPT_ID}.*"
+    below:
+      id: "Search inserts"
