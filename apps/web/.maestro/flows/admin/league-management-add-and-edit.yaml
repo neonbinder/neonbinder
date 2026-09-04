@@ -1,0 +1,358 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/leagues&worker=${WORKER_INDEX || "0"}
+name: "League Management — add a league by hand, classify it, and edit what we know about it"
+tags:
+  - regression
+  - admin
+---
+# R1 — Single feature: /admin/leagues (NEO-240) lets an operator ADD a league by
+# hand under a chosen sport, classify it with a level, record an era and the
+# other spellings it answers to, and have every one of those survive a reload —
+# and the abbreviation it was given then shows up as that league's handle on
+# /admin/teams.
+#
+# One flow rather than two because the row does not exist until this flow makes
+# it. The sibling teams screen is split (team-management-filter for the master
+# side, team-management-edit-a-team for the detail side) precisely because no
+# flow there may create a row to work on; here the master half, the detail half
+# and the cross-screen half are one continuous user story about ONE league that
+# this flow owns end to end.
+#
+# SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
+# redirecting to /admin/leagues. No in-body login, no credential step, no
+# runFlow. Nothing else in the suite opens /admin/leagues and nothing else
+# creates a league, so this duplicates no existing flow. /admin/leagues sits
+# behind AdminLayout, which bounces non-admins to /dashboard, so reaching the
+# counter at all is also proof the admin gate let us through.
+#
+# R9 — not applicable: there is no set-builder cascade on this screen, so there
+# is no drill to route through util-drill-*. The only picker here is a native
+# <select>, driven the way the Players screen's is (see the sport step).
+#
+# R2 — this cannot go green without the feature working:
+#   * the create button is targeted by its OWN accessible name, "Create league
+#     <this run's name>", so the tap cannot land on some other button — and the
+#     screen only renders that name while no league of that name exists (an
+#     exact near-match demotes the primary to "Open <name>" instead);
+#   * "Added <name>." is the mutation's own INSERTED confirmation —
+#     `createByAdmin` returns `created: false` and the screen says "That league
+#     already exists — opened it." when it merely found a row, so a create that
+#     silently deduped fails here;
+#   * "Sport: Baseball" in the detail panel proves the row was filed under the
+#     sport that was picked, not under a blank or a wrong one (sport is
+#     read-only after creation, so this is the only chance to prove it);
+#   * everything asserted after the reload is read back OUT OF THE DATABASE, not
+#     off a form that still holds what was typed: the level as the master row's
+#     own level segment, the abbreviation as the row's abbreviation segment, the
+#     era as the "Active from" value and the alias as a parsed CHIP rather than
+#     as the raw comma string in the box;
+#   * the alias assertion is scoped to the "Current aliases" list, so the text
+#     still sitting in the Aliases input cannot answer it — a screen that stored
+#     the string but never parsed it into an alias fails here;
+#   * and the last step proves the abbreviation reached the OTHER screen: on
+#     /admin/teams the league picker offers leagues by `abbreviation ?? name`,
+#     so an abbreviation that never persisted would leave the picker offering
+#     the long league name and this assertion would find nothing.
+# There are no `when:` branches and no conditional runFlow anywhere in this
+# file, so there is no path through it that reaches the end without exercising
+# the feature.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
+# mid-flow reloads (30s each, matching the identical openLink in
+# team-management-edit-a-team and player-management-add-and-career-history). No
+# marketplace is touched anywhere, so nothing here earns a long timeout.
+#
+# R7 / R7a — NOT destructive, and it writes to NO shared row:
+#   * `leagues` is a GLOBAL table — the page says so itself ("Leagues are
+#     globally shared rows — every collector sees the same league data") — so
+#     this flow never edits a league it did not make. It CREATES its own, named
+#     "LG-<worker>-<attempt>", unique per worker AND per attempt, so eight
+#     concurrent runners plus a retry can never land on the same row. Per-attempt
+#     is mechanical as well as polite: the "Create league <name>" button renders
+#     only while no league of that name exists, so a leftover row from a prior
+#     attempt would demote the button to "Open <name>" and the flow would reach
+#     for a control that is not there.
+#   * The one league it touches is one nothing else can see by name, so the
+#     `1 of N` counter and the master-row assertions cannot be answered by
+#     another worker's row.
+#   * No set, checklist, card, variant or team is touched, so this flow owns no
+#     entry in SET-REGISTRY.md — that registry governs SETS, and this flow
+#     creates none. It creates no team either, so the per-worker team-name rules
+#     do not apply.
+#   * "Re-enrich from Wikidata" is NEVER TAPPED. It is a live outbound SPARQL
+#     call to a third party from CI — the same reason team-management-edit-a-team
+#     never taps "Discover" and the players flow never taps its own re-enrich.
+#     Creating the league does schedule a background enrichment, but the name is
+#     nonsense so Wikidata answers nothing and the row is never rewritten under
+#     the assertions below.
+#
+# R8 — every scroll that precedes a tap centres its target. On the 1024x629
+# headless viewport the admin chrome (the sticky binder header, the "Admin" h1,
+# the section tabs, the "League Management" h2 and its subtitle) eats roughly the
+# top third before this screen's own filter row starts, so the add form's level
+# group and its Create button, and the detail panel's Save button, are all at or
+# below the fold. The ONE scroll that deliberately does NOT centre is the one
+# back up to the "Added …" line: that line renders above the filter row, less
+# than half a viewport from the top of the document, so there is no scroll
+# position at which it can BE centred and asking for one can never settle.
+#
+# R10 — no `when:` guards, no create/fallback branches, no settle waits. Every
+# wait here is synchronising something that is genuinely in flight.
+
+- launchApp
+
+# Wait for the COUNTER, not the "League Management" heading. The heading paints
+# while the leagues query is still in flight — the master column says
+# "Loading leagues…" and the counter is an empty string until it resolves. The
+# counter is also when the filter takes focus, so it is the honest "this screen
+# is ready to be typed into" signal.
+- extendedWaitUntil:
+    visible: ".*of .* leagues.*"
+    timeout: 45000
+
+# The runner injects ATTEMPT_ID ("r<runner>-a<attempt>-<random>", or
+# "w<worker>-a<attempt>-<random>" from the smoke script). This gives a standalone
+# local run a fallback and only when unset, so a runner-injected value is
+# preserved. Same idiom as player-management-add-and-career-history.
+#
+# Length matters here in a way it does not on the Players screen: the
+# abbreviation below is "L<ATTEMPT_ID>" and `createByAdmin` REFUSES an
+# abbreviation over 16 characters (MAX_LEAGUE_ABBREVIATION_LENGTH). The longest
+# id either runner can mint is "r7-a3-32767" — 11 characters, 12 with the L —
+# and the local fallback is 4, so both clear it with room to spare.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+# ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
+# Not decoration, and not an assertion about filtering for its own sake. This is
+# a PRECONDITION for the next step: every league row prints its sport beside the
+# name, so with rows on screen the word "Baseball" is on the page many times over
+# and the sport picker below could not be identified by what it says. A name
+# nothing can match clears the list, and then "Baseball" belongs to the picker
+# alone.
+- tapOn: "Filter leagues"
+- inputText: "zzzznotaleague"
+- assertVisible: "No leagues match that filter."
+# The counter agreeing at zero is the other half. It is composed as
+# "<visible> of <total> leagues", and Maestro text matching is fully anchored,
+# so a leading 0 can only mean the filter was applied and matched nothing — it
+# cannot be satisfied by "10 of …".
+- assertVisible: "0 of .* leagues.*"
+
+# ── PICK THE SPORT ──────────────────────────────────────────────────────────
+# Chosen on the LIST's sport picker rather than inside the add form, and that is
+# a mechanical necessity, not a preference. Maestro reaches a native picker's
+# choices by their position within their own picker and resolves that position
+# against the FIRST <select> in the document — so while the add form is open
+# there are two pickers on the page and a choice made in the form's picker lands
+# in the list's instead. With the form still closed the list's picker is the only
+# <select> on the page and the choice is unambiguous. The add form then opens
+# with this sport already selected, which is exactly what the screen promises
+# ("Pre-selected from the list's sport filter, when one is set").
+- tapOn: "All sports"
+- tapOn: "Baseball"
+# The picker now READS "Baseball" — a <select>'s Maestro text is its selected
+# option's text, so this is a direct read of what it holds. The list is still
+# empty (above), so no league row can be answering here.
+- assertVisible: "Baseball"
+
+# ── ADD THE LEAGUE ──────────────────────────────────────────────────────────
+- tapOn: "Add league"
+- assertVisible: "Add a league"
+
+- tapOn: "New league name"
+- inputText: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The abbreviation is not decoration either — it is the field the last step of
+# this flow reads back on a different screen.
+- tapOn: "Abbreviation"
+- inputText: "L${ATTEMPT_ID}"
+
+# The level, set on the add form's own group. Six plain buttons rather than a
+# picker, so none of the native-<select> awkwardness above applies — "Minor" is
+# just a button, and it is the only thing on the page that says so while the add
+# form is open. Centred first because the group sits below the two fields and the
+# sport picker, which on a 629px-tall viewport puts it at the fold.
+- scrollUntilVisible:
+    element:
+      text: "Minor"
+    centerElement: true
+- tapOn: "Minor"
+
+# The green button NAMES the league it is about to create, so this tap cannot
+# land on any other button — and it carries that name only while no league of
+# that name already exists (an exact match swaps the primary to "Open <name>"
+# and demotes creating to a "Create anyway" link beside it).
+- scrollUntilVisible:
+    element:
+      id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+- tapOn:
+    id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# "Added <name>." is said ONLY for a row that was INSERTED — `createByAdmin`
+# asks whether the row existed before it writes, and the screen says "That
+# league already exists — opened it." when it did. So this is the assertion that
+# the hand-entry actually created something.
+#
+# It is reached by scrolling UP because it is not next to the button that earns
+# it: this message is the PAGE-level status line, rendered above the filter row
+# at the top of the screen, while the Create button was just centred near the
+# bottom. No `centerElement` on this one (R8's stated exception, mirrored): the
+# line sits less than half a viewport below the top of the document, so no
+# scroll position centres it and asking for one can never settle. The scroll IS
+# the assertion (R6) — it fails loudly if the line never appears.
+- scrollUntilVisible:
+    element:
+      text: ".*Added LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    direction: UP
+
+# The new league's own panel has replaced the add form. This line exists nowhere
+# else on the screen and proves the row was filed under the sport that was
+# picked — which is the only chance to prove it, because sport is deliberately
+# read-only from here on (moving a league between sports would strand every team
+# filed under the old one).
+- scrollUntilVisible:
+    element:
+      text: ".*Sport: Baseball.*"
+    centerElement: true
+
+# ── EDIT WHAT WE KNOW ABOUT IT ──────────────────────────────────────────────
+# The era. A league that started in 1901 and is still running is the ordinary
+# case the panel is shaped around — "Active to" is left empty on purpose, which
+# the screen reads as "still running" rather than as an incomplete record.
+- scrollUntilVisible:
+    element:
+      text: "Active from"
+    centerElement: true
+- tapOn: "Active from"
+- inputText: "1901"
+
+# The aliases. This is the failure the screen exists to fix: two spellings of one
+# league sitting side by side because the normaliser could not tell them apart.
+# It is typed as a comma list and shown back as chips, and the chips are what the
+# reload below checks — the raw string in the box is not evidence it parsed.
+#
+# TWO aliases, not one, and that is what makes the reload assertion airtight
+# rather than merely suggestive. The Aliases box holds the whole comma string
+# ("Alias-…, Second-…") and Maestro reports an input's value as its text, while
+# each chip holds ONE alias. Maestro text matching is fully anchored, so the
+# single-alias strings asserted after the reload CANNOT be answered by the box —
+# only by a chip. A screen that stored the typed string as one long alias, or
+# that showed the string back without ever splitting it, fails there.
+- scrollUntilVisible:
+    element:
+      text: "Aliases"
+    centerElement: true
+- tapOn: "Aliases"
+- inputText: "Alias-${ATTEMPT_ID}, Second-${ATTEMPT_ID}"
+
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+- tapOn: "Save"
+
+# The confirmation renders directly BELOW the action row — NEO-240 put the
+# detail panel's status line there rather than at the page level precisely
+# because at 1024x629 the page-level line is off-screen when Save is pressed
+# (NEO-212 found this on the Players screen). Save was just centred, so the line
+# is on screen: a plain wait, no scroll.
+- extendedWaitUntil:
+    visible: ".*Saved LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 7000
+
+# ── IT PERSISTED ────────────────────────────────────────────────────────────
+# A reload is what separates the panel still holding what was typed from the
+# database holding it. Deliberately to the BARE route, with no ?league= param, so
+# nothing is preselected and the detail column comes back on its placeholder —
+# which is what makes the two master-row assertions below unambiguous. 30s
+# matches the identical openLink in the sibling admin flows: a full SPA reload
+# and re-auth, not a UI wait.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/leagues
+- extendedWaitUntil:
+    visible: ".*of .* leagues.*"
+    timeout: 30000
+
+- tapOn: "Filter leagues"
+- inputText: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# Exactly one league answers to this run's name. The counter is the assertion
+# that the filter ran and found precisely our row — fully anchored, so "1 of …"
+# cannot be satisfied by "11 of …".
+- assertVisible: "1 of .* leagues.*"
+
+# Nothing is selected yet — the detail column is still inviting a pick. This is
+# not scenery: it is what makes the next two assertions load-bearing. With the
+# panel closed there is no Level group and no Abbreviation field on the page, so
+# the only thing that can say "Minor", and the only thing that can carry this
+# run's abbreviation, is the MASTER ROW reading them back out of the database.
+- assertVisible: "Select a league to see its teams and edit what we know about it."
+# The level, chosen on the add form before the row existed.
+- assertVisible: "Minor"
+# The abbreviation, typed on the add form beside it.
+- assertVisible: "L${ATTEMPT_ID}"
+
+# Open the row. Targeted by `id:` rather than by text because the filter box now
+# holds this exact name and Maestro reports an input's value as its text — the
+# row's name element carries the league name as a `title` too, which Maestro
+# exposes as the resource-id, and the filter input carries no id at all. So this
+# selector resolves to the row and only the row.
+- scrollUntilVisible:
+    element:
+      id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+- tapOn:
+    id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The aliases came back AS PARSED ALIASES, not as a string in a box. The Aliases
+# input above these chips holds the WHOLE comma string, and Maestro matching is
+# fully anchored, so neither of these two assertions can be satisfied by the box
+# — only by an individual chip. Together they prove the list round-tripped as a
+# LIST of two, which is the actual feature.
+#
+# Centred because the chip list is the last thing in the field stack and the
+# panel runs past the fold; the scroll IS the assertion for the first chip (R6),
+# and centring it puts the second chip beside it and the years row above it, both
+# on screen by construction.
+- scrollUntilVisible:
+    element:
+      text: "Alias-${ATTEMPT_ID}"
+    centerElement: true
+- assertVisible: "Second-${ATTEMPT_ID}"
+
+# ...and the era came back with them. "Active from" reads its stored value, which
+# is the only place on this screen a year can appear.
+- assertVisible: "1901"
+
+# The roster — the panel's second subject, and the reason a league is worth
+# classifying at all. Nothing plays in this one yet, which is both the honest
+# empty state and what makes the cross-screen assertion below unambiguous: with
+# no team in this league, no team row on /admin/teams can print its
+# abbreviation. The scroll IS the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: "No teams yet."
+    centerElement: true
+
+# ── AND THE ABBREVIATION REACHED THE OTHER SCREEN ───────────────────────────
+# Team Management offers leagues by `abbreviation ?? name`, so this league can
+# only be listed by its short form if the abbreviation persisted — a league that
+# lost it would be offered by its full name and this assertion would find
+# nothing. It is also the linkage NEO-240 exists for: a league is only worth
+# classifying because the teams screen leans on it.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+
+# Open the League picker. The tap is load-bearing, not navigation: a native
+# picker's choices only enter Maestro's hierarchy while that picker has focus,
+# so without this the option below does not exist to be found. No option is
+# TAPPED here — only read — so the "first <select> on the page" limitation that
+# governs the sport step above does not apply.
+- tapOn: "All leagues"
+# Unambiguous by construction: the only OTHER place this abbreviation could
+# appear on this screen is beside a team that plays in this league, and this
+# league has none (the panel said "No teams yet." a moment ago). So the option
+# in the open picker is the only node that can answer here.
+- assertVisible: "L${ATTEMPT_ID}"
