@@ -53,6 +53,9 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars"
 - pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
+- pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 
 # --- <ID> Stars Gold ---
@@ -65,6 +68,9 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars Gold"
 - pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
+- pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 
 # --- <ID> Stars Red (third entry keeps the Group Parallels button layout stable) ---
@@ -76,6 +82,9 @@ tags:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars Red"
+- pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
 - pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 

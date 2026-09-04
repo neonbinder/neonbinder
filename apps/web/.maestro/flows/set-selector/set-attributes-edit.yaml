@@ -285,6 +285,15 @@ tags:
       - assertVisible: "Add Custom Entry"
       - inputText: "BaseAttr-${WORKER_INDEX || 0}"
       - pressKey: Enter
+      # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+      # confirm with the Create button already focused; this second Enter presses it.
+      - pressKey: Enter
+      # The form must be GONE before the value below is matched: while the
+      # confirm is up, the sentence "Create ... '{v}' under ...?" contains the
+      # very value the assertion looks for, so the row-visible check could pass
+      # on the confirm rather than on the new row (NEO-219).
+      - extendedWaitUntil:
+          notVisible: "Add Custom Entry"
       - assertVisible:
           text: ".*BaseAttr-${WORKER_INDEX || 0}.*"
 

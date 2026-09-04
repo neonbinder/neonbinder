@@ -42,6 +42,10 @@ const state: { items: unknown; status: unknown } = {
 
 vi.mock("convex/react", () => ({
   useMutation: () => mockAddCustom,
+  // NEO-219: EntityColumn takes the client at render for the one-shot
+  // cross-parent duplicate lookup. Nothing here submits a custom value, so the
+  // query is never called — but `useConvex()` must exist.
+  useConvex: () => ({ query: vi.fn() }),
   useAction: (ref: string) =>
     ref === "ensureSelectorOptions" ? mockEnsure : vi.fn(),
   useQuery: (ref: string) =>

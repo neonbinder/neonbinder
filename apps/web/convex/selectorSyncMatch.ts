@@ -181,6 +181,56 @@ export function assertSelectorValue(raw: string): string {
   return checked.value;
 }
 
+/**
+ * NEO-219 — the ONE rule for a value an operator typed into "Add Custom
+ * Entry", shared by the mutation that writes it and the form that offers it.
+ *
+ * `checkSelectorValue` above is the universal floor (non-empty after trim,
+ * length ceiling, no control or zero-width characters). This adds the
+ * per-LEVEL rule on top, because "" and "\u200b" are not the only ways to
+ * name a row badly: `EntityColumn`'s custom field had no validation at all,
+ * so `2o24` (letter o) went in as a `year` row, and every downstream consumer
+ * that parses a year off a selector value — `deriveCardFeatures`, SKU
+ * generation, the release-year resolution — silently got nothing back.
+ *
+ * PURE and dependency-free on purpose: `EntityColumn` imports it directly the
+ * way the SetSelector components already import `platformSlots`, so the inline
+ * error the operator reads and the `ConvexError` the mutation throws are the
+ * same sentence produced by the same code. A second copy in the component is
+ * how the two come to disagree.
+ *
+ * Year is STRICT four digits (Jason, 2026-09-04, decision 2). Season-shaped
+ * values ("1972-73") are rejected even though `deriveCardFeatures` anticipates
+ * them, because no season-shaped row or fixture exists anywhere in dev, prod
+ * or `.maestro` — every `YEAR:` is four digits. Loosen the regex here, in one
+ * place, if a real one ever appears.
+ *
+ * Note the ORDER: `checkSelectorValue` trims first, so " 2024 " is accepted
+ * and stored as "2024". The regex never sees the surrounding whitespace.
+ *
+ * @param level the `selectorOptions.level` the value is being created at
+ * @param raw   exactly what the operator typed, untrimmed
+ */
+export function checkCustomSelectorValue(
+  level: string,
+  raw: string,
+): SelectorValueCheck {
+  const base = checkSelectorValue(raw);
+  if (!base.ok) return base;
+
+  if (level === "year") {
+    if (!/^\d{4}$/.test(base.value)) {
+      return { ok: false, reason: "Year must be a four-digit number" };
+    }
+  }
+
+  // Every other level: non-empty after trim, which `checkSelectorValue`
+  // already guaranteed. There is deliberately no per-level character rule for
+  // set/insert/parallel names — real ones carry slashes, parentheses, accents
+  // and print-run numerals ("Gold /50", "Refractor (SP)").
+  return base;
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // NEO-239 — the variantType rename refusal is GONE
 //

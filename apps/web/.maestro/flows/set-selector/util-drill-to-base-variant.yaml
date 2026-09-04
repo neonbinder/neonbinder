@@ -87,11 +87,15 @@ tags:
 # the boundary time to land, and a slower one is still caught by the step below.
 - assertNotVisible: "An error occurred. Please refresh the page."
 
-# Brief wait to let the BaseMappingForm decide whether to hold the picker
-# open (SL data found) or auto-confirm and close (no SL data).
+# Wait for whichever of the two Base-mapping surfaces this row lands on:
+#   Path A — no mapping yet: BaseSetPicker ("Select Base Set") opens and STAYS
+#     open until a set is picked and confirmed.
+#   Path B — already mapped (a set the setup track or an earlier run provisioned):
+#     no picker at all, just the "Re-map Base" button.
+# NEO-219 deleted the third path this comment used to describe — the picker
+# closing itself and writing a BSC fallback nobody saw. There is no auto-close
+# any more; a successful fetch always waits for a pick.
 # 60s covers: SL fetch round trip (~50s) + Puppeteer session re-auth if needed.
-# Wait for either the BaseSetPicker modal (SL data present) OR the post-confirm
-# "Re-map Base" control (Path B — modal auto-closed).
 #
 # NOT a bare visibility wait: SCROLL to it. The Base-mapping controls render
 # BELOW the columns container (components/modules/SetSelector.tsx:519-540) —
@@ -121,11 +125,35 @@ tags:
     centerElement: true
     timeout: 60000
 
-# If the picker is open (SL data present), confirm the pre-selected set.
+# Path A — the picker is open: PICK a set on each side, then confirm.
 - runFlow:
     when:
       visible: "Select Base Set"
     commands:
+      # The confirm button reads "Loading…" until the live SportLots + BSC
+      # round-trip lands, then flips to "Confirm Base Set". That flip is the
+      # marketplace wait (R5 exception) and the gate that the candidate rows
+      # tapped below exist at all.
+      - extendedWaitUntil:
+          visible: "Confirm Base Set"
+          timeout: 45000
+      # NEO-219 — PICK BEFORE CONFIRMING. The picker used to select rows on the
+      # operator's behalf and Confirm merely accepted them; now nothing below an
+      # exact set-name match is pre-selected, Confirm is disabled until something
+      # is picked, and only what is picked is linked. Both lists render
+      # best-match-first, so the FIRST row on each side is the best-ranked
+      # candidate — what the old build selected on its own, except where
+      # NEO-219's re-ranking (an exact manufacturer match now scores BELOW the
+      # generic "Base" rows) deliberately promotes a better one.
+      #
+      # The labels are the marketplaces' own words and are deliberately NOT
+      # pinned: SportLots names a set's base row differently from set to set.
+      # `id:` is a full-string regex in Maestro, so "…candidate: .*" reads as
+      # "the first candidate row on this side".
+      - tapOn:
+          id: "BSC base candidate: .*"
+      - tapOn:
+          id: "SportLots base candidate: .*"
       - tapOn: "Confirm Base Set"
       - extendedWaitUntil:
           notVisible: "Select Base Set"

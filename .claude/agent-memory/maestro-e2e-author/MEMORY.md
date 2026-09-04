@@ -20,3 +20,4 @@
 - [NEO-239 retire "custom" — flow impact](reference_neo239_retire_custom_flow_impact.md) — no "Custom" badge to assert; per-side resolvability replaces `isCustomSubtree`; any variantType renameable; Base is `metadata.isBase`
 - [CI's Convex preview starts empty](reference_ci_convex_preview_starts_empty.md) — no dev clone, no `--preview-run`; `e2e.yml`'s seed job runs the setup track, so a backfill is never a CI prerequisite
 - [Never push a branch's Convex to shared dev](feedback_never_push_a_branch_convex_to_shared_dev.md) — use the PR's own preview on a spare-port Vite; seed it with the setup track
+- [NEO-219 confirm surfaces](reference_neo219_confirm_surfaces.md) — custom entry needs TWO Enters; Base picker needs an explicit pick; chips confirm detach; empty rows have a delete control

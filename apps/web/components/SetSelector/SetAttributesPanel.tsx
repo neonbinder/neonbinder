@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
+import { TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -7,10 +8,20 @@ import {
   EXPECTED_FEATURES,
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
+import { slotIds, type SlotBearingRow } from "../../convex/platformSlots";
+import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { FeatureValueControl } from "./FeatureValueControl";
 import RenameEntityControl from "./RenameEntityControl";
 import BaseRoleControl from "./BaseRoleControl";
+import {
+  ALL_SIDES,
+  joinLabels,
+  LEVEL_SINGULAR,
+  levelNoun,
+  SIDE_LABEL,
+  type SelectorLevel,
+} from "./selector-sync-feedback";
 
 /**
  * NEO-38 (PR B-2) — level-agnostic set ATTRIBUTES editor.
@@ -80,10 +91,19 @@ const LEVEL_LABEL: Record<Level, string> = {
 export default function SetAttributesPanel({
   selectorOptionId,
   defaultCollapsed,
+  onDeleted,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   /** Start collapsed (cards present) so the panel doesn't push them off-screen. */
   defaultCollapsed?: boolean;
+  /**
+   * NEO-219 — the row this panel describes was just deleted, so the panel and
+   * everything downstream of it is about to be pointing at nothing. The owner
+   * (`SetSelector`) clears the selection from `level` down and parks focus on
+   * the column, because only it knows where "stable" is; this panel cannot,
+   * since it unmounts as part of the same update.
+   */
+  onDeleted?: (level: SelectorLevel) => void;
 }) {
   const row = useQuery(api.selectorOptions.getSelectorOptionById, {
     id: selectorOptionId,
@@ -210,7 +230,7 @@ export default function SetAttributesPanel({
               only thing making it discoverable. The panel scopes itself to the
               deepest current selection at ANY level, so this one control
               renames sports, years, manufacturers, sets and variants alike. */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <h3 className="text-sm font-semibold text-gray-100">
               {headerTitle}
             </h3>
@@ -232,6 +252,31 @@ export default function SetAttributesPanel({
                 onResult={showToast}
               />
             )}
+            {/* NEO-219: the one sanctioned delete, next to the pencil for the
+                same reason the pencil is next to the title — the title IS the
+                row it acts on.
+                NEO-239: this used to be wrapped in `canRenameSelectorRow(row)`,
+                which meant "hide it on a variantType that is not custom". That
+                predicate is gone with the custom concept — a row either carries
+                marketplace ids or it does not, and both behave the same — so
+                the gate is now the control's OWN, and it is a better one: it
+                reads `getSelectorOptionHoldings` and renders nothing for a
+                protected row, an explained refusal for a row with something
+                below it, and the confirm only when the row is genuinely empty.
+                Server-side emptiness + protection checks still run
+                independently. Nothing became deletable that the server would
+                not already have let go. */}
+            <DeleteSelectorRowControl
+              // Keyed on the row: this panel does NOT remount when the
+              // selection moves, so without this a dialog opened for one row
+              // — or a revealed reason belonging to it — would survive onto
+              // the next one and ask its question about the wrong thing.
+              key={selectorOptionId}
+              id={selectorOptionId}
+              row={row}
+              level={leafLevel}
+              onDeleted={onDeleted}
+            />
           </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
@@ -413,5 +458,290 @@ function SetFeatureRow({
         className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}
       />
     </label>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// NEO-219 — the one sanctioned delete
+// ---------------------------------------------------------------------------
+
+/**
+ * "Sets are fixed, never deleted" holds, with ONE exception agreed 2026-09-03:
+ * a row with nothing below it — no child rows, no cards anywhere in its
+ * subtree, no cross-listings, and at sport level no players/teams/leagues —
+ * may be removed. That is the whole rule, and it is checked SERVER-side; this
+ * control only mirrors it so the operator is not offered an action that will
+ * be refused.
+ *
+ * Two states, both stated in words rather than colour:
+ *   • holdings exist → the button is `aria-disabled` and names what is below
+ *     it ("Holds 3 sets and 220 cards — delete what is below it first").
+ *     Clicking reveals that sentence visually, because "why is this greyed
+ *     out?" is the question a disabled control always raises and a permanent
+ *     line of it under every row in the Set Builder is noise. The sentence is
+ *     in the DOM at all times as the button's `aria-describedby` target, so a
+ *     screen reader hears the reason without the reveal.
+ *   • nothing below it → a ConfirmDialog, Cancel-focused (decision 3), which
+ *     additionally says the row may come back if it carries a marketplace id:
+ *     an empty SYNCED row deleted today is re-inserted by the next Sync Sets,
+ *     which is harmless but surprising if unannounced.
+ *
+ * A `SELECTOR_ROW_NOT_EMPTY` refusal is a real race, not a bug: the holdings
+ * query and the click are separated by however long the operator read the
+ * dialog. It renders the server's own `holds` inside the dialog rather than
+ * closing, so the answer arrives where the question was asked.
+ */
+
+/** One thing standing in the way of a delete, as the server reports it. */
+type SelectorHolding = {
+  kind: string;
+  count: number;
+  /**
+   * On `kind: "rows"`, the level of the children being counted — OMITTED when
+   * they are mixed (a variantType holding both inserts and parallels). Absent
+   * therefore means "no single right noun exists", not "look it up": deriving
+   * one from the parent's level would confidently name the wrong thing in
+   * exactly the case the server declined to name.
+   */
+  level?: SelectorLevel;
+  examples?: string[];
+};
+
+type SelectorHoldings = {
+  holds: SelectorHolding[];
+  /** `refusesValueRename` on the server — a structural row, never deletable. */
+  protected: boolean;
+};
+
+/**
+ * Singular/plural nouns for every non-row holding kind that is a COUNT NOUN —
+ * i.e. every kind whose remedy is the sentence's own "delete what is below it
+ * first". `review` deliberately has no entry here; see `reviewClause`.
+ */
+const HOLD_NOUN: Record<string, readonly [string, string]> = {
+  cards: ["card", "cards"],
+  crossListings: ["cross-listing", "cross-listings"],
+  "cross-listings": ["cross-listing", "cross-listings"],
+  players: ["player", "players"],
+  teams: ["team", "teams"],
+  leagues: ["league", "leagues"],
+};
+
+function holdPhrase(hold: SelectorHolding): string {
+  if (hold.kind === "rows") {
+    // No level means the children are MIXED (inserts and parallels under one
+    // variantType), so there is no single right noun. "3 rows" is the honest
+    // answer; deriving one from the parent would name the wrong thing in
+    // precisely the case the server declined to name.
+    return hold.level
+      ? `${hold.count} ${levelNoun(hold.level, hold.count)}`
+      : `${hold.count} ${hold.count === 1 ? "row" : "rows"}`;
+  }
+  const noun = HOLD_NOUN[hold.kind];
+  if (!noun) return `${hold.count} ${hold.kind}`;
+  return `${hold.count} ${hold.count === 1 ? noun[0] : noun[1]}`;
+}
+
+/**
+ * An in-flight checklist review on this row.
+ *
+ * NOT a `HOLD_NOUN` entry, because it is not the same kind of statement as the
+ * others. "Holds 1 checklist review — delete what is below it first" would give
+ * the operator the wrong instruction: a review is not a thing below the row
+ * waiting to be deleted, it is work in progress on the row itself, and the way
+ * out is to finish or cancel it. So it gets its own clause with its own remedy.
+ */
+function reviewClause(count: number): string {
+  return count === 1
+    ? "a checklist review is in progress here — finish or cancel it first"
+    : `${count} checklist reviews are in progress here — finish or cancel them first`;
+}
+
+/**
+ * "Holds 3 sets and 220 cards — delete what is below it first."
+ *
+ * Exported shape shared by the disabled reason and the server's refusal, so
+ * the operator reads the same sentence whichever side produced it.
+ *
+ * Two clauses at most, because there are two different remedies: everything
+ * countable below the row is deleted, and an in-flight review is finished or
+ * cancelled. Both can be true at once, so both are said.
+ */
+export function selectorHoldsMessage(
+  holds: readonly SelectorHolding[],
+): string {
+  const present = holds.filter((h) => h.count > 0);
+  const countable = present.filter((h) => h.kind !== "review");
+  const reviewCount = present
+    .filter((h) => h.kind === "review")
+    .reduce((total, h) => total + h.count, 0);
+
+  const clauses: string[] = [];
+  if (countable.length > 0) {
+    clauses.push(
+      `Holds ${joinLabels(countable.map(holdPhrase))} — delete what is below it first`,
+    );
+  }
+  if (reviewCount > 0) {
+    const clause = reviewClause(reviewCount);
+    // Leading clause starts a sentence; a trailing one continues one.
+    clauses.push(
+      clauses.length === 0
+        ? clause.charAt(0).toUpperCase() + clause.slice(1)
+        : clause,
+    );
+  }
+  return clauses.join("; ");
+}
+
+/**
+ * The server's delete refusals, matched STRUCTURALLY rather than with
+ * `instanceof ConvexError` — same reasoning as RenameEntityControl's
+ * `refusalMessage`: a mocked or rethrown error in a test, or a version skew in
+ * the convex client, must still surface the server's own answer.
+ */
+function deleteRefusalMessage(e: unknown): string | null {
+  if (typeof e !== "object" || e === null) return null;
+  const data = (e as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return null;
+  const { code, holds, message } = data as {
+    code?: unknown;
+    holds?: unknown;
+    message?: unknown;
+  };
+  if (code === "SELECTOR_ROW_NOT_EMPTY") {
+    const list = Array.isArray(holds) ? (holds as SelectorHolding[]) : [];
+    return (
+      selectorHoldsMessage(list) ||
+      "Something is below it now — it can't be deleted."
+    );
+  }
+  if (code === "SELECTOR_ROW_PROTECTED") {
+    return typeof message === "string" && message.length > 0
+      ? message
+      : "This row can't be deleted.";
+  }
+  return null;
+}
+
+function DeleteSelectorRowControl({
+  id,
+  row,
+  level,
+  onDeleted,
+}: {
+  id: Id<"selectorOptions">;
+  row: Pick<SlotBearingRow, "platformData"> & { value: string };
+  level: SelectorLevel;
+  onDeleted?: (level: SelectorLevel) => void;
+}) {
+  const holdings: SelectorHoldings | undefined = useQuery(
+    api.selectorOptions.getSelectorOptionHoldings,
+    { id },
+  );
+  const deleteSelectorOption = useMutation(
+    api.selectorOptions.deleteSelectorOption,
+  );
+
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reasonRevealed, setReasonRevealed] = useState(false);
+  const reasonId = useId();
+
+  // A protected row is not "disabled", it is not a thing you may do at all —
+  // same call the pencil makes. Rendering nothing beats rendering a control
+  // that can only ever refuse.
+  if (holdings?.protected) return null;
+
+  const reason =
+    holdings === undefined
+      ? "Checking what is below it…"
+      : selectorHoldsMessage(holdings.holds);
+  const blocked = reason.length > 0;
+
+  const linkedSides = ALL_SIDES.filter(
+    (side) => slotIds(row, side).length > 0,
+  ).map((side) => SIDE_LABEL[side]);
+
+  const description =
+    "Nothing is below it. This cannot be undone." +
+    (linkedSides.length > 0
+      ? ` It is linked to ${joinLabels(
+          linkedSides,
+        )}; the next sync may add it back.`
+      : "");
+
+  const handleConfirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteSelectorOption({ id });
+      setOpen(false);
+      onDeleted?.(level);
+    } catch (e) {
+      setError(
+        deleteRefusalMessage(e) ??
+          (e instanceof Error ? e.message : String(e)),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          if (blocked) {
+            setReasonRevealed(true);
+            return;
+          }
+          setError(null);
+          setOpen(true);
+        }}
+        // aria-disabled, not `disabled`: the reason is the whole point of the
+        // control in this state, and a natively disabled button cannot be
+        // focused to hear it or clicked to reveal it.
+        aria-disabled={blocked || undefined}
+        aria-describedby={blocked ? reasonId : undefined}
+        aria-label={`Delete ${row.value}`}
+        title={`Delete ${row.value}`}
+        // p-1: a bare 16x16 icon is under WCAG 2.5.8's 24x24 minimum target.
+        className="shrink-0 p-1 text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-500"
+      >
+        <TrashIcon className="w-4 h-4" />
+      </button>
+      {blocked && (
+        <span
+          id={reasonId}
+          className={
+            reasonRevealed
+              ? "w-full text-[10px] text-gray-400"
+              : "sr-only"
+          }
+        >
+          {reason}
+        </span>
+      )}
+      {open && (
+        <ConfirmDialog
+          title={`Delete ${LEVEL_SINGULAR[level]} "${row.value}"?`}
+          description={description}
+          confirmLabel="Yes, delete"
+          busyLabel="Deleting…"
+          busy={busy}
+          error={error}
+          onConfirm={() => void handleConfirm()}
+          onCancel={() => {
+            if (busy) return;
+            setError(null);
+            setOpen(false);
+          }}
+        />
+      )}
+    </>
   );
 }

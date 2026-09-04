@@ -83,6 +83,9 @@ tags:
       - assertVisible: "Add Custom Entry"
       - inputText: ${INSERT_NAME || "Base"}
       - pressKey: Enter
+      # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+      # confirm with the Create button already focused; this second Enter presses it.
+      - pressKey: Enter
       - assertNotVisible: "Add Custom Entry"
 
 # ============================================================

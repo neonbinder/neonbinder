@@ -12,6 +12,16 @@ interface ConfirmDialogProps {
   busyLabel: string;
   /** True while the confirmed action is in flight. Drives BOTH `disabled` and the label. */
   busy: boolean;
+  /**
+   * A refusal that arrived AFTER the dialog opened — e.g. the server declining
+   * the delete because the row stopped being empty between render and click
+   * (NEO-219). Rendered as a `role="alert"` inside the dialog and joined onto
+   * `aria-describedby`, because the dialog is already open and already
+   * announced: a message appended to the static description would never be
+   * read out, and one rendered outside the dialog is behind the modal barrier.
+   * Optional — most callers close on success and surface nothing here.
+   */
+  error?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -56,6 +66,7 @@ export function ConfirmDialog({
   confirmLabel,
   busyLabel,
   busy,
+  error,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -121,7 +132,11 @@ export function ConfirmDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
-      aria-describedby="confirm-dialog-description"
+      aria-describedby={
+        error
+          ? "confirm-dialog-description confirm-dialog-error"
+          : "confirm-dialog-description"
+      }
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 outline-none"
       onKeyDown={handleKeyDown}
       onClick={() => {
@@ -144,6 +159,15 @@ export function ConfirmDialog({
         >
           {description}
         </p>
+        {error && (
+          <p
+            id="confirm-dialog-error"
+            role="alert"
+            className="mb-5 text-sm text-[#FF2EB3]"
+          >
+            {error}
+          </p>
+        )}
         <div className="flex gap-3">
           <NeonButton cancel type="button" onClick={onConfirm} disabled={busy}>
             {/* Label keyed off the SAME condition as `disabled` (NEO-128): the

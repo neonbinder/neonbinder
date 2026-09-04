@@ -573,6 +573,13 @@ export default defineSchema({
     unlinked: v.optional(
       v.array(
         v.object({
+          // NEO-219: may DANGLE. `deleteSelectorOption` sweeps the status rows
+          // keyed on the deleted row (its child columns'), but not one that
+          // merely NAMES it here — a sibling column's notice can outlive the
+          // row it points at. Inert today: the notice renders `value`, which
+          // is denormalised right here, and the id is only ever used to scroll
+          // to a row that is either present or not. Anything that starts
+          // dereferencing this id must tolerate a null `ctx.db.get`.
           id: v.id("selectorOptions"),
           value: v.string(),
           side: v.union(v.literal("bsc"), v.literal("sportlots")),

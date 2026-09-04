@@ -431,8 +431,13 @@ tags:
 # the boundary time to land, and a slower one is still caught by the step below.
 - assertNotVisible: "An error occurred. Please refresh the page."
 
-# Path A: BaseSetPicker stays open (SL data present) → confirm.
-# Path B: it auto-closes (BSC fallback) → "Re-map Base" appears. Handle both.
+# Path A: this Base row has no mapping yet → BaseSetPicker opens and STAYS open
+#   until a set is picked and confirmed.
+# Path B: this Base row is ALREADY mapped (a re-run against a deployment the
+#   seed has already provisioned) → no picker at all, just "Re-map Base".
+# NEO-219 removed the third path this comment used to describe: the picker no
+# longer closes itself and writes a BSC fallback nobody saw. Every successful
+# fetch now waits for a pick.
 # Scroll, don't just look — the Base-mapping controls render BELOW the columns
 # container (components/modules/SetSelector.tsx:519-540), so any column that
 # grows (a shared partial-failure notice, a long list) parks them under the
@@ -447,9 +452,38 @@ tags:
     when:
       visible: "Select Base Set"
     commands:
+      # The confirm button reads "Loading…" until the live SportLots + BSC
+      # round-trip lands and then flips to "Confirm Base Set". That flip is the
+      # marketplace wait (R5 exception) AND the gate that the candidate rows
+      # tapped below exist at all.
       - extendedWaitUntil:
           visible: "Confirm Base Set"
           timeout: 45000
+      # NEO-219 — PICK BEFORE CONFIRMING. The picker used to select a row on the
+      # operator's behalf (top BSC scorer always, top SportLots scorer whenever
+      # it looked plausible) and Confirm just accepted it. Now nothing below an
+      # exact set-name match is pre-selected, Confirm stays disabled until
+      # something is picked, and ONLY what is picked is linked — so the seed has
+      # to make both choices explicitly.
+      #
+      # Both lists render best-match-first, so the FIRST row on each side is the
+      # best-ranked candidate — which is what the old build selected on its own.
+      # One caveat worth knowing when reading a CI diff: NEO-219 also DEMOTED an
+      # exact manufacturer match below the generic "Base"/"Base Set" rows (so a
+      # bare "Topps" can no longer outrank "Topps Chrome"), so on a set where the
+      # brand row used to win, the seed now links a better row than it used to.
+      # That is the intended product change, and this seed follows it rather than
+      # pinning the old answer.
+      #
+      # The row LABELS are the marketplaces' own words and are deliberately NOT
+      # pinned — SportLots names a set's base row differently from set to set
+      # (sometimes the set name, sometimes a generic "Base") and the seed must
+      # not depend on marketplace copy. `id:` is a full-string regex in Maestro,
+      # so "…candidate: .*" reads as "the first candidate row on this side".
+      - tapOn:
+          id: "BSC base candidate: .*"
+      - tapOn:
+          id: "SportLots base candidate: .*"
       - tapOn: "Confirm Base Set"
       - extendedWaitUntil:
           notVisible: "Select Base Set"

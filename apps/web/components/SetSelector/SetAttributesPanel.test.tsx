@@ -73,6 +73,8 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionById: "getSelectorOptionById",
       getAncestorChain: "getAncestorChain",
       setSelectorOptionFeature: "setSelectorOptionFeature",
+      getSelectorOptionHoldings: "getSelectorOptionHoldings",
+      deleteSelectorOption: "deleteSelectorOption",
       renameSelectorOption: "renameSelectorOption",
       setBaseVariantType: "setBaseVariantType",
     },
@@ -81,19 +83,24 @@ vi.mock("../../convex/_generated/api", () => ({
 
 const mockSetSelectorOptionFeature = vi.fn();
 const mockSetBaseVariantType = vi.fn();
+const mockDeleteSelectorOption = vi.fn();
 
 let currentRow: unknown;
 let currentChain: unknown;
+/** `getSelectorOptionHoldings` — undefined means "still counting". */
+let currentHoldings: unknown;
 
 vi.mock("convex/react", () => ({
   useQuery: (query: string) => {
     if (query === "getSelectorOptionById") return currentRow;
     if (query === "getAncestorChain") return currentChain;
+    if (query === "getSelectorOptionHoldings") return currentHoldings;
     return undefined;
   },
   useMutation: (mutation: string) => {
     if (mutation === "setSelectorOptionFeature")
       return mockSetSelectorOptionFeature;
+    if (mutation === "deleteSelectorOption") return mockDeleteSelectorOption;
     if (mutation === "setBaseVariantType") return mockSetBaseVariantType;
     return vi.fn();
   },
@@ -118,6 +125,7 @@ function makeRow(overrides: Partial<{
   value: string;
   features: Record<string, string>;
   metadata: Record<string, unknown>;
+  platformData: Record<string, Record<string, string>>;
 }> = {}) {
   return {
     _id: SELECTOR_OPTION_ID,
@@ -137,11 +145,12 @@ function makeChain(sport = "Baseball") {
   ];
 }
 
-function renderPanel() {
+function renderPanel(onDeleted?: (level: string) => void) {
   return render(
     <SetAttributesPanel
       selectorOptionId={SELECTOR_OPTION_ID}
       defaultCollapsed={false}
+      onDeleted={onDeleted as never}
     />,
   );
 }
@@ -154,6 +163,8 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
   beforeEach(() => {
     vi.clearAllMocks();
     mockSetSelectorOptionFeature.mockResolvedValue(undefined);
+    mockDeleteSelectorOption.mockResolvedValue({ deleted: true });
+    currentHoldings = undefined;
   });
 
   afterEach(() => {
@@ -406,6 +417,244 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
         value: "true",
       });
     });
+  });
+});
+
+/**
+ * NEO-219 part 3 — the one sanctioned delete.
+ *
+ * "Sets are fixed, never deleted" still holds; the single exception agreed
+ * 2026-09-03 is a row with NOTHING below it. These tests pin the two halves
+ * that make that exception safe to offer at all:
+ *
+ *   • the affordance never lies — it is inert, and says in words what is below
+ *     the row, rather than greying out and leaving the operator to guess;
+ *   • the client gate is only an affordance. The server re-checks, and when it
+ *     refuses (the row stopped being empty while the dialog was open) the
+ *     refusal is rendered INSIDE the dialog, where the question was asked,
+ *     instead of the dialog closing as if it had worked.
+ *
+ * The trash is hidden — not disabled — for a protected row, which is exactly
+ * the call the rename pencil already makes for a non-custom variantType: a
+ * control that can only ever refuse is worse than no control.
+ */
+describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeleteSelectorOption.mockResolvedValue({ deleted: true });
+    currentChain = makeChain("Baseball");
+    currentHoldings = undefined;
+  });
+
+  it("is inert and names what is below the row when holdings exist", () => {
+    currentRow = makeRow({ level: "manufacturer", value: "Topps" });
+    // Exactly the server's shape: `kind: "rows"` names the children's level
+    // when they share one. The noun is the operator's only clue about what is
+    // in the way, so it comes from the server rather than being guessed here.
+    currentHoldings = {
+      holds: [
+        {
+          kind: "rows",
+          count: 3,
+          level: "setName",
+          examples: ["Chrome", "Update", "Heritage"],
+        },
+        { kind: "cards", count: 220, examples: ["#1 Trout"] },
+      ],
+      protected: false,
+    };
+
+    renderPanel();
+
+    const trash = screen.getByLabelText("Delete Topps");
+    expect(trash.getAttribute("aria-disabled")).toBe("true");
+
+    // The reason is in the DOM at all times as the button's described-by
+    // target, so a screen reader hears it without any interaction.
+    const reason = screen.getByText(
+      "Holds 3 sets and 220 cards — delete what is below it first",
+    );
+    expect(trash.getAttribute("aria-describedby")).toBe(reason.id);
+
+    // Clicking an inert control must not open the dialog — it answers the
+    // question the inert state raises instead.
+    fireEvent.click(trash);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mockDeleteSelectorOption).not.toHaveBeenCalled();
+  });
+
+  it("says the neutral 'rows' when the children are mixed levels and the server names none", () => {
+    // A variantType holding both inserts and parallels: the server OMITS
+    // `level` because no single noun is right. Inventing one from the parent's
+    // level would name the wrong thing in exactly that case, so the sentence
+    // stays neutral instead.
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Inserts",
+    });
+    currentHoldings = {
+      holds: [{ kind: "rows", count: 3, examples: ["Gold", "Refractor"] }],
+      protected: false,
+    };
+
+    renderPanel();
+
+    expect(
+      screen.getByText("Holds 3 rows — delete what is below it first"),
+    ).toBeTruthy();
+  });
+
+  it("names an in-flight checklist review with its own remedy, not 'delete what is below it'", () => {
+    // A review is work in progress ON the row, not a thing below it, so the
+    // instruction has to differ: telling an operator to delete their way out
+    // of a review they are halfway through is the wrong answer.
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    currentHoldings = {
+      holds: [{ kind: "review", count: 1, examples: ["#12 Trout"] }],
+      protected: false,
+    };
+
+    const { unmount } = renderPanel();
+
+    expect(
+      screen.getByLabelText("Delete 2024 Topps Chrome").getAttribute("aria-disabled"),
+    ).toBe("true");
+    expect(
+      screen.getByText(
+        "A checklist review is in progress here — finish or cancel it first",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/delete what is below it first/)).toBeNull();
+    unmount();
+
+    // Both remedies can be true at once, so both are stated — and the review
+    // clause pluralises like every other count in this sentence.
+    currentHoldings = {
+      holds: [
+        { kind: "rows", count: 2, level: "variantType", examples: ["Base"] },
+        { kind: "review", count: 3, examples: [] },
+      ],
+      protected: false,
+    };
+    renderPanel();
+    expect(
+      screen.getByText(
+        "Holds 2 variant types — delete what is below it first; 3 checklist reviews are in progress here — finish or cancel them first",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("is inert while the holdings query is still in flight — never optimistically deletable", () => {
+    currentRow = makeRow({ level: "setName" });
+    currentHoldings = undefined;
+
+    renderPanel();
+
+    const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
+    expect(trash.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("Checking what is below it…")).toBeTruthy();
+  });
+
+  it("is hidden entirely for a protected row — hidden, not disabled", () => {
+    // A protected row is not "a thing you may do but not now", it is not a
+    // thing you may do at all, so there is no control to disable.
+    currentRow = makeRow({ level: "insert", value: "Refractors" });
+    currentHoldings = { holds: [], protected: true };
+    renderPanel();
+    expect(screen.queryByLabelText("Delete Refractors")).toBeNull();
+  });
+
+  it("offers BOTH controls on an empty variantType — the custom gate is gone (NEO-239)", () => {
+    // This half of the old assertion said a variantType that was not `isCustom`
+    // hid both the pencil and the trash, via `canRenameSelectorRow`. NEO-239
+    // deleted that predicate with the custom concept: a row either carries
+    // marketplace ids or it does not, and both behave the same. Nothing became
+    // deletable that the server would have refused — the gate moved from a
+    // client-side flag to the row's real state, which is what `holdings`
+    // answers, plus the server's own emptiness and protection checks.
+    currentRow = makeRow({ level: "variantType", value: "Base" });
+    currentHoldings = { holds: [], protected: false };
+    renderPanel();
+    expect(screen.getByLabelText("Delete Base")).toBeTruthy();
+    expect(screen.getByLabelText("Rename Base")).toBeTruthy();
+  });
+
+  it("confirms, deletes, and hands the level back to its owner", async () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    currentHoldings = { holds: [], protected: false };
+    const onDeleted = vi.fn();
+
+    renderPanel(onDeleted);
+
+    fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
+
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog).getByText('Delete Set "2024 Topps Chrome"?'),
+    ).toBeTruthy();
+    expect(
+      within(dialog).getByText("Nothing is below it. This cannot be undone."),
+    ).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Yes, delete" }));
+
+    await waitFor(() => {
+      expect(mockDeleteSelectorOption).toHaveBeenCalledWith({
+        id: SELECTOR_OPTION_ID,
+      });
+    });
+    await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("setName"));
+  });
+
+  it("renders the server's holds message inside the dialog when the row stopped being empty", async () => {
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    currentHoldings = { holds: [], protected: false };
+    mockDeleteSelectorOption.mockRejectedValue({
+      data: {
+        code: "SELECTOR_ROW_NOT_EMPTY",
+        holds: [{ kind: "cards", count: 4, examples: ["#1", "#2"] }],
+      },
+    });
+    const onDeleted = vi.fn();
+
+    renderPanel(onDeleted);
+
+    fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
+    fireEvent.click(screen.getByRole("button", { name: "Yes, delete" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("alert").textContent,
+      ).toBe("Holds 4 cards — delete what is below it first");
+    });
+    // The dialog stays open — the answer belongs where the question was asked.
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(onDeleted).not.toHaveBeenCalled();
+  });
+
+  it("warns that a marketplace-linked row may come back, and only then", () => {
+    // No ids attached: nothing will re-create it, so no sentence.
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    currentHoldings = { holds: [], protected: false };
+    const { unmount } = renderPanel();
+    fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
+    expect(screen.getByRole("dialog").textContent).not.toContain(
+      "the next sync may add it back",
+    );
+    unmount();
+
+    // A BSC slug is attached: the next Sync Sets will re-insert this row, and
+    // an operator who is not told that reads the reappearance as a bug.
+    currentRow = makeRow({
+      level: "setName",
+      value: "2024 Topps Chrome",
+      platformData: { bsc: { b0: "2024-topps-chrome" } },
+    });
+    renderPanel();
+    fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
+    expect(screen.getByRole("dialog").textContent).toContain(
+      "It is linked to BSC; the next sync may add it back.",
+    );
   });
 });
 

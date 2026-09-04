@@ -160,6 +160,16 @@ Consequences worth knowing:
   two-BSC-source insert row to re-sync, and the sole-writer rule forbids a
   second flow from building one.
 
+**NEO-219 — STEP 9 opens the detach confirm on one BSC source and CANCELS.**
+It presses the `×` on `Dugout Collection Artist's Proofs Series 1`, reads back
+"110 cards were fetched from it" (the per-SOURCE count, which only this
+two-source set can distinguish from the row's 220 total), and then presses
+Cancel. **Nothing is detached.** The set is left with both BSC sources, the one
+SportLots source and 220 paired cards — exactly as STEP 8 leaves it. This step
+lives here for the same reason STEPs 7 and 8 do: the shape it needs (one NB row,
+two sources, a known split) exists nowhere else, and the sole-writer rule below
+forbids a second flow from building it.
+
 220 is also the fan-out regression guard. BSC does not OR multi-value facets:
 before `fetchBscChecklist` fanned out one request per source set, this exact
 configuration returned 200 OK with zero rows and the UI reported "0 BSC cards".
@@ -242,6 +252,18 @@ directly in the UI — "Cards (337)" against "Found 335 cards". Both flows are n
 on per-worker custom sets. `NEO-109` (read-only `signed-by-autofills-from-players`
 failing on card #300) is very likely the same pollution.
 
+### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning
+
+`custom-entry-survives-resync.yaml` creates one custom SPORT row per attempt,
+`TestCustomSport-<attempt>`, proves a marketplace re-sync does not delete it,
+and — since NEO-219 — **deletes it again through the attributes header's delete
+control** (STEP 4). It therefore leaves the Sports column exactly as it found it.
+That delete is the flow's contract: if STEP 4 is ever removed, the flow goes back
+to leaking one global sport row per run.
+
+The row is safe to delete because it holds nothing — no years, sets, cards,
+players or teams — which is the only condition `deleteSelectorOption` accepts.
+
 ## Custom sets
 
 **A marketplace side is fetched only when the ids that side needs are present on
@@ -309,9 +331,35 @@ would put the wrong question on screen.
 | `xbg-`, `xbs-` | `cross-release-import-reports-missing-numbers.yaml` |
 | `xcg-`, `xsrc-` | `cross-release-hide-toggle-filters-guest-cards.yaml` |
 | `xdg-`, `xds-` | `cross-release-unlink-keeps-card-in-home-set.yaml` |
+| `xp-` | `custom-set-exists-elsewhere-offers-drill.yaml` — its OWN sport `xp-sport-<worker>`, brand rows `xp-<worker>-A` / `xp-<worker>-B` under it in 2026, and a set `xp-<worker>-<attempt> Chrome` under B. **It must never use `E2E Test Sport <worker>`** — see the fold note below. |
 
 `xsrc-` is intentionally shared between the two cross-release flows that both
 need the same guest-source set; it is still per-worker.
+
+### Adding ROWS to a shared column pushes other flows' controls under the fold
+
+A per-worker custom SET is free. A per-worker custom **manufacturer, year or
+sport row added under an ancestor other flows drill through is not** — it makes
+that column taller for everybody.
+
+The columns start at y≈380 (the Admin Tools block sits above them) and each row
+is ~58px in the 1024×625 headless viewport, so a column's `Sync <X>` / `+ Custom`
+buttons fall off the bottom at roughly the **fourth** row. `util-drill-to-custom.yaml`
+waits for `Add custom <X>` **without scrolling** at several levels — a deliberate
+guard against a CDP crash during re-render — so once those buttons are under the
+fold the drill cannot recover and every consumer of that ancestor fails.
+
+This is not hypothetical. `custom-set-exists-elsewhere-offers-drill.yaml`
+originally created two brand rows under the SHARED `E2E Test Sport <worker>` ›
+`2026`, which `util-drill-to-custom-set.yaml` pins 7 flows to. In PR #226 run 1
+that took the Manufacturers column from one row (`Topps`) to three and broke
+`team-picker-create-custom-card` — a flow with no relationship to it. The fix was
+to give the flow its own sport.
+
+**So: if a flow must create a row above SET level, give it a private ancestor.**
+A private SPORT is the cheap one — the Sports column is long enough to render a
+search input, every drill filters it first, and its list is capped by its own
+`max-h-[400px]` scroller, so one more sport row is invisible to everyone.
 
 ## Team names (NEO-214)
 

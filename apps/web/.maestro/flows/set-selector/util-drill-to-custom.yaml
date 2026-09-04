@@ -236,6 +236,9 @@ tags:
                             timeout: 5000
                         - inputText: ${SPORT}
                         - pressKey: Enter
+                        # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+                        # confirm with the Create button already focused; this second Enter presses it.
+                        - pressKey: Enter
                         - extendedWaitUntil:
                             notVisible: "Add Custom Entry"
                             timeout: 10000
@@ -283,6 +286,9 @@ tags:
                             visible: "Add Custom Entry"
                             timeout: 5000
                         - inputText: ${SPORT}
+                        - pressKey: Enter
+                        # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+                        # confirm with the Create button already focused; this second Enter presses it.
                         - pressKey: Enter
                         - extendedWaitUntil:
                             notVisible: "Add Custom Entry"
@@ -386,6 +392,9 @@ tags:
                             timeout: 5000
                         - inputText: ${YEAR}
                         - pressKey: Enter
+                        # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+                        # confirm with the Create button already focused; this second Enter presses it.
+                        - pressKey: Enter
                         - extendedWaitUntil:
                             notVisible: "Add Custom Entry"
                             timeout: 10000
@@ -440,6 +449,9 @@ tags:
                             visible: "Add Custom Entry"
                             timeout: 5000
                         - inputText: ${YEAR}
+                        - pressKey: Enter
+                        # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+                        # confirm with the Create button already focused; this second Enter presses it.
                         - pressKey: Enter
                         - extendedWaitUntil:
                             notVisible: "Add Custom Entry"
@@ -533,6 +545,9 @@ tags:
                             timeout: 5000
                         - inputText: ${MANUFACTURER}
                         - pressKey: Enter
+                        # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+                        # confirm with the Create button already focused; this second Enter presses it.
+                        - pressKey: Enter
                         - extendedWaitUntil:
                             notVisible: "Add Custom Entry"
                             timeout: 10000
@@ -585,6 +600,9 @@ tags:
                             visible: "Add Custom Entry"
                             timeout: 5000
                         - inputText: ${MANUFACTURER}
+                        - pressKey: Enter
+                        # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+                        # confirm with the Create button already focused; this second Enter presses it.
                         - pressKey: Enter
                         - extendedWaitUntil:
                             notVisible: "Add Custom Entry"
@@ -640,6 +658,9 @@ tags:
                 visible: "Add Custom Entry"
                 timeout: 5000
             - inputText: ${SET_NAME}
+            - pressKey: Enter
+            # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+            # confirm with the Create button already focused; this second Enter presses it.
             - pressKey: Enter
             - extendedWaitUntil:
                 notVisible: "Add Custom Entry"
@@ -800,6 +821,9 @@ tags:
                 timeout: 10000
             - inputText: ${VARIANT_TYPE}
             - pressKey: Enter
+            # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+            # confirm with the Create button already focused; this second Enter presses it.
+            - pressKey: Enter
             # Wait for the custom-entry FORM to close before anything targets the
             # new row. This gate exists on all 8 other Add-Custom-Entry blocks in
             # this file; level 5 was the only one missing it, and that omission is
@@ -904,6 +928,9 @@ tags:
                 visible: "Add Custom Entry"
                 timeout: 5000
             - inputText: ${VARIANT}
+            - pressKey: Enter
+            # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+            # confirm with the Create button already focused; this second Enter presses it.
             - pressKey: Enter
             - extendedWaitUntil:
                 notVisible: "Add Custom Entry"
