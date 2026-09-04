@@ -1,7 +1,6 @@
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import SetSelector from "@/components/modules/SetSelector";
-import AdminTools from "@/components/SetSelector/AdminTools";
 import MissingCredentialsBanner from "@/components/SetSelector/MissingCredentialsBanner";
 
 /**
@@ -45,11 +44,11 @@ export default function AdminSetBuilderPage() {
   // full-bleed break-out (negative margins) caused NEO-63: the negative left
   // margin pushed content off the left edge, which let scrollIntoView drag a
   // deep column UNDER the fixed nav (x≈864–1024 at 1024px) so taps hit the nav
-  // and navigated to /inventory. It also clipped AdminTools at ≤1024px and only
-  // added width above ~1300px anyway. So: no break-out — the section renders in
-  // normal flow inside binder-layout's max-w-6xl + lg:pr-[170px] nav gutter,
-  // nav-safe exactly like every other page; the columns row's overflow-x-auto
-  // handles extra columns via horizontal scroll.
+  // and navigated to /inventory. It also clipped the page's own content at
+  // ≤1024px and only added width above ~1300px anyway. So: no break-out — the
+  // section renders in normal flow inside binder-layout's max-w-6xl +
+  // lg:pr-[170px] nav gutter, nav-safe exactly like every other page; the
+  // columns row's overflow-x-auto handles extra columns via horizontal scroll.
   return (
     <div className="space-y-4">
       {/* The subtitle is load-bearing beyond decoration: ~47 Maestro flows wait
@@ -64,7 +63,6 @@ export default function AdminSetBuilderPage() {
         </p>
       </div>
 
-      <AdminTools />
       <SetSelector />
     </div>
   );

@@ -103,6 +103,7 @@ jobs:
     outputs:
       url: ${{ steps.vercel-preview.outputs.url }}
       convex_site: ${{ steps.convex.outputs.convex_site }}
+      convex_name: ${{ steps.convex.outputs.convex_name }}
     steps:
       # NEO-162: this was a 60-attempt poll of the GitHub Deployments API,
       # hunting for the vercel[bot] deployment on this SHA. The preview is now
@@ -173,6 +174,23 @@ jobs:
           site="${cloud/.convex.cloud/.convex.site}"
           echo "Convex site URL: $site"
           echo "convex_site=$site" >> "$GITHUB_OUTPUT"
+          # Same slug pr-pipeline.yml's "Resolve Convex preview deployment
+          # name" step derives (NEO-214) — the `--deployment` selector the
+          # `seed` job's scripted reset (e2e-baseline.sh, via
+          # `run-e2e-smoke.sh setup`) passes as $CONVEX_NAME. Assert its shape
+          # before writing it out: CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT
+          # scoped (not deployment-scoped), so a malformed/empty slug here
+          # wouldn't fail closed on its own — the key would still authenticate
+          # fine against a wrong or empty --deployment, and e2e-baseline.sh
+          # would end up resetting some OTHER preview in the project rather
+          # than erroring.
+          name="${cloud#https://}"; name="${name%.convex.cloud}"
+          if [ -z "$name" ] || [[ ! "$name" =~ ^[a-z-]+-[0-9]+$ ]]; then
+            echo "::error::Could not derive a Convex preview deployment name from '$cloud'"
+            exit 1
+          fi
+          echo "Convex deployment: $name"
+          echo "convex_name=$name" >> "$GITHUB_OUTPUT"
 
   seed:
     defaults:
@@ -199,13 +217,29 @@ jobs:
           preview-url: ${{ needs.setup.outputs.url }}
           bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
-      - name: Seed global baseline (setup track, worker 0)
+      - name: Seed global baseline (scripted reset, then setup track worker 0)
         env:
           APP_URL: http://localhost:3000
-          # Single ordered writer: the setup flow does the global reset + Base +
-          # Insert + Parallel in one in-place pass (NEO-62). Forced serial in the
-          # scheduler too (SELECT_MODE setup); pinned here for clarity. No SHARD_*
-          # → single-shard, worker 0.
+          # NEO-214: `run-e2e-smoke.sh setup` runs the scripted
+          # `e2e-baseline.sh reset` itself (single writer, single entry point
+          # shared with local use) before launching setup.yaml, which then
+          # does Base + Insert + Parallel in one in-place pass (NEO-62).
+          # e2e-baseline.sh needs a PREVIEW deploy key + the deployment slug
+          # to reach THIS PR's Convex preview rather than the CLI's local
+          # default. CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT scoped, not
+          # deployment-scoped (a wrong CONVEX_NAME would reach ANOTHER PR's
+          # preview in this project, not dev/prod — previews are a separate
+          # deployment class from either) — hence the shape assertion on
+          # `name` in the `setup` job above. Also note: once --deployment is
+          # passed, the CLI selects the target BY THAT NAME directly and
+          # never consults the key for target selection at all — the key
+          # only authenticates the call, so a right key + wrong name is
+          # exactly the "reach another PR's preview" failure mode, not a
+          # fail-closed one.
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          # Forced serial in the scheduler too (SELECT_MODE setup); pinned
+          # here for clarity. No SHARD_* → single-shard, worker 0.
           MAESTRO_PARALLELISM: "1"
           # Skip Phase-0 worker-bootstrap (NEO-62): the setup flow's own url chain
           # (/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials)
@@ -214,7 +248,12 @@ jobs:
           # jobs still bootstrap (they don't set this).
           MAESTRO_SKIP_BOOTSTRAP: "1"
           REPORT_DIR: maestro-report
-        run: npm run test:e2e -- setup
+        run: |
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
+          fi
+          npm run test:e2e -- setup
 
       - name: Enqueue flows into the work-queue
         # After the baseline exists, populate the shared queue with the runnable
