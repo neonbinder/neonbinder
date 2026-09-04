@@ -443,12 +443,17 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
 
   it("is inert and names what is below the row when holdings exist", () => {
     currentRow = makeRow({ level: "manufacturer", value: "Topps" });
-    // Exactly the server's shape: `kind: "rows"` carries no level, so the
-    // noun ("sets") is derived from the row's OWN level. A wrong noun here
-    // would be the operator's only clue about what is in the way.
+    // Exactly the server's shape: `kind: "rows"` names the children's level
+    // when they share one. The noun is the operator's only clue about what is
+    // in the way, so it comes from the server rather than being guessed here.
     currentHoldings = {
       holds: [
-        { kind: "rows", count: 3, examples: ["Chrome", "Update", "Heritage"] },
+        {
+          kind: "rows",
+          count: 3,
+          level: "setName",
+          examples: ["Chrome", "Update", "Heritage"],
+        },
         { kind: "cards", count: 220, examples: ["#1 Trout"] },
       ],
       protected: false,
@@ -471,6 +476,28 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     fireEvent.click(trash);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(mockDeleteSelectorOption).not.toHaveBeenCalled();
+  });
+
+  it("says the neutral 'rows' when the children are mixed levels and the server names none", () => {
+    // A variantType holding both inserts and parallels: the server OMITS
+    // `level` because no single noun is right. Inventing one from the parent's
+    // level would name the wrong thing in exactly that case, so the sentence
+    // stays neutral instead.
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Inserts",
+      isCustom: true,
+    });
+    currentHoldings = {
+      holds: [{ kind: "rows", count: 3, examples: ["Gold", "Refractor"] }],
+      protected: false,
+    };
+
+    renderPanel();
+
+    expect(
+      screen.getByText("Holds 3 rows — delete what is below it first"),
+    ).toBeTruthy();
   });
 
   it("is inert while the holdings query is still in flight — never optimistically deletable", () => {

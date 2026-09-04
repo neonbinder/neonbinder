@@ -426,7 +426,13 @@ function SetFeatureRow({
 type SelectorHolding = {
   kind: string;
   count: number;
-  /** Present on `kind: "rows"`; the level of the children being counted. */
+  /**
+   * On `kind: "rows"`, the level of the children being counted — OMITTED when
+   * they are mixed (a variantType holding both inserts and parallels). Absent
+   * therefore means "no single right noun exists", not "look it up": deriving
+   * one from the parent's level would confidently name the wrong thing in
+   * exactly the case the server declined to name.
+   */
   level?: SelectorLevel;
   examples?: string[];
 };
@@ -435,21 +441,6 @@ type SelectorHoldings = {
   holds: SelectorHolding[];
   /** `refusesValueRename` on the server — a structural row, never deletable. */
   protected: boolean;
-};
-
-/**
- * Fallback child level for a `kind: "rows"` holding that arrives without one.
- * The server should send `level`; this keeps the sentence grammatical if it
- * does not. Approximate by construction (a parallel can hang off either a
- * variantType or an insert), which is exactly why `hold.level` wins.
- */
-const CHILD_LEVEL: Partial<Record<SelectorLevel, SelectorLevel>> = {
-  sport: "year",
-  year: "manufacturer",
-  manufacturer: "setName",
-  setName: "variantType",
-  variantType: "insert",
-  insert: "parallel",
 };
 
 /** Singular/plural nouns for every non-row holding kind. */
@@ -462,12 +453,15 @@ const HOLD_NOUN: Record<string, readonly [string, string]> = {
   leagues: ["league", "leagues"],
 };
 
-function holdPhrase(hold: SelectorHolding, rowLevel: SelectorLevel): string {
+function holdPhrase(hold: SelectorHolding): string {
   if (hold.kind === "rows") {
-    return `${hold.count} ${levelNoun(
-      hold.level ?? CHILD_LEVEL[rowLevel],
-      hold.count,
-    )}`;
+    // No level means the children are MIXED (inserts and parallels under one
+    // variantType), so there is no single right noun. "3 rows" is the honest
+    // answer; deriving one from the parent would name the wrong thing in
+    // precisely the case the server declined to name.
+    return hold.level
+      ? `${hold.count} ${levelNoun(hold.level, hold.count)}`
+      : `${hold.count} ${hold.count === 1 ? "row" : "rows"}`;
   }
   const noun = HOLD_NOUN[hold.kind];
   if (!noun) return `${hold.count} ${hold.kind}`;
@@ -482,11 +476,8 @@ function holdPhrase(hold: SelectorHolding, rowLevel: SelectorLevel): string {
  */
 export function selectorHoldsMessage(
   holds: readonly SelectorHolding[],
-  rowLevel: SelectorLevel,
 ): string {
-  const parts = holds
-    .filter((h) => h.count > 0)
-    .map((h) => holdPhrase(h, rowLevel));
+  const parts = holds.filter((h) => h.count > 0).map(holdPhrase);
   if (parts.length === 0) return "";
   return `Holds ${joinLabels(parts)} — delete what is below it first`;
 }
@@ -497,10 +488,7 @@ export function selectorHoldsMessage(
  * `refusalMessage`: a mocked or rethrown error in a test, or a version skew in
  * the convex client, must still surface the server's own answer.
  */
-function deleteRefusalMessage(
-  e: unknown,
-  rowLevel: SelectorLevel,
-): string | null {
+function deleteRefusalMessage(e: unknown): string | null {
   if (typeof e !== "object" || e === null) return null;
   const data = (e as { data?: unknown }).data;
   if (typeof data !== "object" || data === null) return null;
@@ -512,7 +500,7 @@ function deleteRefusalMessage(
   if (code === "SELECTOR_ROW_NOT_EMPTY") {
     const list = Array.isArray(holds) ? (holds as SelectorHolding[]) : [];
     return (
-      selectorHoldsMessage(list, rowLevel) ||
+      selectorHoldsMessage(list) ||
       "Something is below it now — it can't be deleted."
     );
   }
@@ -557,7 +545,7 @@ function DeleteSelectorRowControl({
   const reason =
     holdings === undefined
       ? "Checking what is below it…"
-      : selectorHoldsMessage(holdings.holds, level);
+      : selectorHoldsMessage(holdings.holds);
   const blocked = reason.length > 0;
 
   const linkedSides = ALL_SIDES.filter(
@@ -582,7 +570,7 @@ function DeleteSelectorRowControl({
       onDeleted?.(level);
     } catch (e) {
       setError(
-        deleteRefusalMessage(e, level) ??
+        deleteRefusalMessage(e) ??
           (e instanceof Error ? e.message : String(e)),
       );
     } finally {
