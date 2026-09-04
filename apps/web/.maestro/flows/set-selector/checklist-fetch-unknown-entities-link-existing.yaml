@@ -317,11 +317,15 @@ tags:
     id: "Create player UnknownLink-${ATTEMPT_ID}"
 
 # ============================================================
-# CLOSE + CLEANUP — discard the picker (no save) and delete the test card
+# CLOSE + CLEANUP — leave the picker without creating, delete the test card
+#
+# NEO-216: the picker writes only when a row is CHOSEN. The step above merely
+# typed a name and read the offered "+ Create" row, so nothing was sent, and
+# "Done" (the drawer's only close control now) closes without writing.
 # ============================================================
 
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 

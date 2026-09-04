@@ -1,32 +1,45 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Card detail drawer — edit name, toggle RC, set title & description, save, verify persistence"
+name: "Card detail drawer — every field autosaves as you leave it (no Save button)"
 tags:
   - set-selector
   - regression
 ---
-# NEO-25 acceptance test for the right-anchored CardDetailPanel drawer.
+# NEO-25 drawer, re-pointed at the NEO-216 behaviour: the card detail drawer is
+# a LIVE per-field editor. There is no Save button, no draft, and no discard
+# bar — each field writes itself the moment the operator leaves it, and says so.
+#
+# THE ONE FEATURE THIS FLOW PROVES (R1):
+#   Editing a field in the card detail drawer PERSISTS without any save action —
+#   the operator types, moves on, and the change is already stored.
 #
 # WHAT THIS TESTS:
 #   1. Opening the drawer via the "Edit card {n}" button (row action).
-#   2. Drawer header shows "Card #{n}" (new title — old modal said "Edit card #").
-#   3. Editing the card name field (no Enter-to-save; save is via the Save button).
-#   4. Typing a Card title (listingTitle) and Card description (listingDescription).
-#      These fields are at positions 4 and 5 in the drawer body — above the
-#      attribute chips — so they are reachable near the top of the scroll area.
-#   5. Toggling the "RC" attribute chip (aria-pressed toggles on/off).
-#      Attributes are at position 6 (below Card title/description); scroll required.
-#   6. Saving via "Save card edit" — drawer closes, row shows updated name.
-#   7. Re-opening the drawer confirms card name, RC chip state, and listing title
-#      all persisted to the database.
-#   8. Dirty-guard: clicking the backdrop (close request while dirty) shows the
-#      inline confirm bar with "Discard changes" and "Keep editing" buttons.
-#   9. "Keep editing" dismisses the confirm bar without closing the drawer.
-#  10. "Close card detail" button (×) while dirty also triggers the dirty guard.
-#  11. Cancel button always closes immediately (no dirty guard on Cancel).
+#   2. Drawer header shows "Card #{n}".
+#   3. The footer states the rule ("Changes save as you leave each field.") and
+#      offers "Done" — the save control it replaced is gone from the DOM.
+#   4. Card name: type + Enter -> "Saved Card name".
+#   5. Card title: type + Enter -> "Saved Card title".
+#   6. Card description (a textarea, so Enter is a NEWLINE): type, then leave
+#      the field -> "Saved Card description".
+#   7. RC attribute chip: the tap itself writes -> "Saved Attributes".
+#   8. Print run: type 99 + Enter -> "Saved Print run", and the row's sub-line
+#      picks up "/99" once the drawer is closed.
+#   9. Re-opening the drawer shows every one of those values still there —
+#      nothing was ever "saved", and nothing was lost.
+#  10. Print run CLEARED (NEO-217): erase it + Enter -> "Cleared Print run",
+#      and "/99" is gone from the row. A blank number is a real answer ("this
+#      card is not numbered"), not a no-op.
+#
+# WHY THERE IS NO DIRTY-GUARD SECTION ANY MORE:
+#   This flow used to tap the backdrop and the x while dirty and assert an
+#   inline confirm bar offering to throw the draft away. None of that exists:
+#   there is nothing unsaved to discard, so closing just closes. The
+#   replacement coverage is step 9 — reopening and finding the values there is
+#   the same guarantee, stated positively.
 #
 # PER-WORKER DATA ISOLATION:
-#   Drills to E2E Test Sport ${WORKER_INDEX} → 2026 → Topps → cd-<WORKER_INDEX> (custom set, Insert VT,
+#   Drills to E2E Test Sport ${WORKER_INDEX} -> 2026 -> Topps -> cd-<WORKER_INDEX> (custom set, Insert VT,
 #   "Base" insert). Each worker operates on its own custom checklist — no shared
 #   state with the cascade's Baseball/2024/Topps Chrome checklist. Concurrent
 #   workers never touch the same card rows.
@@ -35,24 +48,29 @@ tags:
 #   1. Card name
 #   2. Teams (TeamPicker)
 #   3. Features editor (collapsed "Show features editor" button)
-#   4. Card title  ← visible near top; no scroll needed after header
+#   4. Card title  <- visible near top; no scroll needed after header
 #      (NEO-101 added a "62/80" counter + "Regenerate" to its label row and an
 #      over-cap alert BELOW the input — the input itself did not move, and its
 #      aria-label is still "Card title".)
 #   5. Card description
-#   6. Attributes chips (Toggle RC / AU / RELIC / SP / SSP / NUM)  ← may need scroll
+#   6. Attributes chips (Toggle RC / AU / RELIC / SP / SSP / NUM)  <- may need scroll
 #   7. grid[ Print run | Autographed dropdown ]  (Autographed is always-visible
 #      here now — promoted out of the collapsed features editor, NEO-71-74)
 #   8. Card variation
 #   9. Players (PlayerPicker — editable, NEO-25)
 #  10. Inherited from set (read-only)
 #  11. Images / "No image yet" placeholder
+#   + FOOTER (pinned, outside the scroll container): the "Changes save as you
+#     leave each field." note and the "Done editing card" button.
 #
-# NEO-25 BEHAVIORAL NOTES:
-#   - Drawer title is "Card #{n}" — the old inline modal said "Edit card #{n}".
-#   - Card name input does NOT save on Enter; use "Save card edit" button.
-#   - Cancel / Escape discard immediately. The backdrop, ×, and prev/next
-#     are dirty-guarded.
+# COMMIT MECHANICS (NEO-216) — how a flow makes a field write itself:
+#   - single-line inputs (Card name, Card title, Print run, Card variation)
+#     commit on Enter IN PLACE. The drawer stays open; a toast confirms.
+#   - Card description is a <textarea>: Enter types a newline. It commits when
+#     the operator LEAVES it, so the flow taps another element to blur it.
+#   - chips and pickers write on the tap itself — no key, no blur.
+#   - one toast region serves the whole drawer, so assert each toast BEFORE
+#     making the next edit; the next write replaces the message.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -103,30 +121,42 @@ tags:
     text: ".*Card #888-${ATTEMPT_ID}.*"
 
 # ============================================================
-# EDIT: rename the card
-# Card name does NOT save on Enter (NEO-25 delta 4). Save is via button.
+# THE FOOTER STATES THE RULE — and there is no Save button.
+# This is the NEO-216 delta in one assertion pair: the drawer tells the
+# operator that leaving a field saves it, and offers only "Done".
+# ============================================================
+
+- assertVisible: "Changes save as you leave each field."
+- assertVisible:
+    id: "Done editing card"
+
+# ============================================================
+# EDIT 1 — Card name. Enter commits IN PLACE (the drawer stays open).
+# The toast is the product's own confirmation that the write landed.
 # ============================================================
 
 - tapOn:
     id: "Card name"
 # eraseText: 60 clears the original card name. Maestro web taps place the
-# cursor one position before the end of a React controlled input, so one
-# trailing character may remain after eraseText. This is a known Maestro web
-# cursor-placement behavior — the character is harmless to the product test
-# (the rename persisted; the card title and description assert full-string).
+# cursor one position before the end of a React input, so one trailing
+# character may remain after eraseText. Harmless here — the assertions below
+# match the typed prefix as a substring.
 - eraseText: 60
 - inputText: "Renamed Detail Player ${ATTEMPT_ID}"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Saved Card name.*"
+    timeout: 7000
 
 # ============================================================
-# EDIT: type into the Card title (listingTitle) and Card description
-# These fields are at positions 4 and 5 in the drawer body — directly
-# below the (collapsed) features editor. The header + Card name + Teams +
-# features button consume roughly 220px; Card title starts at ~220px from
-# the top of the scroll area, well above the 629px fold. No scroll required.
-# We interact with these BEFORE scrolling down to the attribute chips so we
-# never have to scroll back UP to reach them.
+# EDIT 2 — Card title (listingTitle), position 4 in the drawer body.
+# These fields are directly below the (collapsed) features editor. The header +
+# Card name + Teams + features button consume roughly 220px; Card title starts
+# at ~220px from the top of the scroll area, well above the 629px fold. No
+# scroll required. We interact with these BEFORE scrolling down to the
+# attribute chips so we never have to scroll back UP to reach them.
 #
-# NEO-24/NEO-25 AUTO-TITLE: Card title and description are NO LONGER empty on a
+# NEO-24/NEO-25 AUTO-TITLE: Card title and description are NOT empty on a
 # freshly-created card — generateListingTitle/Description (addCustomCard) now
 # pre-fill both (e.g. title "2026 Topps cd-0 #888-…"). A Maestro-web tap on a
 # pre-filled input drops the caret roughly at the clicked character (mid-string),
@@ -138,12 +168,11 @@ tags:
 # is no reliable full-clear of a mid-caret pre-filled input in maestro-web).
 #
 # NEO-101 — WHY THE MARKER IS SHORT ("T${ATTEMPT_ID}", ~12 chars):
-# listingTitle now has a HARD 80-character cap. Over it, `updateCard` throws and
-# the drawer's Save button goes aria-disabled — so a marker long enough to push
-# the concatenated value past 80 does not fail this flow's ASSERTION, it fails
-# the flow at the Save step, several actions later and for a reason that reads
-# like a product bug. The old marker ("2024 Topps Chrome NEO-25 Test Title …",
-# ~47 chars) landed the value at 79–80.
+# listingTitle has a HARD 80-character cap. Over it the COMMIT is refused (the
+# field keeps the text and shows "Shorten it before saving." beside it — see
+# checklist-title-length-limits-and-fixer.yaml, which owns that behaviour), so a
+# marker long enough to push the concatenated value past 80 would fail this flow
+# on the toast wait below, for a reason that reads like a product bug.
 #
 # THE ARITHMETIC, recomputed against the fill-toward-80 generator by running
 # `assessListingTitle` on this flow's exact fixture:
@@ -174,17 +203,33 @@ tags:
 - tapOn:
     id: "Card title"
 - inputText: "T${ATTEMPT_ID}"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Saved Card title.*"
+    timeout: 7000
+
+# ============================================================
+# EDIT 3 — Card description. This one is a <textarea>, so Enter types a
+# NEWLINE rather than saving (a bare Enter belongs to the operator writing a
+# paragraph). It commits when the operator LEAVES the field, so the flow taps
+# the Card name input above it — a harmless parking spot that only moves the
+# caret — and waits for the description's own confirmation.
+# ============================================================
 
 - assertVisible:
     id: "Card description"
 - tapOn:
     id: "Card description"
 - inputText: "NEO-25 description body for ${ATTEMPT_ID}"
+- tapOn:
+    id: "Card name"
+- extendedWaitUntil:
+    visible: ".*Saved Card description.*"
+    timeout: 7000
 
 # ============================================================
-# EDIT: toggle the RC attribute chip
-# The chip starts inactive (new custom card has no attributes).
-# Tapping it once activates it (aria-pressed becomes "true").
+# EDIT 4 — the RC attribute chip writes on the TAP itself (no key, no blur).
+# The chip starts inactive (a new custom card has no attributes).
 # Attributes are at position 6 (below Card title/description) — scroll
 # down to bring the row into view before tapping.
 # ============================================================
@@ -195,81 +240,61 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     timeout: 10000
-# Validated at run time: Maestro web cannot reliably read aria-pressed="false"
-# via the CDP bridge (assertVisible checked: false always times out — confirmed
-# by the failing log). Use plain assertVisible to confirm the chip is present,
-# then tap it. Persistence verification (RC is ON after save + reopen) confirms
-# the toggle state round-tripped to the DB — that is the authoritative test.
-- assertVisible:
-    id: "Toggle RC"
 - tapOn:
     id: "Toggle RC"
+- extendedWaitUntil:
+    visible: ".*Saved Attributes.*"
+    timeout: 7000
 
 # ============================================================
-# DIRTY-GUARD: verify backdrop click shows the confirm bar
-# (Clicking the backdrop while dirty should NOT close the drawer —
-# instead it shows "Discard changes" and "Keep editing" inline.)
+# EDIT 5 — Print run (NEO-217). A number commits on Enter like any other
+# single-line field. The row's sub-line renders "/99" for it, which is what
+# the close below verifies.
 # ============================================================
 
-# Tap the backdrop (left side of the screen, outside the drawer panel).
-# The drawer is right-anchored (sm:w-[30rem], max-w-[95vw]); at 1024px
-# viewport width the panel occupies ~480px on the right. Tapping at x=5%
-# (y=50%) reliably lands on the backdrop layer at this viewport width.
-- tapOn:
-    point: "1%, 1%"
-
-# The dirty confirm bar should appear.
-- assertVisible: "Discard unsaved changes?"
-- assertVisible: "Keep editing"
-- assertVisible: "Discard changes"
-
-# "Keep editing" dismisses the bar — drawer stays open with edits intact.
-- tapOn:
-    id: "Keep editing"
-- assertNotVisible: "Discard unsaved changes?"
-
-# Card name input is still visible (drawer is still open).
+# NO scrollUntilVisible here, deliberately. The drawer is right-anchored
+# (x>=544 at 1024), so scrollUntilVisible's viewport-centre swipe drives the
+# BACKDROP, not the drawer's own scroll container — it can only ever be a
+# no-op on this panel. Print run is the row directly beneath the attribute
+# chips that were just brought into view, so it is in the same fold; if the
+# drawer's field order ever grows enough to push it out, the fix is the
+# pin-then-correct swipe pair documented in
+# checklist-title-length-limits-and-fixer.yaml, not a longer timeout.
 - extendedWaitUntil:
     visible:
-      id: "Card name"
-    timeout: 15000
+      id: "Print run"
+    timeout: 7000
+- tapOn:
+    id: "Print run"
+- inputText: "99"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Saved Print run.*"
+    timeout: 7000
 
 # ============================================================
-# DIRTY-GUARD: verify the × button also triggers the guard
+# CLOSE — "Done" just closes. Nothing is pending; everything above is stored.
+#
+# The footer sits OUTSIDE the drawer's scroll container (a flex-col panel with
+# a pinned footer), so it is always on screen. scrollUntilVisible cannot
+# satisfy centering on it and would time out even while it is plainly visible —
+# so this is the R8 exception: assert + tap, no scroll.
 # ============================================================
 
 - tapOn:
-    id: "Close card detail"
-
-- assertVisible: "Discard unsaved changes?"
-
-# Dismiss with "Keep editing" again so our edits survive.
-- tapOn:
-    id: "Keep editing"
-- assertNotVisible: "Discard unsaved changes?"
-
-# ============================================================
-# SAVE
-# Save button is in the sticky footer OUTSIDE the scroll container — it
-# is always in the fixed bottom bar of the drawer panel. scrollUntilVisible
-# cannot satisfy centering on a position:fixed / flex-col-pinned element
-# and will time out even when the button is clearly on screen (root cause
-# of the CI run 2 failure). Use a plain extendedWaitUntil + tapOn instead.
-# ============================================================
-
-- assertVisible:
-    id: "Save card edit"
-- tapOn:
-    id: "Save card edit"
-
-# After save, handleSave calls onClose() — the drawer disappears.
-# Wait for the Card name input to be gone (drawer closed) before proceeding.
-# We do NOT assert the full player name here — the text is split across lines
-# in the narrow card-number column and Maestro may not find it as a single
-# text node. The persistence check below (re-open) is the authoritative
-# assertion that the save worked.
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
+
+# The row behind the drawer now carries the print run in its sub-line. On this
+# per-worker custom card the sub-line has no teams, no variation and no
+# autograph, so "/99" is the whole line.
+- scrollUntilVisible:
+    element:
+      text: ".*/99.*"
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 10000
 
 # ============================================================
 # VERIFY PERSISTENCE — reopen and confirm saved values
@@ -317,6 +342,13 @@ tags:
     id: "Card title"
     text: ".*T${ATTEMPT_ID}.*"
 
+# Card description is position 5, immediately below the title — also above the
+# fold on reopen. It was committed by a BLUR rather than by Enter, so this is
+# the assertion that the blur path writes too.
+- assertVisible:
+    id: "Card description"
+    text: ".*NEO-25 description body for ${ATTEMPT_ID}.*"
+
 # The RC chip should be active (aria-pressed="true"). Attributes are at
 # position 6 — below Card title — so scroll down to bring the row into view.
 - scrollUntilVisible:
@@ -335,16 +367,63 @@ tags:
     id: "Toggle RC"
 
 # ============================================================
-# CLOSE via Cancel (immediate close — no dirty guard)
-# Cancel button is in the same sticky footer as Save — OUTSIDE the scroll
-# container. Same fix: extendedWaitUntil + tapOn, no scrollUntilVisible.
+# PRINT RUN PERSISTED — and can be CLEARED again (NEO-217)
+#
+# The number survived the close with no save action, and blanking the field is
+# a real answer rather than a no-op: the commit sends `null`, the server drops
+# the field, and the confirmation says "Cleared", never "Saved".
+# ============================================================
+
+# Same fold as the attribute chips just scrolled to — see the note on the first
+# session for why scrollUntilVisible cannot drive this drawer's inner scroll.
+- extendedWaitUntil:
+    visible:
+      id: "Print run"
+      text: "99"
+    timeout: 7000
+
+- tapOn:
+    id: "Print run"
+- eraseText: 10
+# Prove the field really is EMPTY before committing. An <input> with no value
+# reads back its placeholder, so "e.g. 99" IS the empty state — and if a stray
+# character survived the erase this fails here, saying so, instead of silently
+# committing a different number and failing later on the toast.
+- assertVisible:
+    id: "Print run"
+    text: "e.g. 99"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Cleared Print run.*"
+    timeout: 7000
+
+# ============================================================
+# CLOSE via "Done" — the only close control the drawer has now.
+# It sits in the pinned footer OUTSIDE the scroll container, so it is always on
+# screen; scrollUntilVisible cannot satisfy centering on it (R8 exception).
 # ============================================================
 
 - assertVisible:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - tapOn:
-    id: "Cancel card edit"
-- assertNotVisible: "Card name"
+    id: "Done editing card"
+- assertNotVisible:
+    id: "Card name"
+
+# Bring the row back into view before reading it — closing the drawer can leave
+# Virtuoso showing a different window of the list, and a row that is merely
+# absent from the DOM would make the negative below pass for the wrong reason.
+# R6: this scroll IS the positive assertion; nothing repeats it.
+- scrollUntilVisible:
+    element:
+      text: ".*Renamed Detail Player ${ATTEMPT_ID}.*"
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 10000
+
+# THE POINT: the row's sub-line lost its "/99". The clear reached the stored
+# row, not just the input it was typed into.
+- assertNotVisible: ".*/99.*"
 
 # ============================================================
 # CLEANUP — delete this attempt's test card

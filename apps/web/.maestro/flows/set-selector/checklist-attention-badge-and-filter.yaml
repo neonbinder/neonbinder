@@ -266,9 +266,9 @@ tags:
 # in this form the picker sits directly above the Add/Cancel row, so an open
 # popover covers "Submit new card". A pointerdown anywhere outside the picker
 # closes it; the Card name input above is in the form and outside the picker.
-# Escape is deliberately NOT used — it is the drawer's "discard draft" and the
-# walker's "defer this card", and this flow should not depend on which handler
-# happens to see it.
+# Escape is deliberately NOT used — it is the drawer's "close" and the walker's
+# "defer this card", and this flow should not depend on which handler happens to
+# see it. (It is also not a web keycode Maestro can send.)
 - tapOn:
     id: "Card name"
 - extendedWaitUntil:
@@ -394,17 +394,25 @@ tags:
 - tapOn:
     id: "Add New York Yankees"
 
-# The chip proves the pick landed in the drawer's draft. Teams are part of that
-# draft — they only reach the card on Save (unlike per-row features, which
-# persist immediately). Tapping "Card name" first parks the caret on a field
-# ABOVE the picker; do NOT press Escape to close the popover — Escape reaches
-# the panel's own keydown handler and discards the unsaved draft.
+# The chip proves the pick landed. NEO-216: there is no draft and no Save
+# button — TeamPicker sends `updateCard.teamOnCardIds` on the tap itself, and
+# the drawer confirms it in its one status region. Waiting on that confirmation
+# is what makes the badge assertion below meaningful: without it we would be
+# racing an in-flight mutation.
 - assertVisible:
     id: "Remove team New York Yankees"
+- extendedWaitUntil:
+    visible: ".*Saved Teams.*"
+    timeout: 7000
+
+# Tapping "Card name" parks the caret on a field ABOVE the picker, which closes
+# the popover (Escape is not a web keycode, and the drawer has no discard path
+# to trip any more). Then "Done" closes the drawer so the row behind it — and
+# its attention badge — is readable again.
 - tapOn:
     id: "Card name"
 - tapOn:
-    id: "Save card edit"
+    id: "Done editing card"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE COUNT MOVES — and only for the card that was answered.

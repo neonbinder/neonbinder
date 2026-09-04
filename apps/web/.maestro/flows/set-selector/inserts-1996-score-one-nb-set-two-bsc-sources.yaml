@@ -496,18 +496,26 @@ tags:
 - tapOn:
     id: "Card name"
 - inputText: "NB203-${ATTEMPT_ID}"
-# Save lives in the drawer's sticky footer, OUTSIDE the scroll container.
-# `scrollUntilVisible` can never satisfy centering on it and times out even
-# while it is plainly on screen — so assert + tap, per card-detail-panel.yaml.
-- assertVisible:
-    id: "Save card edit"
-- tapOn:
-    id: "Save card edit"
 
-# The drawer closes on save, and the row repaints with our name. This is the
-# PRECONDITION for everything below — if the edit never landed, the review
-# dialog would have nothing to show and STEP 7's whole point would evaporate
-# into a green run. Fail here instead, where the message says so.
+# NEO-216 — the drawer has no Save button. A single-line field commits on Enter
+# IN PLACE (the drawer stays open) and the drawer confirms the write in its one
+# status region. THIS WAIT IS THE PRECONDITION for everything below: if the name
+# never reached the database, the re-sync's review dialog would have nothing to
+# show and STEP 7's whole point would evaporate into a green run. Fail here
+# instead, where the message says which write went missing.
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Saved Card name.*"
+    timeout: 7000
+
+# Close the drawer. "Done" lives in the drawer's pinned footer, OUTSIDE the
+# scroll container; `scrollUntilVisible` can never satisfy centering on it and
+# times out even while it is plainly on screen — so assert + tap, per
+# card-detail-panel.yaml (R8 exception).
+- assertVisible:
+    id: "Done editing card"
+- tapOn:
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 # Scoped below the same anchor, for the same reason the tap is: an unscoped
