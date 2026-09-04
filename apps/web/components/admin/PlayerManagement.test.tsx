@@ -180,6 +180,20 @@ const BAD_QID_PLAYER = {
   lastUpdated: 1,
 };
 
+/**
+ * NEO-235 — `TROUT` a few seconds later, once the enrichment `createByAdmin`
+ * scheduled has written back. Exactly the three fields the detail panel seeds a
+ * draft from that enrichment fills in: career stints, the Wikidata id and the
+ * Hall of Fame flag.
+ */
+const ENRICHED_TROUT = {
+  ...TROUT,
+  isHallOfFame: true,
+  externalIds: { wikidataId: "Q194298" },
+  teamYears: [{ teamId: "t-reds", fromYear: 2011 }],
+  lastUpdated: 2,
+};
+
 const PLAYERS_BY_ID: Record<string, unknown> = {
   "p-griffey": GRIFFEY,
   "p-trout": TROUT,
@@ -234,6 +248,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   for (const key of Object.keys(seenArgs)) delete seenArgs[key];
   lastPickerSportId = null;
+  // `players.get` answers out of this map and two NEO-235 tests move a row
+  // under an open panel, so it is restored rather than left mutated.
+  PLAYERS_BY_ID["p-trout"] = TROUT;
+  PLAYERS_BY_ID["p-griffey"] = GRIFFEY;
   management = {
     players: [RICE, GRIFFEY, TROUT],
     totalCount: 3,
@@ -739,6 +757,118 @@ describe("PlayerManagement — the detail panel", () => {
     expect(
       (screen.getByLabelText("Player name") as HTMLInputElement).value,
     ).toBe("Mike Trout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-235 — the panel follows the live row, and says so when it cannot
+// ---------------------------------------------------------------------------
+
+describe("PlayerManagement — an enrichment landing under an open panel", () => {
+  /** Open Mike Trout, then let the scheduled enrichment write back. */
+  function enrichUnderTheOpenPanel(
+    rerender: ReturnType<typeof render>["rerender"],
+  ) {
+    PLAYERS_BY_ID["p-trout"] = ENRICHED_TROUT;
+    rerender(<PlayerManagement />);
+  }
+
+  it("adopts the enriched row while the draft is untouched", () => {
+    // The bug NEO-235 was filed for: `createByAdmin` schedules enrichment, the
+    // row grows stints/QID/HoF seconds later, and every part of the screen
+    // reading the row directly moved while the draft did not — so the header
+    // link showed the QID over a Wikidata box that was still empty.
+    const { rerender } = render(<PlayerManagement />);
+    fireEvent.click(screen.getByRole("button", { name: /Mike Trout/ }));
+    expect(screen.getByText("No stints recorded yet.")).toBeTruthy();
+
+    enrichUnderTheOpenPanel(rerender);
+
+    expect(
+      (screen.getByLabelText("Wikidata id") as HTMLInputElement).value,
+    ).toBe("Q194298");
+    expect(
+      (screen.getByRole("checkbox", { name: "Hall of Fame" }) as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(screen.getByText("Cincinnati Reds · 2011–present")).toBeTruthy();
+    // Adopted silently: nothing was at risk, so there is nothing to report...
+    expect(screen.queryByText(/updated elsewhere/)).toBeNull();
+    // ...and the draft now equals the row, so there is nothing to save either.
+    expect(
+      screen.getByRole("button", { name: "Save" }).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("keeps a dirty draft, and reloads it only when asked", () => {
+    const { rerender } = render(<PlayerManagement />);
+    fireEvent.click(screen.getByRole("button", { name: /Mike Trout/ }));
+    fireEvent.change(screen.getByLabelText("Player name"), {
+      target: { value: "Michael Trout" },
+    });
+
+    enrichUnderTheOpenPanel(rerender);
+
+    // Not one keystroke of the operator's is overwritten.
+    expect(
+      (screen.getByLabelText("Player name") as HTMLInputElement).value,
+    ).toBe("Michael Trout");
+    expect(
+      (screen.getByLabelText("Wikidata id") as HTMLInputElement).value,
+    ).toBe("");
+    const notice = screen.getByText(
+      "This player was updated elsewhere — Reload to see the latest.",
+    );
+    expect(notice.closest("[role='status']")).toBeTruthy();
+
+    // Reload is the only thing that discards it, and it takes the whole row.
+    fireEvent.click(screen.getByLabelText("Reload player Mike Trout"));
+    expect(
+      (screen.getByLabelText("Player name") as HTMLInputElement).value,
+    ).toBe("Mike Trout");
+    expect(
+      (screen.getByLabelText("Wikidata id") as HTMLInputElement).value,
+    ).toBe("Q194298");
+    expect(screen.getByText("Cincinnati Reds · 2011–present")).toBeTruthy();
+    expect(screen.queryByText(/updated elsewhere/)).toBeNull();
+  });
+
+  it("still saves the fields the operator changed afterwards", async () => {
+    const { rerender } = render(<PlayerManagement />);
+    fireEvent.click(screen.getByRole("button", { name: /Mike Trout/ }));
+    enrichUnderTheOpenPanel(rerender);
+
+    // Edit the value the enrichment just wrote — the case that proves the
+    // re-seed rebased what "changed" means rather than merely repainting.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(mockSavePlayerFields).toHaveBeenCalledWith({
+        id: "p-trout",
+        isHallOfFame: false,
+      }),
+    );
+    expect(await screen.findByText("Saved Mike Trout.")).toBeTruthy();
+  });
+
+  it("never reports the panel's own save as a change from elsewhere", async () => {
+    // The reactive write a save produces looks exactly like anyone else's. It
+    // is told apart by the draft already matching it — not by a timer, and not
+    // by assuming the mutation resolves before its own query update lands.
+    const { rerender } = render(<PlayerManagement />);
+    selectGriffey();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved Ken Griffey Jr..")).toBeTruthy();
+
+    PLAYERS_BY_ID["p-griffey"] = { ...GRIFFEY, isHallOfFame: false };
+    rerender(<PlayerManagement />);
+
+    expect(screen.queryByText(/updated elsewhere/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Save" }).hasAttribute("disabled"),
+    ).toBe(true);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
@@ -94,6 +94,63 @@ function stintsEqual(a: Stint[], b: Stint[]): boolean {
 function stintRange(stint: Stint): string {
   return `${stint.fromYear}–${stint.toYear ?? "present"}`;
 }
+
+/**
+ * NEO-235 — the four fields the detail panel seeds a draft from, flattened
+ * into one comparable string.
+ *
+ * Object identity is useless here: `useQuery` hands back a fresh object on
+ * every reactive push, so "did the row actually change?" has to be asked of the
+ * VALUES. Normalised the same way the draft normalises them before saving
+ * (trimmed name and id, stints sorted, an absent `toYear` as null) so an
+ * untouched draft compares equal to the row it came from.
+ */
+function fieldSignature(fields: {
+  name: string;
+  isHallOfFame: boolean;
+  wikidataId: string;
+  stints: Stint[];
+}): string {
+  return JSON.stringify([
+    fields.name.trim(),
+    fields.isHallOfFame,
+    fields.wikidataId.trim(),
+    sortStints(fields.stints).map((s) => [
+      s.teamId,
+      s.fromYear,
+      s.toYear ?? null,
+    ]),
+  ]);
+}
+
+/** {@link fieldSignature} for a stored row. */
+function rowSignature(row: Player): string {
+  return fieldSignature({
+    name: row.name,
+    isHallOfFame: row.isHallOfFame ?? false,
+    wikidataId: row.externalIds?.wikidataId ?? "",
+    stints: row.teamYears ?? [],
+  });
+}
+
+/**
+ * Height of an `Input` box: 24px line-height + 2×8px padding + 2×1px border.
+ * Anything that has to sit on the same baseline as a field — the read-only
+ * sport, the Hall of Fame checkbox — matches it rather than guessing.
+ */
+const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
+
+/**
+ * Two lines of `text-sm leading-tight`, reserved for every label in the
+ * add-stint row so the controls under them share one baseline whether or not a
+ * given label wraps. "Stint to year (optional)" does wrap in the ~440px detail
+ * column at 1024px wide and does not at 1440px; without the reserve that single
+ * wrap dropped its input 18px below its neighbour's, which is the ragged row
+ * NEO-235 was filed about. `items-end` inside the reserve keeps the text on the
+ * line nearest its own field.
+ */
+const STINT_LABEL_CLASS =
+  "mb-1 flex min-h-[2.25rem] items-end text-sm font-medium leading-tight text-slate-300";
 
 // ---------------------------------------------------------------------------
 // Add form
@@ -331,16 +388,61 @@ function PlayerDetail({
    */
   const [status, setStatus] = useState<Status>(null);
 
-  // Re-seed on selection change, keyed on _id — React's documented "adjust
-  // state when props change" pattern rather than an effect, which the lint rule
-  // rejects. Same mechanism as TeamManagement's TeamDetail.
-  const [seededId, setSeededId] = useState(player._id);
-  if (seededId !== player._id) {
-    setSeededId(player._id);
-    setName(player.name);
-    setIsHallOfFame(player.isHallOfFame ?? false);
-    setWikidataId(player.externalIds?.wikidataId ?? "");
-    setStints(sortStints(player.teamYears ?? []));
+  /**
+   * NEO-235 — the draft follows the LIVE row, not just the selected `_id`.
+   *
+   * `createByAdmin` schedules Wikidata enrichment, so seconds after a player is
+   * added by hand the server row grows `teamYears`, `externalIds.wikidataId`
+   * and `isHallOfFame`. Everything reading the row directly moved — the master
+   * row started saying "2 stints", the header link above these fields started
+   * showing the QID — while the draft, seeded once per `_id`, went on saying
+   * "No stints recorded yet." next to an empty Wikidata box. The panel
+   * contradicted itself on screen.
+   *
+   * `seeded.signature` is the row AS SEEDED. When the live row moves, three
+   * comparisons decide what happens:
+   *
+   *   - **draft === seeded** — nothing has been typed. Adopt the new row.
+   *   - **draft === live** — the row caught up with what is already on screen.
+   *     That is our own save landing (or someone else saving the same edit);
+   *     adopting is a no-op for the fields and only re-bases `seeded`, so a
+   *     save can never be mistaken for a write from elsewhere.
+   *   - **otherwise** — adopting would destroy real edits. Keep the draft and
+   *     say so; `Reload` below is the way out.
+   *
+   * The signature covers the seeded FIELDS and deliberately not `lastUpdated`:
+   * a write that changed none of them (a re-enrichment that found nothing new)
+   * must not throw a "someone changed this" notice at an operator mid-edit.
+   */
+  const [seeded, setSeeded] = useState(() => ({
+    id: player._id,
+    signature: rowSignature(player),
+  }));
+  const [rowMovedUnderDraft, setRowMovedUnderDraft] = useState(false);
+
+  /** Take the row as it now stands, discarding whatever the fields held. */
+  const seedFrom = (row: Player) => {
+    setName(row.name);
+    setIsHallOfFame(row.isHallOfFame ?? false);
+    setWikidataId(row.externalIds?.wikidataId ?? "");
+    setStints(sortStints(row.teamYears ?? []));
+    setSeeded({ id: row._id, signature: rowSignature(row) });
+    setRowMovedUnderDraft(false);
+  };
+
+  const liveSignature = rowSignature(player);
+  const draftSignature = fieldSignature({
+    name,
+    isHallOfFame,
+    wikidataId,
+    stints,
+  });
+
+  // Adjusted during render — React's documented "adjust state when props
+  // change" pattern rather than an effect, which the lint rule rejects. Same
+  // mechanism as TeamManagement's TeamDetail.
+  if (seeded.id !== player._id) {
+    seedFrom(player);
     setPendingTeam(null);
     setPendingFrom("");
     setPendingTo("");
@@ -349,7 +451,32 @@ function PlayerDetail({
     // Otherwise "Saved Ken Griffey Jr." stays on screen under a different
     // player's Save button.
     setStatus(null);
+  } else if (seeded.signature !== liveSignature) {
+    if (
+      draftSignature === seeded.signature ||
+      draftSignature === liveSignature
+    ) {
+      seedFrom(player);
+    } else if (!rowMovedUnderDraft) {
+      setRowMovedUnderDraft(true);
+    }
   }
+
+  /** The notice's `Reload`: throw the draft away — including anything staged in
+   *  the add-stint row — and start again from the row as it now stands. */
+  const reloadFromRow = () => {
+    seedFrom(player);
+    setPendingTeam(null);
+    setPendingFrom("");
+    setPendingTo("");
+    setStintError(null);
+    setNameTakenId(null);
+  };
+
+  /** Caption under the Wikidata field. Its own row in the grid (see the render)
+   *  rather than the primitive's `helperText`, so the field boxes above it stay
+   *  on one line; the association it would have lost is passed back by hand. */
+  const qidCaptionId = useId();
 
   // One batched lookup for every team named anywhere in this panel — the drafted
   // stints plus whatever the picker currently holds, so the duplicate refusal
@@ -487,11 +614,11 @@ function PlayerDetail({
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         {/* NEO-212 (a11y): h3, not h4. Nothing on this screen renders an
             <h3> above it, so an <h4> here skipped a level and a screen reader
             navigating by heading gets a broken outline (WCAG 2.2 SC 1.3.1). */}
-        <h3 className="text-lg font-semibold">{player.name}</h3>
+        <h3 className="text-lg font-semibold leading-tight">{player.name}</h3>
         <CopyButton value={player.name} label="player name" />
         {qid &&
           (qidUrl ? (
@@ -530,53 +657,129 @@ function PlayerDetail({
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Input
-          label="Player name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-
-        {/* Read-only on purpose. Moving a player between sports is not an edit,
-            it is a re-key: `nameNormalized` is unique per (name, sport), every
-            lookup scopes by sportId, and existing card rows point at this row
-            under the old sport. Out of scope for NEO-212 — delete the row and
-            re-add it under the right sport if it is genuinely wrong. */}
-        <p className="self-end text-sm text-slate-400">Sport: {sportLabel}</p>
-
-        <label className="flex items-center gap-2 text-sm text-slate-300">
-          <input
-            type="checkbox"
-            checked={isHallOfFame}
-            onChange={(e) => setIsHallOfFame(e.target.checked)}
-            className="h-6 w-6 rounded border-slate-700 bg-slate-900 text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green"
+      {/* NEO-235 — the fields on a real grid.
+          Three rows, each an explicit two-column grid rather than one auto-flow
+          container: the old single grid let a bare `Sport:` caption, a lone
+          checkbox and a field carrying its own helper line each set their own
+          height, so no two controls started or ended on the same line.
+          `sm:items-end` is what does the alignment work — every cell here is
+          built to end at the bottom edge of an input box (see
+          FIELD_BOX_HEIGHT), so the boxes, the read-only sport and the checkbox
+          all land on one line. */}
+      <div className="space-y-3">
+        <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
+          <Input
+            label="Player name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
           />
-          Hall of Fame
-        </label>
 
-        <Input
-          label="Wikidata id"
-          value={wikidataId}
-          placeholder="Q…"
-          onChange={(e) => setWikidataId(e.target.value)}
-          error={qidValid ? undefined : "A Wikidata id looks like Q12345."}
-          helperText="Leave empty to clear it."
-        />
+          {/* Read-only on purpose. Moving a player between sports is not an
+              edit, it is a re-key: `nameNormalized` is unique per (name,
+              sport), every lookup scopes by sportId, and existing card rows
+              point at this row under the old sport. Out of scope for NEO-212 —
+              delete the row and re-add it under the right sport if it is
+              genuinely wrong.
+
+              NEO-235: painted as a field rather than as a caption floating
+              beside one. Recessed surface and a dimmer border say "not yours to
+              change" without `disabled`'s opacity, which would have taken the
+              text under the 4.5:1 floor. The visible text stays exactly
+              `Sport: {label}` — the E2E flow reads this line to prove the row
+              was created under the sport that was picked. */}
+          <p
+            className={`w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-base text-slate-300 ${FIELD_BOX_HEIGHT}`}
+          >
+            Sport: {sportLabel}
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
+          <Input
+            label="Wikidata id"
+            value={wikidataId}
+            placeholder="Q…"
+            onChange={(e) => setWikidataId(e.target.value)}
+            // The caption is rendered as its own grid row below so the boxes
+            // stay on one line; `helperText`/`error` would have put it inside
+            // this cell and pushed the box up off the checkbox's line. The
+            // association the primitive would have made is made by hand.
+            aria-describedby={qidCaptionId}
+            aria-invalid={qidValid ? undefined : true}
+          />
+
+          <label
+            className={`flex items-center gap-2 text-sm text-slate-200 ${FIELD_BOX_HEIGHT}`}
+          >
+            <input
+              type="checkbox"
+              checked={isHallOfFame}
+              onChange={(e) => setIsHallOfFame(e.target.checked)}
+              className="h-6 w-6 shrink-0 rounded border-slate-700 bg-slate-900 text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green"
+            />
+            Hall of Fame
+          </label>
+        </div>
+
+        {/* The caption row. One line, always in the same place, whether it is
+            saying how to clear the field or why the id is refused. */}
+        <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+          <p
+            id={qidCaptionId}
+            className={`text-sm ${qidValid ? "text-slate-400" : "text-neon-pink"}`}
+          >
+            {qidValid
+              ? "Leave empty to clear it."
+              : "A Wikidata id looks like Q12345."}
+          </p>
+        </div>
       </div>
 
-      <div className="space-y-3">
+      {/* NEO-235 — the row moved while there were unsaved edits on screen.
+          Deliberately not a modal and not an auto-adopt: the operator's own
+          typing is the thing most likely to be lost, so nothing is overwritten
+          until they say so. Orange rather than pink — nothing has failed. */}
+      {rowMovedUnderDraft && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-neon-orange/40 bg-neon-orange/5 px-3 py-2 text-sm text-neon-orange"
+        >
+          <span>This player was updated elsewhere — Reload to see the latest.</span>
+          <button
+            type="button"
+            onClick={reloadFromRow}
+            aria-label={`Reload player ${player.name}`}
+            className="min-h-6 rounded px-2 py-1 underline underline-offset-2 transition-colors hover:bg-neon-orange/10 focus:outline-none focus:ring-2 focus:ring-neon-orange"
+          >
+            Reload
+          </button>
+        </div>
+      )}
+
+      {/* A hairline, not a card: the career history is a second subject within
+          the same panel, and boxing it would have implied a second surface. */}
+      <div className="space-y-3 border-t border-slate-800 pt-4">
+        {/* Stays a plain, non-interactive heading directly above the add row:
+            the E2E flow taps this text to dismiss TeamPicker's popover, which
+            can only ever hang BELOW the trigger, so the heading is the one
+            thing in this section the popover can never cover. */}
         <h3 className="text-base font-semibold">Career history</h3>
 
         {stints.length === 0 ? (
-          <p className="text-sm text-slate-400">No stints recorded yet.</p>
+          <p className="rounded-md border border-dashed border-slate-800 px-3 py-2 text-sm text-slate-400">
+            No stints recorded yet.
+          </p>
         ) : (
-          <ul aria-label="Career history" className="space-y-1">
+          <ul
+            aria-label="Career history"
+            className="divide-y divide-slate-800 rounded-md border border-slate-800"
+          >
             {stints.map((stint, index) => (
               <li
                 key={`${stint.teamId}-${stint.fromYear}`}
-                className="flex items-center gap-2 text-sm text-slate-200"
+                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 text-sm text-slate-200"
               >
-                <span className="flex-1 truncate">
+                <span className="truncate">
                   {teamName(stint.teamId)} · {stintRange(stint)}
                 </span>
                 <button
@@ -592,39 +795,63 @@ function PlayerDetail({
           </ul>
         )}
 
-        <div className="flex flex-wrap items-end gap-3">
-          <TeamPicker
-            // Single stint at a time, so the picker's array is collapsed to its
-            // most recent pick rather than accumulating chips: a stint has one
-            // team, and the multi-select is the shared component's contract,
-            // not this field's.
-            value={pendingTeam ? [pendingTeam] : []}
-            onChange={(next) => {
-              setStintError(null);
-              setPendingTeam(next.length > 0 ? next[next.length - 1] : null);
-            }}
-            sportId={player.sportId}
-          />
-          {/* Width on the WRAPPER, not the field: in non-bare mode the Input
-              primitive owns geometry (`w-full`) and Tailwind resolves the
-              conflict by stylesheet order, not class order — see its header. */}
-          <div className="w-28">
+        {/* NEO-235 — one baseline for the whole add row.
+            It was `flex flex-wrap`, which in the ~440px detail column dropped
+            the year boxes onto a second line under the picker (straight beneath
+            its popover) and left the four controls on three different baselines.
+            A grid fixes the columns instead: the picker sizes to its pill, the
+            two year fields split the remaining width EQUALLY — equal widths are
+            what stop one label wrapping a beat before the other — and the
+            button takes what it needs. `items-end` puts every control's bottom
+            edge on the same line whatever its label did. */}
+        <div className="grid max-w-2xl grid-cols-2 items-end gap-x-3 gap-y-3 sm:grid-cols-[minmax(0,auto)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+          <div className="min-w-0">
+            <span className={STINT_LABEL_CLASS}>Team</span>
+            <div className={`flex items-center ${FIELD_BOX_HEIGHT}`}>
+              <TeamPicker
+                // Single stint at a time, so the picker's array is collapsed to
+                // its most recent pick rather than accumulating chips: a stint
+                // has one team, and the multi-select is the shared component's
+                // contract, not this field's.
+                value={pendingTeam ? [pendingTeam] : []}
+                onChange={(next) => {
+                  setStintError(null);
+                  setPendingTeam(next.length > 0 ? next[next.length - 1] : null);
+                }}
+                sportId={player.sportId}
+              />
+            </div>
+          </div>
+
+          {/* `bare`, so this file owns the label markup and can give both year
+              labels the same reserved height — the primitive's own label is a
+              fixed one-line block and cannot be told to reserve two. Geometry
+              comes with `bare` being the caller's job (see the Input header);
+              the primitive still supplies the surface and the Maestro-unique
+              marker class. */}
+          <label className="block min-w-0">
+            <span className={STINT_LABEL_CLASS}>Stint from year</span>
             <Input
-              label="Stint from year"
+              bare
               type="number"
               value={pendingFrom}
               onChange={(e) => setPendingFrom(e.target.value)}
+              className="w-full px-3 py-2 text-base"
             />
-          </div>
-          <div className="w-28">
+          </label>
+
+          <label className="block min-w-0">
+            <span className={STINT_LABEL_CLASS}>Stint to year (optional)</span>
             <Input
-              label="Stint to year (optional)"
+              bare
               type="number"
               value={pendingTo}
               placeholder="present"
               onChange={(e) => setPendingTo(e.target.value)}
+              className="w-full px-3 py-2 text-base"
             />
-          </div>
+          </label>
+
           {/* NEO-212 (a11y): NeonButton's `secondary` paints white on #00C2FF
               — 2.07:1, under SC 1.4.3's 4.5:1 floor. The primitive is shared by
               the whole app so it is not repainted here; this call site
@@ -635,6 +862,7 @@ function PlayerDetail({
             secondary
             style={{ color: "#000000" }}
             onClick={addStint}
+            className="justify-self-start"
           >
             Add stint
           </NeonButton>
@@ -647,7 +875,7 @@ function PlayerDetail({
         )}
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2 border-t border-slate-800 pt-4">
         <NeonButton type="button" onClick={() => void save()} disabled={!canSave}>
           {busy === "save" ? "Saving…" : "Save"}
         </NeonButton>
@@ -825,7 +1053,13 @@ export default function PlayerManagement() {
             a sport change did anything — silent for a screen-reader user until
             it was a live region. Text format unchanged: the E2E flow waits on
             "0 matches". */}
-        <p role="status" aria-live="polite" className="text-xs text-slate-400 pb-2">
+        {/* NEO-235: centred against the field boxes rather than nudged up with
+            a `pb-2`, so it stays put when the row wraps. */}
+        <p
+          role="status"
+          aria-live="polite"
+          className={`flex items-center text-xs text-slate-400 ${FIELD_BOX_HEIGHT}`}
+        >
           {counter}
         </p>
         <NeonButton
@@ -834,7 +1068,6 @@ export default function PlayerManagement() {
             setAdding(true);
             setStatus(null);
           }}
-          className="mb-1"
         >
           Add player
         </NeonButton>
@@ -863,17 +1096,25 @@ export default function PlayerManagement() {
                       type="button"
                       onClick={() => selectPlayer(player._id)}
                       aria-current={isSelected ? "true" : undefined}
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
+                      // NEO-235: `items-baseline`, not `items-center` — the
+                      // name is text-sm and every tag beside it is text-xs, so
+                      // centring left five slightly different lines through one
+                      // row. One gap value across the whole row, and every tag
+                      // `shrink-0` so the NAME is what gives when the row is
+                      // narrow.
+                      className={`flex w-full items-baseline gap-x-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
                         isSelected
                           ? "border-neon-blue bg-neon-blue/10 text-neon-blue"
                           : "border-transparent text-slate-300 hover:bg-slate-900"
                       }`}
                     >
-                      <span className="flex-1 truncate">{player.name}</span>
+                      <span className="min-w-0 flex-1 truncate">
+                        {player.name}
+                      </span>
                       {/* NEO-212 (a11y): slate-400, not slate-500 — #64748b on
                           the slate-950 row is 4.0:1, under SC 1.4.3's 4.5:1
                           floor for this size. slate-400 clears it. */}
-                      <span className="text-xs text-slate-400">
+                      <span className="shrink-0 text-xs text-slate-400">
                         {sportNameById.get(player.sportId as string) ?? ""}
                       </span>
                       {/* NEO-212 (a11y): `title` is a mouse-hover affordance
@@ -883,7 +1124,7 @@ export default function PlayerManagement() {
                           and "Q…" are not two unexplained glyphs. */}
                       {player.isHallOfFame && (
                         <span
-                          className="text-xs text-neon-orange"
+                          className="shrink-0 text-xs text-neon-orange"
                           aria-label="Hall of Fame"
                           title="Hall of Fame"
                         >
@@ -891,13 +1132,13 @@ export default function PlayerManagement() {
                         </span>
                       )}
                       {stintCount > 0 && (
-                        <span className="text-xs text-slate-400">
+                        <span className="shrink-0 text-xs text-slate-400">
                           {stintCount} {stintCount === 1 ? "stint" : "stints"}
                         </span>
                       )}
                       {qid && (
                         <span
-                          className="text-xs text-neon-teal"
+                          className="shrink-0 text-xs text-neon-teal"
                           aria-label={`Wikidata ${qid}`}
                           title={`Wikidata ${qid}`}
                         >
