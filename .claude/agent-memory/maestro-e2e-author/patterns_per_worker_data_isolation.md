@@ -5,6 +5,17 @@ description: "HARD RULE for every flow: the suite runs at parallelism=3 (3 concu
 
 # Per-worker data isolation (parallelism=3 contention) — HARD RULE
 
+
+> **CORRECTION (2026-09-03): the numbers and the lane below are OUT OF DATE.**
+> CI now runs the NEO-49 dynamic work queue — **8 runners** drain one shared
+> queue at `MAESTRO_PARALLELISM=1` per runner, so flows still run concurrently
+> against one Convex preview. **The `isolated` serial lane is GONE and the
+> `isolated` tag is dead — do not add it.** Everything else on this page still
+> holds, and holds harder: `selectorOptions` / `cardChecklist` are global, so
+> every editing flow uses a per-`WORKER_INDEX` custom subtree, and a flow that
+> must touch a real set needs its own isolation story (sole-writer, registered
+> in `.maestro/SET-REGISTRY.md`) rather than a lane.
+
 **Why:** the e2e suite runs at `MAESTRO_PARALLELISM=3`, and each worker signs in as a DIFFERENT
 test user (`&worker=${WORKER_INDEX}` → `TEST_EMAIL_${worker}`). So 3 flows run as **3 concurrent
 real users** against ONE shared Convex preview. But `selectorOptions` (the set catalog: sport→…→set→
