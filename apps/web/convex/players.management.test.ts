@@ -880,3 +880,105 @@ describe("savePlayerFields", () => {
     expect(doc?.isHallOfFame).toBeUndefined();
   });
 });
+
+// ===========================================================================
+// getByIdParam — `get`, for an id that came out of a URL
+// ===========================================================================
+
+/**
+ * NEO-235. `/admin/players?player=<id>` puts a player id somewhere anybody can
+ * retype, and `players.get` takes `v.id("players")`: a string that does not
+ * parse as an id is refused by Convex's ARGUMENT VALIDATION, before the handler
+ * runs, which a `useQuery` surfaces as a thrown render — the admin screen
+ * replaced by the app-level error boundary because a query string was mangled.
+ *
+ * This query takes a `v.string()` and normalizes it instead, so every way of
+ * naming a player who is not there — deleted, another deployment's, another
+ * TABLE's, or not an id at all — collapses into the single `null` the screen
+ * already has a branch for. The four cases below are those four ways plus the
+ * happy path, and the gate is asserted separately because a query that answered
+ * `null` to everyone would pass all five.
+ */
+describe("getByIdParam", () => {
+  test("resolves a real id to the public shape, without createdByUserId", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, {
+      name: "Ken Griffey Jr.",
+      sportId,
+      createdByUserId: "user_someone_else",
+    });
+
+    const doc = await t
+      .withIdentity(MEMBER_IDENTITY)
+      .query(api.players.getByIdParam, { id: playerId });
+
+    expect(doc?.name).toBe("Ken Griffey Jr.");
+    expect(doc?._id).toBe(playerId);
+    // Signed-in reference data still does not ship the audit field. The returns
+    // validator is what enforces it; this is what says so out loud.
+    expect(doc).not.toHaveProperty("createdByUserId");
+  });
+
+  test("answers null for a string that is not an id at all", async () => {
+    // The case the whole function exists for. `get` would not reach its handler.
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    expect(
+      await t
+        .withIdentity(MEMBER_IDENTITY)
+        .query(api.players.getByIdParam, { id: "not-an-id" }),
+    ).toBeNull();
+    expect(
+      await t
+        .withIdentity(MEMBER_IDENTITY)
+        .query(api.players.getByIdParam, { id: "" }),
+    ).toBeNull();
+  });
+
+  test("answers null for a well-formed id belonging to another table", async () => {
+    // `normalizeId` is table-scoped, and that is the half a client-side format
+    // check could never do: this string IS a valid Convex id, just not a
+    // player's. Handing it to `ctx.db.get` typed as a player would be the one
+    // way this function could return the wrong row rather than none.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    expect(
+      await t
+        .withIdentity(MEMBER_IDENTITY)
+        .query(api.players.getByIdParam, { id: sportId }),
+    ).toBeNull();
+  });
+
+  test("answers null for a well-formed player id that no longer exists", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, { name: "Deleted Row", sportId });
+    await t.run(async (ctx) => ctx.db.delete(playerId));
+
+    expect(
+      await t
+        .withIdentity(MEMBER_IDENTITY)
+        .query(api.players.getByIdParam, { id: playerId }),
+    ).toBeNull();
+  });
+
+  test("rejects an anonymous caller, exactly as `get` does", async () => {
+    // Same gate as `get` — `requireSignedIn`, not `requireAdmin`: `players` is
+    // signed-in-readable reference data and this is a read of one row. The
+    // refusal must be a THROW, not a `null`: `null` is this query's answer for
+    // "no such player", and a signed-out caller must not be told that.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await insertPlayer(t, { name: "Guarded", sportId });
+
+    await expect(
+      t.query(api.players.getByIdParam, { id: playerId }),
+    ).rejects.toThrow(/Not authenticated/);
+    await expect(
+      t.query(api.players.getByIdParam, { id: "not-an-id" }),
+    ).rejects.toThrow(/Not authenticated/);
+  });
+});

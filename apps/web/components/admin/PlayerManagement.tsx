@@ -1056,7 +1056,11 @@ export default function PlayerManagement() {
   const [filter, setFilter] = useState("");
   const [debouncedFilter, setDebouncedFilter] = useState("");
   const [sportFilter, setSportFilter] = useState<string>("all");
-  const [selectedId, setSelectedId] = useState<Id<"players"> | null>(null);
+  // A plain string, not `Id<"players">`, and that is the point: one of the
+  // things that lands here is the `?player=` param, which anybody can retype.
+  // `players.getByIdParam` takes the raw string and answers `null` for anything
+  // that is not a live player id — see the comment on the deep link below.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [status, setStatus] = useState<Status>(null);
 
@@ -1151,7 +1155,7 @@ export default function PlayerManagement() {
   // to go back to, and no other screen links to `?player=`.
   //
   // Gated on the LIST having loaded rather than on the id resolving, which are
-  // two different things here. The id goes straight to `players.get` below, so
+  // two different things here. The id goes straight to `getByIdParam` below, so
   // the panel opens for a player the master list cannot show at all — one past
   // `listForManagement`'s 500-row cap, or one the search index has not been
   // asked for. The gate exists for the scroll: the commit that first paints
@@ -1171,11 +1175,15 @@ export default function PlayerManagement() {
     management !== undefined
   ) {
     followParam(playerParam);
-    // An id this deployment does not carry — a stale link, or one copied from
-    // another deployment — resolves to `null` out of `players.get` and leaves
-    // the panel on its placeholder with no row highlighted. No error banner:
-    // there is nothing the operator could do about it from here.
-    setSelectedId(playerParam as Id<"players">);
+    // Handed on RAW, with no cast to `Id<"players">` — this string came out of
+    // a URL and casting it would only be a lie to the type checker. Anything
+    // that is not a live player id of this deployment (a stale link, one copied
+    // from another deployment, or a hand-typed nonsense id that does not parse
+    // at all) resolves to `null` out of `players.getByIdParam` and leaves the
+    // panel on its placeholder with no row highlighted. One outcome for all
+    // three: there is nothing the operator could do about any of them from
+    // here, so none of them gets an error banner — and none of them may throw.
+    setSelectedId(playerParam);
     setAdding(false);
     // The linked row has to be REACHABLE, not merely selected: both filters
     // can hide it from the master list, so following a link clears them. The
@@ -1263,8 +1271,16 @@ export default function PlayerManagement() {
   // from a near-match, or from the NAME_TAKEN alert, is frequently NOT in the
   // current page — it may be past the 500 cap or excluded by the filter that is
   // still in the box. This also keeps the panel reactive to its own saves.
+  //
+  // `getByIdParam`, not `get`: one of the ids that reaches this state came out
+  // of the URL, and `get`'s `v.id("players")` argument makes a hand-mangled
+  // `?player=` a THROWN query rather than an empty panel — which unmounts the
+  // screen into the app-level error boundary. One query for both sources, not
+  // two: an id off the master list is a valid string, so it normalizes and
+  // resolves exactly as before, and a second subscription would only be a
+  // second way for the panel to disagree with itself.
   const selected = useQuery(
-    api.players.get,
+    api.players.getByIdParam,
     selectedId ? { id: selectedId } : "skip",
   );
 

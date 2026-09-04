@@ -11,6 +11,10 @@
  * still renders a perfectly correct screen, and a selection that never reaches
  * the URL only shows up when a shared link opens the wrong thing.
  *
+ * The last test covers where those two halves MEET: a click writes the param,
+ * so the screen has to be able to tell a param it wrote itself from a link it
+ * was sent. Getting that wrong wipes the operator's filter mid-click.
+ *
  * Mocking mirrors PlayerManagement.test.tsx: convex/react's hooks are module
  * mocked and routed by the (string-mocked) function reference.
  */
@@ -119,6 +123,34 @@ describe("TeamManagement — the ?team deep link", () => {
     renderAt("/admin/teams?team=t-mariners");
     fireEvent.click(row("New York Yankees"));
 
+    expect(row("New York Yankees").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("search").textContent).toBe("?team=t-yankees");
+  });
+
+  it("leaves the operator's filter alone when they click a different row", () => {
+    // The one-slot regression, and the reason the marker holds TWO ids.
+    //
+    // React Router applies location updates inside `startTransition`, so the
+    // render that commits this click is a render in which `searchParams` still
+    // says `t-mariners` — the id the operator ARRIVED on. A marker that
+    // remembers only the last id it followed cannot tell that stale value apart
+    // from a fresh link back to the Mariners, so it follows it: it re-selects
+    // them, and because following a link clears the filters (a linked row has
+    // to be reachable), the word the operator typed a second ago empties itself
+    // under their own click.
+    //
+    // The three assertions above all pass with that bug — the URL and the
+    // final selection both catch up once the transition lands. The filter is
+    // what does not come back, so it is what this test watches.
+    renderAt("/admin/teams?team=t-mariners");
+
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "New" },
+    });
+
+    fireEvent.click(row("New York Yankees"));
+
+    expect(screen.getByLabelText("Filter teams")).toHaveProperty("value", "New");
     expect(row("New York Yankees").getAttribute("aria-current")).toBe("true");
     expect(screen.getByTestId("search").textContent).toBe("?team=t-yankees");
   });

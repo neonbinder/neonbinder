@@ -69,6 +69,9 @@ vi.mock("../../convex/_generated/api", () => ({
       listForManagement: "players.listForManagement",
       search: "players.search",
       get: "players.get",
+      // NEO-235: the deep-link path answers out of `getByIdParam`, which takes
+      // a raw string. `get` stays mocked because it stays exported.
+      getByIdParam: "players.getByIdParam",
       nearMatches: "players.nearMatches",
       createByAdmin: "players.createByAdmin",
       savePlayerFields: "players.savePlayerFields",
@@ -363,6 +366,13 @@ function routeQuery(ref: string, args: Record<string, unknown>): unknown {
       return nearMatches;
     case "players.get":
       return PLAYERS_BY_ID[args.id as string] ?? null;
+    // NEO-235: same map, and the same `?? null` for anything not in it. That
+    // last part is the whole behaviour under test — the real query normalizes
+    // the string first and answers `null` for one that is not an id of this
+    // table at all, where `players.get` would have REJECTED the argument and
+    // thrown the query into the app-level error boundary.
+    case "players.getByIdParam":
+      return PLAYERS_BY_ID[args.id as string] ?? null;
     case "teams.getManyByIds":
       return TEAMS.filter((t) =>
         (args.ids as string[]).includes(t._id),
@@ -376,7 +386,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   for (const key of Object.keys(seenArgs)) delete seenArgs[key];
   lastPickerSportId = null;
-  // `players.get` answers out of this map and two NEO-235 tests move a row
+  // the id queries answer out of this map and two NEO-235 tests move a row
   // under an open panel, so it is restored rather than left mutated.
   PLAYERS_BY_ID["p-trout"] = TROUT;
   PLAYERS_BY_ID["p-griffey"] = GRIFFEY;
@@ -1287,8 +1297,10 @@ describe("PlayerManagement — accessibility", () => {
  *
  * The deep link is deliberately NOT resolved against the master list. That
  * list is a 500-row page of a server-side query, so the player behind a shared
- * link is frequently not in it; the id goes to `players.get` instead, and the
- * panel opens either way.
+ * link is frequently not in it; the id goes to `players.getByIdParam` instead,
+ * and the panel opens either way. That query takes the param as a raw STRING
+ * and normalizes it server-side, so a hand-mangled `?player=` is an empty
+ * panel rather than a rejected argument that throws the render away.
  */
 
 // The URL is half of what is under test here, so it is rendered.
@@ -1331,9 +1343,9 @@ describe("PlayerManagement — the ?player deep link", () => {
       "Ken Griffey Jr.",
     );
     // No row was highlighted because there is no row — the panel came from
-    // `players.get` alone.
+    // the id query alone.
     expect(document.querySelector('[aria-current="true"]')).toBeNull();
-    expect(lastArgs("players.get")).toEqual({ id: "p-griffey" });
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "p-griffey" });
   });
 
   it("selects and scrolls to the row when the list does have one", () => {
@@ -1369,6 +1381,32 @@ describe("PlayerManagement — the ?player deep link", () => {
         "Select a player to see and edit everything we know about them.",
       ),
     ).toBeTruthy();
+  });
+
+  it("renders normally for a param that is not an id at all", () => {
+    // Not the same case as the stale id above, and it used to have a very
+    // different outcome. `?player=p-gone` is a WELL-FORMED id for a row this
+    // deployment does not have; `?player=not-an-id` does not parse as an id of
+    // any table. The screen used to hand the raw string to `players.get`, whose
+    // argument is `v.id("players")`, so Convex refused it before the handler
+    // ran and `useQuery` threw — replacing the whole admin screen with the
+    // app-level error boundary because somebody mangled a query string.
+    //
+    // `players.getByIdParam` takes a string and normalizes it server-side, so
+    // an unparseable id is answered `null` and lands in the SAME placeholder
+    // branch as a deleted one. Asserted as "the page is still here", because
+    // the defect's signature was the page not being here.
+    renderAt("/admin/players?player=not-an-id");
+
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "not-an-id" });
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    expect(
+      screen.getByText(
+        "Select a player to see and edit everything we know about them.",
+      ),
+    ).toBeTruthy();
+    // The master list is untouched: this is a normal render, not a recovery.
+    expect(listRow(/Mike Trout/)).toBeTruthy();
   });
 
   it("writes the param when a row is picked", () => {

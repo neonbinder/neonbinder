@@ -430,22 +430,45 @@ export default function TeamManagement() {
   // state when a prop changes" pattern, the same one TeamDetail above uses to
   // re-seed its draft.
   //
-  // `appliedTeamParam` is what keeps it to once per distinct id: this runs on
+  // `followedTeamParams` is what keeps it to once per distinct id: this runs on
   // every reactive update to the teams table, and re-selecting on each one
   // would pull the operator off a row they had clicked since arriving. The
-  // click handler below sets it too — the param it writes is the operator's
+  // click handler below marks it too — the param it writes is the operator's
   // own selection, not a fresh link to follow.
+  //
+  // TWO ids are remembered, not one, and that is not belt-and-braces. React
+  // Router applies every location update inside `startTransition` — the app's
+  // `BrowserRouter` and the tests' `MemoryRouter` share that code path — so the
+  // render that commits a new selection is a render in which `searchParams`
+  // STILL NAMES THE PREVIOUS TEAM; the URL catches up one render later. A
+  // one-slot marker cannot tell that stale value apart from a fresh link back
+  // to that team, so it follows it — and because following a link clears the
+  // filters, the filter the operator typed a moment ago empties itself under
+  // their own click, and the row they clicked is dropped for the one they came
+  // in on. Remembering the superseded id closes exactly that window.
+  //
+  // The cost of the second slot is that a link BACK to the team just left would
+  // be ignored for as long as this screen stays mounted. Nothing can produce
+  // one: every write here is a `replace`, so there is no history entry to go
+  // back to, and the only other screen that links here (`/admin/players`) links
+  // to a team by id from a career stint, which arrives as a fresh mount.
+  //
+  // `/admin/players` follows its `?player` param through the same pair.
   const [searchParams, setSearchParams] = useSearchParams();
-  const [appliedTeamParam, setAppliedTeamParam] = useState<string | null>(null);
+  const [followedTeamParams, setFollowedTeamParams] = useState<
+    readonly [string | null, string | null]
+  >([null, null]);
+  const followTeamParam = (id: string) =>
+    setFollowedTeamParams(([current]) => [id, current]);
   const selectedRowRef = useRef<HTMLButtonElement | null>(null);
   const teamParam = searchParams.get("team");
 
   if (
     teamParam !== null &&
-    teamParam !== appliedTeamParam &&
+    !followedTeamParams.includes(teamParam) &&
     management !== undefined
   ) {
-    setAppliedTeamParam(teamParam);
+    followTeamParam(teamParam);
     const match = management.teams.find((team) => team._id === teamParam);
     // An id this deployment does not carry — a stale link, or one copied from
     // another deployment — leaves the screen exactly as it was: no selection,
@@ -466,10 +489,11 @@ export default function TeamManagement() {
   // link would look like it had done nothing. `block: "nearest"` leaves a row
   // that is already on screen where it is — which is the usual case for the
   // click below, since that writes the param too.
+  const followedTeamParam = followedTeamParams[0];
   useEffect(() => {
-    if (appliedTeamParam === null) return;
+    if (followedTeamParam === null) return;
     selectedRowRef.current?.scrollIntoView({ block: "nearest" });
-  }, [appliedTeamParam]);
+  }, [followedTeamParam]);
 
   const teams = useMemo(() => management?.teams ?? [], [management]);
   const leagueList = useMemo(() => leagues ?? [], [leagues]);
@@ -568,13 +592,13 @@ export default function TeamManagement() {
                         setSelectedId(team._id);
                         // Keep the URL in step with the selection so this
                         // team can be linked, shared or reloaded. Marking the
-                        // param applied is part of that: without it, the param
-                        // written here reads as a fresh deep link on the next
-                        // render and clears the filters the operator is
-                        // working under. `replace` keeps Back an exit from the
-                        // screen rather than a walk through every row they
-                        // looked at.
-                        setAppliedTeamParam(team._id);
+                        // param followed is part of writing it, not bookkeeping
+                        // after the fact: without it, the param written here
+                        // reads as a fresh deep link on a later render and
+                        // clears the filters the operator is working under.
+                        // `replace` keeps Back an exit from the screen rather
+                        // than a walk through every row they looked at.
+                        followTeamParam(team._id);
                         setSearchParams({ team: team._id }, { replace: true });
                       }}
                       aria-current={isSelected ? "true" : undefined}

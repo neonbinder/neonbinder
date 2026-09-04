@@ -163,6 +163,12 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     ["players.list", (t: ReturnType<typeof convexTest>) => t.query(api.players.list, {})],
     ["teams.list", (t: ReturnType<typeof convexTest>) => t.query(api.teams.list, {})],
     ["teams.getManyByIds", (t: ReturnType<typeof convexTest>) => t.query(api.teams.getManyByIds, { ids: [] })],
+    // NEO-235. Signed-in, like the `players.get` it wraps — it is a read of one
+    // row of signed-in-readable reference data, by an id that came out of a URL.
+    // Called with a string that is deliberately NOT an id: this function takes
+    // `v.string()` precisely so a malformed id is a `null` rather than a throw,
+    // so the throw asserted here can only be the identity gate.
+    ["players.getByIdParam", (t: ReturnType<typeof convexTest>) => t.query(api.players.getByIdParam, { id: "not-an-id" })],
   ])("%s rejects an anonymous caller", async (_name, call) => {
     const t = convexTest(schema, modules);
     await expect(call(t)).rejects.toThrow(/Not authenticated/);
