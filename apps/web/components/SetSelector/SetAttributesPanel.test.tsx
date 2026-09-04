@@ -72,11 +72,14 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionById: "getSelectorOptionById",
       getAncestorChain: "getAncestorChain",
       setSelectorOptionFeature: "setSelectorOptionFeature",
+      renameSelectorOption: "renameSelectorOption",
+      setBaseVariantType: "setBaseVariantType",
     },
   },
 }));
 
 const mockSetSelectorOptionFeature = vi.fn();
+const mockSetBaseVariantType = vi.fn();
 
 let currentRow: unknown;
 let currentChain: unknown;
@@ -90,6 +93,7 @@ vi.mock("convex/react", () => ({
   useMutation: (mutation: string) => {
     if (mutation === "setSelectorOptionFeature")
       return mockSetSelectorOptionFeature;
+    if (mutation === "setBaseVariantType") return mockSetBaseVariantType;
     return vi.fn();
   },
 }));
@@ -112,6 +116,7 @@ function makeRow(overrides: Partial<{
   level: string;
   value: string;
   features: Record<string, string>;
+  metadata: Record<string, unknown>;
 }> = {}) {
   return {
     _id: SELECTOR_OPTION_ID,
@@ -400,5 +405,256 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
         value: "true",
       });
     });
+  });
+});
+
+/**
+ * NEO-239 — the base role, now that name matching is gone.
+ *
+ * Base used to be whichever variant type happened to be called "Base", which
+ * is how a hand-built set got one: by the operator typing the right word.
+ * Detection reads `metadata.isBase` now, so hand entry needs a way to SET it —
+ * this is that control, and these tests are the reason it is safe to have
+ * deleted the name match.
+ *
+ * The negative cases carry as much weight as the positive one: a set has
+ * exactly one base and the mutation clears the siblings, so the row that
+ * already IS the base must not offer the action again (it would be a no-op
+ * that looks like a toggle), and no other level may offer it at all.
+ */
+describe("SetAttributesPanel — marking the base variant type (NEO-239)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetBaseVariantType.mockResolvedValue({
+      baseId: SELECTOR_OPTION_ID,
+      clearedIds: [],
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("calls setBaseVariantType for the selected variant type", async () => {
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
+
+    await waitFor(() => {
+      expect(mockSetBaseVariantType).toHaveBeenCalledWith({
+        variantTypeId: SELECTOR_OPTION_ID,
+      });
+    });
+    // Same verb as the control, so the operator can tell the tap landed.
+    expect(
+      await screen.findByText("Marked Insert as the base set"),
+    ).toBeTruthy();
+  });
+
+  it("reports the sibling it took the role FROM, counted by the server", async () => {
+    // The side effect the operator cannot see from here: this panel is scoped
+    // to one row, so the row that just LOST the role is off-screen in another
+    // column. `clearedIds` is the server's own count of it — the alternative
+    // was a hedged "any other base is cleared", which says the same thing
+    // whether or not anything happened.
+    mockSetBaseVariantType.mockResolvedValueOnce({
+      baseId: SELECTOR_OPTION_ID,
+      clearedIds: ["other-variant-type-id"],
+    });
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
+
+    expect(
+      await screen.findByText(
+        "Marked Insert as the base set — cleared 1 other",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("does not claim a clear when the set had no base to take it from", async () => {
+    // A hand-built set marking its first base. Saying "cleared 0 others"
+    // would be noise, and saying "cleared any other" would be a claim about
+    // something that did not happen.
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
+
+    const toast = await screen.findByRole("status");
+    expect(toast.textContent).toBe("Marked Insert as the base set");
+  });
+
+  it("clears the role from the base row, leaving the set with no base", async () => {
+    // `clear: true` is the way back for an operator who marked the wrong row.
+    // Without it the only way to unset a base is to promote some OTHER row,
+    // which forces exactly the guess the clear path exists to avoid — a set is
+    // allowed to have no base at all.
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isBase: true },
+    });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Clear base set from Insert"));
+
+    await waitFor(() => {
+      expect(mockSetBaseVariantType).toHaveBeenCalledWith({
+        variantTypeId: SELECTOR_OPTION_ID,
+        clear: true,
+      });
+    });
+    // No count: clearing touches only the row in front of the operator, so
+    // there is no off-screen sibling to report.
+    expect(await screen.findByText("Cleared the base set")).toBeTruthy();
+  });
+
+  it("drops the indicator once the cleared row comes back without the flag", () => {
+    // The reactive round trip, as the panel sees it: the mutation lands, the
+    // row re-resolves with no `isBase`, and this row is now an ordinary variant
+    // type offering the mark action again. Asserted on the re-resolved row
+    // rather than on local state — the indicator has no state of its own, and
+    // it must not keep showing a role the server has taken away.
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isBase: true },
+    });
+    currentChain = makeChain("Baseball");
+    const { unmount } = renderPanel();
+    expect(screen.getByText("Base set")).toBeTruthy();
+    unmount();
+
+    currentRow = makeRow({ level: "variantType", value: "Insert", metadata: {} });
+    renderPanel();
+
+    expect(screen.queryByText("Base set")).toBeNull();
+    expect(screen.queryByLabelText("Clear base set from Insert")).toBeNull();
+    expect(screen.getByLabelText("Mark Insert as the base set")).toBeTruthy();
+  });
+
+  it("says nothing changed when the CLEAR fails, and leaks no thrown text", async () => {
+    mockSetBaseVariantType.mockRejectedValueOnce(
+      new Error("[Request ID: xyz] Server Error"),
+    );
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isBase: true },
+    });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Clear base set from Insert"));
+
+    const toast = await screen.findByRole("status");
+    expect(toast.textContent).toBe(
+      "Couldn't clear the base set. Nothing changed.",
+    );
+    expect(toast.textContent).not.toContain("Request ID");
+  });
+
+  it("shows a static 'Base set' indicator, and no mark action, on the base row", () => {
+    // `metadata.isBase` is the ONLY input. The row is called "Insert" here on
+    // purpose: if the indicator ever went back to reading the display value,
+    // this row would lose its badge and the test would say so.
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isBase: true },
+    });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    expect(screen.getByText("Base set")).toBeTruthy();
+    // Not the same control in an "on" position: marking is a transfer and this
+    // row already holds the role, so the only thing left to offer is the clear.
+    expect(screen.queryByLabelText("Mark Insert as the base set")).toBeNull();
+    expect(screen.getByLabelText("Clear base set from Insert")).toBeTruthy();
+  });
+
+  it("offers the action on a variant type that is NOT the base", () => {
+    // The other half of the same set. A row carrying metadata that says
+    // nothing about the role is not the base, and can become it.
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Base",
+      metadata: { isInsert: true },
+    });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    expect(screen.getByLabelText("Mark Base as the base set")).toBeTruthy();
+    expect(screen.queryByText("Base set")).toBeNull();
+    expect(screen.queryByLabelText("Clear base set from Base")).toBeNull();
+  });
+
+  it("does not offer the role at any other level", () => {
+    // Only a variant type can be a set's base. Offering it on a set, a year or
+    // a parallel would be an action with no meaning and a mutation that would
+    // have to refuse it.
+    for (const level of ["sport", "year", "manufacturer", "setName", "insert", "parallel"]) {
+      currentRow = makeRow({ level, value: "Topps" });
+      currentChain = makeChain("Baseball");
+      const { unmount } = renderPanel();
+      expect(screen.queryByLabelText("Mark Topps as the base set")).toBeNull();
+      expect(screen.queryByText("Base set")).toBeNull();
+      unmount();
+    }
+  });
+
+  it("says nothing changed when the mutation fails, and leaks no thrown text", async () => {
+    // A Convex/adapter error can carry a marketplace URL or a credential hint,
+    // and the operator's actual question on a failure is whether their data
+    // survived it.
+    mockSetBaseVariantType.mockRejectedValueOnce(
+      new Error("[Request ID: abc] Server Error"),
+    );
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
+
+    const toast = await screen.findByRole("status");
+    expect(toast.textContent).toBe("Couldn't set the base set. Nothing changed.");
+    expect(toast.textContent).not.toContain("Request ID");
+  });
+
+  it("keeps the confirmation visible while the panel is COLLAPSED", async () => {
+    // The control lives in the header, so it is reachable collapsed — which is
+    // how an operator building a set by hand will meet it. The toast used to
+    // render only inside the expanded branch, which would have made this tap
+    // look like it did nothing.
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    currentChain = makeChain("Baseball");
+
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed
+      />,
+    );
+
+    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
+
+    expect(
+      await screen.findByText("Marked Insert as the base set"),
+    ).toBeTruthy();
   });
 });

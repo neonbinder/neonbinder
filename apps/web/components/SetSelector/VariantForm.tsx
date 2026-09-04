@@ -9,8 +9,9 @@ import SyncDoneNotice from "./SyncDoneNotice";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
-  coveredSidesFromErrors,
+  coveredSidesFromFetch,
   returnedIdsFromFetch,
+  skippedSidesOf,
   totalsBySideFor,
   partialFailureMessage,
   planSinglePlatformStore,
@@ -204,7 +205,13 @@ export default function VariantForm({
         // to idle mode, which unmounts this form and takes the alert (and its
         // Retry button) with it. The operator has to be able to see that their
         // data was left alone and to re-run the sync.
-        const plan = planSinglePlatformStore(result.errors);
+        // NEO-239: a side skipped for lack of ids is not "reached and empty",
+        // so it never enters coveredSides — otherwise this store would unlink
+        // every child's slot on a marketplace the fetch never queried.
+        const plan = planSinglePlatformStore(
+          result.errors,
+          skippedSidesOf(result),
+        );
         if (plan.kind === "blocked") {
           setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
           return;
@@ -265,8 +272,14 @@ export default function VariantForm({
 
   const handleReconciliationConfirm = async (result: ReconciledResult) => {
     // Both read off the fetch result the modal was built from. If it is gone
-    // we say nothing rather than guessing — see `coveredSidesFromErrors`.
-    const covered = coveredSidesFromErrors(reconciliationData?.errors);
+    // we say nothing rather than guessing — see `coveredSidesFromFetch`. A side
+    // the fetch SKIPPED for lack of ids is subtracted too (NEO-239): it raises
+    // no error, and calling it covered would unlink every child's slot on a
+    // marketplace that was never asked.
+    const covered = coveredSidesFromFetch(
+      reconciliationData?.errors,
+      skippedSidesOf(reconciliationData),
+    );
     const returnedIds = reconciliationData
       ? returnedIdsFromFetch(reconciliationData)
       : undefined;

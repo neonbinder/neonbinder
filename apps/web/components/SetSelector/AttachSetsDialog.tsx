@@ -7,6 +7,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { Input } from "../primitives/Input";
+import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 
 /**
  * Combined attach dialog (NEO-6 phase 1, reworked in NEO-196). Lists BSC and
@@ -131,6 +132,25 @@ export default function AttachSetsDialog({
 
   const [bscCandidates, setBscCandidates] = useState<Candidate[]>([]);
   const [slCandidates, setSlCandidates] = useState<Candidate[]>([]);
+  /**
+   * NEO-239 — the side was SKIPPED, not asked.
+   *
+   * A row whose chain carries no ids on one side gets `success: true` with an
+   * empty list and the server's fixed skip sentence, because a side with
+   * nothing to scope the query is not an error: the operator can still attach
+   * on the other pane, and a red alert would say otherwise. But rendering that
+   * as the ordinary "No BSC sets for this year." is a lie in the other
+   * direction — it reports on a marketplace nobody asked. So the sentence is
+   * held per side and shown in place of the empty copy.
+   *
+   * Matched by EQUALITY against the server's own exported constant, not by
+   * sniffing the text: a successful non-skip call also carries a `message`,
+   * and it is a count ("BSC: 12 set(s)") that must never surface as an
+   * explanation. Importing the constant means a reword moves both sides at
+   * once.
+   */
+  const [bscSkipNote, setBscSkipNote] = useState<string | null>(null);
+  const [slSkipNote, setSlSkipNote] = useState<string | null>(null);
   const [bscLoading, setBscLoading] = useState(false);
   const [slLoading, setSlLoading] = useState(false);
   // Per-pane, not shared: one marketplace being down must not blank the other,
@@ -199,6 +219,7 @@ export default function AttachSetsDialog({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag raised before the fetch it guards
     setSlLoading(true);
     setSlError(null);
+    setSlSkipNote(null);
     (async () => {
       try {
         const result = await fetchSlAttachSets({ selectorOptionId });
@@ -208,6 +229,7 @@ export default function AttachSetsDialog({
           setSlCandidates([]);
           return;
         }
+        if (isSkipMessage(result)) setSlSkipNote(result.message);
         setSlCandidates(
           dedupe(
             result.options.filter(
@@ -241,6 +263,7 @@ export default function AttachSetsDialog({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loading flag raised before the fetch it guards
     setBscLoading(true);
     setBscError(null);
+    setBscSkipNote(null);
     (async () => {
       try {
         const result = await fetchBscAttachOptions({
@@ -254,6 +277,7 @@ export default function AttachSetsDialog({
           setBscCandidates([]);
           return;
         }
+        if (isSkipMessage(result)) setBscSkipNote(result.message);
         // The variants view drops what is already attached; the set list does
         // NOT. NEO-189 made a set attachable, but it is still the only way to
         // reach a sibling set's variants — filtering an attached set out of
@@ -485,6 +509,7 @@ export default function AttachSetsDialog({
             loading={bscLoading}
             error={bscError}
             emptyText={bscEmptyText}
+            emptyNote={bscSkipNote}
             isEmpty={filteredBsc.length === 0}
           >
             {bscView === "sets"
@@ -525,6 +550,7 @@ export default function AttachSetsDialog({
             loading={slLoading}
             error={slError}
             emptyText="No unattached SportLots sets."
+            emptyNote={slSkipNote}
             isEmpty={filteredSl.length === 0}
           >
             {filteredSl.map((c) => (
@@ -595,6 +621,20 @@ function searchFilter(items: Candidate[], query: string): Candidate[] {
 }
 
 /**
+ * Did this successful result mean "we did not ask that marketplace"?
+ *
+ * Only an empty list can be a skip — a side that returned candidates was
+ * plainly reached — and only the server's own skip sentence counts, so a
+ * genuinely empty marketplace keeps the pane's ordinary empty copy.
+ */
+function isSkipMessage(result: {
+  options: unknown[];
+  message?: string;
+}): result is { options: unknown[]; message: string } {
+  return result.options.length === 0 && result.message === NO_MARKETPLACE_IDS_MESSAGE;
+}
+
+/**
  * Shared pane chrome — heading, optional breadcrumb, search box, count, and
  * the loading / error / empty states. Both marketplaces render the same shell
  * so the two sides read as one control surface even though only BSC has a
@@ -612,6 +652,7 @@ function Pane({
   loading,
   error,
   emptyText,
+  emptyNote,
   isEmpty,
   children,
 }: {
@@ -636,6 +677,13 @@ function Pane({
   loading: boolean;
   error: string | null;
   emptyText: string;
+  /**
+   * Replaces `emptyText` AND the no-matches line when the whole side was
+   * skipped. It outranks the search message deliberately: with nothing
+   * fetched, every search comes back empty, and "No matches for 'topps'"
+   * would blame the filter for a pane that was never populated.
+   */
+  emptyNote?: string | null;
   isEmpty: boolean;
   children: React.ReactNode;
 }) {
@@ -682,7 +730,8 @@ function Pane({
         )}
         {!loading && !error && isEmpty && (
           <li className="text-xs text-gray-500 italic px-2 py-1">
-            {search.trim() ? `No matches for “${search.trim()}”.` : emptyText}
+            {emptyNote ??
+              (search.trim() ? `No matches for “${search.trim()}”.` : emptyText)}
           </li>
         )}
         {!loading && !error && children}

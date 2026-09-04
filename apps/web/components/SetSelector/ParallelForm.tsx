@@ -9,8 +9,9 @@ import SyncDoneNotice from "./SyncDoneNotice";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
-  coveredSidesFromErrors,
+  coveredSidesFromFetch,
   returnedIdsFromFetch,
+  skippedSidesOf,
   totalsBySideFor,
   partialFailureMessage,
   planSinglePlatformStore,
@@ -152,7 +153,12 @@ export default function ParallelForm({
         // about the OTHER side too, so an adapter error means write nothing and
         // name the platform. No onDone() on this path: it would unmount the
         // form and take the alert and its Retry button with it.
-        const plan = planSinglePlatformStore(result.errors);
+        // NEO-239: a side skipped for lack of ids is not "reached and empty",
+        // so it never enters coveredSides — see VariantForm.doSync.
+        const plan = planSinglePlatformStore(
+          result.errors,
+          skippedSidesOf(result),
+        );
         if (plan.kind === "blocked") {
           setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
           return;
@@ -208,8 +214,14 @@ export default function ParallelForm({
 
   const handleReconciliationConfirm = async (result: ReconciledResult) => {
     // Both read off the fetch result the modal was built from. If it is gone
-    // we say nothing rather than guessing — see `coveredSidesFromErrors`.
-    const covered = coveredSidesFromErrors(reconciliationData?.errors);
+    // we say nothing rather than guessing — see `coveredSidesFromFetch`. A side
+    // the fetch SKIPPED for lack of ids is subtracted too (NEO-239): it raises
+    // no error, and calling it covered would unlink every child's slot on a
+    // marketplace that was never asked.
+    const covered = coveredSidesFromFetch(
+      reconciliationData?.errors,
+      skippedSidesOf(reconciliationData),
+    );
     const returnedIds = reconciliationData
       ? returnedIdsFromFetch(reconciliationData)
       : undefined;

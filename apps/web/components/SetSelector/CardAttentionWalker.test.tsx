@@ -158,20 +158,21 @@ describe("deriveCardAttention", () => {
     );
   });
 
-  it("flags a CUSTOM card with no team immediately — there is no lookup to wait for", () => {
+  it("flags a card with NO marketplace ref immediately — there is no lookup to wait for", () => {
     // The case the placeholder rule got wrong: gating on teamCheckDoneAt
-    // unconditionally left custom cards permanently unbadged, which is the
-    // exact invisibility this ticket exists to fix. A custom card has no
-    // platformData.bsc.ref, so nothing will ever stamp teamCheckDoneAt on it
-    // and waiting for that stamp means waiting forever.
-    const custom: CardChecklistRow = {
-      _id: "card-custom" as unknown as Id<"cardChecklist">,
+    // unconditionally left hand-added cards permanently unbadged, which is the
+    // exact invisibility this ticket exists to fix. A card with no
+    // platformData.bsc.ref has nothing that will ever stamp teamCheckDoneAt on
+    // it, so waiting for that stamp means waiting forever. NEO-239: the absent
+    // ref IS the condition — there is no "custom" flag to read, and a row that
+    // later gets an id attached simply stops matching.
+    const handAdded: CardChecklistRow = {
+      _id: "card-hand-added" as unknown as Id<"cardChecklist">,
       cardNumber: "301",
       cardName: "Hand-added Card",
-      isCustom: true,
     };
-    expect(deriveCardAttention(custom)).toEqual([{ kind: "missingTeam" }]);
-    expect(needsAttention(custom)).toBe(true);
+    expect(deriveCardAttention(handAdded)).toEqual([{ kind: "missingTeam" }]);
+    expect(needsAttention(handAdded)).toBe(true);
   });
 
   it("flags a SportLots-only card immediately, for the same reason", () => {

@@ -8,7 +8,8 @@ import {
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
 import { FeatureValueControl } from "./FeatureValueControl";
-import RenameEntityControl, { canRenameSelectorRow } from "./RenameEntityControl";
+import RenameEntityControl from "./RenameEntityControl";
+import BaseRoleControl from "./BaseRoleControl";
 
 /**
  * NEO-38 (PR B-2) — level-agnostic set ATTRIBUTES editor.
@@ -134,6 +135,12 @@ export default function SetAttributesPanel({
   const breadcrumb = chain.map((c) => c.value).join(" › ");
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
 
+  /** Raise a transient confirmation. Shared by the feature rows and the header. */
+  const showToast = (message: string) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 6000);
+  };
+
   const handleSaveFeature = async (
     key: string,
     label: string,
@@ -144,8 +151,7 @@ export default function SetAttributesPanel({
     if (features[key] === trimmed) return; // no-op
     // Optimistic "Saved {label}" confirmation — the mutation is a single-row
     // patch (NEO-71-74), no propagation counts to report.
-    setToast(`Saved ${label}`);
-    setTimeout(() => setToast(null), 6000);
+    showToast(`Saved ${label}`);
     try {
       await setSelectorOptionFeature({ selectorOptionId, key, value: trimmed });
     } catch (e) {
@@ -171,12 +177,23 @@ export default function SetAttributesPanel({
             <h3 className="text-sm font-semibold text-gray-100">
               {headerTitle}
             </h3>
-            {/* NEO-211 (plan F): a non-custom variantType's value drives Base
-                detection and the BSC checklist fetch's `variant` facet, so it is
-                not editable. Rendering a pencil that always errors would be a
-                worse answer than not offering one. */}
-            {canRenameSelectorRow(row) && (
-              <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+            {/* NEO-239: every level renames, variantType included. Base is an
+                NB role flag and the BSC `variant` facet comes off the row's
+                tagged slot, so no display value is load-bearing any more. */}
+            <RenameEntityControl id={selectorOptionId} currentValue={row.value} />
+            {/* NEO-239: which variant type is the set's base is IDENTITY, not
+                an attribute, so it sits with the name rather than in the grid
+                below — and stays reachable while the panel is collapsed, which
+                is how an operator building a set by hand will meet it. Only
+                variant types have the role; nothing else in the hierarchy can
+                be a base set. */}
+            {leafLevel === "variantType" && (
+              <BaseRoleControl
+                id={selectorOptionId}
+                value={row.value}
+                metadata={row.metadata}
+                onResult={showToast}
+              />
             )}
           </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
@@ -206,6 +223,25 @@ export default function SetAttributesPanel({
         )}
       </div>
 
+      {toast && (
+        // NEO-47: position the save confirmation FIXED in the viewport, not
+        // in-flow above the grid. A save made while scrolled down to the
+        // feature rows would otherwise render the toast off-screen above
+        // the fold — invisible to the user (and the e2e assertion).
+        //
+        // NEO-239: outside the `expanded` branch, because the header now holds
+        // a control ("Mark as base set") that is reachable while the panel is
+        // collapsed. A confirmation that only renders in the expanded state
+        // would leave that action looking like it did nothing.
+        <div
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          role="status"
+          aria-live="polite"
+        >
+          {toast}
+        </div>
+      )}
+
       {expanded && (
         <>
           <div className="flex items-center justify-between">
@@ -213,20 +249,6 @@ export default function SetAttributesPanel({
               Set attributes
             </span>
           </div>
-
-          {toast && (
-            // NEO-47: position the save confirmation FIXED in the viewport, not
-            // in-flow above the grid. A save made while scrolled down to the
-            // feature rows would otherwise render the toast off-screen above
-            // the fold — invisible to the user (and the e2e assertion).
-            <div
-              className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
-              role="status"
-              aria-live="polite"
-            >
-              {toast}
-            </div>
-          )}
 
           {toggleFeatures.length > 0 && (
             <div

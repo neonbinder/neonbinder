@@ -45,6 +45,7 @@
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -650,6 +651,96 @@ describe("AttachSetsDialog — failures and keyboard", () => {
       "session expired",
     );
     expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy();
+  });
+
+  /**
+   * NEO-239 — a SKIP is neither a failure nor an empty marketplace.
+   *
+   * A row whose chain carries no ids on one side is not queried on that side:
+   * the action returns `success: true` with an empty list and the server's
+   * fixed skip sentence, because the operator can still attach on the other
+   * pane and a red alert would say the marketplace broke. What the pane must
+   * NOT do is render that as its ordinary empty copy, which reports on a
+   * marketplace nobody asked.
+   */
+  test("a SKIPPED SportLots side explains itself instead of reading as empty", async () => {
+    mockFetchSl.mockResolvedValue({
+      success: true,
+      options: [],
+      message: NO_MARKETPLACE_IDS_MESSAGE,
+    });
+
+    renderDialog();
+
+    const sl = within(slPane());
+    await waitFor(() =>
+      expect(sl.getByText(NO_MARKETPLACE_IDS_MESSAGE)).toBeTruthy(),
+    );
+    // Not the ordinary empty copy, and not an error: the side was skipped.
+    expect(sl.queryByText("No unattached SportLots sets.")).toBeNull();
+    expect(sl.queryByRole("alert")).toBeNull();
+    // The other pane is untouched — attaching on BSC is still the way forward.
+    expect(within(bscPane()).getByLabelText("Toggle Gold Foil")).toBeTruthy();
+  });
+
+  test("the skip note outranks the no-matches line, which would blame the filter", async () => {
+    // With nothing fetched every search comes back empty, so "No matches for
+    // 'chrome'" would point the operator at their own typing for a pane that
+    // was never populated.
+    mockFetchSl.mockResolvedValue({
+      success: true,
+      options: [],
+      message: NO_MARKETPLACE_IDS_MESSAGE,
+    });
+
+    renderDialog();
+    await waitFor(() =>
+      expect(within(slPane()).getByText(NO_MARKETPLACE_IDS_MESSAGE)).toBeTruthy(),
+    );
+
+    fireEvent.change(screen.getByLabelText("Search SportLots sets"), {
+      target: { value: "chrome" },
+    });
+
+    const sl = within(slPane());
+    expect(sl.getByText(NO_MARKETPLACE_IDS_MESSAGE)).toBeTruthy();
+    expect(sl.queryByText(/No matches for/)).toBeNull();
+  });
+
+  test("an empty-but-REACHED marketplace keeps the ordinary empty copy", async () => {
+    // The distinction the equality check exists for: a successful call also
+    // carries a `message`, and on this path it is a count. Rendering that as
+    // the explanation would tell the operator "SportLots: 0 set(s)".
+    mockFetchSl.mockResolvedValue({
+      success: true,
+      options: [],
+      message: "SportLots: 0 set(s)",
+    });
+
+    renderDialog();
+
+    const sl = within(slPane());
+    await waitFor(() =>
+      expect(sl.getByText("No unattached SportLots sets.")).toBeTruthy(),
+    );
+    expect(sl.queryByText("SportLots: 0 set(s)")).toBeNull();
+  });
+
+  test("a SKIPPED BSC side explains itself in the BSC pane", async () => {
+    mockFetchBsc.mockResolvedValue({
+      success: true,
+      options: [],
+      message: NO_MARKETPLACE_IDS_MESSAGE,
+    });
+
+    renderDialog();
+
+    const bsc = within(bscPane());
+    await waitFor(() =>
+      expect(bsc.getByText(NO_MARKETPLACE_IDS_MESSAGE)).toBeTruthy(),
+    );
+    expect(bsc.queryByRole("alert")).toBeNull();
+    expect(within(slPane()).getByLabelText("Toggle Topps Chrome")).toBeTruthy();
   });
 
   test("Enter on a browse button browses instead of attaching", async () => {

@@ -48,6 +48,7 @@ import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
+import { isBaseRole } from "../SetSelector/baseRole";
 
 import SportSelector from "../SetSelector/SportSelector";
 import YearSelector from "../SetSelector/YearSelector";
@@ -123,8 +124,9 @@ export default function SetSelector() {
 
   // Base is a terminal variantType: when selected, the cascade stops
   // there and the CardChecklist attaches to the variantType row itself
-  // (no Variant / Variant-of-Variant columns). Read the row to detect
-  // value === "Base" and to drive the auto-mapping prompt.
+  // (no Variant / Variant-of-Variant columns). Read the row for its NB base
+  // role (NEO-239: `metadata.isBase`, never the display value) and to drive
+  // the auto-mapping prompt.
   const selectedVariantType = useQuery(
     api.selectorOptions.getSelectorOptionById,
     selectedVariantTypeId ? { id: selectedVariantTypeId } : "skip",
@@ -155,8 +157,9 @@ export default function SetSelector() {
     };
   }
   if (selectedVariantType !== undefined) {
-    stableVariantTypeFlagsRef.current.isBase =
-      selectedVariantType?.value.toLowerCase().trim() === "base";
+    stableVariantTypeFlagsRef.current.isBase = isBaseRole(
+      selectedVariantType?.metadata,
+    );
     // Auto-prompt is gated on the SportLots mapping specifically. The BSC
     // slug on the row is auto-populated by "Sync Variant Types" (BSC's
     // variant facet returns "Base" with a slug), so testing it would

@@ -124,6 +124,45 @@ describe("MultiSourcePanel — the facet a BSC slot filters on (NEO-189)", () =>
     expect(bsc.getByLabelText("Series 2 is attached as a BSC set")).toBeTruthy();
   });
 
+  test("names BSC's `variant` facet for the NB level it filters, not 'variant'", () => {
+    // NEO-239 made `variant` a tagged facet (it used to be re-derived from the
+    // row's display value, which is what made variantType rows unrenameable).
+    // It has to read differently from `variantName`: one selects BSC's
+    // Base/Insert/Parallel axis — NB's variant TYPE — and the other selects one
+    // named variant inside a set. Same word, unrelated sources.
+    setRow({
+      platformData: { bsc: { b1: "base", b2: "gold-foil" } },
+      platformLabels: { bsc: { b1: "Base", b2: "Gold Foil" } },
+      platformFacets: { bsc: { b1: "variant", b2: "variantName" } },
+      primaryPlatformId: { bsc: "b1" },
+    });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    const bsc = within(bscColumn());
+    expect(
+      bsc.getByLabelText("Base is attached as a BSC variant type"),
+    ).toBeTruthy();
+    expect(
+      bsc.getByLabelText("Gold Foil is attached as a BSC variant"),
+    ).toBeTruthy();
+  });
+
+  test("renders for a row with NO ids at all — that is the attach affordance", () => {
+    // NEO-239. This panel used to return null for a row flagged `isCustom`, on
+    // the theory that a hand-entered row "has no marketplace concept". It was
+    // backwards: the panel IS the only way to attach a first id, so hiding it
+    // on exactly the rows that have none made them permanently unattachable,
+    // and made a set entered by hand a second class of thing. A set either
+    // carries marketplace ids or it does not, and both behave the same.
+    setRow({ platformData: {}, isCustom: true });
+    render(<MultiSourcePanel selectorOptionId={ROW_ID} />);
+
+    expect(screen.getByText("Multi-source sets")).toBeTruthy();
+    expect(screen.getByLabelText("Attach more source sets")).toBeTruthy();
+    // Both sides say so explicitly rather than rendering an empty column.
+    expect(screen.getAllByText("No sets attached.")).toHaveLength(2);
+  });
+
   test("SportLots chips never carry a facet tag", () => {
     // SL has one unit of attachment, so a tag there would be noise that reads
     // as a distinction the marketplace does not make.

@@ -128,6 +128,24 @@ describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
     expect(onDone).toHaveBeenCalled();
   });
 
+  it("does NOT cover a side the fetch SKIPPED for lack of ids (NEO-239)", async () => {
+    // NEO-239 replaced the "custom subtree" abort with a per-side skip: a side
+    // whose required ancestor ids are missing is simply not queried, and it
+    // reports no error. That skip has to reach `coveredSides`, because
+    // `coveredSides` is what licenses the store to DETACH — an empty SportLots
+    // side that was never asked would otherwise unlink every child's SL slot.
+    // The store still runs: BSC really did answer, and its rows are real.
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      skippedSides: ["sportlots"],
+    });
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(args.coveredSides).toEqual(["bsc"]);
+  });
+
   it("writes NOTHING when the empty side errored, and names the platform", async () => {
     mockFetchRawOptions.mockResolvedValue(
       bscOnly([{ platform: "sportlots", message: "socket hang up" }]),
@@ -290,7 +308,7 @@ describe("VariantForm — reconciliation confirm (NEO-211 F1)", () => {
   });
 
   it("omits coveredSides entirely rather than claiming both sides were fine", async () => {
-    // coveredSidesFromErrors fails closed on an absent fetch result; this pins
+    // coveredSidesFromFetch fails closed on an absent fetch result; this pins
     // that the confirm path spreads it rather than assigning undefined.
     mockFetchRawOptions.mockResolvedValue(bothSides());
     await renderForm();

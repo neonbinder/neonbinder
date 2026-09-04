@@ -306,12 +306,13 @@ describe("CardChecklistItem — NEO-102 attention mark", () => {
     expect(screen.queryByLabelText(/needs attention/)).toBeNull();
   });
 
-  it("marks a custom row with no team right away — nothing will ever look it up", () => {
+  it("marks a row with no marketplace ref and no team right away — nothing will ever look it up", () => {
     // No platformData.bsc.ref, so no automatic source: `makeCard()`'s default
     // is exactly this shape. Gating on teamCheckDoneAt regardless of the ref
     // (as an earlier draft of the rule did) left these cards permanently
-    // unbadged, which is the invisibility NEO-102 exists to fix.
-    renderItem({ card: makeCard({ isCustom: true }) });
+    // unbadged, which is the invisibility NEO-102 exists to fix. NEO-239: the
+    // missing ref is the whole condition; there is no flag saying "hand-added".
+    renderItem({ card: makeCard() });
     expect(
       screen.getByLabelText("Card 42 needs attention: no team on this card yet"),
     ).toBeTruthy();

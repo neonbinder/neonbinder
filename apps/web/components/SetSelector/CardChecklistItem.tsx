@@ -50,7 +50,6 @@ type CardChecklistItemProps = {
       bsc?: { ref: string; src?: string };
       sportlots?: { ref: string; src?: string };
     };
-    isCustom?: boolean;
     // NEO-189: the card this row is a variation OF, when it is one.
     variationOfCardId?: Id<"cardChecklist">;
     // NEO-21: present only on guest rows — a card printed in another product
@@ -343,11 +342,6 @@ export default function CardChecklistItem({
             }
           >
             BSC
-          </span>
-        )}
-        {card.isCustom && (
-          <span className="text-xs px-1 py-0.5 rounded bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700">
-            Custom
           </span>
         )}
         {/* NEO-21: names the set this card was physically printed in, so it's

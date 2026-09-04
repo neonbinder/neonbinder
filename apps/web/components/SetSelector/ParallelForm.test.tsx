@@ -99,6 +99,20 @@ describe("ParallelForm — single-platform store (NEO-211 plan B)", () => {
     expect(onDone).toHaveBeenCalled();
   });
 
+  it("does NOT cover a side the fetch SKIPPED for lack of ids (NEO-239)", async () => {
+    // Same guarantee as VariantForm's: a side that was never queried reports no
+    // error, and counting it as covered would let this store detach every
+    // child's slot on that marketplace.
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      skippedSides: ["sportlots"],
+    });
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    expect(mockStore.mock.calls[0][0].coveredSides).toEqual(["bsc"]);
+  });
+
   it("writes NOTHING when the empty side errored, and keeps Retry reachable", async () => {
     mockFetchRawOptions.mockResolvedValue(
       bscOnly([{ platform: "sportlots", message: "socket hang up" }]),

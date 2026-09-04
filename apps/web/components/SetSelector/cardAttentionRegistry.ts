@@ -104,7 +104,6 @@ export type CardChecklistRow = {
   listingTitleTruncated?: boolean;
   autographType?: string;
   printRun?: number;
-  isCustom?: boolean;
 };
 
 export type AttentionFixerProps = {

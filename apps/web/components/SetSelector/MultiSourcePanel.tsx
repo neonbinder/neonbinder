@@ -6,6 +6,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import AttachSetsDialog from "./AttachSetsDialog";
 import { slotEntries, slotFacet, slotLabel } from "../../convex/platformSlots";
+import type { BscFacet } from "../../convex/bscFacets";
 
 /**
  * Per-row attached-sets panel (NEO-6 phase 1). Renders chip stacks for the
@@ -44,8 +45,15 @@ type SlotChip = {
    * from the label. Absent on every slot attached before NEO-189 and on every
    * slot the reconciler writes — those are the untagged ones the fetch handles
    * by NB level, so "no tag" is a real, visible state rather than a gap.
+   *
+   * NEO-239 added a third: `variant`, the BSC axis a variantType row filters on
+   * (what used to be re-derived from the row's DISPLAY VALUE, which is why
+   * those rows could not be renamed). An untagged variantType row makes the BSC
+   * side unresolvable and is skipped, so whether this tag is present is now the
+   * difference between a row that fetches and one that does not — the operator
+   * has to be able to see it.
    */
-  facet?: "setName" | "variantName";
+  facet?: BscFacet;
 };
 
 export default function MultiSourcePanel({
@@ -127,11 +135,11 @@ export default function MultiSourcePanel({
         : {}),
     }));
 
-  // Hide only for genuinely custom user-created rows, which have no
-  // marketplace concept at all. Marketplace-backed rows stay reachable even
-  // after every id has been removed (NEO-71-74), so a cleared/bad primary
-  // mapping can always be re-attached via "Attach more…" below.
-  if (row.isCustom) return null;
+  // NEO-239: no row is hidden here. A set either carries marketplace ids or
+  // it does not, and both behave the same — an id can be attached to ANY row,
+  // including one entered by hand and one whose ids were all detached
+  // (NEO-71-74). The panel IS the affordance for attaching the first id, so
+  // hiding it on the rows that have none was exactly backwards.
 
   return (
     <div className="border border-gray-700 rounded-lg bg-gray-900/60 p-4">
@@ -203,6 +211,20 @@ export default function MultiSourcePanel({
     </div>
   );
 }
+
+/**
+ * What each BSC facet is CALLED in this panel.
+ *
+ * `variant` is BSC's own axis of Base / Insert / Parallel, which is NB's
+ * variantType column, so it is named for the NB level the operator is looking
+ * at rather than for BSC's word — the two "variant" facets would otherwise be
+ * one indistinguishable label, and they source completely different things.
+ */
+const FACET_NOUN: Record<BscFacet, string> = {
+  setName: "set",
+  variantName: "variant",
+  variant: "variant type",
+};
 
 function SideColumn({
   title,
@@ -393,11 +415,9 @@ function Chip({
         // so it cannot be mistaken for the green select/commit affordance.
         <span
           className="text-[10px] uppercase tracking-wide text-gray-500 shrink-0"
-          aria-label={`${chip.label} is attached as a BSC ${
-            chip.facet === "setName" ? "set" : "variant"
-          }`}
+          aria-label={`${chip.label} is attached as a BSC ${FACET_NOUN[chip.facet]}`}
         >
-          {chip.facet === "setName" ? "set" : "variant"}
+          {FACET_NOUN[chip.facet]}
         </span>
       )}
       </div>
