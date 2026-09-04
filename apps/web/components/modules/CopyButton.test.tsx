@@ -9,6 +9,13 @@
  * to be the CALLER's wording, because the right manual fallback differs per
  * caller ("select the number" for text on screen, "open the link" for a URL
  * that is not).
+ *
+ * NEO-212 merged the icon copy button (`components/primitives/CopyButton`)
+ * into this file as `variant="icon"`, so the icon presentation is asserted
+ * here too — including the part that made it a separate presentation rather
+ * than a separate component: on success the announcement is visually hidden
+ * (the check mark already said it, and inline text would reflow the row),
+ * while on failure it is SHOWN, because it is the recovery instruction.
  */
 
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -85,5 +92,57 @@ describe("CopyButton", () => {
     expect(container.children).toHaveLength(2);
     expect(container.children[0].tagName).toBe("BUTTON");
     expect(container.children[1].tagName).toBe("SPAN");
+  });
+});
+
+/**
+ * The icon presentation. `variant="text"` is unchanged by its arrival — that
+ * is what every test above is pinning — so what is left to assert is the two
+ * things the icon variant does differently.
+ */
+describe("CopyButton, variant=icon", () => {
+  function renderIcon() {
+    return render(
+      <CopyButton
+        value="Ken Griffey Jr."
+        variant="icon"
+        copyLabel="Copy player name"
+        copiedMessage="Copied"
+        failedMessage="Copy failed — select the text and copy manually"
+      />,
+    );
+  }
+
+  it("is icon-only, so its accessible name is its only name", async () => {
+    writeText.mockResolvedValue(undefined);
+    renderIcon();
+
+    const button = screen.getByRole("button", { name: "Copy player name" });
+    // No visible text of its own: the glyph is aria-hidden, the name is the
+    // aria-label, and the status region is empty until a press.
+    expect(button.textContent).toBe("");
+    expect(screen.getByRole("status").textContent).toBe("");
+
+    fireEvent.click(button);
+
+    expect(await screen.findByText("Copied")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith("Ken Griffey Jr.");
+    // Announced, not shown — the check mark is the sighted confirmation and an
+    // inline "Copied" would reflow the row it sits in.
+    expect(screen.getByRole("status").className).toContain("sr-only");
+  });
+
+  it("shows the failure, because it is the instruction the user must follow", async () => {
+    writeText.mockRejectedValue(new Error("denied"));
+    renderIcon();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy player name" }));
+
+    expect(
+      await screen.findByText(
+        "Copy failed — select the text and copy manually",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole("status").className).not.toContain("sr-only");
   });
 });
