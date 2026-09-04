@@ -299,6 +299,20 @@ export default function EntityReviewWizard({
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   /**
+   * a11y (WCAG 2.4.3 / 4.1.2) — where to park focus while `cancelling` or
+   * `saving` disables the footer button that was just clicked.
+   *
+   * Both flags flip true the instant Cancel (with nothing decided — no
+   * `ConfirmDialog` involved) or Confirm & Save / Retry commit is pressed,
+   * and both use NATIVE `disabled` on that button (unlike the per-row
+   * decision controls, which use `aria-disabled` for exactly this reason —
+   * see the header note on NEO-221's `busy` guard). The browser blurs a
+   * disabled element to `<body>` the instant it disables, dropping focus
+   * outside the still-open, still-`aria-modal` dialog. Mirrors
+   * `ConfirmDialog`'s own `if (busy) dialogRef.current?.focus()`.
+   */
+  const dialogRootRef = useRef<HTMLDivElement>(null);
+  /**
    * True once this batch has ever had rows, and true once the operator's own
    * cancel emptied it. Both feed the expired-session tell (D13) and both are
    * READ DURING RENDER, so they are state rather than refs.
@@ -514,6 +528,21 @@ export default function EntityReviewWizard({
   useEffect(() => {
     if (allDecided) confirmButtonRef.current?.focus();
   }, [allDecided]);
+
+  // See `dialogRootRef`'s own doc comment: both flags disable the button
+  // that triggered them, natively, which otherwise strands focus on
+  // `<body>` for the length of the round-trip.
+  //
+  // `cancelling && !confirming` on purpose: when `decided > 0`, `cancelling`
+  // flips true from INSIDE the already-open `ConfirmDialog` (its own
+  // "Discard" button), which already parks focus on ITS OWN container via
+  // the identical pattern. Parking here too would fire in the same commit
+  // and steal focus back out of the confirm dialog that is still on screen.
+  // This branch is for the one case ConfirmDialog is never involved in: the
+  // `decided === 0` immediate-cancel fast path.
+  useEffect(() => {
+    if ((cancelling && !confirming) || saving) dialogRootRef.current?.focus();
+  }, [cancelling, confirming, saving]);
 
   /**
    * NEO-221 — keep issuing the bulk create as lookups settle, while armed.
@@ -928,10 +957,14 @@ export default function EntityReviewWizard({
     // needs a nested <Theme> — it escapes the root Theme's CSS scope.
     <Theme>
       <div
-        className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4"
+        className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 outline-none"
         role="dialog"
         aria-modal="true"
         aria-labelledby="entity-review-wizard-title"
+        ref={dialogRootRef}
+        // Focusable only programmatically — see `dialogRootRef`'s own doc
+        // comment for what lands here and why.
+        tabIndex={-1}
         onKeyDown={(e) => {
           if (e.key !== "Escape") return;
           // The discard confirm owns Escape while it is up (it cancels itself).
@@ -1259,10 +1292,13 @@ export default function EntityReviewWizard({
                       >
                         Change decision
                       </NeonButton>
+                      {/* a11y (2.5.8): p-2 -m-2 grows the tap target to
+                          ~24x24 without shifting the visible text — the same
+                          convention as TrackingCode's Copy button. */}
                       <button
                         type="button"
                         onClick={resumeWalking}
-                        className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted"
+                        className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted"
                       >
                         Next
                       </button>
@@ -1473,11 +1509,15 @@ export default function EntityReviewWizard({
                             Skip — not a {notAWhat(current.kind)}
                           </button>
                           {backTargetId && (
+                            // a11y (2.5.8): p-2 -m-2, same convention as
+                            // TrackingCode's Copy button — grows the tap
+                            // target without moving the visible text or its
+                            // siblings in this row.
                             <button
                               type="button"
                               onClick={() => presentDecided(backTargetId)}
                               aria-label="Back to previous decision"
-                              className="text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
+                              className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
                             >
                               Back
                             </button>
@@ -1534,13 +1574,16 @@ export default function EntityReviewWizard({
                         {saving ? "Saving..." : "Retry commit"}
                       </NeonButton>
                       {onDismissCommitError && (
+                        // a11y (2.5.8): p-2 -m-2 grows the tap target without
+                        // moving the visible text — same convention as
+                        // TrackingCode's Copy button.
                         <button
                           type="button"
                           onClick={() => {
                             onDismissCommitError();
                             if (backTargetId) presentDecided(backTargetId);
                           }}
-                          className="text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
+                          className="p-2 -m-2 text-xs text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted"
                         >
                           Back to review
                         </button>
@@ -1588,7 +1631,13 @@ export default function EntityReviewWizard({
                           handleChangeDecision(row._id);
                         }}
                         aria-label={`Change decision for ${row.name}`}
-                        className="text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                        // a11y (2.5.8): py-1 gets this to 24px tall (16px
+                        // text-xs line-height + 2×4px). Only horizontal
+                        // margin is cancelled (-mx-1) — the vertical padding
+                        // is left to grow the row itself rather than
+                        // overlapping the list's `space-y-1` gap between
+                        // adjacent "Decided" rows.
+                        className="py-1 px-1 -mx-1 text-gray-400 hover:text-[#00B7FF] focus:text-[#00B7FF] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                       >
                         Change
                       </button>
@@ -1612,13 +1661,17 @@ export default function EntityReviewWizard({
                   <span className="text-xs text-gray-400" role="status" aria-live="polite">
                     Adding {remaining} more as their lookups finish…
                   </span>
+                  {/* a11y (2.5.8): p-2 -m-2 — same convention as
+                      TrackingCode's Copy button; the footer's height is
+                      fixed by its own padding (see the NEO-110 note above),
+                      so this cannot move it. */}
                   <button
                     type="button"
                     onClick={() => {
                       autoAddRef.current = false;
                       setAutoAddPending(false);
                     }}
-                    className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
+                    className="p-2 -m-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted"
                   >
                     Stop
                   </button>

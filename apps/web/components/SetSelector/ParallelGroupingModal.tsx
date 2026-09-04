@@ -389,6 +389,9 @@ export default function ParallelGroupingModal({
   const [error, setError] = useState<string | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  /** What had focus before this opened, so it can go back there on close
+   *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   // Initialize once when the tree first resolves. Subsequent updates from
   // other tabs are intentionally ignored — re-initializing would discard the
@@ -585,18 +588,28 @@ export default function ParallelGroupingModal({
   }, [confirming, onClose, totalChanges]);
 
   /**
-   * NEO-220 — focus opens on the dialog container.
+   * NEO-220 — focus opens on the dialog container, and returns to whatever
+   * opened it on close.
    *
-   * This is what makes the root `onKeyDown` below reachable at all: Escape is
-   * handled on the overlay element now, not on `window`, and a keypress only
-   * reaches it if focus is inside. The window listener it replaces fired
-   * wherever focus happened to be, including inside the discard confirm this
-   * dialog now renders — one Escape would have dismissed the confirm AND the
-   * session it was protecting.
+   * The focus-in-and-back-out half is what makes the root `onKeyDown` below
+   * reachable at all: Escape is handled on the overlay element now, not on
+   * `window`, and a keypress only reaches it if focus is inside. The window
+   * listener it replaced fired wherever focus happened to be, including
+   * inside the discard confirm this dialog now renders — one Escape would
+   * have dismissed the confirm AND the session it was protecting.
+   *
+   * Capture-trigger-restore-on-close mirrors CardPairingModal's own effect —
+   * without it, closing (Cancel, Confirm, or the discard confirm) drops focus
+   * to `<body>` instead of back to the "Group Parallels" button that opened
+   * this dialog.
    */
   useEffect(() => {
     if (!isOpen) return;
+    triggerRef.current = document.activeElement as HTMLElement | null;
     overlayRef.current?.focus();
+    return () => {
+      if (triggerRef.current?.isConnected) triggerRef.current.focus();
+    };
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -615,23 +628,49 @@ export default function ParallelGroupingModal({
     <Theme>
     <div
       className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 outline-none"
+      // NEO-220 a11y fix: this dialog announced itself to nothing — no role,
+      // no accessible name, and (until the Tab trap below) no keyboard
+      // containment, unlike every sibling dialog in this directory.
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="parallel-grouping-heading"
       ref={overlayRef}
       // Focusable only programmatically — it exists so Escape has somewhere to
       // land inside this dialog rather than on `window`.
       tabIndex={-1}
       onClick={requestClose}
       onKeyDown={(e) => {
-        if (e.key !== "Escape") return;
-        // The discard confirm is a sibling in this portal and owns Escape
-        // while it is open.
-        if (discardOpen) return;
-        // D8: Escape inside a text field means something smaller and local.
-        if (isEditableTarget(e.target)) return;
-        // Escape during a drag cancels the DRAG (dnd-kit's own document
-        // listener); one keypress must not also end the session.
-        if (activeDragId) return;
-        e.preventDefault();
-        requestClose();
+        if (e.key === "Escape") {
+          // The discard confirm is a sibling in this portal and owns Escape
+          // while it is open.
+          if (discardOpen) return;
+          // D8: Escape inside a text field means something smaller and local.
+          if (isEditableTarget(e.target)) return;
+          // Escape during a drag cancels the DRAG (dnd-kit's own document
+          // listener); one keypress must not also end the session.
+          if (activeDragId) return;
+          e.preventDefault();
+          requestClose();
+          return;
+        }
+        if (e.key !== "Tab") return;
+        // Keep Tab inside the dialog — aria-modal="true" promises this.
+        // Copied from ReconciliationModal / CardPairingModal's own trap.
+        const root = overlayRef.current;
+        if (!root) return;
+        const focusable = root.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), [href], select, textarea, [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }}
     >
       <div
@@ -641,7 +680,10 @@ export default function ParallelGroupingModal({
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-700 flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-xl font-semibold text-white">
+            <h2
+              id="parallel-grouping-heading"
+              className="text-xl font-semibold text-white"
+            >
               Group Parallels
             </h2>
             <p className="text-sm text-gray-400 mt-1">

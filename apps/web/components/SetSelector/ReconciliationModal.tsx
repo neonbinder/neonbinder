@@ -817,6 +817,9 @@ export default function ReconciliationModal({
    */
   const [discardOpen, setDiscardOpen] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  /** What had focus before this opened, so it can go back there on close
+   *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
+  const triggerRef = useRef<HTMLElement | null>(null);
   // Default SL-side prefixes: full set name, set name with manufacturer
   // prefix stripped, plus any caller-supplied extras (typically the SL Base
   // anchor's name). De-duped and lowercased.
@@ -1130,10 +1133,19 @@ export default function ReconciliationModal({
    * inside. It starts here, on the container, so the first Tab lands on the
    * dialog's own first control rather than wherever the operator had been on
    * the page behind.
+   *
+   * Trigger is captured and restored on close (mirrors CardPairingModal's own
+   * effect) — without it, closing this dialog (Cancel, Confirm, or the
+   * discard confirm) drops focus to `<body>` instead of back to whatever
+   * button opened it (WCAG 2.4.3).
    */
   useEffect(() => {
     if (!isOpen) return;
+    triggerRef.current = document.activeElement as HTMLElement | null;
     dialogRef.current?.focus();
+    return () => {
+      if (triggerRef.current?.isConnected) triggerRef.current.focus();
+    };
   }, [isOpen]);
 
   // Find the dragged item for the overlay

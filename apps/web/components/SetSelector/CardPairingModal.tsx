@@ -5,6 +5,7 @@ import React, {
   useReducer,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
@@ -1095,6 +1096,7 @@ export default function CardPairingModal({
   initialData,
   isStreaming,
   streamProgress,
+  restoreFocusRef,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -1112,6 +1114,23 @@ export default function CardPairingModal({
   isStreaming?: boolean;
   /** Progress for the streaming banner: cards released / cards found so far. */
   streamProgress?: { ready: number; total: number };
+  /**
+   * a11y (NEO-221) — where to send keyboard focus when this dialog closes,
+   * PREFERRED over this component's own `document.activeElement`-at-mount
+   * capture.
+   *
+   * That capture is correct the FIRST time this opens (a plain click, nothing
+   * unmounts in between). It is not reliable when `CardChecklist` reopens this
+   * same modal via the entity wizard's "Back to matching": that click unmounts
+   * the wizard (removing whatever had focus — the "Back to matching" button
+   * itself) in the same state update that flips `isOpen` back to true, so by
+   * the time this component's mount effect runs, the browser has already
+   * blurred to `<body>` — capturing that "restores" focus to nowhere. Mirrors
+   * `SyncReviewModal`'s own `restoreFocusRef` for the identical reason.
+   * Optional and additive: omitting it keeps the original capture-on-mount
+   * behavior for every existing caller/test.
+   */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const [state, dispatch] = useReducer(reducer, initialData, seedState);
   const [selectedBsc, setSelectedBsc] = useState<string | null>(null);
@@ -1231,14 +1250,17 @@ export default function CardPairingModal({
   useEffect(() => {
     if (!isOpen) return;
     // Remember what opened us so focus can go back there on close, rather
-    // than falling to <body>.
-    triggerRef.current = document.activeElement as HTMLElement | null;
+    // than falling to <body>. Prefers the caller's durable trigger (see
+    // restoreFocusRef's own doc comment) — falls back to the original
+    // document.activeElement capture when the prop is absent.
+    const restoreTarget = restoreFocusRef?.current;
+    triggerRef.current = restoreTarget ?? (document.activeElement as HTMLElement | null);
     const id = requestAnimationFrame(() => cancelBtnRef.current?.focus());
     return () => {
       cancelAnimationFrame(id);
       triggerRef.current?.focus?.();
     };
-  }, [isOpen]);
+  }, [isOpen, restoreFocusRef]);
 
   /**
    * Every action below removes the very <li> holding the button that was

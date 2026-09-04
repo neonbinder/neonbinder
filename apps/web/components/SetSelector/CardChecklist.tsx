@@ -1672,6 +1672,11 @@ export default function CardChecklist({
           }}
           onConfirm={handlePairingConfirm}
           setLabel={variantRow?.value}
+          // a11y: see syncButtonRef's own comment — "Back to matching" reopens
+          // this modal by unmounting the wizard's own trigger button in the
+          // same update that flips `isOpen`, so this component's own
+          // document.activeElement-at-mount capture cannot be trusted.
+          restoreFocusRef={syncButtonRef}
           // One source, live for the whole review — during the fetch and after
           // it. The modal absorbs updates append-only, so rows that arrive
           // late join without disturbing a decision already made.
