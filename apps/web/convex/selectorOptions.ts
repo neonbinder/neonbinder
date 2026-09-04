@@ -129,6 +129,7 @@ import {
   pruneEmptySides,
   setPrimarySlotId,
   slotEntries,
+  slotFacet,
   slotForId,
   slotIds,
   slotLabel,
@@ -3975,35 +3976,100 @@ export const setVariantTypePlatformData = mutation({
     let working: {
       platformData: typeof row.platformData;
       platformLabels: typeof row.platformLabels;
+      platformFacets: typeof row.platformFacets;
       platformSlotSeq: typeof row.platformSlotSeq;
     } = {
       platformData: row.platformData,
       platformLabels: row.platformLabels,
+      platformFacets: row.platformFacets,
       platformSlotSeq: row.platformSlotSeq,
     };
-    for (const [side, incoming, label] of [
-      ["bsc", wireToIds(args.platformData.bsc)[0], undefined],
-      [
+
+    // SportLots has one unit of attachment, so its primary slot IS the mapping.
+    const incomingSl = wireToIds(args.platformData.sportlots)[0];
+    if (incomingSl) {
+      const next = setPrimarySlotId(
+        working,
         "sportlots",
-        wireToIds(args.platformData.sportlots)[0],
+        incomingSl,
         args.platformData.sportlotsDisplay,
-      ],
-    ] as const) {
-      if (!incoming) continue;
-      const next = setPrimarySlotId(working, side, incoming, label);
-      working = {
-        platformData: next.platformData,
-        platformLabels: next.platformLabels,
-        platformSlotSeq: next.platformSlotSeq,
-      };
+      );
+      working = { ...working, ...next };
+    }
+
+    // ── BSC: a SECOND slot, never the variant one (NEO-239) ─────────────────
+    //
+    // What arrives here is a BSC **setName** slug — `BaseMappingForm` sends the
+    // picked set, or falls back to the setName ancestor's own slug because
+    // BSC's variantName facet is usually empty under `variant=base`. It is NOT
+    // a variant value.
+    //
+    // This used to go through `setPrimarySlotId`, which reuses the primary slot
+    // KEY and overwrites its id — so the Base row's `b0`, holding "base", came
+    // out holding "2024-topps-chrome". That is the corruption NEO-189 recorded
+    // ("a mis-saved BaseSetPicker mapping … ended up pointing at the parent
+    // setName"), and it was survivable only because an untagged variantType
+    // slot contributed nothing to the query. NEO-239 tags that slot `variant`,
+    // which would have turned an inert wrong id into an ACTIVE one: the
+    // checklist fetch would send `variant: ["2024-topps-chrome"]` and BSC
+    // would answer for a variant axis that does not exist.
+    //
+    // A Base row legitimately needs BOTH axes — `variant` says which slice of
+    // the set, `setName` says which set — so they get a slot each. The variant
+    // slot is left exactly alone, and re-mapping refreshes the setName slot in
+    // place (its key is reused, so any card already attributed to it keeps
+    // resolving) rather than allocating a fresh one on every confirm.
+    const incomingBsc = wireToIds(args.platformData.bsc)[0];
+    if (incomingBsc) {
+      const bscSlots = slotEntries(working, "bsc");
+      const existingSetNameSlot = bscSlots.find(
+        (e) => slotFacet(working, "bsc", e.slot) === "setName",
+      )?.slot;
+      // A row written before facets existed has an untagged primary and no
+      // variant slot to protect; refreshing it in place is the old behaviour
+      // and keeps its cards resolving.
+      const untaggedPrimary = bscSlots.find(
+        (e) => slotFacet(working, "bsc", e.slot) === undefined,
+      )?.slot;
+      const targetSlot = existingSetNameSlot ?? untaggedPrimary;
+
+      if (targetSlot) {
+        working = {
+          ...working,
+          platformData: {
+            ...working.platformData,
+            bsc: { ...(working.platformData.bsc ?? {}), [targetSlot]: incomingBsc },
+          },
+          platformFacets: {
+            ...(working.platformFacets ?? {}),
+            bsc: {
+              ...(working.platformFacets?.bsc ?? {}),
+              [targetSlot]: "setName",
+            },
+          },
+        };
+      } else {
+        const alloc = allocateSlots(working, {
+          bsc: [{ id: incomingBsc, facet: "setName" }],
+        });
+        working = {
+          ...working,
+          platformData: alloc.platformData,
+          platformLabels: alloc.platformLabels,
+          platformFacets: alloc.platformFacets,
+          platformSlotSeq: alloc.platformSlotSeq,
+        };
+      }
     }
 
     const labels = pruneEmptySides({ ...(working.platformLabels ?? {}) });
+    const facets = pruneEmptySides({ ...(working.platformFacets ?? {}) });
     const merged: Record<string, unknown> = {
       platformData: pruneEmptySides({ ...working.platformData }),
       lastUpdated: Date.now(),
     };
     if (Object.keys(labels).length > 0) merged.platformLabels = labels;
+    if (Object.keys(facets).length > 0) merged.platformFacets = facets;
     if (
       working.platformSlotSeq &&
       Object.keys(working.platformSlotSeq).length > 0

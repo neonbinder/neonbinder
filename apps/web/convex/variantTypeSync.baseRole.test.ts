@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { resolveBscFacetFilters } from "./bscFacets";
 
 const modules = (
   import.meta as unknown as {
@@ -391,5 +392,158 @@ describe("Sync Variant Types — the Base row gets the role and the tag", () => 
     expect((await t.run(async (ctx) => ctx.db.get(existing)))?.lastUpdated).toBe(
       stamp,
     );
+  });
+});
+
+// ===========================================================================
+// NEO-239 — Base mapping must not clobber the variant axis
+// ===========================================================================
+
+/**
+ * The seed's next step after "Sync Variant Types": tap Base, and
+ * `BaseMappingForm` writes the picked SportLots set plus a BSC slug through
+ * `setVariantTypePlatformData`.
+ *
+ * The BSC slug it sends is a **setName** value — the picked set, or (the
+ * common case, because BSC's variantName facet is usually empty under
+ * `variant=base`) the setName ancestor's own slug. It is not a variant value.
+ *
+ * That mutation used to push it through `setPrimarySlotId`, which reuses the
+ * primary slot KEY and overwrites its id: the Base row's `b0` went from "base"
+ * to "2024-topps-chrome". NEO-189 recorded exactly this corruption and it was
+ * survivable only because an untagged variantType slot contributed nothing to
+ * the query. NEO-239 tags that slot `variant`, which would have made the wrong
+ * id ACTIVE — every checklist fetch beneath the row sending
+ * `variant: ["2024-topps-chrome"]`, a value BSC's variant axis does not have.
+ */
+describe("Base mapping writes setName alongside variant, never over it", () => {
+  async function seedMappedBase(t: ReturnType<typeof convexTest>) {
+    const setId = await seedSetRow(t);
+    stubBscVariants([{ label: "Base", slug: "base" }]);
+    await syncVariantTypes(t, setId);
+    const [base] = await variantTypeRows(t, setId);
+    return { setId, baseId: base._id };
+  }
+
+  test("the variant slot survives, and the set slug lands in its own tagged slot", async () => {
+    const t = convexTest(schema, modules);
+    const { baseId } = await seedMappedBase(t);
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: baseId,
+        platformData: {
+          bsc: "2024-topps-chrome", // the setName ancestor's slug — the fallback
+          sportlots: "884412",
+          sportlotsDisplay: "2024 Topps Chrome",
+        },
+      });
+
+    const row = await t.run(async (ctx) => ctx.db.get(baseId));
+    const bsc = row!.platformData.bsc!;
+    const facets = row!.platformFacets!.bsc!;
+
+    // The variant axis is untouched — this is the whole point.
+    const variantSlots = Object.entries(facets).filter(([, f]) => f === "variant");
+    expect(variantSlots).toHaveLength(1);
+    expect(bsc[variantSlots[0][0]]).toBe("base");
+
+    // …and the set slug is present, in a slot that says what it is.
+    const setNameSlots = Object.entries(facets).filter(([, f]) => f === "setName");
+    expect(setNameSlots).toHaveLength(1);
+    expect(bsc[setNameSlots[0][0]]).toBe("2024-topps-chrome");
+
+    // SportLots is unaffected by any of this.
+    expect(row!.platformData.sportlots).toEqual({ s0: "884412" });
+    expect(row!.platformLabels?.sportlots).toEqual({ s0: "2024 Topps Chrome" });
+  });
+
+  test("re-mapping REFRESHES the setName slot rather than allocating a new one", async () => {
+    // Slot keys are how cards are attributed, so a confirm that allocated a
+    // fresh slot every time would both grow without bound and orphan whatever
+    // pointed at the previous one.
+    const t = convexTest(schema, modules);
+    const { baseId } = await seedMappedBase(t);
+    const write = (bsc: string) =>
+      t.withIdentity(ADMIN).mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: baseId,
+        platformData: { bsc, sportlots: "884412" },
+      });
+
+    await write("2024-topps-chrome");
+    const first = await t.run(async (ctx) => ctx.db.get(baseId));
+    await write("2024-topps-chrome-update");
+    const second = await t.run(async (ctx) => ctx.db.get(baseId));
+
+    expect(Object.keys(second!.platformData.bsc!)).toEqual(
+      Object.keys(first!.platformData.bsc!),
+    );
+    expect(Object.values(second!.platformData.bsc!)).toContain(
+      "2024-topps-chrome-update",
+    );
+    // Still exactly one of each axis.
+    const facets = Object.values(second!.platformFacets!.bsc!);
+    expect(facets.filter((f) => f === "variant")).toHaveLength(1);
+    expect(facets.filter((f) => f === "setName")).toHaveLength(1);
+  });
+
+  test("the resulting chain queries BOTH axes — variant=base AND the set", async () => {
+    // The end-to-end statement: what the mapped Base row makes the checklist
+    // fetch send. `variant` must still be "base", or BSC answers with the
+    // set's whole catalogue (base plus every insert and parallel).
+    const t = convexTest(schema, modules);
+    const { baseId } = await seedMappedBase(t);
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: baseId,
+        platformData: { bsc: "2024-topps-chrome", sportlots: "884412" },
+      });
+
+    const chain = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.getAncestorChain, { id: baseId });
+    const plan = resolveBscFacetFilters(chain);
+
+    expect(plan.filters.variant).toEqual(["base"]);
+    expect(plan.filters.setName).toEqual(["2024-topps-chrome"]);
+    expect(plan.filters.sport).toEqual(["baseball"]);
+    expect(plan.filters.year).toEqual(["2024"]);
+    // A setName-tagged slot on the leaf makes it the source of cards.
+    expect(plan.sourceFacet).toBe("setName");
+  });
+
+  test("a legacy row with an UNTAGGED bsc slot keeps the old in-place refresh", async () => {
+    // Backward compatibility: a Base row written before facets existed has no
+    // variant slot to protect, and its primary is what BaseMappingForm has
+    // always overwritten. Allocating a second slot for it would change which
+    // slot that row's existing cards resolve through.
+    const t = convexTest(schema, modules);
+    const setId = await seedSetRow(t);
+    const legacy = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: { bsc: { b0: "base" } },
+        metadata: { isBase: true },
+        primaryPlatformId: { bsc: "b0" },
+        platformSlotSeq: { bsc: 1 },
+        parentId: setId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setVariantTypePlatformData, {
+        variantTypeId: legacy,
+        platformData: { bsc: "2024-topps-chrome" },
+      });
+
+    const row = await t.run(async (ctx) => ctx.db.get(legacy));
+    expect(row!.platformData.bsc).toEqual({ b0: "2024-topps-chrome" });
+    expect(row!.platformFacets?.bsc).toEqual({ b0: "setName" });
   });
 });
