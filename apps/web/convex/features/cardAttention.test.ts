@@ -381,6 +381,46 @@ describe("deriveCardAttention — unreviewedName", () => {
     ]);
   });
 
+  test("a card with an unreviewed PLAYER name and NO team at all shows only unreviewedName", () => {
+    // The one shape where the two rules genuinely collide: no team info of any
+    // kind, so `missingTeam` would fire on its own merits, plus a player name
+    // that links to nothing. One badge, because one fixer write settles both —
+    // the walker must not stop the operator twice for one card and then ask
+    // about something they just answered.
+    expect(
+      deriveCardAttention({
+        teamOnCardIds: [],
+        teamCheckDoneAt: 1_700_000_000_000,
+        pendingPlayerNames: ["Never Reviewed"],
+        platformData: { bsc: { ref: "bsc-1" } },
+      }),
+    ).toEqual([{ kind: "unreviewedName", names: ["Never Reviewed"] }]);
+  });
+
+  test("the same card with NO refs and no team is also a single item", () => {
+    expect(
+      deriveCardAttention({
+        pendingPlayerNames: ["Never Reviewed"],
+        platformData: {},
+      }),
+    ).toEqual([{ kind: "unreviewedName", names: ["Never Reviewed"] }]);
+  });
+
+  test("once the player is linked, the suppressed missingTeam comes BACK", () => {
+    // The suppression is a walker-ordering rule, not an amnesty: a card that
+    // still has no team after the name is settled is still missing a team, and
+    // the next pass has to say so.
+    expect(
+      deriveCardAttention({
+        teamOnCardIds: [],
+        teamCheckDoneAt: 1_700_000_000_000,
+        playerIds: ["player_1"],
+        pendingPlayerNames: ["Never Reviewed"],
+        platformData: { bsc: { ref: "bsc-1" } },
+      }),
+    ).toEqual([{ kind: "missingTeam" }]);
+  });
+
   test("empty arrays are not an unreviewed name", () => {
     // `[]` is the shape a resolve pass leaves behind after stripping the last
     // name, and it must read exactly like an absent field.
@@ -428,6 +468,7 @@ describe("needsAttention", () => {
       { pendingTeamNames: [] },
       // NEO-221
       { ...HAS_TEAM, pendingPlayerNames: ["Elly De La Cruz"] },
+      { pendingPlayerNames: ["Elly De La Cruz"] },
       { ...HAS_TEAM, playerIds: ["player_1"], pendingPlayerNames: ["Elly"] },
       { teamOnCardIds: ["team_1"], pendingTeamNames: ["Reno Aces"] },
       // NEO-101 kinds, on rows that are otherwise settled.

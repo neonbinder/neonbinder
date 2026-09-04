@@ -164,6 +164,9 @@ export type AttentionCardRow = {
  *   2. `teamNoneConfirmedAt` is unset. An operator who said "this card carries
  *      no team" has answered; re-asking is the bug this field exists to stop.
  *   3. the card is not still WAITING on the automatic answer.
+ *   4. (NEO-221) no `unreviewedName` item fired. That item's fixer links the
+ *      whole card in one write, so raising both would stop the walker twice
+ *      for one piece of work.
  *
  * Clause 3 is the one worth explaining. A card with a `platformData.bsc.ref`
  * has an automatic source for its team: `processBscTeamEnrichmentQueue` walks
@@ -184,10 +187,48 @@ export type AttentionCardRow = {
 export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
   const items: AttentionItem[] = [];
 
+  // ── NEO-221: a name on the card that links to nothing ────────────────────
+  //
+  // Computed first because `missingTeam` below defers to it — see there.
+  //
+  // Fires per side, on the same shape of test: a pending NAME with no
+  // corresponding LINK. `pendingPlayerNames` with an empty `playerIds`, or
+  // `pendingTeamNames` with an empty `teamOnCardIds`. A card that already
+  // links to a player or a team has its answer, and the leftover spelling is
+  // a duplicate rather than a gap.
+  //
+  // ## No marketplace gate, deliberately
+  //
+  // An earlier draft badged only cards carrying a BSC or SportLots ref, on the
+  // theory that a hand-added card's pending name is an answer awaiting the
+  // next sync while a synced card's is a question never asked. That is the
+  // "custom card" concept re-spelled, and NB behaviour is never keyed on
+  // whether a row has marketplace ids (see the product invariant in the root
+  // CLAUDE.md). It is also not true: both producers leave a card naming a
+  // player it does not link to, and both are fixed the same way — link it in
+  // the walker, or let the next sync's wizard resolve it.
+  const unreviewed = [
+    ...((row.playerIds?.length ?? 0) === 0 ? (row.pendingPlayerNames ?? []) : []),
+    ...((row.teamOnCardIds?.length ?? 0) === 0 ? (row.pendingTeamNames ?? []) : []),
+  ];
+
   const hasTeam =
     (row.teamOnCardIds?.length ?? 0) > 0 || (row.pendingTeamNames?.length ?? 0) > 0;
   const awaitingBscLookup = !!row.platformData?.bsc?.ref && !row.teamCheckDoneAt;
-  if (!hasTeam && !row.teamNoneConfirmedAt && !awaitingBscLookup) {
+  // `unreviewed.length === 0` is the fourth clause, and it is about the
+  // WALKER rather than about teams. `unreviewedName`'s fixer links the whole
+  // card — players and teams, in one write — so a card carrying both items
+  // would stop the operator twice for one piece of work, and the second stop
+  // would present a question the first had already answered. One gap, one
+  // badge. (The two only ever coincide on a card with an unresolved PLAYER
+  // name and no team at all: a pending TEAM name already counts as having a
+  // team, so it suppresses `missingTeam` through `hasTeam` above.)
+  if (
+    !hasTeam &&
+    !row.teamNoneConfirmedAt &&
+    !awaitingBscLookup &&
+    unreviewed.length === 0
+  ) {
     items.push({ kind: "missingTeam" });
   }
 
@@ -214,37 +255,8 @@ export function deriveCardAttention(row: AttentionCardRow): AttentionItem[] {
     });
   }
 
-  // ── NEO-221: a name on the card that links to nothing ────────────────────
-  //
-  // Fires per side, on the same shape of test: a pending NAME with no
-  // corresponding LINK. `pendingPlayerNames` with an empty `playerIds`, or
-  // `pendingTeamNames` with an empty `teamOnCardIds`. A card that already
-  // links to a player or a team has its answer, and the leftover spelling is
-  // a duplicate rather than a gap.
-  //
-  // ## No marketplace gate, deliberately
-  //
-  // An earlier draft badged only cards carrying a BSC or SportLots ref, on the
-  // theory that a hand-added card's pending name is an answer awaiting the
-  // next sync while a synced card's is a question never asked. That is the
-  // "custom card" concept re-spelled, and NB behaviour is never keyed on
-  // whether a row has marketplace ids (see the product invariant in the root
-  // CLAUDE.md). It is also not true: both producers leave a card naming a
-  // player it does not link to, and both are fixed the same way — link it in
-  // the walker, or let the next sync's wizard resolve it.
-  //
-  // ## Exactly one badge, not two
-  //
-  // `hasTeam` above already counts a non-empty `pendingTeamNames` as having a
-  // team, so a card with an unresolved team name gets THIS item and not
-  // `missingTeam`. That split is the useful one: `missingTeam` means nobody
-  // has said anything about the team, and this means somebody has, and it has
-  // not landed yet. Two badges for one gap would just double the count the
-  // operator is working through.
-  const unreviewed = [
-    ...((row.playerIds?.length ?? 0) === 0 ? (row.pendingPlayerNames ?? []) : []),
-    ...((row.teamOnCardIds?.length ?? 0) === 0 ? (row.pendingTeamNames ?? []) : []),
-  ];
+  // NEO-221 — see the note where `unreviewed` is computed, at the top. Pushed
+  // last so the title/aspect items keep the order they had.
   if (unreviewed.length > 0) {
     items.push({ kind: "unreviewedName", names: [...unreviewed] });
   }

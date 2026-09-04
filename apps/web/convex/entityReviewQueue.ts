@@ -769,6 +769,7 @@ async function decideAllRemaining(
   args: { selectorOptionId: Id<"selectorOptions">; batchId: string },
   decision: { action: "create" } | { action: "skip" },
   includePending: boolean,
+  callerId: string,
 ): Promise<number> {
   const rows = await ctx.db
     .query("entityReviewQueue")
@@ -776,6 +777,12 @@ async function decideAllRemaining(
       q.eq("selectorOptionId", args.selectorOptionId).eq("batchId", args.batchId),
     )
     .collect();
+  // NEO-221 — same second layer as `recordDecision` and `cancelBatch`, and it
+  // matters MORE here than on either of them: one call rules on every open row
+  // in the batch, so a stale batchId from another session would decide a
+  // colleague's whole review in a single mutation. Checked over every row
+  // before the first patch, so a refusal writes nothing at all.
+  for (const row of rows) assertOwnsRow(row, callerId);
   const now = Date.now();
   let count = 0;
   for (const row of rows) {
@@ -822,8 +829,8 @@ export const recordAllRemainingAsCreate = mutation({
   },
   returns: v.number(),
   handler: async (ctx, args): Promise<number> => {
-    await requireAdmin(ctx);
-    return await decideAllRemaining(ctx, args, { action: "create" }, false);
+    const callerId = await requireAdmin(ctx);
+    return await decideAllRemaining(ctx, args, { action: "create" }, false, callerId);
   },
 });
 
@@ -855,8 +862,8 @@ export const recordAllRemainingAsSkip = mutation({
   },
   returns: v.number(),
   handler: async (ctx, args): Promise<number> => {
-    await requireAdmin(ctx);
-    return await decideAllRemaining(ctx, args, { action: "skip" }, true);
+    const callerId = await requireAdmin(ctx);
+    return await decideAllRemaining(ctx, args, { action: "skip" }, true, callerId);
   },
 });
 
@@ -919,6 +926,43 @@ export const cancelBatch = mutation({
     for (const row of rows) assertOwnsRow(row, callerId);
     await deleteBatchRows(ctx, args.selectorOptionId, args.batchId);
     return null;
+  },
+});
+
+/**
+ * NEO-221 — the batchId of this (selectorOptionId, user) pair's open review
+ * batch, or null.
+ *
+ * Exists for one caller and one shape: `resolveUnknownsAndStartBatch` needs to
+ * know whether a batch is already open BEFORE it decides whether to call
+ * `startBatch`. It cannot just call `startBatch` unconditionally — with no
+ * batch open and no unknown names that would mint an empty batch and hand the
+ * client a batchId for a wizard with nothing in it. And it cannot skip the
+ * call when there are no unknowns either, because an OPEN batch full of
+ * undecided rows then survives a re-Confirm that resolved everything, and
+ * nothing ever consumes or deletes it. So the caller asks first.
+ *
+ * Reads `by_selector_option_and_user`'s first row, which is exactly the read
+ * `startBatch` itself does to decide resume-versus-create — deliberately the
+ * same index and the same question, so the two cannot disagree about whether
+ * a batch exists.
+ */
+export const findOpenBatch = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    createdByUserId: v.string(),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_selector_option_and_user", (q) =>
+        q
+          .eq("selectorOptionId", args.selectorOptionId)
+          .eq("createdByUserId", args.createdByUserId),
+      )
+      .first();
+    return existing?.batchId ?? null;
   },
 });
 

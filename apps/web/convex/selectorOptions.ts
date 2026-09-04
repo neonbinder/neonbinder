@@ -890,9 +890,31 @@ async function resolveUnknownsAndStartBatch(
   // Marketplaces" mid-review never discards progress — and is scoped
   // per-user so two different sessions fetching the SAME set never
   // share/collide on one batch.
-  if (unknownPlayers.length > 0 || unknownTeams.length > 0) {
-    const callerId = await getCurrentUserId(ctx);
-    if (!callerId) throw new Error("Not authenticated");
+  //
+  // NEO-221: and it is called when there are NO unknowns too, PROVIDED a batch
+  // is already open for this pair. That case is not hypothetical — it is the
+  // "Back to matching" loop. The operator Confirms, the wizard opens, they go
+  // back, re-pair so every name now resolves, and Confirm again. With the old
+  // "only when unknowns > 0" guard the second Confirm returned no batchId, so
+  // commit never read the batch and never deleted it, and the stale rows sat
+  // there until they either resumed themselves into the NEXT fetch of the set
+  // or were reaped a day later. Calling `startBatch` with empty name lists
+  // reconciles the undecided rows away, keeps any decision the operator made,
+  // and hands back the batchId that commit then consumes and deletes.
+  //
+  // Asked first rather than called unconditionally: with no batch open and no
+  // unknown names, `startBatch` would mint an EMPTY batch and hand the client
+  // a batchId for a wizard with nothing in it.
+  const callerId = await getCurrentUserId(ctx);
+  if (!callerId) throw new Error("Not authenticated");
+  const hasUnknowns = unknownPlayers.length > 0 || unknownTeams.length > 0;
+  const openBatchId = hasUnknowns
+    ? null
+    : await ctx.runQuery(internal.entityReviewQueue.findOpenBatch, {
+        selectorOptionId: args.selectorOptionId,
+        createdByUserId: callerId,
+      });
+  if (hasUnknowns || openBatchId !== null) {
     batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId: args.selectorOptionId,
       createdByUserId: callerId,
@@ -7863,6 +7885,13 @@ export const resolveChecklistEntities = action({
     unknownTeams: v.array(v.string()),
     // Present whenever there are unknowns — the review wizard subscribes to
     // this batch via entityReviewQueue.
+    //
+    // NEO-221: also present with NO unknowns when a batch is already open for
+    // this (selectorOptionId, user) pair. That is the "Back to matching"
+    // return trip, where a re-pair resolved everything: the batch still exists
+    // and only commit deletes it, so the id has to come back or the rows are
+    // orphaned. It is then a batch of the operator's own decisions and nothing
+    // else — see `resolveUnknownsAndStartBatch`.
     batchId: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<{
@@ -11084,10 +11113,14 @@ export const commitCardChecklist = action({
     // Counted as ONE set: a player and a team that share a spelling are one
     // thing to tell the operator about, not two. Only the SIZE leaves this
     // function — see the return validator.
-    const unreviewedNameCount = new Set([
-      ...prelude.unreviewedPlayerNames,
-      ...prelude.unreviewedTeamNames,
-    ]).size;
+    //
+    // Filled from what is actually STAMPED on a card below, not from the
+    // prelude's lists. The prelude also resolves names folded in from existing
+    // custom cards' own `pendingPlayerNames`/`pendingTeamNames` (see the fold
+    // pass there), and an unreviewed one of those sits on no incoming card —
+    // counting it would tell the operator "3 names were not reviewed" about a
+    // commit that stamped two.
+    const stampedUnreviewedNames = new Set<string>();
     // ── NEO-203: which existing row each incoming card updates ──────────────
     const match = resolveExistingIds(args.cards, prelude);
     const conflictIndices = new Set(match.conflicts.map((c) => c.index));
@@ -11153,6 +11186,9 @@ export const commitCardChecklist = action({
             .filter((t) => t && unreviewedTeams.has(t)),
         ),
       );
+      // What the operator is actually told about — see `stampedUnreviewedNames`.
+      for (const n of pendingPlayerNames) stampedUnreviewedNames.add(n);
+      for (const n of pendingTeamNames) stampedUnreviewedNames.add(n);
       // Reconciliation markers live in `attributes` so they are visible on the
       // card itself, not only in a log. NEO-203 adds `ref-collision`: this
       // card resolved to a row another incoming card had already claimed, so
@@ -11449,7 +11485,7 @@ export const commitCardChecklist = action({
       // NEO-221: players and teams together and deduped — the operator is
       // being told "these names got no link", and which table a name would
       // have landed in is not the part they need.
-      unreviewedNameCount,
+      unreviewedNameCount: stampedUnreviewedNames.size,
     };
   },
 });

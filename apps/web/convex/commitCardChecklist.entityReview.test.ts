@@ -1528,6 +1528,101 @@ describe("commitCardChecklist: unreviewed names", () => {
     expect(row!.pendingPlayerNames).toEqual(["Operator Typed", "Never Reviewed"]);
   });
 
+  test("the count is what was STAMPED, not every name the prelude could not resolve", async () => {
+    // The prelude also folds in existing custom cards' own pending names, so
+    // an unreviewed one of those is unresolved but sits on no incoming card.
+    // Counting it would tell the operator "2 names were not reviewed" about a
+    // commit that stamped one, and send them looking for a card that does not
+    // carry it.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantTypeId,
+        cardNumber: "9001",
+        cardName: "Hand added, not in this sync",
+        isCustom: true,
+        pendingPlayerNames: ["Folded In From A Custom Card"],
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+    for (const name of ["On An Incoming Card", "Folded In From A Custom Card"])
+      await insertUndecidedReviewRow(t, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        batchId: "batch-1",
+        kind: "player",
+        name,
+      });
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", players: ["On An Incoming Card"] })],
+      batchId: "batch-1",
+    });
+
+    // One, not two.
+    expect(result.unreviewedNameCount).toBe(1);
+    const cards = await readCards(t, variantTypeId);
+    expect(cards.find((c) => c.cardNumber === "1")!.pendingPlayerNames).toEqual([
+      "On An Incoming Card",
+    ]);
+    // And the hand-added card keeps its own name, untouched by this commit.
+    expect(cards.find((c) => c.cardNumber === "9001")!.pendingPlayerNames).toEqual([
+      "Folded In From A Custom Card",
+    ]);
+  });
+
+  test("a re-sync that changes nothing writes nothing but the timestamp", async () => {
+    // The merge must not manufacture a patch out of a value it is restating.
+    // `platformData`/`sortOrder`/`lastUpdated` are refreshed unconditionally on
+    // every matched row (that is what the sync is FOR), so the assertion is
+    // that everything ELSE — the pending-name fields included — comes back
+    // byte-identical.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const commit = (batchId: string) =>
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: ["Still Unreviewed"] })],
+        batchId,
+      });
+
+    await insertUndecidedReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "player",
+      name: "Still Unreviewed",
+    });
+    await commit("batch-1");
+    const before = (await readCards(t, variantTypeId))[0];
+    expect(before.pendingPlayerNames).toEqual(["Still Unreviewed"]);
+
+    // Same card, same still-unreviewed name.
+    await insertUndecidedReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-2",
+      kind: "player",
+      name: "Still Unreviewed",
+    });
+    await commit("batch-2");
+
+    const after = (await readCards(t, variantTypeId))[0];
+    expect(after._id).toBe(before._id);
+    expect(after.pendingPlayerNames).toEqual(["Still Unreviewed"]);
+    expect({ ...after, lastUpdated: 0 }).toEqual({ ...before, lastUpdated: 0 });
+  });
+
   test("a fully-reviewed commit writes neither field and reports zero", async () => {
     // The common path has to be byte-identical to what it was before this
     // feature existed — no stamp, nothing to badge, nothing to say.
@@ -1556,5 +1651,76 @@ describe("commitCardChecklist: unreviewed names", () => {
     expect(card.pendingPlayerNames).toBeUndefined();
     expect(card.pendingTeamNames).toBeUndefined();
     expect(card.playerIds).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
+// NEO-221 — the "Back to matching" return trip must not orphan the batch
+// ===========================================================================
+
+describe("resolveChecklistEntities: an open batch is reconciled even when nothing is unknown", () => {
+  test("returns the open batchId, drops the undecided row, keeps the decided one", async () => {
+    // The exact loop: Confirm opens the wizard, the operator goes Back to
+    // matching, re-pairs so every name now resolves, and Confirms again. The
+    // guard used to be "only call startBatch when unknowns > 0", so this
+    // second Confirm returned no batchId — commit never read the batch, never
+    // deleted it, and its rows resumed themselves into the NEXT fetch of the
+    // set, carrying decisions taken against a card list that had moved on.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const rowIds = await t.run(async (ctx) => {
+      const mk = (name: string, decided: boolean) =>
+        ctx.db.insert("entityReviewQueue", {
+          selectorOptionId: variantTypeId,
+          batchId: "batch-open",
+          // Must be the CALLER, or this is somebody else's batch and
+          // `findOpenBatch` correctly declines to see it.
+          createdByUserId: ADMIN_IDENTITY.subject,
+          kind: "player" as const,
+          name,
+          sportId,
+          status: "ready" as const,
+          ...(decided ? { decision: { action: "create" as const } } : {}),
+        });
+      return {
+        decided: await mk("Ruled On", true),
+        undecided: await mk("Never Ruled On", false),
+      };
+    });
+
+    // Nothing unknown this time round — the re-pair resolved everything.
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId: variantTypeId, sportId, cards: [] },
+    );
+
+    expect(resolved.unknownPlayers).toEqual([]);
+    expect(resolved.unknownTeams).toEqual([]);
+    // The id commit needs in order to consume and delete the batch.
+    expect(resolved.batchId).toBe("batch-open");
+
+    expect(await t.run(async (ctx) => ctx.db.get(rowIds.undecided))).toBeNull();
+    const kept = await t.run(async (ctx) => ctx.db.get(rowIds.decided));
+    expect(kept!.decision).toEqual({ action: "create" });
+  });
+
+  test("with NO open batch and nothing unknown, no batch is minted", async () => {
+    // The other half of the guard: calling startBatch unconditionally would
+    // hand the client a batchId for a wizard with nothing in it.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId: variantTypeId, sportId, cards: [] },
+    );
+
+    expect(resolved.batchId).toBeUndefined();
+    expect(
+      await t.run(async (ctx) => ctx.db.query("entityReviewQueue").collect()),
+    ).toHaveLength(0);
   });
 });

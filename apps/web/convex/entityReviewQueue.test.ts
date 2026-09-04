@@ -2482,6 +2482,42 @@ describe("ownership scoping", () => {
     ).toEqual({ action: "create" });
   });
 
+  test.each([
+    ["recordAllRemainingAsCreate", api.entityReviewQueue.recordAllRemainingAsCreate],
+    ["recordAllRemainingAsSkip", api.entityReviewQueue.recordAllRemainingAsSkip],
+  ] as const)(
+    "%s refuses another admin's batch WITHOUT deciding anything",
+    async (_name, fn) => {
+      // Matters more here than on the single-row calls: ONE call rules on
+      // every open row in the batch, so a stale batchId from another session
+      // would decide a colleague's entire review in a single mutation.
+      const t = convexTest(schema, modules);
+      const selectorOptionId = await seedSelectorOption(t);
+      for (const name of ["A", "B"])
+        await insertRow(t, {
+          selectorOptionId,
+          sportId: selectorOptionId,
+          batchId: "b",
+          kind: "player",
+          name,
+          status: "ready",
+        });
+
+      await expect(
+        t.withIdentity(OTHER_ADMIN).mutation(fn, {
+          selectorOptionId,
+          batchId: "b",
+        }),
+      ).rejects.toThrow(/different review session/);
+
+      const rows = await t.run(async (ctx) =>
+        ctx.db.query("entityReviewQueue").collect(),
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r) => r.decision === undefined)).toBe(true);
+    },
+  );
+
   test("cancelBatch refuses another admin's batch WITHOUT deleting any of it", async () => {
     // Cancelling is the one irreversible thing an operator can do to a review,
     // so the check runs before the delete, not per row inside it.
@@ -2544,5 +2580,129 @@ describe("bulk fast paths: includePending is not a client argument", () => {
         includePending: true,
       } as unknown as { selectorOptionId: Id<"selectorOptions">; batchId: string }),
     ).rejects.toThrow();
+  });
+});
+
+// ===========================================================================
+// startBatch with an EMPTY incoming set (NEO-221)
+//
+// Reached through `resolveUnknownsAndStartBatch`, which now calls startBatch
+// when a batch is already open even if this fetch surfaced no unknown names —
+// the "Back to matching, re-pair until everything resolves, Confirm again"
+// loop. Without the call the open batch is never read by commit and never
+// deleted, and its rows resume themselves into the NEXT fetch of the set.
+// ===========================================================================
+
+describe("startBatch with no incoming names", () => {
+  test("resolves an open batch down to its decided rows and returns its id", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Ruled On", "Never Ruled On"],
+      teamNames: [],
+    });
+    const before = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    const decidedId = before.find((r) => r.name === "Ruled On")!._id;
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: decidedId,
+      action: "create",
+    });
+
+    const resumed = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: [],
+      teamNames: [],
+    });
+
+    // The id commit needs in order to consume and delete this batch.
+    expect(resumed).toBe(batchId);
+    const after = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    // The open question is gone; the operator's ruling is not.
+    expect(after.map((r) => r.name)).toEqual(["Ruled On"]);
+    expect(after[0].decision).toEqual({ action: "create" });
+  });
+
+  test("empties a wholly-undecided batch without deleting the batch's identity", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["A", "B"],
+      teamNames: ["C"],
+    });
+
+    expect(
+      await t.mutation(internal.entityReviewQueue.startBatch, {
+        selectorOptionId,
+        createdByUserId: "user_review_001",
+        sportId: selectorOptionId,
+        playerNames: [],
+        teamNames: [],
+      }),
+    ).toBe(batchId);
+
+    expect(
+      await asAdmin.query(api.entityReviewQueue.getBatch, {
+        selectorOptionId,
+        batchId,
+      }),
+    ).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// findOpenBatch (NEO-221)
+// ===========================================================================
+
+describe("findOpenBatch", () => {
+  test("returns the open batch's id, or null when the pair has none", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    expect(
+      await t.query(internal.entityReviewQueue.findOpenBatch, {
+        selectorOptionId,
+        createdByUserId: "user_review_001",
+      }),
+    ).toBeNull();
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: ["Mike Trout"],
+      teamNames: [],
+    });
+
+    expect(
+      await t.query(internal.entityReviewQueue.findOpenBatch, {
+        selectorOptionId,
+        createdByUserId: "user_review_001",
+      }),
+    ).toBe(batchId);
+    // Scoped per user, exactly as startBatch's own resume read is.
+    expect(
+      await t.query(internal.entityReviewQueue.findOpenBatch, {
+        selectorOptionId,
+        createdByUserId: "somebody_else",
+      }),
+    ).toBeNull();
   });
 });
