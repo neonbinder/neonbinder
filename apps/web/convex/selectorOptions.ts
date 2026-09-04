@@ -291,7 +291,6 @@ const NB_CONTENT_FIELDS = [
   "isRookie",
   "isRelic",
   "printRun",
-  "autographType",
   "cardVariation",
 ] as const;
 type NbContentField = (typeof NB_CONTENT_FIELDS)[number];
@@ -384,7 +383,6 @@ const NB_CONTENT_FIELD_TIER: Record<NbContentField, 1 | 2> = {
   isRookie: 1,
   isRelic: 1,
   printRun: 1,
-  autographType: 1,
   cardVariation: 1,
 };
 
@@ -2480,7 +2478,13 @@ export const updateCard = mutation({
     // `isRelic` are derived by the caller from `attributes` (RC / RELIC) so
     // the boolean columns can't drift from the token array. Clearing a string
     // field is done by sending "" (sending undefined leaves it untouched).
-    printRun: v.optional(v.number()),
+    //
+    // NEO-217: `printRun` is the one NUMBER an operator can clear, and a
+    // number has no "" to send. It therefore accepts an explicit `null`,
+    // which means exactly one thing — DELETE the field. Widened as a union
+    // rather than a second "clearPrintRun" arg so the release is additive: an
+    // old SPA simply never sends `null`.
+    printRun: v.optional(v.union(v.number(), v.null())),
     autographType: v.optional(v.string()),
     cardVariation: v.optional(v.string()),
     isRookie: v.optional(v.boolean()),
@@ -2502,6 +2506,30 @@ export const updateCard = mutation({
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
         filtered[key] = value;
+      }
+    }
+
+    // NEO-217 — clearing a NUMBER.
+    //
+    // Every other editable field already has a spelling for "nothing" that
+    // survives the loop above: "" for a string, [] for an array, false for a
+    // boolean. A number has none, so `printRun` takes an explicit `null` and
+    // that `null` NEVER reaches `ctx.db.patch` — `undefined` in a patch is how
+    // Convex deletes a field, and a stored `null` would fail the schema's
+    // `v.optional(v.number())` on the very next read.
+    //
+    // A non-null value must be a positive integer: the panel's Print run is a
+    // free-text input, and /0, /-1 and /2.5 are not print runs. Rejected
+    // loudly rather than coerced, because silently storing a nonsense print
+    // run puts it in a listing title.
+    if (filtered.printRun === null) {
+      filtered.printRun = undefined;
+    } else if (filtered.printRun !== undefined) {
+      const requestedPrintRun = filtered.printRun as number;
+      if (!Number.isInteger(requestedPrintRun) || requestedPrintRun < 1) {
+        throw new ConvexError(
+          `Print run must be a whole number of 1 or more; received ${requestedPrintRun}.`,
+        );
       }
     }
     // NEO-101: the hard title cap, enforced HERE because this is the single
@@ -3285,6 +3313,37 @@ export async function materializeSelectorOptionFeature(
 // own creation (copy-down); descendants/cards created AFTER this edit pick
 // it up naturally via that same copy-down, but rows that already existed
 // before the edit keep whatever they were seeded with.
+/**
+ * NEO-217 — the single place that decides what one feature write MEANS,
+ * shared verbatim by `setSelectorOptionFeature` (set/node level) and
+ * `setCardFeature` (card level) so the two hosts of the same UI control can
+ * never disagree about it.
+ *
+ * `""` is the operator CLEARING the attribute, and cleared means the key is
+ * ABSENT from the record — not present with an empty value. A stored `""`
+ * would be a third spelling of nothing alongside "key missing" and "never
+ * set", and every reader (listing generation, propagation, the row sub-line)
+ * already reads absent as "this row says nothing here".
+ *
+ * A clear deliberately SKIPS `validateFeatureValue`: the closed vocabularies
+ * (`era`, `league`) do not contain "", so validating one would make the enum
+ * fields the only attributes that can never be un-set — precisely the gap
+ * this ticket closes.
+ */
+function applyFeatureEdit(
+  existing: Record<string, string> | undefined,
+  key: string,
+  value: string,
+): Record<string, string> {
+  if (value === "") {
+    const cleared = { ...(existing ?? {}) };
+    delete cleared[key];
+    return cleared;
+  }
+  validateFeatureValue(key, value);
+  return { ...(existing ?? {}), [key]: value };
+}
+
 export const setSelectorOptionFeature = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -3294,13 +3353,13 @@ export const setSelectorOptionFeature = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    validateFeatureValue(args.key, args.value);
     const row = await ctx.db.get(args.selectorOptionId);
     if (!row) {
       throw new Error(`selectorOption ${args.selectorOptionId} not found`);
     }
     await ctx.db.patch(args.selectorOptionId, {
-      features: { ...(row.features ?? {}), [args.key]: args.value },
+      // NEO-217: `""` removes the key rather than storing an empty value.
+      features: applyFeatureEdit(row.features, args.key, args.value),
       lastUpdated: Date.now(),
     });
     return null;
@@ -3316,12 +3375,12 @@ export const setCardFeature = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    validateFeatureValue(args.key, args.value);
     const card = await ctx.db.get(args.cardChecklistId);
     if (!card) {
       throw new Error(`cardChecklist ${args.cardChecklistId} not found`);
     }
-    const features = { ...(card.features ?? {}), [args.key]: args.value };
+    // NEO-217: `""` removes the key rather than storing an empty value.
+    const features = applyFeatureEdit(card.features, args.key, args.value);
 
     // Autographed flipping from blank/None to a real format: default Signed
     // By to the player(s) already attached to this card. Multiple players
@@ -3329,7 +3388,9 @@ export const setCardFeature = mutation({
     // An operator can still edit Signed By afterward — this only seeds it.
     if (args.key === "autographed") {
       const wasBlank = (card.features?.autographed ?? "None") === "None";
-      const isNowSet = args.value !== "None";
+      // NEO-217: `""` is a CLEAR, which is the opposite of "just became an
+      // autograph" — it must not seed Signed By any more than "None" does.
+      const isNowSet = args.value !== "None" && args.value !== "";
       if (wasBlank && isNowSet && card.playerIds && card.playerIds.length > 0) {
         const players = await Promise.all(
           card.playerIds.map((id) => ctx.db.get(id)),
@@ -8057,7 +8118,6 @@ export const commitCardChecklistChunk = internalMutation({
           isRookie: card.isRookie,
           isRelic: card.isRelic,
           printRun: card.printRun,
-          autographType: card.autographType,
           cardVariation: card.cardVariation,
         };
         // Re-diff server-side: an accepted field whose value did not actually
@@ -8216,7 +8276,14 @@ export const commitCardChecklistChunk = internalMutation({
           isRookie: card.isRookie,
           isRelic: card.isRelic,
           printRun: card.printRun,
-          autographType: card.autographType,
+          // NEO-217: `autographType` is NOT written any more. It still
+          // arrives on the wire and `deriveCardObservedFeatures` above still
+          // folds it into `features.autographed`, which is now the one truth
+          // for "this card is an autograph" — storing the raw string as well
+          // only gave the row sub-line and the NEO-203 diff a second, worse
+          // answer (BSC never sends it; SportLots sends the literal
+          // "Unknown"). The column stays in the schema for rows written
+          // before this; there is no backfill.
           cardVariation: card.cardVariation,
           platformData: toStoredPlatformData(card.platformData),
           // NEO-24: inherit ancestor + derive per-card on insert. Existing
@@ -9189,11 +9256,6 @@ export const diffChecklistAgainstExisting = query({
         { name: "isRookie", stored: row.isRookie, incoming: c.isRookie },
         { name: "isRelic", stored: row.isRelic, incoming: c.isRelic },
         { name: "printRun", stored: row.printRun, incoming: c.printRun },
-        {
-          name: "autographType",
-          stored: row.autographType,
-          incoming: c.autographType,
-        },
         {
           name: "cardVariation",
           stored: row.cardVariation,

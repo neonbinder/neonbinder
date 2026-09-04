@@ -531,6 +531,70 @@ describe("diffChecklistAgainstExisting — explicitly-empty stored values", () =
 // CI round 2 — ambiguity that exists vs ambiguity that cost something.
 // ---------------------------------------------------------------------------
 
+/**
+ * NEO-217 — `autographType` is no longer an NB content field.
+ *
+ * `features.autographed` is the one truth for "this card is an autograph": it
+ * is what the listing title and description read, what the drawer edits, and
+ * what `deriveCardObservedFeatures` still derives FROM the incoming
+ * `autographType` at insert. The raw column stays on legacy rows and stays on
+ * the wire, but it is no longer displayed or diffed — the marketplace signal
+ * is information-free (BSC never sends it, SportLots sends the literal
+ * "Unknown"), so a tier-1 diff on it could only ever offer `− — / + Unknown`,
+ * which is pure noise on a review screen whose whole job is to be believed.
+ */
+describe("diffChecklistAgainstExisting — autographType is not diffed (NEO-217)", () => {
+  test("a legacy stored autographType against an incoming card that carries none is not a field entry", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" })],
+      });
+    const [row] = await storedRows(t, leafId);
+    // Stand in for a row written before NEO-217 stopped storing it.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(row._id, { autographType: "Unknown" });
+    });
+
+    const result = await diff(t, leafId, [
+      card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" }),
+    ]);
+
+    expect(result.cards[0].fields).toEqual([]);
+    expect(result.cards[0].bucket).toBe("identical");
+  });
+
+  test("an incoming autographType against a row that has none is not a field entry either", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card({ cardNumber: "1", cardName: "Curated", bscRef: "bsc-1" })],
+      });
+
+    const result = await diff(t, leafId, [
+      card({
+        cardNumber: "1",
+        cardName: "Curated",
+        bscRef: "bsc-1",
+        autographType: "Unknown",
+        // A real change, so the card IS reviewable — which is what makes the
+        // absence of an `autographType` entry meaningful rather than vacuous.
+        printRun: 99,
+      }),
+    ]);
+
+    expect(result.cards[0].fields.map((f) => f.name)).toEqual(["printRun"]);
+  });
+});
+
 describe("diffChecklistAgainstExisting — ambiguity is only reported when it changed an outcome", () => {
   /**
    * The 1996 Score shape: ONE SportLots set holds both series, so two distinct
