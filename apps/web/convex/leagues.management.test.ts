@@ -275,17 +275,22 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
 
 describe("NEO-240: the creation-only enrichment hook", () => {
   /**
-   * `scheduleLeagueEnrichment` is a NO-OP STUB until NEO-240 WP1 lands the
-   * lookup, so there is nothing behavioural to observe yet — which is exactly
-   * what the second test pins: today an insert schedules nothing, and if WP1
-   * wires the hook up without this file being revisited, that test fails and
-   * says so.
+   * WP1 wired `scheduleLeagueEnrichment` up, so both halves are now
+   * observable and both are asserted.
    *
-   * The placement is what actually has to survive, and it is asserted on the
-   * SOURCE, the same way publicFunctionAuth.test.ts asserts a declaration
-   * keyword: the hook must be called exactly once and only after the insert,
-   * because "on the insert branch and nowhere else" is what makes enrichment
-   * creation-only by construction rather than by every caller remembering.
+   * The PLACEMENT is asserted on the SOURCE, the same way
+   * publicFunctionAuth.test.ts asserts a declaration keyword: the hook must be
+   * called exactly once and only after the insert, because "on the insert
+   * branch and nowhere else" is what makes enrichment creation-only by
+   * construction rather than by every caller remembering. A behavioural test
+   * cannot see that — a hook moved above the early `return existing._id`
+   * would still schedule exactly one item for a brand-new league.
+   *
+   * The BEHAVIOUR is asserted by running a real creation and reading
+   * `_scheduled_functions`. The pool is not drained: `enqueueEnrichment`
+   * reaches `Workpool.enqueueAction` and convex-test cannot register the
+   * workpool component, so letting it run would test the pool rather than this
+   * wiring — the same reason players.management.test.ts gives.
    */
   const source = readFileSync(join(__dirname, "leagues.ts"), "utf8");
 
@@ -303,7 +308,20 @@ describe("NEO-240: the creation-only enrichment hook", () => {
     expect(source.match(/ctx\.db\.insert\("leagues"/g) ?? []).toHaveLength(1);
   });
 
-  test("schedules nothing today — the stub is still a stub", async () => {
+  test("the hook enqueues leagueIds onto the shared pool, and never with force", () => {
+    const hook = source.slice(
+      source.indexOf("async function scheduleLeagueEnrichment"),
+      source.indexOf("export async function findOrCreateLeague"),
+    );
+    expect(hook).toContain("internal.wikidataPool.enqueueEnrichment");
+    expect(hook).toContain("leagueIds: [id]");
+    // `force` belongs to `enrichFromWikidata`, the human "look again" remedy.
+    // An automatic caller setting it would defeat the creation-only guard in
+    // `adapters/wikidata.enrichLeague` for every league in the product.
+    expect(hook).not.toContain("force");
+  });
+
+  test("a CREATED league schedules exactly one enrichment", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
@@ -311,9 +329,31 @@ describe("NEO-240: the creation-only enrichment hook", () => {
       .withIdentity(ADMIN)
       .mutation(api.leagues.createByAdmin, { name: "Eastern League", sportId });
 
+    const scheduled = await t.run(async (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("enqueueEnrichment");
+    expect((scheduled[0].args[0] as { leagueIds?: unknown[] }).leagueIds).toHaveLength(1);
+  });
+
+  test("a FOUND league schedules nothing more", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    await asAdmin.mutation(api.leagues.createByAdmin, {
+      name: "Eastern League",
+      sportId,
+    });
+    await asAdmin.mutation(api.leagues.createByAdmin, {
+      name: "  eastern league ",
+      sportId,
+    });
+
     expect(
       await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()),
-    ).toHaveLength(0);
+    ).toHaveLength(1);
   });
 });
 

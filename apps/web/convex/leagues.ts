@@ -162,18 +162,17 @@ export async function findLeagueByName(
 /**
  * NEO-240 — creation-only enrichment hook for a league row.
  *
- * A NO-OP STUB TODAY, deliberately. It exists so the ONE insert site in this
- * module already has the call in the right place, on the right branch: the
- * insert branch of `findOrCreateLeague` and nowhere else, which is what makes
+ * Called from the ONE insert site in this module — the insert branch of
+ * `findOrCreateLeague` and nowhere else — which is what makes league
  * enrichment creation-only by construction rather than by every caller
  * remembering (Jason, 2026-09-02: "if the player is already known we should
  * not try to look up the data again" — the same rule, for leagues).
  *
- * NEO-240 WP1 replaces the body with:
- *
- *   await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEnrichment, {
- *     leagueIds: [id],
- *   });
+ * Scheduled rather than awaited inline for the reason `teams.findOrCreate`
+ * gives: enrichment is a network round trip and this runs inside a mutation.
+ * The work lands on the deployment-wide 5-wide `wikidataPool`, sharing
+ * Wikidata's per-IP budget with every other SPARQL caller instead of opening a
+ * lane of its own.
  *
  * No `force`: that flag belongs to `enrichFromWikidata`, the human "this answer
  * is wrong, look again" remedy. Automatic callers never set it — see the
@@ -183,10 +182,9 @@ async function scheduleLeagueEnrichment(
   ctx: MutationCtx,
   id: Id<"leagues">,
 ): Promise<void> {
-  // Referenced so the signature cannot drift out of shape while the body is
-  // empty; WP1 replaces this body only.
-  void ctx;
-  void id;
+  await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEnrichment, {
+    leagueIds: [id],
+  });
 }
 
 /**
@@ -1013,8 +1011,8 @@ export const teamsIn = query({
  * thrown, because an un-enriched league is a perfectly valid end state and the
  * operator's click should not surface as a broken screen.
  *
- * The lookup itself is a placeholder until NEO-240 WP1 lands its body — see
- * `adapters/wikidata.enrichLeague`.
+ * The lookup itself is `adapters/wikidata.enrichLeague`: Wikidata EntitySearch
+ * filtered to sports leagues, then P1813/P571/P576 for the short name and span.
  */
 export const enrichFromWikidata = action({
   args: { id: v.id("leagues") },

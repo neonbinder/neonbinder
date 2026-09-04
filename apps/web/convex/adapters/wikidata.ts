@@ -490,6 +490,108 @@ async function findTeamQid(
 }
 
 /**
+ * NEO-240 — Wikidata's class for a sports league: "group of sports teams or
+ * individual athletes that compete against each other".
+ *
+ * VERIFIED LIVE 2026-09-04 against
+ * `https://www.wikidata.org/wiki/Special:EntityData/Q623109.json` (User-Agent
+ * header set): `labels.en.value === "sports league"`. Recorded here rather
+ * than assumed, because a wrong class QID fails silently in exactly the way
+ * NEO-235's four `hallOfFameQid` constants did — the filter matches nothing,
+ * every league resolves to "no match", and a unit test that supplies both
+ * sides of the comparison agrees with itself while agreeing with nothing real.
+ */
+const SPORTS_LEAGUE_QID = "Q623109";
+
+/**
+ * Find the best Wikidata QID for a LEAGUE — the twin of `findTeamQid`, using
+ * the same inlined MediaWiki EntitySearch.
+ *
+ * ## Two filters, and why the sport one is optional here
+ *
+ * `wdt:P31/wdt:P279* wd:Q623109` (instance/subclass of sports league) is the
+ * load-bearing one, and it is far narrower than the team/player equivalents:
+ * "any human" and "any sports team" match thousands of entities per name, so
+ * those two functions REFUSE to run without `wdt:P641` to disambiguate. A
+ * league name plus "is a sports league" is already a tight bound, so this one
+ * degrades instead of refusing: a sport row with no `sportConfig.wikidata`
+ * (any custom sport) still gets a lookup rather than a guaranteed miss.
+ *
+ * The residual risk of the sport-less path is a same-named league in another
+ * sport, and what contains it is downstream: `applyEnrichmentInternal` gap-fills
+ * only and never touches `name`, so a wrong match can add an abbreviation and a
+ * span to a bare row, never rewrite an operator's answer, and the admin
+ * "Discover" button is the documented remedy.
+ *
+ * ## VERIFIED LIVE 2026-09-04 — this exact query, one call per sport
+ *
+ *   "MLB" + Q5369  (baseball)         → Q1163715  Major League Baseball
+ *   "NFL" + Q41323 (American football) → Q1215884  National Football League
+ *   "NBA" + Q5372  (basketball)        → Q155223   National Basketball Association
+ *   "NHL" + Q41466 (ice hockey)        → Q1215892  P1813 "NHL", P571 1917-11-26
+ *
+ * Two things that verification found, neither of which reading the code would
+ * have shown:
+ *
+ * 1. **The NHL is Q1215892, not Q1734.** Q1734 — the value this work package
+ *    was specified with — is `volleyball`, the SPORT. Same class of error as
+ *    the NEO-235 hall-of-fame QIDs, caught this time before it was written
+ *    down. Q1215892 has no English *label* (only a description and a P1813
+ *    short name), which is why the label service renders it as its own QID;
+ *    that is a Wikidata gap, not a lookup failure, and it costs us nothing
+ *    because we never read a league's Wikidata label.
+ *
+ * 2. **Search-result order must be asked for explicitly.** Without
+ *    `wikibase:apiOrdinal`, "NFL" + Q41323 returned Q6972733 FIRST — a real,
+ *    correctly-classified "National Football League", but the 1902
+ *    Pennsylvania one, defunct for 120 years. mwapi hands SPARQL its hits as
+ *    an unordered set, so `LIMIT 1` over a bare join keeps whichever row the
+ *    join emitted first, which is not the relevance order the search computed.
+ *    Binding `?num wikibase:apiOrdinal true` and ordering by it restores that
+ *    ranking: the real NFL is rank 0, the 1902 league rank 21.
+ *
+ *    `findPlayerQid` / `findTeamQid` do NOT do this, and this is not a drive-by
+ *    fix for them: their `wdt:P641` filter is what makes their first row
+ *    tolerable, and changing their result selection is a behaviour change to
+ *    two shipped enrichment paths that belongs to its own ticket.
+ *
+ * ## Nothing from that table is stored anywhere
+ *
+ * `sportConfig` gains no league QIDs. These are the answers this function must
+ * PRODUCE; pinning them as constants would recreate both halves of the NEO-235
+ * failure — a hand-copied external id, and one that gets stamped onto rows
+ * where correcting the constant can no longer reach it.
+ */
+async function findLeagueQid(
+  name: string,
+  sportQid: string | undefined,
+): Promise<string | null> {
+  const safeName = sparqlStringLiteral(name);
+  const sportFilter = sportQid ? `?league wdt:P641 wd:${sportQid} .` : "";
+  const query = `
+    SELECT DISTINCT ?league ?num WHERE {
+      SERVICE wikibase:mwapi {
+        bd:serviceParam wikibase:api "EntitySearch" .
+        bd:serviceParam wikibase:endpoint "www.wikidata.org" .
+        bd:serviceParam mwapi:search "${safeName}" .
+        bd:serviceParam mwapi:language "en" .
+        ?league wikibase:apiOutputItem mwapi:item .
+        ?num wikibase:apiOrdinal true .
+      }
+      ?league wdt:P31/wdt:P279* wd:${SPORTS_LEAGUE_QID} .
+      ${sportFilter}
+    }
+    ORDER BY ?num
+    LIMIT 1
+  `;
+
+  const result = await runSparql(query);
+  const binding = result?.results.bindings[0];
+  // See the note in findPlayerQid — a non-QID segment is treated as no match.
+  return binding ? (qidFromIri(binding.league.value) ?? null) : null;
+}
+
+/**
  * Player enrichment result, shared by both consumers:
  *  - `enrichPlayer` (id-based, post-creation) resolves `careerTeams` names
  *    to real team ids via teams.findOrCreateInternal before persisting.
@@ -1176,30 +1278,209 @@ export const runEntityReviewLookup = internalAction({
 });
 
 /**
- * NEO-240 — league enrichment, PLACEHOLDER.
+ * NEO-240 — what a league lookup can answer.
  *
- * NEO-240 WP1 replaces this body only. The declaration exists now because the
- * pool has to be able to name it: `wikidataPool.enqueueEnrichment` accepts
- * `leagueIds` as of this change, and `leagues.enrichFromWikidata` (the admin
- * "Discover" button) enqueues onto it. A missing action there is a reference
- * error in `internal.adapters.wikidata`, not a quiet no-op, so the stub is what
- * lets the surface ship ahead of the lookup.
+ * `wikidataId` is non-optional: this whole object only exists once a QID
+ * resolved, so a result with no id is a state the caller never has to consider
+ * (contrast `TeamLookupResult`, where ESPN can answer without Wikidata).
+ */
+export interface LeagueLookupResult {
+  wikidataId: string;
+  /** P1813 short name, English only — "MLB", "NFL". */
+  abbreviation?: string;
+  /** P571 inception → `from`, P576 dissolved → `to`. `to` absent = still active. */
+  yearsActive?: { from: number; to?: number };
+  /**
+   * P17 country label. Returned for CONTEXT and deliberately NOT PERSISTED:
+   * `leagues` has no country field, and adding one as a side effect of writing
+   * an adapter is how a schema stops meaning anything. Whoever wants it on the
+   * row adds the column and the operator UI in a ticket that says so.
+   *
+   * A cross-border league has several — MLB, the NBA and the NHL each carry
+   * both Q30 (United States) and Q16 (Canada) — and this is exactly ONE of
+   * them, chosen by the query's ordering. Stable across lookups, but not "the"
+   * country, which is a second reason it must not be stored as if it were.
+   */
+  country?: string;
+}
+
+/**
+ * NEO-240 — pure lookup, no db writes: name (+ the sport's Wikidata QID when
+ * the sport row has one) → the league's QID, short name and lifespan.
  *
- * The real body will mirror `enrichTeam` above: read the row through
- * `internal.leagues.getInternal`, skip it unless `force` when it already
- * carries an enrichment marker (creation-only, NEO-203), run the SPARQL
- * lookup, and write results back through
- * `internal.leagues.applyEnrichmentInternal` — which gap-fills only, so an
- * operator's own abbreviation or span is never restamped.
+ * Wikidata only, unlike `lookupTeamEnrichment`: ESPN's site API exposes teams
+ * within a league, never a league entity of its own, so there is no second
+ * source to merge and no defunct-league coverage to fall back to.
  *
- * Returning `null` unconditionally is the right placeholder behaviour: an
- * un-enriched league is a perfectly valid end state ("a miss is fall-back, not
- * failure", the long-standing convention in this file), so an enqueued item
- * that does nothing costs one pool slot and leaves the row exactly as the
- * operator sees it.
+ * A miss returns null and is FALL-BACK, NOT FAILURE — the long-standing
+ * convention in this file. Vintage and independent leagues routinely have no
+ * Wikidata entity, and an un-enriched league is a perfectly good end state.
+ */
+export async function lookupLeagueEnrichment(
+  name: string,
+  sportQid?: string,
+): Promise<LeagueLookupResult | null> {
+  const qid = await findLeagueQid(name, sportQid);
+  if (!qid) {
+    // Structured for the same reason as the player/team no-match lines
+    // (NEO-208): a league name is operator input and must not be able to shape
+    // a log line by being concatenated into one.
+    console.log(
+      JSON.stringify({
+        msg: "wikidata_league_no_match",
+        name,
+        sportQid: sportQid ?? null,
+      }),
+    );
+    return null;
+  }
+
+  // ORDER BY ?inception is not decoration. Each OPTIONAL is independently
+  // multi-valued, so this is a cross product, and `LIMIT 1` over it would
+  // otherwise pick an arbitrary row: the NBA has TWO P571 values (1946-06-06,
+  // the BAA's founding, and 1949-08-03, the merger that named it), and the
+  // earlier one is the answer "when did this league begin" wants. The
+  // `?countryLabel` tiebreak only makes the remaining arbitrary pick STABLE
+  // across lookups — see the note on `country` above for why that value is
+  // context and never data.
+  //
+  // P1813 is monolingual text, so the language filter is required; without it
+  // a league with a French and an English short name would resolve to whichever
+  // row the cross product emitted first.
+  const detailQuery = `
+    SELECT ?shortName ?inception ?dissolved ?countryLabel WHERE {
+      OPTIONAL { wd:${qid} wdt:P1813 ?shortName . FILTER(LANG(?shortName) = "en") }
+      OPTIONAL { wd:${qid} wdt:P571 ?inception . }
+      OPTIONAL { wd:${qid} wdt:P576 ?dissolved . }
+      OPTIONAL { wd:${qid} wdt:P17 ?country . }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+    ORDER BY ?inception ?countryLabel
+    LIMIT 1
+  `;
+  const result = await runSparql(detailQuery);
+  const row = result?.results.bindings[0];
+
+  // Same year parser as the team lookup, and for the same reason: Wikidata
+  // renders a date at whatever precision it holds, so the NHL's 1917-11-26 and
+  // MLB's year-precision 1903 both have to yield a bare year.
+  const fromYear = yearFromBinding(row?.inception);
+  const toYear = yearFromBinding(row?.dissolved);
+
+  return {
+    wikidataId: qid,
+    abbreviation: row?.shortName?.value,
+    yearsActive: fromYear !== undefined ? { from: fromYear, to: toYear } : undefined,
+    country: row?.countryLabel?.value,
+  };
+}
+
+/**
+ * NEO-240 — the league twin of `teamEnrichmentMarkers`: "has this row already
+ * been enriched?", for the creation-only guard on `enrichLeague`.
+ *
+ * ## `abbreviation` and `level` are NOT markers, and must never become ones
+ *
+ * This is the trap `teamEnrichmentMarkers` documents (`leagueId` and
+ * `lastUpdated` there), and for leagues it is sharper, because the fields that
+ * LOOK like enrichment output are the ones creation already writes:
+ *
+ *   `resolveDefaultLeagueId` builds the sport's default row from the sport's
+ *   own `sportConfig` — `league` is the abbreviation ("MLB") and
+ *   `espn.leagueName` the full name — and `findOrCreateLeague` stamps
+ *   `level: "major"` on it in the same insert.
+ *
+ * So every default league row is born carrying an abbreviation AND a level. If
+ * either were a marker, the guard would skip the row on the very hop that just
+ * created it, and league enrichment would be dead on arrival for exactly the
+ * leagues that matter most — with no error anywhere, which is what makes this
+ * worth spelling out rather than deriving from "any enrichment field".
+ *
+ * What is left is the pair no creation path writes: `externalIds.wikidataId`
+ * and `yearsActive`. Both come only from a lookup or an operator, and a row
+ * carrying either has already been answered.
+ */
+function leagueEnrichmentMarkers(league: {
+  yearsActive?: unknown;
+  externalIds?: { wikidataId?: string };
+}): string[] {
+  const markers: string[] = [];
+  if (league.yearsActive) markers.push("yearsActive");
+  if (league.externalIds?.wikidataId) markers.push("wikidataId");
+  return markers;
+}
+
+/**
+ * NEO-240 — enrich ONE league row. The third sibling of `enrichPlayer` /
+ * `enrichTeam`, with the same three-part shape: read the row, refuse to look
+ * anything up for a row that already has an answer, then write back through a
+ * gap-fill-only mutation.
+ *
+ * CREATION-ONLY (NEO-203). Jason, 2026-09-02, on the twins: "the enrichment
+ * writes should only fire if the team is new. We should never be firing that
+ * on an update." `leagues.findOrCreateLeague` calls
+ * `scheduleLeagueEnrichment` on its insert branch and nowhere else, so the
+ * automatic path already honours that; the guard below is the structural belt
+ * behind the convention, and it sits ABOVE the network calls so a mis-enqueued
+ * existing league costs a single field check rather than two SPARQL round
+ * trips. `force` is the operator exception, reachable only through the
+ * admin-gated `leagues.enrichFromWikidata`.
+ *
+ * Never throws. An enrichment failure has no user waiting on it and nothing to
+ * age (the pool takes no `onComplete` for this lane, deliberately — see
+ * `wikidataPool.enqueueEnrichment`), so an escaping error would buy a red pool
+ * item and change nothing about the row. A miss and a thrown error are the same
+ * outcome here: the league keeps the fields the operator can already see.
  */
 export const enrichLeague = internalAction({
   args: { leagueId: v.id("leagues"), force: v.optional(v.boolean()) },
   returns: v.null(),
-  handler: async (): Promise<null> => null,
+  handler: async (ctx, args): Promise<null> => {
+    const league = await ctx.runQuery(internal.leagues.getInternal, {
+      id: args.leagueId,
+    });
+    if (!league) return null;
+
+    const alreadyEnriched = leagueEnrichmentMarkers(league);
+    if (alreadyEnriched.length > 0 && !args.force) {
+      console.log(
+        JSON.stringify({
+          msg: "enrich_league_skipped_existing",
+          leagueId: args.leagueId,
+          markers: alreadyEnriched,
+        }),
+      );
+      return null;
+    }
+
+    try {
+      // The sport's Wikidata context, resolved the same way `enrichTeam` does
+      // it — from the sport ROW's `sportConfig`, never from a name-keyed map
+      // (NEO-96). Absent for a custom sport, and `lookupLeagueEnrichment`
+      // degrades to a class-only search rather than refusing; see the note on
+      // `findLeagueQid`.
+      const sportCtx = await ctx.runQuery(
+        internal.selectorOptions.getSportEnrichmentContext,
+        { sportId: league.sportId },
+      );
+
+      const result = await lookupLeagueEnrichment(
+        league.name,
+        sportCtx?.wikidata?.sportQid,
+      );
+      if (!result) return null;
+
+      // `country` is deliberately not passed: the mutation has no such arg and
+      // the table has no such column. See `LeagueLookupResult.country`.
+      await ctx.runMutation(internal.leagues.applyEnrichmentInternal, {
+        id: args.leagueId,
+        abbreviation: result.abbreviation,
+        yearsActive: result.yearsActive,
+        wikidataId: result.wikidataId,
+      });
+    } catch (error) {
+      console.error(`[wikidata] enrichLeague for ${args.leagueId} failed:`, error);
+    }
+    return null;
+  },
 });
