@@ -255,6 +255,24 @@ function selectGriffey() {
   fireEvent.click(screen.getByRole("button", { name: /Ken Griffey Jr\./ }));
 }
 
+/**
+ * The detail panel's status line must render BELOW the Save / Re-enrich row,
+ * not in the page-level line at the top of the screen.
+ *
+ * Asserted as document order rather than "is inside the panel" because
+ * position is the whole point of the fix: on a 1024x629 viewport the top line
+ * sits ~600px above the button, so a message routed there is off-screen at the
+ * moment it is produced. A sighted mouse user pressing Save got no visible
+ * confirmation, and a failed save reported WHY somewhere they never looked;
+ * `role="status"` meant AT had been told all along, which is what hid it.
+ */
+function expectBelowTheActionRow(el: Element) {
+  const save = screen.getByRole("button", { name: /^Sav/ });
+  expect(
+    save.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+}
+
 /** Open the add form and choose a sport, which the create button requires. */
 function openAddForm(container: HTMLElement) {
   fireEvent.click(screen.getByRole("button", { name: "Add player" }));
@@ -659,9 +677,55 @@ describe("PlayerManagement — the detail panel", () => {
     await waitFor(() =>
       expect(mockEnrich).toHaveBeenCalledWith({ id: "p-griffey" }),
     );
-    expect(
-      await screen.findByText("Enrichment queued — it lands in a moment."),
-    ).toBeTruthy();
+    const said = await screen.findByText(
+      "Enrichment queued — it lands in a moment.",
+    );
+    expect(said.getAttribute("role")).toBe("status");
+    expectBelowTheActionRow(said);
+  });
+
+  it("confirms a save under the button that was pressed", async () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Byte-identical text — including the doubled stop, because the fixture's
+    // name already ends in one. The E2E flow waits on /.*Saved PM-….*/.
+    const said = await screen.findByText("Saved Ken Griffey Jr..");
+    expect(said.getAttribute("role")).toBe("status");
+    expectBelowTheActionRow(said);
+    // Exactly one live region says it — routing it to the panel must not also
+    // leave a copy in the page-level line.
+    expect(screen.getAllByText("Saved Ken Griffey Jr..")).toHaveLength(1);
+  });
+
+  it("reports a failed save where the operator can see the reason", async () => {
+    // A plain Error, not a ConvexError: production redacts those, so the
+    // fallback string is what a real operator would be reading.
+    mockSavePlayerFields.mockRejectedValue(new Error("boom"));
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const said = await screen.findByText("Could not save that player.");
+    expect(said.getAttribute("role")).toBe("alert");
+    expectBelowTheActionRow(said);
+  });
+
+  it("clears the panel's status when a different player is opened", async () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Hall of Fame" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Saved Ken Griffey Jr..")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Mike Trout/ }));
+    expect(screen.queryByText("Saved Ken Griffey Jr..")).toBeNull();
   });
 
   it("re-seeds the draft when a different player is opened", () => {

@@ -289,12 +289,10 @@ function AddPlayerForm({
 function PlayerDetail({
   player,
   sportLabel,
-  onStatus,
   onSelect,
 }: {
   player: Player;
   sportLabel: string;
-  onStatus: (status: Status) => void;
   onSelect: (id: Id<"players">) => void;
 }) {
   const savePlayerFields = useMutation(api.players.savePlayerFields);
@@ -319,6 +317,19 @@ function PlayerDetail({
   const [stintError, setStintError] = useState<string | null>(null);
   const [nameTakenId, setNameTakenId] = useState<Id<"players"> | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  /**
+   * NEO-212 (a11y/UX): the panel's own status line, rendered directly under the
+   * action row rather than routed to the page-level line at the top of the
+   * screen. On a 1024x629 viewport that top line sits ~600px above the Save
+   * button and is off-screen when it is pressed, so a sighted mouse user got no
+   * confirmation and, worse, never saw WHY a save failed. `role="status"` had
+   * it announced to AT the whole time — this was a sighted-user-only gap.
+   *
+   * Detail-originated messages live here and ONLY here: exactly one live region
+   * announces each one. The add form's messages stay page-level on purpose —
+   * they report on the list, which the top line sits directly above.
+   */
+  const [status, setStatus] = useState<Status>(null);
 
   // Re-seed on selection change, keyed on _id — React's documented "adjust
   // state when props change" pattern rather than an effect, which the lint rule
@@ -335,6 +346,9 @@ function PlayerDetail({
     setPendingTo("");
     setStintError(null);
     setNameTakenId(null);
+    // Otherwise "Saved Ken Griffey Jr." stays on screen under a different
+    // player's Save button.
+    setStatus(null);
   }
 
   // One batched lookup for every team named anywhere in this panel — the drafted
@@ -411,7 +425,7 @@ function PlayerDetail({
   const save = async () => {
     if (!canSave) return;
     setBusy("save");
-    onStatus(null);
+    setStatus(null);
     setNameTakenId(null);
     try {
       // Only what changed. `savePlayerFields` treats every arg as optional and
@@ -424,7 +438,7 @@ function PlayerDetail({
         ...(qidChanged ? { wikidataId: trimmedQid || null } : {}),
         ...(stintsChanged ? { teamYears: sortStints(stints) } : {}),
       });
-      onStatus({ text: `Saved ${trimmedName}.`, isError: false });
+      setStatus({ text: `Saved ${trimmedName}.`, isError: false });
     } catch (e) {
       // NAME_TAKEN carries the OTHER row's id precisely so this screen can
       // offer to go there. Read `.data` first (the only thing that survives
@@ -439,7 +453,7 @@ function PlayerDetail({
       if (taken) {
         setNameTakenId(taken[1] as Id<"players">);
       } else {
-        onStatus({
+        setStatus({
           text: userFacingMessage(e, "Could not save that player."),
           isError: true,
         });
@@ -451,15 +465,15 @@ function PlayerDetail({
 
   const reEnrich = async () => {
     setBusy("enrich");
-    onStatus(null);
+    setStatus(null);
     try {
       await enrichFromWikidata({ id: player._id });
-      onStatus({
+      setStatus({
         text: "Enrichment queued — it lands in a moment.",
         isError: false,
       });
     } catch (e) {
-      onStatus({
+      setStatus({
         text: userFacingMessage(e, "Could not queue enrichment."),
         isError: true,
       });
@@ -646,6 +660,15 @@ function PlayerDetail({
           {busy === "enrich" ? "Queueing…" : "Re-enrich from Wikidata"}
         </NeonButton>
       </div>
+
+      {status && (
+        <p
+          className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
+          role={status.isError ? "alert" : "status"}
+        >
+          {status.text}
+        </p>
+      )}
     </div>
   );
 }
@@ -754,6 +777,11 @@ export default function PlayerManagement() {
 
   return (
     <div className="space-y-4">
+      {/* Page-level status — the ADD FORM's messages only ("Added {name}.",
+          "That player already exists — opened it."). Those report on the LIST,
+          which sits directly below this line, so the top of the page is where
+          they belong. The detail panel keeps its own status line under its
+          action row instead; see PlayerDetail (NEO-212). */}
       {status && (
         <p
           className={`text-sm ${status.isError ? "text-neon-pink" : "text-slate-300"}`}
@@ -903,7 +931,6 @@ export default function PlayerManagement() {
               sportLabel={
                 sportNameById.get(selected.sportId as string) ?? "unknown"
               }
-              onStatus={setStatus}
               onSelect={selectPlayer}
             />
           ) : (

@@ -267,10 +267,37 @@ tags:
       text: "Save"
     centerElement: true
 - tapOn: "Save"
-# The confirmation names the player, so this proves the save targeted THIS row.
+
+# SCROLL BACK UP FOR THE CONFIRMATION — it is not next to the button that
+# earns it. `status` lives on the PAGE root (PlayerManagement's own state) and
+# renders as a single <p> above the filter row, while Save sits at the bottom
+# of the right-hand detail column. Reaching Save scrolls the page down far
+# enough that the confirmation lands ABOVE the viewport, so asserting it from
+# here can never pass however long it waits (CI run 33826087915).
+#
+# Measured from that run's own artifacts: in the failing hierarchy the "Filter
+# players" label is at y=9, and on the unscrolled page the status line sits
+# ~36px above that label — so it was at y≈-27, clipped. The same hierarchy is
+# missing the "Admin" heading, the tab bar and the "Player Management" heading
+# for the same reason, which is what proves the hierarchy is viewport-clipped
+# and its silence about the status line is not evidence the save failed.
+#
+# The save had in fact SUCCEEDED: in that screenshot the Save button is painted
+# rgb(8,105,48), an exact match for NeonButton's disabled rendering
+# (opacity 0.45 over #00D558 on this background), while "Re-enrich" beside it
+# is full-strength #00C2FF. Save only goes disabled when `dirty` is false,
+# i.e. when the draft stints already equal `player.teamYears` read back from
+# the database. A rejected mutation would have left it bright and enabled.
+#
+# The scroll IS the assertion (R6) — it fails loudly if the line never appears,
+# and the line names the player, so it still proves the save targeted THIS row.
+# NEO-212: the detail panel's save confirmation renders directly BELOW the
+# Save / Re-enrich row (it used to live at the top of the page, ~600px above
+# the button, where a sighted user never saw it and this step had to scroll UP
+# to find it). Save was just centred, so the line is on screen — a plain wait.
 - extendedWaitUntil:
     visible: ".*Saved PM-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
-    timeout: 7000
+    timeout: 15000
 
 # ── IT PERSISTED, AND IT PERSISTED IN ORDER ─────────────────────────────────
 # A reload is what separates the form still holding what was typed from the
