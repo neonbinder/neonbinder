@@ -56,7 +56,7 @@
  * CardDetailPanel's TeamPicker/PlayerPicker).
  */
 
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -70,11 +70,18 @@ vi.mock("../../convex/_generated/api", () => ({
     entityReviewQueue: {
       getBatch: "entityReviewQueue.getBatch",
       recordDecision: "entityReviewQueue.recordDecision",
+      // NEO-221: back-navigation clears a decision so the row can be redecided.
+      clearDecision: "entityReviewQueue.clearDecision",
       cancelBatch: "entityReviewQueue.cancelBatch",
       recordAllRemainingAsCreate: "entityReviewQueue.recordAllRemainingAsCreate",
       recordAllRemainingAsSkip: "entityReviewQueue.recordAllRemainingAsSkip",
     },
-    players: { nearMatches: "players.nearMatches", search: "players.search" },
+    players: {
+      nearMatches: "players.nearMatches",
+      search: "players.search",
+      // NEO-221: resolves a linked player's canonical name for the decided list.
+      getManyByIds: "players.getManyByIds",
+    },
     // `teams.search` is CareerTeamEntry's typeahead (rendered for player rows);
     // `getManyByIds` resolves linked teams for the staging list; `resolveNames`
     // backs the "will create N new teams" summary. Each returns undefined from
@@ -95,10 +102,13 @@ let currentNearMatches: unknown;
 let currentResolvedNames: unknown;
 /** Rows served to teams.getManyByIds (linked-team canonical names). */
 let currentLinkedTeams: unknown;
+/** Rows served to players.getManyByIds (linked-player canonical names). */
+let currentLinkedPlayers: unknown;
 /** Every (ref, args) pair useQuery saw, so arg-shaping can be asserted. */
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
 const mockRecordDecision = vi.fn();
+const mockClearDecision = vi.fn();
 const mockCancelBatch = vi.fn();
 const mockRecordAllRemainingAsCreate = vi.fn();
 const mockRecordAllRemainingAsSkip = vi.fn();
@@ -112,10 +122,12 @@ vi.mock("convex/react", () => ({
       return currentNearMatches;
     if (ref === "teams.resolveNames") return currentResolvedNames;
     if (ref === "teams.getManyByIds") return currentLinkedTeams;
+    if (ref === "players.getManyByIds") return currentLinkedPlayers;
     return undefined;
   },
   useMutation: (ref: string) => {
     if (ref === "entityReviewQueue.recordDecision") return mockRecordDecision;
+    if (ref === "entityReviewQueue.clearDecision") return mockClearDecision;
     if (ref === "entityReviewQueue.cancelBatch") return mockCancelBatch;
     if (ref === "entityReviewQueue.recordAllRemainingAsCreate")
       return mockRecordAllRemainingAsCreate;
@@ -189,6 +201,12 @@ function makeRow(overrides: Partial<Row> = {}): Row {
   };
 }
 
+/**
+ * NEO-220 replaced the bare `cardCount` prop with the whole of what Confirm &
+ * Save is about to do, so the final step can itemise it.
+ */
+const SUMMARY = { cardCount: 3, deleteCount: 0, reviewDecisionCount: 0 };
+
 function renderWizard(props: Partial<Parameters<typeof EntityReviewWizard>[0]> = {}) {
   const onConfirm = vi.fn();
   const onCancel = vi.fn();
@@ -197,13 +215,18 @@ function renderWizard(props: Partial<Parameters<typeof EntityReviewWizard>[0]> =
       isOpen
       selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
       batchId="batch-1"
-      cardCount={3}
+      summary={SUMMARY}
       onConfirm={onConfirm}
       onCancel={onCancel}
       {...props}
     />,
   );
   return { ...utils, onConfirm, onCancel };
+}
+
+/** The discard confirm's destructive button — "Discard", per the E2E contract. */
+function discardButton(): HTMLElement {
+  return screen.getByRole("button", { name: "Discard" });
 }
 
 /**
@@ -223,6 +246,7 @@ function progressText(): string {
 beforeEach(() => {
   vi.clearAllMocks();
   mockRecordDecision.mockResolvedValue(null);
+  mockClearDecision.mockResolvedValue(null);
   mockCancelBatch.mockResolvedValue(null);
   mockRecordAllRemainingAsCreate.mockResolvedValue(0);
   mockRecordAllRemainingAsSkip.mockResolvedValue(0);
@@ -230,12 +254,16 @@ beforeEach(() => {
   currentNearMatches = [];
   currentResolvedNames = undefined;
   currentLinkedTeams = undefined;
+  currentLinkedPlayers = undefined;
   queryCalls = [];
   lastLinkSearchProps = null;
   nextRowId = 0;
 });
 
 afterEach(() => {
+  // Several NEO-221 tests drive the armed-bulk debounce on fake timers; a
+  // leaked fake clock turns every later `waitFor` in the file into a hang.
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -583,14 +611,14 @@ describe("EntityReviewWizard — final confirm step", () => {
       makeRow({ decision: { action: "create" } }),
       makeRow({ decision: { action: "link", linkedPlayerId: "p1" } }),
     ];
-    renderWizard({ cardCount: 5 });
+    renderWizard({ summary: { ...SUMMARY, cardCount: 5 } });
 
     expect(screen.getByText("All reviewed — save 5 cards?")).toBeTruthy();
   });
 
   it("uses singular 'card' when cardCount is 1", () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
-    renderWizard({ cardCount: 1 });
+    renderWizard({ summary: { ...SUMMARY, cardCount: 1 } });
 
     expect(screen.getByText("All reviewed — save 1 card?")).toBeTruthy();
   });
@@ -619,7 +647,9 @@ describe("EntityReviewWizard — final confirm step", () => {
 // ---------------------------------------------------------------------------
 
 describe("EntityReviewWizard — cancel", () => {
-  it("Cancel before any decisions calls cancelBatch then onCancel", async () => {
+  it("Cancel with NOTHING decided discards straight away — no confirm to read", async () => {
+    // The zero-decision case is the one `checklist-fetch-cancel-dialog` walks,
+    // and a confirm in front of it would be a question about nothing.
     currentRows = [makeRow({ status: "pending" })];
     const { onCancel } = renderWizard();
 
@@ -634,7 +664,8 @@ describe("EntityReviewWizard — cancel", () => {
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
   });
 
-  it("Cancel mid-review (some rows already decided) still calls cancelBatch then onCancel", async () => {
+  it("Cancel with decisions ASKS FIRST, and cancelling the question keeps the batch", async () => {
+    // NEO-220's whole promise: a review session cannot be lost to one click.
     currentRows = [
       makeRow({ decision: { action: "create" } }),
       makeRow({ status: "ready" }),
@@ -643,56 +674,107 @@ describe("EntityReviewWizard — cancel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
 
+    // The count is in the title, so the operator knows what they are throwing
+    // away before they agree to throw it away. Singular, at one decision.
+    expect(screen.getByText("Discard 1 decision?")).toBeTruthy();
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+
+    // Backing out of the confirm leaves the review exactly where it was.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByText(/Discard 1 decision/)).toBeNull();
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.getByText("Confirm New Players & Teams")).toBeTruthy();
+  });
+
+  it("pluralizes the confirm title", () => {
+    currentRows = [
+      makeRow({ decision: { action: "create" } }),
+      makeRow({ decision: { action: "skip" } }),
+      makeRow({ status: "ready" }),
+    ];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    expect(screen.getByText("Discard 2 decisions?")).toBeTruthy();
+  });
+
+  it("confirming the discard cancels the batch and then closes", async () => {
+    currentRows = [
+      makeRow({ decision: { action: "create" } }),
+      makeRow({ status: "ready" }),
+    ];
+    const { onCancel } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(discardButton());
+
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
   });
 
-  it("Cancel on the final all-decided step still calls cancelBatch then onCancel", async () => {
+  it("Cancel on the final all-decided step goes through the same confirm", async () => {
     currentRows = [makeRow({ decision: { action: "create" } })];
     const { onCancel } = renderWizard();
 
     expect(screen.getByText(/All reviewed/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(discardButton());
 
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
   });
 
-  it("still closes the wizard (calls onCancel) even when cancelBatch rejects", async () => {
-    // Robustness: onCancel() lives in handleCancel's finally block, so a
-    // transient cancelBatch rejection (network/auth) must NOT strand the dialog
-    // permanently open — the finally is the only thing that guarantees the
-    // wizard clears its pending-preview state.
-    //
-    // The component's caller invokes `void handleCancel()`, so the rejection
-    // propagates out unawaited (an unhandled rejection — pre-existing behavior,
-    // identical before and after this fix). Swallow that one expected rejection
-    // locally so it doesn't surface as a false-positive test error.
-    const expectedRejections: unknown[] = [];
-    const onUnhandled = (reason: unknown) => {
-      expectedRejections.push(reason);
-    };
-    process.on("unhandledRejection", onUnhandled);
-    try {
-      mockCancelBatch.mockRejectedValueOnce(new Error("network down"));
-      currentRows = [makeRow({ status: "ready" })];
-      const { onCancel } = renderWizard();
+  it("does NOT close when cancelBatch rejects — it says the batch is still there", async () => {
+    // The inversion NEO-220 makes. `onCancel()` used to live in a `finally`, so
+    // a rejected cancel still told the parent "cancelled, nothing saved" while
+    // the rows sat on the server: the operator was told a batch was gone that
+    // would come straight back on the next sync. Now the failure is reported
+    // and the dialog stays put, which is the only honest pair of facts.
+    mockCancelBatch.mockRejectedValueOnce(new Error("network down"));
+    currentRows = [
+      makeRow({ decision: { action: "create" } }),
+      makeRow({ status: "ready" }),
+    ];
+    const { onCancel } = renderWizard();
 
-      fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    fireEvent.click(discardButton());
 
-      await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
-      await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
-      // Give the microtask that re-throws out of `void handleCancel()` a tick to
-      // land on our listener before we detach it.
-      await new Promise((r) => setTimeout(r, 0));
-    } finally {
-      process.off("unhandledRejection", onUnhandled);
-    }
-    expect(expectedRejections).toHaveLength(1);
-    expect((expectedRejections[0] as Error).message).toBe("network down");
+    const alert = await screen.findByText(/Couldn't discard this review/);
+    expect(alert.textContent).toContain("network down");
+    expect(alert.textContent).toContain("The batch is still here.");
+    expect(onCancel).not.toHaveBeenCalled();
+    // Still on screen, still retryable.
+    expect(discardButton()).toBeTruthy();
   });
 
-  it("pressing Escape also cancels", async () => {
+  it("reports a failed zero-decision cancel inline rather than closing", async () => {
+    mockCancelBatch.mockRejectedValueOnce(new Error("network down"));
+    currentRows = [makeRow({ status: "ready" })];
+    const { onCancel } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+
+    const alert = await screen.findByText(/Couldn't discard this review/);
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("Escape routes through the same confirm as the Cancel button", () => {
+    currentRows = [
+      makeRow({ decision: { action: "create" } }),
+      makeRow({ status: "ready" }),
+    ];
+    renderWizard();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+    expect(screen.getByText("Discard 1 decision?")).toBeTruthy();
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+  });
+
+  it("Escape with nothing decided still cancels immediately", async () => {
     currentRows = [makeRow({ status: "ready" })];
     const { onCancel } = renderWizard();
 
@@ -700,6 +782,96 @@ describe("EntityReviewWizard — cancel", () => {
 
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+  });
+
+  it("Escape from inside a text field never reaches the dialog", async () => {
+    // NEO-220. The career-team combobox is an editable target, so Escape there
+    // is the field's to interpret — it used to bubble out and cancel the batch.
+    currentRows = [
+      makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+    ];
+    const { onCancel } = renderWizard();
+
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+  });
+
+  it("Escape while the link search is open closes the search, not the review", async () => {
+    // One level at a time. The search panel is a level; the batch is not the
+    // next one after it.
+    currentRows = [makeRow({ kind: "player", status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Link to existing instead"));
+    expect(screen.getByLabelText("Entity link search (stub)")).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+    expect(screen.queryByLabelText("Entity link search (stub)")).toBeNull();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+  });
+
+  it("Escape does nothing while the discard confirm is up", () => {
+    // The confirm owns Escape at that point (it cancels itself). A root handler
+    // that also fired would open a second confirm behind the first.
+    currentRows = [
+      makeRow({ decision: { action: "create" } }),
+      makeRow({ status: "ready" }),
+    ];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    // The wizard overlay is the FIRST dialog in the document; the confirm is a
+    // sibling rendered after it inside the same portal.
+    fireEvent.keyDown(screen.getAllByRole("dialog")[0], { key: "Escape" });
+
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+    expect(screen.getByText("Discard 1 decision?")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-220 — Enter no longer reaches past the control it was aimed at
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — Enter", () => {
+  it("does NOT commit when Enter is pressed on the focused Cancel button", () => {
+    // The defect: a dialog-level Enter handler fired for any target that was
+    // not an <input>, so an operator tabbing to Cancel and pressing Enter
+    // committed the whole fetch — and then cancelled it. Enter now does only
+    // what the focused control does.
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard();
+
+    const cancel = screen.getByRole("button", { name: "Cancel (Esc)" });
+    (cancel as HTMLElement).focus();
+    fireEvent.keyDown(cancel, { key: "Enter" });
+
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("does NOT commit when Enter is pressed on the dialog itself", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
+
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("still autofocuses Confirm & Save, which is what makes Enter work", () => {
+    // The keyboard contract is unchanged for the operator: reach the final step
+    // and Enter saves. It is now the BUTTON's own activation doing it.
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: /Confirm & Save/ }),
+    );
   });
 });
 
@@ -712,7 +884,11 @@ describe("EntityReviewWizard — cancel", () => {
 // ---------------------------------------------------------------------------
 
 describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
-  it("labels the button with the undecided count and calls the bulk mutation", async () => {
+  it("says how many names are still being looked up, and that they are NOT included", async () => {
+    // NEO-221. The bulk create used to decide rows whose lookup had not
+    // finished — names the operator had never seen, added as new players on
+    // the strength of a click that said nothing about them. The server now
+    // excludes them, so the button has to say so, or the count silently lies.
     currentRows = [
       makeRow({ status: "ready", name: "A" }),
       makeRow({ status: "pending", name: "B" }),
@@ -720,7 +896,11 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     ];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Add all remaining as new (3)" });
+    const bulk = screen.getByRole("button", {
+      name: "Add All Remaining as New (3) — 2 still looking up, wait or skip",
+    });
+    // The E2E-matched prefix is intact — Maestro matches
+    // `.*Add All Remaining as New.*` and the clause is appended, not woven in.
     expect(bulk.textContent).toContain("Add All Remaining as New (3)");
 
     fireEvent.click(bulk);
@@ -733,6 +913,14 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     );
   });
 
+  it("drops the clause entirely when every row has settled", () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (2)" });
+    expect(bulk.textContent).not.toContain("still looking up");
+  });
+
   it("counts only undecided rows, ignoring ones already decided", () => {
     currentRows = [
       makeRow({ status: "ready", decision: { action: "create" } }),
@@ -742,7 +930,9 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     expect(
-      screen.getByRole("button", { name: "Add all remaining as new (2)" }),
+      screen.getByRole("button", {
+        name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
+      }),
     ).toBeTruthy();
   });
 
@@ -765,7 +955,7 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     mockRecordAllRemainingAsCreate.mockRejectedValueOnce(new Error("not an admin"));
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Add all remaining as new (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("not an admin");
@@ -777,12 +967,211 @@ describe("EntityReviewWizard — bulk 'Add All Remaining as New'", () => {
     renderWizard();
 
     const bulk = screen.getByRole("button", {
-      name: "Add all remaining as new (1)",
+      name: "Add All Remaining as New (1)",
     }) as HTMLButtonElement;
     fireEvent.click(bulk);
 
     await screen.findByRole("alert");
     expect(bulk.disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-221 — "keep adding as their lookups finish"
+//
+// Excluding pending rows from the bulk create is correct and, on its own,
+// turns one click into a click per straggler. Arming a follow-up fixes that
+// — and is a client-driven write loop keyed on a reactive query, so the
+// security review's bounds (debounce, threshold, cap, disarm-on-rejection)
+// are part of the behaviour, not an optimisation on top of it.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — armed bulk add", () => {
+  const wizardEl = () => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />
+  );
+
+  /** [settled-and-decided, then whatever the test wants] */
+  const settledA = () =>
+    makeRow({ _id: "row-a" as unknown as Id<"entityReviewQueue">, status: "ready", name: "A" });
+
+  it("collapses two rows settling 100ms apart into ONE follow-up call", async () => {
+    // The debounce is the bound that matters most: the NEO-99 pool drains five
+    // at a time, and without this every drained row would be its own mutation.
+    vi.useFakeTimers();
+    try {
+      currentRows = [
+        { ...settledA() },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "pending", name: "B" }),
+        makeRow({ _id: "row-c" as unknown as Id<"entityReviewQueue">, status: "pending", name: "C" }),
+      ];
+      const { rerender } = render(wizardEl());
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Add All Remaining as New (3) — 2 still looking up, wait or skip",
+        }),
+      );
+      await act(async () => {});
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+
+      // B's lookup lands.
+      currentRows = [
+        { ...settledA(), decision: { action: "create" } },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+        makeRow({ _id: "row-c" as unknown as Id<"entityReviewQueue">, status: "pending", name: "C" }),
+      ];
+      rerender(wizardEl());
+
+      // …and C's, 100ms later. Both are inside one debounce window.
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+      currentRows = [
+        { ...settledA(), decision: { action: "create" } },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+        makeRow({ _id: "row-c" as unknown as Id<"entityReviewQueue">, status: "ready", name: "C" }),
+      ];
+      rerender(wizardEl());
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disarms on a rejected follow-up and says it stopped", async () => {
+    // One refusal means every retry refuses too, so retrying on a timer would
+    // hammer the backend with a call that cannot succeed.
+    vi.useFakeTimers();
+    try {
+      mockRecordAllRemainingAsCreate
+        .mockResolvedValueOnce(1)
+        .mockRejectedValueOnce(new Error("not an admin"));
+
+      currentRows = [
+        { ...settledA() },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "pending", name: "B" }),
+      ];
+      const { rerender } = render(wizardEl());
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
+        }),
+      );
+      await act(async () => {});
+      expect(screen.getByText(/Adding .* as their lookups finish/)).toBeTruthy();
+
+      currentRows = [
+        { ...settledA(), decision: { action: "create" } },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+      ];
+      rerender(wizardEl());
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+
+      await act(async () => {});
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toContain("not an admin");
+      expect(alert.textContent).toContain("Stopped adding automatically");
+      // Disarmed: the status line is gone and the bulk buttons are back.
+      expect(screen.queryByText(/as their lookups finish/)).toBeNull();
+
+      // …and it does NOT try again on the next tick.
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Stop disarms it and cancels the scheduled call", async () => {
+    vi.useFakeTimers();
+    try {
+      currentRows = [
+        { ...settledA() },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "pending", name: "B" }),
+      ];
+      const { rerender } = render(wizardEl());
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
+        }),
+      );
+      await act(async () => {});
+
+      currentRows = [
+        { ...settledA(), decision: { action: "create" } },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+      ];
+      rerender(wizardEl());
+
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/as their lookups finish/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not arm at all when nothing is still being looked up", async () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add All Remaining as New (2)" }));
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByText(/as their lookups finish/)).toBeNull();
+  });
+
+  it("'Skip Remaining' disarms it — that branch means every name, lookups included", async () => {
+    vi.useFakeTimers();
+    try {
+      currentRows = [
+        { ...settledA() },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "pending", name: "B" }),
+      ];
+      const { rerender } = render(wizardEl());
+
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
+        }),
+      );
+      await act(async () => {});
+      // Armed — so the bulk buttons are replaced by the status line. Re-render
+      // with the create landed so the footer offers "Skip Remaining" again.
+      fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+      rerender(wizardEl());
+
+      fireEvent.click(screen.getByRole("button", { name: "Skip Remaining (2)" }));
+      await act(async () => {});
+      expect(mockRecordAllRemainingAsSkip).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText(/as their lookups finish/)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -990,7 +1379,7 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     ];
     renderWizard();
 
-    const bulk = screen.getByRole("button", { name: "Skip remaining (3)" });
+    const bulk = screen.getByRole("button", { name: "Skip Remaining (3)" });
     expect(bulk.textContent).toContain("Skip Remaining (3)");
 
     fireEvent.click(bulk);
@@ -1012,8 +1401,12 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     ];
     renderWizard();
 
-    expect(screen.getByRole("button", { name: "Add all remaining as new (2)" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Skip remaining (2)" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Add All Remaining as New (2) — 1 still looking up, wait or skip",
+      }),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip Remaining (2)" })).toBeTruthy();
   });
 
   it("is not rendered once every row is decided", () => {
@@ -1029,7 +1422,7 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     mockRecordAllRemainingAsSkip.mockRejectedValueOnce(new Error("not an admin"));
     renderWizard();
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip remaining (2)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip Remaining (2)" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("not an admin");
@@ -1041,14 +1434,14 @@ describe("EntityReviewWizard — bulk 'Skip Remaining'", () => {
     renderWizard();
 
     const skipAll = screen.getByRole("button", {
-      name: "Skip remaining (1)",
+      name: "Skip Remaining (1)",
     }) as HTMLButtonElement;
     fireEvent.click(skipAll);
 
     await screen.findByRole("alert");
     expect(skipAll.disabled).toBe(false);
     expect(
-      (screen.getByRole("button", { name: "Add all remaining as new (1)" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "Add All Remaining as New (1)" }) as HTMLButtonElement)
         .disabled,
     ).toBe(false);
   });
@@ -1708,7 +2101,7 @@ describe("EntityReviewWizard — accessibility", () => {
         isOpen
         selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
         batchId="batch-1"
-        cardCount={3}
+        summary={SUMMARY}
         onConfirm={vi.fn()}
         onCancel={vi.fn()}
       />
@@ -1745,7 +2138,7 @@ describe("EntityReviewWizard — accessibility", () => {
         isOpen
         selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
         batchId="batch-1"
-        cardCount={3}
+        summary={SUMMARY}
         onConfirm={vi.fn()}
         onCancel={vi.fn()}
       />
@@ -1811,5 +2204,623 @@ describe("EntityReviewWizard — accessibility", () => {
     // Both are still on screen — moved beside the heading, not removed.
     expect(screen.getByText(/\(Player · Baseball\)/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy name" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-221 — the presented row is pinned, and a decision lands on it or nowhere
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — presented row stability", () => {
+  const wizardEl = () => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />
+  );
+
+  const rowA = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-a" as unknown as Id<"entityReviewQueue">,
+      name: "Alpha",
+      ...over,
+    });
+  const rowB = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-b" as unknown as Id<"entityReviewQueue">,
+      name: "Bravo",
+      ...over,
+    });
+
+  it("does not swap the row out when an EARLIER sibling's lookup lands", () => {
+    // The reordering defect. `current` used to be `rows.find(first settled and
+    // undecided)`, so Alpha resolving made Alpha the presented row — mid-
+    // sentence, and taking the operator's staged career teams with it.
+    currentRows = [rowA({ status: "pending" }), rowB({ status: "ready" })];
+    const { rerender } = render(wizardEl());
+    expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+
+    currentRows = [rowA({ status: "ready" }), rowB({ status: "ready" })];
+    rerender(wizardEl());
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+  });
+
+  it("keeps staged career teams across a sibling's lookup landing", () => {
+    // The reset effect is keyed on the presented row id, so a batch update that
+    // does not change which row is on screen must not clear the mini-form.
+    currentRows = [
+      rowA({ status: "pending" }),
+      rowB({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+    ];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "Toronto Blue Jays" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2023" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(screen.getByText(/Toronto Blue Jays \(2023–present\)/)).toBeTruthy();
+
+    currentRows = [
+      rowA({ status: "ready" }),
+      rowB({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+    ];
+    rerender(wizardEl());
+
+    expect(screen.getByText(/Toronto Blue Jays \(2023–present\)/)).toBeTruthy();
+  });
+
+  it("advances once the presented row is decided", () => {
+    currentRows = [rowA({ status: "ready" }), rowB({ status: "ready" })];
+    const { rerender } = render(wizardEl());
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+
+    currentRows = [
+      rowA({ status: "ready", decision: { action: "create" } }),
+      rowB({ status: "ready" }),
+    ];
+    rerender(wizardEl());
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+  });
+
+  it("advances when the presented row disappears from the batch", () => {
+    // A resume reconciliation drops rows whose names are no longer incoming.
+    currentRows = [rowA({ status: "ready" }), rowB({ status: "ready" })];
+    const { rerender } = render(wizardEl());
+
+    currentRows = [rowB({ status: "ready" })];
+    rerender(wizardEl());
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+  });
+});
+
+describe("EntityReviewWizard — one decision at a time", () => {
+  it("a double click records EXACTLY ONE decision", async () => {
+    // The guard has to be a ref. Two clicks in one frame share a render
+    // closure, so a `deciding` STATE read is false for both and issues two
+    // mutations — which is how a row got decided twice and, on a slow link, how
+    // the second landed after the presentation had already moved on.
+    const row = makeRow({ kind: "player", status: "ready" });
+    currentRows = [row];
+    let resolveDecision: (v: unknown) => void = () => {};
+    mockRecordDecision.mockImplementationOnce(
+      () => new Promise((res) => (resolveDecision = res)),
+    );
+    renderWizard();
+
+    const add = screen.getByRole("button", { name: "Add as New Player" });
+    fireEvent.click(add);
+    fireEvent.click(add);
+
+    expect(mockRecordDecision).toHaveBeenCalledTimes(1);
+
+    resolveDecision(null);
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+  });
+
+  it("marks the decision controls aria-disabled — never native disabled — while in flight", () => {
+    // Native `disabled` drops a button out of the tab order, so a keyboard
+    // operator who had tabbed to it is thrown back to the top of the document
+    // for the length of the round-trip (WCAG 2.2 SC 2.4.3). NeonButton already
+    // paints aria-disabled the same way.
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    mockRecordDecision.mockImplementationOnce(() => new Promise(() => {}));
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    for (const name of [
+      "Add as New Player",
+      "Link to existing instead",
+      "Skip Mike Trout — not a person",
+    ]) {
+      const control = screen.getByRole("button", { name }) as HTMLButtonElement;
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(control.disabled).toBe(false);
+    }
+  });
+
+  it("a second control is inert while the first decision is in flight", () => {
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    mockRecordDecision.mockImplementationOnce(() => new Promise(() => {}));
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip Mike Trout — not a person" }));
+
+    expect(mockRecordDecision).toHaveBeenCalledTimes(1);
+    expect(mockRecordDecision.mock.calls[0][0].action).toBe("create");
+  });
+
+  it("shows a rejected decision inline and leaves the row undecided", async () => {
+    // `recordDecision` throws BEFORE it patches, so the row really is still
+    // waiting on a decision — and the same three controls are still the way
+    // forward. Swallowing this (the old `void handleLink(...)`) made a failed
+    // link look exactly like a successful one.
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    mockRecordDecision.mockRejectedValueOnce(new Error("sport mismatch"));
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Link to existing instead"));
+    fireEvent.click(screen.getByText("Stub link select"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("sport mismatch");
+    expect(alert.textContent).toContain("still waiting on a decision");
+
+    // Still the same row, and the search stays open so the operator can pick a
+    // different target without retracing their steps.
+    expect(screen.getByRole("heading", { level: 3, name: "Mike Trout" })).toBeTruthy();
+    expect(screen.getByLabelText("Entity link search (stub)")).toBeTruthy();
+
+    // Backing out of the search returns the three decision controls, because
+    // the row is genuinely still undecided.
+    fireEvent.keyDown(screen.getAllByRole("dialog")[0], { key: "Escape" });
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+  });
+
+  it("clears the inline error when the next decision is attempted", async () => {
+    currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];
+    mockRecordDecision.mockRejectedValueOnce(new Error("sport mismatch"));
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await screen.findByRole("alert");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(screen.queryByText(/sport mismatch/)).toBeNull());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-221 — back-navigation and the decided list
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — back and re-decide", () => {
+  const wizardEl = () => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+    />
+  );
+
+  const alpha = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-a" as unknown as Id<"entityReviewQueue">,
+      name: "Alpha",
+      kind: "player",
+      status: "ready",
+      ...over,
+    });
+  const bravo = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-b" as unknown as Id<"entityReviewQueue">,
+      name: "Bravo",
+      kind: "player",
+      status: "ready",
+      ...over,
+    });
+
+  it("offers no Back until something has been decided this session", () => {
+    currentRows = [alpha(), bravo()];
+    renderWizard();
+
+    expect(screen.queryByLabelText("Back to previous decision")).toBeNull();
+  });
+
+  it("Back presents the last decided row read-only, with no way to decide it twice", async () => {
+    currentRows = [alpha(), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    rerender(wizardEl());
+    expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Back to previous decision"));
+
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+    const panel = screen.getByRole("group", { name: "Decision for Alpha" });
+    expect(within(panel).getByText("Added as new")).toBeTruthy();
+    // Read-only: the decision controls are gone, so there is nothing to press
+    // that would silently overwrite a decision the operator is inspecting.
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Change decision" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Next" })).toBeTruthy();
+  });
+
+  it("the presented decided row does NOT auto-advance when the batch updates", async () => {
+    // The `explicit` half of the nav rule. Without it the read-only panel would
+    // be swept away by the next reactive update, because the row it shows is
+    // decided and the derived rule only ever presents undecided rows.
+    currentRows = [alpha(), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    rerender(wizardEl());
+    fireEvent.click(screen.getByLabelText("Back to previous decision"));
+
+    // A lookup lands elsewhere in the batch.
+    currentRows = [
+      alpha({ decision: { action: "create" } }),
+      bravo({ enrichment: { description: "arrived late" } }),
+    ];
+    rerender(wizardEl());
+
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+  });
+
+  it("'Change decision' calls clearDecision for that row", async () => {
+    currentRows = [alpha(), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    rerender(wizardEl());
+    fireEvent.click(screen.getByLabelText("Back to previous decision"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision" }));
+
+    await waitFor(() =>
+      expect(mockClearDecision).toHaveBeenCalledWith({ reviewRowId: "row-a" }),
+    );
+  });
+
+  it("a cleared row becomes decidable again, in place", async () => {
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Change decision for Alpha" }));
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [alpha(), bravo()];
+    rerender(wizardEl());
+
+    // Alpha stays presented (explicitly) rather than the wizard walking off to
+    // Bravo, so the operator lands on the row they asked to change.
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+  });
+
+  it("'Next' hands navigation back to the wizard", async () => {
+    currentRows = [alpha(), bravo()];
+    const { rerender } = render(wizardEl());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    rerender(wizardEl());
+    fireEvent.click(screen.getByLabelText("Back to previous decision"));
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(screen.getByRole("heading", { level: 3, name: "Bravo" })).toBeTruthy();
+  });
+
+  it("lists every decided row with what it was decided as", () => {
+    currentLinkedPlayers = [{ _id: "p1", name: "Michael Trout" }];
+    currentRows = [
+      alpha({ decision: { action: "create" } }),
+      bravo({ decision: { action: "link", linkedPlayerId: "p1" } }),
+      makeRow({ _id: "row-c" as unknown as Id<"entityReviewQueue">, name: "Charlie", status: "ready", decision: { action: "skip" } }),
+    ];
+    renderWizard();
+
+    const list = screen.getByRole("list", { name: "Decided names" });
+    expect(list.textContent).toContain("Alpha");
+    expect(list.textContent).toContain("Added as new");
+    expect(list.textContent).toContain("Linked to Michael Trout");
+    expect(list.textContent).toContain("Skipped");
+  });
+
+  it("never renders the live control's 'Link to {name}' name in the decided list", () => {
+    // Two controls sharing that accessible name is ambiguous to a screen reader
+    // and to a Maestro `tapOn` alike, so the history reads in the past tense.
+    currentLinkedPlayers = [{ _id: "p1", name: "Michael Trout" }];
+    currentRows = [
+      alpha({ decision: { action: "link", linkedPlayerId: "p1" } }),
+      bravo(),
+    ];
+    renderWizard();
+
+    expect(screen.queryByLabelText("Link to Michael Trout")).toBeNull();
+    expect(screen.getByRole("list", { name: "Decided names" }).textContent).toContain(
+      "Linked to Michael Trout",
+    );
+  });
+
+  it("collapses the decided list past five entries", () => {
+    currentRows = [
+      ...Array.from({ length: 6 }, (_, i) =>
+        makeRow({
+          _id: `row-${i}` as unknown as Id<"entityReviewQueue">,
+          name: `Name ${i}`,
+          status: "ready",
+          decision: { action: "create" },
+        }),
+      ),
+      bravo(),
+    ];
+    renderWizard();
+
+    const disclosure = screen.getByText("Decided (6)").closest("details") as HTMLDetailsElement;
+    expect(disclosure.open).toBe(false);
+  });
+
+  it("leaves a short decided list open", () => {
+    currentRows = [alpha({ decision: { action: "create" } }), bravo()];
+    renderWizard();
+
+    const disclosure = screen.getByText("Decided (1)").closest("details") as HTMLDetailsElement;
+    expect(disclosure.open).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-220 — the final step says what it is about to do
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — final-step summary", () => {
+  it("itemises the commit as a definition list", () => {
+    // The card count alone never mentioned the deletes, the field updates or
+    // the new player/team rows, so the one irreversible step in the flow was
+    // also the least specific screen in it.
+    currentRows = [
+      makeRow({ name: "A", decision: { action: "create" } }),
+      makeRow({ name: "B", decision: { action: "link", linkedTeamId: "t1" } }),
+      makeRow({ name: "C", decision: { action: "skip" } }),
+    ];
+    renderWizard({
+      summary: { cardCount: 12, deleteCount: 2, reviewDecisionCount: 3 },
+    });
+
+    // Heading unchanged — "All reviewed" and the card count are E2E matchers.
+    expect(screen.getByText("All reviewed — save 12 cards?")).toBeTruthy();
+
+    const pairs = Array.from(document.querySelectorAll("dt")).map((dt) => [
+      dt.textContent,
+      dt.nextElementSibling?.textContent,
+    ]);
+    expect(pairs).toEqual([
+      ["Cards to save", "12"],
+      ["Cards to delete", "2"],
+      ["Cards with field updates", "3"],
+      ["New players and teams", "1"],
+      ["Linked to existing", "1"],
+      ["Skipped as not a name", "1"],
+    ]);
+  });
+
+  it("omits every zero except the card count — a list of noughts buries the rest", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard({ summary: { cardCount: 4, deleteCount: 0, reviewDecisionCount: 0 } });
+
+    const terms = Array.from(document.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(terms).toEqual(["Cards to save", "New players and teams"]);
+  });
+
+  it("still shows the card count when it is zero", () => {
+    // A checklist fetch that only deletes is a real case, and "save 0 cards" is
+    // the honest heading for it.
+    currentRows = [makeRow({ decision: { action: "skip" } })];
+    renderWizard({ summary: { cardCount: 0, deleteCount: 5, reviewDecisionCount: 0 } });
+
+    expect(screen.getByText("All reviewed — save 0 cards?")).toBeTruthy();
+    const terms = Array.from(document.querySelectorAll("dt")).map((dt) => dt.textContent);
+    expect(terms).toEqual(["Cards to save", "Cards to delete", "Skipped as not a name"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-220 — a failed commit is recoverable
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — commit failure", () => {
+  it("shows the error with a retry and a way back, and hides the duplicate confirm", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const onDismissCommitError = vi.fn();
+    renderWizard({
+      commitError: "Commit failed: conflicting card numbers",
+      onDismissCommitError,
+    });
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("Commit failed: conflicting card numbers");
+    expect(alert.textContent).toContain("Every decision you made is still here.");
+
+    // One control per action: the footer's Confirm & Save stands down while the
+    // inline Retry is up, so the operator is not choosing between two buttons
+    // that do the same thing under different names.
+    expect(screen.getByRole("button", { name: "Retry commit" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Confirm & Save/ })).toBeNull();
+  });
+
+  it("Retry commit calls onConfirm again", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard({ commitError: "Commit failed: timeout" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry commit" }));
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("Back to review dismisses the error", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const onDismissCommitError = vi.fn();
+    renderWizard({ commitError: "Commit failed: timeout", onDismissCommitError });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to review" }));
+
+    expect(onDismissCommitError).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders nothing extra when there is no commit error", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    expect(screen.queryByRole("button", { name: "Retry commit" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Confirm & Save/ })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-221 (D13) — the batch was swept out from under the wizard
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — expired session", () => {
+  const wizardEl = (props: Partial<Parameters<typeof EntityReviewWizard>[0]> = {}) => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+      {...props}
+    />
+  );
+
+  it("says the session expired once the batch it had is emptied", () => {
+    // `sweepAbandonedBatches` deletes a batch nobody has touched for a day. A
+    // wizard left open on it used to sit on an empty list whose Confirm & Save
+    // would commit nothing at all.
+    currentRows = [makeRow({ status: "ready" })];
+    const { rerender } = render(wizardEl());
+
+    currentRows = [];
+    rerender(wizardEl());
+
+    expect(
+      screen.getByText("This review session has expired — re-sync to start again."),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+    // Nothing to decide, nothing to discard: the review controls are gone.
+    expect(screen.queryByRole("button", { name: "Cancel (Esc)" })).toBeNull();
+    expect(screen.queryByText(/Add All Remaining as New/)).toBeNull();
+  });
+
+  it("Close reports back without pretending to cancel a batch that is gone", () => {
+    currentRows = [makeRow({ status: "ready" })];
+    const onCancel = vi.fn();
+    const { rerender } = render(wizardEl({ onCancel }));
+
+    currentRows = [];
+    rerender(wizardEl({ onCancel }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+  });
+
+  it("does NOT claim expiry for a batch that was empty from the start", () => {
+    // An empty batch before any row has ever arrived is a race with startBatch,
+    // not an expiry, and calling it one would be a scary lie about fresh work.
+    currentRows = [];
+    renderWizard();
+
+    expect(screen.queryByText(/expired/)).toBeNull();
+  });
+
+  it("does NOT claim expiry while the commit that consumes the rows is in flight", () => {
+    // Commit deletes the batch rows on its way out, so `saving` is exactly the
+    // window where an emptied batch is expected rather than abandoned.
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { rerender } = render(wizardEl({ saving: true }));
+
+    currentRows = [];
+    rerender(wizardEl({ saving: true }));
+
+    expect(screen.queryByText(/expired/)).toBeNull();
+  });
+
+  it("does NOT claim expiry after the operator's own cancel emptied it", async () => {
+    currentRows = [makeRow({ status: "ready" })];
+    const onCancel = vi.fn();
+    const { rerender } = render(wizardEl({ onCancel }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel (Esc)" }));
+    await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+
+    currentRows = [];
+    rerender(wizardEl({ onCancel }));
+
+    expect(screen.queryByText(/expired/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-220 — "Back to matching", the non-destructive way out
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — back to matching", () => {
+  it("offers it only when the parent has a matching session to return to", () => {
+    currentRows = [makeRow({ status: "ready" })];
+    const { unmount } = renderWizard();
+    expect(screen.queryByRole("button", { name: "Back to matching" })).toBeNull();
+    // …and Cancel is still the only way out on the custom-subtree path.
+    expect(screen.getByRole("button", { name: "Cancel (Esc)" })).toBeTruthy();
+    unmount();
+
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard({ onBack: vi.fn() });
+    expect(screen.getByRole("button", { name: "Back to matching" })).toBeTruthy();
+  });
+
+  it("goes back WITHOUT discarding the batch", async () => {
+    // The difference between this and Cancel is the whole point: card matching
+    // and entity review are two halves of one fetch, and stepping between them
+    // must not throw either half away.
+    currentRows = [
+      makeRow({ decision: { action: "create" } }),
+      makeRow({ status: "ready" }),
+    ];
+    const onBack = vi.fn();
+    const { onCancel } = renderWizard({ onBack });
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+
+    expect(onBack).toHaveBeenCalledTimes(1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    // No confirm either — nothing is being discarded.
+    expect(screen.queryByText(/Discard/)).toBeNull();
   });
 });

@@ -329,7 +329,7 @@ describe("EntityLinkSearch — keyboard", () => {
     expect(onSelect).toHaveBeenCalledWith("p2", "Mike Trout");
   });
 
-  it("Escape calls onCancel", () => {
+  it("Escape on an empty field closes the panel", () => {
     const { onCancel } = renderSearch();
 
     fireEvent.keyDown(screen.getByRole("textbox", { name: "Search existing players" }), {
@@ -337,6 +337,50 @@ describe("EntityLinkSearch — keyboard", () => {
     });
 
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("Escape CLEARS a typed query before it closes anything (NEO-220)", () => {
+    // One level at a time. Escape on a mistyped search used to close the whole
+    // panel, losing the row context the operator had navigated to.
+    const { onCancel } = renderSearch();
+    typeAndSettle("Search existing players", "Troutt");
+
+    const input = screen.getByRole("textbox", {
+      name: "Search existing players",
+    }) as HTMLInputElement;
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(input.value).toBe("");
+    expect(onCancel).not.toHaveBeenCalled();
+
+    // A second Escape, now that there is nothing left to clear, closes.
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("never lets Escape reach the dialog behind it", () => {
+    // The old handler relied on the WIZARD skipping Escape while the search was
+    // open — a guarantee living in the wrong component. Anything that changed
+    // the root's condition would have turned "clear my search" into "discard
+    // the review batch", silently.
+    const onRootEscape = vi.fn();
+    const onCancel = vi.fn();
+    render(
+      <div onKeyDown={onRootEscape}>
+        <EntityLinkSearch
+          kind="player"
+          sportId={SPORT_ID}
+          onSelect={vi.fn()}
+          onCancel={onCancel}
+        />
+      </div>,
+    );
+
+    const input = screen.getByRole("textbox", { name: "Search existing players" });
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(onRootEscape).not.toHaveBeenCalled();
   });
 
   it("clicking the Cancel (Esc) button calls onCancel", () => {
