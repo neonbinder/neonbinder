@@ -55,6 +55,7 @@ import type {
   PlatformSide,
 } from "./platformSlots";
 import { slotEntries, slotFacet } from "./platformSlots";
+import { platformServesLevel } from "./platformLevels";
 
 /** The minimum a chain node must expose to be judged. */
 export type ResolvableRow = {
@@ -106,7 +107,7 @@ export const BSC_REQUIRED_LEVELS: ReadonlySet<string> = new Set([
  *   insert       → sport, year, manufacturer   `sprt`, `yr`, `brd`
  *
  * Levels absent from this table are ones SportLots does not answer at all —
- * see `SL_SERVED_LEVELS`.
+ * see `PLATFORM_LEVEL_SUPPORT` in convex/platformLevels.ts.
  */
 export const SL_SCOPE_BY_LEVEL: Readonly<Record<string, readonly string[]>> = {
   sport: [],
@@ -116,35 +117,25 @@ export const SL_SCOPE_BY_LEVEL: Readonly<Record<string, readonly string[]>> = {
 };
 
 /**
- * The levels each side's selector-options fetch can answer AT ALL.
+ * NEO-216 owns "does this marketplace have this level at all".
  *
- * SportLots has no set/variant split: `dealsets.tpl` returns a flat set list
- * reached at NB level `insert`, and `fetchSportLotsSelectorOptions` answers
- * `setName`, `variantType` and `parallel` with a documented
- * `unsupported_level` empty result. BSC is the mirror image — it has no
- * `manufacturer` facet and no `parallel` one (`LEVEL_TO_BSC_FACET`).
+ * That table lives in `convex/platformLevels.ts` — `PLATFORM_LEVEL_SUPPORT`,
+ * read off `LEVEL_TO_BSC_FACET` and SportLots' `LEVEL_TO_TARGET_SELECT`,
+ * enumerated exhaustively by its own test, and consulted by both adapters as a
+ * backstop. NEO-239 arrived at the identical table independently and
+ * duplicated it here for a week; the duplicate is gone, because two tables
+ * that must agree are a table that will eventually disagree.
  *
- * Calling a side at a level it does not serve is not merely wasteful, it is
- * WRONG in a way that reads as an outage: the caller cannot tell "structurally
- * empty" from "reached and genuinely empty", so `fetchAggregatedOptions`
- * reports "no options returned from any platform" and the column shows Retry —
- * on a set where retrying can never help. Worse, an empty success licenses the
- * unlink pass on that side.
+ * The two questions remain distinct and BOTH gate a side:
+ *
+ *   platformServesLevel  — does this marketplace model this level? A property
+ *                          of the marketplace's taxonomy; no retry or
+ *                          credential can change it.
+ *   the tables below     — does THIS CHAIN carry the ids that side's request
+ *                          body consumes at this level? A property of the data.
+ *
+ * A side must pass both to be asked.
  */
-export const BSC_SERVED_LEVELS: ReadonlySet<string> = new Set([
-  "sport",
-  "year",
-  "setName",
-  "variantType",
-  "insert",
-]);
-
-export const SL_SERVED_LEVELS: ReadonlySet<string> = new Set([
-  "sport",
-  "year",
-  "manufacturer",
-  "insert",
-]);
 
 /**
  * At `insert` and `parallel`, SportLots additionally requires the SET to be a
@@ -266,13 +257,13 @@ export function resolvableSides(
 
   // A side that cannot answer at this level is unresolvable outright, whatever
   // ids the chain carries. `unsupported_level` is not an empty answer.
-  if (level !== undefined && !BSC_SERVED_LEVELS.has(level)) {
+  if (level !== undefined && !platformServesLevel("bsc", level)) {
     missingBsc.push(`level=${level}`);
   }
   if (
     level !== undefined &&
     opts?.slRequired === undefined &&
-    !SL_SERVED_LEVELS.has(level)
+    !platformServesLevel("sportlots", level)
   ) {
     missingSl.push(`level=${level}`);
   }

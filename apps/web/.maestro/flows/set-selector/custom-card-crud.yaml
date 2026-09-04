@@ -85,13 +85,22 @@ tags:
     id: "Card name"
 - eraseText: 40
 - inputText: "Renamed-${ATTEMPT_ID}"
-# Assert Save is visible (sticky footer button — always in viewport).
-- assertVisible:
-    id: "Save card edit"
-- tapOn:
-    id: "Save card edit"
+# NEO-216: no Save button. A single-line field commits on Enter in place, and
+# the drawer confirms it — wait for that before closing, so the assertion below
+# is about what was STORED rather than about what is still in flight.
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Saved Card name.*"
+    timeout: 7000
 
-# After save the edit form closes. Scroll to the row to verify rename.
+# "Done" is the drawer's close control (pinned footer, outside the scroll
+# container — no scroll can centre it, R8 exception).
+- assertVisible:
+    id: "Done editing card"
+- tapOn:
+    id: "Done editing card"
+
+# The drawer is gone. Scroll to the row to verify the rename reached it.
 - scrollUntilVisible:
     element:
       text: "Renamed-${ATTEMPT_ID}"

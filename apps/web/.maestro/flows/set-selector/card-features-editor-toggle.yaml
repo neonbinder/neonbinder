@@ -122,17 +122,18 @@ tags:
     id: "Show features editor"
 
 # ============================================================
-# CLEANUP — cancel edit and delete this attempt's test card
+# CLEANUP — close the drawer and delete this attempt's test card
 # ============================================================
 
-# Assert the Cancel button is visible before tapping — sticky footer
-# button is always in viewport (not scrollable), so assertVisible is safe.
+# NEO-216: "Done" is the drawer's only close control now (the Save/Cancel pair
+# went with the draft they served). Assert it before tapping — the pinned footer
+# is always in the viewport and cannot be centred by a scroll (R8 exception).
 - assertVisible:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - tapOn:
-    id: "Cancel card edit"
-# Scroll the delete button into view — the Cancel above collapses the edit
-# form, resetting the Virtuoso scroll position. The card row may not be
+    id: "Done editing card"
+# Scroll the delete button into view — closing the drawer collapses the edit
+# view, resetting the Virtuoso scroll position. The card row may not be
 # in the viewport when the form closes. centerElement: true keeps it well
 # clear of the sticky header before the tap.
 - scrollUntilVisible:

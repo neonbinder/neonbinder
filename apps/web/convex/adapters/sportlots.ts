@@ -3,6 +3,10 @@
 import { action, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { primaryId } from "../platformSlots";
+import {
+  platformServesLevel,
+  unsupportedLevelMessage,
+} from "../platformLevels";
 import { displayVariationLabel } from "../../lib/cards/variations";
 import { api, internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
@@ -364,6 +368,41 @@ export const fetchSportLotsSelectorOptions = action({
     let tokenMs: number | undefined;
     let filtersCallMs: number | undefined;
     let statusCode: number | undefined;
+
+    // NEO-216 — BEFORE the session cookie. SportLots does not model NB's
+    // `setName` / `variantType` splits (those come from BSC) and has no
+    // `parallel` concept; see convex/platformLevels.ts. This check used to sit
+    // BELOW `getSportLotsCookie`, so a Sync Variant Types paid a real SL
+    // session round-trip only to return an empty list.
+    //
+    // It used to return `success: true, options: []`, which is the dangerous
+    // spelling: an empty successful side is exactly the statement that
+    // licenses NEO-211's unlink pass to detach SL links. "SportLots has no
+    // such level" is not "SportLots was asked and had nothing", and the two
+    // must not share a representation. Callers now read the table and do not
+    // call us here; this is the backstop for one that does not.
+    if (!platformServesLevel("sportlots", args.level)) {
+      await recordAdapterCall(ctx, {
+        requestId,
+        operation: "fetchSportLotsSelectorOptions",
+        platform: "sportlots",
+        level: args.level,
+        parentSport: args.parentFilters.sport,
+        parentYear: args.parentFilters.year,
+        parentSetName: args.parentFilters.setName,
+        duration_ms: Date.now() - start,
+        success: false,
+        result_count: 0,
+        stage: "adapter",
+        error_class: "unsupported_level",
+      });
+      return {
+        success: false,
+        options: [],
+        message: unsupportedLevelMessage("sportlots", args.level),
+      };
+    }
+
     try {
       const tokenStart = Date.now();
       let sessionCookie = await getSportLotsCookie(ctx);
@@ -407,26 +446,9 @@ export const fetchSportLotsSelectorOptions = action({
         elapsed_ms: tokenMs,
       });
 
-      // setName and variantType: BSC-only levels in NB's hierarchy.
-      // SL doesn't have separate set or variant-type concepts.
-      if (args.level === "setName" || args.level === "variantType") {
-        await recordAdapterCall(ctx, {
-          requestId,
-          operation: "fetchSportLotsSelectorOptions",
-          platform: "sportlots",
-          level: args.level,
-          parentSport: args.parentFilters.sport,
-          parentYear: args.parentFilters.year,
-          parentSetName: args.parentFilters.setName,
-          duration_ms: Date.now() - start,
-          token_ms: tokenMs,
-          success: true,
-          result_count: 0,
-          stage: "adapter",
-          error_class: "unsupported_level",
-        });
-        return { success: true, options: [] };
-      }
+      // NEO-216: the setName / variantType special case that used to live here
+      // moved ABOVE the cookie fetch and into the shared
+      // `platformServesLevel` table — this is unreachable ground now.
 
       // insert level (NB "Variant"): SL's dealsets.tpl set list maps here.
       // SL combines set+variant into a flat list of set names.

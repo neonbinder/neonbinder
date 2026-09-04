@@ -216,6 +216,10 @@ export default function ParallelForm({
           `Stored ${items.length} parallels (single platform)`,
         );
         // Hold the panel open while there is a detach to report.
+        // NB: empty-empty-no-errors MUST land here and call onDone — it is the
+        // normal path for a custom subtree (both adapters short-circuit), and
+        // EntityColumn renders this form INSTEAD of the idle "+ Custom" button
+        // while mode === "sync", so not returning to idle hides that button.
         if (unlinkedRows.length === 0) onDone?.();
       }
     } catch {

@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "TeamPicker — chip add, remove, keyboard Enter, 'No matches' state, cancel reverts"
+name: "TeamPicker — chip add, remove, keyboard Enter, 'No matches' state, autosaved on the tap"
 tags:
   - set-selector
   - regression
@@ -16,9 +16,11 @@ tags:
 #   5. The "Remove team <name>" button removes the chip.
 #   6. Typing a non-existent name shows "No matches." in the popover.
 #   7. Pressing Enter on the highlighted match adds the chip (keyboard path).
-#   8. Cancel revert: opening the edit form, adding a chip, then clicking Cancel
-#      reverts the chip list back to the original state.
-#   9. Saving a team and reloading the page shows the team name persists.
+#   8. NEO-216 autosave: the picker writes on the TAP — closing the drawer and
+#      reopening it shows the chip still attached, with no save action in
+#      between. (This replaces the old "Cancel reverts the chip" test: there is
+#      no draft to revert any more, and no Cancel button to revert it with.)
+#   9. The team name reaches the ROW and survives a full page reload + re-drill.
 #
 # PER-WORKER DATA ISOLATION:
 #   Drills to Baseball → 2024 → Topps → tp-<WORKER_INDEX> (custom set) →
@@ -225,6 +227,15 @@ tags:
 
 # Press Enter to confirm the highlighted first match.
 - pressKey: Enter
+
+# NEO-216: the picker writes `teamOnCardIds` on the pick itself — no Save
+# button, no draft — and the drawer confirms it in its one status region. This
+# is where the write happens, so this is where it is confirmed. (TEST 6 is the
+# AUTHORITATIVE proof it persisted; the toast only says the mutation went out.)
+- extendedWaitUntil:
+    visible: ".*Saved Teams.*"
+    timeout: 7000
+
 - tapOn:
     id: "Card name"
 
@@ -233,15 +244,21 @@ tags:
     id: "Remove team TPT-${ATTEMPT_ID}"
 
 # ============================================================
-# TEST 6 — Cancel reverts the team edit
+# TEST 6 — NEO-216: the pick was ALREADY saved, so closing keeps it
+#
+# The drawer has no Save button and no draft. TeamPicker calls updateCard with
+# `teamOnCardIds` on the tap itself and the drawer confirms it, so leaving and
+# coming back must show the same chip. This is the assertion that would fail if
+# the picker ever went back to writing into a draft.
 # ============================================================
 
-# Cancel — chip should disappear.
+# "Done" is the only close control now; it sits in the drawer's pinned footer,
+# outside the scroll container, so it needs no scroll (R8 exception).
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible: "Card name"
 
-# Re-open edit — no chip (we never saved).
+# Re-open — the chip is still there, unsaved by anything.
 - tapOn:
     id: "Edit card 889-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -250,30 +267,26 @@ tags:
       id: "Card name"
     timeout: 15000
 
-# Only the "+ Add team" trigger — no chip.
 - assertVisible:
-    id: "Add team"
+    id: "Remove team TPT-${ATTEMPT_ID}"
 
 # ============================================================
-# TEST 7 — Save + reload persists the team name
+# TEST 7 — the write reaches the ROW and survives a reload
+#
+# NOTHING IS ADDED HERE, deliberately. Since NEO-214 this flow owns ONE team,
+# and TEST 5 already re-attached it — so re-adding would be reaching for a
+# control the picker does not render: `matches` drops every id already in
+# `value` (TeamPicker.tsx), and an exact case-insensitive name match also
+# suppresses the "+ Create" row, so typing "TPT-<attempt>" with the chip
+# attached shows "No matches." That is correct product behaviour, not a bug —
+# the flow simply has nothing left to add. What is still unproven at this point
+# is that the write reached the ROW behind the drawer and survives a reload,
+# and that is all this step does.
 # ============================================================
 
-# Add the team again and save.
+# Close the drawer and read the row underneath.
 - tapOn:
-    id: "Add team"
-- assertVisible:
-    id: "Search teams"
-- tapOn:
-    id: "Search teams"
-- inputText: "TPT-${ATTEMPT_ID}"
-- assertVisible:
-    id: "Add TPT-${ATTEMPT_ID}"
-- tapOn:
-    id: "Add TPT-${ATTEMPT_ID}"
-- tapOn:
-    id: "Card name"
-- tapOn:
-    id: "Save card edit"
+    id: "Done editing card"
 - assertVisible: "Team Feature Player ${ATTEMPT_ID}"
 
 - assertVisible:

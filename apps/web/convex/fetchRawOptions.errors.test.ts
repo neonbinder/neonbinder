@@ -224,12 +224,18 @@ describe("fetchRawOptions error shape", () => {
 
 describe("fetchRawOptions when an adapter throws", () => {
   test("each failing platform gets its own { platform, message } entry", async () => {
-    // At `insert`, BOTH sides serve the level and both are scoped by this
-    // chain — SportLots needs sport + year + manufacturer plus an SL anchor
-    // beneath the manufacturer, BSC needs sport + year + setName plus a
-    // `variant`-tagged slot on the variantType row. That is the only shape
-    // where two simultaneous adapter failures are reachable, which is what
-    // this test is about.
+    // NEO-216 + NEO-239: driven at `insert`, the level BOTH marketplaces serve.
+    // This used to run at `variantType` and still saw two entries — because
+    // SportLots was being called at a level it does not have, failed on the
+    // dead browser service, and was counted as an outage. That conflation is
+    // the bug NEO-216 fixes; the two-entry SHAPE this test exists to pin is
+    // real, so it moves to a level where both sides genuinely answer.
+    //
+    // The fixture has to satisfy both gates for both sides, which is why it is
+    // its own seed: SportLots needs sport + year + manufacturer ids and a
+    // linked set, BSC needs sport + year + setName ids and a `variant`-tagged
+    // slot on the variantType row. Anything less and a side is SKIPPED rather
+    // than failing, and there is no second entry to assert.
     const t = convexTest(schema, modules);
     const variantTypeId = await seedInsertReadyChain(t);
 
@@ -253,6 +259,7 @@ describe("fetchRawOptions when an adapter throws", () => {
       .withIdentity(ADMIN_IDENTITY)
       .action(api.setReconciliation.fetchRawOptions, {
         level: "insert",
+        // Inserts hang off the variantType row, so that is the parent.
         parentId: variantTypeId,
       });
 
@@ -261,5 +268,35 @@ describe("fetchRawOptions when an adapter throws", () => {
     const platforms = res.errors.map((e) => e.platform).sort();
     expect(platforms).toEqual(["bsc", "sportlots"]);
     for (const e of res.errors) expect(typeof e.message).toBe("string");
+  }, 60_000);
+
+  test("a platform that does not serve the level is not among them (NEO-216)", async () => {
+    // Same dead browser service, one level up. SportLots does not model
+    // `variantType`, so it is not called and cannot be blamed — only BSC, which
+    // does serve it and really did fail, is reported. Without this the forms'
+    // alert named a marketplace that was never asked anything.
+    const t = convexTest(schema, modules);
+    const setNameId = await seedChain(t, { setNameBsc: "topps-2024" });
+
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    vi.stubGlobal("fetch", async (url: string | URL | Request) => {
+      if (String(url).endsWith("/health")) {
+        return new Response(
+          JSON.stringify({ status: "ok", environment: "test", contractVersion: 1 }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("upstream failed", { status: 500 });
+    });
+
+    const res = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.setReconciliation.fetchRawOptions, {
+        level: "variantType",
+        parentId: setNameId,
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.errors.map((e) => e.platform)).toEqual(["bsc"]);
   }, 60_000);
 });

@@ -381,9 +381,11 @@ tags:
 - assertVisible:
     id: "Create player Apollo17Lands-${ATTEMPT_ID}"
 
-# Leave without creating anything — Cancel discards the picker and the drawer.
+# Leave without creating anything. NEO-216: the picker writes only when a row
+# is CHOSEN, and we only typed — so nothing was sent. "Done" is the drawer's
+# only close control now, and it just closes.
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 

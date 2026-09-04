@@ -50,8 +50,11 @@ const PLATFORM_LABELS: Record<string, string> = {
  * An unrecognised key is NOT echoed. The only keys these ever receive are
  * "bsc" and "sportlots"; the fallback is what makes "no adapter string reaches
  * reactive state" a property of these functions rather than of their callers.
+ *
+ * Exported because NEO-216's "no marketplace serves this level" notice needs
+ * the same naming and the same guarantee — one mapping, not two.
  */
-function platformNames(sides: readonly string[]): string {
+export function platformNames(sides: readonly string[]): string {
   return sides
     .map((p) => PLATFORM_LABELS[p] ?? "A marketplace")
     .sort()

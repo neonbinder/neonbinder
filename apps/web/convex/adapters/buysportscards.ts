@@ -20,6 +20,10 @@ import {
   legacyBscFacetForLevel,
   planBscFanOut,
 } from "../bscFacets";
+import {
+  platformServesLevel,
+  unsupportedLevelMessage,
+} from "../platformLevels";
 
 // Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
 // The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
@@ -237,6 +241,38 @@ export const fetchBscSelectorOptions = action({
     let tokenMs: number | undefined;
     let filtersCallMs: number | undefined;
     let statusCode: number | undefined;
+
+    // NEO-216 — BEFORE the token. BSC has no `manufacturer` or `parallel` axis
+    // (see convex/platformLevels.ts), and the check for that used to sit below
+    // the credential fetch, so every Sync Manufacturers paid a real BSC session
+    // round-trip to be told there was nothing to ask for. Callers consult the
+    // same table and no longer call us here at all; this is the backstop for
+    // one that does not, and it is deliberately a `success: false` so a caller
+    // that ignores the table still cannot mistake "no such level" for "asked
+    // and the level is empty" — the second licenses an unlink, the first must
+    // never be able to.
+    if (!platformServesLevel("bsc", args.level)) {
+      await recordAdapterCall(ctx, {
+        requestId,
+        operation: "fetchBscSelectorOptions",
+        platform: "bsc",
+        level: args.level,
+        parentSport: args.parentFilters.sport,
+        parentYear: args.parentFilters.year,
+        parentSetName: args.parentFilters.setName,
+        duration_ms: Date.now() - start,
+        success: false,
+        result_count: 0,
+        stage: "adapter",
+        error_class: "unsupported_level",
+      });
+      return {
+        success: false,
+        options: [],
+        message: unsupportedLevelMessage("bsc", args.level),
+      };
+    }
+
     try {
       // Get BSC token
       const tokenStart = Date.now();
@@ -306,10 +342,12 @@ export const fetchBscSelectorOptions = action({
         }
       }
 
-      // Refuse an unscoped request rather than send one. A level the CALLER
-      // named in `parentFilters` is a level it meant to scope by; arriving here
-      // with no id for it means the chain could not supply one, and the query
-      // that would go out is a wider one than anybody asked for.
+      // NEO-239 — refuse an UNSCOPED request rather than send one. Distinct
+      // from the NEO-216 served-level guard above: that one asks "does BSC have
+      // this level at all", this one asks "did the caller's chain supply the
+      // ids for the level it says it is scoping by". A level named in
+      // `parentFilters` with no id in `filters` means the query that would go
+      // out is wider than anybody asked for.
       const unscoped = BSC_SCOPED_LEVELS.filter(
         (lvl) => args.parentFilters[lvl] && !filters[LEVEL_TO_BSC_FACET[lvl]],
       );
@@ -335,6 +373,10 @@ export const fetchBscSelectorOptions = action({
         return { success: false, options: [], message: BSC_UNSCOPED_MESSAGE };
       }
 
+      // Unreachable since the NEO-216 guard above (which reads the same
+      // `LEVEL_TO_BSC_FACET`-derived table), and kept as defence in depth: if
+      // the table and the facet map ever disagree, this is what stops a
+      // facet-less request going out. platformLevels.test.ts pins them equal.
       const facetKey = LEVEL_TO_BSC_FACET[args.level];
       if (!facetKey) {
         await recordAdapterCall(ctx, {

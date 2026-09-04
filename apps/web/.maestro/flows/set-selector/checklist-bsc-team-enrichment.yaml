@@ -153,10 +153,13 @@ tags:
 - assertVisible:
     id: "Remove team Seattle Mariners"
 
-# ── CLOSE (read-only: Cancel, never Save) ───────────────────────────────────
-# Cancel closes immediately with no dirty guard and writes nothing — this flow
-# leaves the shared checklist exactly as it found it (R7).
+# ── CLOSE (read-only: this flow never edits a field) ────────────────────────
+# NEO-216: the drawer autosaves per field and has no Save/Cancel pair, so
+# "read-only" is now a property of what the flow TOUCHES, not of which button
+# it leaves by. Nothing above typed into a field, toggled a chip or picked in a
+# picker, so no mutation was sent and "Done" simply closes — this flow leaves
+# the shared checklist exactly as it found it (R7).
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"

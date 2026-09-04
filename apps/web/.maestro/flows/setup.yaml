@@ -102,6 +102,37 @@ tags:
 #   Clerk user (TEST_EMAIL_N) — that is the CI runner's job (worker-bootstrap.yaml
 #   looped per worker). A single Maestro flow can't loop a varying &worker=N URL.
 #
+# ── A SYNC THAT HALF-WORKED IS A FAILED SEED (NEO-216) ──────────────────────
+#   Jason, 2026-09-04: "CI that approves a failure." A marketplace call that
+#   drops mid-sync does NOT fail this flow on its own — NEO-211 made a
+#   one-sided sync a SUCCESS with a notice, precisely so an operator is not
+#   blocked when BSC is down and SportLots answered. That is right for a person
+#   and wrong for the seed: the runners would be handed a baseline that is
+#   silently missing one marketplace's rows, and the ~50 flows that read it
+#   would fail somewhere else entirely, hours later, looking like their own
+#   bugs.
+#
+#   So every sync step below is followed by a hard assertion that NEITHER
+#   failure notice is on screen:
+#     * the partial notice — `partialSyncMessage` in convex/selectorOptions.ts,
+#       fixed text "<platform> could not be reached, so nothing from
+#       <platform> was changed. …", rendered by SyncDoneNotice;
+#     * the total-failure notice — SYNC_ERROR_MESSAGE, "Couldn't sync options —
+#       please try again.", rendered by EntityColumn's error box.
+#   Both matchers are anchored on the FIXED half of each string (the platform
+#   names are interpolated, and the apostrophe is matched as `.`), and each one
+#   is placed immediately AFTER that step's positive gate — never on its own —
+#   so it cannot pass against a blank or crashed page.
+#
+#   DEPENDS ON THE "PLATFORM SERVES THIS LEVEL" FIX IN THIS SAME PR. BSC has no
+#   manufacturer level at all, and NEO-211 currently reports "not served" as
+#   "could not be reached" — so before that fix the Manufacturers column shows
+#   the partial notice on EVERY healthy run and the assertion below it would be
+#   red for a product bug rather than an outage. The fix makes the notice mean
+#   only what it says, which is what these assertions are written against. If
+#   this flow ever goes red on one of them, read it as a real half-sync (or a
+#   regression in that fix) — do NOT delete the assertion.
+#
 # TIMEOUT POLICY — READ THIS BEFORE COPYING A WAIT ELSEWHERE:
 #   This is the ONE flow allowed to wait longer than Maestro's default. It pays
 #   the cold-start cost ONCE — Cloud Run spin-up, first marketplace login, the
@@ -222,6 +253,12 @@ tags:
       text: "Baseball"
     centerElement: true
     timeout: 10000
+
+# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+# THAT HALF-WORKED IS A FAILED SEED" in the header.
+- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+- assertNotVisible: ".*Couldn.t sync options.*"
+
 - tapOn: "Baseball"
 
 # ── YEAR: 2024 ──────────────────────────────────────────────────────────────
@@ -233,6 +270,12 @@ tags:
 - extendedWaitUntil:
     visible: ".*Search years.*"
     timeout: 90000
+
+# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+# THAT HALF-WORKED IS A FAILED SEED" in the header.
+- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+- assertNotVisible: ".*Couldn.t sync options.*"
+
 # Columns lay out horizontally — bring this column's search input into the
 # viewport before tapping (10s is the tight ceiling; the sync wait above is the
 # warm cost, this scroll is pure layout).
@@ -265,6 +308,12 @@ tags:
 - extendedWaitUntil:
     visible: ".*Search manufacturers.*"
     timeout: 45000
+
+# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+# THAT HALF-WORKED IS A FAILED SEED" in the header.
+- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+- assertNotVisible: ".*Couldn.t sync options.*"
+
 # NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
 # follows uses a `below:` RELATIVE selector (the filtered row and the search
 # input both read "Topps", so relationship is the only unambiguous handle — see
@@ -296,6 +345,12 @@ tags:
 - extendedWaitUntil:
     visible: ".*Search sets.*"
     timeout: 45000
+
+# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+# THAT HALF-WORKED IS A FAILED SEED" in the header.
+- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+- assertNotVisible: ".*Couldn.t sync options.*"
+
 # NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
 # follows uses a `below:` RELATIVE selector (the filtered row and the search
 # input both read "Topps Chrome", so relationship is the only unambiguous handle — see
@@ -350,6 +405,12 @@ tags:
 - assertVisible: "Base"
 - assertVisible: "Insert"
 - assertVisible: "Parallel"
+
+# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+# THAT HALF-WORKED IS A FAILED SEED" in the header.
+- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+- assertNotVisible: ".*Couldn.t sync options.*"
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # LOAD CARDS — Base variant of 2024 Topps Chrome.
@@ -609,6 +670,12 @@ tags:
 - extendedWaitUntil:
     visible: ".*Search inserts.*"
     timeout: 15000
+
+# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+# THAT HALF-WORKED IS A FAILED SEED" in the header.
+- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+- assertNotVisible: ".*Couldn.t sync options.*"
+
 - scrollUntilVisible:
     element:
       text: ".*Search inserts.*"
@@ -815,6 +882,12 @@ tags:
 - extendedWaitUntil:
     visible: ".*Search parallels.*"
     timeout: 15000
+
+# STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+# THAT HALF-WORKED IS A FAILED SEED" in the header.
+- assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+- assertNotVisible: ".*Couldn.t sync options.*"
+
 - scrollUntilVisible:
     element:
       text: ".*Search parallels.*"

@@ -5,6 +5,7 @@ import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import { platformServesLevel } from "./platformLevels";
 import {
   slotIds,
   initialSlots,
@@ -502,6 +503,22 @@ export const fetchRawOptions = action({
         parentFilters,
       );
 
+      // NEO-216 — the same "serves this level" table the column sync reads
+      // (convex/platformLevels.ts). A marketplace that does not model a level
+      // is not fetched and NEVER lands in `platformErrors`, which is what this
+      // action returns as `errors` — and `errors` is what the forms turn into
+      // "<platform> failed, nothing was changed" and what
+      // `coveredSidesFromErrors` reads. Reporting "not served" there produced a
+      // failure alert on a healthy sync, exactly as it did in the Manufacturers
+      // column.
+      //
+      // At `parallel` NEITHER side serves: BSC never had a facet for it (see
+      // convex/bscFacets.ts) and SportLots has no sub-variant concept, so this
+      // correctly fetches nothing and reports nothing rather than blaming both
+      // marketplaces for a level neither has.
+      const bscServesLevel = platformServesLevel("bsc", level);
+      const slServesLevel = platformServesLevel("sportlots", level);
+
       // Build platform-specific filters from the ancestor chain
       let slPlatformFilters: Record<string, string> | undefined;
       let bscPlatformFilters: Record<string, string[]> | undefined;
@@ -544,6 +561,11 @@ export const fetchRawOptions = action({
           const ancestorBscIds = slotIds(ancestor, "bsc");
           if (ancestorBscIds.length > 0) {
             bscPlatformFilters[lvl] = ancestorBscIds;
+            // NEO-239 — no `else`. The display-value fallback that used to sit
+            // here sent an NB name as a BSC filter, and the `precondMissingBsc`
+            // branch beside it is now `resolvableSides` (which also carries
+            // NEO-216's "only a precondition for a call we are going to MAKE"
+            // refinement: an unserved level is unresolvable, not a failure).
           }
         }
 

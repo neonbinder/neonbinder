@@ -7,6 +7,7 @@ import {
   EXPECTED_FEATURES,
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { FeatureValueControl } from "./FeatureValueControl";
 import RenameEntityControl from "./RenameEntityControl";
 import BaseRoleControl from "./BaseRoleControl";
@@ -48,6 +49,12 @@ import BaseRoleControl from "./BaseRoleControl";
  *   1. User types a new value into a row.
  *   2. Blur / Enter triggers the mutation (patches this row only).
  *   3. Toast renders "Saved {label}".
+ *
+ * Clear flow (NEO-217): emptying a text row, or picking the "—" option in a
+ * select, sends `value: ""`, which the server treats as "remove this key"
+ * (never as a stored empty string). The toast then reads "Cleared {label}".
+ * Blank is a complete answer for every field here, so being unable to get back
+ * to blank was a hole, not a safeguard.
  */
 
 type Level =
@@ -135,27 +142,57 @@ export default function SetAttributesPanel({
   const breadcrumb = chain.map((c) => c.value).join(" › ");
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
 
-  /** Raise a transient confirmation. Shared by the feature rows and the header. */
+  /**
+   * Raise a transient confirmation.
+   *
+   * Shared by the feature rows below and by the header's base-role control
+   * (NEO-239), which is why it is a helper rather than an inline setToast:
+   * two callers raising a 6s toast had to agree on the 6s.
+   */
   const showToast = (message: string) => {
     setToast(message);
     setTimeout(() => setToast(null), 6000);
   };
 
+  /**
+   * NEO-217 — an empty value CLEARS the attribute; it is not a no-op.
+   *
+   * This used to return early on `""`, which meant nothing set at this level
+   * could ever be un-set: a League typed by mistake, or a Season that turned
+   * out to belong to the parallel rather than the set, was permanent. The
+   * server now removes the key entirely for `""` (never stores an empty
+   * string — "attribute gone" has one spelling, absence), so the only thing
+   * needed here is to stop swallowing the empty commit and to say which of
+   * the two things happened.
+   */
   const handleSaveFeature = async (
     key: string,
     label: string,
     value: string,
   ) => {
     const trimmed = value.trim();
-    if (trimmed.length === 0) return;
-    if (features[key] === trimmed) return; // no-op
-    // Optimistic "Saved {label}" confirmation — the mutation is a single-row
-    // patch (NEO-71-74), no propagation counts to report.
-    showToast(`Saved ${label}`);
+    const clearing = trimmed.length === 0;
+    // A clear of an already-absent key is the real no-op — `features[key]`
+    // is undefined, and `"" === undefined` is false, so it needs saying.
+    if (clearing ? features[key] === undefined : features[key] === trimmed) {
+      return;
+    }
+    // Optimistic confirmation — the mutation is a single-row patch
+    // (NEO-71-74), no propagation counts to report. "Saved {label}" is
+    // unchanged (Maestro asserts it); "Cleared {label}" is the new string,
+    // deliberately distinct so the toast never claims a value was stored.
+    showToast(clearing ? `Cleared ${label}` : `Saved ${label}`);
     try {
       await setSelectorOptionFeature({ selectorOptionId, key, value: trimmed });
     } catch (e) {
-      setToast(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      // NEVER a raw `.message`. Production redacts a plain Error to "Server
+      // Error", and even a surviving message reaches the client wrapped in
+      // "[CONVEX M(selectorOptions:setSelectorOptionFeature)] [Request ID: …]"
+      // — so the old `Failed: ${e.message}` toast showed an operator either
+      // nothing useful or a request id. Only a ConvexError's `data` is text a
+      // backend deliberately chose for a person, and `userFacingMessage` is
+      // the one place that rule lives.
+      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
     }
   };
 
@@ -365,6 +402,11 @@ function SetFeatureRow({
         feat={feat}
         value={value ?? ""}
         onSave={onSave}
+        // NEO-217: without this, `useReactiveField` treats an empty commit as
+        // "revert" and writes the old value straight back into the input — the
+        // operator deletes the text, tabs out, and watches it reappear. Routing
+        // it to `onSave("")` is what makes a set attribute clearable.
+        onEmptyCommit={() => onSave("")}
         ariaLabel={`Value for ${label}`}
         placeholder="—"
         dataFeatKey={feat.key}

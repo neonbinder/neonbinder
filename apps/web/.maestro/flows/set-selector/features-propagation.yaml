@@ -322,19 +322,15 @@ tags:
       text: ".*CooTest-CARD.*"
     timeout: 7000
 
-# Save the card edit (closes the form). Scroll Save button into view first —
-# with features expanded it may be below the 1024×629 headless viewport.
-# waitToSettleTimeoutMs: 3000 — the pressKey Enter above triggered a Convex
-# write; scrolling mid-re-render causes CDP crashes, so let React settle.
-- scrollUntilVisible:
-    element:
-      id: "Save card edit"
-    centerElement: true
-    visibilityPercentage: 50
-    waitToSettleTimeoutMs: 3000
-    timeout: 20000
+# Close the drawer. NEO-216 removed the Save button — the card-level feature
+# edit above already persisted through setCardFeature (asserted directly), so
+# "Done" only has to close. It lives in the drawer's pinned footer, OUTSIDE the
+# scroll container, so it is on screen whatever the body is scrolled to and a
+# scrollUntilVisible could never satisfy centering on it (R8 exception).
+- assertVisible:
+    id: "Done editing card"
 - tapOn:
-    id: "Save card edit"
+    id: "Done editing card"
 
 # After the edit form closes, Virtuoso may reset scroll to top of visible range.
 - scrollUntilVisible:
@@ -464,20 +460,14 @@ tags:
 # not reach this card (nor the fp-insert node the panel shows here).
 - assertNotVisible: ".*CooTest-SET2.*"
 
-# Close the card edit form before cleanup. Deleting a row while its inline edit
-# form is still open does NOT surface the "Confirm?" delete prompt, so we save +
-# close the form and re-materialize the card row first (mirrors the pre-cleanup
-# handoff the old flow did). No pending write here (Step D only reads), so a
-# short settle suffices.
-- scrollUntilVisible:
-    element:
-      id: "Save card edit"
-    centerElement: true
-    visibilityPercentage: 50
-    waitToSettleTimeoutMs: 1000
-    timeout: 20000
+# Close the card drawer before cleanup. Deleting a row while its drawer is
+# still open does NOT surface the "Confirm?" delete prompt, so we close and
+# re-materialize the card row first. Step D only READ, and NEO-216 removed the
+# Save button — "Done" closes, and there is nothing pending to wait on.
+- assertVisible:
+    id: "Done editing card"
 - tapOn:
-    id: "Save card edit"
+    id: "Done editing card"
 
 # Re-materialize the card row (Virtuoso may reset scroll on form close).
 - scrollUntilVisible:

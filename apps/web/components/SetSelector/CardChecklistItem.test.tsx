@@ -467,3 +467,88 @@ describe("CardChecklistItem — NEO-208 pending team names", () => {
     expect(screen.getByText("Stale Typed Name (unconfirmed)")).toBeTruthy();
   });
 });
+
+/**
+ * NEO-217 — `features.autographed` is the ONE truth for the "auto" suffix.
+ *
+ * The row used to render `${card.autographType} auto` from the raw
+ * marketplace column. That column is information-free: BSC never sent it and
+ * SportLots sends the literal "Unknown", so every SportLots autograph read
+ * "Unknown auto" — and a card whose operator had set Autographed back to None
+ * in the drawer went on reading "auto" forever, because the drawer has only
+ * written `features.autographed` since NEO-71-74.
+ */
+describe("CardChecklistItem — NEO-217 autograph suffix", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders the auto suffix from features.autographed", () => {
+    const { container } = renderItem({
+      card: makeCard({ features: { autographed: "On Card" } }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("On Card auto");
+  });
+
+  it("renders the Sticker/Label wording verbatim", () => {
+    const { container } = renderItem({
+      card: makeCard({ features: { autographed: "Sticker/Label" } }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("Sticker/Label auto");
+  });
+
+  it("renders no auto suffix when features.autographed is 'None'", () => {
+    // "None" is a real stored value meaning "not an autograph" — the toggle
+    // row's first option — not a missing one.
+    const { container } = renderItem({
+      card: makeCard({ features: { autographed: "None" } }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("");
+  });
+
+  it("renders no auto suffix from a legacy autographType column alone", () => {
+    // The regression this ticket exists for: a SportLots row carrying
+    // `autographType: "Unknown"` and nothing in features must say nothing.
+    const { container } = renderItem({
+      card: makeCard({ autographType: "Unknown" }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("");
+  });
+
+  it("features.autographed wins over a contradicting legacy autographType", () => {
+    const { container } = renderItem({
+      card: makeCard({
+        autographType: "Unknown",
+        features: { autographed: "On Card" },
+      }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("On Card auto");
+  });
+
+  it("a legacy autographType does not resurrect the suffix once Autographed is None", () => {
+    const { container } = renderItem({
+      card: makeCard({
+        autographType: "On-Card",
+        features: { autographed: "None" },
+      }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("");
+  });
+
+  it("keeps the auto suffix in the same single sub-line as the other parts", () => {
+    const { container } = renderItem({
+      card: makeCard({ printRun: 99, features: { autographed: "On Card" } }),
+    });
+    const subtitle = container.querySelector(".truncate.min-h-\\[1rem\\]");
+    expect(subtitle?.textContent).toBe("/99 · On Card auto");
+    expect(
+      document.querySelectorAll(".truncate.min-h-\\[1rem\\]").length,
+    ).toBe(1);
+  });
+});

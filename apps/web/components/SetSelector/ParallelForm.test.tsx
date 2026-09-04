@@ -294,3 +294,61 @@ describe("ParallelForm — unlink notice (NEO-211 plan D)", () => {
     expect(notice.textContent).toContain("Gold");
   });
 });
+
+/**
+ * NEO-216 — a fetch that succeeds with nothing on either side.
+ *
+ * `platformLevels.ts` has `parallel: false` for both sides, and a CUSTOM
+ * subtree short-circuits both adapters at any level, so "both lists empty,
+ * `errors: []`" is a NORMAL, healthy outcome here — not a failure and not a
+ * level nobody serves that deserves its own copy.
+ *
+ * It must return the column to idle. `EntityColumn` renders this form INSTEAD
+ * of the idle controls while `mode === "sync"`, so the "+ Custom" button only
+ * exists once `onDone` has fired — which is exactly how `util-drill-to-custom`
+ * reaches it. A branch that showed a message and skipped `onDone` here took
+ * "+ Custom" off the screen and turned 29 E2E flows red with "No visible
+ * element found: id: Add custom Inserts". Hence: no store (there is nothing to
+ * write), but `onDone` always.
+ */
+describe("ParallelForm — nothing on either side, nothing failed (NEO-216)", () => {
+  const nothingAnywhere = {
+    success: true,
+    bscOptions: [],
+    slOptions: [],
+    autoMatched: [],
+    unmatchedBsc: [],
+    unmatchedSl: [],
+    slCandidates: [],
+    errors: [],
+    message: "BSC: 0, SL: 0",
+  };
+
+  it("stores nothing and returns the column to idle so + Custom is reachable", async () => {
+    mockFetchRawOptions.mockResolvedValue(nothingAnywhere);
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    // Nothing to write, and writing an empty result is a claim about both
+    // sides that would license unlinking every existing row.
+    expect(mockStore).not.toHaveBeenCalled();
+  });
+
+  it("still reports a real adapter failure instead of quietly returning to idle", async () => {
+    // Both lists empty AND an error is an outage, not an empty level. The
+    // error branch must win, or a BSC failure closes the panel silently.
+    mockFetchRawOptions.mockResolvedValue({
+      ...nothingAnywhere,
+      errors: [{ platform: "bsc", message: "https://api.bsc/internal 500" }],
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Sync failed: could not load parallels/)).toBeTruthy(),
+    );
+    expect(onDone).not.toHaveBeenCalled();
+    expect(mockStore).not.toHaveBeenCalled();
+    // NEO-211 F3: the adapter's own text never reaches the DOM.
+    expect(screen.queryByText(/api\.bsc/)).toBeNull();
+  });
+});
