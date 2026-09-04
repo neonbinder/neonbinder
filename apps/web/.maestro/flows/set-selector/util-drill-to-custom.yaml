@@ -842,6 +842,12 @@ tags:
           text: ${VARIANT_TYPE}
           waitToSettleTimeoutMs: 2000
 
+      # Selecting a variant type is the first thing that mounts the base-role
+      # control and subscribes to the ancestor chain, so a server-side error
+      # there kills the whole page — and the header wait below would then burn
+      # its full timeout and report a missing column instead (NEO-239).
+      - assertNotVisible: "An error occurred. Please refresh the page."
+
       # Verify the Variants column opened. Header is the pluralized VARIANT_TYPE:
       # "Insert" → "Inserts", "Parallel" → "Parallels", etc.
       #

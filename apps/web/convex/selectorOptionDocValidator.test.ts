@@ -58,7 +58,18 @@ const FULLY_POPULATED = {
   platformSlotSeq: { bsc: 2, sportlots: 1 },
   isCustom: false,
   createdByUserId: "clerk|admin_user_137",
-  metadata: { cardNumberPrefix: "DK-", isInsert: true, isParallel: false },
+  // NEO-239 — `isBase` added. Leaving it out is precisely how this fixture
+  // stopped catching the drift it exists for: `getAncestorChain`'s hand-typed
+  // metadata validator missed the new field, and no seeded row carried it, so
+  // every test passed while the query threw in the preview for any chain
+  // containing a Base row. A fixture that is not FULLY POPULATED is not a
+  // drift guard.
+  metadata: {
+    cardNumberPrefix: "DK-",
+    isInsert: true,
+    isParallel: false,
+    isBase: true,
+  },
   sportConfig: {
     skuCode: "BB",
     league: "MLB",
@@ -204,5 +215,42 @@ describe("selectorOptions returns-validator drift", () => {
     expect(row?.platformLabels).toBeDefined();
     expect(row?.sportConfig).toBeDefined();
     expect(row?.createdByUserId).toBe("clerk|admin_user_137");
+  });
+
+  /**
+   * NEO-239 — the FIFTH validator, and the one that actually shipped broken.
+   *
+   * `getAncestorChain` does not return whole rows, so it was never in this
+   * file's original four — it hand-builds a projection with its own `returns`,
+   * including a hand-typed copy of the table's `metadata` object. When
+   * `metadata.isBase` was added, that copy did not follow, and Convex
+   * validated the query's OUTPUT and threw
+   * `Object contains extra field 'isBase' … Path: [4].metadata` server-side.
+   *
+   * The failure mode is the reason this file exists, one step nastier: the
+   * write that set the flag was correct, the row was correct, and the page
+   * error-boundaried on the next query that walked a chain containing it. Only
+   * a fixture carrying the field can see it — which is why `FULLY_POPULATED`
+   * gained `isBase` above rather than this test being written around it.
+   */
+  test("getAncestorChain returns a chain whose metadata carries isBase", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { insertId } = await seedFullTree(t);
+
+    const chain = await asAdmin.query(api.selectorOptions.getAncestorChain, {
+      id: insertId,
+    });
+
+    // sport → setName → variantType → insert, every one of them populated.
+    expect(chain).toHaveLength(4);
+    expect(chain.every((node) => node.metadata?.isBase === true)).toBe(true);
+    // The projection's other derived fields, so a future re-inlining of THOSE
+    // is caught here too rather than in a preview.
+    expect(chain[0].platformFacets).toBeUndefined();
+    expect(chain[3].features).toEqual({ league: "MLB", era: "Modern" });
+    expect(chain[3].platformLabels?.sportlots).toEqual({
+      s0: "Dugout Collection Artists Proofs",
+    });
   });
 });

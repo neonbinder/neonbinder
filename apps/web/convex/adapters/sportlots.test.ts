@@ -126,7 +126,39 @@ describe("stripBrandPrefixForLabel", () => {
     expect(stripBrandPrefixForLabel("Bowman Chrome", "Topps")).toBe(
       "Bowman Chrome",
     );
-    expect(stripBrandPrefixForLabel("Toppsy Turvy", "Topps")).toBe("y Turvy");
+  });
+
+  test("requires a WORD boundary — a longer word that merely starts the same is untouched", () => {
+    // The bug the first revision shipped: a bare `startsWith` turned
+    // "Toppstown Retro" into "town Retro". Not a cosmetic slip — NB seeds a
+    // fresh row's display value from this string, so a real SportLots set was
+    // silently renamed to nonsense that no operator typed and none would
+    // recognise.
+    expect(stripBrandPrefixForLabel("Toppstown Retro", "Topps")).toBe(
+      "Toppstown Retro",
+    );
+    expect(stripBrandPrefixForLabel("Toppsy Turvy", "Topps")).toBe(
+      "Toppsy Turvy",
+    );
+    expect(stripBrandPrefixForLabel("Topps1 Special", "Topps")).toBe(
+      "Topps1 Special",
+    );
+  });
+
+  test("a non-space separator ends the word too, and is itself left in place", () => {
+    // The boundary rule is "absent or non-alphanumeric", so a hyphen ends the
+    // brand as a space does and the strip applies. What comes back still has
+    // the separator on the front: the remainder is whitespace-trimmed and
+    // nothing more, exactly as the original did. Inventing a second cleanup
+    // rule for punctuation is a different decision from restoring this one,
+    // and it would have to guess whether a leading "#" is a separator or part
+    // of the set's name.
+    expect(stripBrandPrefixForLabel("Topps-Series 1", "Topps")).toBe(
+      "-Series 1",
+    );
+    expect(stripBrandPrefixForLabel("Topps Series 1", "Topps")).toBe(
+      "Series 1",
+    );
   });
 
   test("no manufacturer in context means no strip at all", () => {
@@ -150,29 +182,28 @@ describe("stripBrandPrefixForLabel", () => {
   });
 
   test("a label that IS the brand keeps its name instead of vanishing", () => {
-    // The one correction to the original. Stripping this to "" made the caller's
+    // The second correction to the original. Stripping this to "" made the caller's
     // `if (radioId && setName)` guard drop the row entirely — losing a set
     // because SportLots named it after its brand is not a cleanup.
     expect(stripBrandPrefixForLabel("Topps", "Topps")).toBe("Topps");
     expect(stripBrandPrefixForLabel("Topps   ", "Topps")).toBe("Topps   ");
   });
 
-  // NEO-239 ADVERSARIAL PASS — real bug, reported not fixed (per task
-  // instructions the source is untouched). `stripBrandPrefixForLabel` checks
-  // `label.startsWith(brand)` with NO WORD-BOUNDARY CHECK after the prefix.
-  // A brand that is a plain string-prefix of a longer, unrelated word in the
-  // label — not followed by a space — gets chewed into a garbled label
-  // instead of being left alone. The function's own docstring promises "must
-  // not chew a name it does not own"; this is exactly that chewing. The
-  // existing "leaves an unrelated prefix alone" test ALSO demonstrates this
-  // with "Toppsy Turvy" → "y Turvy" but is captioned as if the label were
-  // untouched — it is not.
-  test("BUG: a brand with no trailing word-boundary corrupts an unrelated label", () => {
-    // "Toppstown" is not "Topps" — it merely starts with the same letters.
-    // The correct output is the label unchanged, exactly like "Bowman Chrome"
-    // above. The current implementation instead slices mid-word.
+  // NEO-239 ADVERSARIAL PASS — found a real bug, now FIXED. The first
+  // revision checked `label.startsWith(brand)` with no word-boundary check, so
+  // a brand that is a plain string-prefix of a longer, unrelated word got
+  // sliced mid-word: "Toppstown Retro" became "town Retro". Not cosmetic — NB
+  // seeds a fresh row's display value from this string, so a real SportLots
+  // set was renamed to nonsense no operator typed and none would recognise.
+  //
+  // The original test above ("leaves an unrelated prefix alone") demonstrated
+  // the same bug with "Toppsy Turvy" while being captioned as though the label
+  // were untouched; both are now asserted correctly.
+  test("a brand with no trailing word-boundary leaves the label alone", () => {
+    // "Toppstown" is not "Topps" — it merely starts with the same letters, and
+    // the right answer is the label unchanged, exactly like "Bowman Chrome".
     expect(stripBrandPrefixForLabel("Toppstown Retro", "Topps")).toBe(
-      "town Retro", // BUG: should be "Toppstown Retro", unchanged.
+      "Toppstown Retro",
     );
   });
 });

@@ -79,6 +79,68 @@ export const bscFacetValidator = v.union(
 );
 
 /**
+ * NEO-239 — which of BSC's `variant` facet ids means "the base set"?
+ *
+ * ## Why this is a marketplace-id question and not a name one
+ *
+ * NB's base ROLE (`metadata.isBase`) has to come from somewhere at creation,
+ * and the invariant is explicit about which direction is allowed: a row may be
+ * DERIVED from marketplace data when it is created. So this compares a
+ * marketplace id to marketplace vocabulary, once, on the sync that inserts the
+ * row. It never reads the NB display value, and nothing re-derives afterwards —
+ * a rename cannot move the role, and `setBaseVariantType` overrides it.
+ *
+ * ## Why it is not `id === "base"`
+ *
+ * That is what shipped first, and CI caught it: `setup.yaml` synced 2024 Topps
+ * Chrome's variant types against real BSC, the rows appeared, and the Base row
+ * got no role — so BSC's actual slug for its base variant is not the bare
+ * literal. We have no recorded sample of what it IS (the only prior evidence in
+ * this repo was `parentFilters.variantType.toLowerCase()`, an assumption
+ * NEO-239 deleted for being one), and the failure is silent two screens later:
+ * the operator taps "Base" and no mapping form appears.
+ *
+ * So the match is on TOKENS rather than a literal. The id is folded to
+ * lowercase and split on every non-alphanumeric run, and the base variant is
+ * the one carrying a whole `base` token. That recognises `base`, `Base`,
+ * `base-set`, `base_cards` and `2024-topps-chrome-base` alike, while
+ * `baseball` — one token, not two — is correctly NOT a match, which a
+ * substring test would have got wrong.
+ *
+ * ## Ambiguity is not resolved here
+ *
+ * A token test cannot rank `base` against a hypothetical `base-parallel`.
+ * Callers therefore confer the role only when EXACTLY ONE id in the batch
+ * matches (see `storeSelectorOptions`); more than one is reported and left to
+ * `setBaseVariantType`. Fail-closed: no role is recoverable in one click, two
+ * rival base rows make `getBaseVariantBySet` answer by document order.
+ */
+export function isBscBaseVariantId(id: string): boolean {
+  return id
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .includes("base");
+}
+
+/**
+ * The single BSC id in a batch that names the base variant, or `undefined`
+ * when none does or more than one does.
+ *
+ * The batch is the unit because the sync sees every variant of a set at once —
+ * which is the only place "exactly one of these is the base" can be checked at
+ * all.
+ */
+export function soleBscBaseVariantId(
+  ids: ReadonlyArray<string | undefined>,
+): string | undefined {
+  const matches = [
+    ...new Set(ids.filter((id): id is string => !!id && isBscBaseVariantId(id))),
+  ];
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
  * The facet a SYNC at `level` knows the ids it just fetched belong to.
  *
  * Only `variantType` is answered, and only since NEO-239. The level sync at

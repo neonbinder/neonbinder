@@ -38,7 +38,8 @@ import {
   unlinkedEntryValidator,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
-import { syncWrittenBscFacet } from "./bscFacets";
+import { soleBscBaseVariantId, syncWrittenBscFacet } from "./bscFacets";
+import { selectorOptionFields } from "./schema";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
 // selectorOptions.ts so the reconciler and the aggregator cannot disagree.
 import {
@@ -99,11 +100,13 @@ const levelValidator = v.union(
   v.literal("parallel"),
 );
 
-const metadataValidator = v.optional(v.object({
-  cardNumberPrefix: v.optional(v.string()),
-  isInsert: v.optional(v.boolean()),
-  isParallel: v.optional(v.boolean()),
-}));
+/**
+ * NEO-239 — DERIVED, never re-listed. `storeReconciledOptions` takes operator
+ * metadata on the wire, and a hand-typed copy of the table's shape here would
+ * silently reject a field the table gained. See the twin in selectorOptions.ts
+ * for the drift that made this structural.
+ */
+const metadataValidator = selectorOptionFields.metadata;
 
 // ===== MATCHING HELPERS =====
 
@@ -1291,6 +1294,23 @@ export const storeReconciledOptions = mutation({
         value: working.get(r._id)?.value ?? r.value,
       }));
 
+    // NEO-239 — the base ROLE, decided once for the whole batch. Same rule as
+    // `storeSelectorOptions`: exactly one incoming BSC id may name the base
+    // variant, and a set whose base an operator has already chosen is left
+    // alone. See `isBscBaseVariantId` for why it is a token match on the
+    // marketplace id rather than a literal or the NB display value.
+    const baseVariantId =
+      level === "variantType"
+        ? soleBscBaseVariantId(items.map((item) => item.ids.bsc))
+        : undefined;
+    const siblingHoldsBaseRole = existingOptions.some(
+      (row) => row.metadata?.isBase === true,
+    );
+    const confersBaseRole = (ids: Partial<Record<"bsc" | "sportlots", string>>) =>
+      baseVariantId !== undefined &&
+      !siblingHoldsBaseRole &&
+      ids.bsc === baseVariantId;
+
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
 
@@ -1408,16 +1428,11 @@ export const storeReconciledOptions = mutation({
           w.metadata = { ...(w.metadata || {}), ...item.metadata };
         }
 
-        // NEO-239 — derive the base ROLE once, from BSC's own `base` variant
-        // id, never from the display value. ADDS ONLY: a row that already
-        // carries a value keeps it, so an operator's `setBaseVariantType`
-        // decision survives every later sync.
-        if (
-          level === "variantType" &&
-          w.metadata?.isBase === undefined &&
-          parsed.ids.bsc !== undefined &&
-          selectorValueKey(parsed.ids.bsc) === "base"
-        ) {
+        // NEO-239 — the base ROLE, from BSC's own base variant id, never from
+        // the display value. ADDS ONLY: a row that already carries a value
+        // keeps it, so an operator's `setBaseVariantType` decision survives
+        // every later sync.
+        if (w.metadata?.isBase === undefined && confersBaseRole(parsed.ids)) {
           w.metadata = { ...(w.metadata ?? {}), isBase: true };
         }
 
@@ -1474,13 +1489,9 @@ export const storeReconciledOptions = mutation({
               },
             }
           : alloc.platformFacets;
-      const insertIsBase =
-        syncFacet === "variant" &&
-        bscIds.some((id) => selectorValueKey(id) === "base");
-      const insertMetadata =
-        insertIsBase
-          ? { ...(item.metadata ?? {}), isBase: true }
-          : item.metadata;
+      const insertMetadata = confersBaseRole(parsed.ids)
+        ? { ...(item.metadata ?? {}), isBase: true }
+        : item.metadata;
 
       const newPrimary: { bsc?: string; sportlots?: string } = {};
       if (bscIds[0]) newPrimary.bsc = alloc.slotByIdBySide.bsc[bscIds[0]];

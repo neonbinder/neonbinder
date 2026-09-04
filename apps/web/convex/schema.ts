@@ -136,6 +136,43 @@ export const selectorOptionLevelValidator = v.union(
  * impossible: a new field is in the `returns` of all four the moment it is in
  * the table. See `selectorOptionDocValidator` in convex/selectorOptions.ts.
  */
+/**
+ * NEO-239 — the `metadata` FIELDS, exported so every validator that speaks
+ * metadata is BUILT from this one definition.
+ *
+ * Same lesson as `selectorOptionFields` above, learned the same way. Four
+ * places re-typed this three-field object by hand — `getAncestorChain`'s
+ * `returns`, `storeReconciledOptions`' args, `setVariantTypePlatformData`'s
+ * args and `updateSelectorOptionMetadata`'s args — and when NEO-239 added
+ * `isBase` to the table, `getAncestorChain` started throwing
+ * `Object contains extra field 'isBase'` for every chain containing a Base
+ * row. Server-side, so the SetSelector page error-boundaried the moment the
+ * flag existed: the seed flow synced variant types, the flag was written
+ * correctly, and the NEXT query to walk that chain took the page down.
+ *
+ * A required-object caller writes `v.object(selectorOptionMetadataFields)`;
+ * an optional one uses `selectorOptionFields.metadata`. Neither re-lists a
+ * field, so the next addition here reaches all four for free.
+ */
+export const selectorOptionMetadataFields = {
+  cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
+  isInsert: v.optional(v.boolean()),
+  isParallel: v.optional(v.boolean()),
+  /**
+   * NEO-239 — "this variantType row is the set's BASE", as an NB ROLE.
+   *
+   * Was detected by comparing the display value to the literal `"base"`,
+   * which made an NB behaviour depend on a name that came from a
+   * marketplace, and broke the moment an operator renamed the row. The role
+   * is decided ONCE — when the variantType row is created from BSC's `base`
+   * variant slot — and read from here afterwards, so a rename is free.
+   *
+   * Absent means "not the base", including on rows written before this
+   * field; `backfillVariantFacetAndBaseRole` sets it on the existing ones.
+   */
+  isBase: v.optional(v.boolean()),
+};
+
 export const selectorOptionFields = {
   level: selectorOptionLevelValidator,
   value: v.string(), // Display value (e.g., "Football")
@@ -248,24 +285,8 @@ export const selectorOptionFields = {
    */
   isCustom: v.optional(v.boolean()),
   createdByUserId: v.optional(v.string()), // Audit trail for hand-added entries
-  metadata: v.optional(v.object({
-    cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
-    isInsert: v.optional(v.boolean()),
-    isParallel: v.optional(v.boolean()),
-    /**
-     * NEO-239 — "this variantType row is the set's BASE", as an NB ROLE.
-     *
-     * Was detected by comparing the display value to the literal `"base"`,
-     * which made an NB behaviour depend on a name that came from a
-     * marketplace, and broke the moment an operator renamed the row. The role
-     * is decided ONCE — when the variantType row is created from BSC's `base`
-     * variant slot — and read from here afterwards, so a rename is free.
-     *
-     * Absent means "not the base", including on rows written before this
-     * field; `backfillVariantFacetAndBaseRole` sets it on the existing ones.
-     */
-    isBase: v.optional(v.boolean()),
-  })),
+  // Built from `selectorOptionMetadataFields` above — never re-listed here.
+  metadata: v.optional(v.object(selectorOptionMetadataFields)),
   // NEO-96: self-describing config for a `level: "sport"` row. Absent on
   // every other level, and absent on custom sports (which degrade explicitly:
   // slugified SKU prefix, no Wikidata/ESPN enrichment).

@@ -98,11 +98,13 @@ import {
   cardPlatformWireDataValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
+  selectorOptionMetadataFields,
 } from "./schema";
 import {
   BSC_SOURCE_FACETS,
   bscFacetValidator,
   resolveBscFacetFilters,
+  soleBscBaseVariantId,
   syncWrittenBscFacet,
 } from "./bscFacets";
 // NEO-239 — the per-side "can this marketplace even be asked?" rule that
@@ -440,11 +442,18 @@ const selectorOptionDocValidator = v.object({
   ...selectorOptionFields,
 });
 
-const metadataValidator = v.optional(v.object({
-  cardNumberPrefix: v.optional(v.string()),
-  isInsert: v.optional(v.boolean()),
-  isParallel: v.optional(v.boolean()),
-}));
+/**
+ * NEO-239 — DERIVED, never re-listed.
+ *
+ * This was a hand-typed copy of the table's `metadata` object, and when
+ * `isBase` was added to the table it did not follow: `getAncestorChain`
+ * (which uses this as its `returns`) threw `Object contains extra field
+ * 'isBase'` for every chain containing a Base row, server-side, taking the
+ * whole SetSelector page down through its error boundary. Exactly the drift
+ * `selectorOptionFields` was introduced to make impossible — bypassed by
+ * re-inlining. See `selectorOptionDocValidator.test.ts`.
+ */
+const metadataValidator = selectorOptionFields.metadata;
 
 // NEO-24: marketplace-agnostic feature map (set-level + card-level).
 // Keys come from `convex/features/expectedFeatures.ts`; values are strings.
@@ -1463,6 +1472,40 @@ export const storeSelectorOptions = mutation({
       return w;
     };
 
+    // NEO-239 — WHICH incoming id is the base variant, decided ONCE for the
+    // whole batch.
+    //
+    // Per-item it cannot be decided at all: "exactly one of these is the base"
+    // is a statement about the set's variants together, and the sync is the
+    // only place they are all in hand. Ambiguity (two matching ids) yields
+    // `undefined` and no row gets the role — recoverable in one click via
+    // `setBaseVariantType`, where two rival base rows would make
+    // `getBaseVariantBySet` answer by document order.
+    const baseVariantId =
+      level === "variantType"
+        ? soleBscBaseVariantId(items.map((item) => item.ids.bsc))
+        : undefined;
+    // And never against a set that already has an answer. An operator's
+    // `setBaseVariantType` decision outlives every later sync.
+    const siblingHoldsBaseRole = existingOptions.some(
+      (row) => row.metadata?.isBase === true,
+    );
+    const confersBaseRole = (item: IncomingItem): boolean =>
+      baseVariantId !== undefined &&
+      !siblingHoldsBaseRole &&
+      item.ids.bsc === baseVariantId;
+    if (level === "variantType" && !baseVariantId && !siblingHoldsBaseRole) {
+      // Loud, because the symptom is silent and two screens away: the operator
+      // taps "Base", `modules/SetSelector.tsx` finds no `metadata.isBase`, and
+      // no mapping form renders. Ids only — they are marketplace values, not
+      // operator content, and this is a log line, not reactive state.
+      console.warn(
+        `[storeSelectorOptions] no single BSC base variant in this batch ` +
+          `(parentId=${parentId}); no row was given the base role. Ids: ` +
+          `${JSON.stringify(items.map((i) => i.ids.bsc).filter(Boolean))}`,
+      );
+    }
+
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
 
@@ -1528,18 +1571,13 @@ export const storeSelectorOptions = mutation({
           slotIds({ platformData: w.platformData }, "bsc")[0],
         );
 
-        // NEO-239 — derive the base ROLE once, from BSC's own `base` variant
-        // id. ADDS ONLY: a row that already carries a value keeps it, so an
+        // NEO-239 — derive the base ROLE once, from BSC's own base variant id.
+        // ADDS ONLY: a row that already carries a value keeps it, so an
         // operator's `setBaseVariantType` decision survives every later sync,
         // and the flag is never flipped or cleared here. Every variantType row
-        // synced before this ticket has no flag at all, and this is where it
-        // gets one.
-        if (
-          level === "variantType" &&
-          w.metadata?.isBase === undefined &&
-          item.ids.bsc !== undefined &&
-          selectorValueKey(item.ids.bsc) === "base"
-        ) {
+        // synced before this ticket has no flag at all, and this is where the
+        // ones a sync reaches first get one.
+        if (w.metadata?.isBase === undefined && confersBaseRole(item)) {
           w.metadata = { ...(w.metadata ?? {}), isBase: true };
         }
 
@@ -1606,15 +1644,11 @@ export const storeSelectorOptions = mutation({
         Object.keys(alloc.platformLabels.bsc ?? {}).length > 0 ||
         Object.keys(alloc.platformLabels.sportlots ?? {}).length > 0;
       // NEO-239 — "this is the set's Base" becomes an NB ROLE, decided once,
-      // here, from BSC's own `base` variant id. It used to be re-derived
-      // everywhere by comparing the display value to the literal "base", which
+      // here, from BSC's own base variant id. It used to be re-derived
+      // everywhere by comparing the DISPLAY VALUE to the literal "base", which
       // made NB behaviour depend on a marketplace's word for the thing and
       // broke on rename. `metadata.isBase` is read from now on.
-      const isBaseRole =
-        syncFacet === "variant" &&
-        incomingBsc !== undefined &&
-        selectorValueKey(incomingBsc) === "base";
-      const insertMetadata = isBaseRole ? { isBase: true } : undefined;
+      const insertMetadata = confersBaseRole(item) ? { isBase: true } : undefined;
       const id = await ctx.db.insert("selectorOptions", {
         level,
         value: insertValue,
@@ -3908,11 +3942,9 @@ export const setVariantTypePlatformData = mutation({
       // string stopped meaning anything once a row could hold several SL sets.
       sportlotsDisplay: v.optional(v.string()),
     }),
-    metadata: v.optional(v.object({
-      cardNumberPrefix: v.optional(v.string()),
-      isInsert: v.optional(v.boolean()),
-      isParallel: v.optional(v.boolean()),
-    })),
+    // Derived from the table (NEO-239). A hand-typed copy here is how the
+    // `isBase` drift happened one validator over.
+    metadata: selectorOptionFields.metadata,
   },
   returns: v.object({
     success: v.boolean(),
@@ -3989,11 +4021,9 @@ export const setVariantTypePlatformData = mutation({
 export const updateSelectorOptionMetadata = mutation({
   args: {
     id: v.id("selectorOptions"),
-    metadata: v.object({
-      cardNumberPrefix: v.optional(v.string()),
-      isInsert: v.optional(v.boolean()),
-      isParallel: v.optional(v.boolean()),
-    }),
+    // Required here (an update must name what it is setting), but the FIELDS
+    // still come from the table — see `selectorOptionMetadataFields`.
+    metadata: v.object(selectorOptionMetadataFields),
   },
   returns: v.null(),
   handler: async (ctx, args) => {

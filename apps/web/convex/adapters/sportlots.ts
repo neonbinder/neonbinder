@@ -282,13 +282,21 @@ async function resolveSlScope(
  * cleaning labels; a caller that wants to scope a request must supply a slot
  * id, and is refused otherwise.
  *
- * Case-sensitive `startsWith`, matching what shipped before NEO-239 removed it:
- * "Topps Series 1" + "Topps" → "Series 1"; "Bowman Chrome" + "Topps" → unchanged.
+ * Case-sensitive, matching what shipped before NEO-239 removed it:
+ * "Topps Series 1" + "Topps" → "Series 1"; "Bowman Chrome" + "Topps" →
+ * unchanged.
  *
- * One correction to the original: a label that IS exactly the brand keeps its
- * name instead of being stripped to "" and then dropped by the caller's
- * `if (radioId && setName)` guard. Losing a set because SportLots happened to
- * name it after its brand is not a cleanup.
+ * TWO corrections to the original, both cases where it damaged a label:
+ *
+ *   WORD BOUNDARY. A bare `startsWith` turned "Toppstown Retro" into "town
+ *   Retro" — a real SportLots set silently renamed to nonsense, and worse, one
+ *   NB then seeds a row's display value from. The character after the prefix
+ *   must be absent or non-alphanumeric, so the brand has to be a whole word.
+ *
+ *   NEVER STRIP TO NOTHING. A label that IS exactly the brand kept its name
+ *   rather than becoming "" and then being dropped entirely by the caller's
+ *   `if (radioId && setName)` guard. Losing a set because SportLots happened to
+ *   name it after its brand is not a cleanup.
  */
 export function stripBrandPrefixForLabel(
   label: string,
@@ -296,6 +304,11 @@ export function stripBrandPrefixForLabel(
 ): string {
   const brand = manufacturer?.trim();
   if (!brand || !label.startsWith(brand)) return label;
+  const next = label.charAt(brand.length);
+  // "" means the label was exactly the brand — handled by the empty check
+  // below. Anything alphanumeric means the brand is a PREFIX OF A LONGER WORD
+  // and this is a different set that merely starts with the same letters.
+  if (next && /[a-zA-Z0-9]/.test(next)) return label;
   const stripped = label.slice(brand.length).trim();
   return stripped.length > 0 ? stripped : label;
 }

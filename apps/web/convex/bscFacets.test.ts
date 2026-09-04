@@ -24,6 +24,8 @@ import { describe, expect, test } from "vitest";
 import {
   BSC_SOURCE_FACETS,
   MAX_BSC_FAN_OUT,
+  isBscBaseVariantId,
+  soleBscBaseVariantId,
   legacyBscFacetForLevel,
   planBscFanOut,
   resolveBscFacetFilters,
@@ -352,5 +354,62 @@ describe("syncWrittenBscFacet", () => {
     ]) {
       expect(syncWrittenBscFacet(level)).toBeUndefined();
     }
+  });
+});
+
+// ===========================================================================
+// NEO-239 — recognising BSC's base variant id
+// ===========================================================================
+
+describe("isBscBaseVariantId", () => {
+  test.each(["base", "Base", "BASE", " base ", "base-set", "base_cards", "2024-topps-chrome-base"])(
+    "%s is the base variant",
+    (id) => {
+      // The first shipped version of this was `id === "base"`, and CI caught it
+      // against real BSC: the rows synced, the Base row got no role, and the
+      // setup flow's tap on "Base" produced no mapping form. We still have no
+      // recorded sample of BSC's actual slug, so the match is on whole TOKENS
+      // of the id rather than a literal nobody has verified.
+      expect(isBscBaseVariantId(id)).toBe(true);
+    },
+  );
+
+  test.each(["insert", "parallel", "promo", "mail-in", "short-print"])(
+    "%s is not",
+    (id) => {
+      expect(isBscBaseVariantId(id)).toBe(false);
+    },
+  );
+
+  test("`baseball` is NOT a base variant — the reason this is a token match", () => {
+    // A substring test would say yes. BSC's `sport` facet uses this exact
+    // string, and nothing stops a future caller passing the wrong facet's id.
+    expect(isBscBaseVariantId("baseball")).toBe(false);
+    expect(isBscBaseVariantId("database")).toBe(false);
+    expect(isBscBaseVariantId("rebase")).toBe(false);
+  });
+});
+
+describe("soleBscBaseVariantId", () => {
+  test("names the one base id in a batch", () => {
+    expect(soleBscBaseVariantId(["insert", "base", "parallel"])).toBe("base");
+  });
+
+  test("returns undefined when NOTHING matches", () => {
+    expect(soleBscBaseVariantId(["insert", "parallel"])).toBeUndefined();
+    expect(soleBscBaseVariantId([])).toBeUndefined();
+    expect(soleBscBaseVariantId([undefined, undefined])).toBeUndefined();
+  });
+
+  test("returns undefined when TWO match — ambiguity is not resolved by guessing", () => {
+    // Fail-closed. No role is one click of `setBaseVariantType` away; two base
+    // rows make `getBaseVariantBySet` answer by document order.
+    expect(soleBscBaseVariantId(["base", "base-parallel"])).toBeUndefined();
+  });
+
+  test("the SAME id twice is still one answer", () => {
+    // Two NB rows may legitimately map to one marketplace set (NEO-137 M:1);
+    // that is not the ambiguity this guards against.
+    expect(soleBscBaseVariantId(["base", "base", "insert"])).toBe("base");
   });
 });

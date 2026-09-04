@@ -77,6 +77,16 @@ tags:
     timeout: 10000
 - tapOn: "Base"
 
+# Selecting a variant type is the first thing that mounts BaseMappingForm and
+# subscribes to the ancestor chain, so a server-side error there kills the whole
+# page. Say so here, in one second, instead of letting the next scroll spend its
+# full timeout swiping a dead page and then blame a missing element (NEO-239 —
+# CI run 33892721504, where a `returns:`-validator drift on the new
+# `metadata.isBase` read exactly like a Base row that was never flagged).
+# A fast-fail diagnostic, not a guarantee: the tap's own settle is what gives
+# the boundary time to land, and a slower one is still caught by the step below.
+- assertNotVisible: "An error occurred. Please refresh the page."
+
 # Brief wait to let the BaseMappingForm decide whether to hold the picker
 # open (SL data found) or auto-confirm and close (no SL data).
 # 60s covers: SL fetch round trip (~50s) + Puppeteer session re-auth if needed.
