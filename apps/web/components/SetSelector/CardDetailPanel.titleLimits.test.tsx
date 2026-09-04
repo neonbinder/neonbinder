@@ -368,6 +368,128 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     );
   });
 
+  /**
+   * CI regression, PR #225 —
+   * `.maestro/flows/set-selector/checklist-title-length-limits-and-fixer.yaml`.
+   *
+   * The operator typed a 157-character title, pressed Enter (refused, alert
+   * shown), then pressed Regenerate. The field then held the regenerated
+   * 71-character title — and the refusal alert was STILL on screen, pointing
+   * at text that no longer existed.
+   *
+   * Two things conspired. `error` was only ever cleared by a SUCCESSFUL
+   * `runCommit`, and the refusal meant `card.listingTitle` never changed — so
+   * the regenerated title matched the stored one, `runCommit` returned at its
+   * no-op guard, and nothing cleared the error. `applyTitle` now goes through
+   * `useReactiveField`'s `replace`, which retires the error with the value it
+   * described, before the commit is even attempted.
+   */
+  it("Regenerate after a refused over-cap title clears the refusal and saves the new title", async () => {
+    renderPanel(makeCard({ listingTitle: "stale title" }));
+
+    // 1. Type an over-cap title and press Enter. Refused.
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), { target: { value: titleOfLength(157) } });
+      fireEvent.keyDown(titleInput(), { key: "Enter" });
+    });
+
+    expect(screen.getByText("157/80")).toBeTruthy();
+    const refusals = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(
+      refusals.some((t) => t.includes("77 over the 80-character limit")),
+    ).toBe(true);
+    expect(refusals.some((t) => t.includes("Not saved"))).toBe(true);
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+
+    // 2. Regenerate. The typed text is the operator's own wording, so the
+    //    first press only arms the confirm; the second replaces it.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    // 3. The field holds the regenerated title, and NOTHING is still alerting.
+    await waitFor(() =>
+      expect(titleInput().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(titleInput().getAttribute("aria-invalid")).toBeNull();
+    expect(screen.getByText("39/80")).toBeTruthy();
+
+    // 4. And it was actually saved, through the single-field path.
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_ID,
+        listingTitle: "2024 Topps Chrome Julio Rodriguez #300b",
+      }),
+    );
+  });
+
+  it("clears the refusal even when the regenerated title is identical to the stored one", async () => {
+    // The exact shape of the CI failure: the refused write never changed the
+    // stored title, so Regenerate hands back what is already saved and the
+    // commit legitimately no-ops. The alert must still go — it described text
+    // that has been replaced, and a no-op commit is not a reason to keep it.
+    renderPanel(
+      makeCard({ listingTitle: "2024 Topps Chrome Julio Rodriguez #300b" }),
+    );
+
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), { target: { value: titleOfLength(157) } });
+      fireEvent.keyDown(titleInput(), { key: "Enter" });
+    });
+    expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    await waitFor(() =>
+      expect(titleInput().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Nothing to write: the value on screen is the value on the server.
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("replaces the old refusal with the new one when the regenerated title is also refused", async () => {
+    previewResult = {
+      ...(previewResult as Record<string, unknown>),
+      title: titleOfLength(120),
+    };
+    renderPanel(makeCard({ listingTitle: "stale title" }));
+
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), { target: { value: titleOfLength(157) } });
+      fireEvent.keyDown(titleInput(), { key: "Enter" });
+    });
+    expect(screen.getByText("157/80")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    await waitFor(() => expect(screen.getByText("120/80")).toBeTruthy());
+    // The standing message is about the value on screen now, not the old one.
+    const alerts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.some((t) => t.includes("40 over the 80-character limit"))).toBe(
+      true,
+    );
+    expect(alerts.some((t) => t.includes("77 over"))).toBe(false);
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
   it("says so when the stored auto-title was cut short", () => {
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),

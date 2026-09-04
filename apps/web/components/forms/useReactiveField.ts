@@ -118,6 +118,12 @@ export type ReactiveFieldApi<
   error: string | null;
   /** Imperatively commit the live value (blur + Enter both route here). */
   commit: () => Promise<void>;
+  /**
+   * Replace the field's contents programmatically and commit them. Retires any
+   * standing error first — it described the value being replaced. Use this,
+   * never a hand-rolled `el.value = x` followed by `commit()`.
+   */
+  replace: (next: string) => Promise<void>;
 };
 
 export function useReactiveField<
@@ -154,6 +160,10 @@ export function useReactiveField<
     if (!el || busyRef.current) return;
     if (typeof document !== "undefined" && document.activeElement === el) return;
     el.value = value ?? "";
+    // The error described the text we just overwrote. Leaving it up points a
+    // refusal at content that is no longer on screen — see `replace` below for
+    // the same rule applied to a programmatic replacement.
+    setError(null);
   }, [value]);
 
   const runCommit = useCallback(async () => {
@@ -242,6 +252,33 @@ export function useReactiveField<
     [runCommit, enterCommit],
   );
 
+  /**
+   * Replace the field's contents programmatically, then commit them.
+   *
+   * NEO-216 bug (CI, PR #225): the card drawer's Regenerate button used to
+   * write the generated title into the DOM itself and call `commit()`. When
+   * the operator had just been REFUSED an over-cap title, the refusal left
+   * `error` set AND left the stored value unchanged — so the regenerated title
+   * frequently equalled the stored one, `runCommit` returned at its no-op
+   * guard, and the alert about the 157-character title stayed on screen above
+   * a field now holding a 71-character one.
+   *
+   * Clearing `error` here rather than inside `runCommit` is the point: the
+   * error belongs to the VALUE that was refused, so it must die the moment
+   * that value is replaced, whether or not the follow-up commit does anything.
+   * If the replacement is itself refused, `runCommit` sets the new message
+   * over the cleared one.
+   */
+  const replace = useCallback(
+    async (next: string) => {
+      const el = inputRef.current;
+      if (el) el.value = next;
+      setError(null);
+      await runCommit();
+    },
+    [runCommit],
+  );
+
   return {
     inputProps: {
       ref: (el: E | null) => {
@@ -255,5 +292,6 @@ export function useReactiveField<
     busy,
     error,
     commit: runCommit,
+    replace,
   };
 }

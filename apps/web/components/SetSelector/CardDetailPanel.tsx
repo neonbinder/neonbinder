@@ -444,7 +444,14 @@ export default function CardDetailPanel({
     onSave: async (trimmed) => {
       const state = titleLengthState(trimmed.length, LISTING_TITLE_MAX, true);
       if (state.over) {
-        throw new Error(`Title is ${state.alert} Shorten it before saving.`);
+        // Says what HAPPENED, not what is wrong: `TitleLengthAlert` already
+        // renders "Title is 157 characters — 77 over the 80-character limit.
+        // Shorten it before saving." directly below this input, and throwing
+        // that same sentence put two identical `role="alert"` nodes on screen,
+        // announced twice for one mistake.
+        throw new Error(
+          `Not saved — the title is over the ${LISTING_TITLE_MAX}-character limit.`,
+        );
       }
       await commitField({ listingTitle: trimmed }, "Saved Card title");
     },
@@ -530,20 +537,23 @@ export default function CardDetailPanel({
   // because the drawer opens for every card they arrow through.
   //
   // The fetched title lands in the DOM and is then committed through the SAME
-  // single-field path as typing it by hand — `titleField.commit()` reads the
-  // live input, so Regenerate inherits the cap check, the busy state, the
-  // error line and the "Saved Card title" toast for free. Held in a ref
-  // because `commit`'s identity changes with the row, and `applyTitle` is a
-  // dependency of an effect inside useTitlePreview.
-  const commitTitleRef = useRef<(() => Promise<void>) | null>(null);
+  // single-field path as typing it by hand, so Regenerate inherits the cap
+  // check, the busy state, the error line and the "Saved Card title" toast for
+  // free. Held in a ref because the callback's identity changes with the row,
+  // and `applyTitle` is a dependency of an effect inside useTitlePreview.
+  //
+  // `replace`, NOT `el.value = … ; commit()` (CI, PR #225): a refused over-cap
+  // title leaves an error AND leaves the stored title unchanged, so the title
+  // Regenerate hands back is often identical to the stored one — the commit
+  // then no-ops and the old refusal sits above a field that no longer holds
+  // the text it refers to. `replace` retires the error with the value.
+  const replaceTitleRef = useRef<((next: string) => Promise<void>) | null>(null);
   useEffect(() => {
-    commitTitleRef.current = titleField.commit;
-  }, [titleField.commit]);
+    replaceTitleRef.current = titleField.replace;
+  }, [titleField.replace]);
   const applyTitle = useCallback((title: string) => {
-    const el = titleInputRef.current;
-    if (el) el.value = title;
     setTitleLength(title.length);
-    void commitTitleRef.current?.();
+    void replaceTitleRef.current?.(title);
   }, []);
   const preview = useTitlePreview(card._id, applyTitle);
   /** Does the field hold something other than what is stored? Read live. */
