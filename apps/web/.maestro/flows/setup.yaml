@@ -1,5 +1,5 @@
 appId: com.neonbinder.web
-url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/admin&worker=${WORKER_INDEX || "0"}
 name: "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel)"
 tags:
   - setup
@@ -49,10 +49,11 @@ tags:
 # every other flow — the 8 runners drain a shared queue, so any other write is
 # visible to whatever else happens to be running (see SET-REGISTRY.md, R7a).
 #
-#   - selectorOptions / cardChecklist / players / teams cleared, then rebuilt
+#   - selectorOptions / cardChecklist / players / teams arrive EMPTY — the
+#     scripted reset (see the ordering note below) runs before this flow — and
+#     the hierarchy below is what this flow rebuilds in them
 #   - Worker 0's BSC + SportLots sessions warmed (creds seeded by the
 #     /testing/seed-credentials redirect in the url above)
-#   - Seeded teams: New York Yankees, New York Mets
 #   - Hierarchy: Baseball → 2024 → Topps → Topps Chrome
 #   - Variant Types synced: Base, Insert, Parallel
 #   - Base   → card checklist fetched + saved                                    [this flow]
@@ -63,13 +64,38 @@ tags:
 # set (e.g. Topps Update, Topps Pro Debut, Topps Wonderland), any other sport,
 # and any non-Topps-Chrome variant rows beyond the matched sets saved above.
 #
+# NO TEAM OR PLAYER FIXTURE IS PROVISIONED HERE (NEO-214). This flow used to tap
+# a "Seed Test Teams" button that inserted New York Yankees / New York Mets and
+# an "E2E Fixture Player"; that button and the mutation behind it are gone, so
+# `teams` and `players` are EMPTY for the whole run until a flow puts something
+# in them. Every flow that needs a team or a player now creates its own,
+# per-worker and per-attempt, through the product's own screens — /admin/players
+# for a player and its career stints, TeamPicker's "+ Create" row for a team,
+# /admin/teams for that team's colours. That is strictly better isolation than
+# the shared fixture was (nothing global to contend on) and it is the only
+# fixture path left, so do NOT reintroduce a global seed step here.
+#
 # WHERE THE LOGGED-IN USER COMES FROM:
 #   The `url:` above signs this flow in as TEST_EMAIL_${WORKER_INDEX} (worker 0
-#   by default) and seeds that user's marketplace creds server-side. The reset
-#   and the whole sync run as that one user. No prior flow is required.
+#   by default) and seeds that user's marketplace creds server-side. The whole
+#   sync runs as that one user. No prior flow is required.
 #   NOTE: The seed CI job runs with MAESTRO_SKIP_BOOTSTRAP=1 — no preceding
-#   worker-bootstrap. This flow is fully self-sufficient: sign-in + reset + seed
-#   creds are all handled by the /testing/sign-in?redirect=... chain in url: above.
+#   worker-bootstrap. This flow is fully self-sufficient: sign-in + per-user
+#   reset + seed creds are all handled by the /testing/sign-in?redirect=... chain
+#   in url: above.
+#
+# ── WHERE THIS FLOW SITS IN THE SCRIPTED SEQUENCE (NEO-214) ─────────────────
+#   1. `e2e-baseline.sh reset` — the global set-builder wipe, run from the
+#      command line against the target Convex deployment BEFORE this flow. It
+#      replaces the "Reset Set Builder Data" button this flow used to click; the
+#      button (and the whole Admin Tools panel on /admin/set-builder) no longer
+#      exists in the product.
+#   2. THIS FLOW — lands on an already-empty deployment and rebuilds the
+#      hierarchy above.
+#   Nothing runs after it: the old step 3, a scripted team seed, was dropped
+#   when the fixture moved into the flows that need it (see the note above).
+#   The runner is responsible for only starting the queue once this flow has
+#   exited 0 — a flow that fails half way leaves a partly-synced deployment.
 #
 # CREDS FOR *ALL* WORKER THREADS:
 #   This flow only warms worker 0. Every parallel worker needs its own warmed
@@ -87,6 +113,24 @@ tags:
 
 - launchApp
 
+# ── LAND ON THE ADMIN HUB, NOT THE SET SELECTOR (NEO-214) ───────────────────
+# The final hop of the url chain above is /admin, and that is deliberate rather
+# than incidental. The deployment is already empty when this flow lands (the
+# scripted reset ran first), and the Sports column auto-syncs the moment it
+# FIRST mounts empty — so landing on /set-selector would kick that marketplace
+# sync off on first paint, concurrently with the BSC and SportLots credential
+# warm-ups immediately below. Both of those are real marketplace logins, and the
+# marketplaces answer 503 when several land at once. The hub runs no sync at
+# all, so nothing competes; the `openLink /set-selector` further down then
+# becomes the set selector's first mount and triggers the Sports sync exactly as
+# it always did, only now with the logins already finished.
+#
+# The gate is the hub CARD's own sentence for the Set Builder tool. It is not
+# the panel's subtitle: the two read differently on purpose ("from marketplace
+# data" on the card, "using marketplace APIs" in the panel — see
+# admin/admin-section-navigation.yaml), so this cannot be satisfied by the wrong
+# screen, and the panel gate further down cannot be satisfied by this one.
+#
 # 120s, not the old 45s (NEO-141). This one wait covers the entire redirect chain
 # in the url above — Clerk sign-in, /testing/reset, then /testing/seed-credentials
 # — and seeding now performs a REAL marketplace sign-in for each platform it has
@@ -94,31 +138,22 @@ tags:
 # both need one on the same visit. This is the setup track's cold-start budget
 # doing exactly what it exists for; do NOT copy this ceiling into a feature flow.
 - extendedWaitUntil:
-    visible: ".*Build set parameters using marketplace APIs.*"
+    visible: ".*Build set parameters from marketplace data.*"
     timeout: 120000
 
-# ── GLOBAL RESET ────────────────────────────────────────────────────────────
-# DESTRUCTIVE — sanctioned global wipe; gated by ALLOW_RESET_SET_BUILDER_DATA,
-# dev/preview only. This is the ONE authorised destructive step in the whole
-# E2E suite — every other flow reads from the clean state it creates.
-- scrollUntilVisible:
-    element:
-      text: "Reset Set Builder Data"
-    timeout: 10000
-- tapOn: "Reset Set Builder Data"
-- extendedWaitUntil:
-    visible: "Delete Everything"
-    timeout: 20000
-# Confirm input is autofocused; erase any stray chars, then type the keyword.
-# NEVER tapOn the placeholder first — it injects a stray character.
-- eraseText: 10
-- inputText: "RESET"
-- tapOn: "Delete Everything"
-# Reset deletes can be large; "Reset failed: ..." surfaces clearly if it errors.
-- extendedWaitUntil:
-    visible:
-      text: ".*Deleted [0-9]+ selector options.*"
-    timeout: 60000
+# ── THE GLOBAL RESET IS NOT HERE ANY MORE (NEO-214) ─────────────────────────
+# It used to be the block that followed this comment: tap "Reset Set Builder
+# Data", type RESET, tap "Delete Everything". That whole Admin Tools panel was
+# removed from /admin/set-builder — a destructive global wipe is not something
+# any admin should be able to hit from a page — and the reset is now a scripted
+# command run against the deployment BEFORE this flow starts. So by the time we
+# get here the tables are already empty; there is nothing to click and nothing
+# to wait for.
+#
+# It is still the ONE authorised destructive step in the whole E2E track (R7),
+# it is still gated by ALLOW_RESET_SET_BUILDER_DATA so it can only fire on a
+# dev/preview deployment, and it is still the clean state every other flow
+# reads from. It just is not a tap any more.
 
 # ── WARM WORKER 0's MARKETPLACE SESSIONS ────────────────────────────────────
 # seed-credentials (in the url above) stored real BSC + SL creds but does NOT
@@ -132,10 +167,12 @@ tags:
 - runFlow:
     file: util/util-login-to-sportlots.yaml
 
-# ── FRESH MOUNT OF THE SET SELECTOR ─────────────────────────────────────────
-# The reset wiped selectorOptions IN PLACE; the Sports column only auto-syncs
-# when it first mounts empty. Re-navigate so the now-empty column re-triggers
-# the sync — without this, "Baseball" never appears and the drill below fails.
+# ── FIRST MOUNT OF THE SET SELECTOR ─────────────────────────────────────────
+# The Sports column auto-syncs when it first mounts empty, and after the
+# scripted reset it IS empty — so this navigation is what triggers the sync.
+# Without it, "Baseball" never appears and the drill below fails. It is placed
+# here, after the two credential warm-ups, so the sync does not race two real
+# marketplace logins (see the landing note at the top).
 - openLink: ${APP_URL || "http://localhost:3000"}/set-selector
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
@@ -168,34 +205,17 @@ tags:
           visible: "Baseball"
           timeout: 60000
 
-# ── SEED TEST TEAMS (NEO-96: must run AFTER the sport sync) ─────────────────
-# The reset wiped `teams`. Seed New York Yankees + Mets so TeamPicker-style
-# flows get a deterministic typeahead match without depending on card commits.
+# ── NO TEAM SEED HERE ANY MORE (NEO-214) ────────────────────────────────────
+# A "Seed Test Teams" tap used to sit right here, after the sport sync, because
+# the seeded teams referenced the Baseball sport ROW and that row only exists
+# once the Sports column has finished syncing. Both the button and the mutation
+# behind it are gone; `teams` and `players` now stay empty until a flow creates
+# what it needs. See the fixture note in this file's header before reaching for
+# a replacement — the answer is per-worker rows made through /admin/players and
+# /admin/teams inside the flow that needs them, not a global seed here.
 #
-# ORDERING IS LOAD-BEARING. Teams now reference the sport-level selectorOptions
-# ROW rather than storing the string "Baseball", so seedTestTeams has to resolve
-# that row — which only exists once the Sports column has finished its
-# post-reset auto-sync (the wait immediately above). This block used to sit
-# before the reset's fresh mount, where the row does not exist yet; the mutation
-# now throws a clear error rather than silently seeding nothing.
-- scrollUntilVisible:
-    element:
-      text: "Seed Test Teams"
-    centerElement: true
-    timeout: 10000
-- tapOn: "Seed Test Teams"
-- extendedWaitUntil:
-    visible:
-      text: ".*Seed complete.*"
-    timeout: 15000
-# NEO-210: dismiss the "Seed complete" banner. It sits above the selector
-# cascade and pushes every column ~60px further down the 629px viewport; that
-# is what left the filtered "2024" row half under the fold on two CI runs
-# (33700420070, 33750702257). Optional so a banner that already auto-cleared
-# does not fail the seed.
-- tapOn:
-    text: "Dismiss"
-    optional: true
+# Deleting the block also removed the suite's only executable `Dismiss` tap,
+# which NEO-211's SyncDoneNotice had made ambiguous.
 
 - scrollUntilVisible:
     element:

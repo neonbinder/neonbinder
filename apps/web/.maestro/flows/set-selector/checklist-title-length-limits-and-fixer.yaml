@@ -93,7 +93,7 @@ tags:
 #       `teamOnCardIds` argument, so the Submit below is rejected by Convex's
 #       argument validator and no card is created. Everything up to and
 #       including the picker — the form opening, "+ Add team", the popover, the
-#       "Add New York Yankees" option, the chip, the popover closing — is
+#       "+ Create TLF-<attempt>" option, the chip, the popover closing — is
 #       verified locally; the card's creation and every assertion downstream of
 #       it need the PR's own Convex preview.
 #     • NEO-101 (already on main's client but not its backend when this note
@@ -146,20 +146,24 @@ tags:
 # FIXTURE SIZING — the generated title must FIT, and the names below are chosen
 # so it does. Titles now fill toward 80: this card generates
 #
-#   "2024 Topps tlf-<w>-<attempt> #101-<attempt> New York Yankees Baseball"
+#   "2024 Topps tlf-<w>-<attempt> #101-<attempt> TLF-<attempt> Baseball"
 #
 # NEO-208 leaves that string BYTE-IDENTICAL, which is why nothing below moved.
 # The generator takes one `teamNames: string[]`; `addCustomCard` now fills it
 # from the LINKED teams' stored names (`resolveTeamOnCardIdsForWrite` hands them
 # back from the rows it already read) instead of from the typed
 # `pendingTeamNames`, and `previewListingTitle` — the query behind Regenerate —
-# already preferred resolved team names over pending ones. The seeded team's
-# stored `name` is exactly "New York Yankees" (it is what the picker's own
-# "Add New York Yankees" option is named after), so both the creation title and
-# the regenerated one are unchanged, and so is the length arithmetic below.
+# already preferred resolved team names over pending ones. The team's stored
+# `name` is exactly what the picker created it under, which is what both the
+# creation title and the regenerated one read.
 #
-# which measures 63-71 characters across the ATTEMPT_ID lengths the runners
-# produce (`<runner>-a<n>-<RANDOM>`, 7-11 chars; ~73 even if a runner index ever
+# NEO-214 replaced the shared "New York Yankees" fixture with the per-attempt
+# "TLF-<attempt>" this flow creates itself, and the arithmetic below SHRANK
+# rather than grew: 16 characters became 11-15 (`TLF-` plus a 7-11 character
+# ATTEMPT_ID), so the tail is never longer than it used to be.
+#
+# which measures 58-70 characters across the ATTEMPT_ID lengths the runners
+# produce (`<runner>-a<n>-<RANDOM>`, 7-11 chars; ~72 even if a runner index ever
 # went to two digits). That headroom is not cosmetic. If the CORE overflowed,
 # the generator would cut it at a word boundary and stamp
 # `listingTitleTruncated`, which adds a SECOND attention item to this card - and
@@ -184,10 +188,10 @@ tags:
 # ── The team, through the quick-add form's TeamPicker (NEO-208) ──────────────
 # Same four handles the drawer's picker is driven by in team-picker.yaml: the
 # "+ Add team" trigger, the popover's search input, and the option row named
-# after the team. Typing the FULL name rather than "Yankees" is deliberate — the
-# candidate pool is every Baseball team, and other flows' player commits
-# get-or-create farm clubs in it mid-run, so a prefix match on the whole name is
-# the one query that cannot be crowded out of the popover's top-8 slice.
+# after the team. The name typed here belongs to no team yet, so the row offered
+# is "+ Create" — and it is per-worker and per-attempt because the candidate pool
+# is every Baseball team and other flows create rows in it mid-run, so a shared
+# name would be a race in two directions at once.
 #
 # SCROLL FIRST (R8), and this is not optional. On the 1024×629 CI viewport the
 # add-card form opens with its lower half below the fold — measured: the Players
@@ -210,13 +214,19 @@ tags:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "New York Yankees"
+- inputText: "TLF-${ATTEMPT_ID}"
+# "+ Create", not "Add" (NEO-214): the global seeded Yankees/Mets fixture is
+# gone, so `teams` is empty until a flow fills it and this picker's own escape
+# hatch is how a card gets a team. The name is per-worker AND per-attempt —
+# ATTEMPT_ID is already "w<worker>-a<attempt>-<rand>" — which keeps eight
+# runners off each other's row and keeps the create row (offered only while no
+# team of that name exists) reachable on a retry.
 - tapOn:
-    id: "Add New York Yankees"
-# The chip is the proof the pick landed. Unlike the drawer's picker this one is
-# not a draft — its value goes straight into `addCustomCard` on Submit.
+    id: "Create team TLF-${ATTEMPT_ID}"
+# The chip is the proof the creation landed. Unlike the drawer's picker this one
+# is not a draft — its value goes straight into `addCustomCard` on Submit.
 - assertVisible:
-    id: "Remove team New York Yankees"
+    id: "Remove team TLF-${ATTEMPT_ID}"
 
 # Close the popover BEFORE reaching for Submit. It is `absolute top-full`, and
 # in this form the picker sits directly above the Add/Cancel row, so an open
@@ -325,8 +335,8 @@ tags:
 # What is left is the whole rebuilt title, asserted as its exact SHAPE rather
 # than as "contains the card number":
 #
-#   2024 Topps <this attempt's set>  #101-<attempt>  New York Yankees  Baseball
-#   └─────── core ───────────────┘  └── number ──┘  └──── fill tail ─────┘
+#   2024 Topps <this attempt's set>  #101-<attempt>  TLF-<attempt>  Baseball
+#   └─────── core ───────────────┘  └── number ──┘  └─── fill tail ───┘
 #
 # The fill tail is the part worth pinning. Titles are built to fill toward 80
 # now, so after the core and the card number the generator keeps appending
@@ -349,7 +359,7 @@ tags:
 # "the padding went away".
 - assertVisible:
     id: "Card title"
-    text: "2024 Topps .*#101-${ATTEMPT_ID} New York Yankees Baseball"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} TLF-${ATTEMPT_ID} Baseball"
 # ...and it fits, so the refusal is lifted.
 - assertNotVisible: ".*Shorten it before saving.*"
 
@@ -478,7 +488,7 @@ tags:
 # confused with the drawer's own "Card title" field.
 - assertVisible:
     id: "Card title for #101-${ATTEMPT_ID}"
-    text: "2024 Topps .*#101-${ATTEMPT_ID} New York Yankees Baseball"
+    text: "2024 Topps .*#101-${ATTEMPT_ID} TLF-${ATTEMPT_ID} Baseball"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE FIX — shorten the variation until the field stops complaining, then save.

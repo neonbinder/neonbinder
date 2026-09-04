@@ -1,132 +1,265 @@
 appId: com.neonbinder.web
-url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/teams&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Team Management — select a team and edit it"
 tags:
   - regression
   - admin
 ---
 # R1 — Single feature: the master-detail half of Team Management. Selecting a
-# team from the list opens an edit panel for it, and a field saved there
-# persists. The sibling flow team-management-filter covers the master side
+# team from the list opens an edit panel for it, and the fields saved there
+# persist. The sibling flow team-management-filter covers the master side
 # (filtering, empty state); this one covers the detail side.
 #
-# SELF-CONTAINED (R3/R4) but DEPENDS ON THE FIXTURE. "New York Yankees" is
-# seeded by setup.yaml's "Seed Test Teams" (convex/teams.ts#seedTestTeams),
-# which after NEO-147 also gives it deterministic colours. That is the whole
-# reason this flow can exist: the teams table is global and empty after a
-# reset, so before the fixture carried colours there was no team any flow could
-# name and assert on. Do not swap in a real synced team — those come from
-# marketplace data and vary.
+# WHY IT STARTS ON /admin/players (NEO-214). This flow used to edit "New York
+# Yankees", a team that setup.yaml seeded globally by clicking a "Seed Test
+# Teams" button. The button and the mutation behind it are gone, so `teams` is
+# empty until something puts a row in it — and Team Management itself has no
+# "add a team" control, by design: teams are born from the product's team
+# typeahead (`teams.findOrCreate`), never typed into an admin form. So the flow
+# creates the row the same way the product does, on the one screen that offers
+# that typeahead outside the set-builder cascade: /admin/players' career-history
+# editor. That is also the honest user story it now tells end to end —
 #
-# R2 — this cannot go green without the feature working. It types a city into
-# the detail panel, saves, and asserts the value survives a reload. A panel
-# that rendered but did not persist, or persisted to the wrong row, fails.
+#   an operator adds a player, gives them a team the app has never heard of,
+#   and then goes to Team Management to fill in what that new team is.
 #
-# The city is per-worker so eight runners editing the same shared Yankees row
-# cannot read each other's writes (R7a — the queue shares one deployment).
+# A team born that way carries nothing but a name, which is exactly the state
+# Team Management exists to resolve, and it is what the panel's empty colour
+# field asserts below.
+#
+# SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
+# redirecting to /admin/players. No in-body login and no credential step. The
+# player it creates on the way is scaffolding, not coverage: the hand-entry
+# feature itself belongs to player-management-add-and-career-history, and this
+# flow deliberately asserts nothing about it beyond what it needs to get a team.
+#
+# R2 — this cannot go green without the feature working. It selects the team,
+# proves the panel opened on a row with NO colours yet (the Primary field shows
+# its placeholder, so anything already filled in would fail), types a colour and
+# a city, saves, and asserts BOTH values survive a full reload and re-selection.
+# A panel that rendered but did not persist, or persisted to the wrong row,
+# fails.
+#
+# R7 / R7a — writes to NO shared row. Both the player and the team are named
+# "<prefix>-<worker>-<attempt>", so eight concurrent runners and a retry can
+# never land on the same row, and nothing pre-existing is read or edited. The
+# per-attempt half is mechanical as well as safe: the typeahead offers
+# "+ Create <name>" only while no team of that name exists, so a name left
+# behind by a previous attempt would render "Add <name>" instead.
+#
+# "Discover" is NEVER tapped. It performs a live outbound fetch of
+# teamcolorcodes.com's sitemap (~1.5MB) from CI, against a third party with no
+# contract.
 
 - launchApp
 
-# Wait for the COUNTER, not the heading. "Team Management" is the page title and
-# renders while the list is still loading — the filter input does not exist yet
-# at that point, so typing there goes nowhere. The counter only renders once the
-# query has resolved, which is also when the autofocus lands (NEO-156).
+# Wait for the COUNTER, not the "Player Management" heading — the heading paints
+# while the list is still loading, and the filter would swallow keystrokes then.
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# The runner injects ATTEMPT_ID ("w<worker>-a<attempt>-<random>"). This gives a
+# standalone local run a fallback, and only when unset — a runner-injected value
+# is preserved.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+# ── SCAFFOLDING: A PLAYER, SO THERE IS A CAREER EDITOR TO PICK A TEAM IN ────
+# Every player row prints its sport beside the name, so with rows on screen the
+# word "Baseball" is on the page a hundred times over and the sport picker below
+# could not be identified by what it says. Filtering to a name nothing matches
+# clears the list, and then "Baseball" belongs to the picker alone. (Same
+# precondition, and the same reasoning, as
+# player-management-add-and-career-history — see its note for the long version.)
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+
+# The sport is picked on the LIST's picker, with the add form closed: Maestro
+# resolves a native picker's choice against the FIRST picker on the page, so a
+# choice made while the form's own picker is also mounted lands in the wrong
+# one. The form then opens with this sport already chosen.
+- tapOn: "All sports"
+- tapOn: "Baseball"
+
+- tapOn: "Add player"
+# The form's own heading — it gates the two taps below, which would otherwise
+# reach for fields that have not mounted yet.
+- assertVisible: "Add a player"
+- tapOn: "New player name"
+- inputText: "TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      id: "Create player TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+- tapOn:
+    id: "Create player TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# "Added <name>." is said only for a row that was inserted, so this is also the
+# signal that the new player's own panel — and its career editor — is open.
+- extendedWaitUntil:
+    visible: ".*Added TME-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 7000
+
+# ── THE TEAM THIS FLOW IS ACTUALLY ABOUT, CREATED FROM THE TYPEAHEAD ────────
+# The career editor sits below the panel's five fields, past the fold on the
+# 1024x629 headless viewport, so it is scrolled to and centred first.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
+# reason the popover is now showing its "+ Create" row. It is also a real
+# assertion about the name being this attempt's alone.
+- assertVisible: "No matches."
+
+# CREATE IT WITH ENTER, NOT BY TAPPING THE "+ Create" ROW.
+#
+# The row exists and is correctly labelled — but on this screen it cannot be
+# tapped, and that is geometry, not flakiness. The career editor is the LAST
+# thing on the player panel, so once the page is scrolled as far as it goes
+# "+ Add team" sits at y=510-532 of the 629px headless viewport (measured, CI
+# run 33875599981) and cannot be centred: there is no page left to scroll. Its
+# popover is `absolute top-full`, so it opens BELOW that — search input at
+# y=545-579, first row at y=583. One row fits. Two do not: with no match the
+# popover renders "No matches." AND the "+ Create" row under it, which puts the
+# create row at y>=609, off the bottom of the screen. maestro-web still reports
+# its layout bounds, so `tapOn` "succeeds" while the click lands outside the
+# picker — which is a pointerdown-outside, so the popover closes and no team is
+# ever created. That is exactly how this step failed.
+#
+# Enter on the search input runs the SAME handler the row does: TeamPicker's
+# keydown takes the highlighted match when there is one, and otherwise calls
+# createAndAdd(). "No matches." above is what proves there is none, so Enter
+# here can only mean create — and it needs no coordinates at all.
+- pressKey: Enter
+
+# The chip is the proof the row was really created; creation is a round-trip and
+# the chip is what the picker paints when it returns. Nothing else is done with
+# the player — the stint is never added and the player is never saved, because
+# the team row exists the moment `findOrCreate` returns, not when the player is.
+- extendedWaitUntil:
+    visible:
+      id: "Remove team TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 7000
+
+# ════════════════════════════════════════════════════════════════════════════
+# TEAM MANAGEMENT — the feature under test starts here.
+# ════════════════════════════════════════════════════════════════════════════
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
     visible: ".*of .* teams.*"
-    timeout: 45000
-# Filter by the fixture's FULL name, never the bare "Yankees". `teams` is a
-# GLOBAL table and other flows create rows in it while this one runs: on
-# 2026-09-01 (CI run 33546667978) a checklist flow on another runner committed a
-# player whose Wikidata career includes a Yankees farm club, which get-or-created
-# "Gulf Coast League Yankees" 14 seconds before this step. "Yankees" then matched
-# 2 of 105 teams and the assertion below failed — nothing was broken, the filter
-# text was just not specific enough to survive a concurrent worker.
-#
-# The full name is collision-proof in both directions: the filter is a plain
-# case-insensitive substring match on the team name (TeamManagement's `visible`),
-# so it still finds the fixture; a concurrent get-or-create of the Yankees
-# themselves lands on this very row, because teams dedupe on normalized name +
-# sport and every flow that can create them does so under Baseball ("Yankees,
-# New York" normalizes into the same key); and a farm club carries its own
-# city's name, never "New York Yankees" inside it.
-- inputText: "New York Yankees"
+    timeout: 30000
 
-# The list narrows to the fixture. Composed with the count so this cannot pass
-# against an unfiltered list that merely happens to contain the Yankees.
+# No tapOn before typing: the filter takes focus on arrival (NEO-156), and the
+# assertion below is what proves the keystrokes landed. The name is unique to
+# this worker and attempt, so unlike the old shared fixture it cannot be widened
+# by a concurrent worker's get-or-create.
+- inputText: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The list narrows to the one team. Composed with the count so this cannot pass
+# against an unfiltered list that merely happens to contain it.
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 15000
 
 # Tap the ROW, anchored below the counter. maestro-web reports an input's
-# current value as its text, so now that the filter box holds "New York Yankees"
+# current value as its text, so now that the filter box holds this exact name
 # the box itself answers to that string too — and it sits above the list, so an
 # unanchored tap could land in the filter instead of selecting the team. The
 # counter renders between the two, so "below the counter" is the row and only
 # the row.
 - tapOn:
-    text: "New York Yankees"
+    text: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     below:
       text: "1 of .* teams.*"
 
-# ── THE DETAIL PANEL ────────────────────────────────────────────────────────
-# Its heading is the team's name, and Save/Discover only exist inside it, so
-# together they prove the panel opened for the row that was tapped rather than
-# rendering the "Select a team" placeholder.
-# Scrolled to first: the panel's buttons sit below its five fields, and on the
-# 1024x629 headless viewport that is past the fold. `visible` is false for an
-# element that exists off-screen.
+# ── THE DETAIL PANEL, AND IT IS SHOWING THIS ROW'S REAL STATE ──────────────
+# The panel's fields sit below the filter row, past the fold on the 1024x629
+# headless viewport, so the colour field is scrolled to and centred — and the
+# scroll IS the assertion (R6), which is why nothing re-asserts the same text
+# after it.
+#
+# What it asserts is that the panel opened on a team with NO colours: a team
+# born from the typeahead carries only a name. maestro-web reports an empty
+# input by its PLACEHOLDER (value ‖ placeholder ‖ aria-label), and "#01214b" is
+# the Primary colour field's — it appears nowhere else in the app. So the field
+# mapped an ABSENT value rather than someone else's, which is the precondition
+# that makes the save below mean something. The tap after it goes to the same
+# node, which is the input itself rather than its label — the most direct handle
+# there is, and the one that cannot be satisfied once a value is typed.
 - scrollUntilVisible:
     element:
-      text: "Save"
+      text: "#01214b"
     centerElement: true
     timeout: 15000
-- assertVisible: "Save"
-- assertVisible: "Discover"
-
-# The seeded colours arrive in the panel's own fields. This is the assertion
-# the fixture exists for — #132448 is Yankees navy from seedTestTeams, and it
-# reaches here only if the row was read and mapped into the form correctly.
-- assertVisible: "#132448"
-
-# NEVER tap "Discover". It performs a live outbound fetch of teamcolorcodes.com's
-# sitemap (~1.5MB) from CI, against a third party with no contract.
 
 # ── EDIT AND SAVE ───────────────────────────────────────────────────────────
-# City is chosen deliberately: it is free text, is not part of the seeded
-# fixture, and nothing else derives from it — so writing it cannot disturb
-# another flow reading colours or the league off this same shared row.
+# Two fields, chosen deliberately: the colour is what this screen exists to
+# supply (a team with no primary colour is what the list flags as needing
+# attention), and City is free text that nothing derives from. Both are empty on
+# arrival, so neither needs erasing first. They are filled top-down, in the
+# order they appear, so every scroll below moves the page one way.
+- tapOn: "#01214b"
+- inputText: "#132448"
+
 - scrollUntilVisible:
     element:
       text: "City"
     centerElement: true
     timeout: 10000
 - tapOn: "City"
-- eraseText
 - inputText: 'Bronx${WORKER_INDEX || "0"}'
+
+# Save and Discover only exist inside the panel, so reaching them is the other
+# half of the proof that it opened rather than rendering the "Select a team"
+# placeholder. Discover is asserted, never tapped — it fires a live outbound
+# fetch of teamcolorcodes.com's ~1.5MB sitemap from CI.
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+    timeout: 10000
+- assertVisible: "Discover"
 - tapOn: "Save"
 
 # The mutation confirms by name, so this proves the save targeted THIS team.
 - extendedWaitUntil:
-    visible: ".*Saved New York Yankees.*"
+    visible: ".*Saved TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     timeout: 15000
 
 # ── IT PERSISTED ────────────────────────────────────────────────────────────
 # A reload is what separates "the form still holds what I typed" from "the
-# database holds it". Re-select and read the field back.
+# database holds it". Re-select and read both fields back.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
     visible: ".*of .* teams.*"
     timeout: 30000
-# Same full-name filter and same counter-anchored row tap as on the way in —
-# see the comments above for why neither can be shortened.
-- inputText: "New York Yankees"
+# Same filter and same counter-anchored row tap as on the way in — see the
+# comments above for why neither can be shortened.
+- inputText: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 15000
 - tapOn:
-    text: "New York Yankees"
+    text: "TMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     below:
       text: "1 of .* teams.*"
-- extendedWaitUntil:
-    visible: 'Bronx${WORKER_INDEX || "0"}'
+# The scroll IS this assertion (R6) — it fails loudly if the city never comes
+# back — and it also brings the colour field, two rows away in the same grid,
+# into the viewport for the assertion after it.
+- scrollUntilVisible:
+    element:
+      text: 'Bronx${WORKER_INDEX || "0"}'
+    centerElement: true
     timeout: 15000
+# And the colour came back too — the field now reports a VALUE where it reported
+# its placeholder before the save, which is the same field answering differently
+# for the same team.
+- assertVisible: "#132448"

@@ -11,28 +11,38 @@ tags:
 #
 # That one sentence is deliberately the whole flow. The sibling admin screen is
 # split across two flows (team-management-filter for the master side,
-# team-management-edit-a-team for the detail side) because the teams table has
-# no row any flow may create; here the flow creates its OWN row, so the master
-# and detail halves are one continuous user story and splitting them would mean
-# creating two throwaway players instead of one.
+# team-management-edit-a-team for the detail side) because its empty state and
+# its detail panel are separate claims with separate preconditions; here the
+# master and detail halves are one continuous user story — add a player, then
+# edit the player you just added — and splitting them would mean creating two
+# throwaway players instead of one.
 #
 # SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
 # redirecting to /admin/players. No in-body login, no credential step. Nothing
 # else in the suite touches /admin/players, and nothing else creates a player
 # by hand, so this duplicates no existing flow.
 #
-# THE FIXTURE IT LEANS ON: "New York Yankees" (Baseball), seeded by setup.yaml's
-# "Seed Test Teams" (convex/teams.ts#seedTestTeams). Used by its FULL name for
-# the same reason team-management-edit-a-team gives at length — `teams` is a
-# GLOBAL table and concurrent workers get-or-create farm clubs ("Gulf Coast
-# League Yankees"), so the bare "Yankees" is not a safe handle.
+# IT LEANS ON NO FIXTURE AT ALL (NEO-214). It used to record its stints against
+# "New York Yankees", a team setup.yaml seeded by clicking a "Seed Test Teams"
+# button. That button, and the mutation behind it, are gone — a global seed is
+# not something the product should carry — so `teams` is empty until a flow puts
+# something in it. This flow therefore creates the team it needs the way an
+# operator would: the career editor's team typeahead offers a "+ Create" row for
+# a name it does not know, and that is `teams.findOrCreate`.
 #
-# The ONE exception is the post-reload master-row assertion, which matches
-# ".*Yankees.*" because the row abbreviates a team to its nickname once the team
-# has a `city`. That matcher is safe where the others are not because it is
-# anchored inside a list filtered to this run's own player, and that player has
-# stints at nothing but New York — no farm club can answer it. See the note
-# there.
+# The team is named "PMT-<worker>-<attempt>", per-worker AND per-attempt for the
+# same reason the player is: eight runners share one deployment and `teams` is a
+# global table, so a name reused across workers would have them creating and
+# reading each other's row. Per-attempt matters mechanically too — the picker
+# offers "+ Create <name>" only while no team of that name exists, so a name a
+# previous attempt left behind would render "Add <name>" instead and the first
+# stint below would be reaching for a control that is not there.
+#
+# That one name carries every team assertion in the flow, including the
+# post-reload MASTER ROW one NEO-235 added. The row prints a team's NICKNAME —
+# `teamNickname` strips a leading city from the name — but a team born in this
+# picker has no `city` at all, so the row prints the name in full and the
+# matcher is simply the name.
 #
 # R2 — this cannot go green without the feature working:
 #   * the create button is targeted by its own accessible name, "Create player
@@ -45,9 +55,9 @@ tags:
 #   * the two stints are asserted by RELATIVE POSITION (the later stint BELOW
 #     the earlier one), which is the acceptance criterion — a screen that
 #     rendered both but in insertion order fails;
-#   * after the reload the MASTER ROW names the Yankees, which it can only do by
-#     reading the saved stints back and totalling them per team (NEO-235
-#     replaced the row's old "2 stints" count with that team nod);
+#   * after the reload the MASTER ROW names this run's own team, which it can
+#     only do by reading the saved stints back and totalling them per team
+#     (NEO-235 replaced the row's old "2 stints" count with that team nod);
 #   * every one of those assertions is repeated after a full page reload, which
 #     is what separates "the form still holds what I typed" from "the database
 #     holds it".
@@ -63,10 +73,10 @@ tags:
 #     "PM-<worker>-<attempt>" — unique per worker AND per attempt, so eight
 #     concurrent runners and a retry can never land on the same row. Nothing
 #     pre-existing is edited.
-#   * the Yankees row is READ ONLY: the flow picks it out of the team
-#     typeahead by its exact name, which means TeamPicker offers no "+ Create"
-#     row at all (an exact match suppresses it), and `teams.findOrCreate` is
-#     never called.
+#   * the same is true of its team, "PMT-<worker>-<attempt>": it is CREATED
+#     here, never shared, and no pre-existing team row is read or written. The
+#     second stint reuses the row this flow made moments earlier, so even that
+#     is not a read of anything global.
 #   * no set, checklist, card or variant is touched anywhere, so this flow owns
 #     no entry in SET-REGISTRY.md — that registry governs sets, and this flow
 #     creates none.
@@ -186,9 +196,42 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "New York Yankees"
-- tapOn:
-    id: "Add New York Yankees"
+- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+
+# NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
+# reason the popover is now showing its "+ Create" row. It is also a real
+# assertion about the name being this attempt's alone.
+- assertVisible: "No matches."
+
+# CREATE IT WITH ENTER, NOT BY TAPPING THE "+ Create" ROW.
+#
+# The row exists and is correctly labelled — but on this screen it cannot be
+# tapped, and that is geometry, not flakiness. The career editor is the LAST
+# thing on the player panel, so once the page is scrolled as far as it goes
+# "+ Add team" sits at y=510-532 of the 629px headless viewport (measured, CI
+# run 33875599981) and cannot be centred: there is no page left to scroll. Its
+# popover is `absolute top-full`, so it opens BELOW that — search input at
+# y=545-579, first row at y=583. One row fits. Two do not: with no match the
+# popover renders "No matches." AND the "+ Create" row under it, which puts the
+# create row at y>=609, off the bottom of the screen. maestro-web still reports
+# its layout bounds, so `tapOn` "succeeds" while the click lands outside the
+# picker — which is a pointerdown-outside, so the popover closes and no team is
+# ever created. That is exactly how this step failed.
+#
+# Enter on the search input runs the SAME handler the row does: TeamPicker's
+# keydown takes the highlighted match when there is one, and otherwise calls
+# createAndAdd(). "No matches." above is what proves there is none, so Enter
+# here can only mean create — and it needs no coordinates at all.
+- pressKey: Enter
+
+# The chip is the proof the creation landed. Waiting for it before touching
+# anything else also removes a race: the create is a round-trip, and the chip is
+# what the picker paints when it returns.
+- extendedWaitUntil:
+    visible:
+      id: "Remove team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 7000
 
 # CLOSE THE TEAM TYPEAHEAD FIRST, by tapping the section heading above it.
 #
@@ -230,13 +273,18 @@ tags:
 # stint grows it, so the row this asserts moves. The scroll is the assertion (R6).
 - scrollUntilVisible:
     element:
-      text: ".*New York Yankees · 2010–2012.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
     centerElement: true
 
 # ── STINT 2 — THE EARLIER ONE, AT THE SAME TEAM ─────────────────────────────
 # Two stints at one franchise is the case the feature exists for (traded away,
 # re-signed later). The team picker was cleared by the add above, so it is
 # reopened and the same team picked again.
+#
+# "Add <name>", not "Create team <name>": the team exists now — this flow made
+# it a few steps ago — and an exact match suppresses the create row. The
+# difference is the assertion: reaching for "Add" here proves the first stint's
+# creation actually persisted a row the picker can find again.
 - scrollUntilVisible:
     element:
       id: "Add team"
@@ -245,9 +293,9 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "New York Yankees"
+- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - tapOn:
-    id: "Add New York Yankees"
+    id: "Add PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 # Same popover, same dismissal as above — tap the heading, never a keycode.
 - tapOn: "Career history"
 - tapOn: ".*Stint from year.*"
@@ -264,12 +312,12 @@ tags:
 # which is the point: the same assertion, run twice.
 - scrollUntilVisible:
     element:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
     centerElement: true
 - assertVisible:
-    text: ".*New York Yankees · 2010–2012.*"
+    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
     below:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
 
 # ── SAVE ────────────────────────────────────────────────────────────────────
 - scrollUntilVisible:
@@ -327,22 +375,23 @@ tags:
 # The list itself reports the career history it just read back. NEO-235 replaced
 # the row's "2 stints" count with the team the player spent longest with, so
 # this is the same assertion against the same fact: the master row can only name
-# the Yankees by reading the stints back out of the database and summing them.
+# this team by reading the stints back out of the database and totalling them.
 #
 # Anchored `below:` the counter for the same reason the tap below it is —
 # maestro reports an input's current value as its text, and though the filter box
 # holds the player's name rather than a team, anchoring keeps this pointed at a
 # LIST ROW rather than at anything the page might grow above it.
 #
-# `.*Yankees.*` rather than the full name on purpose: the row prints the
-# nickname a fan says out loud when the team has a `city` recorded, and
-# "Seed Test Teams" (convex/teams.ts#seedTestTeams) sets colours but no city, so
-# today this row reads "New York Yankees". The loose matcher covers both, so
-# enriching that fixture's city later cannot silently break this flow. It is
-# still specific — no other team reaches this row, whose player is this run's own
-# and has stints at nothing else.
+# THE FULL NAME, not a nickname. The row prints `teamNickname(team)`, which
+# strips a leading city from the stored name — but only when the row HAS a
+# `city`, and a team created through this picker has none: `teams.findOrCreate`
+# writes a name, a sport and a league and nothing else. So the row prints this
+# team's name in full. (NEO-235 wrote this assertion against the seeded
+# "New York Yankees" and matched ".*Yankees.*" to survive that fixture gaining a
+# city later; NEO-214 deleted the fixture, and a per-attempt name needs no such
+# hedge — it is unique to this run and cannot be answered by another team.)
 - assertVisible:
-    text: ".*Yankees.*"
+    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     below:
       text: ".*matches.*"
 
@@ -359,12 +408,12 @@ tags:
 # earlier stint came back (R6 — no redundant assertVisible of it here)...
 - scrollUntilVisible:
     element:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
     centerElement: true
 # ...and this asserts the OTHER stint, still below it. Same single assertion as
 # before the reload, which is the whole point: the order is a property of the
 # stored data, not of the draft that was on screen when Save was pressed.
 - assertVisible:
-    text: ".*New York Yankees · 2010–2012.*"
+    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
     below:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"

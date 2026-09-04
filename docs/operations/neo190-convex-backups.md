@@ -24,6 +24,12 @@ wipes `selectorOptions`, `cardChecklist`, `cardCrossListings`, `players`,
 `teams` and `leagues` in one shot. A mistaken reset, a bad migration, or a
 deploy that mangles many rows has no undo other than a backup.
 
+Since NEO-214 that reset is the only Set Builder destructive tool at all — the
+in-app Admin Tools panel is gone — and it refuses to run unless
+`ALLOW_RESET_SET_BUILDER_DATA=true` on the target deployment. Prod does not
+have it; a prod reset arms, runs and disarms in one sitting. Full procedure:
+[`neo214-set-builder-admin-scripts.md`](./neo214-set-builder-admin-scripts.md).
+
 Before 2026-09-02 there was no backup of prod at all.
 
 ---
@@ -92,7 +98,9 @@ If the plan ever lapses, periodic backups stop silently — see §8.
 
 Manual backups: **Backup Now** on the same page. Also kept 7 days. Use it
 before any deliberate destructive operation — a migration, a
-`resetSetBuilderDataFromCli` run, a restore.
+`resetSetBuilderDataFromCli` run, a restore. For a reset specifically, the
+backup goes **before** you arm `ALLOW_RESET_SET_BUILDER_DATA` on prod, not
+after — see [`neo214-set-builder-admin-scripts.md`](./neo214-set-builder-admin-scripts.md) §4.
 
 **Verify it is still on** whenever you are in the dashboard for anything
 else: the Backups page should show a backup less than two days old.

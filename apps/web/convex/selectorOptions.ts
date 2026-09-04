@@ -4043,10 +4043,14 @@ export const updateSelectorOptionMetadata = mutation({
 // ===== ADMIN UTILITIES =====
 
 /**
- * The reset itself, shared by BOTH entry points so they cannot drift:
- * `resetSetBuilderData` (the AdminTools button) and
- * `resetSetBuilderDataFromCli` (`npx convex run`). Authorisation belongs to
- * the caller — this function performs the delete unconditionally.
+ * The reset itself: drains the six tables by looping each `reset*Batch`
+ * internal mutation to exhaustion.
+ *
+ * This function performs no check of its own, but the delete is NOT
+ * unconditional — `assertResetArmed()` is asserted at both layers around it,
+ * once at the `resetSetBuilderDataFromCli` entry point and again as the first
+ * line of every batch mutation this loops. Reaching a table with the
+ * deployment unarmed is not possible through either door.
  */
 async function runSetBuilderReset(ctx: ActionCtx): Promise<{
   selectorOptionsDeleted: number;
@@ -4142,104 +4146,89 @@ async function runSetBuilderReset(ctx: ActionCtx): Promise<{
 }
 
 /**
- * Full reset of Set Builder data. Deletes every row in `selectorOptions`
- * and `cardChecklist`. Intended for dev cleanup between test runs.
+ * Batch size for the reset loop below.
  *
- * Two layers of safety (enforced in the internal mutations below):
- * 1. requireAdmin — only the admin role can call this from a signed-in session.
- * 2. ALLOW_RESET_SET_BUILDER_DATA env var — must be set to "true" on the
- *    Convex deployment. Set on dev + preview + integration-test deployments
- *    (where E2E tests reset state between runs); unset on production.
- *    Without this gate, the admin user could accidentally wipe production
- *    data by clicking "Reset Set Builder Data" while pointed at prod.
- *
- * Implementation: this is an action that loops a paginated internal
- * mutation. A single mutation has a per-execution read limit of 4096
- * rows; on dev deployments where selectorOptions has accumulated many
- * thousands of rows from prior test runs, a single-pass `.collect()`
- * was throwing "Too many reads in a single function execution".
+ * The reset is an action looping a paginated internal mutation rather than one
+ * big mutation: a single mutation has a per-execution read limit of 4096 rows,
+ * and on deployments where `selectorOptions` has accumulated many thousands of
+ * rows from prior test runs a single-pass `.collect()` threw "Too many reads in
+ * a single function execution".
  */
 const RESET_BATCH_SIZE = 500;
 
-export const resetSetBuilderData = action({
-  args: {},
-  returns: v.object({
-    selectorOptionsDeleted: v.number(),
-    cardChecklistDeleted: v.number(),
-    crossListingsDeleted: v.number(),
-    playersDeleted: v.number(),
-    teamsDeleted: v.number(),
-    leaguesDeleted: v.number(),
-  }),
-  handler: async (
-    ctx,
-  ): Promise<{
-    selectorOptionsDeleted: number;
-    cardChecklistDeleted: number;
-    crossListingsDeleted: number;
-    playersDeleted: number;
-    teamsDeleted: number;
-    leaguesDeleted: number;
-  }> => {
-    // CLIENT-CALLABLE entry point (the AdminTools button). Both guards live
-    // here now rather than in each batch mutation: this is the only path a
-    // browser can reach, so it is the only path that needs them.
-    //
-    // `ALLOW_RESET_SET_BUILDER_DATA` is deliberately UNSET on prod so a
-    // misdirected click cannot wipe production. Keeping that check down in the
-    // batch mutations meant the CLI inherited it too, which would have forced
-    // arming this button on prod just to run a reset from a terminal — see
-    // `resetSetBuilderDataFromCli` below.
-    await requireAdmin(ctx);
-    if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
-      throw new Error(
-        "Reset Set Builder Data is not enabled in this environment. " +
-          "Set ALLOW_RESET_SET_BUILDER_DATA=true on the Convex deployment to enable.",
-      );
-    }
-
-    return await runSetBuilderReset(ctx);
-  },
-});
+/**
+ * The arming check, asserted at BOTH layers of the reset — the entry point and
+ * every batch mutation it loops.
+ *
+ * The duplication is the point (NEO-214 security review). There is no identity
+ * check anywhere under this entry point, because a CLI run carries no identity
+ * (see `resetSetBuilderDataFromCli`), so the flag is the ONLY thing standing
+ * between a call and a drained table. Asserting it solely at the entry point
+ * would mean a future internal caller — a migration, a cron, a well-meaning
+ * `ctx.runMutation` — could empty a table by going straight to a batch. So the
+ * check lives next to each delete, which is exactly where the old
+ * `requireAdmin` used to sit and for the same defence-in-depth reason.
+ *
+ * `ConvexError` rather than `Error`: production Convex REDACTS a plain `Error`
+ * message, and the whole point of this refusal is to name the flag you have to
+ * set.
+ */
+function assertResetArmed(): void {
+  if (process.env.ALLOW_RESET_SET_BUILDER_DATA !== "true") {
+    throw new ConvexError(
+      "Set Builder reset is not armed on this deployment. Set " +
+        "ALLOW_RESET_SET_BUILDER_DATA=true on it first " +
+        "(`npx convex env set ALLOW_RESET_SET_BUILDER_DATA true`), and " +
+        "unset it again afterwards on production.",
+    );
+  }
+}
 
 /**
- * CLI entry point for the SAME reset the AdminTools button performs.
+ * The ONLY entry point to the Set Builder reset (NEO-214). Wipes
+ * `selectorOptions`, `cardChecklist`, `cardCrossListings`, `players`, `teams`
+ * and `leagues`.
  *
- * Runs the identical batch mutations as `resetSetBuilderData` above — one
- * implementation, so the two paths cannot drift.
+ * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
+ * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting
+ * while the Set Selector is open lets the page immediately re-sync the sport
+ * column and write the rows straight back, which is exactly what happened on
+ * dev during NEO-137.
  *
- *   # dev (your personal deployment)
+ *   # the default deployment from .env.local / .env.convex (dev)
  *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
- *     '{"confirm":"RESET"}' --identity '{"role":"admin"}'
+ *     '{"confirm":"RESET"}'
  *
- *   # production
+ *   # a preview deployment
  *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
- *     '{"confirm":"RESET"}' --identity '{"role":"admin"}' --prod
+ *     '{"confirm":"RESET"}' --deployment <name>
  *
- * `--identity` IS REQUIRED — do not drop it. The batch mutations this calls
- * each run `requireAdmin`, which reads `ctx.auth.getUserIdentity()`. A bare
- * `convex run` carries no identity at all, so without the flag the very first
- * batch throws `Not authenticated` and nothing is deleted.
+ *   # production, only after arming (see below)
+ *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
+ *     '{"confirm":"RESET"}' --prod
  *
- * `--identity` IS NOT A SECURITY CONTROL. Anyone running `convex run` can
- * fabricate any identity they like, admin included. The thing that actually
- * gates this is your Convex login: reaching `--prod` requires prod deploy
- * credentials. That is the real "logged in as me" check, and `requireAdmin`
- * stays on the batch mutations as defence-in-depth for other callers, not as
- * the boundary that protects prod.
+ * DO NOT ADD `--identity`. It does not authorise this and it BREAKS it:
+ * `convex run --identity` routes the call through the path that resolves
+ * PUBLIC functions only, so an internal function comes back "Could not find
+ * function". NEO-214's CI seed job failed on exactly that. There is no user
+ * identity on a CLI run and none is wanted — see the auth note below.
  *
- * WHY THE `ALLOW_RESET_SET_BUILDER_DATA` GUARD IS NOT REPEATED HERE:
+ * WHAT AUTHORISES THIS, AND WHAT ARMS IT:
  *
- *   That flag exists to stop the AdminTools BUTTON wiping prod by a
- *   misdirected click, which is why it is unset there. An `internalAction` is
- *   unreachable from any client, so the flag would add no safety here — it
- *   would only force you to arm the button on prod in order to run a reset
- *   from a terminal, which is strictly worse.
- *
- * PRACTICAL NOTE: run this with the app CLOSED. Resetting while the Set
- * Selector is open lets the page immediately re-sync the sport column and
- * write the rows straight back — which is exactly what happened on dev during
- * NEO-137.
+ * - AUTH is the deployment's own admin credential — `convex login` locally, or
+ *   `CONVEX_DEPLOY_KEY` in CI. An `internalAction` is unreachable from any
+ *   client, so there is no user session to check and the batch mutations below
+ *   deliberately run no `requireAdmin`; one there would throw
+ *   "Not authenticated" on every legitimate run. Reaching `--prod` requires
+ *   prod deploy credentials, and that is the real boundary.
+ * - ARMING is `ALLOW_RESET_SET_BUILDER_DATA === "true"` on the target
+ *   deployment, plus the literal `confirm: "RESET"`. NEO-214 made the flag
+ *   apply to the CLI too (Jason, 2026-09-04): before NEO-214 it existed to
+ *   stop a misdirected click on an AdminTools button and the CLI deliberately
+ *   skipped it, but with that button deleted the flag's only remaining job is
+ *   "arm before you fire", which is the friction a prod wipe should have.
+ *   Dev/preview deployments keep it set permanently; prod arms and disarms
+ *   around the run.
  */
 export const resetSetBuilderDataFromCli = internalAction({
   args: {
@@ -4265,18 +4254,18 @@ export const resetSetBuilderDataFromCli = internalAction({
     teamsDeleted: number;
     leaguesDeleted: number;
   }> => {
-    // Same auth posture as the button — the batch mutations below enforce
-    // requireAdmin, which `--identity` satisfies. This entry point differs
-    // from the button in exactly one way: it does not require
-    // ALLOW_RESET_SET_BUILDER_DATA, so prod can be reset from a terminal
-    // without arming a prod-wiping button in the UI.
+    // Fail here rather than partway through the loop, so an unarmed run costs
+    // nothing. Each batch re-asserts it independently.
+    assertResetArmed();
+    // No identity check here or in the batch mutations below — reaching an
+    // internalAction at all required the deployment's admin credential.
     return await runSetBuilderReset(ctx);
   },
 });
 
 /**
- * Internal: delete up to RESET_BATCH_SIZE rows from selectorOptions.
- * Used by resetSetBuilderData (action) in a loop until no rows remain.
+ * Internal: delete up to RESET_BATCH_SIZE rows from `selectorOptions`, looped
+ * by `runSetBuilderReset` until no rows remain.
  */
 export const resetSelectorOptionsBatch = internalMutation({
   args: {},
@@ -4285,16 +4274,10 @@ export const resetSelectorOptionsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
-    // Auth stays HERE, as close to the delete as possible — restored after it
-    // was briefly hoisted to the entry points. `convex run --identity` can
-    // satisfy this from the CLI, so moving it bought nothing and cost the
-    // defence-in-depth the original author put here deliberately.
-    //
-    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
-    // stop a misdirected CLICK in AdminTools, so it belongs on the
-    // client-callable entry point only. Keeping it here would force arming
-    // that button on prod merely to run a reset from a terminal.
-    await requireAdmin(ctx);
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
     const rows = await ctx.db.query("selectorOptions").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -4304,8 +4287,8 @@ export const resetSelectorOptionsBatch = internalMutation({
 });
 
 /**
- * Internal: delete up to RESET_BATCH_SIZE rows from cardChecklist.
- * Used by resetSetBuilderData (action) in a loop until no rows remain.
+ * Internal: delete up to RESET_BATCH_SIZE rows from `cardChecklist`, looped by
+ * `runSetBuilderReset` until no rows remain.
  */
 export const resetCardChecklistBatch = internalMutation({
   args: {},
@@ -4314,16 +4297,10 @@ export const resetCardChecklistBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
-    // Auth stays HERE, as close to the delete as possible — restored after it
-    // was briefly hoisted to the entry points. `convex run --identity` can
-    // satisfy this from the CLI, so moving it bought nothing and cost the
-    // defence-in-depth the original author put here deliberately.
-    //
-    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
-    // stop a misdirected CLICK in AdminTools, so it belongs on the
-    // client-callable entry point only. Keeping it here would force arming
-    // that button on prod merely to run a reset from a terminal.
-    await requireAdmin(ctx);
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
     const rows = await ctx.db.query("cardChecklist").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -4333,11 +4310,10 @@ export const resetCardChecklistBatch = internalMutation({
 });
 
 /**
- * Internal: delete up to RESET_BATCH_SIZE rows from cardCrossListings
- * (NEO-21). Used by resetSetBuilderData (action) in a loop until no rows
- * remain — a dev/test reset that wiped cardChecklist but left this table
- * would carry over junction rows pointing at ids the next run reuses for
- * unrelated cards.
+ * Internal: delete up to RESET_BATCH_SIZE rows from `cardCrossListings`
+ * (NEO-21), looped by `runSetBuilderReset` until no rows remain — a reset that
+ * wiped `cardChecklist` but left this table would carry over junction rows
+ * pointing at ids the next run reuses for unrelated cards.
  */
 export const resetCardCrossListingsBatch = internalMutation({
   args: {},
@@ -4346,16 +4322,10 @@ export const resetCardCrossListingsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
-    // Auth stays HERE, as close to the delete as possible — restored after it
-    // was briefly hoisted to the entry points. `convex run --identity` can
-    // satisfy this from the CLI, so moving it bought nothing and cost the
-    // defence-in-depth the original author put here deliberately.
-    //
-    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
-    // stop a misdirected CLICK in AdminTools, so it belongs on the
-    // client-callable entry point only. Keeping it here would force arming
-    // that button on prod merely to run a reset from a terminal.
-    await requireAdmin(ctx);
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
     const rows = await ctx.db.query("cardCrossListings").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -4365,8 +4335,8 @@ export const resetCardCrossListingsBatch = internalMutation({
 });
 
 /**
- * Internal: delete up to RESET_BATCH_SIZE rows from players.
- * Used by resetSetBuilderData (action) in a loop until no rows remain.
+ * Internal: delete up to RESET_BATCH_SIZE rows from `players`, looped by
+ * `runSetBuilderReset` until no rows remain.
  */
 export const resetPlayersBatch = internalMutation({
   args: {},
@@ -4375,16 +4345,10 @@ export const resetPlayersBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
-    // Auth stays HERE, as close to the delete as possible — restored after it
-    // was briefly hoisted to the entry points. `convex run --identity` can
-    // satisfy this from the CLI, so moving it bought nothing and cost the
-    // defence-in-depth the original author put here deliberately.
-    //
-    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
-    // stop a misdirected CLICK in AdminTools, so it belongs on the
-    // client-callable entry point only. Keeping it here would force arming
-    // that button on prod merely to run a reset from a terminal.
-    await requireAdmin(ctx);
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
     const rows = await ctx.db.query("players").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -4394,11 +4358,8 @@ export const resetPlayersBatch = internalMutation({
 });
 
 /**
- * Internal: delete up to RESET_BATCH_SIZE rows from teams.
- * Used by resetSetBuilderData (action) in a loop until no rows remain.
- */
-/**
- * Internal: delete up to RESET_BATCH_SIZE rows from `leagues`.
+ * Internal: delete up to RESET_BATCH_SIZE rows from `leagues`, looped by
+ * `runSetBuilderReset` until no rows remain.
  *
  * NEO-156 added this alongside the teams batch. A reset that wipes teams but
  * leaves their leagues standing is not a clean slate — it leaves league rows
@@ -4412,9 +4373,9 @@ export const resetLeaguesBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
-    // Auth here rather than at the entry point, same as every other batch —
-    // see the note in resetSelectorOptionsBatch.
-    await requireAdmin(ctx);
+    // Armed-check here rather than only at the entry point, same as every
+    // other batch — see the note in resetSelectorOptionsBatch.
+    assertResetArmed();
     const rows = await ctx.db.query("leagues").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
@@ -4423,6 +4384,10 @@ export const resetLeaguesBatch = internalMutation({
   },
 });
 
+/**
+ * Internal: delete up to RESET_BATCH_SIZE rows from `teams`, looped by
+ * `runSetBuilderReset` until no rows remain.
+ */
 export const resetTeamsBatch = internalMutation({
   args: {},
   returns: v.object({
@@ -4430,117 +4395,15 @@ export const resetTeamsBatch = internalMutation({
     hasMore: v.boolean(),
   }),
   handler: async (ctx) => {
-    // Auth stays HERE, as close to the delete as possible — restored after it
-    // was briefly hoisted to the entry points. `convex run --identity` can
-    // satisfy this from the CLI, so moving it bought nothing and cost the
-    // defence-in-depth the original author put here deliberately.
-    //
-    // The ALLOW_RESET_SET_BUILDER_DATA check is NOT here: that flag exists to
-    // stop a misdirected CLICK in AdminTools, so it belongs on the
-    // client-callable entry point only. Keeping it here would force arming
-    // that button on prod merely to run a reset from a terminal.
-    await requireAdmin(ctx);
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
     const rows = await ctx.db.query("teams").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
     return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
-  },
-});
-
-/**
- * One-time cleanup: deletes legacy child rows under Base variantTypes.
- *
- * Before Base became a terminal node, the sync flow created a single
- * `level=insert` row under each Base variantType to hold the SL/BSC
- * platform mapping and any synced cardChecklist. This mutation removes
- * those orphan rows (and any parallels under them, plus their checklist
- * entries) so the Base variantType row itself can carry the platform
- * mapping. Custom cards/inserts under those rows are dropped — by user
- * direction.
- *
- * Re-runnable: idempotent. After the first run, no Base variantTypes will
- * have children and subsequent runs are no-ops.
- */
-export const wipeLegacyBaseChildren = mutation({
-  args: {},
-  returns: v.object({
-    baseVariantTypesScanned: v.number(),
-    insertsDeleted: v.number(),
-    parallelsDeleted: v.number(),
-    cardChecklistRowsDeleted: v.number(),
-  }),
-  handler: async (ctx) => {
-    await requireAdmin(ctx);
-    const baseVariantTypes = (
-      await ctx.db.query("selectorOptions").withIndex("by_level").collect()
-    ).filter(
-      // NEO-239 — the base ROLE, not the literal name.
-      (row) => row.level === "variantType" && row.metadata?.isBase === true,
-    );
-
-    let insertsDeleted = 0;
-    let parallelsDeleted = 0;
-    let cardChecklistRowsDeleted = 0;
-
-    for (const baseVT of baseVariantTypes) {
-      const inserts = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "insert").eq("parentId", baseVT._id),
-        )
-        .collect();
-
-      for (const ins of inserts) {
-        const parallels = await ctx.db
-          .query("selectorOptions")
-          .withIndex("by_level_and_parent", (q) =>
-            q.eq("level", "parallel").eq("parentId", ins._id),
-          )
-          .collect();
-
-        for (const par of parallels) {
-          const parCards = await ctx.db
-            .query("cardChecklist")
-            .withIndex("by_selector_option", (q) =>
-              q.eq("selectorOptionId", par._id),
-            )
-            .collect();
-          for (const c of parCards) {
-            // NEO-21: drop this card's cross-listing rows before the card.
-            await deleteCardCrossListingsFor(ctx, c._id);
-            await ctx.db.delete(c._id);
-            cardChecklistRowsDeleted += 1;
-          }
-          await ctx.db.delete(par._id);
-          parallelsDeleted += 1;
-        }
-
-        const insCards = await ctx.db
-          .query("cardChecklist")
-          .withIndex("by_selector_option", (q) =>
-            q.eq("selectorOptionId", ins._id),
-          )
-          .collect();
-        for (const c of insCards) {
-          // NEO-21: drop this card's cross-listing rows before the card.
-          await deleteCardCrossListingsFor(ctx, c._id);
-          await ctx.db.delete(c._id);
-          cardChecklistRowsDeleted += 1;
-        }
-        await ctx.db.delete(ins._id);
-        insertsDeleted += 1;
-      }
-
-      await ctx.db.patch(baseVT._id, { children: [], lastUpdated: Date.now() });
-    }
-
-    return {
-      baseVariantTypesScanned: baseVariantTypes.length,
-      insertsDeleted,
-      parallelsDeleted,
-      cardChecklistRowsDeleted,
-    };
   },
 });
 
@@ -10296,8 +10159,8 @@ export const auditChecklistDataForResync = internalQuery({
  * actually tripped. Tightening the loop does not buy another 2x; the
  * transaction has to be split.
  *
- * Same shape as `resetSetBuilderData` above — a public entry point looping
- * internal mutations, each its own transaction:
+ * Same shape as the Set Builder reset above — one entry point looping internal
+ * mutations, each its own transaction:
  *
  *   prelude  → once. Admin check, sport row, player/team creation from the
  *              review decisions, leaf features, setName ancestor, and the

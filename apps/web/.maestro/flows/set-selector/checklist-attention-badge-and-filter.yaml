@@ -51,10 +51,12 @@ tags:
 #   `cna-${WORKER_INDEX}-${ATTEMPT_ID}` under the REAL Baseball / 2024 / Topps
 #   ancestors (registered in .maestro/SET-REGISTRY.md). Two reasons for that
 #   exact shape:
-#     • The real Sport ancestor keeps sport="baseball", so setup.yaml's seeded
-#       New York Yankees AND New York Mets are both in TeamPicker's sport-scoped
-#       candidate pool (this flow picks one of each — see cards 3 and #702). A
-#       synthetic "E2E Test Sport N" would return "No matches." for either.
+#     • The real Sport ancestor keeps sport="baseball", which is the sport row
+#       TeamPicker scopes its list by and TAGS a team it creates with — and no
+#       sport row means no "+ Create" row at all (NEO-96). This flow creates
+#       both of the teams it uses (NEO-214 removed the global seeded fixture),
+#       named CNAA-/CNAB-<worker>-<attempt> so eight runners and a retry cannot
+#       collide, and so the create row is offered rather than an "Add" row.
 #     • A custom Set node makes the subtree custom, so no BSC/SL call fires and
 #       nothing shared is read or written.
 #   The set name carries ATTEMPT_ID because this flow asserts an EXACT
@@ -66,7 +68,7 @@ tags:
 #   Local E2E drives this branch's Vite bundle against SHARED DEV, which tracks
 #   main, and main's `addCustomCard` has no `teamOnCardIds` argument yet. Card 3
 #   therefore gets as far as the picker — the form, "+ Add team", the popover,
-#   the "Add New York Mets" option, the chip, the popover closing — and its
+#   the "+ Create" option, the chip, the popover closing — and its
 #   Submit is then refused by Convex's argument validator, so no card is created
 #   and nothing after it can run. Cards #701/#702 and the whole badge / count /
 #   filter half are verified locally against a backend WITHOUT card 3; the
@@ -194,14 +196,14 @@ tags:
 # follow, and both are asserted below: the row shows the team, and the row is
 # NOT badged.
 #
-# NEW YORK METS, not the Yankees, and that choice is load-bearing. #702 is given
-# the Yankees further down, so a plain ".*Yankees.*" would stop being specific to
-# one row the moment that happens; the Mets are this card's alone for the whole
-# flow, which makes the team text below a single-row assertion without needing a
-# relational matcher (Maestro's `below:` compares top edges only — see the
-# driver notes — and is not trustworthy inside a virtualized list). Both teams
-# are seeded for Baseball by setup.yaml, which is why this flow drills the real
-# Baseball ancestor (see the isolation note at the top).
+# TEAM "CNAB", not "CNAA", and that choice is load-bearing. #702 is given CNAA
+# further down, so naming that one here would stop being specific to a single row
+# the moment it happens; CNAB is this card's alone for the whole flow, which
+# makes the team text below a single-row assertion without needing a relational
+# matcher (Maestro's `below:` compares top edges only — see the driver notes —
+# and is not trustworthy inside a virtualized list). Both teams are created by
+# this flow, in this picker, under the real Baseball sport row — which is why it
+# drills the real Baseball ancestor (see the isolation note at the top).
 #
 # direction: UP — the add-card button sits ABOVE the checklist and the scroll
 # above left the list scrolled DOWN to #702's row.
@@ -226,10 +228,11 @@ tags:
 
 # The picker, driven by the same four handles as the drawer's (team-picker.yaml
 # owns the component's own behaviour; this is the quick-add form's use of it).
-# The FULL team name is typed rather than "Mets": the candidate pool is every
-# Baseball team, other flows' player commits get-or-create farm clubs in it
-# mid-run, and a prefix match on the whole name is the one query that cannot be
-# crowded out of the popover's top-8 slice.
+# The name typed here belongs to no team yet, so the popover answers with its
+# "+ Create" row — one tap that both creates the team and chips it. The name is
+# per-worker and per-attempt: the candidate pool is every Baseball team and other
+# flows create rows in it mid-run, so a name that could be shared would be a
+# race in two directions at once.
 #
 # SCROLL FIRST (R8), and this is not optional. On the 1024×629 CI viewport the
 # add-card form opens with its lower half below the fold — measured: the Players
@@ -254,13 +257,15 @@ tags:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "New York Mets"
+- inputText: "CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+# Offered only for a name no team in this sport already carries, and labelled
+# with the name it would create, so this cannot land on another team.
 - tapOn:
-    id: "Add New York Mets"
+    id: "Create team CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 # The chip is the proof the pick landed. Unlike the drawer's picker this one is
 # not a draft — its value goes straight into `addCustomCard` on Submit.
 - assertVisible:
-    id: "Remove team New York Mets"
+    id: "Remove team CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # Close the popover BEFORE reaching for Submit. It is `absolute top-full`, and
 # in this form the picker sits directly above the Add/Cancel row, so an open
@@ -299,7 +304,7 @@ tags:
 # operator seeing what they picked. Before NEO-208 this line was empty: the
 # typed name went to `pendingTeamNames`, which nothing rendered at all, and
 # that invisibility is the whole of the ticket.
-- assertVisible: ".*New York Mets.*"
+- assertVisible: ".*CNAB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 
 # AND THE ROW IS NOT BADGED, because a picked team IS a `teamOnCardIds` link and
 # that is precisely what deriveCardAttention asks for. The scroll above is what
@@ -363,9 +368,10 @@ tags:
 # nothing clears a flag by hand, the card simply stops satisfying
 # deriveCardAttention once teamOnCardIds is non-empty.
 #
-# Teams is position 2 in the drawer body, so no in-drawer swipe is needed.
-# New York Yankees is seeded for Baseball by the setup track, which is why this
-# flow drills the real Baseball ancestor (see the isolation note at the top).
+# Teams is position 2 in the drawer body, so no in-drawer swipe is needed. This
+# card gets its own team, CNAA, created here the same way card 3 created CNAB —
+# under the real Baseball sport row, which is why this flow drills the real
+# Baseball ancestor (see the isolation note at the top).
 # ════════════════════════════════════════════════════════════════════════════
 
 - scrollUntilVisible:
@@ -388,11 +394,11 @@ tags:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "Yankees"
+- inputText: "CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - assertVisible:
-    id: "Add New York Yankees"
+    id: "Create team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - tapOn:
-    id: "Add New York Yankees"
+    id: "Create team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # The chip proves the pick landed in the drawer's draft. Teams are part of that
 # draft — they only reach the card on Save (unlike per-row features, which
@@ -400,7 +406,7 @@ tags:
 # ABOVE the picker; do NOT press Escape to close the popover — Escape reaches
 # the panel's own keydown handler and discards the unsaved draft.
 - assertVisible:
-    id: "Remove team New York Yankees"
+    id: "Remove team CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - tapOn:
     id: "Card name"
 - tapOn:
@@ -419,7 +425,7 @@ tags:
 - assertVisible: "1 need attention"
 # The row now shows the team it was given — the reason its badge went away.
 - assertVisible:
-    text: ".*Yankees.*"
+    text: ".*CNAA-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 
 # ════════════════════════════════════════════════════════════════════════════
 # THE FILTER — the chip collapses the grid to the flagged rows, and back.

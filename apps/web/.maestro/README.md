@@ -114,10 +114,14 @@ MAESTRO_NO_DEPS=1 MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
   npm run test:e2e:pick -- name:set-attributes-edit
 ```
 
-> ⚠️ `setup.yaml` calls **Reset Set Builder Data**, wiping the target Convex
-> deployment's set-builder tables. Point `VITE_CONVEX_URL` at a **disposable
-> preview** (your PR's Convex preview), never shared `dev`. `MAESTRO_NO_DEPS=1`
-> skips `setup.yaml`, so re-run loops don't reset between attempts.
+> ⚠️ The setup track **wipes the target Convex deployment's set-builder
+> tables**. Since NEO-214 that wipe is a scripted command
+> (`e2e-baseline.sh reset`, run by the smoke script's setup mode *before*
+> `setup.yaml`) rather than a button the flow clicks — the Admin Tools panel it
+> used to click is gone from `/admin/set-builder`. Nothing about the warning
+> changes: point `VITE_CONVEX_URL` at a **disposable preview** (your PR's Convex
+> preview), never shared `dev`. `MAESTRO_NO_DEPS=1` skips the setup track, so
+> re-run loops don't reset between attempts.
 
 ## What's intentionally divergent (cross-platform coverage)
 
@@ -147,7 +151,7 @@ bug, not a flow bug:
 | Java major version | `.java-version` | `setup-maestro.sh`, CI's `actions/setup-java`, `test:e2e:check` |
 | Chrome build (local) | `.maestro/chrome-version` | `lib-e2e-chrome.sh` (hard gate in every local runner), `test:e2e:check` |
 | Worker parallelism | `MAESTRO_PARALLELISM=3` | CI workflow, `test:e2e:like-ci` |
-| Convex DB state at "setup-done" | `setup.yaml` calls `Reset Set Builder Data` | Cascade flow itself |
+| Convex DB state at "setup-done" | scripted `e2e-baseline.sh reset`, then `setup.yaml` | `run-e2e-smoke.sh` setup mode |
 | Cascade dependency ordering | `requires:` / `provides:` tags | `run-e2e-smoke.sh` topo-sort + cascade-prerequisite check (NEO-23) |
 
 ## Troubleshooting: "passes locally, fails CI" (or vice versa)
@@ -184,11 +188,26 @@ two buckets.
    `./setup-maestro.sh`. The runners gate on this now, so it should only be
    reachable by overriding `SE_BROWSER_PATH` by hand.
 4. **Convex preview state leaks across CI runs.** Per-PR Convex previews
-   persist for the life of the PR. `setup.yaml` clicks "Reset Set Builder
-   Data" which wipes `selectorOptions`, `cardChecklist`, `players`, and
-   `teams`. If a flow expects truly fresh state in some other table,
-   either add it to `resetSetBuilderData` or use unique values per run
-   (`${TEST_USERNAME}` is timestamp-based per CI run).
+   persist for the life of the PR. The scripted reset that runs before
+   `setup.yaml` wipes `selectorOptions`, `cardChecklist`, `players`, and
+   `teams`. If a flow expects truly fresh state in some other table, either add
+   it to `selectorOptions:resetSetBuilderDataFromCli` (the internal action the
+   script calls — there is no public reset any more) or use unique values per
+   run (`${TEST_USERNAME}` is timestamp-based per CI run).
+
+   Note what that wipe means for `teams` and `players`: they are **empty at the
+   start of every run**, and no flow seeds a shared fixture into them (NEO-214
+   deleted the "Seed Test Teams" button and the mutation behind it). A flow that
+   needs a team or a player creates its own, named per **worker and attempt**,
+   through the product's own screens — `/admin/players` for a player and its
+   career stints, TeamPicker's "+ Create" row for a team, `/admin/teams` for
+   that team's colours. Worked examples:
+   `admin/player-management-add-and-career-history.yaml`,
+   `spine-label/player-team-colors-default-to-longest-tenure.yaml`,
+   `set-selector/team-picker.yaml`. Per-attempt is not belt-and-braces: the
+   picker offers "+ Create <name>" only while no team of that name exists, so a
+   name a previous attempt left behind renders "Add <name>" instead and the
+   create step reaches for a control that is not there.
 5. **Intentional platform divergence.** If you've ruled out 1–4, you're
    probably looking at a real Mac↔Linux Chrome difference — that's the
    coverage we want. Reproduce by reading the bounds out of the CI
@@ -320,10 +339,12 @@ screenshot for `[testing] …` before suspecting anything else.
 ## Worker-state seeding
 
 The cascade's `requires:` / `provides:` dependency graph IS the seeding
-infrastructure. `setup.yaml` (level 0) does the heavy lift — DB reset +
-credential save + drill to 2024 Topps Chrome + Variant Types sync. Every
-subsequent flow declares what state it needs (`requires:`) and produces
-(`provides:`).
+infrastructure. The setup track (level 0) does the heavy lift — the scripted
+`e2e-baseline.sh reset` first, then `setup.yaml` for credential save + drill to
+2024 Topps Chrome + Variant Types sync. Every subsequent flow declares what
+state it needs (`requires:`) and produces (`provides:`). Note that neither step
+seeds a team or a player: those tables stay empty until a flow makes its own
+per-worker rows (see troubleshooting item 4 above).
 
 If you need to manually seed a particular worker's state for a local
 repro, just run `setup.yaml` first:

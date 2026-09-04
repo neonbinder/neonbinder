@@ -33,7 +33,7 @@ tags:
 #     a no-op — asserted by the team name STILL sitting in the input (a successful
 #     add clears the form) and NO staged-chip list rendering yet.
 #   - A VALID add (name + from-year + to-year) makes a chip appear with the exact
-#     text "CareerTeam-… (2001–2005)" inside the "Staged career teams" list, and
+#     text "CareerTeam-<token> (2001–2005)" inside the "Staged career teams" list, and
 #     clears the mini-form.
 #   - The to-year-OPTIONAL branch renders "… (2010–present)"; the per-chip Remove
 #     control (aria "Remove {name}") deletes a staged entry.
@@ -73,9 +73,13 @@ tags:
 #   is private to this worker, so no concurrent runner can seed this wizard's batch.
 #   Because the SPORT ancestor is real "Baseball", fetchCardChecklist derives
 #   sport="baseball" (selectorOptions.ts lowercases it), so the wizard row / the
-#   CareerTeamEntry combobox both operate in sport "baseball" (its team-suggestion
-#   pool — routinely empty, no marketplace populates teams — is irrelevant here:
-#   the mini-form deliberately accepts a name matching nothing and creates it).
+#   CareerTeamEntry combobox both operate in sport "baseball". Its team-suggestion
+#   pool is NOT empty any more — no marketplace populates `teams`, but since
+#   NEO-214 removed the seeded fixture the other flows on this deployment create
+#   their own teams under Baseball — which is why the names typed below are built
+#   from a separator-free attempt token that the search index cannot match. See
+#   the note beside that evalScript; the mini-form still accepts a name matching
+#   nothing and creates it, and this keeps it matching nothing.
 #
 # R3 — DEDUP: "Add as New" and "Link to Existing" are covered by
 #   checklist-keyboard-only / checklist-fetch-unknown-entities-link-existing. This
@@ -95,6 +99,34 @@ tags:
 - extendedWaitUntil:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
+
+# ── A TEAM NAME THAT MATCHES NOTHING, AND THE TOKEN THAT MAKES IT SO ────────
+# The two names this flow types must return ZERO suggestions, and that is a hard
+# requirement rather than a nicety: CareerTeamEntry's suggestion dropdown is
+# `absolute z-10 left-0 right-0`, so the moment it has a single row it covers the
+# "From year" box and the "+ Add" button directly beneath it — and it can only be
+# closed by picking a suggestion, by a successful add, or by Escape, which
+# maestro-web cannot send at all. A tap aimed at "+ Add" then lands on the first
+# suggestion, which REPLACES the typed name with that team's. That is exactly how
+# this flow failed in CI run 33875599981: the input came back holding another
+# worker's "CNAA-1-r1-a1-19072".
+#
+# What made the list non-empty is that the suggestions come from `teams.search`,
+# a Convex SEARCH index — it matches on TOKENS, not substrings. ATTEMPT_ID is
+# "r<runner>-a<attempt>-<random>", so every flow that names a team after it
+# contributes the token "a1", and "CareerTeam-r3-a1-23945" shares that token with
+# every one of them. This flow's header used to be able to say the team pool was
+# "routinely empty"; since NEO-214 deleted the seeded fixture, flows create their
+# own teams and it never is again.
+#
+# Stripping the hyphens is what fixes it: "r3-a1-23945" tokenizes as three terms,
+# "r3a123945" as one, and no other team in the deployment carries that token or a
+# prefix of it. The names stay unique per runner and per attempt exactly as
+# before — this only changes how the search index reads them.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+# Single-quoted, like the evalScript in checklist-pairing-dialog-cancel: the
+# expression contains double quotes, and quoting the scalar keeps YAML out of it.
+- evalScript: '${output.ATTEMPT_TOKEN = String(output.ATTEMPT_ID).split("-").join("")}'
 
 # ============================================================
 # DRILL TO A PER-WORKER CUSTOM SET UNDER REAL Baseball/2024/Topps
@@ -238,12 +270,12 @@ tags:
 # has rendered. This proves garbage is not silently accepted.
 - tapOn:
     id: "Career team name"
-- inputText: "CareerTeam-${ATTEMPT_ID}"
+- inputText: "CareerTeam-${ATTEMPT_TOKEN}"
 - tapOn:
     id: "Add career team"
 - assertVisible:
     id: "Career team name"
-    text: ".*CareerTeam-${ATTEMPT_ID}.*"
+    text: ".*CareerTeam-${ATTEMPT_TOKEN}.*"
 - assertNotVisible:
     id: "Staged career teams"
 
@@ -259,28 +291,28 @@ tags:
 # Chip text: "{name} ({fromYear}–{toYear})" — the separator is an en-dash (U+2013),
 # matched here with "." to avoid a literal-unicode YAML matcher; parens escaped.
 - assertVisible:
-    text: ".*CareerTeam-${ATTEMPT_ID} \\(2001.2005\\).*"
+    text: ".*CareerTeam-${ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
 # ── 4c. to-year OPTIONAL branch ("–present") + the per-chip Remove control ──
 # Add a second, throwaway entry with NO to-year → chip reads "… (2010–present)",
 # then remove it (aria "Remove {name}") so only the first entry is committed.
 - tapOn:
     id: "Career team name"
-- inputText: "TempTeam-${ATTEMPT_ID}"
+- inputText: "TempTeam-${ATTEMPT_TOKEN}"
 - tapOn:
     id: "From year"
 - inputText: "2010"
 - tapOn:
     id: "Add career team"
 - assertVisible:
-    text: ".*TempTeam-${ATTEMPT_ID} \\(2010.present\\).*"
+    text: ".*TempTeam-${ATTEMPT_TOKEN} \\(2010.present\\).*"
 - tapOn:
-    id: "Remove TempTeam-${ATTEMPT_ID}"
+    id: "Remove TempTeam-${ATTEMPT_TOKEN}"
 - assertNotVisible:
-    text: ".*TempTeam-${ATTEMPT_ID}.*"
+    text: ".*TempTeam-${ATTEMPT_TOKEN}.*"
 # The kept entry is still staged.
 - assertVisible:
-    text: ".*CareerTeam-${ATTEMPT_ID} \\(2001.2005\\).*"
+    text: ".*CareerTeam-${ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
 # ============================================================
 # STEP 5 — ADD AS NEW PLAYER (carrying the staged team) → WIZARD ADVANCES

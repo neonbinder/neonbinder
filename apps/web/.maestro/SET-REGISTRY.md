@@ -313,6 +313,45 @@ would put the wrong question on screen.
 `xsrc-` is intentionally shared between the two cross-release flows that both
 need the same guest-source set; it is still per-worker.
 
+## Team names (NEO-214)
+
+`teams` is a GLOBAL table with no per-user scoping, and it is **empty at the
+start of every run**: the scripted reset wipes it and nothing seeds a shared
+fixture back in (NEO-214 deleted the "Seed Test Teams" button and the mutation
+behind it, along with the "New York Yankees" / "New York Mets" rows the suite
+used to lean on). A flow that needs a team therefore creates its own, and the
+same registration rule as sets applies — **pick an unused prefix and add a row
+here in the same commit**, so two flows never collide on a name.
+
+Every one of these is created through the product, never seeded: TeamPicker's
+`+ Create` row (`id: "Create team <name>"` → `teams.findOrCreate`), on whichever
+screen the flow is already standing. `/admin/teams` has no "add a team" control
+by design — it edits teams, it does not invent them — so a flow that needs a
+team's COLOURS creates the team in a picker first and then colours it there.
+
+| Prefix | Owning flow | Shape |
+|---|---|---|
+| `CNAA-`, `CNAB-` | `checklist-attention-badge-and-filter.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
+| `CNWT-` | `checklist-attention-walker-missing-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
+| `NBTeam-` | `team-picker-create-custom-card.yaml` | `-${ATTEMPT_ID}` |
+| `PMT-` | `admin/player-management-add-and-career-history.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
+| `SLA-`, `SLB-` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` (coloured `#132448` / `#002d72`) |
+| `TLF-` | `checklist-title-length-limits-and-fixer.yaml` | `-${ATTEMPT_ID}` — kept SHORT on purpose; the name lands in a generated listing title measured against an 80-character cap |
+| `TMT-` | `admin/team-management-edit-a-team.yaml` | `-${WORKER_INDEX}-${ATTEMPT_ID}` |
+| `TPT-` | `team-picker.yaml` | `-${ATTEMPT_ID}` |
+
+**Always per-ATTEMPT, not just per-worker.** `+ Create <name>` is offered only
+while no team of that name exists, so a name a previous attempt left behind
+renders `Add <name>` instead and the create step reaches for a control that is
+not there. (`ATTEMPT_ID` is `w<worker>-a<attempt>-<random>`, so it already
+carries the worker; the flows that also prefix `${WORKER_INDEX}` do so for
+readability in a failure screenshot, not for uniqueness.)
+
+Players follow the same rule — `players` is global and equally empty. The two
+flows that create one name it `PM-`/`SLP-` + `${WORKER_INDEX}` + `${ATTEMPT_ID}`,
+plus the throwaway `TME-` that `team-management-edit-a-team.yaml` needs in order
+to reach a career editor at all.
+
 ## Read-only consumers of the shared real set
 
 These flows drill to 2024 Topps Chrome and only read. They are the reason the set

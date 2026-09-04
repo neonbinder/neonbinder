@@ -1540,7 +1540,7 @@ Every Maestro flow declares its scheduling profile via tags in its top-level `ta
 |---|---|---|
 | `requires:<state>` | Your flow asserts on a state of the app/DB that another flow produces (sets loaded, cards loaded, hierarchy populated, etc.). | Flow runs only after every flow tagged `provides:<state>` has succeeded. |
 | `provides:<state>` | Your flow leaves the system in a known state that downstream flows can build on (sync sets, sync card checklists, populate hierarchy, etc.). | The named state is considered achieved when ALL providers complete. |
-| `isolated:true` | Your flow does its own destructive reset (clicks "Reset Set Builder Data" or otherwise wipes global tables) and assumes a fresh DB. | Flow runs alone, serially, on a dedicated worker. The cascade (`provides:`/`requires:`) lane is blocked until all isolated flows finish. |
+| `isolated:true` | Your flow runs after a destructive reset (the scripted `e2e-baseline.sh reset` — NEO-214; there is no "Reset Set Builder Data" button anymore) or otherwise wipes global tables, and assumes a fresh DB. | Flow runs alone, serially, on a dedicated worker. The cascade (`provides:`/`requires:`) lane is blocked until all isolated flows finish. |
 | `serial-marketplace` | Your flow saves or tests BSC / SportLots credentials, hitting `/login/bsc` or `/login/sportlots` on the browser service. | Flow serializes with other marketplace flows on a dedicated worker (the browser service 503s under concurrent marketplace logins). Runs concurrently with everything else. |
 | (none of the above) | Your flow is parallel-safe — it touches only the per-worker test user's own state and doesn't depend on global data. | Distributed across workers in parallel. |
 

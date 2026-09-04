@@ -5,7 +5,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { Autocomplete, Input } from "@/components/primitives";
 // The shared `Button` primitive is a light-surface control (bg-white,
 // text-slate-900). These pages are dark, and the rest of the app reaches for
-// NeonButton here — see components/SetSelector/AdminTools.tsx.
+// NeonButton here — see components/SetSelector/AttachSetsDialog.tsx.
 import NeonButton from "@/components/modules/NeonButton";
 import {
   PlayerAutocomplete,
