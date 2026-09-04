@@ -1,5 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { parseSlVariationMarker } from "./sportlots";
+import {
+  parseSlVariationMarker,
+  stripBrandPrefixForLabel,
+} from "./sportlots";
 
 /**
  * NEO-189 — SportLots variation markers.
@@ -92,5 +95,65 @@ describe("parseSlVariationMarker", () => {
       isVariation: false,
       residual: desc,
     });
+  });
+});
+
+/**
+ * NEO-239 — the brand-prefix strip, which is DERIVATION and not a query input.
+ *
+ * SportLots names its sets with the brand in front ("Topps Series 1") where NB
+ * files "Series 1" under a manufacturer row called "Topps". A fresh NB row
+ * seeds its display value from what the fetch returns, so leaving the prefix
+ * on gives every synced set a name that repeats its own parent — and on a
+ * re-sync of rows created before that, the stored SL label disagrees with
+ * every NB value and NEO-211's suggestion query nags a rename on the whole
+ * year.
+ *
+ * The invariant permits this ("a row may be derived from marketplace data when
+ * it is created") and forbids the reverse. Which direction this is, is
+ * enforced by where it sits: applied to the parsed RESPONSE, from a parameter
+ * `resolveSlScope` never receives. See `retireCustom.security.test.ts` for the
+ * test that it never reaches the wire.
+ */
+describe("stripBrandPrefixForLabel", () => {
+  test("strips the brand the NB parent is called", () => {
+    expect(stripBrandPrefixForLabel("Topps Series 1", "Topps")).toBe("Series 1");
+  });
+
+  test("leaves an unrelated prefix alone", () => {
+    // SportLots lists more than one brand's sets when the year is browsed, and
+    // the strip must not chew a name it does not own.
+    expect(stripBrandPrefixForLabel("Bowman Chrome", "Topps")).toBe(
+      "Bowman Chrome",
+    );
+    expect(stripBrandPrefixForLabel("Toppsy Turvy", "Topps")).toBe("y Turvy");
+  });
+
+  test("no manufacturer in context means no strip at all", () => {
+    // The attach pane and the top-level syncs pass no manufacturer; the label
+    // is then the marketplace's own name, unaltered.
+    expect(stripBrandPrefixForLabel("Topps Series 1", undefined)).toBe(
+      "Topps Series 1",
+    );
+    expect(stripBrandPrefixForLabel("Topps Series 1", "   ")).toBe(
+      "Topps Series 1",
+    );
+  });
+
+  test("case-sensitive, matching what shipped before", () => {
+    // Kept deliberately: widening the match is a behaviour change beyond
+    // restoring the strip, and a case-folded match would start eating prefixes
+    // the original left alone.
+    expect(stripBrandPrefixForLabel("TOPPS Series 1", "Topps")).toBe(
+      "TOPPS Series 1",
+    );
+  });
+
+  test("a label that IS the brand keeps its name instead of vanishing", () => {
+    // The one correction to the original. Stripping this to "" made the caller's
+    // `if (radioId && setName)` guard drop the row entirely — losing a set
+    // because SportLots named it after its brand is not a cleanup.
+    expect(stripBrandPrefixForLabel("Topps", "Topps")).toBe("Topps");
+    expect(stripBrandPrefixForLabel("Topps   ", "Topps")).toBe("Topps   ");
   });
 });

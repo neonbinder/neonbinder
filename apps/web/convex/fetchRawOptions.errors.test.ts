@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { NO_MARKETPLACE_IDS_MESSAGE } from "./marketplaceResolvability";
 
 const modules = (
   import.meta as unknown as {
@@ -48,23 +49,34 @@ afterEach(() => {
   delete process.env.NEONBINDER_BROWSER_URL;
 });
 
-/** sport → year → setName, with BSC slugs present or deliberately missing. */
+/**
+ * sport → year → setName, with each side's ids present or deliberately absent.
+ *
+ * NEO-239 — `custom: true` is gone. There was never anything for it to say
+ * that `platformData` did not already say: an unlinked row is a row with no
+ * ids, and that is now what the fetch reads.
+ */
 async function seedChain(
   t: ReturnType<typeof convexTest>,
-  opts: { setNameBsc?: string; custom?: boolean },
+  opts: { setNameBsc?: string; scopeIds?: boolean },
 ): Promise<Id<"selectorOptions">> {
+  const scoped = opts.scopeIds !== false;
   return t.run(async (ctx) => {
     const sport = await ctx.db.insert("selectorOptions", {
       level: "sport",
       value: "Baseball",
-      platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
+      platformData: scoped
+        ? { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } }
+        : {},
       children: [],
       lastUpdated: SENTINEL,
     });
     const year = await ctx.db.insert("selectorOptions", {
       level: "year",
       value: "2024",
-      platformData: { bsc: { b0: "2024" }, sportlots: { s0: "2024" } },
+      platformData: scoped
+        ? { bsc: { b0: "2024" }, sportlots: { s0: "2024" } }
+        : {},
       parentId: sport,
       children: [],
       lastUpdated: SENTINEL,
@@ -73,7 +85,6 @@ async function seedChain(
       level: "setName",
       value: "Topps",
       platformData: opts.setNameBsc ? { bsc: { b0: opts.setNameBsc } } : {},
-      ...(opts.custom ? { isCustom: true } : {}),
       parentId: year,
       children: [],
       lastUpdated: SENTINEL,
@@ -82,9 +93,22 @@ async function seedChain(
 }
 
 describe("fetchRawOptions error shape", () => {
-  test("a missing BSC slug is reported per-platform, and names the level", async () => {
+  test("a missing BSC id SKIPS that side — it is not an error, and it is declared", async () => {
+    // NEO-239, and a REVERSAL of what this used to assert. A missing slug was
+    // reported as a BSC `error`, which is the wrong word for it: BSC was never
+    // asked. The distinction is not cosmetic — `coveredSides` is built from
+    // `errors`, so calling a skip an error and calling it neither would both
+    // have put the side into coverage and let the unlink pass detach live
+    // links on a side nobody queried. `skippedSides` is the third answer.
     const t = convexTest(schema, modules);
     const setNameId = await seedChain(t, {});
+    // SportLots IS asked here — that is the point — so its network has to be
+    // stubbed. A 500 stands in for "the marketplace could not answer", which
+    // is the state that must stay distinguishable from "we never asked".
+    vi.stubGlobal(
+      "fetch",
+      (async () => new Response("unavailable", { status: 500 })) as typeof fetch,
+    );
 
     const res = await t
       .withIdentity(ADMIN_IDENTITY)
@@ -93,25 +117,20 @@ describe("fetchRawOptions error shape", () => {
         parentId: setNameId,
       });
 
-    // `success: true` with a populated `errors` is the contract: the fetch
-    // itself did not blow up, one platform could not be queried. A caller that
-    // reads only `success` cannot tell this from "there are no variants", which
-    // is exactly the confusion that made the single-platform branch destructive.
     expect(res.success).toBe(true);
-    expect(res.errors).toEqual([
-      {
-        platform: "bsc",
-        message: expect.stringContaining("Missing platformData.bsc on:"),
-      },
-    ]);
-    expect(res.errors[0].message).toContain("setName=Topps");
+    expect(res.skippedSides).toContain("bsc");
+    // No BSC entry in `errors`: nothing failed on that side.
+    expect(res.errors.some((e) => e.platform === "bsc")).toBe(false);
     expect(res.bscOptions).toEqual([]);
-    expect(res.slOptions).toEqual([]);
+    // SportLots still has its ids, so it was asked. In this environment it has
+    // no browser service to reach, so it errors — which is the shape the forms
+    // must be able to tell apart from a skip, and the point of the split.
+    expect(res.skippedSides).not.toContain("sportlots");
   });
 
-  test("a custom subtree is a clean SKIP, not an error", async () => {
+  test("a path with no marketplace ids at all is a clean SKIP, not an error", async () => {
     const t = convexTest(schema, modules);
-    const setNameId = await seedChain(t, { custom: true });
+    const setNameId = await seedChain(t, { scopeIds: false });
 
     const res = await t
       .withIdentity(ADMIN_IDENTITY)
@@ -120,12 +139,13 @@ describe("fetchRawOptions error shape", () => {
         parentId: setNameId,
       });
 
-    // No marketplace presence below a custom node, so neither adapter is
-    // called and `errors` stays EMPTY — the form routes empty-and-clean to
-    // "+ Custom" rather than to a Retry it could never satisfy.
+    // Neither adapter is called and `errors` stays EMPTY — the form routes
+    // empty-and-clean to "+ Custom" rather than to a Retry it could never
+    // satisfy.
     expect(res.success).toBe(true);
     expect(res.errors).toEqual([]);
-    expect(res.message).toContain("Custom subtree");
+    expect(res.skippedSides.sort()).toEqual(["bsc", "sportlots"]);
+    expect(res.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
   });
 
   test("is admin-gated", async () => {

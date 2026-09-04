@@ -42,7 +42,6 @@ async function seedCard(
     cardNumber: string;
     bscRef?: string;
     slRef?: string;
-    isCustom?: boolean;
   },
 ) {
   await t.run(async (ctx) => {
@@ -54,7 +53,6 @@ async function seedCard(
         ...(opts.bscRef ? { bsc: { ref: opts.bscRef } } : {}),
         ...(opts.slRef ? { sportlots: { ref: opts.slRef } } : {}),
       },
-      ...(opts.isCustom ? { isCustom: true } : {}),
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
@@ -82,20 +80,28 @@ describe("auditChecklistDataForResync", () => {
     });
   });
 
-  test("counts ref-less non-custom rows and samples them, but never counts custom cards", async () => {
+  test("counts EVERY ref-less row and samples them", async () => {
+    // NEO-239 — this used to exclude `isCustom` rows on the grounds that they
+    // are "expected" to carry no ref. But the question the audit asks is "how
+    // many cards can the id-keyed matcher not key?", and a hand-added card is
+    // exactly as unkeyable as a marketplace one that lost its ref. Excluding a
+    // whole population understated the answer, and the two are not
+    // distinguishable by anything a matcher can see — which is the point of
+    // retiring the flag.
     const t = convexTest(schema, modules);
     const variantId = await seedVariant(t);
     await seedCard(t, variantId, { cardNumber: "1", bscRef: "bsc-1" });
     // Legacy / pre-NEO-137 shape: no ref on either side.
     await seedCard(t, variantId, { cardNumber: "50" });
     await seedCard(t, variantId, { cardNumber: "51", slRef: "sl-51" });
-    // A custom card is EXPECTED to carry no ref — it has no upstream at all.
-    await seedCard(t, variantId, { cardNumber: "9001", isCustom: true });
+    // Hand-added, and equally ref-less.
+    await seedCard(t, variantId, { cardNumber: "9001" });
 
     const report = await runAudit(t);
-    expect(report.reflessCards.count).toBe(1);
+    expect(report.reflessCards.count).toBe(2);
     expect(report.reflessCards.samples).toEqual([
       { selectorOptionId: variantId, cardNumber: "50" },
+      { selectorOptionId: variantId, cardNumber: "9001" },
     ]);
   });
 

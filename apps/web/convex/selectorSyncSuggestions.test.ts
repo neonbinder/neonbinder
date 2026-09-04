@@ -158,7 +158,13 @@ describe("getSelectorSyncSuggestions", () => {
     ).toHaveLength(1);
   });
 
-  test("never offers a rename the server would refuse (non-custom variantType)", async () => {
+  test("a variantType row is offered a suggestion like any other level (NEO-239)", async () => {
+    // This used to assert the opposite: variantType rows were skipped so the
+    // query would "never offer an Accept the server would refuse". The server
+    // refuses nothing now — the row's name stopped being load-bearing when the
+    // BSC `variant` facet moved to a tagged slot and Base became
+    // `metadata.isBase` — so suppressing the suggestion would hide a real
+    // upstream disagreement from the operator for no reason.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const parentId = await parentRow(t);
@@ -168,6 +174,8 @@ describe("getSelectorSyncSuggestions", () => {
         value: "Base",
         platformData: { bsc: { b0: "base-slug" } },
         platformLabels: { bsc: { b0: "Base Set" } },
+        platformFacets: { bsc: { b0: "variant" } },
+        metadata: { isBase: true },
         primaryPlatformId: { bsc: "b0" },
         parentId,
         children: [],
@@ -175,12 +183,15 @@ describe("getSelectorSyncSuggestions", () => {
       });
     });
 
-    expect(
-      await asAdmin.query(api.selectorOptions.getSelectorSyncSuggestions, {
-        level: "variantType",
-        parentId,
-      }),
-    ).toHaveLength(0);
+    const suggestions = await asAdmin.query(
+      api.selectorOptions.getSelectorSyncSuggestions,
+      { level: "variantType", parentId },
+    );
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      currentValue: "Base",
+      suggestions: [{ side: "bsc", label: "Base Set" }],
+    });
   });
 
   test("is admin-gated", async () => {
@@ -640,7 +651,17 @@ describe("applySelectorSyncSuggestions", () => {
 // NEO-211 F — one guard, every door
 // ===========================================================================
 
-describe("non-custom variantType values are protected on every write path", () => {
+describe("NEO-239 — every variantType renames, on every write path", () => {
+  /**
+   * The refusal these tests used to assert (NEO-211 F) existed because two
+   * places read a variantType row's DISPLAY VALUE as data: the BSC checklist
+   * fetch derived its `variant` facet from it, and "which row is the base set"
+   * was a comparison against the literal "base". Both now read the row —
+   * a `variant`-tagged slot and `metadata.isBase` — so the name carries no
+   * meaning any process depends on and the guard has nothing left to protect.
+   *
+   * `parentId` here is a setName row, so these rows are siblings under one set.
+   */
   async function seedVariantTypes(t: ReturnType<typeof convexTest>) {
     const parentId = await parentRow(t);
     const synced = await t.run(async (ctx) =>
@@ -649,6 +670,8 @@ describe("non-custom variantType values are protected on every write path", () =
         value: "Base",
         platformData: { bsc: { b0: "base-slug" } },
         platformLabels: { bsc: { b0: "Base Set" } },
+        platformFacets: { bsc: { b0: "variant" } },
+        metadata: { isBase: true },
         primaryPlatformId: { bsc: "b0" },
         platformSlotSeq: { bsc: 1 },
         parentId,
@@ -656,54 +679,51 @@ describe("non-custom variantType values are protected on every write path", () =
         lastUpdated: SENTINEL,
       }),
     );
-    const custom = await t.run(async (ctx) =>
+    const unlinked = await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "My Variant",
         platformData: {},
-        isCustom: true,
         parentId,
         children: [],
         lastUpdated: SENTINEL,
       }),
     );
-    return { parentId, synced, custom };
+    return { parentId, synced, unlinked };
   }
 
-  test("renameSelectorOption throws a coded ConvexError", async () => {
+  test("renameSelectorOption renames a synced variantType", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { synced } = await seedVariantTypes(t);
 
-    // The value drives Base detection, `getBaseVariantBySet`, and the BSC
-    // checklist fetch's `variant` facet — so every variantType value is
-    // load-bearing, not only "Base".
-    await expect(
-      asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
-        id: synced,
-        value: "Base Cards",
-      }),
-    ).rejects.toThrow(/VARIANT_TYPE_RENAME_REFUSED|cannot be renamed/);
-    expect((await t.run(async (ctx) => ctx.db.get(synced)))?.value).toBe("Base");
+    await asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
+      id: synced,
+      value: "Base Cards",
+    });
+    const after = await t.run(async (ctx) => ctx.db.get(synced));
+    expect(after?.value).toBe("Base Cards");
+    // The name moved; the ROLE and the LINKAGE did not. That is the whole
+    // reason the rename is safe now.
+    expect(after?.metadata?.isBase).toBe(true);
+    expect(after?.platformFacets?.bsc).toEqual({ b0: "variant" });
   });
 
-  test("a CUSTOM variantType row is still renameable", async () => {
+  test("an UNLINKED variantType row is renameable, as it always was", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { custom } = await seedVariantTypes(t);
+    const { unlinked } = await seedVariantTypes(t);
 
-    // `.maestro/rename-selector-option.yaml` renames a custom row; the refusal
-    // must not reach it.
     await asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
-      id: custom,
+      id: unlinked,
       value: "My Renamed Variant",
     });
-    expect((await t.run(async (ctx) => ctx.db.get(custom)))?.value).toBe(
+    expect((await t.run(async (ctx) => ctx.db.get(unlinked)))?.value).toBe(
       "My Renamed Variant",
     );
   });
 
-  test("the reconciliation modal's tier-0 rename is refused too", async () => {
+  test("the reconciliation modal's tier-0 rename lands", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { parentId, synced } = await seedVariantTypes(t);
@@ -723,9 +743,9 @@ describe("non-custom variantType values are protected on every write path", () =
     });
 
     const after = await t.run(async (ctx) => ctx.db.get(synced));
-    // The name is refused; the LINKAGE the operator just confirmed still lands.
-    expect(after?.value).toBe("Base");
+    expect(after?.value).toBe("Base Cards");
     expect(after?.platformData.bsc).toEqual({ b0: "base-slug" });
+    expect(after?.metadata?.isBase).toBe(true);
   });
 
   test("a tier-0 item whose value is UNCHANGED never attempts the rename, so a protected row is not refused", async () => {
@@ -757,7 +777,7 @@ describe("non-custom variantType values are protected on every write path", () =
     expect(after?.value).toBe("Base");
   });
 
-  test("applySelectorSyncSuggestions accept is refused too", async () => {
+  test("applySelectorSyncSuggestions accept applies to a variantType too", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { parentId, synced } = await seedVariantTypes(t);
@@ -778,7 +798,10 @@ describe("non-custom variantType values are protected on every write path", () =
       },
     );
 
-    expect(res).toMatchObject({ applied: 0, skipped: 1 });
-    expect((await t.run(async (ctx) => ctx.db.get(synced)))?.value).toBe("Base");
+    // The slot label is "Base Set"; accepting adopts it as the row's name.
+    expect(res).toMatchObject({ applied: 1, skipped: 0 });
+    expect((await t.run(async (ctx) => ctx.db.get(synced)))?.value).toBe(
+      "Base Set",
+    );
   });
 });

@@ -22,10 +22,12 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  BSC_SOURCE_FACETS,
   MAX_BSC_FAN_OUT,
   legacyBscFacetForLevel,
   planBscFanOut,
   resolveBscFacetFilters,
+  syncWrittenBscFacet,
   type BscFacet,
   type FacetBearingRow,
 } from "./bscFacets";
@@ -277,5 +279,78 @@ describe("planBscFanOut", () => {
     const plan = planBscFanOut({ setName: ["a", "b"] }, 2);
     expect(plan.capped).toBe(false);
     expect(plan.combos).toHaveLength(2);
+  });
+});
+
+// ===========================================================================
+// NEO-239 — `variant` joins the facet union, but not as a card SOURCE
+// ===========================================================================
+
+describe("the `variant` facet (NEO-239)", () => {
+  test("a `variant`-tagged slot filters on the variant axis", () => {
+    // This is what replaced deriving `filters.variant` from the row's DISPLAY
+    // value in `fetchBscChecklist`. BSC's variant set is not the closed
+    // base/insert/parallel enum that shortcut assumed ("Promo", "Mail In"
+    // occur), which is exactly why the id has to drive it.
+    const plan = resolveBscFacetFilters([
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      node("setName", { b0: "2024-topps" }),
+      node("variantType", { b0: "promo" }, { b0: "variant" }),
+    ]);
+    expect(plan.filters.variant).toEqual(["promo"]);
+  });
+
+  test("`variant` is NEVER the sourceFacet — it scopes, it does not source", () => {
+    // `sourceFacet` decides what each returned card is ATTRIBUTED to, so that
+    // `resolveCardSlots` can bind it to the slot it came from. A variant value
+    // is not a set; cards attributed to one would bind to nothing.
+    const plan = resolveBscFacetFilters([
+      node("sport", { b0: "baseball" }),
+      node("variantType", { b0: "base" }, { b0: "variant" }),
+    ]);
+    expect(plan.sourceFacet).toBeUndefined();
+    expect([...BSC_SOURCE_FACETS].sort()).toEqual(["setName", "variantName"]);
+  });
+
+  test("a row carrying BOTH a variant tag and setName tags contributes both", () => {
+    // NEO-189's motivating row, now fully expressible: an NB Base drawing from
+    // two BSC setName sets AND scoping them to the base variant. The deepest
+    // SOURCE facet still names the source.
+    const plan = resolveBscFacetFilters([
+      node("sport", { b0: "baseball" }),
+      node("setName", { b0: "2024-topps" }),
+      node(
+        "variantType",
+        { b0: "base", b1: "series-1", b2: "series-2" },
+        { b0: "variant", b1: "setName", b2: "setName" },
+      ),
+    ]);
+    expect(plan.filters.variant).toEqual(["base"]);
+    // The setName ancestor's own slug is OVERRIDDEN, not unioned — BSC answers
+    // a three-value facet with 200 OK and no rows.
+    expect(plan.filters.setName).toEqual(["series-1", "series-2"]);
+    expect(plan.sourceFacet).toBe("setName");
+  });
+});
+
+describe("syncWrittenBscFacet", () => {
+  test("only the variantType sync knows the facet of the ids it stores", () => {
+    // It asked BSC for its `variant` facet values and is storing what came
+    // back, so the tag is a fact the writer holds. Every other level returns
+    // undefined: NEO-189's rule is that a slot is tagged deliberately or not
+    // at all, and a second source of truth for setName would only be able to
+    // disagree with the level rule.
+    expect(syncWrittenBscFacet("variantType")).toBe("variant");
+    for (const level of [
+      "sport",
+      "year",
+      "manufacturer",
+      "setName",
+      "insert",
+      "parallel",
+    ]) {
+      expect(syncWrittenBscFacet(level)).toBeUndefined();
+    }
   });
 });

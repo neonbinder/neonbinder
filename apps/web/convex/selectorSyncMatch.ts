@@ -182,34 +182,17 @@ export function assertSelectorValue(raw: string): string {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// variantType protection (NEO-211 F)
+// NEO-239 — the variantType rename refusal is GONE
+//
+// `refusesValueRename` (NEO-211 F) refused a rename on any variantType row a
+// human had not typed. It existed because two places read that row's DISPLAY
+// VALUE as if it were data: the BSC checklist fetch re-derived its `variant`
+// facet from the value, and "which row is the base set" was detected by the
+// literal string "base". Both are now read from the row instead — a
+// `variant`-tagged BSC slot and `metadata.isBase` — so the name carries no
+// meaning any process depends on, and every variantType row renames like every
+// other level.
 // ───────────────────────────────────────────────────────────────────────────
-
-export const VARIANT_TYPE_RENAME_REFUSED = "VARIANT_TYPE_RENAME_REFUSED";
-export const VARIANT_TYPE_RENAME_MESSAGE =
-  "Variant type names come from the marketplace sync and cannot be renamed";
-
-/**
- * A non-custom `variantType` row's DISPLAY VALUE is load-bearing, not
- * cosmetic: SetSelector derives terminal-column/Base-mapping behaviour from
- * it, `getBaseVariantBySet` looks Base up by name, and the BSC checklist fetch
- * derives its `variant` facet from the value (adapters/buysportscards.ts). So
- * every one of Base / Insert / Parallel / Promo is a protected string, not
- * only "Base".
- *
- * Custom variantType rows are NB's own invention with no marketplace meaning,
- * so they stay renameable (and `.maestro/rename-selector-option.yaml` renames
- * a custom row).
- *
- * Shared by all three value-writing paths so the refusal cannot be reached
- * around by whichever one a future feature happens to use.
- */
-export function refusesValueRename(row: {
-  level: string;
-  isCustom?: boolean;
-}): boolean {
-  return row.level === "variantType" && row.isCustom !== true;
-}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Matching
@@ -218,7 +201,6 @@ export function refusesValueRename(row: {
 export type MatchableRow<TId extends string = string> = SlotBearingRow & {
   _id: TId;
   value: string;
-  isCustom?: boolean;
 };
 
 export type IncomingItem = {
@@ -627,7 +609,7 @@ export function clearDeclinedIfLabelChanged(
 // ───────────────────────────────────────────────────────────────────────────
 
 export type RenamePlan =
-  | { ok: false; reason: "refused" | "invalid" | "clash"; message: string }
+  | { ok: false; reason: "invalid" | "clash"; message: string }
   | { ok: true; unchanged: true }
   | {
       ok: true;
@@ -645,8 +627,8 @@ export type RenamePlan =
  * typed it), `applySelectorSyncSuggestions` accept (a marketplace label the
  * operator approved), and the reconciliation modal's tier-0 RENAME (a title
  * edited in the modal). Before NEO-211 only the first had the sibling-clash
- * check and the feature re-derivation, and none of them had the variantType
- * refusal. A guard that lives on one of three doors is not a guard.
+ * check and the feature re-derivation. A guard that lives on one of three
+ * doors is not a guard.
  *
  * `siblings` must be the caller's IN-TRANSACTION working set, not a stale
  * read: two accepted suggestions in one call that fold to the same name have
@@ -659,7 +641,6 @@ export function planValueRename(args: {
     _id: string;
     level: string;
     value: string;
-    isCustom?: boolean;
     features?: Record<string, string>;
     sportConfig?: unknown;
   };
@@ -667,14 +648,6 @@ export function planValueRename(args: {
   siblings: ReadonlyArray<{ _id: string; value: string }>;
 }): RenamePlan {
   const { row, siblings } = args;
-
-  if (refusesValueRename(row)) {
-    return {
-      ok: false,
-      reason: "refused",
-      message: VARIANT_TYPE_RENAME_MESSAGE,
-    };
-  }
 
   const checked = checkSelectorValue(args.nextValue);
   if (!checked.ok) {

@@ -42,20 +42,58 @@ import {
 } from "./platformSlots";
 
 /**
- * The BSC facets an operator can attach an id to.
+ * The BSC facets a slot's id can belong to.
  *
- * Deliberately NOT the full facet list. `sport` and `year` are scope resolved
- * from the ancestor chain, and `variant` (base/insert/parallel) is derived
- * from the NB variantType's display value — see the note in
- * `fetchBscChecklist`. Only `setName` and `variantName` name a source of
- * cards, so only those two are attachable.
+ * `sport` and `year` are scope resolved from the ancestor chain and are never
+ * tagged; every other facet a slot can hold is here.
+ *
+ * NEO-239 added `variant` (base/insert/parallel/promo/…). It used to be
+ * derived from the NB variantType row's DISPLAY VALUE, which is the reverse
+ * dependency the product invariant forbids — an NB name must never build a
+ * marketplace query, and BSC's variant set is not a closed enum ("Promo",
+ * "Mail In" occur), so the name was never a safe stand-in for the id either.
+ * It is now a tagged slot like any other.
  */
-export type BscFacet = "setName" | "variantName";
+export type BscFacet = "setName" | "variantName" | "variant";
+
+/**
+ * The facets that name a SOURCE OF CARDS, and so the only ones an operator can
+ * attach as an extra source set.
+ *
+ * `variant` is deliberately NOT here (NEO-239 / audit F6): it SCOPES a query
+ * — "the base cards of this set" — it does not name a second set to draw cards
+ * from. Attaching it as a source would make `sourceFacet` attribute cards to a
+ * value that is not a set, and `resolveCardSlots` would bind them to nothing.
+ */
+export type BscSourceFacet = "setName" | "variantName";
+
+export const BSC_SOURCE_FACETS: ReadonlySet<string> = new Set([
+  "setName",
+  "variantName",
+]);
 
 export const bscFacetValidator = v.union(
   v.literal("setName"),
   v.literal("variantName"),
+  v.literal("variant"),
 );
+
+/**
+ * The facet a SYNC at `level` knows the ids it just fetched belong to.
+ *
+ * Only `variantType` is answered, and only since NEO-239. The level sync at
+ * variantType asks BSC for its `variant` facet values and stores exactly what
+ * came back, so the tag is a fact the writer holds, not an inference about an
+ * id someone else wrote.
+ *
+ * Every other level deliberately returns `undefined`: NEO-189's rule is that a
+ * slot is tagged deliberately or not at all, and retro-tagging a setName row's
+ * primary would change nothing (the level rule already answers `setName` for
+ * it) while adding a way for the two sources of truth to disagree.
+ */
+export function syncWrittenBscFacet(level: string): BscFacet | undefined {
+  return level === "variantType" ? "variant" : undefined;
+}
 
 /** NB level → BSC facet key. Levels absent here have no BSC facet at all. */
 export const LEVEL_TO_BSC_FACET: Record<string, string> = {
@@ -72,16 +110,22 @@ export const LEVEL_TO_BSC_FACET: Record<string, string> = {
  *
  * Two levels resolve to `undefined` and that is load-bearing:
  *
- *   variantType — `LEVEL_TO_BSC_FACET` maps it to `variant`, but the checklist
- *                 fetch has always skipped it and re-derived `variant` from
- *                 the row's DISPLAY value instead. A mis-saved BaseSetPicker
- *                 mapping corrupted those slugs in dev (they ended up pointing
- *                 at the parent setName), and the display value is robust
- *                 regardless of what is on the entity.
- *   parallel    — never had a BSC facet.
+ *   variantType — `LEVEL_TO_BSC_FACET` maps it to `variant`, but an UNTAGGED
+ *                 variantType slug is not trustworthy: a mis-saved
+ *                 BaseSetPicker mapping corrupted those slugs in dev (they
+ *                 ended up pointing at the parent setName), so an untagged id
+ *                 here could be a setName value wearing a variant's clothes.
+ *                 It contributes nothing.
  *
- * Both cases mean "this untagged id contributes nothing to the query", which
- * is what shipped and what untagged rows must keep doing.
+ *                 NEO-239 changed what happens NEXT, not this: the checklist
+ *                 fetch used to paper over the gap by deriving `variant` from
+ *                 the row's DISPLAY value. It no longer does. A variantType row
+ *                 with no `variant`-tagged slot makes the whole BSC side
+ *                 unresolvable and BSC is SKIPPED — see
+ *                 `marketplaceResolvability.ts`. Failing open would query
+ *                 sport+year+setName with no variant axis, which returns base
+ *                 plus every insert and parallel in the set.
+ *   parallel    — never had a BSC facet.
  */
 export function legacyBscFacetForLevel(level: string): string | undefined {
   if (level === "variantType") return undefined;
@@ -104,8 +148,11 @@ export type BscFacetPlan = {
    * of this facet so `resolveCardSlots` can bind each card to the slot it came
    * from. `undefined` when the leaf contributed nothing, which is the legacy
    * Base/Parallel case and keeps the old attribution fallback.
+   *
+   * NEVER `variant` (NEO-239 / audit F6) — that facet scopes a query, it does
+   * not name a set cards can be attributed to.
    */
-  sourceFacet?: BscFacet;
+  sourceFacet?: BscSourceFacet;
 };
 
 /**
@@ -130,7 +177,7 @@ export function resolveBscFacetFilters(
   chain: readonly FacetBearingRow[],
 ): BscFacetPlan {
   const filters: Record<string, string[]> = {};
-  let sourceFacet: BscFacet | undefined;
+  let sourceFacet: BscSourceFacet | undefined;
 
   for (const node of chain) {
     const perFacet = new Map<string, string[]>();
@@ -144,9 +191,9 @@ export function resolveBscFacetFilters(
     }
     for (const [facet, ids] of perFacet) {
       filters[facet] = ids;
-      // Deepest contributor of an ATTACHABLE facet names the source. `sport`
-      // and `year` are scope, never a source.
-      if (facet === "setName" || facet === "variantName") sourceFacet = facet;
+      // Deepest contributor of a SOURCE facet names the source. `sport`,
+      // `year` and `variant` are scope, never a source.
+      if (BSC_SOURCE_FACETS.has(facet)) sourceFacet = facet as BscSourceFacet;
     }
   }
 

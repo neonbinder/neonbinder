@@ -119,16 +119,19 @@ async function seedTree(
       level: "sport",
       value: "Baseball",
       sportConfig: { skuCode: "BB", league: "MLB" },
-      platformData: { bsc: { b0: "baseball" } },
-      platformSlotSeq: { bsc: 1 },
+      // NEO-239 — SportLots is scoped by `sprt` + `yr`, so those two ids are
+      // what make the SL side of this chain resolvable at all. Without them
+      // SportLots is SKIPPED rather than queried by display name.
+      platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       children: [],
       lastUpdated: Date.now(),
     });
     const yearId = await ctx.db.insert("selectorOptions", {
       level: "year",
       value: "2021",
-      platformData: { bsc: { b0: "2021" } },
-      platformSlotSeq: { bsc: 1 },
+      platformData: { bsc: { b0: "2021" }, sportlots: { s0: "2021" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
       parentId: sportId,
       children: [],
       lastUpdated: Date.now(),
@@ -146,6 +149,9 @@ async function seedTree(
       level: "variantType",
       value: "Base",
       platformData: { bsc: { b0: "base" }, sportlots: { s0: "189991" } },
+      // NEO-239 — the BSC slot names its facet; without the tag the row has no
+      // `variant` axis and BSC is skipped.
+      platformFacets: { bsc: { b0: "variant" } },
       primaryPlatformId: { bsc: "b0", sportlots: "s0" },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
       parentId: setNameId,

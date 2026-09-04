@@ -219,7 +219,14 @@ describe("selectorSyncStatus", () => {
       api.selectorOptions.ensureSelectorOptions,
       { level: "setName" },
     );
-    expect(res).toEqual({ ran: false, reason: "already_populated" });
+    // NEO-239 — `skippedSides` rides on every fetch result now, so the FE can
+    // tell "we never asked this marketplace" from "it answered with nothing".
+    // An already-populated column asked neither, and skipped neither.
+    expect(res).toEqual({
+      ran: false,
+      reason: "already_populated",
+      skippedSides: [],
+    });
     // And the notice survives for the admin to read and dismiss.
     expect(
       await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
