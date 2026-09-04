@@ -98,3 +98,15 @@ be trusted because of who calls it, an optional `restoreFocusRef` prop that
 the parent can supply — falling back to the original self-contained behavior
 when absent — is a low-risk way to fix it without changing the modal's
 default behavior or its existing tests.
+
+**No `await` required — a same-tick unmount/remount goes stale the same way
+(NEO-221, [[discard-confirm-dialog-family-neo220]]).** `EntityReviewWizard`'s
+"Back to matching" unmounts the wizard (whose own button had focus) and flips
+`CardPairingModal.isOpen` back to `true` in the SAME synchronous handler —
+two batched `setState` calls, one React commit, zero `await`. That's enough:
+DOM removal of a focused node blurs to `<body>` during the commit's mutation
+phase, which completes before any passive effect runs, so
+`CardPairingModal`'s own mount effect still reads a stale `document.body` by
+the time it fires. Don't gate this check on "is there a network round-trip
+between the two dialogs" — gate it on "is the trigger element a member of the
+tree that's unmounting in the same transition that reopens the other dialog."
