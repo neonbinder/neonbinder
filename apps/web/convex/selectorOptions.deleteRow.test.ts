@@ -8,7 +8,10 @@
  *
  * Covers:
  *  - empty custom row is deleted, the parent's children array shrinks, and the
- *    transient per-batch rows keyed on it go with it
+ *    transient rows keyed on it (skips, sync status) go with it
+ *  - staged checklist review work (checklistCandidates / entityReviewQueue) is
+ *    a HOLDING, not transient — the delete refuses while a review is live
+ *  - the sweep is bounded: more archived skips than the cap refuses instead
  *  - refused for child rows / cards / cross-listings, each naming what it found
  *  - a "rows" holding carries the children's LEVEL when they share one, and
  *    omits it when they are mixed
@@ -20,9 +23,9 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 
@@ -48,6 +51,9 @@ const NON_ADMIN_IDENTITY = {
 
 const SENTINEL_LAST_UPDATED = 1_700_000_000_000;
 
+/** Mirrors TRANSIENT_DELETE_CAP in convex/selectorOptions.ts. */
+const TRANSIENT_DELETE_CAP = 500;
+
 type Level =
   | "sport"
   | "year"
@@ -63,7 +69,8 @@ type HoldKind =
   | "crossListings"
   | "players"
   | "teams"
-  | "leagues";
+  | "leagues"
+  | "review";
 
 type Hold = {
   kind: HoldKind;
@@ -181,7 +188,7 @@ describe("deleteSelectorOption — empty row", () => {
     expect(parent!.children).toEqual([keeperId]);
   });
 
-  test("deletes the transient per-batch rows keyed on the row", async () => {
+  test("sweeps the transient rows that mean nothing without the row", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -192,15 +199,7 @@ describe("deleteSelectorOption — empty row", () => {
     });
 
     await t.run(async (ctx) => {
-      await ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: setId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "player",
-        name: "Some Name",
-        sportId,
-        status: "pending",
-      });
+      // A "not a person" ruling is meaningless once the set is gone.
       await ctx.db.insert("entityReviewSkips", {
         selectorOptionId: setId,
         kind: "team",
@@ -208,18 +207,6 @@ describe("deleteSelectorOption — empty row", () => {
         name: "Checklist",
         skippedAt: SENTINEL_LAST_UPDATED,
         skippedByUserId: ADMIN_IDENTITY.subject,
-      });
-      await ctx.db.insert("checklistCandidates", {
-        selectorOptionId: setId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        cardNumber: "1",
-        cardName: "Some Player",
-        platformData: {},
-        bucket: "matched",
-        stem: "1",
-        status: "ready",
-        lastUpdated: SENTINEL_LAST_UPDATED,
       });
       // Status row for a CHILD column of the row being deleted.
       await ctx.db.insert("selectorSyncStatus", {
@@ -236,18 +223,202 @@ describe("deleteSelectorOption — empty row", () => {
     });
 
     const leftovers = await t.run(async (ctx) => ({
-      queue: (await ctx.db.query("entityReviewQueue").collect()).length,
       skips: (await ctx.db.query("entityReviewSkips").collect()).length,
-      candidates: (await ctx.db.query("checklistCandidates").collect()).length,
       statuses: (await ctx.db.query("selectorSyncStatus").collect()).length,
     }));
 
-    expect(leftovers).toEqual({
-      queue: 0,
-      skips: 0,
-      candidates: 0,
-      statuses: 0,
+    expect(leftovers).toEqual({ skips: 0, statuses: 0 });
+  });
+
+  // ── security condition 2: staged review work is a HOLDING, not transient ──
+  //
+  // A set under review has ~900 checklistCandidates and a queue of unresolved
+  // names but NOT ONE cardChecklist row — so before this, the delete was most
+  // available exactly while another admin's review was live.
+
+  test("refuses a row carrying staged checklistCandidates", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      isCustom: true,
     });
+    await t.run(async (ctx) => {
+      for (const cardNumber of ["1", "2", "3"]) {
+        await ctx.db.insert("checklistCandidates", {
+          selectorOptionId: setId,
+          batchId: "batch-1",
+          createdByUserId: "some_other_admin",
+          cardNumber,
+          cardName: `Card ${cardNumber}`,
+          platformData: {},
+          bucket: "matched",
+          stem: cardNumber,
+          status: "ready",
+          lastUpdated: SENTINEL_LAST_UPDATED,
+        });
+      }
+    });
+
+    // The row has NO cards yet — that is the whole hazard.
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("cardChecklist").collect()).length,
+      ),
+    ).toBe(0);
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
+    );
+
+    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
+    expect(holdFor(error.data, "review")).toEqual({
+      kind: "review",
+      count: 3,
+      // Never the staged names — another operator's in-progress work.
+      examples: [],
+    });
+
+    expect(await t.run(async (ctx) => ctx.db.get(setId))).not.toBeNull();
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("checklistCandidates").collect()).length,
+      ),
+    ).toBe(3);
+  });
+
+  test("refuses a row carrying an entityReviewQueue", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      parentId: sportId,
+      isCustom: true,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: setId,
+        batchId: "batch-1",
+        createdByUserId: "some_other_admin",
+        kind: "player",
+        name: "Unresolved Name",
+        sportId,
+        status: "pending",
+      });
+    });
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
+    );
+
+    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
+    expect(holdFor(error.data, "review")).toEqual({
+      kind: "review",
+      count: 1,
+      examples: [],
+    });
+
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("entityReviewQueue").collect()).length,
+      ),
+    ).toBe(1);
+  });
+
+  test("getSelectorOptionHoldings reports staged review work too", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      isCustom: true,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("checklistCandidates", {
+        selectorOptionId: setId,
+        batchId: "batch-1",
+        createdByUserId: "some_other_admin",
+        cardNumber: "1",
+        cardName: "Card 1",
+        platformData: {},
+        bucket: "matched",
+        stem: "1",
+        status: "ready",
+        lastUpdated: SENTINEL_LAST_UPDATED,
+      });
+    });
+
+    const holdings = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: setId },
+    );
+    expect(holdings.holds).toEqual([
+      { kind: "review", count: 1, examples: [] },
+    ]);
+  });
+
+  // ── security condition 3a: the sweep is bounded ──────────────────────────
+
+  test("refuses rather than sweeping more archived skips than the cap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      isCustom: true,
+    });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < TRANSIENT_DELETE_CAP + 1; i++) {
+        await ctx.db.insert("entityReviewSkips", {
+          selectorOptionId: setId,
+          kind: "player",
+          nameNormalized: `name ${i}`,
+          name: `Name ${i}`,
+          skippedAt: SENTINEL_LAST_UPDATED,
+          skippedByUserId: ADMIN_IDENTITY.subject,
+        });
+      }
+    });
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
+    );
+
+    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
+    // Refused rather than issuing a 501-row write batch in one transaction.
+    expect(holdFor(error.data, "review")?.count).toBe(TRANSIENT_DELETE_CAP + 1);
+    expect(await t.run(async (ctx) => ctx.db.get(setId))).not.toBeNull();
+  });
+
+  test("sweeps a skip count at the cap without refusing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      isCustom: true,
+    });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < TRANSIENT_DELETE_CAP; i++) {
+        await ctx.db.insert("entityReviewSkips", {
+          selectorOptionId: setId,
+          kind: "player",
+          nameNormalized: `name ${i}`,
+          name: `Name ${i}`,
+          skippedAt: SENTINEL_LAST_UPDATED,
+          skippedByUserId: ADMIN_IDENTITY.subject,
+        });
+      }
+    });
+
+    const result = await asAdmin.mutation(
+      api.selectorOptions.deleteSelectorOption,
+      { id: setId },
+    );
+    expect(result.deleted).toBe(true);
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("entityReviewSkips").collect()).length,
+      ),
+    ).toBe(0);
   });
 
   test("an empty SYNCED row is deletable and reports syncedBack", async () => {
@@ -596,6 +767,51 @@ describe("deleteSelectorOption — refusals", () => {
 // getSelectorOptionHoldings
 // ===========================================================================
 
+// ===========================================================================
+// Audit trail (security condition 5)
+// ===========================================================================
+
+describe("deleteSelectorOption — audit log", () => {
+  test("names the admin who deleted the row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await insertRow(t, "sport", "Cricket", { isCustom: true });
+
+    // Captured INSIDE the implementation, not read off `mock.calls` after the
+    // fact — `mockRestore` clears the recorded calls. Same shape as
+    // commitCardChecklist.resync.test.ts.
+    const logs: string[] = [];
+    const spy = vi
+      .spyOn(console, "log")
+      .mockImplementation((...args: unknown[]) => {
+        logs.push(args.map(String).join(" "));
+      });
+    try {
+      await asAdmin.mutation(api.selectorOptions.deleteSelectorOption, {
+        id: sportId,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    const lines = logs
+      .filter((line) => line.includes("selector_option_deleted"))
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(lines).toHaveLength(1);
+    // The row is gone afterwards, so this line is the ONLY trace the one
+    // sanctioned delete leaves. It has to say who.
+    expect(lines[0]).toMatchObject({
+      msg: "selector_option_deleted",
+      adminUserId: ADMIN_IDENTITY.subject,
+      id: sportId,
+      level: "sport",
+      value: "Cricket",
+      isCustom: true,
+    });
+  });
+});
+
 describe("getSelectorOptionHoldings", () => {
   test("reports an empty row as deletable and unprotected", async () => {
     const t = convexTest(schema, modules);
@@ -709,7 +925,13 @@ describe("getSelectorOptionHoldings", () => {
 // ===========================================================================
 
 describe("deleteSelectorOption — adversarial", () => {
-  test("a row holding ONLY transient per-batch rows deletes cleanly (holds is empty)", async () => {
+  // NEO-219 security condition 2 rewrote this case. It used to assert that a
+  // row carrying all four per-batch tables deleted cleanly. Two of them —
+  // checklistCandidates and entityReviewQueue — are another operator's live
+  // review, and a set under review has NO cardChecklist rows yet, so that
+  // behaviour made the delete most available exactly when it was most
+  // destructive. They are holdings now; the other two are still swept.
+  test("staged review rows hold the delete; skips and sync status do not", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
 
@@ -719,36 +941,42 @@ describe("deleteSelectorOption — adversarial", () => {
       isCustom: true,
     });
 
-    // Confirm the holdings view agrees BEFORE the write: transient rows are
-    // not holdings, so this row reads as empty despite carrying four of them.
-    const holdingsBefore = await asAdmin.query(
-      api.selectorOptions.getSelectorOptionHoldings,
-      { id: setId },
-    );
-    expect(holdingsBefore).toEqual({ holds: [], protected: false });
+    const seedSweepable = async () => {
+      await t.run(async (ctx) => {
+        await ctx.db.insert("entityReviewSkips", {
+          selectorOptionId: setId,
+          kind: "team",
+          nameNormalized: "checklist",
+          name: "Checklist",
+          skippedAt: SENTINEL_LAST_UPDATED,
+          skippedByUserId: ADMIN_IDENTITY.subject,
+        });
+        await ctx.db.insert("selectorSyncStatus", {
+          level: "variantType",
+          parentId: setId,
+          status: "error",
+          message: "boom",
+          updatedAt: SENTINEL_LAST_UPDATED,
+        });
+      });
+    };
 
-    await t.run(async (ctx) => {
-      await ctx.db.insert("entityReviewQueue", {
+    // All four present → the two staged ones hold it.
+    await seedSweepable();
+    const stagedIds = await t.run(async (ctx) => ({
+      queue: await ctx.db.insert("entityReviewQueue", {
         selectorOptionId: setId,
         batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
+        createdByUserId: "some_other_admin",
         kind: "player",
         name: "Some Name",
         sportId,
         status: "pending",
-      });
-      await ctx.db.insert("entityReviewSkips", {
-        selectorOptionId: setId,
-        kind: "team",
-        nameNormalized: "checklist",
-        name: "Checklist",
-        skippedAt: SENTINEL_LAST_UPDATED,
-        skippedByUserId: ADMIN_IDENTITY.subject,
-      });
-      await ctx.db.insert("checklistCandidates", {
+      }),
+      candidate: await ctx.db.insert("checklistCandidates", {
         selectorOptionId: setId,
         batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
+        createdByUserId: "some_other_admin",
         cardNumber: "1",
         cardName: "Some Player",
         platformData: {},
@@ -756,23 +984,63 @@ describe("deleteSelectorOption — adversarial", () => {
         stem: "1",
         status: "ready",
         lastUpdated: SENTINEL_LAST_UPDATED,
-      });
-      await ctx.db.insert("selectorSyncStatus", {
-        level: "variantType",
-        parentId: setId,
-        status: "error",
-        message: "boom",
-        updatedAt: SENTINEL_LAST_UPDATED,
-      });
+      }),
+    }));
+
+    const holdingsBefore = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: setId },
+    );
+    expect(holdingsBefore.holds).toEqual([
+      { kind: "review", count: 2, examples: [] },
+    ]);
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: setId }),
+    );
+    expect(error.data.code).toBe("SELECTOR_ROW_NOT_EMPTY");
+    // Refused writes NOTHING — the other operator's review is intact, and so
+    // are the sweepable rows.
+    expect(await t.run(async (ctx) => ctx.db.get(setId))).not.toBeNull();
+    expect(
+      await t.run(async (ctx) => ({
+        queue: await ctx.db.get(stagedIds.queue),
+        candidate: await ctx.db.get(stagedIds.candidate),
+        skips: (await ctx.db.query("entityReviewSkips").collect()).length,
+        statuses: (await ctx.db.query("selectorSyncStatus").collect()).length,
+      })),
+    ).toEqual({
+      queue: expect.objectContaining({ name: "Some Name" }),
+      candidate: expect.objectContaining({ cardName: "Some Player" }),
+      skips: 1,
+      statuses: 1,
     });
+
+    // Review finishes (its rows are cleaned up by the commit) → now it goes,
+    // and the two sweepable tables go with it.
+    await t.run(async (ctx) => {
+      await ctx.db.delete(stagedIds.queue);
+      await ctx.db.delete(stagedIds.candidate);
+    });
+
+    expect(
+      await asAdmin.query(api.selectorOptions.getSelectorOptionHoldings, {
+        id: setId,
+      }),
+    ).toEqual({ holds: [], protected: false });
 
     const result = await asAdmin.mutation(
       api.selectorOptions.deleteSelectorOption,
       { id: setId },
     );
-
     expect(result.deleted).toBe(true);
     expect(await t.run(async (ctx) => ctx.db.get(setId))).toBeNull();
+    expect(
+      await t.run(async (ctx) => ({
+        skips: (await ctx.db.query("entityReviewSkips").collect()).length,
+        statuses: (await ctx.db.query("selectorSyncStatus").collect()).length,
+      })),
+    ).toEqual({ skips: 0, statuses: 0 });
   });
 
   test("deletes even when the parent's `children` array does NOT list it (legacy divergence)", async () => {
@@ -893,5 +1161,88 @@ describe("deleteSelectorOption — adversarial", () => {
     expect(holdFor(error.data, "cards")?.count).toBe(1);
     // Nothing written: the row and its new card both survive.
     expect(await t.run(async (ctx) => ctx.db.get(rowId))).not.toBeNull();
+  });
+});
+
+// ===========================================================================
+// Belt-and-braces: the commit chunk fails closed on a deleted row
+// (security condition 2)
+// ===========================================================================
+
+describe("commitCardChecklistChunk — deleted parent row", () => {
+  test("throws SELECTOR_ROW_DELETED and inserts nothing", async () => {
+    const t = convexTest(schema, modules);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      isCustom: true,
+    });
+    // The delete now refuses while a review is staged, but the commit ACTION
+    // spans several transactions, so a chunk can still arrive after the row
+    // went away. `resolveCardSlots` degrades to `() => ({})` for a missing row
+    // rather than throwing, so without this guard the chunk would insert
+    // cards pointing at nothing, with no slot attribution at all.
+    await t.run(async (ctx) => {
+      await ctx.db.delete(setId);
+    });
+
+    let thrown: unknown;
+    try {
+      await t.run(async (ctx) =>
+        ctx.runMutation(internal.selectorOptions.commitCardChecklistChunk, {
+          selectorOptionId: setId,
+          sportValue: "Baseball",
+          cards: [
+            {
+              cardNumber: "1",
+              cardName: "Shohei Ohtani",
+              platformData: { bsc: { ref: "bsc-1", setId: "topps-chrome" } },
+              sortOrder: 1,
+              playerNames: [],
+              teamNames: [],
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(ConvexError);
+    expect(
+      (thrown as ConvexError<{ code: string }>).data,
+    ).toMatchObject({ code: "SELECTOR_ROW_DELETED" });
+
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("cardChecklist").collect()).length,
+      ),
+    ).toBe(0);
+  });
+
+  test("still commits normally while the row exists", async () => {
+    const t = convexTest(schema, modules);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome", {
+      isCustom: true,
+    });
+
+    const result = await t.run(async (ctx) =>
+      ctx.runMutation(internal.selectorOptions.commitCardChecklistChunk, {
+        selectorOptionId: setId,
+        sportValue: "Baseball",
+        cards: [
+          {
+            cardNumber: "1",
+            cardName: "Shohei Ohtani",
+            platformData: {},
+            sortOrder: 1,
+            playerNames: [],
+            teamNames: [],
+          },
+        ],
+      }),
+    );
+
+    expect(result.storedIds).toHaveLength(1);
   });
 });

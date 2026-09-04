@@ -45,6 +45,9 @@ const NON_ADMIN_IDENTITY = {
 
 const SENTINEL_LAST_UPDATED = 1_700_000_000_000;
 
+/** Mirrors MAX_ELSEWHERE_PARENTS in convex/selectorOptions.ts. */
+const MAX_ELSEWHERE_PARENTS = 200;
+
 type Level =
   | "sport"
   | "year"
@@ -332,6 +335,69 @@ describe("findSelectorOptionElsewhere", () => {
     );
 
     expect(matches.map((m) => m._id)).toEqual([parallelUnderInsert]);
+  });
+
+  // ── security condition 3b: the search is bounded ────────────────────────
+
+  test("answers an oversized value without reading anything", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { topps } = await seedSetNameTree(t);
+
+    // 201 chars — one past MAX_SELECTOR_VALUE_LENGTH. No stored value can be
+    // this long (checkSelectorValue caps the write side at 200), so "no match"
+    // is the correct answer AND the cheap one; it must not fan out first.
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "setName", parentId: topps, value: "x".repeat(201) },
+    );
+    expect(matches).toEqual([]);
+
+    // A value AT the ceiling is still searched properly.
+    const atCeiling = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "setName", parentId: topps, value: "y".repeat(200) },
+    );
+    expect(atCeiling).toEqual([]);
+  });
+
+  test("caps the parallel candidate-parent fan-out", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const yearId = await insertRow(t, "year", "2024", sportId);
+    const mfrId = await insertRow(t, "manufacturer", "Topps", yearId);
+    const setId = await insertRow(t, "setName", "Topps Chrome", mfrId);
+
+    // MAX_ELSEWHERE_PARENTS + 1 variantTypes. `by_level_and_parent` orders by
+    // _creationTime, so the last one falls outside the cap.
+    const variantTypeIds: Array<Id<"selectorOptions">> = [];
+    for (let i = 0; i < MAX_ELSEWHERE_PARENTS + 1; i++) {
+      variantTypeIds.push(
+        await insertRow(t, "variantType", `VT ${i}`, setId, true),
+      );
+    }
+    const beyondCap = variantTypeIds[variantTypeIds.length - 1];
+    await insertRow(t, "parallel", "Gold /50", beyondCap);
+
+    const matches = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "parallel", parentId: variantTypeIds[0], value: "Gold /50" },
+    );
+
+    // Truncated, not exhaustive: the search is an OFFER, and a miss costs a
+    // duplicate row, never data. The per-parent uniqueness check is untouched.
+    expect(matches).toEqual([]);
+
+    // Proof the same shape IS found inside the cap.
+    await insertRow(t, "parallel", "Gold /50", variantTypeIds[5]);
+    const inCap = await asAdmin.query(
+      api.selectorOptions.findSelectorOptionElsewhere,
+      { level: "parallel", parentId: variantTypeIds[0], value: "Gold /50" },
+    );
+    expect(inCap).toHaveLength(1);
+    expect(inCap[0].parentId).toBe(variantTypeIds[5]);
   });
 
   test("rejects a non-admin caller", async () => {

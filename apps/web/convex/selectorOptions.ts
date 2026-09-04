@@ -70,6 +70,7 @@ import {
   // verbatim with EntityColumn's inline error so the form and the mutation
   // cannot disagree about what "2o24" is.
   checkCustomSelectorValue,
+  MAX_SELECTOR_VALUE_LENGTH,
   valuesDeepEqual,
   clearDeclinedIfLabelChanged,
   planSelectorSync,
@@ -1550,6 +1551,19 @@ export const storeSelectorOptions = mutation({
  */
 const MAX_ELSEWHERE_MATCHES = 20;
 
+/**
+ * Ceiling on how many candidate parents one search scans (security condition
+ * 3b). Only `parallel` can approach it — its scope is every variantType in the
+ * set PLUS every insert under them, which a set with hundreds of inserts turns
+ * into a wide fan-out on a query an operator triggers by typing.
+ *
+ * Truncating makes the search a best-effort OFFER rather than a proof of
+ * absence, which is what it already was: `addCustomSelectorOption` treats "no
+ * match" as "go ahead", and a missed duplicate is a duplicate row, not data
+ * loss. The per-parent uniqueness check is unaffected.
+ */
+const MAX_ELSEWHERE_PARENTS = 200;
+
 type ElsewherePathNode = {
   _id: Id<"selectorOptions">;
   level: Level;
@@ -1671,12 +1685,16 @@ async function elsewhereCandidateParents(
     const variantTypeIds = await childrenOf("variantType", setId);
     if (level === "insert") return variantTypeIds;
 
-    // parallel: every variantType AND every insert under them.
-    const candidates: Array<Id<"selectorOptions">> = [...variantTypeIds];
+    // parallel: every variantType AND every insert under them, capped.
+    const candidates: Array<Id<"selectorOptions">> = variantTypeIds.slice(
+      0,
+      MAX_ELSEWHERE_PARENTS,
+    );
     for (const vtId of variantTypeIds) {
+      if (candidates.length >= MAX_ELSEWHERE_PARENTS) break;
       candidates.push(...(await childrenOf("insert", vtId)));
     }
-    return candidates;
+    return candidates.slice(0, MAX_ELSEWHERE_PARENTS);
   }
 
   return [parentId];
@@ -1703,6 +1721,12 @@ async function findElsewhereMatches(
   parentId: Id<"selectorOptions"> | undefined,
   value: string,
 ): Promise<ElsewhereMatch[]> {
+  // Security condition 3b: nothing longer than a storable value can match a
+  // stored value, so an oversized string is answered with "no match" BEFORE
+  // any index read rather than being folded and scanned for. `checkSelectorValue`
+  // enforces the same ceiling on the write side, so this cannot hide a real row.
+  if (value.length > MAX_SELECTOR_VALUE_LENGTH) return [];
+
   const key = selectorValueKey(value);
   if (!key) return [];
 
@@ -2385,6 +2409,15 @@ export const renamePlatformLabel = mutation({
 const HOLDING_SCAN_CAP = 1000;
 /** How many names are carried back so the refusal can NAME what it found. */
 const HOLDING_EXAMPLE_LIMIT = 3;
+/**
+ * Ceiling on the rows one delete may sweep with the row.
+ *
+ * Above it the delete REFUSES rather than issuing an unbounded write batch
+ * inside a single transaction. A row carrying more archived review decisions
+ * than this is not the "nothing below it" case the exception was sanctioned
+ * for, so refusing is also the honest answer, not just the cheap one.
+ */
+const TRANSIENT_DELETE_CAP = 500;
 
 const holdingKindValidator = v.union(
   v.literal("rows"),
@@ -2393,6 +2426,8 @@ const holdingKindValidator = v.union(
   v.literal("players"),
   v.literal("teams"),
   v.literal("leagues"),
+  // NEO-219 security condition 2 — staged checklist-review state.
+  v.literal("review"),
 );
 
 const holdingValidator = v.object({
@@ -2404,6 +2439,12 @@ const holdingValidator = v.object({
    * cosmetic number exact is not worth the read budget.
    */
   count: v.number(),
+  /**
+   * Always EMPTY for `kind: "review"`. The staged rows are another operator's
+   * in-progress work — unreviewed player and team names off a checklist. The
+   * refusal needs to say "a review is staged here", not leak its contents into
+   * a dialog.
+   */
   examples: v.array(v.string()),
   /**
    * `kind: "rows"` ONLY, and only when every child shares one level — what the
@@ -2429,7 +2470,8 @@ type Holding = {
     | "crossListings"
     | "players"
     | "teams"
-    | "leagues";
+    | "leagues"
+    | "review";
   count: number;
   examples: string[];
   level?: Level;
@@ -2523,6 +2565,52 @@ async function collectSelectorOptionHoldings(
     });
   }
 
+  // ── NEO-219 security condition 2: in-flight checklist work counts ──────
+  //
+  // A set under review has ~900 staged `checklistCandidates` and a queue of
+  // unresolved player/team names, but NOT ONE `cardChecklist` row yet — the
+  // cards only land at commit. So the pre-condition window is exactly the
+  // window in which another admin's review is live, and treating those tables
+  // as "transient, delete them with the row" made the delete MOST available
+  // precisely when it was most destructive.
+  //
+  // Worse, `commitCardChecklist` is an ACTION (prelude → chunks → finalize).
+  // Its phases are separate transactions, so OCC cannot serialise a delete
+  // against it: a delete landing between the prelude and a chunk leaves the
+  // chunks inserting cards that point at a row which no longer exists —
+  // `resolveCardSlots` degrades to `() => ({})` for a missing row rather than
+  // throwing, so every one of those cards would store with no slot
+  // attribution at all. `commitCardChecklistChunk` now fails closed on a
+  // missing row as well; this is the half that stops the delete.
+  const stagedCandidates = await ctx.db
+    .query("checklistCandidates")
+    .withIndex("by_selector_option_and_user", (q) =>
+      q.eq("selectorOptionId", row._id),
+    )
+    .take(HOLDING_SCAN_CAP);
+  const stagedQueue = await ctx.db
+    .query("entityReviewQueue")
+    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
+    .take(HOLDING_SCAN_CAP);
+  // `entityReviewSkips` IS still swept with the row — a "not a person" ruling
+  // is meaningless once the set is gone. It is counted here only to keep the
+  // sweep bounded: above the cap the delete refuses instead of issuing an
+  // unbounded write batch (security condition 3a).
+  const archivedSkips = await ctx.db
+    .query("entityReviewSkips")
+    .withIndex("by_selector_option_and_kind_and_name", (q) =>
+      q.eq("selectorOptionId", row._id),
+    )
+    .take(TRANSIENT_DELETE_CAP + 1);
+  const skipsOverCap = archivedSkips.length > TRANSIENT_DELETE_CAP;
+  const reviewCount =
+    stagedCandidates.length +
+    stagedQueue.length +
+    (skipsOverCap ? archivedSkips.length : 0);
+  if (reviewCount > 0) {
+    holds.push({ kind: "review", count: reviewCount, examples: [] });
+  }
+
   // NEO-96: players/teams/leagues reference a SPORT row by id. Nothing points
   // at any other level, so this whole block is skipped elsewhere.
   if (row.level === "sport") {
@@ -2607,7 +2695,10 @@ export const deleteSelectorOption = mutation({
     syncedBack: v.optional(v.boolean()),
   }),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    // NEO-219 security condition 5: the row itself is gone afterwards, so this
+    // log line is the ONLY audit trail the one sanctioned delete leaves. Who
+    // did it has to be on it.
+    const adminUserId = await requireAdmin(ctx);
     const row = await ctx.db.get(args.id);
     if (!row) {
       throw new Error(`selectorOptions row not found: ${args.id}`);
@@ -2623,39 +2714,36 @@ export const deleteSelectorOption = mutation({
     }
 
     // ── transient state keyed on the row, deleted WITH it ──────────────────
-    const queued = await ctx.db
-      .query("entityReviewQueue")
-      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
-      .collect();
-    for (const doc of queued) await ctx.db.delete(doc._id);
-
-    const candidates = await ctx.db
-      .query("checklistCandidates")
-      // `selectorOptionId` is this index's prefix, so it serves the
-      // all-operators read as well as the per-operator one it was built for.
-      .withIndex("by_selector_option_and_user", (q) =>
-        q.eq("selectorOptionId", row._id),
-      )
-      .collect();
-    for (const doc of candidates) await ctx.db.delete(doc._id);
-
+    //
+    // `checklistCandidates` and `entityReviewQueue` are NOT here: staged
+    // review work is a HOLDING now (see collectSelectorOptionHoldings), so
+    // reaching this line already proves both are empty. Deleting another
+    // operator's live review was the point of security condition 2.
+    //
+    // What is left is state that means nothing without the row, and every
+    // sweep is bounded: the holdings check above refused anything carrying
+    // more than TRANSIENT_DELETE_CAP skips, so the `.take` here is a belt on
+    // top of that rather than a silent truncation.
     const skips = await ctx.db
       .query("entityReviewSkips")
       .withIndex("by_selector_option_and_kind_and_name", (q) =>
         q.eq("selectorOptionId", row._id),
       )
-      .collect();
+      .take(TRANSIENT_DELETE_CAP);
     for (const doc of skips) await ctx.db.delete(doc._id);
 
     // A status row is keyed on (childLevel, parentId), so the ones belonging
     // to this row are its CHILD columns' — one indexed lookup per level.
+    // `setSelectorSyncStatus` keeps at most one row per (level, parentId), so
+    // this is ≤ 7 rows in practice; the cap only exists so a future writer
+    // that stops upserting cannot turn this into an unbounded batch.
     for (const level of ALL_SELECTOR_LEVELS) {
       const statuses = await ctx.db
         .query("selectorSyncStatus")
         .withIndex("by_level_and_parent", (q) =>
           q.eq("level", level).eq("parentId", row._id),
         )
-        .collect();
+        .take(TRANSIENT_DELETE_CAP);
       for (const doc of statuses) await ctx.db.delete(doc._id);
     }
 
@@ -2682,6 +2770,7 @@ export const deleteSelectorOption = mutation({
     console.log(
       JSON.stringify({
         msg: "selector_option_deleted",
+        adminUserId,
         id: row._id,
         level: row.level,
         value: truncateForLog(row.value),
@@ -8716,6 +8805,25 @@ export const commitCardChecklistChunk = internalMutation({
     staleDecisionIds: Array<Id<"cardChecklist">>;
     contentAppliedCount: number;
   }> => {
+    // NEO-219 security condition 2 — fail closed on a row deleted mid-commit.
+    //
+    // `commitCardChecklist` is an ACTION: prelude, chunks and finalize are
+    // separate transactions, so nothing serialises them against a concurrent
+    // `deleteSelectorOption`. `resolveCardSlots` below returns `() => ({})`
+    // for a missing row, which is right for its own contract (a row with no
+    // slots attributes nothing) but WRONG here — it would let this chunk
+    // insert several hundred cards pointing at a row that no longer exists,
+    // silently and with no slot attribution. The delete now refuses while a
+    // review is staged; this is the other half, for the window the holdings
+    // check cannot cover.
+    const parentRow = await ctx.db.get(args.selectorOptionId);
+    if (!parentRow) {
+      throw new ConvexError({
+        code: "SELECTOR_ROW_DELETED",
+        selectorOptionId: args.selectorOptionId,
+      });
+    }
+
     const toStoredPlatformData = await resolveCardSlots(
       ctx,
       args.selectorOptionId,
