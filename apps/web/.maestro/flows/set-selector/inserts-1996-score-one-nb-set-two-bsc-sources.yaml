@@ -767,9 +767,13 @@ tags:
 # insert fetch. R5 marketplace exception.
 # ============================================================
 
+# Scroll UP for the same reason as 8a (CI run 4, runner-3 step-152): the
+# Variants column sits ABOVE the attributes panel and the checklist, and a
+# default DOWN scroll from here walks into the checklist's inner scroller.
 - scrollUntilVisible:
     element:
       text: "Sync Inserts"
+    direction: UP
     centerElement: true
     timeout: 15000
 - tapOn: "Sync Inserts"
