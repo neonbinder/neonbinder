@@ -36,8 +36,11 @@ export interface NearMatch {
 
 export interface NearMatchPanelProps {
   /** Which entity table the matches came from. Names the list for a screen
-   *  reader, so a screen showing both lists stays unambiguous. */
-  kind: "player" | "team";
+   *  reader, so a screen showing both lists stays unambiguous.
+   *
+   *  NEO-240 added `league`: `/admin/leagues` guards the same failure the other
+   *  two do — a second "Amer. League" row nothing can tell from the first. */
+  kind: "player" | "team" | "league";
   /**
    * `undefined` is "not asked / still loading" and renders nothing, exactly as
    * an empty array does — a panel that flickers "Possible matches" with no
