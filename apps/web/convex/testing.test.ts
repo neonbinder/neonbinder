@@ -633,3 +633,127 @@ describe("seedMyTestCredentials", () => {
     });
   });
 });
+
+// NEO-121 — the scan-visibility fixture. It exists so an E2E flow can look at a
+// purchase row that has USPS scans on it; the only organic route to one is a
+// real purchase plus three days of USPS, neither of which a CI run has.
+//
+// What matters here is that it writes through the SAME two internal writers the
+// product uses, that it is idempotent (a re-run must not accumulate rows on a
+// worker account that is reused for the life of the deployment), that it is
+// scoped to the caller, and that it is dead on production.
+describe("seedMyTestCredentials — label-scans fixture", () => {
+  beforeEach(() => {
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    __resetContractCache();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.NEONBINDER_BROWSER_URL;
+    delete process.env.DEV_EASYPOST_API_KEY;
+  });
+
+  async function readFixtureRows(
+    t: ReturnType<typeof convexTest>,
+    userId: string,
+  ) {
+    return await t.run(async (ctx) => {
+      const rows = await ctx.db.query("labelPurchases").collect();
+      return rows.filter((row) => row.userId === userId);
+    });
+  }
+
+  test("files one purchase with the four-scan history, and calls no marketplace", async () => {
+    const t = convexTest(schema, modules);
+    let fetchCalled = false;
+    vi.stubGlobal("fetch", (async () => {
+      fetchCalled = true;
+      throw new Error("the scan fixture must not call out");
+    }) as unknown as typeof fetch);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["label-scans"] });
+
+    expect(result.seeded).toEqual([{ site: "label-scans", stored: true }]);
+    // The selector is NOT a site: it must never fall through to the loop's
+    // "no dev creds configured" skip branch, and it must not trigger a login.
+    expect(fetchCalled).toBe(false);
+
+    const rows = await readFixtureRows(t, USER_A);
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row.trackingCode).toHaveLength(31);
+    expect(row.trackingStatus).toBe("out_for_delivery");
+    expect(row.publicTrackingUrl).toMatch(/^https:\/\//);
+    expect(row.scans?.map((scan) => scan.message)).toEqual([
+      "Origin Processing Cancellation of Postage",
+      "Origin Primary Processing",
+      "Destination MMP Processing",
+      "Delivery",
+    ]);
+    // Oldest → newest, and the newest is the one the row summarises.
+    expect(row.scans?.at(-1)?.city).toBe("OLYMPIA");
+    expect(row.lastScanAt).toBe(row.scans?.at(-1)?.at);
+  });
+
+  test("is idempotent: a second seed re-uses the row instead of filing another", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal("fetch", (async () => {
+      throw new Error("the scan fixture must not call out");
+    }) as unknown as typeof fetch);
+
+    const caller = t.withIdentity({ subject: USER_A });
+    await caller.action(api.testing.seedMyTestCredentials, {
+      sites: ["label-scans"],
+    });
+    const first = (await readFixtureRows(t, USER_A))[0];
+
+    await caller.action(api.testing.seedMyTestCredentials, {
+      sites: ["label-scans"],
+    });
+    const rows = await readFixtureRows(t, USER_A);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._id).toEqual(first._id);
+    // Re-applied rather than no-op'd: the snapshot's `updatedAt` is `now`, so
+    // it clears the monotonic guard every run and the scan times stay recent.
+    expect(rows[0].trackerUpdatedAt).toBeGreaterThanOrEqual(
+      first.trackerUpdatedAt ?? 0,
+    );
+    expect(rows[0].scans).toHaveLength(4);
+  });
+
+  test("seeds only the caller — one worker's fixture is not another's", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal("fetch", (async () => {
+      throw new Error("the scan fixture must not call out");
+    }) as unknown as typeof fetch);
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["label-scans"] });
+    await t
+      .withIdentity({ subject: USER_B })
+      .action(api.testing.seedMyTestCredentials, { sites: ["label-scans"] });
+
+    // Two rows carrying the SAME synthetic shipment id, one per user — which is
+    // exactly why the lookup filters on userId as well as the index.
+    expect(await readFixtureRows(t, USER_A)).toHaveLength(1);
+    expect(await readFixtureRows(t, USER_B)).toHaveLength(1);
+  });
+
+  test("is dead on production: no enabling flag, no row", async () => {
+    delete process.env.TESTING_RESET_SECRET;
+    const t = convexTest(schema, modules);
+
+    await expect(
+      t
+        .withIdentity({ subject: USER_A })
+        .action(api.testing.seedMyTestCredentials, { sites: ["label-scans"] }),
+    ).rejects.toThrow(/not enabled on this deployment/);
+
+    expect(await readFixtureRows(t, USER_A)).toHaveLength(0);
+  });
+});

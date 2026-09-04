@@ -161,16 +161,16 @@ separately and don't infer one from the other — a translucent-tint badge in
 particular can need meaningfully different token weights per theme, not just
 a color swap.**
 
-## Open question, not yet resolved
+## Resolved: the dark background IS forced, just not via `body`
 
-`apps/web/app/globals.css` sets `body` background via `--background` which is
-white (`#ffffff`) unless `prefers-color-scheme: dark` matches — there is no
-forced-dark class anywhere found in `src/layouts/*.tsx` or `src/main.tsx`. If a
-user's OS is in light mode, the ambient page background could be white while
-every component still hardcodes light-on-dark text colors (slate-200/300/400,
-neon-*). Every contrast finding in this file assumes the dark background is
-what actually renders (consistent with CLAUDE.md calling this a fixed dark
-theme, and with how every component already styles its own boxes as if the
-canvas were dark). Flagged as a caveat, not chased down — worth a real
-investigation the next time contrast is audited, since the whole premise of
-"neon on dark passes" depends on it.
+Traced during the NEO-121 audit. `apps/web/app/globals.css`'s `body` background
+(`var(--background)`, white unless `prefers-color-scheme: dark`) is a red
+herring — `src/main.tsx` wraps the entire app in Radix's `<Theme appearance="dark" ...>`,
+which renders a `.radix-themes` div with `background-color: var(--color-background)`
+covering the full viewport ON TOP of `body`. `.dark, .dark-theme { --color-background: #0a0a0a }`
+(`app/globals.css`) applies unconditionally under `appearance="dark"` regardless
+of the OS `prefers-color-scheme` setting. So the rendered background is always
+near-black `#0a0a0a`, never white, regardless of the user's OS theme — the
+`body`/`:root` light-mode default never actually paints. Every contrast finding
+in this file (computed against slate-950/900/800/black) reflects what really
+renders. No further investigation needed; this is settled.

@@ -37,7 +37,7 @@ const TOOL_DETAILS: Record<
   },
   "/print/labels": {
     description:
-      "Reprint a label you already paid for — your 25 most recent purchases, with their tracking numbers.",
+      "Reprint a label you already paid for — your 25 most recent purchases, with their tracking numbers and USPS scan history.",
     icon: ClockIcon,
     accent: "text-neon-green group-hover:border-neon-green/50",
   },

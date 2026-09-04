@@ -22,11 +22,28 @@
 // - Deletes are strictly scoped to the three per-user tables via the by_user
 //   index. No bulk-wipe paths, no cross-user reach.
 
-import { mutation, action } from "./_generated/server";
+import { mutation, action, internalMutation } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
 import { CLERK_USER_ID_RE, placeholderJobPrefix } from "./lib/placeholderObjects";
+import type { Id } from "./_generated/dataModel";
+
+/**
+ * What {@link seedMyTestLabelScans} hands back.
+ *
+ * Written out as a named type, and used to annotate both the handler and the
+ * `ctx.runMutation` call in {@link seedMyTestCredentials}, purely to break a
+ * TypeScript inference cycle: an action in this file calls an internal
+ * mutation in this file, so `internal.testing.*` cannot be resolved while the
+ * module's own exports are still being inferred. Explicit annotations cut the
+ * cycle; without them tsc reports TS7022/TS7023 on both functions.
+ */
+type ScanFixtureResult = {
+  purchaseId: Id<"labelPurchases">;
+  scans: number;
+  applied: boolean;
+};
 
 export const resetMyTestState = mutation({
   args: {},
@@ -244,12 +261,27 @@ export const seedMyTestCredentials = action({
       throw new Error("Not authenticated");
     }
 
-    const sites = args.sites ?? ["buysportscards", "sportlots"];
+    // NEO-121 — `sites` is the seed SELECTOR, and one of the things a flow can
+    // ask to be seeded is not a marketplace at all: the scan-visibility fixture
+    // (see SCAN_FIXTURE_SELECTOR below). Pulled out before the loop so it never
+    // falls through to the "no dev creds for this site" skip branch, and so a
+    // flow that asks only for it pays for no marketplace logins.
+    const requested = args.sites ?? ["buysportscards", "sportlots"];
+    const wantsScanFixture = requested.includes(SCAN_FIXTURE_SELECTOR);
+    const sites = requested.filter((site) => site !== SCAN_FIXTURE_SELECTOR);
     const seeded: Array<{
       site: string;
       stored: boolean;
       skipped?: boolean;
     }> = [];
+
+    if (wantsScanFixture) {
+      const fixture: ScanFixtureResult = await ctx.runMutation(
+        internal.testing.seedMyTestLabelScans,
+        { userId },
+      );
+      seeded.push({ site: SCAN_FIXTURE_SELECTOR, stored: fixture.scans > 0 });
+    }
 
     for (const site of sites) {
       const envKeys = SEED_SITE_ENV[site];
@@ -381,14 +413,237 @@ export const seedMyTestCredentials = action({
     // it gets back, so an unconditional extra element would change the result
     // of seeding on every deployment that has no EasyPost key. Silence when
     // unconfigured keeps this additive.
+    //
+    // NEO-121 — stores through the INTERNAL helper, not the public
+    // `saveEasypostKey`, precisely because the public one now schedules webhook
+    // registration (decision 8). Every preview seeds this same shared test key
+    // for 8 worker users, so registering here would pile a webhook per preview
+    // per worker onto one EasyPost test account — and `preview-cleanup.yml`
+    // deletes the preview deployment, so nothing would ever unregister them.
+    // The seed stores the key; only a real seller's save registers a hook.
     const easypostKey = process.env.DEV_EASYPOST_API_KEY;
     if (easypostKey) {
-      const result = await ctx.runAction(api.postage.saveEasypostKey, {
+      const result = await ctx.runAction(internal.postage.storeEasypostKeyForUser, {
+        userId,
         apiKey: easypostKey,
       });
       seeded.push({ site: "easypost", stored: result.success });
     }
 
     return { seeded };
+  },
+});
+
+// ─── NEO-121 — the scan-visibility fixture ───────────────────────────────────
+//
+// WHY A FIXTURE AT ALL
+// A purchase row with USPS scans on it cannot be reached from the UI in test
+// time. Getting one for real means tapping "Buy & print" — which spends real
+// money on a production key and ends in window.print(), whose native dialog
+// wedges the runner — and then waiting three days for USPS to scan the letter.
+// Neither is a thing an E2E run can do, so the row is written directly, in the
+// exact shape the two real writers produce.
+//
+// WHY IT RIDES ON /testing/seed-credentials
+// That page is the suite's one generic "seed something for the caller, then
+// land on the destination" hop, and its `sites` query param is already the
+// selector for WHAT to seed. Adding a fixture name to that selector costs no
+// new route, no new page and no new entry in the router — one fewer moving
+// part than a second seeding page that would do the same three things.
+//
+// WHY IT WRITES THROUGH THE REAL WRITERS
+// It calls `internal.shipping.recordLabelPurchase` and then
+// `internal.shipmentTracking.applyTrackerSnapshot` — the same two mutations a
+// real purchase and a real `tracker.updated` webhook go through. So the stored
+// row is sanitised, truncated, capped and monotonic-guarded exactly as
+// production data is, and the E2E asserts against what the product would
+// actually render rather than against a hand-built document that could drift.
+//
+// THE DATA IS A REAL LETTER. Every message, city and status below is copied
+// from the production tracker Jason supplied on 2026-09-03 (Madison WI →
+// Olympia WA, four scans over three days, terminal status `out_for_delivery`).
+// The tracking code is a 31-digit IMb of the right SHAPE but a synthetic
+// value, and the shipment/tracker ids are synthetic: nothing here names a real
+// EasyPost object, so no flow can accidentally act on one.
+
+/**
+ * The name a flow passes in `sites` to ask for the scan fixture.
+ *
+ * Deliberately hyphenated and not a marketplace name, so it can never collide
+ * with a real entry in {@link SEED_SITE_ENV}.
+ */
+const SCAN_FIXTURE_SELECTOR = "label-scans";
+
+/**
+ * Synthetic EasyPost identifiers. `by_shipment` on this id is what makes the
+ * seed idempotent — a re-run finds the row it wrote last time instead of
+ * filing a second one, so a worker account never accumulates fixture rows.
+ */
+const SCAN_FIXTURE_SHIPMENT_ID = "shp_e2escanfixture0000000000000001";
+const SCAN_FIXTURE_TRACKER_ID = "trk_e2escanfixture0000000000000001";
+
+/** 31 digits — an IMb, the shape a real First-Class letter carries. */
+const SCAN_FIXTURE_TRACKING_CODE = "0004012345678901234567890123456";
+
+/** EasyPost's public tracking page for the tracker. Rendered as a link. */
+const SCAN_FIXTURE_PUBLIC_URL =
+  "https://track.easypost.com/djE6dHJrX2ZpeHR1cmVfMDAx";
+
+/**
+ * The recipient the fixture row is addressed to.
+ *
+ * Distinct from every other name the suite types ("Jane Buyer", "Dana Reyes")
+ * so a flow asserting on this row's heading cannot be satisfied by a row some
+ * other flow left behind.
+ */
+const SCAN_FIXTURE_RECIPIENT = "Scan Fixture Buyer";
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * File one label purchase for `userId` and apply a four-scan tracker snapshot
+ * to it, so `/print/labels` has a row with a real scan history to render.
+ *
+ * Safety, in the same shape as the other helpers in this file:
+ *   - `internalMutation` — unreachable from any client. The only caller is
+ *     {@link seedMyTestCredentials}, which has already checked the enabling
+ *     flag and derived `userId` from the verified Clerk subject. It is
+ *     re-checked here anyway: this writes rows, and a write helper that trusts
+ *     its caller's gate is one refactor away from being ungated.
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - writes ONLY through the two internal writers the feature itself uses, so
+ *     it can create nothing the product could not create;
+ *   - idempotent, and never deletes: a re-run re-applies the snapshot to the
+ *     row it already wrote. Nothing existing is removed, so no other flow's
+ *     state can be degraded by seeding this one.
+ *
+ * The scan times are relative to now (three days of history ending six hours
+ * ago) rather than fixed instants, so the row always reads as a letter in the
+ * mail this week and `updatedAt` is always strictly newer than what a previous
+ * run stored — which is what lets the monotonic guard in
+ * `applyTrackerSnapshot` accept the re-application instead of no-op'ing.
+ */
+export const seedMyTestLabelScans = internalMutation({
+  args: { userId: v.string() },
+  returns: v.object({
+    purchaseId: v.id("labelPurchases"),
+    scans: v.number(),
+    applied: v.boolean(),
+  }),
+  handler: async (ctx, args): Promise<ScanFixtureResult> => {
+    // Fail closed in production: the enabling flag is unset there.
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test scan seeding is not enabled on this deployment");
+    }
+
+    const now = Date.now();
+
+    const findRow = async () =>
+      await ctx.db
+        .query("labelPurchases")
+        .withIndex("by_shipment", (q) =>
+          q.eq("easypostShipmentId", SCAN_FIXTURE_SHIPMENT_ID),
+        )
+        .filter((q) => q.eq(q.field("userId"), args.userId))
+        .first();
+
+    let row = await findRow();
+    if (!row) {
+      // The real purchase writer. No `tracker` argument: the snapshot is
+      // applied below through the webhook's own mutation, which is the path
+      // that actually has to work for this feature.
+      await ctx.runMutation(internal.shipping.recordLabelPurchase, {
+        userId: args.userId,
+        easypostShipmentId: SCAN_FIXTURE_SHIPMENT_ID,
+        trackingCode: SCAN_FIXTURE_TRACKING_CODE,
+        // A real First-Class letter: 78¢, one ounce.
+        costCents: 78,
+        weightOz: 1,
+        toAddress: {
+          name: SCAN_FIXTURE_RECIPIENT,
+          line1: "1 Capitol Way N",
+          city: "Olympia",
+          state: "WA",
+          postalCode: "98501",
+          country: "US",
+        },
+        // Never fetched: reprint calls `refreshLabelUrl` rather than opening
+        // the stored URL, and no flow taps reprint. Stored because the field
+        // is required and a row is never allowed to be empty.
+        labelUrl: "https://easypost-files.invalid/e2e-scan-fixture-label.png",
+      });
+      row = await findRow();
+      if (!row) {
+        throw new Error("Scan fixture: purchase row was not written");
+      }
+    }
+
+    const scans = [
+      {
+        // The postmark. USPS's own wording, and the single most alarming
+        // string in the timeline — the page glosses it, and the E2E asserts
+        // the gloss.
+        at: now - 72 * HOUR_MS,
+        status: "pre_transit",
+        message: "Origin Processing Cancellation of Postage",
+        city: "MADISON",
+        state: "WI",
+        zip: "53703",
+        country: "US",
+      },
+      {
+        at: now - 61 * HOUR_MS,
+        status: "in_transit",
+        message: "Origin Primary Processing",
+        city: "MILWAUKEE",
+        state: "WI",
+        zip: "53203",
+        country: "US",
+      },
+      {
+        at: now - 30 * HOUR_MS,
+        status: "in_transit",
+        message: "Destination MMP Processing",
+        city: "TACOMA",
+        state: "WA",
+        zip: "98409",
+        country: "US",
+      },
+      {
+        // The finish line for a letter: the destination post office's
+        // "Delivery" scan. Nothing ever confirms the mailbox.
+        at: now - 6 * HOUR_MS,
+        status: "out_for_delivery",
+        message: "Delivery",
+        city: "OLYMPIA",
+        state: "WA",
+        zip: "98501",
+        country: "US",
+      },
+    ];
+
+    const result: { applied: boolean; newScans: number } = await ctx.runMutation(
+      internal.shipmentTracking.applyTrackerSnapshot,
+      {
+        purchaseId: row._id,
+        userId: args.userId,
+        snapshot: {
+          trackerId: SCAN_FIXTURE_TRACKER_ID,
+          status: "out_for_delivery",
+          statusDetail: "out_for_delivery",
+          updatedAt: now,
+          lastScanAt: scans[scans.length - 1].at,
+          estDeliveryAt: now - 6 * HOUR_MS,
+          publicTrackingUrl: SCAN_FIXTURE_PUBLIC_URL,
+          scans,
+        },
+      },
+    );
+
+    return {
+      purchaseId: row._id,
+      scans: scans.length,
+      applied: result.applied,
+    };
   },
 });
