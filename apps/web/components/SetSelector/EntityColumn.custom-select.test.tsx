@@ -44,6 +44,8 @@ vi.mock("../../convex/_generated/api", () => ({
     selectorOptions: {
       getSelectorOptions: "getSelectorOptions",
       addCustomSelectorOption: "addCustomSelectorOption",
+      getAncestorChain: "getAncestorChain",
+      findSelectorOptionElsewhere: "findSelectorOptionElsewhere",
     },
   },
 }));
@@ -52,11 +54,16 @@ vi.mock("../../convex/_generated/api", () => ({
 // controlled items list. Each test reconfigures these before rendering.
 const mockAddCustom = vi.fn();
 const mockQuery = vi.fn();
+// NEO-219: the cross-parent duplicate lookup is a one-shot client query, not a
+// subscription. Default: nothing found anywhere, which is the plain-create path.
+const mockFindElsewhere = vi.fn();
 
 vi.mock("convex/react", () => ({
   useMutation: () => mockAddCustom,
   useAction: () => vi.fn(),
-  useQuery: () => mockQuery(),
+  useConvex: () => ({ query: (...args: unknown[]) => mockFindElsewhere(...args) }),
+  useQuery: (ref: string) =>
+    ref === "getAncestorChain" ? undefined : mockQuery(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -123,6 +130,20 @@ async function submitCustomValue(
   });
 }
 
+/**
+ * NEO-219: a genuinely-new value no longer writes on the first Enter — it opens
+ * a confirm whose primary button ("Create") already has focus, so the keyboard
+ * flow is type → Enter → Enter. Tests that assert the WRITE press it.
+ */
+async function confirmCreate() {
+  await waitFor(() => {
+    expect(screen.getByText("Create")).toBeTruthy();
+  });
+  await act(async () => {
+    fireEvent.click(screen.getByText("Create"));
+  });
+}
+
 describe("EntityColumn — '+ Custom' select-on-match (NEO-46)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -130,6 +151,7 @@ describe("EntityColumn — '+ Custom' select-on-match (NEO-46)", () => {
     mockQuery.mockReturnValue(EXISTING_ITEMS);
     // Default resolve so the new-value path never rejects unexpectedly.
     mockAddCustom.mockResolvedValue("newly-created-id");
+    mockFindElsewhere.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -165,6 +187,9 @@ describe("EntityColumn — '+ Custom' select-on-match (NEO-46)", () => {
     const onSelectExisting = vi.fn();
 
     await submitCustomValue("Pickleball", onSelectExisting);
+    // NEO-219: the first Enter opens the confirm and writes nothing.
+    expect(mockAddCustom).not.toHaveBeenCalled();
+    await confirmCreate();
 
     await waitFor(() => {
       expect(mockAddCustom).toHaveBeenCalledTimes(1);
