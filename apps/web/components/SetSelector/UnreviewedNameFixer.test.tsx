@@ -245,11 +245,13 @@ describe("UnreviewedNameFixer — linking", () => {
   });
 
   /**
-   * Linking a player says nothing about a typed TEAM name. Clearing it would
-   * throw away the operator's own answer to a question they were not asked
-   * here — and the next sync would then never fold that name into a review.
+   * The half-answer. `onSaved()` tells the walker the card is done and moves
+   * past it — so a save that leaves the card badged is the worst outcome
+   * available: the operator is told they finished, the walker never returns,
+   * and the badge is still in the grid. A card with an unlinked player name
+   * AND an unlinked team name is one click away from exactly that.
    */
-  it("leaves the side that gained no link untouched", async () => {
+  it("will not save while a typed side still has no link", async () => {
     renderFixer(
       baseRow({
         pendingPlayerNames: ["Yordan Alvrez"],
@@ -257,14 +259,52 @@ describe("UnreviewedNameFixer — linking", () => {
       }),
     );
 
+    const saveButton = screen.getByRole("button", { name: /Save & Next/ });
+    expect(saveButton.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("Link a player and a team to clear this card."))
+      .toBeTruthy();
+
     pickTeam("Houston Astros");
+
+    // Half answered: the team is linked, the player name is still the reason
+    // this card is flagged, and the hint now names only what is left.
+    expect(saveButton.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText("Link a player to clear this card.")).toBeTruthy();
+    await save();
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+
+    pickPlayer("Yordan Alvarez");
+    expect(saveButton.getAttribute("aria-disabled")).toBeNull();
+    await save();
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      playerIds: [ALVAREZ._id],
+      teamOnCardIds: [ASTROS._id],
+      pendingPlayerNames: [],
+      pendingTeamNames: [],
+    });
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The one shape where Save is worth pressing with the pickers untouched: a
+   * card that reached commit with a RESOLVED player and a leftover typed name.
+   * The link is already right; the name is stale, and saving retires it.
+   */
+  it("offers the save that only retires a stale name", async () => {
+    renderFixer(baseRow({ playerIds: [ALVAREZ._id as Id<"players">] }));
+
+    expect(
+      screen.getByRole("button", { name: /Save & Next/ }).getAttribute("aria-disabled"),
+    ).toBeNull();
     await save();
 
     expect(mockUpdateCard).toHaveBeenCalledWith({
       id: CARD_ID,
-      playerIds: [],
-      teamOnCardIds: [ASTROS._id],
-      pendingPlayerNames: ["Yordan Alvrez"],
+      playerIds: [ALVAREZ._id],
+      teamOnCardIds: [],
+      pendingPlayerNames: [],
       pendingTeamNames: [],
     });
   });
@@ -294,6 +334,7 @@ describe("UnreviewedNameFixer — linking", () => {
     expect(
       screen.getByRole("button", { name: /Save & Next/ }).getAttribute("aria-disabled"),
     ).toBe("true");
+    expect(screen.getByText("Link a player to clear this card.")).toBeTruthy();
     await save();
     expect(mockUpdateCard).not.toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();

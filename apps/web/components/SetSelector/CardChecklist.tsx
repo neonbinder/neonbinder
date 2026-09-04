@@ -336,6 +336,29 @@ export default function CardChecklist({
   const [pairingPhase, setPairingPhase] = useState<"closed" | "review" | "parked">(
     "closed",
   );
+  /**
+   * NEO-221 — which FETCH the mounted pairing modal belongs to. Bumped once
+   * per `handleSync`, and used for nothing but the modal's React `key`.
+   *
+   * Parking made a remount stop being guaranteed. `startCandidateBatch` clears
+   * and rewrites `checklistCandidates` in ONE transaction, so a re-sync never
+   * takes `liveCandidates` through an empty value — `streamedPairing` goes
+   * straight from the old batch to the new one, React reconciles the same
+   * element, and `CardPairingModal` absorbs `initialData` APPEND-ONLY: the new
+   * batch lands beside the stale one and Confirm ships cards from a checklist
+   * the operator is no longer looking at.
+   *
+   * Keying on the fetch makes "a new sync starts a new pairing session" a
+   * structural fact rather than something every failure path has to remember
+   * to arrange. The explicit `setPairingPhase("closed")` on those paths still
+   * matters — it is what discards the candidates and lets the modal unmount
+   * before the next sync — but this is the backstop if one is ever missed.
+   *
+   * State, not `syncGenerationRef`: this value is READ DURING RENDER, and a
+   * ref read there is the "refs are not for rendering" mistake. The ref stays
+   * what the async staleness checks use.
+   */
+  const [pairingInstance, setPairingInstance] = useState(0);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -414,6 +437,30 @@ export default function CardChecklist({
   const syncGenerationRef = useRef(0);
 
   /**
+   * NEO-221 — end the pairing session for good and bin what it was reviewing.
+   *
+   * Every path that leaves the operator with NO dialog on screen has to call
+   * this. Parking (D9) is what made that a rule rather than a nicety: a parked
+   * phase keeps `streamedPairing` non-null, which keeps `CardPairingModal`
+   * mounted and its reducer alive. That is exactly right while the wizard is
+   * up and can offer "Back to matching" — and exactly wrong the moment the
+   * wizard is not, because nothing on screen can then reach the session, its
+   * candidates are never discarded, and the next sync re-shows the same
+   * instance with the previous batch still in it.
+   *
+   * The discard failure is logged, not shown: nothing was saved, the operator
+   * has already been told why, and the next fetch's clear-stale step sweeps
+   * whatever is left.
+   */
+  const abandonPairingSession = useCallback(() => {
+    setPairingPhase("closed");
+    setCommitError(null);
+    void discardCandidates({ selectorOptionId: variantId }).catch((error) => {
+      console.warn("Failed to discard checklist candidates:", error);
+    });
+  }, [discardCandidates, variantId]);
+
+  /**
    * Three-phase pipeline (NEO-137 moved pairing to the front):
    *   1. fetchChecklist → publishes three buckets of CANDIDATES to
    *      `checklistCandidates` as it reconciles them, and answers with a
@@ -453,6 +500,12 @@ export default function CardChecklist({
     // committing a partial checklist is not.
     setFetchInFlight(true);
     setPairingPhase("review");
+    // A new fetch is a new pairing session: remount the modal rather than
+    // reconciling the old one (see `pairingInstance`), and drop any commit
+    // failure the previous run left behind, which the wizard would otherwise
+    // render on a review that has nothing to do with it.
+    setPairingInstance((n) => n + 1);
+    setCommitError(null);
     setSyncMessage(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
@@ -561,6 +614,10 @@ export default function CardChecklist({
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
       );
+      // The diff query or entity resolution threw, so no wizard opened and
+      // nothing on screen can reach the session we parked a moment ago. Un-park
+      // it, or it stays mounted with a stale reducer until the tab is closed.
+      abandonPairingSession();
     } finally {
       setCommitting(false);
     }
@@ -600,7 +657,14 @@ export default function CardChecklist({
       unknownTeams,
     };
     if (unknownPlayers.length === 0 && unknownTeams.length === 0) {
-      await runCommit(preview);
+      // No wizard on this path — nothing to hold the preview for, and nothing
+      // to render `commitError`. `runCommit` has already put the failure in the
+      // sync banner (`Commit failed: …`), which is the only place an operator
+      // will see it here, so all that is left is to end the parked session.
+      if (!(await runCommit(preview))) {
+        setPairingPhase("closed");
+        setCommitError(null);
+      }
     } else {
       // Stash preview; the review wizard handles the rest.
       setPendingPreview(preview);
@@ -622,6 +686,9 @@ export default function CardChecklist({
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
       );
+      // Same as `handlePairingConfirm`'s catch: the content review is gone, no
+      // wizard opened, and the parked session would otherwise be unreachable.
+      abandonPairingSession();
     } finally {
       setCommitting(false);
     }
@@ -1652,6 +1719,11 @@ export default function CardChecklist({
 
       {streamedPairing && (
         <CardPairingModal
+          // NEO-221: one instance per FETCH. Without this, a re-sync while a
+          // session is still mounted reconciles into the SAME instance and
+          // `initialData`'s append-only absorb stacks the new batch on the old
+          // one. See `pairingInstance`.
+          key={pairingInstance}
           // NEO-221 (D9): MOUNTED for `"review"` and `"parked"`, OPEN only for
           // `"review"`. `CardPairingModal`'s `if (!isOpen) return null` sits
           // below all of its hooks, so a parked modal keeps its reducer — that
@@ -1752,23 +1824,14 @@ export default function CardChecklist({
             // the abort — drop the reviewed set, close the parked pairing
             // session for good, and bin the candidates it was reviewing.
             setPendingPreview(null);
-            setCommitError(null);
-            setPairingPhase("closed");
             setSyncMessage("Fetch cancelled — no cards saved.");
             // NEO-221 (D9/R4): the discard used to happen when the operator
             // CONFIRMED the pairing. It cannot any more — a parked session can
             // still be returned to, and discarding its candidates would empty
-            // the dialog it goes back to. So it moved to the two ends of the
-            // pipeline: a landed commit (in `runCommit`) and this abort.
-            //
-            // Failure is logged, not shown: nothing was saved, the operator
-            // has already been told so, and the next fetch's clear-stale step
-            // sweeps whatever is left.
-            void discardCandidates({ selectorOptionId: variantId }).catch(
-              (error) => {
-                console.warn("Failed to discard checklist candidates:", error);
-              },
-            );
+            // the dialog it goes back to. So it moved to the ends of the
+            // pipeline: a landed commit (in `runCommit`), this abort, and the
+            // failure paths that leave no dialog on screen.
+            abandonPairingSession();
           }}
         />
       )}

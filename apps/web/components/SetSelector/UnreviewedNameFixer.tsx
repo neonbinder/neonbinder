@@ -118,14 +118,37 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
   };
   const atCap = teamIds.length >= MAX_CARD_TEAMS;
 
-  /**
-   * Nothing to write unless a list actually CHANGED. Saving the row back to
-   * itself would report the card as answered while leaving it in exactly the
-   * state that flagged it — the walker would advance and the badge would stay.
-   */
   const sameIds = (a: readonly string[], b: readonly string[]) =>
     a.length === b.length && a.every((id, i) => id === b[i]);
-  const changed =
+
+  /**
+   * Would this write leave the card STILL BADGED?
+   *
+   * `onSaved()` tells the walker the card is answered and moves past it, so a
+   * save that does not clear the flag is the worst outcome available here: the
+   * operator is told they are done, the walker never comes back to this card,
+   * and the badge is still in the grid. That is easy to reach by accident on a
+   * card carrying both an unlinked player name and an unlinked team name —
+   * link the team, press Save, and the player name is still the whole reason
+   * the card was flagged.
+   *
+   * So Save is gated on the card actually being CLEARED, side by side with the
+   * rule in `deriveCardAttention`: a side with typed names must gain a link.
+   * `aria-disabled` rather than `disabled`, with the reason in the hint the
+   * button is `aria-describedby`, so the explanation is reachable — see the
+   * note on the button itself.
+   */
+  const playerSideOpen = unlinkedPlayerNames.length > 0 && playerIds.length === 0;
+  const teamSideOpen = unlinkedTeamNames.length > 0 && teamIds.length === 0;
+  const clearsCard = !playerSideOpen && !teamSideOpen;
+
+  /**
+   * And is there anything to write at all? Ids may be untouched and yet the
+   * write still worth making: a card can reach commit with a resolved
+   * `playerIds` AND a leftover typed name, and pressing Save is what retires
+   * the name.
+   */
+  const idsChanged =
     !sameIds(
       playerIds as unknown as string[],
       (row.playerIds ?? []) as unknown as string[],
@@ -134,7 +157,10 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       teamIds as unknown as string[],
       (row.teamOnCardIds ?? []) as unknown as string[],
     );
-  const canSave = changed && !busy;
+  const retiresNames =
+    (playerIds.length > 0 && (row.pendingPlayerNames?.length ?? 0) > 0) ||
+    (teamIds.length > 0 && (row.pendingTeamNames?.length ?? 0) > 0);
+  const canSave = clearsCard && (idsChanged || retiresNames) && !busy;
 
   const save = async () => {
     if (!canSave) return;
@@ -181,7 +207,19 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
   };
 
   const summary = (() => {
-    if (!changed) return "Link a player or a team to clear this card.";
+    // Says which side is still open, not a generic "link something" — on a
+    // card with two unlinked sides, "link a player or a team" is exactly the
+    // instruction that leads to a half-answer.
+    if (!clearsCard) {
+      const missing = [
+        ...(playerSideOpen ? ["a player"] : []),
+        ...(teamSideOpen ? ["a team"] : []),
+      ];
+      return `Link ${missing.join(" and ")} to clear this card.`;
+    }
+    if (!idsChanged && !retiresNames) {
+      return "Nothing to change here — skip this card.";
+    }
     const parts: string[] = [];
     if (playerIds.length > 0) {
       parts.push(`${playerIds.length} ${playerIds.length === 1 ? "player" : "players"}`);

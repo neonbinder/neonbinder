@@ -1892,3 +1892,141 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-221 — the failure paths out of a PARKED pairing session.
+//
+// `handlePairingConfirm` parks the session (D9) so the wizard can offer "Back
+// to matching". Three routes then leave no dialog on screen at all, and each
+// one used to leave the session parked forever: nothing could reach it, its
+// candidates were never discarded, and — because `startCandidateBatch` clears
+// and rewrites in ONE transaction — the next Sync re-showed the SAME modal
+// instance, whose append-only absorb stacked the new batch beside the stale
+// one. Confirm then shipped cards from a checklist the operator was no longer
+// looking at.
+// ---------------------------------------------------------------------------
+
+/** A second fetch's candidate, sharing nothing with the first batch. */
+const freshCandidate = {
+  cardNumber: "7",
+  cardName: "Fresh Player",
+  bucket: "matched" as const,
+  confidence: 1,
+  platformData: { bsc: { ref: "bsc-7" }, sportlots: { ref: "sl-7" } },
+};
+
+/**
+ * Sync again after a failure and assert the dialog that comes back holds ONLY
+ * the new batch.
+ *
+ * This is the bleed itself, observed from the operator's seat: a stale row
+ * surviving into the next session is a card that can be committed onto a set
+ * it was never fetched for.
+ */
+async function resyncAndExpectOnlyTheNewBatch() {
+  state.liveCandidates = { ready: 1, total: 1, cards: [freshCandidate] };
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  });
+
+  expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+  expect(screen.getByText(/Fresh Player/)).toBeTruthy();
+  expect(screen.queryByText(/Streamed Player/)).toBeNull();
+  expect(screen.queryByText(/BSC Only Player/)).toBeNull();
+}
+
+describe("CardChecklist — NEO-221: a parked session that nothing can reach", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /** (a) The content diff — or entity resolution — throws. */
+  it("closes and discards when the step after pairing throws", async () => {
+    await pairedEntityReviewPath();
+    mockDiffChecklist.mockRejectedValue(new Error("diff exploded"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    expect(screen.getByText("Error: diff exploded")).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    // No dialog is on screen, so the session has to end itself.
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+    await resyncAndExpectOnlyTheNewBatch();
+  });
+
+  /**
+   * (b) The commit fails on the path with NO unknowns — so no wizard opens,
+   * and `commitError` has nothing to render it. The banner is the only place
+   * the operator sees this, and the session still has to end.
+   */
+  it("closes when a commit fails with no wizard to report it", async () => {
+    await pairedEntityReviewPath();
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+
+    expect(screen.getByText(/Commit failed: chunk 2\/3 timed out/)).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    await resyncAndExpectOnlyTheNewBatch();
+  });
+
+  /** (c) The content review was shown, skipped, and the step after it threw. */
+  it("closes and discards when the step after the content review throws", async () => {
+    await pairedEntityReviewPath();
+    mockDiffChecklist.mockResolvedValue({
+      cards: [],
+      removedUpstream: {
+        fullyOrphaned: [
+          {
+            id: "row-gone" as unknown as Id<"cardChecklist">,
+            cardNumber: "5",
+            cardName: "Gone Card",
+            sides: ["bsc"],
+          },
+        ],
+        partialOrphanCount: 0,
+      },
+      conflicts: [],
+      collisionInsertCount: 0,
+      ambiguityBlockedCount: 0,
+    });
+    mockResolveEntities.mockRejectedValue(new Error("resolve exploded"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    });
+    // The content review takes over from the pairing dialog.
+    await screen.findByText(/Gone Card/);
+
+    await act(async () => {
+      // Its accessible name is the aria-label, not the visible "Skip changes".
+      fireEvent.click(
+        screen.getByRole("button", { name: /Skip reviewing changes/ }),
+      );
+    });
+
+    expect(screen.getByText("Error: resolve exploded")).toBeTruthy();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+    await resyncAndExpectOnlyTheNewBatch();
+  });
+});
