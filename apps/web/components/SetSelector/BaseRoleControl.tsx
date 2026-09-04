@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -73,6 +73,37 @@ export default function BaseRoleControl({
     api.selectorOptions.setBaseVariantType,
   );
   const [busy, setBusy] = useState(false);
+  const isBase = isBaseRole(metadata);
+  const markRef = useRef<HTMLButtonElement>(null);
+  const clearRef = useRef<HTMLButtonElement>(null);
+  const prevIsBaseRef = useRef(isBase);
+  /**
+   * This component's own write is what is about to swap the control.
+   *
+   * The role arrives from the server, so it can also flip while the operator is
+   * doing nothing here — another tab, or a parallel worker, marking a sibling.
+   * Moving focus on THAT would be focus theft, so the restore below fires only
+   * when this instance's own button was the thing that caused the change. Same
+   * shape as RenameEntityControl's `wasEditingRef`, except that one guards a
+   * purely local transition and this one has to tell the two apart.
+   */
+  const actedRef = useRef(false);
+
+  // The acting button unmounts the instant the role lands — "Mark as base set"
+  // is replaced by the indicator plus "Clear base set", and vice versa — and
+  // with nothing to move focus onto, the browser drops it to <body>. A
+  // keyboard operator would be returned to the top of the document mid-task.
+  useEffect(() => {
+    if (prevIsBaseRef.current === isBase) return;
+    const acted = actedRef.current;
+    prevIsBaseRef.current = isBase;
+    actedRef.current = false;
+    if (!acted) return;
+    // Focus the control that took the other one's place: the two are each
+    // other's undo, so this is also where the operator is most likely headed.
+    if (isBase) clearRef.current?.focus();
+    else markRef.current?.focus();
+  }, [isBase]);
 
   const markAsBase = async () => {
     if (busy) return;
@@ -82,6 +113,7 @@ export default function BaseRoleControl({
       // Optional-chained: a mocked or older deployment can answer with nothing,
       // and a missing count is a reason to say less, never to throw away a
       // confirmation for a write that succeeded.
+      actedRef.current = true;
       const cleared = result?.clearedIds?.length ?? 0;
       onResult(
         cleared > 0
@@ -91,6 +123,7 @@ export default function BaseRoleControl({
           : `Marked ${value} as the base set`,
       );
     } catch {
+      actedRef.current = false;
       onResult("Couldn't set the base set. Nothing changed.");
     } finally {
       setBusy(false);
@@ -102,17 +135,19 @@ export default function BaseRoleControl({
     setBusy(true);
     try {
       await setBaseVariantType({ variantTypeId: id, clear: true });
+      actedRef.current = true;
       // No count here, unlike marking: clearing touches exactly the row the
       // operator is looking at, so there is no off-screen side effect to report.
       onResult("Cleared the base set");
     } catch {
+      actedRef.current = false;
       onResult("Couldn't clear the base set. Nothing changed.");
     } finally {
       setBusy(false);
     }
   };
 
-  if (isBaseRole(metadata)) {
+  if (isBase) {
     return (
       <span className="shrink-0 flex items-center gap-1.5">
         {/* Not a control, and deliberately not styled like one: the same 10px
@@ -129,12 +164,17 @@ export default function BaseRoleControl({
           Base set
         </span>
         <button
+          ref={clearRef}
           type="button"
           onClick={clearBase}
           disabled={busy}
           aria-label={`Clear base set from ${value}`}
           title="Leaves this set with no base until you mark one."
-          className="text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none disabled:opacity-50"
+          // py-1.5 takes a text-xs line box past WCAG 2.5.8's 24x24 minimum
+          // target; the ring is focus-VISIBLE so a mouse click does not draw
+          // one, and it replaces `focus:outline-none` rather than sitting
+          // beside it — an invisible focus is the bug that pattern causes.
+          className="text-xs py-1.5 text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 disabled:opacity-50"
         >
           Clear base set
         </button>
@@ -144,12 +184,14 @@ export default function BaseRoleControl({
 
   return (
     <button
+      ref={markRef}
       type="button"
       onClick={markAsBase}
       disabled={busy}
       aria-label={`Mark ${value} as the base set`}
       title="A set has one base — this clears any other."
-      className="shrink-0 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none disabled:opacity-50"
+      // See the clear button above for py-1.5 and the focus-visible ring.
+      className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 disabled:opacity-50"
     >
       Mark as base set
     </button>

@@ -414,7 +414,10 @@ function Chip({
         // Not a control — a read-only note on what this slot filters on. Grey,
         // so it cannot be mistaken for the green select/commit affordance.
         <span
-          className="text-[10px] uppercase tracking-wide text-gray-500 shrink-0"
+          // gray-400, not gray-500: 10px uppercase at gray-500 is 3.0:1 here,
+          // well under 4.5:1, and this tag is what separates a slot that
+          // sources a whole set from one that sources a single variant.
+          className="text-[10px] uppercase tracking-wide text-gray-400 shrink-0"
           aria-label={`${chip.label} is attached as a BSC ${FACET_NOUN[chip.facet]}`}
         >
           {FACET_NOUN[chip.facet]}

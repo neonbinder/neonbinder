@@ -156,4 +156,23 @@ describe("stripBrandPrefixForLabel", () => {
     expect(stripBrandPrefixForLabel("Topps", "Topps")).toBe("Topps");
     expect(stripBrandPrefixForLabel("Topps   ", "Topps")).toBe("Topps   ");
   });
+
+  // NEO-239 ADVERSARIAL PASS — real bug, reported not fixed (per task
+  // instructions the source is untouched). `stripBrandPrefixForLabel` checks
+  // `label.startsWith(brand)` with NO WORD-BOUNDARY CHECK after the prefix.
+  // A brand that is a plain string-prefix of a longer, unrelated word in the
+  // label — not followed by a space — gets chewed into a garbled label
+  // instead of being left alone. The function's own docstring promises "must
+  // not chew a name it does not own"; this is exactly that chewing. The
+  // existing "leaves an unrelated prefix alone" test ALSO demonstrates this
+  // with "Toppsy Turvy" → "y Turvy" but is captioned as if the label were
+  // untouched — it is not.
+  test("BUG: a brand with no trailing word-boundary corrupts an unrelated label", () => {
+    // "Toppstown" is not "Topps" — it merely starts with the same letters.
+    // The correct output is the label unchanged, exactly like "Bowman Chrome"
+    // above. The current implementation instead slices mid-word.
+    expect(stripBrandPrefixForLabel("Toppstown Retro", "Topps")).toBe(
+      "town Retro", // BUG: should be "Toppstown Retro", unchanged.
+    );
+  });
 });

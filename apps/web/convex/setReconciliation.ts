@@ -34,6 +34,7 @@ import {
   platformSideValidator,
   returnedIdsValidator,
   unionChildren,
+  skippedSyncMessage,
   unlinkedEntryValidator,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
@@ -41,11 +42,10 @@ import { syncWrittenBscFacet } from "./bscFacets";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
 // selectorOptions.ts so the reconciler and the aggregator cannot disagree.
 import {
-  BSC_SKIPPED_SUFFIX,
   NO_MARKETPLACE_IDS_MESSAGE,
   SL_ATTACH_REQUIRED_LEVELS,
-  SL_SKIPPED_SUFFIX,
   resolvableSides,
+  skippedSideList,
   type ChainResolution,
   type ResolvableRow,
 } from "./marketplaceResolvability";
@@ -552,10 +552,7 @@ export const fetchRawOptions = action({
         );
       }
 
-      const skippedSides: Array<"bsc" | "sportlots"> = [
-        ...(resolution.bsc.resolvable ? [] : (["bsc"] as const)),
-        ...(resolution.sportlots.resolvable ? [] : (["sportlots"] as const)),
-      ];
+      const skippedSides = skippedSideList(resolution);
       if (skippedSides.length > 0) {
         console.log(
           `[fetchRawOptions] skipping ${skippedSides.join(",")} for ${level} — ` +
@@ -686,11 +683,8 @@ export const fetchRawOptions = action({
         message,
       }));
 
-      const skipSuffix = skippedSides.includes("bsc")
-        ? BSC_SKIPPED_SUFFIX
-        : skippedSides.includes("sportlots")
-          ? SL_SKIPPED_SUFFIX
-          : "";
+      const skipSuffix =
+        skippedSides.length > 0 ? ` ${skippedSyncMessage(skippedSides)}` : "";
 
       return {
         success: true,

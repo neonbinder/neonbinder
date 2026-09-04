@@ -198,6 +198,72 @@ describe("R1 — a side with no ids on the chain cannot be 'covered'", () => {
     // …and STILL not on the side that was never queried.
     expect(after?.platformData.sportlots).toEqual({ s0: "884412" });
   });
+
+  test("…and a RESOLVABLE side still unlinks in storeReconciledOptions too", async () => {
+    // The two mutations carry independent copies of the same narrowing logic
+    // (documented no-cross-file-import). Proving the "not a blanket mute"
+    // property only against `storeSelectorOptions` leaves the sibling
+    // function's copy unverified — this is the same case, run through
+    // `storeReconciledOptions`.
+    const t = convexTest(schema, modules);
+    const { setName, child } = await seedBscOnlyTree(t);
+
+    // A DIFFERENT item, not pointed at `child` by `existingId` and not
+    // matching its name — `child` (value "Base") is simply not resent this
+    // sync, which is what should make it eligible for the unlink pass.
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setReconciliation.storeReconciledOptions, {
+        level: "variantType",
+        parentId: setName,
+        reconciledItems: [
+          { value: "Insert", platformData: { bsc: "insert" }, metadata: undefined },
+        ],
+        coveredSides: ["bsc", "sportlots"],
+        returnedIds: { bsc: ["insert"], sportlots: [] },
+      });
+
+    const after = await t.run(async (ctx) => ctx.db.get(child));
+    expect(after?.platformData.bsc).toBeUndefined();
+    expect(res.unlinked.some((u) => u.side === "bsc")).toBe(true);
+    expect(after?.platformData.sportlots).toEqual({ s0: "884412" });
+  });
+
+  test("a chain broken in the MIDDLE (year has no BSC id) narrows coveredSides too", async () => {
+    // `loadResolvabilityChain` walks every ancestor, not just the immediate
+    // parent. A year row with an empty BSC slot map between a linked sport and
+    // a linked setName must still make BSC unresolvable for a child sync —
+    // proving the mutation-level narrowing checks the WHOLE chain, not only
+    // the row nearest the new options.
+    const t = convexTest(schema, modules);
+    const { setName, child } = await seedBscOnlyTree(t);
+    // Break the chain at `year`, in between sport and setName.
+    const yearId = await t.run(async (ctx) => {
+      const setNameRow = await ctx.db.get(setName);
+      return setNameRow!.parentId!;
+    });
+    await t.run(async (ctx) => ctx.db.patch(yearId, { platformData: {} }));
+
+    // The child row (value "Base") is NOT resent this sync — if `bsc` were
+    // (wrongly) treated as covered, the unlink pass would read that as
+    // "upstream dropped Base" and detach its primary BSC slot.
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.storeSelectorOptions, {
+        level: "variantType",
+        parentId: setName,
+        options: [{ value: "Insert", platformData: { bsc: "insert" } }],
+        coveredSides: ["bsc", "sportlots"],
+        returnedIds: { bsc: ["insert"], sportlots: [] },
+      });
+
+    // BSC is unresolvable now (year lost its id), so nothing on the
+    // unresent child's BSC slot is unlinked despite the caller marking it
+    // covered.
+    const after = await t.run(async (ctx) => ctx.db.get(child));
+    expect(after?.platformData.bsc).toEqual({ b0: "base" });
+    expect(res.unlinked.some((u) => u.side === "bsc")).toBe(false);
+  });
 });
 
 // ===========================================================================

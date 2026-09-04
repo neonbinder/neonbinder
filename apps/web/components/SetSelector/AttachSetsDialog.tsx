@@ -729,7 +729,12 @@ function Pane({
           </li>
         )}
         {!loading && !error && isEmpty && (
-          <li className="text-xs text-gray-500 italic px-2 py-1">
+          <li
+            // gray-400, not gray-500: on this panel's ground gray-500 lands at
+            // 3.67:1, under the 4.5:1 WCAG 1.4.3 floor for body text — and this
+            // line is the ONLY explanation an empty pane gives.
+            className="text-xs text-gray-400 italic px-2 py-1"
+          >
             {emptyNote ??
               (search.trim() ? `No matches for “${search.trim()}”.` : emptyText)}
           </li>

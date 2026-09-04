@@ -222,3 +222,86 @@ describe("pending names on an unclaimed card are still resolved", () => {
     expect(handAdded.pendingPlayerNames).toBeUndefined();
   });
 });
+
+describe("the `deletedRowIds` guard — an operator-deleted ref-less card is not also patched", () => {
+  // `rows` in `commitCardChecklistFinalize` is the PRE-DELETE snapshot, and it
+  // feeds TWO later passes that patch existing rows: the preserved-custom
+  // sortOrder pass and the pending-names pass. Both used to be reachable for a
+  // row the delete pass ABOVE them just removed — impossible before NEO-239,
+  // because the "refuse to delete a custom card" guard made a ref-less row
+  // undeletable. That guard is gone (decision 3), so a ref-less row can now be
+  // both operator-deleted AND, in the very same commit, be the exact row those
+  // two passes would otherwise try to `ctx.db.patch` — which throws "Patch on
+  // non-existent document" and fails the WHOLE commit, taking every chunk that
+  // already wrote down with it. `deletedRowIds` is what stands between the two.
+  test("a ref-less card that is BOTH operator-deleted and due a sortOrder patch does not crash the commit", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    // A hand-added, ref-less card. With no marketplace card at "9001" and one
+    // new marketplace card "1" arriving, `preservedCustomNumbers` includes
+    // "9001" and its target sortOrder (index 1, after "1") differs from its
+    // current 0 — so it is due a patch by the sortOrder pass.
+    const handAddedId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: leafId,
+        cardNumber: "9001",
+        cardName: "Hand Added",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card("1", "Marketplace One", "bsc-1")],
+      operatorDeleteIds: [handAddedId],
+    });
+
+    expect(result.operatorDeleted).toBe(1);
+    const after = await rows(t, leafId);
+    expect(after.map((r) => r.cardNumber)).toEqual(["1"]);
+    expect(after.some((r) => r._id === handAddedId)).toBe(false);
+  });
+
+  test("a ref-less card that is BOTH operator-deleted and due a pending-name resolve does not crash the commit", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const asAdmin = t.withIdentity(ADMIN);
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("players", {
+        name: "Ken Griffey Jr.",
+        nameNormalized: "griffey jr ken",
+        sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+    const handAddedId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: leafId,
+        cardNumber: "9001",
+        cardName: "Hand Added",
+        platformData: {},
+        pendingPlayerNames: ["Ken Griffey Jr."],
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card("1", "Marketplace One", "bsc-1")],
+      operatorDeleteIds: [handAddedId],
+    });
+
+    expect(result.operatorDeleted).toBe(1);
+    const after = await rows(t, leafId);
+    expect(after.map((r) => r.cardNumber)).toEqual(["1"]);
+    expect(after.some((r) => r._id === handAddedId)).toBe(false);
+  });
+});

@@ -80,8 +80,10 @@ import {
   UNLINK_NOTICE_LIMIT,
   annotateHasCards,
   checkReturnedIds,
+  partialSyncMessage,
   platformSideValidator,
   returnedIdsValidator,
+  skippedSyncMessage,
   unionChildren,
   unlinkedEntryValidator,
   type UnlinkedEntry,
@@ -107,11 +109,10 @@ import {
 // replaced `isCustomSubtree`. One helper, shared with setReconciliation.ts, so
 // the seven old gates cannot drift into seven different answers.
 import {
-  BSC_SKIPPED_SUFFIX,
   NO_MARKETPLACE_IDS_MESSAGE,
-  SL_SKIPPED_SUFFIX,
   resolvableSides,
   rowHasBscFacet,
+  skippedSideList,
   type ChainResolution,
   type ResolvableRow,
 } from "./marketplaceResolvability";
@@ -5070,34 +5071,12 @@ export const applySelectorSyncSuggestions = mutation({
 const SYNC_ERROR_MESSAGE = "Couldn't sync options — please try again.";
 
 /**
- * NEO-211 B — what the admin is told when ONE marketplace failed and the other
- * one stored fine.
- *
- * FIXED text per platform, built from the platform NAME only. The adapter's
- * own message can carry a marketplace URL, a response body, or a credential
- * hint, and `selectorSyncStatus.message` is reactive state served to the
- * browser — the same reasoning that made SYNC_ERROR_MESSAGE a constant in
- * NEO-47. The raw detail goes to console.error, joined on requestId.
+ * NEO-211 B / NEO-239 — the two user-safe notice builders now live in
+ * `selectorSyncStore.ts`, next to each other and next to the platform-name
+ * mapping they must agree on. Re-exported here only because
+ * `partialSyncMessage` was already part of this module's surface.
  */
-const PLATFORM_LABELS: Record<string, string> = {
-  bsc: "BuySportsCards",
-  sportlots: "SportLots",
-};
-
-export function partialSyncMessage(failedPlatforms: readonly string[]): string {
-  const names = failedPlatforms
-    // An unrecognised key is NOT echoed. The only keys this ever receives are
-    // "bsc" and "sportlots", but the fallback is what makes that a property of
-    // the function rather than of its callers — no adapter string can reach
-    // reactive state through here even if a future caller passes one.
-    .map((p) => PLATFORM_LABELS[p] ?? "A marketplace")
-    .sort()
-    .join(" and ");
-  return (
-    `${names} could not be reached, so nothing from ${names} was changed. ` +
-    `Everything the other marketplace returned was saved — retry to fill in the rest.`
-  );
-}
+export { partialSyncMessage };
 
 /**
  * The single FE entry point to populate a column (NEO-47). An ACTION, not a
@@ -5256,12 +5235,42 @@ export const ensureSelectorOptions = action({
       //
       //   error → the whole sync failed; the column shows Retry (unchanged).
       //   done  → it SUCCEEDED but left a notice: marketplace links removed
-      //           because upstream stopped listing them, and/or one platform
-      //           unreachable while the other stored fine. Not an error — data
-      //           was written, and offering Retry would imply it was not.
+      //           because upstream stopped listing them, one platform
+      //           unreachable while the other stored fine, and/or (NEO-239) one
+      //           platform never asked because this path carries no ids for it.
+      //           Not an error — data was written, and offering Retry would
+      //           imply it was not.
       //   clear → success with nothing to say (today's behaviour).
-      const hasNotice =
-        res.unlinkedTotal > 0 || res.failedPlatforms.length > 0;
+      //
+      // NEO-239 — A ONE-SIDED SKIP IS A NOTICE; A TWO-SIDED ONE IS NOT.
+      //
+      // Half a column populated with no explanation is the worst of the three
+      // outcomes: it looks like the marketplace had nothing, when in fact
+      // nobody asked, and the fix (attach an id) is an action the operator
+      // will never think to take. So it gets the same "done" treatment a
+      // partial failure gets — deliberately NOT the same sentence, because
+      // "could not be reached" invites a Retry that would fail identically
+      // forever.
+      //
+      // Both sides skipped stays SILENT, and that is load-bearing rather than
+      // an oversight: it is the hand-made subtree, where every column down the
+      // tree would carry the same notice about a marketplace the operator
+      // never involved. That path returns `ran: false` above and clears the
+      // status so the column goes idle instantly — which 37 Maestro flows and
+      // every "+ Custom" drill depend on.
+      const skippedNotice =
+        res.skippedSides.length > 0 && res.skippedSides.length < 2
+          ? skippedSyncMessage(res.skippedSides)
+          : undefined;
+      const failedNotice =
+        res.failedPlatforms.length > 0
+          ? partialSyncMessage(res.failedPlatforms)
+          : undefined;
+      // A side cannot be both skipped and failed (a skipped side is never
+      // called), so at most one of these is set. Failure wins if that ever
+      // stops being true: it is the one that warrants a Retry.
+      const message = failedNotice ?? skippedNotice;
+      const hasNotice = res.unlinkedTotal > 0 || message !== undefined;
       await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
         level,
         parentId,
@@ -5269,9 +5278,7 @@ export const ensureSelectorOptions = action({
           ? hasNotice
             ? {
                 status: "done" as const,
-                ...(res.failedPlatforms.length > 0
-                  ? { message: partialSyncMessage(res.failedPlatforms) }
-                  : {}),
+                ...(message ? { message } : {}),
                 ...(res.unlinkedTotal > 0
                   ? {
                       unlinked: res.unlinked,
@@ -5468,10 +5475,7 @@ export const fetchAggregatedOptions = action({
         );
       }
 
-      const skippedSides: Array<"bsc" | "sportlots"> = [
-        ...(resolution.bsc.resolvable ? [] : (["bsc"] as const)),
-        ...(resolution.sportlots.resolvable ? [] : (["sportlots"] as const)),
-      ];
+      const skippedSides = skippedSideList(resolution);
 
       // Neither side can be asked: this is a level of NB's own taxonomy with no
       // marketplace behind it. Not an error — the column simply has nothing to
@@ -5836,13 +5840,11 @@ export const fetchAggregatedOptions = action({
       });
 
       // A skipped side is worth saying out loud — the column looks
-      // half-populated and the operator is owed the reason. FIXED text only
-      // (NEO-47): `selectorSyncStatus.message` is reactive state.
-      const skipSuffix = skippedSides.includes("bsc")
-        ? BSC_SKIPPED_SUFFIX
-        : skippedSides.includes("sportlots")
-          ? SL_SKIPPED_SUFFIX
-          : "";
+      // half-populated and the operator is owed the reason. Built from the
+      // platform NAME only (NEO-47): `selectorSyncStatus.message` is reactive
+      // state, and `ensureSelectorOptions` surfaces the same sentence there.
+      const skipSuffix =
+        skippedSides.length > 0 ? ` ${skippedSyncMessage(skippedSides)}` : "";
 
       return {
         success: result.success,

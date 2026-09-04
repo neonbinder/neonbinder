@@ -29,7 +29,7 @@ import {
   resolvableSides,
   resolvedSideList,
   rowHasBscFacet,
-  skipMessage,
+  skippedSideList,
   type ResolvableRow,
 } from "./marketplaceResolvability";
 
@@ -100,7 +100,7 @@ describe("resolvableSides — the required levels", () => {
     expect(out.bsc.resolvable).toBe(true);
     expect(out.sportlots.resolvable).toBe(true);
     expect(resolvedSideList(out)).toEqual(["bsc", "sportlots"]);
-    expect(skipMessage(out)).toBeUndefined();
+    expect(skippedSideList(out)).toEqual([]);
   });
 });
 
@@ -115,7 +115,9 @@ describe("resolvableSides — the per-side table", () => {
     expect(out.bsc.resolvable).toBe(false);
     expect(out.sportlots.resolvable).toBe(false);
     expect(resolvedSideList(out)).toEqual([]);
-    expect(skipMessage(out)).toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    // `skippedSideList` is the exact inverse, and is what rides back to the
+    // client as `skippedSides` for every caller to subtract from coverage.
+    expect(skippedSideList(out)).toEqual(["bsc", "sportlots"]);
   });
 
   test("sport with a BSC id only: BSC resolves, SportLots is skipped", () => {
@@ -254,24 +256,73 @@ describe("resolvableSides — the per-side table", () => {
     expect(out.bsc.missing).toEqual(["sport=E2E Test Sport 3"]);
     expect(JSON.stringify(out)).not.toContain('"filters"');
   });
-});
 
-describe("skipMessage — fixed server text only", () => {
-  test("names a marketplace, never a row", () => {
-    // `selectorSyncStatus.message` is reactive state served to the browser
-    // (NEO-47), so the skip text carries no row values and no adapter output.
-    const oneSide = resolvableSides([
-      row("sport", { value: "Secret Internal Sport", sportlots: { s0: "BB" } }),
+  test("an EMPTY slot map counts the same as no slot map at all", () => {
+    // `platformData: { bsc: {} }` is a real shape on the wire — a slot was
+    // attached and then every entry detached, or a caller spread an empty
+    // object rather than omitting the key. `rowHasSideId` must judge it by
+    // entry count, not by whether the key is merely present; a regression
+    // that checked `"bsc" in row.platformData` would treat this row as
+    // resolvable and send BSC a request scoped by nothing.
+    const out = resolvableSides([
+      row("sport", { value: "Baseball", bsc: {}, sportlots: {} }),
     ]);
-    const msg = skipMessage(oneSide)!;
-    expect(msg).toContain("BuySportsCards");
-    expect(msg).not.toContain("Secret Internal Sport");
+    expect(out.bsc.resolvable).toBe(false);
+    expect(out.sportlots.resolvable).toBe(false);
+    expect(out.bsc.missing).toEqual(["sport=Baseball"]);
   });
 
-  test("both sides skipped gives the one shared message", () => {
-    expect(skipMessage(resolvableSides([row("sport")]))).toBe(
-      NO_MARKETPLACE_IDS_MESSAGE,
+  test("an id on the OTHER side does not satisfy this one — SportLots-only sport", () => {
+    // The mirror of "sport with a BSC id only" above. A regression that
+    // treated "has ANY marketplace id" as satisfying BOTH sides (e.g.
+    // `rowHasSideId(row, "bsc") || rowHasSideId(row, "sportlots")`) would pass
+    // every test that only ever exercises the BSC-only direction.
+    const out = resolvableSides([
+      row("sport", { value: "Baseball", sportlots: { s0: "BB" } }),
+    ]);
+    expect(out.bsc.resolvable).toBe(false);
+    expect(out.bsc.missing).toEqual(["sport=Baseball"]);
+    expect(out.sportlots.resolvable).toBe(true);
+  });
+
+  test("a required level absent from the CHAIN ARRAY is not 'missing' — even mid-hierarchy", () => {
+    // `resolvableSides` never assumes the hierarchy; it only judges rows it is
+    // actually handed. Skipping `year` out of the array entirely (as opposed
+    // to a `year` row present with no id) must not block BSC — that is the
+    // documented "levels absent from the chain are not missing" rule, proven
+    // for a level in the MIDDLE of the hierarchy, not just the leaf.
+    const out = resolvableSides([linkedSport, linkedSetName]);
+    expect(out.bsc.resolvable).toBe(true);
+    expect(out.bsc.missing).toEqual([]);
+  });
+
+  test("a chain broken in the MIDDLE (year has no BSC id) makes BSC unresolvable", () => {
+    // Not just the top or the leaf — every ancestor is checked independently.
+    const brokenYear = row("year", { value: "2024", bsc: {} });
+    const out = resolvableSides([linkedSport, brokenYear, linkedSetName]);
+    expect(out.bsc.resolvable).toBe(false);
+    expect(out.bsc.missing).toEqual(["year=2024"]);
+  });
+});
+
+describe("skippedSideList", () => {
+  test("is the exact inverse of resolvedSideList", () => {
+    const oneSide = resolvableSides([
+      row("sport", { value: "Baseball", sportlots: { s0: "BB" } }),
+    ]);
+    expect(resolvedSideList(oneSide)).toEqual(["sportlots"]);
+    expect(skippedSideList(oneSide)).toEqual(["bsc"]);
+  });
+
+  test("carries no row values — it is side names only", () => {
+    // What the operator is TOLD is built from these names by
+    // `skippedSyncMessage` (convex/selectorSyncStore.ts), which is where the
+    // "no adapter text, no row values in reactive state" rule is enforced
+    // (NEO-47). Nothing about a row can travel this far.
+    const out = skippedSideList(
+      resolvableSides([row("sport", { value: "Secret Internal Sport" })]),
     );
+    expect(out).toEqual(["bsc", "sportlots"]);
   });
 });
 

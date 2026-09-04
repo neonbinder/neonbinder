@@ -102,22 +102,22 @@ export const SL_ATTACH_REQUIRED_LEVELS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Messages the admin sees when a side (or both) is skipped.
+ * What the admin sees when NEITHER side can be asked.
  *
  * FIXED TEXT. `selectorSyncStatus.message` is reactive state served to the
  * browser, so it carries no row values, no marketplace strings and no adapter
  * detail — same rule as `SYNC_ERROR_MESSAGE` and `partialSyncMessage`
  * (NEO-47 / NEO-211 B). The per-row detail goes to `console.log`.
+ *
+ * The ONE-side case is `skippedSyncMessage` in `selectorSyncStore.ts`, built
+ * from the same platform-name mapping `partialSyncMessage` uses — a side that
+ * was skipped and a side that failed are different events told in the same
+ * vocabulary. It does not live here because this module is deliberately free
+ * of Convex imports.
  */
 export const NO_MARKETPLACE_IDS_MESSAGE =
   "No marketplace ids on this path — nothing to sync. Add entries by hand, or " +
   "attach a marketplace id to this set to link one.";
-
-export const BSC_SKIPPED_SUFFIX =
-  " BuySportsCards was skipped: no BuySportsCards ids on this path.";
-
-export const SL_SKIPPED_SUFFIX =
-  " SportLots was skipped: no SportLots ids on this path.";
 
 /** True when the row carries at least one marketplace id on `side`. */
 export function rowHasSideId(
@@ -195,17 +195,17 @@ export function resolvedSideList(
 }
 
 /**
- * The admin-facing message for a run where at least one side was skipped, or
- * `undefined` when both sides ran.
+ * The sides this run did NOT ask, in the stable order every caller reports and
+ * subtracts from `coveredSides`.
  *
- * Composed from the fixed constants above only.
+ * The inverse of `resolvedSideList`, and the value that rides back to the
+ * client as `skippedSides`.
  */
-export function skipMessage(
+export function skippedSideList(
   resolution: ChainResolution,
-): string | undefined {
-  const bsc = resolution.bsc.resolvable;
-  const sl = resolution.sportlots.resolvable;
-  if (bsc && sl) return undefined;
-  if (!bsc && !sl) return NO_MARKETPLACE_IDS_MESSAGE;
-  return (bsc ? SL_SKIPPED_SUFFIX : BSC_SKIPPED_SUFFIX).trim();
+): PlatformSide[] {
+  const out: PlatformSide[] = [];
+  if (!resolution.bsc.resolvable) out.push("bsc");
+  if (!resolution.sportlots.resolvable) out.push("sportlots");
+  return out;
 }

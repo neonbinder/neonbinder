@@ -566,6 +566,99 @@ describe("SetAttributesPanel — marking the base variant type (NEO-239)", () =>
     expect(toast.textContent).not.toContain("Request ID");
   });
 
+  it("moves focus to 'Clear base set' when marking swaps the control away", async () => {
+    // The acting button unmounts the moment the role lands, and with nothing to
+    // move focus onto the browser drops it to <body> — a keyboard operator is
+    // returned to the top of the document mid-task. The successor control is
+    // also this action's undo, so it is where they are most likely headed.
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    currentChain = makeChain("Baseball");
+    const { rerender } = renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
+    await waitFor(() => expect(mockSetBaseVariantType).toHaveBeenCalled());
+
+    // The row comes back holding the role; the control swaps shape.
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isBase: true },
+    });
+    rerender(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Clear base set from Insert"),
+      ),
+    );
+  });
+
+  it("moves focus to 'Mark as base set' when clearing swaps the control away", async () => {
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isBase: true },
+    });
+    currentChain = makeChain("Baseball");
+    const { rerender } = renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Clear base set from Insert"));
+    await waitFor(() => expect(mockSetBaseVariantType).toHaveBeenCalled());
+
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: {},
+    });
+    rerender(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={false}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Mark Insert as the base set"),
+      ),
+    );
+  });
+
+  it("does NOT steal focus when the role changes without this operator acting", async () => {
+    // The role arrives from the server, so it can flip while nobody is touching
+    // this panel — another tab, or a parallel worker, marking a sibling. Pulling
+    // focus out of whatever the operator is typing in would be focus theft.
+    currentRow = makeRow({ level: "variantType", value: "Insert" });
+    currentChain = makeChain("Baseball");
+    const { rerender } = renderPanel();
+
+    const elsewhere = screen.getByLabelText("Rename Insert");
+    elsewhere.focus();
+    expect(document.activeElement).toBe(elsewhere);
+
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Insert",
+      metadata: { isBase: true },
+    });
+    rerender(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={false}
+      />,
+    );
+
+    // The control swapped, but focus stayed where the operator put it.
+    expect(screen.getByLabelText("Clear base set from Insert")).toBeTruthy();
+    expect(document.activeElement).toBe(elsewhere);
+    expect(mockSetBaseVariantType).not.toHaveBeenCalled();
+  });
+
   it("shows a static 'Base set' indicator, and no mark action, on the base row", () => {
     // `metadata.isBase` is the ONLY input. The row is called "Insert" here on
     // purpose: if the indicator ever went back to reading the display value,

@@ -152,6 +152,97 @@ describe("setBaseVariantType", () => {
     ).toBeNull();
   });
 
+  test("legacy data with TWO prior base rows: granting to a third clears BOTH", async () => {
+    // `metadata.isBase` was never enforced exactly-one at the storage layer —
+    // it is a convention this mutation upholds going forward, not a schema
+    // constraint. A deployment could plausibly already carry two rows both
+    // holding the role (a bug, a race, or hand-edited data). The sibling loop
+    // must clear every sibling holding the role, not just the first one it
+    // finds — otherwise `getBaseVariantBySet`'s `.find()` keeps answering
+    // whichever of the two happens to come first in document order.
+    const t = convexTest(schema, modules);
+    const { setId, base, insert, parallel } = await seedSetWithVariants(t);
+    // Corrupt the data: `parallel` ALSO holds the role, out of band.
+    await t.run(async (ctx) =>
+      ctx.db.patch(parallel, { metadata: { isBase: true } }),
+    );
+    expect(await roleOf(t, base)).toBe(true);
+    expect(await roleOf(t, parallel)).toBe(true);
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setBaseVariantType, {
+        variantTypeId: insert,
+      });
+
+    expect(res.baseId).toBe(insert);
+    expect(res.clearedIds.sort()).toEqual([base, parallel].sort());
+    expect(await roleOf(t, insert)).toBe(true);
+    expect(await roleOf(t, base)).toBeUndefined();
+    expect(await roleOf(t, parallel)).toBeUndefined();
+
+    const found = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.getBaseVariantBySet, { setId });
+    expect(found?.value).toBe("Insert");
+  });
+
+  test("legacy data with TWO prior base rows: `clear` on EITHER clears both, exactly-one restored as zero", async () => {
+    // `clear: true` sets `shouldHoldRole` to `false` for every sibling
+    // regardless of which one was named as the target, so calling it on
+    // either of the two corrupted rows must reach both.
+    const t = convexTest(schema, modules);
+    const { setId, base, parallel } = await seedSetWithVariants(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(parallel, { metadata: { isBase: true } }),
+    );
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setBaseVariantType, {
+        variantTypeId: base,
+        clear: true,
+      });
+
+    expect(res.baseId).toBeNull();
+    expect(res.clearedIds.sort()).toEqual([base, parallel].sort());
+    expect(await roleOf(t, base)).toBeUndefined();
+    expect(await roleOf(t, parallel)).toBeUndefined();
+    expect(
+      await t
+        .withIdentity(ADMIN)
+        .query(api.selectorOptions.getBaseVariantBySet, { setId }),
+    ).toBeNull();
+  });
+
+  test("`clear` targeted at a row that never held the role still clears the real base, but doesn't list the target", async () => {
+    // The target itself never held the role (shouldHoldRole === holdsRole ===
+    // false is a no-op FOR IT), but the sibling that actually holds it must
+    // still be cleared — `clear` is a whole-set operation, not "clear this
+    // one row".
+    const t = convexTest(schema, modules);
+    const { setId, base, insert } = await seedSetWithVariants(t);
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.setBaseVariantType, {
+        variantTypeId: insert, // not the base — never held the role
+        clear: true,
+      });
+
+    expect(res.baseId).toBeNull();
+    // `insert` never held it, so it is not in the list of rows this call
+    // CHANGED — only `base`, which actually lost the role, is.
+    expect(res.clearedIds).toEqual([base]);
+    expect(await roleOf(t, base)).toBeUndefined();
+    expect(await roleOf(t, insert)).toBeUndefined();
+    expect(
+      await t
+        .withIdentity(ADMIN)
+        .query(api.selectorOptions.getBaseVariantBySet, { setId }),
+    ).toBeNull();
+  });
+
   test("re-granting the role to the row that already holds it writes nothing", async () => {
     // NEO-85: a no-op patch still invalidates every query watching the row and
     // reflows the SetSelector columns under Maestro's coordinate taps.
@@ -338,5 +429,40 @@ describe("the base role is derived once, from BSC's own id", () => {
       });
 
     expect(await roleOf(t, id)).toBeUndefined();
+  });
+
+  test("the MATCH branch tags a non-base row `variant` but never grants it the role", async () => {
+    // The insert-branch test above ("a variantType sync tags its BSC slot")
+    // proves this for a brand-new row. This is the same claim through the
+    // MATCH branch: an existing row synced again with a non-"base" id must
+    // gain the facet tag (so BSC stays resolvable at this level) while
+    // `metadata.isBase` stays untouched — the match branch's guard is
+    // `selectorValueKey(item.ids.bsc) === "base"`, and "insert" must fail it.
+    const t = convexTest(schema, modules);
+    const setId = await seedSet(t);
+    const existing = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        platformData: { bsc: { b0: "insert" } },
+        primaryPlatformId: { bsc: "b0" },
+        platformSlotSeq: { bsc: 1 },
+        parentId: setId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.storeSelectorOptions, {
+        level: "variantType",
+        parentId: setId,
+        options: [{ value: "Insert", platformData: { bsc: "insert" } }],
+      });
+
+    const row = await t.run(async (ctx) => ctx.db.get(existing));
+    expect(row?.platformFacets?.bsc).toEqual({ b0: "variant" });
+    expect(row?.metadata?.isBase).toBeUndefined();
   });
 });
