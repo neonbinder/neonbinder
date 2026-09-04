@@ -250,3 +250,103 @@ describe("ParallelForm — unlink notice (NEO-211 plan D)", () => {
     expect(notice.textContent).toContain("Gold");
   });
 });
+
+/**
+ * NEO-216 — no marketplace models the `parallel` level at all.
+ *
+ * `PLATFORM_LEVEL_SUPPORT` (convex/platformLevels.ts) has `parallel: false` for
+ * both sides: BSC never had a facet for it and SportLots has no concept of it.
+ * So `fetchRawOptions` does the right thing and returns both lists empty with
+ * `errors: []` — a fetch that succeeded and had nothing to bring back, with no
+ * credential round-trip and no adapter failure.
+ *
+ * That fell through to the single-platform branch and rendered "Stored 0
+ * parallels (single platform)", which is wrong three ways: nothing was stored,
+ * there is no single platform (there are zero), and it reads like a healthy
+ * sync that found the set genuinely has none. It then called `onDone`, which
+ * returns EntityColumn to idle and unmounts the panel — so the operator could
+ * not read it even if it had been right.
+ */
+describe("ParallelForm — no marketplace serves this level (NEO-216)", () => {
+  const nothingAnywhere = {
+    success: true,
+    bscOptions: [],
+    slOptions: [],
+    autoMatched: [],
+    unmatchedBsc: [],
+    unmatchedSl: [],
+    slCandidates: [],
+    errors: [],
+    message: "BSC: 0, SL: 0",
+  };
+
+  it("says neither marketplace lists sub-variants, and points at + Custom", async () => {
+    mockFetchRawOptions.mockResolvedValue(nothingAnywhere);
+    await renderForm();
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Neither marketplace lists sub-variants for this set; add them with + Custom.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Stored 0 parallels/)).toBeNull();
+    expect(screen.queryByText(/single platform/)).toBeNull();
+  });
+
+  it("stores nothing", async () => {
+    // There is nothing to write, and writing an empty result is a claim about
+    // both sides that would license unlinking every existing row.
+    mockFetchRawOptions.mockResolvedValue(nothingAnywhere);
+    await renderForm();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Neither marketplace lists sub-variants/)).toBeTruthy(),
+    );
+    expect(mockStore).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call onDone, so the message stays readable", async () => {
+    // The defect that made the old copy invisible: onDone unmounts this panel.
+    mockFetchRawOptions.mockResolvedValue(nothingAnywhere);
+    const { onDone } = await renderForm();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Neither marketplace lists sub-variants/)).toBeTruthy(),
+    );
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("is a status, not an error — no Retry, because no retry can change it", async () => {
+    // Nothing failed. Offering Retry would invite the operator to re-run a
+    // sync that is working exactly as designed.
+    mockFetchRawOptions.mockResolvedValue(nothingAnywhere);
+    await renderForm();
+
+    const notice = await screen.findByText(
+      /Neither marketplace lists sub-variants/,
+    );
+    expect(notice.closest('[role="status"]')).toBeTruthy();
+    expect(notice.closest('[role="alert"]')).toBeNull();
+    expect(screen.queryByText("Retry")).toBeNull();
+    expect(screen.getByText("Close")).toBeTruthy();
+  });
+
+  it("still reports a real adapter failure rather than claiming nothing is listed", async () => {
+    // Both lists empty AND an error is an outage, not an empty level. The
+    // error branch must win, or a BSC failure reads as "this set has none".
+    mockFetchRawOptions.mockResolvedValue({
+      ...nothingAnywhere,
+      errors: [{ platform: "bsc", message: "https://api.bsc/internal 500" }],
+    });
+    await renderForm();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Sync failed: could not load parallels/)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Neither marketplace lists sub-variants/)).toBeNull();
+    // NEO-211 F3: the adapter's own text never reaches the DOM.
+    expect(screen.queryByText(/api\.bsc/)).toBeNull();
+  });
+});

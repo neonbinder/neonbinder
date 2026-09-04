@@ -36,6 +36,28 @@ type RawOptionsResult = {
 // when it eventually asserts on this text.
 const SYNC_FAILED_PREFIX = "Sync failed: could not load parallels";
 
+/**
+ * NEO-216 — what to say when NO marketplace models this level.
+ *
+ * `parallel` is that level today: neither adapter has an axis for it
+ * (`PLATFORM_LEVEL_SUPPORT` in convex/platformLevels.ts, read off
+ * `LEVEL_TO_BSC_FACET` and `LEVEL_TO_TARGET_SELECT`). So `fetchRawOptions`
+ * correctly returns both lists empty with `errors: []` — a successful fetch
+ * with nothing in it.
+ *
+ * That landed in the single-platform branch below and rendered "Stored 0
+ * parallels (single platform)", which is wrong three times over: nothing was
+ * stored, there is no "single platform" (there are zero), and it reads like a
+ * sync that worked and found the set genuinely has no parallels. It then called
+ * `onDone`, unmounting the panel before the operator could read it.
+ *
+ * This is not an error — nothing failed and no retry can change it — so it
+ * renders in the `role="status"` branch with Close and no Retry, and it names
+ * the only thing that actually adds a parallel here.
+ */
+const NO_PLATFORM_MESSAGE =
+  "Neither marketplace lists sub-variants for this set; add them with + Custom.";
+
 export default function ParallelForm({
   insertId,
   onDone,
@@ -155,6 +177,26 @@ export default function ParallelForm({
         const plan = planSinglePlatformStore(result.errors);
         if (plan.kind === "blocked") {
           setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
+          return;
+        }
+
+        // Nothing came back from either side, and nothing failed (the
+        // errors-and-empty case returned above, so reaching here means
+        // `errors` is empty).
+        //
+        // Keyed on the OUTCOME rather than on `platformsServingLevel`
+        // directly: consulting the table here and short-circuiting before the
+        // fetch would make every partial-failure branch below unreachable at
+        // this level, taking the NEO-211 tests that guard them — including
+        // "writes NOTHING when the empty side errored" and "renders neither
+        // the URL nor the raw message" — down with it. The table is what makes
+        // this outcome happen; it is not a second place to re-decide it.
+        //
+        // No store and no `onDone`: the store was already a no-op here (the
+        // `items.length > 0` guard below has always skipped it), so only the
+        // copy and the premature unmount change — no unlink behaviour moves.
+        if (result.bscOptions.length === 0 && result.slOptions.length === 0) {
+          setMessage(NO_PLATFORM_MESSAGE);
           return;
         }
 
