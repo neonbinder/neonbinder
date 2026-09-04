@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
@@ -1112,6 +1112,92 @@ export default function PlayerManagement() {
     filterRef.current?.focus();
   }, [management]);
 
+  // NEO-235 — arriving here from somewhere else, on one player.
+  //
+  // `/admin/players?player=<id>` opens the screen with that player already
+  // selected, and every selection writes the id back. The second half is what
+  // the first half is for: the detail panel links each career stint to
+  // `/admin/teams?team=<id>`, and without an id in this screen's own history
+  // entry, Back from there returns to an empty list the operator has to find
+  // their way back through by typing the name again.
+  //
+  // The param is followed during RENDER, not in an effect. The effect version
+  // sets state on a commit that has already happened, which cascades a second
+  // render and the lint rule rejects it; this is React's documented "adjust
+  // state when a prop changes" pattern, the same one PlayerDetail above uses to
+  // re-seed its draft. `/admin/teams` follows its `?team` param the same way.
+  //
+  // `followedParams` is what keeps it to once per distinct id: this runs on
+  // every reactive update to the players table, and re-selecting on each one
+  // would pull the operator off a row they had clicked since arriving.
+  // `selectPlayer` below marks it too — the param IT writes is the operator's
+  // own selection, not a fresh link to follow, so it must not be re-treated as
+  // one and wipe the filter they are working under.
+  //
+  // TWO ids are remembered, not one, and that is not belt-and-braces. React
+  // Router applies every location update inside `startTransition` — the app's
+  // `BrowserRouter` and the tests' `MemoryRouter` share that code path — so the
+  // render that commits a new selection is a render in which `searchParams`
+  // STILL NAMES THE PREVIOUS PLAYER; the URL catches up one render later. A
+  // one-slot marker cannot tell that stale value apart from a fresh link back
+  // to that player, so it follows it — and because following a link clears the
+  // filters, the filter the operator typed a moment ago empties itself under
+  // their own click. Remembering the superseded id closes exactly that window,
+  // and the "never again" half of the filter test is what pins it.
+  //
+  // The cost of the second slot is that a link BACK to the player just left
+  // would be ignored for as long as this screen stays mounted. Nothing can
+  // produce one: every write here is a `replace`, so there is no history entry
+  // to go back to, and no other screen links to `?player=`.
+  //
+  // Gated on the LIST having loaded rather than on the id resolving, which are
+  // two different things here. The id goes straight to `players.get` below, so
+  // the panel opens for a player the master list cannot show at all — one past
+  // `listForManagement`'s 500-row cap, or one the search index has not been
+  // asked for. The gate exists for the scroll: the commit that first paints
+  // rows is the first one in which the selected row's ref exists to scroll to.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [followedParams, setFollowedParams] = useState<
+    readonly [string | null, string | null]
+  >([null, null]);
+  const followParam = (id: string) =>
+    setFollowedParams(([current]) => [id, current]);
+  const selectedRowRef = useRef<HTMLButtonElement | null>(null);
+  const playerParam = searchParams.get("player");
+
+  if (
+    playerParam !== null &&
+    !followedParams.includes(playerParam) &&
+    management !== undefined
+  ) {
+    followParam(playerParam);
+    // An id this deployment does not carry — a stale link, or one copied from
+    // another deployment — resolves to `null` out of `players.get` and leaves
+    // the panel on its placeholder with no row highlighted. No error banner:
+    // there is nothing the operator could do about it from here.
+    setSelectedId(playerParam as Id<"players">);
+    setAdding(false);
+    // The linked row has to be REACHABLE, not merely selected: both filters
+    // can hide it from the master list, so following a link clears them. The
+    // debounced copy is cleared with the box it mirrors, or the search
+    // subscription outlives the term that opened it.
+    setFilter("");
+    setDebouncedFilter("");
+    setSportFilter("all");
+  }
+
+  // Bring the row into view once it has rendered. The master list is a 32rem
+  // scroller, so the selected row can easily sit outside it and the link would
+  // look like it had done nothing. `block: "nearest"` leaves a row that is
+  // already on screen where it is — the usual case for `selectPlayer`, which
+  // writes the param too. A deep-linked player with no row at all (past the
+  // cap) simply has nothing to scroll to; the detail panel still opens.
+  const followedPlayerParam = followedParams[0];
+  useEffect(() => {
+    if (followedPlayerParam === null) return;
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [followedPlayerParam]);
+
   const loaded = useMemo(() => management?.players ?? [], [management]);
 
   /**
@@ -1182,9 +1268,25 @@ export default function PlayerManagement() {
     selectedId ? { id: selectedId } : "skip",
   );
 
+  /**
+   * Every path that opens a player goes through here — a master row, the add
+   * form's `Added {name}.`, its near-match `Open {name}` pick, and the detail
+   * panel's `NAME_TAKEN` destination — so the URL cannot fall out of step with
+   * the panel by one of them forgetting to write it.
+   */
   const selectPlayer = (id: Id<"players">) => {
     setSelectedId(id);
     setAdding(false);
+    // Keep the URL in step with the selection, so the player on screen is the
+    // player a reload or a shared link reopens — and so Back from a career
+    // stint's Team Management link comes back to this player rather than to
+    // the bare list. `followParam` is part of writing it, not bookkeeping
+    // after the fact: an id this screen selected itself must never be read
+    // back as a fresh link to follow, or the very next render wipes the filter
+    // the operator is working under. `replace`, so Back stays an exit from
+    // this screen rather than a walk back through every row they looked at.
+    followParam(id);
+    setSearchParams({ player: id }, { replace: true });
   };
 
   const counter = searching
@@ -1302,6 +1404,7 @@ export default function PlayerManagement() {
                   <li key={player._id}>
                     <button
                       type="button"
+                      ref={isSelected ? selectedRowRef : null}
                       onClick={() => selectPlayer(player._id)}
                       aria-current={isSelected ? "true" : undefined}
                       // NEO-235 — TWO LINES, and the second one is the whole

@@ -26,6 +26,12 @@
  *  5. **`NAME_TAKEN` is offered as a destination, not just an error.** The
  *     mutation hands back the other row's id precisely so the operator is not
  *     left to go and search for it.
+ *  6. **The selected player is in the URL, both ways.** A career stint links
+ *     out to `/admin/teams`, so Back has to come home to the player the
+ *     operator left. Both halves are silent when they break: a deep link that
+ *     lands on an unselected list still renders a perfectly correct screen, and
+ *     a selection that never reaches the URL only shows up one navigation
+ *     later.
  *
  * --- Mocking strategy (mirrors EntityReviewWizard.test.tsx) ---
  * convex/react's useQuery/useMutation/useAction are module-mocked and routed by
@@ -43,7 +49,7 @@ import {
   within,
 } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1265,5 +1271,173 @@ describe("PlayerManagement — accessibility", () => {
     );
     expect(tag?.className).toContain("text-slate-400");
     expect(tag?.className).not.toContain("text-slate-500");
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-235 — `?player=<id>`, the other end of the career-history link.
+ *
+ * The detail panel links every stint to `/admin/teams?team=<id>`. Back from
+ * there is only useful if this screen's own history entry names the player who
+ * was open, which is why selecting writes the param with `replace` rather than
+ * pushing: the entry the operator leaves is the entry they come back to, and
+ * they do not have to walk back through every row they looked at first.
+ *
+ * The deep link is deliberately NOT resolved against the master list. That
+ * list is a 500-row page of a server-side query, so the player behind a shared
+ * link is frequently not in it; the id goes to `players.get` instead, and the
+ * panel opens either way.
+ */
+
+// The URL is half of what is under test here, so it is rendered.
+function LocationProbe() {
+  return <span data-testid="search">{useLocation().search}</span>;
+}
+
+function renderAt(entry: string) {
+  // A FRESH element each time, deliberately: handing `rerender` the identical
+  // element object lets React bail out of the subtree entirely, and a rerender
+  // that renders nothing proves nothing. The router itself stays mounted, so
+  // the history it has accumulated survives — `initialEntries` only ever seeds
+  // the first mount.
+  const tree = () => (
+    <MemoryRouter initialEntries={[entry]}>
+      <PlayerManagement />
+      <LocationProbe />
+    </MemoryRouter>
+  );
+  // `renderBare`, not the file-level `render`: that one supplies its own
+  // MemoryRouter at "/" and this needs the entry to carry a query string.
+  const result = renderBare(tree());
+  return { ...result, rerenderTree: () => result.rerender(tree()) };
+}
+
+const url = () => screen.getByTestId("search").textContent;
+const listRow = (name: RegExp) => screen.getByRole("button", { name });
+
+describe("PlayerManagement — the ?player deep link", () => {
+  it("opens a player the master list has no row for", () => {
+    // The case the id query exists for: a truncated page that does not contain
+    // the linked player. Resolving the param against `visible` would answer
+    // "no such player" for everyone past the cap — on the screen whose whole
+    // job is to be reachable by id.
+    management = { players: [RICE], totalCount: 500, truncated: true };
+    renderAt("/admin/players?player=p-griffey");
+
+    expect(screen.getByLabelText("Player name")).toHaveProperty(
+      "value",
+      "Ken Griffey Jr.",
+    );
+    // No row was highlighted because there is no row — the panel came from
+    // `players.get` alone.
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    expect(lastArgs("players.get")).toEqual({ id: "p-griffey" });
+  });
+
+  it("selects and scrolls to the row when the list does have one", () => {
+    // The scroll matters as much as the selection: the master list is a 32rem
+    // scroller, so a selected row can land off-screen and the link would look
+    // like it did nothing.
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+
+    renderAt("/admin/players?player=p-trout");
+
+    expect(listRow(/Mike Trout/).getAttribute("aria-current")).toBe("true");
+    expect(listRow(/Ken Griffey Jr\./).getAttribute("aria-current")).toBeNull();
+    expect(screen.getByLabelText("Player name")).toHaveProperty(
+      "value",
+      "Mike Trout",
+    );
+    expect(scrollIntoView).toHaveBeenCalled();
+
+    scrollIntoView.mockRestore();
+  });
+
+  it("leaves the screen alone for an id this deployment does not have", () => {
+    // A stale link, or one copied from another deployment. Not an error state:
+    // there is nothing an operator could do about it here, so the screen opens
+    // exactly as it always does.
+    renderAt("/admin/players?player=p-gone");
+
+    expect(document.querySelector('[aria-current="true"]')).toBeNull();
+    expect(
+      screen.getByText(
+        "Select a player to see and edit everything we know about them.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("writes the param when a row is picked", () => {
+    renderAt("/admin/players");
+    expect(url()).toBe("");
+
+    fireEvent.click(listRow(/Ken Griffey Jr\./));
+
+    expect(listRow(/Ken Griffey Jr\./).getAttribute("aria-current")).toBe("true");
+    expect(url()).toBe("?player=p-griffey");
+  });
+
+  it("writes the param for a player it has just created", async () => {
+    // The new row is selected by `onCreated`, so the URL has to follow it
+    // there too — an operator who adds a player and then clicks into their
+    // first team must be able to come back to them.
+    const { container } = renderAt("/admin/players");
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Mike Trout" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create player Mike Trout" }),
+    );
+
+    await waitFor(() => expect(screen.getByText("Added Mike Trout.")).toBeTruthy());
+    expect(url()).toBe("?player=p-trout");
+  });
+
+  it("clears the filter once for the link, and never again", async () => {
+    // Two halves of one rule. The link CLEARS what is in the box, because a
+    // filter left over from the last visit can hide the row it just selected.
+    // A click does NOT, because the param a click writes is the operator's own
+    // selection.
+    //
+    // The second half is the one that actually bites. React Router commits
+    // location updates in a transition, so the render in which a click's new
+    // selection lands is a render where the URL still names the PREVIOUS
+    // player — indistinguishable, to a screen that remembers only the last id
+    // it followed, from a fresh link back to them. It follows the stale param,
+    // clears the filters as any link does, and the operator watches the word
+    // they just typed vanish under their own click.
+    management = undefined;
+    const { rerenderTree } = renderAt("/admin/players?player=p-griffey");
+
+    fireEvent.change(screen.getByLabelText("Filter players"), {
+      target: { value: "Dodgy" },
+    });
+    expect(screen.getByLabelText("Filter players")).toHaveProperty(
+      "value",
+      "Dodgy",
+    );
+
+    // The list arrives; the link is followed now, and takes the box with it.
+    management = { players: [RICE, GRIFFEY, TROUT], totalCount: 3, truncated: false };
+    rerenderTree();
+
+    expect(screen.getByLabelText("Filter players")).toHaveProperty("value", "");
+    expect(listRow(/Ken Griffey Jr\./).getAttribute("aria-current")).toBe("true");
+
+    // One character stays client-side, so the row list here is the loaded page
+    // filtered in the browser — no debounce to wait on.
+    fireEvent.change(screen.getByLabelText("Filter players"), {
+      target: { value: "r" },
+    });
+    fireEvent.click(listRow(/Mike Trout/));
+
+    expect(url()).toBe("?player=p-trout");
+    expect(screen.getByLabelText("Filter players")).toHaveProperty("value", "r");
+    expect(listRow(/Mike Trout/).getAttribute("aria-current")).toBe("true");
   });
 });
