@@ -282,10 +282,28 @@ export default function CardChecklist({
   // add-card field, not the first input (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
   const [pendingPreview, setPendingPreview] = useState<FetchPreview | null>(null);
+  /**
+   * NEO-221 (D10) — the commit's failure message, for the wizard's final step.
+   *
+   * The banner already says "Commit failed: …", but the banner is BEHIND the
+   * wizard's overlay. Before this, `handleWizardConfirm` cleared
+   * `pendingPreview` regardless of outcome, so a failed commit closed the
+   * wizard, discarded the reviewed set and left the operator reading a failure
+   * they could no longer act on — the whole review had to be done again. The
+   * wizard now stays open on a failure and renders this, with Retry and Back.
+   *
+   * Written by `runCommit` itself rather than by its caller: it is the only
+   * place that has the error, and `userFacingMessage` has already unwrapped
+   * the phase label a chunked commit fails with ("chunk 2/3 (cards 151-300 of
+   * 375)"), which is exactly what makes a retry decision possible. Set on the
+   * non-wizard path too, where nothing renders it — harmless, and cheaper than
+   * a second code path that would only differ in whether it remembers.
+   */
+  const [commitError, setCommitError] = useState<string | null>(null);
   // NEO-203 — confirmed cards parked in front of the content-diff review.
   const [pendingReview, setPendingReview] = useState<PendingReview | null>(null);
   /**
-   * NEO-137/NEO-195 — is a pairing review open?
+   * NEO-137/NEO-195 — where the pairing review is, in three states.
    *
    * The CARDS are not held here. They live in `checklistCandidates` and arrive
    * on the `getReadyCandidates` subscription; this is only the session flag
@@ -294,10 +312,30 @@ export default function CardChecklist({
    * note on `streamedPairing` below.
    *
    * Distinct from `fetchInFlight`, which ends when the action resolves. This
-   * one outlives the fetch: the dialog stays open until the operator confirms
-   * or cancels.
+   * one outlives the fetch: the session stays alive until the operator
+   * confirms and commits, or aborts.
+   *
+   * NEO-221 (D9) widened this from a boolean to three states, so the wizard
+   * can hand the operator BACK to matching:
+   *
+   *   - `"closed"`   — no session. `streamedPairing` is null and the dialog is
+   *                    unmounted.
+   *   - `"review"`   — the operator is pairing. The dialog is open.
+   *   - `"parked"`   — they confirmed the pairing and are now downstream (the
+   *                    content-diff review, the entity wizard, the commit).
+   *                    `streamedPairing` stays non-null so `CardPairingModal`
+   *                    stays MOUNTED with `isOpen={false}`, and its `if
+   *                    (!isOpen) return null` sits below all of its hooks —
+   *                    which is what makes every link, keep and rename in its
+   *                    reducer survive a trip into the wizard and back.
+   *
+   * Unmounting it instead (what `setPairingOpen(false)` used to do) threw that
+   * reducer away, so "Back to matching" could only ever have meant "start the
+   * pairing over".
    */
-  const [pairingOpen, setPairingOpen] = useState(false);
+  const [pairingPhase, setPairingPhase] = useState<"closed" | "review" | "parked">(
+    "closed",
+  );
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -342,7 +380,7 @@ export default function CardChecklist({
     setSourceFilter({ bsc: null, sportlots: null });
     setSelectedCardId(null);
     setHideCrossListed(false);
-    setPairingOpen(false);
+    setPairingPhase("closed");
     // NEO-203: a diff computed against one variant's rows is meaningless
     // against another's.
     setPendingReview(null);
@@ -414,7 +452,7 @@ export default function CardChecklist({
     // Confirm until the action resolves — reviewing early is the point,
     // committing a partial checklist is not.
     setFetchInFlight(true);
-    setPairingOpen(true);
+    setPairingPhase("review");
     setSyncMessage(null);
     try {
       const result = await fetchChecklist({ selectorOptionId: variantId });
@@ -422,7 +460,7 @@ export default function CardChecklist({
       // message standing and drop the result on the floor.
       if (abandoned()) return;
       if (!result.success) {
-        setPairingOpen(false);
+        setPairingPhase("closed");
         setSyncMessage(result.message, "error");
         await discardCandidates({ selectorOptionId: variantId });
         return;
@@ -438,7 +476,7 @@ export default function CardChecklist({
         // subscription's value at this instant may still predate the batch
         // write, and mistaking a not-yet-delivered batch for an empty one
         // would commit an empty checklist over a real set.
-        setPairingOpen(false);
+        setPairingPhase("closed");
         await handlePairingConfirm({ cards: [] });
         return;
       }
@@ -451,7 +489,7 @@ export default function CardChecklist({
       // auth) and whatever it had published is a partial batch nobody should
       // be offered — close the review rather than leaving it confirmable.
       if (abandoned()) return;
-      setPairingOpen(false);
+      setPairingPhase("closed");
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
         "error",
@@ -492,7 +530,16 @@ export default function CardChecklist({
       return;
     }
     const sportId = ancestorSportId;
-    setPairingOpen(false);
+    // NEO-221 (D9): PARKED, not closed. The dialog leaves the screen either
+    // way, but parking keeps it mounted so its reducer — every link, keep,
+    // rename and name choice the operator just made — is still there if the
+    // wizard hands them back with "Back to matching".
+    //
+    // A functional update rather than a bare set: `handleSync`'s
+    // zero-candidate short-circuit calls this handler with no pairing session
+    // at all (phase is already `"closed"`), and parking a session that never
+    // existed would be a lie the footer could read back.
+    setPairingPhase((phase) => (phase === "review" ? "parked" : phase));
     setCommitting(true);
     try {
       // Nothing incoming means nothing to diff, and — critically — it must NOT
@@ -580,8 +627,17 @@ export default function CardChecklist({
     }
   };
 
-  const runCommit = async (preview: FetchPreview) => {
+  /**
+   * NEO-221 (D10) — answers whether the commit LANDED.
+   *
+   * It still swallows the failure into a banner, as it always has; the return
+   * value is what lets `handleWizardConfirm` tell the two outcomes apart. It
+   * used to be indistinguishable, so the caller cleared the reviewed set
+   * either way.
+   */
+  const runCommit = async (preview: FetchPreview): Promise<boolean> => {
     setCommitting(true);
+    setCommitError(null);
     try {
       const result = await commitChecklist({
         selectorOptionId: variantId,
@@ -665,6 +721,18 @@ export default function CardChecklist({
           `${result.unmatchedExistingCount} no longer listed upstream (kept).`,
         );
       }
+      // NEO-221 (D12): names whose review rows were never decided. The cards
+      // ARE saved — this is not a failure — but they carry the typed name
+      // instead of a player/team LINK, which is what every listing and player
+      // page reads. Said here because it is otherwise invisible until someone
+      // notices a card attributed to nobody; the same cards are badged for the
+      // attention walker, and `UnreviewedNameFixer` is how they get answered
+      // without waiting for the next sync.
+      if (result.unreviewedNameCount) {
+        notes.push(
+          `${result.unreviewedNameCount} names were not reviewed; those cards have no player/team link.`,
+        );
+      }
       setCommittedMessage(
         [
           discardError
@@ -680,6 +748,13 @@ export default function CardChecklist({
       // (`setCommittedMessage`). The banner grows it for as long as
       // `attentionCount > 0`, which the live subscription keeps current —
       // including for rows flagged well after this handler returned.
+      //
+      // NEO-221 (D9): the pairing session is spent — its cards are now NB
+      // rows. Closing the phase is what finally unmounts `CardPairingModal`
+      // and drops its reducer, and it is the point after which "Back to
+      // matching" would be meaningless.
+      setPairingPhase("closed");
+      return true;
     } catch (error) {
       // NEO-189: the commit is phased server-side and labels its failures with
       // the phase that broke ("prelude", "chunk 2/3 (cards 151-300 of 375)",
@@ -688,22 +763,35 @@ export default function CardChecklist({
       // plain Error down to "Server Error"; `userFacingMessage` is what reads
       // it back. The `.message` fallback keeps every other failure reading
       // exactly as it did before.
-      setSyncMessage(
-        `Commit failed: ${userFacingMessage(
-          error,
-          error instanceof Error ? error.message : "Unknown error",
-        )}`,
-        "error",
+      const message = userFacingMessage(
+        error,
+        error instanceof Error ? error.message : "Unknown error",
       );
+      setSyncMessage(`Commit failed: ${message}`, "error");
+      setCommitError(message);
+      return false;
     } finally {
       setCommitting(false);
     }
   };
 
+  /**
+   * NEO-221 (D10) — the reviewed set is kept until the commit LANDS.
+   *
+   * Clearing `pendingPreview` unconditionally (what this used to do) meant a
+   * commit that failed for any reason — a chunk timing out, a network blip —
+   * threw away the entity review the operator had just finished and closed the
+   * wizard over the failure message. There was no route back: the only way to
+   * re-decide the same names was to re-run the whole sync.
+   *
+   * On failure the preview stays, the wizard stays open, and `commitError`
+   * gives it something to say. The batch is untouched server-side, so pressing
+   * Retry re-sends exactly the same commit.
+   */
   const handleWizardConfirm = async () => {
     if (!pendingPreview) return;
-    await runCommit(pendingPreview);
-    setPendingPreview(null);
+    const committed = await runCommit(pendingPreview);
+    if (committed) setPendingPreview(null);
   };
 
   /**
@@ -830,6 +918,37 @@ export default function CardChecklist({
   const attentionCount = useMemo(
     () => (cards ?? []).filter((c) => needsAttention(c)).length,
     [cards],
+  );
+
+  /**
+   * NEO-221 (D6) — what the wizard's final step promises to save.
+   *
+   * The wizard used to be told only `cardCount`, so "All reviewed — save 712
+   * cards?" was the entire account of a commit that could also be deleting
+   * rows the operator ticked in the content review and applying field changes
+   * they accepted there. Those two are the irreversible half, and they were
+   * decided one dialog earlier — far enough back to have been forgotten by the
+   * time Confirm is pressed.
+   *
+   * Derived here rather than in the wizard because these are facts about the
+   * PREVIEW, which is this component's state; the wizard derives the
+   * created/linked/skipped half from the review rows it already subscribes to.
+   *
+   * Memoised so the wizard is not handed a fresh object on every reactive
+   * `getCardChecklist` update.
+   */
+  const wizardSummary = useMemo(
+    () =>
+      pendingPreview
+        ? {
+            cardCount: pendingPreview.cards.length,
+            deleteCount: pendingPreview.operatorDeleteIds.length,
+            reviewDecisionCount: pendingPreview.decisions.filter(
+              (d) => d.applyFields?.length,
+            ).length,
+          }
+        : null,
+    [pendingPreview],
   );
 
   /**
@@ -996,9 +1115,15 @@ export default function CardChecklist({
    * in step meant widening two wires for every field the screen learned to
    * show (NEO-199 did exactly that).
    *
-   * Gated on `pairingOpen`, NOT on `fetchInFlight`: the review outlives the
+   * Gated on `pairingPhase`, NOT on `fetchInFlight`: the review outlives the
    * fetch, and gating on the fetch is what made a second source necessary in
    * the first place.
+   *
+   * NEO-221 (D9): non-null for `"review"` AND `"parked"`. This is what keeps
+   * `CardPairingModal` MOUNTED (with `isOpen={false}`) while the operator is
+   * downstream in the wizard, so its reducer survives a "Back to matching".
+   * It is also the client's test for "is there a pairing session to go back
+   * to" — the wizard gets an `onBack` only when this is non-null.
    *
    * Gated on `total`, not `ready`. `ready` counts rows whose TEAM has
    * resolved, and teams gate Confirm, not visibility (see
@@ -1010,7 +1135,7 @@ export default function CardChecklist({
    * rather than being re-derived here.
    */
   const streamedPairing = useMemo(() => {
-    if (!pairingOpen || !liveCandidates || liveCandidates.total === 0) {
+    if (pairingPhase === "closed" || !liveCandidates || liveCandidates.total === 0) {
       return null;
     }
     const toCard = (c: (typeof liveCandidates.cards)[number]): PairingCard => ({
@@ -1046,7 +1171,7 @@ export default function CardChecklist({
         .filter((c) => c.bucket === "slOnly")
         .map(toCard),
     };
-  }, [pairingOpen, liveCandidates]);
+  }, [pairingPhase, liveCandidates]);
 
   const lastSynced = useMemo(() => {
     if (!cards || cards.length === 0) return null;
@@ -1527,12 +1652,16 @@ export default function CardChecklist({
 
       {streamedPairing && (
         <CardPairingModal
-          isOpen
+          // NEO-221 (D9): MOUNTED for `"review"` and `"parked"`, OPEN only for
+          // `"review"`. `CardPairingModal`'s `if (!isOpen) return null` sits
+          // below all of its hooks, so a parked modal keeps its reducer — that
+          // is the entire mechanism behind the wizard's "Back to matching".
+          isOpen={pairingPhase === "review"}
           onClose={async () => {
             // Supersede any in-flight fetch so its result cannot reopen this
             // dialog behind the operator (see syncGenerationRef).
             syncGenerationRef.current++;
-            setPairingOpen(false);
+            setPairingPhase("closed");
             setFetchInFlight(false);
             setSyncing(false);
             setSyncMessage("Sync cancelled — no cards saved.");
@@ -1575,17 +1704,66 @@ export default function CardChecklist({
         />
       )}
 
-      {pendingPreview?.batchId && (
+      {pendingPreview?.batchId && wizardSummary && (
         <EntityReviewWizard
           isOpen={pendingPreview !== null}
           selectorOptionId={variantId}
           batchId={pendingPreview.batchId}
-          cardCount={pendingPreview.cards.length}
+          // NEO-221 (D6): the whole account of what Confirm is about to do,
+          // not just the card count. See `wizardSummary`.
+          summary={wizardSummary}
           saving={committing}
           onConfirm={handleWizardConfirm}
+          // NEO-221 (D10): the wizard renders this on its final step with
+          // Retry and Back, instead of the commit failure closing the wizard
+          // and throwing the review away.
+          commitError={commitError}
+          onDismissCommitError={() => setCommitError(null)}
+          /**
+           * NEO-221 (D9) — BACK, not abort.
+           *
+           * Offered only when there is a pairing session to go back TO. On the
+           * custom-subtree path (`candidateCount === 0`) there is none —
+           * nothing was paired — so the prop is absent and the wizard's footer
+           * shows only Cancel.
+           *
+           * Deliberately does NOT cancel the batch: `startBatch` resumes an
+           * existing one, so returning to matching, changing a pairing and
+           * confirming again lands on the SAME review with the same decisions
+           * already made. Dropping the preview is enough to close the wizard.
+           */
+          onBack={
+            streamedPairing
+              ? () => {
+                  setPendingPreview(null);
+                  setCommitError(null);
+                  setPairingPhase("review");
+                }
+              : undefined
+          }
           onCancel={() => {
+            // The wizard has already cancelled the batch by the time this
+            // fires (see its own `handleCancel`); this is the client half of
+            // the abort — drop the reviewed set, close the parked pairing
+            // session for good, and bin the candidates it was reviewing.
             setPendingPreview(null);
+            setCommitError(null);
+            setPairingPhase("closed");
             setSyncMessage("Fetch cancelled — no cards saved.");
+            // NEO-221 (D9/R4): the discard used to happen when the operator
+            // CONFIRMED the pairing. It cannot any more — a parked session can
+            // still be returned to, and discarding its candidates would empty
+            // the dialog it goes back to. So it moved to the two ends of the
+            // pipeline: a landed commit (in `runCommit`) and this abort.
+            //
+            // Failure is logged, not shown: nothing was saved, the operator
+            // has already been told so, and the next fetch's clear-stale step
+            // sweeps whatever is left.
+            void discardCandidates({ selectorOptionId: variantId }).catch(
+              (error) => {
+                console.warn("Failed to discard checklist candidates:", error);
+              },
+            );
           }}
         />
       )}

@@ -60,6 +60,9 @@ vi.mock("../../convex/_generated/api", () => ({
       resolveChecklistEntities: "resolveChecklistEntities",
       commitCardChecklist: "commitCardChecklist",
       addCustomCard: "addCustomCard",
+      // NEO-221: the attention walker's UnreviewedNameFixer writes through
+      // this one.
+      updateCard: "selectorOptions.updateCard",
       // Referenced by CrossListingImportModal, which CardChecklist always
       // mounts (isOpen=false). Never asserted on here.
       getSelectorOptions: "getSelectorOptions",
@@ -77,7 +80,13 @@ vi.mock("../../convex/_generated/api", () => ({
       list: "teams.list",
       findOrCreate: "teams.findOrCreate",
     },
-    players: { getManyByIds: "players.getManyByIds" },
+    // NEO-221: UnreviewedNameFixer mounts the REAL PlayerPicker, which needs
+    // all three of these to resolve.
+    players: {
+      getManyByIds: "players.getManyByIds",
+      list: "players.list",
+      findOrCreate: "players.findOrCreate",
+    },
     cardChecklist: {
       suggestedTeamsForCard: "cardChecklist.suggestedTeamsForCard",
       confirmCardNoTeam: "cardChecklist.confirmCardNoTeam",
@@ -111,17 +120,62 @@ vi.mock("react-virtuoso", () => ({
 }));
 
 /**
- * NEO-102 (CI round 2): the entity-review wizard is stubbed down to its Cancel
- * button. Only ONE thing about it matters here — what CardChecklist's banner
- * says after `onCancel` fires — and the real wizard would drag in the whole
- * `entityReviewQueue` query/mutation surface to prove a fact about its parent.
- * Its own behaviour is covered by EntityReviewWizard.test.tsx.
+ * NEO-102 (CI round 2): the entity-review wizard is stubbed down to the props
+ * its PARENT owns. The real wizard would drag in the whole
+ * `entityReviewQueue` query/mutation surface to prove facts about
+ * CardChecklist; its own behaviour is covered by EntityReviewWizard.test.tsx.
+ *
+ * NEO-221 widened the stub with the three props D6/D9/D10 added — `summary`,
+ * `onBack` and `commitError`/`onDismissCommitError`. Each is rendered as plain
+ * text or a button so a test can read back exactly what the parent decided:
+ * what the final step will claim it is saving, whether there is a pairing
+ * session to return to, and whether a failed commit was reported without
+ * throwing the review away.
  */
 vi.mock("./EntityReviewWizard", () => ({
-  default: ({ onCancel }: { onCancel: () => void }) => (
-    <button type="button" onClick={onCancel}>
-      Cancel entity review
-    </button>
+  default: ({
+    summary,
+    onConfirm,
+    onCancel,
+    onBack,
+    commitError,
+    onDismissCommitError,
+  }: {
+    summary: {
+      cardCount: number;
+      deleteCount: number;
+      reviewDecisionCount: number;
+    };
+    onConfirm: () => void;
+    onCancel: () => void;
+    onBack?: () => void;
+    commitError?: string | null;
+    onDismissCommitError?: () => void;
+  }) => (
+    <div>
+      <p>
+        {`Wizard summary: ${summary.cardCount} cards, ${summary.deleteCount} deletions, ${summary.reviewDecisionCount} field decisions`}
+      </p>
+      {commitError && <p>{`Wizard commit error: ${commitError}`}</p>}
+      <button type="button" onClick={onConfirm}>
+        Confirm entity review
+      </button>
+      <button type="button" onClick={onCancel}>
+        Cancel entity review
+      </button>
+      {/* Rendered ONLY when the prop is present — that presence is itself the
+          assertion in the "custom subtree has nothing to go back to" test. */}
+      {onBack && (
+        <button type="button" onClick={onBack}>
+          Back to matching
+        </button>
+      )}
+      {onDismissCommitError && (
+        <button type="button" onClick={onDismissCommitError}>
+          Dismiss commit error
+        </button>
+      )}
+    </div>
   ),
 }));
 
@@ -135,6 +189,9 @@ const mockDiscardCandidates = vi.fn();
 // it had no component test at all before this ticket.
 const mockAddCustomCard = vi.fn();
 const mockFindOrCreateTeam = vi.fn();
+// NEO-221 — the attention walker's UnreviewedNameFixer.
+const mockUpdateCard = vi.fn();
+const mockFindOrCreatePlayer = vi.fn();
 
 // Mutable holders read lazily by the mocked hooks at call time — same shape
 // as EntityColumn.ensure-sync.test.tsx's `state`.
@@ -155,6 +212,13 @@ const state: {
    */
   teams: Array<{ _id: string; name: string }>;
   /**
+   * NEO-221: the `players` table, for the REAL `PlayerPicker` inside
+   * `UnreviewedNameFixer`. Serves `players.list` (typeahead candidates) and
+   * `players.getManyByIds` (chip labels), exactly as `teams` does for
+   * `TeamPicker` — the mocked `useQuery` ignores arguments.
+   */
+  players: Array<{ _id: string; name: string }>;
+  /**
    * NEO-212: rows for `entityReviewSkips.listForSet`. `[]` — no skips — is the
    * state every pre-existing test in this file runs in, and SkippedNamesPanel
    * renders nothing for it, so the checklist is visually unchanged for them.
@@ -171,6 +235,7 @@ const state: {
   ancestorChain: [],
   liveCandidates: null,
   teams: [],
+  players: [],
   skippedNames: [],
 };
 
@@ -184,6 +249,9 @@ vi.mock("convex/react", () => ({
     // resolved-but-empty, which is the "no career history" shape.
     if (ref === "cardChecklist.suggestedTeamsForCard") return [];
     if (ref === "teams.getManyByIds" || ref === "teams.list") return state.teams;
+    if (ref === "players.getManyByIds" || ref === "players.list") {
+      return state.players;
+    }
     if (ref === "entityReviewSkips.listForSet") return state.skippedNames;
     // CrossListingImportModal's drill-down queries — never exercised here.
     return undefined;
@@ -192,6 +260,8 @@ vi.mock("convex/react", () => ({
     if (ref === "discardCandidates") return mockDiscardCandidates;
     if (ref === "addCustomCard") return mockAddCustomCard;
     if (ref === "teams.findOrCreate") return mockFindOrCreateTeam;
+    if (ref === "players.findOrCreate") return mockFindOrCreatePlayer;
+    if (ref === "selectorOptions.updateCard") return mockUpdateCard;
     return vi.fn();
   },
   useAction: (ref: string) => {
@@ -602,7 +672,10 @@ async function commitZeroCandidatePath() {
     unknownTeams: [],
     batchId: undefined,
   });
-  mockCommitChecklist.mockResolvedValue({ count: 2 });
+  // NEO-221 (D12): the commit now reports how many names its batch never had
+  // a decision for. Zero here — the "nothing was skipped" shape every
+  // pre-existing assertion in this file runs in.
+  mockCommitChecklist.mockResolvedValue({ count: 2, unreviewedNameCount: 0 });
   mockDiscardCandidates.mockResolvedValue(undefined);
   let resolveFetch!: (value: unknown) => void;
   mockFetchChecklist.mockImplementation(
@@ -1421,5 +1494,401 @@ describe("CardChecklist — NEO-212 skipped-names disclosure", () => {
       screen.getByLabelText("Skipped names (1) — not players or teams"),
     ).toBeTruthy();
     expect(screen.getByLabelText("Unskip Checklist")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-221 — the orchestration half of "you cannot lose a review session by
+// accident" (plan §3 WP-D: D6, D9, D10, D12 client).
+//
+// Everything here is about what CardChecklist DOES with the wizard, not what
+// the wizard looks like: which props it hands over, what survives a trip back
+// to matching, and what a failed commit costs. The wizard itself is the stub
+// at the top of this file.
+// ---------------------------------------------------------------------------
+
+/** A `SyncDiff` with nothing to settle, so `needsSyncReview` is false. */
+const NOTHING_TO_REVIEW = {
+  cards: [],
+  conflicts: [],
+  removedUpstream: { fullyOrphaned: [] },
+};
+
+/** A BSC-only candidate — something the operator can KEEP in the pairing dialog. */
+const bscOnlyCandidate = {
+  cardNumber: "2",
+  cardName: "BSC Only Player",
+  bucket: "bscOnly" as const,
+  confidence: 1,
+  platformData: { bsc: { ref: "bsc-2" } },
+};
+
+/**
+ * Drives a REAL pairing session all the way to an open wizard: two streamed
+ * candidates (one matched, one BSC-only), the operator confirms the pairing,
+ * the content diff has nothing to settle, and entity resolution reports an
+ * unknown player.
+ *
+ * Distinct from `cancelEntityReviewPath` above, which reaches the same wizard
+ * through the ZERO-candidate short-circuit — no pairing session ever exists on
+ * that route, which is exactly why it must not be offered a way back to one.
+ */
+async function pairedEntityReviewPath() {
+  state.liveCandidates = {
+    ready: 2,
+    total: 2,
+    cards: [streamedCandidate, bscOnlyCandidate],
+  };
+  mockFetchChecklist.mockResolvedValue({
+    success: true,
+    message: "Fetched 2 cards",
+    candidateCount: 2,
+  });
+  mockDiffChecklist.mockResolvedValue(NOTHING_TO_REVIEW);
+  mockResolveEntities.mockResolvedValue({
+    unknownPlayers: [{ name: "Unknown Guy" }],
+    unknownTeams: [],
+    batchId: "batch-1",
+  });
+  mockDiscardCandidates.mockResolvedValue(undefined);
+
+  const rendered = renderChecklist();
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+  });
+  expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+  return rendered;
+}
+
+/** Press Confirm in the pairing dialog and wait for the wizard to take over. */
+async function confirmPairing() {
+  await act(async () => {
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+  });
+  await waitFor(() => expect(screen.getByText(/Wizard summary/)).toBeTruthy());
+}
+
+describe("CardChecklist — NEO-221 D6: what the wizard is told it will save", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * The wizard used to be handed `cardCount` alone. Deletions and accepted
+   * field changes are the IRREVERSIBLE half of a commit and they were decided
+   * one dialog earlier, so the final step has to account for them too.
+   */
+  it("derives the summary from the preview, not just its card count", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+
+    expect(
+      screen.getByText(
+        "Wizard summary: 1 cards, 0 deletions, 0 field decisions",
+      ),
+    ).toBeTruthy();
+  });
+});
+
+describe("CardChecklist — NEO-221 D9: Back to matching", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  it("re-opens the pairing dialog and closes the wizard", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+  });
+
+  /**
+   * The whole point of parking rather than unmounting. `CardPairingModal`'s
+   * `if (!isOpen) return null` sits BELOW its hooks, so a modal that is merely
+   * hidden keeps its reducer — every link, keep and rename the operator made.
+   * Read back through the CARDS the second Confirm produces: a kept BSC-only
+   * card is in the confirmed set both times, which it could not be if the
+   * reducer had been re-seeded from `initialData`.
+   */
+  it("keeps the pairing session's own state — the kept card survives the round trip", async () => {
+    await pairedEntityReviewPath();
+
+    fireEvent.click(screen.getByLabelText("Keep all BSC-only cards"));
+    await confirmPairing();
+    expect(mockResolveEntities.mock.calls[0][0].cards).toHaveLength(2);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+    expect(await screen.findByText(/Match Cards/)).toBeTruthy();
+
+    await confirmPairing();
+    expect(mockResolveEntities).toHaveBeenCalledTimes(2);
+    expect(mockResolveEntities.mock.calls[1][0].cards).toHaveLength(2);
+  });
+
+  /**
+   * Back is NOT an abort. It leaves the batch alone (so `startBatch` resumes
+   * the same review with the same decisions) and it leaves the candidates
+   * alone — discarding them would empty the very dialog it goes back to.
+   */
+  it("does not discard the candidates it is going back to", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Back to matching" }));
+    });
+
+    expect(mockDiscardCandidates).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The custom-subtree path reaches the wizard with `candidateCount === 0` —
+   * nothing was ever paired, so there is nowhere to go back TO and the footer
+   * must offer only Cancel.
+   */
+  it("is not offered when there was no pairing session", async () => {
+    await cancelEntityReviewPath();
+
+    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Back to matching" })).toBeNull();
+  });
+});
+
+describe("CardChecklist — NEO-221 D9/D10: aborting the review", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * `discardCandidates` used to fire when the operator CONFIRMED the pairing.
+   * It cannot any more — a parked session can still be returned to — so it
+   * moved to the two ends of the pipeline. This is the abort end.
+   */
+  it("closes the parked pairing session and discards its candidates", async () => {
+    await pairedEntityReviewPath();
+    await confirmPairing();
+    expect(mockDiscardCandidates).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel entity review" }));
+    });
+
+    expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    // Closed for good: the dialog does not come back, parked or otherwise.
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+    expect(mockDiscardCandidates).toHaveBeenCalledWith({
+      selectorOptionId: VARIANT_ID,
+    });
+  });
+});
+
+describe("CardChecklist — NEO-221 D10: a commit that fails", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * The review is the expensive thing on screen — potentially hundreds of
+   * create/link decisions. Clearing `pendingPreview` on a rejection threw all
+   * of it away and closed the wizard over a message the operator could no
+   * longer act on.
+   */
+  it("keeps the wizard open and hands it the failure", async () => {
+    await cancelEntityReviewPath();
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+
+    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
+    expect(
+      screen.getByText("Wizard commit error: chunk 2/3 timed out"),
+    ).toBeTruthy();
+    expect(screen.getByText(/Commit failed: chunk 2\/3 timed out/)).toBeTruthy();
+  });
+
+  /** Retry is the same commit, re-sent: the batch is untouched server-side. */
+  it("retrying re-sends the commit, and a second attempt can land", async () => {
+    await cancelEntityReviewPath();
+    mockCommitChecklist.mockRejectedValueOnce(new Error("chunk 2/3 timed out"));
+    mockCommitChecklist.mockResolvedValue({ count: 1, unreviewedNameCount: 0 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+    expect(screen.getByText(/Wizard commit error/)).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+
+    expect(mockCommitChecklist).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    expect(screen.getByText(/Saved 1 cards\./)).toBeTruthy();
+  });
+
+  it("dismissing the failure clears it without closing the wizard", async () => {
+    await cancelEntityReviewPath();
+    mockCommitChecklist.mockRejectedValue(new Error("chunk 2/3 timed out"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Confirm entity review" }));
+    });
+    expect(screen.getByText(/Wizard commit error/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss commit error" }));
+
+    expect(screen.queryByText(/Wizard commit error/)).toBeNull();
+    expect(screen.getByText(/Wizard summary/)).toBeTruthy();
+  });
+});
+
+describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = [{ _id: SPORT_ID, level: "sport", value: "Baseball" }];
+    state.liveCandidates = null;
+    state.teams = [];
+    state.players = [];
+    state.skippedNames = [];
+  });
+
+  /**
+   * The cards ARE saved, so this is a NOTE on the success banner rather than a
+   * failure — but it is the only announcement that some of them landed with no
+   * player or team link at all.
+   */
+  it("appends the unreviewed-names sentence to the commit banner", async () => {
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+    mockResolveEntities.mockResolvedValue({
+      unknownPlayers: [],
+      unknownTeams: [],
+      batchId: undefined,
+    });
+    // A COUNT and nothing else: the names themselves stay on the cards
+    // (`pendingPlayerNames`/`pendingTeamNames`), which is where the attention
+    // walker's fixer reads them from. Shipping them back through the commit
+    // return as well would be a second copy that can only go stale.
+    mockCommitChecklist.mockResolvedValue({ count: 2, unreviewedNameCount: 3 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockFetchChecklist.mockResolvedValue({
+      success: true,
+      message: "Custom selector subtree — no marketplace data available.",
+      candidateCount: 0,
+    });
+
+    renderChecklist();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+
+    expect(
+      screen.getByText(
+        "Saved 2 cards. 3 names were not reviewed; those cards have no player/team link.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("says nothing extra when every name was reviewed", async () => {
+    await commitZeroCandidatePath();
+
+    expect(screen.getByText("Saved 2 cards.")).toBeTruthy();
+  });
+
+  /**
+   * The attention count and the walker's fixer, end to end through the parent.
+   *
+   * DEPENDS ON WP-C: `deriveCardAttention` has to know the `unreviewedName`
+   * kind before a row carrying `pendingPlayerNames` is counted at all, and
+   * `updateCard` has to accept the pending arrays before the fixer's write can
+   * clear them. That is why the plan lands C and D together.
+   */
+  it("counts a card whose names were never reviewed, and links them in the walker", async () => {
+    state.players = [{ _id: "player-1", name: "Yordan Alvarez" }];
+    state.cards = [
+      settledCard({
+        _id: "card-unreviewed" as unknown as Id<"cardChecklist">,
+        cardNumber: "9",
+        cardName: "Yordan Alvrez",
+        pendingPlayerNames: ["Yordan Alvrez"],
+      }),
+    ];
+    mockUpdateCard.mockResolvedValue(null);
+
+    renderChecklist();
+
+    expect(
+      screen.getByRole("button", { name: /Show only cards needing attention/ })
+        .textContent,
+    ).toContain("1 need attention");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+    );
+
+    // The unreviewed name is shown — an operator cannot link a misspelling
+    // they cannot see. Scoped to the fixer's own list: the grid row behind the
+    // dialog carries the same text.
+    const names = await screen.findByRole("list", {
+      name: "Typed on this card, not linked yet",
+    });
+    expect(names.textContent).toContain("Yordan Alvrez");
+
+    // Link the real player through the walker's picker and save.
+    fireEvent.click(screen.getByLabelText("Add player"));
+    fireEvent.click(screen.getByLabelText("Add Yordan Alvarez"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Save & Next/ }));
+    });
+
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: "card-unreviewed",
+      playerIds: ["player-1"],
+      teamOnCardIds: ["team-1"],
+      pendingPlayerNames: [],
+      pendingTeamNames: [],
+    });
   });
 });

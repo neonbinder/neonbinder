@@ -31,6 +31,16 @@ export const ATTENTION_LABELS: Record<AttentionKind, string> = {
   titleOverLimit: "title is over the 80-character limit",
   titleTruncated: "auto-generated title was cut short",
   aspectValueOverLimit: "variation text is over the 65-character limit",
+  // NEO-221 (D12). Says what is MISSING — the LINK — and deliberately says
+  // nothing about review.
+  //
+  // The kind fires for two different origins: a name a marketplace commit left
+  // undecided, and a name an operator typed into the quick-add form that no
+  // `players`/`teams` row exists for yet. "Not reviewed" is true of the first
+  // and a lie about the second, and an operator who has just typed a name does
+  // not want to be told nobody reviewed it. "Not yet linked" is exactly what
+  // is wrong in both cases, and it is the thing the fixer next to it fixes.
+  unreviewedName: "name not yet linked to a player or team",
 };
 
 /**
