@@ -11,17 +11,30 @@
  * still renders a perfectly correct screen, and a selection that never reaches
  * the URL only shows up when a shared link opens the wrong thing.
  *
- * The last test covers where those two halves MEET: a click writes the param,
- * so the screen has to be able to tell a param it wrote itself from a link it
- * was sent. Getting that wrong wipes the operator's filter mid-click.
+ * The `?team` tests end on where those two halves MEET: a click writes the
+ * param, so the screen has to be able to tell a param it wrote itself from a
+ * link it was sent. Getting that wrong wipes the operator's filter mid-click.
+ *
+ * NEO-240 adds the second half of that contract — `?league=<id>`, the link
+ * League Management sends here — plus the three things this screen now owes
+ * leagues: a way through to where they are edited, an order that puts the
+ * likely league first, and a way to create one without losing the team draft.
+ *
+ * That last one was inline fields under the dropdown, captioned "Created for
+ * this team's sport when you save.", until the owner's review of PR #228 called
+ * it confusing. It is a modal now, and the tests below moved with it: the point
+ * of interest is no longer "what does Save send" (Save sends nothing about a
+ * league any more) but "what does the SELECT do" — because a dropdown whose
+ * value silently becomes a sentinel, or fails to come back from one, is the
+ * failure nobody sees until a team is saved into the wrong league.
  *
  * Mocking mirrors PlayerManagement.test.tsx: convex/react's hooks are module
  * mocked and routed by the (string-mocked) function reference.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -34,10 +47,23 @@ vi.mock("../../convex/_generated/api", () => ({
       saveTeamFields: "teams.saveTeamFields",
       enrichFromWikidata: "teams.enrichFromWikidata",
     },
-    leagues: { list: "leagues.list", create: "leagues.create" },
+    leagues: {
+      list: "leagues.list",
+      // The dialog's form uses the ADMIN create — the one that answers whether
+      // it really created anything, and that `nearMatches` guards. The inline
+      // fields used `leagues.create`, a bare find-or-create with no duplicate
+      // guard at all, which is how two spellings of one league got here.
+      createByAdmin: "leagues.createByAdmin",
+      nearMatches: "leagues.nearMatches",
+    },
+    selectorOptions: { getSelectorOptions: "selectorOptions.getSelectorOptions" },
     teamColorSources: { chooseColorSource: "teamColorSources.chooseColorSource" },
   },
 }));
+
+const SPORTS = [
+  { _id: "sport-baseball", _creationTime: 0, level: "sport", value: "Baseball" },
+];
 
 const TEAMS = [
   {
@@ -46,6 +72,7 @@ const TEAMS = [
     name: "New York Yankees",
     nameNormalized: "new york yankees",
     sportId: "sport-baseball",
+    leagueId: "l-mlb",
     colors: { primary: "#0c2340" },
   },
   {
@@ -58,15 +85,79 @@ const TEAMS = [
   },
 ];
 
+/**
+ * Deliberately adversarial to an alphabetical sort: by name these read
+ * Atlantic, International, Major, Nippon — the exact reverse of the answer in
+ * two places — so a test that passes here cannot be passing on `localeCompare`
+ * alone. `l-atlantic` carries no level at all, which is the pre-NEO-240 row.
+ *
+ * `leagues.list` already sorts by name server-side, so this is the order the
+ * screen receives and has to re-order.
+ */
+const LEAGUES = [
+  {
+    _id: "l-atlantic",
+    _creationTime: 0,
+    name: "Atlantic League",
+    abbreviation: "ATL",
+    nameNormalized: "atlantic league",
+    sportId: "sport-baseball",
+    lastUpdated: 0,
+  },
+  {
+    _id: "l-international",
+    _creationTime: 0,
+    name: "International League",
+    abbreviation: "IL",
+    nameNormalized: "international league",
+    sportId: "sport-baseball",
+    level: "minor",
+    lastUpdated: 0,
+  },
+  {
+    _id: "l-mlb",
+    _creationTime: 0,
+    name: "Major League Baseball",
+    abbreviation: "MLB",
+    nameNormalized: "major league baseball",
+    sportId: "sport-baseball",
+    level: "major",
+    lastUpdated: 0,
+  },
+  {
+    _id: "l-npb",
+    _creationTime: 0,
+    name: "Nippon Professional Baseball",
+    abbreviation: "NPB",
+    nameNormalized: "nippon professional baseball",
+    sportId: "sport-baseball",
+    level: "international",
+    lastUpdated: 0,
+  },
+];
+
+const mockCreateByAdmin = vi.fn();
+const mockSaveTeamFields = vi.fn();
+
+/** Near matches the dialog's form should offer. Set per test. */
+let nearMatches: unknown;
+
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    if (args === "skip") return undefined;
     if (ref === "teams.listForManagement") {
       return { teams: TEAMS, truncated: false };
     }
-    if (ref === "leagues.list") return [];
+    if (ref === "leagues.list") return LEAGUES;
+    if (ref === "selectorOptions.getSelectorOptions") return SPORTS;
+    if (ref === "leagues.nearMatches") return nearMatches;
     return undefined;
   },
-  useMutation: () => vi.fn(),
+  useMutation: (ref: string) => {
+    if (ref === "leagues.createByAdmin") return mockCreateByAdmin;
+    if (ref === "teams.saveTeamFields") return mockSaveTeamFields;
+    return vi.fn();
+  },
   useAction: () => vi.fn(),
 }));
 
@@ -87,6 +178,21 @@ function renderAt(entry: string) {
 }
 
 const row = (name: string) => screen.getByRole("button", { name: new RegExp(name) });
+
+/** A select by id — "League" labels two of them, so a label lookup is ambiguous. */
+const select = (id: string) =>
+  document.getElementById(id) as HTMLSelectElement | null;
+
+const optionLabels = (id: string) =>
+  Array.from(select(id)?.options ?? []).map((option) => option.textContent);
+
+beforeEach(() => {
+  nearMatches = undefined;
+  mockCreateByAdmin
+    .mockReset()
+    .mockResolvedValue({ id: "l-new", created: true });
+  mockSaveTeamFields.mockReset().mockResolvedValue(null);
+});
 
 describe("TeamManagement — the ?team deep link", () => {
   it("opens the team named in the URL and scrolls its row into view", () => {
@@ -153,5 +259,310 @@ describe("TeamManagement — the ?team deep link", () => {
     expect(screen.getByLabelText("Filter teams")).toHaveProperty("value", "New");
     expect(row("New York Yankees").getAttribute("aria-current")).toBe("true");
     expect(screen.getByTestId("search").textContent).toBe("?team=t-yankees");
+  });
+});
+
+describe("TeamManagement — the ?league deep link", () => {
+  it("opens filtered to the league named in the URL", () => {
+    renderAt("/admin/teams?league=l-mlb");
+
+    expect(select("league-filter")).toHaveProperty("value", "l-mlb");
+    expect(row("New York Yankees")).toBeTruthy();
+    // The Mariners carry no league, so the filter has to have been applied for
+    // them to be gone — not merely parsed.
+    expect(
+      screen.queryByRole("button", { name: /Seattle Mariners/ }),
+    ).toBeNull();
+  });
+
+  it("ignores a league id this deployment does not carry", () => {
+    // A filter matching nothing reads as "there are no teams" with no visible
+    // cause, and a stale link is not something the operator can fix here. So a
+    // dead id opens the screen exactly as an empty URL would.
+    renderAt("/admin/teams?league=l-gone");
+
+    expect(select("league-filter")).toHaveProperty("value", "all");
+    expect(row("New York Yankees")).toBeTruthy();
+    expect(row("Seattle Mariners")).toBeTruthy();
+  });
+
+  it("writes the filter back to the URL, keeping the team param", () => {
+    renderAt("/admin/teams?team=t-mariners");
+
+    fireEvent.change(select("league-filter")!, { target: { value: "l-mlb" } });
+
+    expect(screen.getByTestId("search").textContent).toBe(
+      "?team=t-mariners&league=l-mlb",
+    );
+    // And the write does not read back as a fresh link on the next render: the
+    // param it just wrote is already marked followed, so nothing re-applies it
+    // and — the visible symptom if it did — nothing resets the filter.
+    expect(select("league-filter")).toHaveProperty("value", "l-mlb");
+  });
+
+  it("drops the param again when the filter goes back to all leagues", () => {
+    // "?league=all" would be a link that says something the screen does not
+    // mean: `all` is the absence of a filter, not a league.
+    renderAt("/admin/teams?league=l-mlb");
+
+    fireEvent.change(select("league-filter")!, { target: { value: "all" } });
+
+    expect(screen.getByTestId("search").textContent).toBe("");
+  });
+
+  it("keeps the league filter in the URL when a row is picked", () => {
+    // The two params are one screen. A click that dropped the filter would
+    // hand the operator a link that opens a different list than the one they
+    // are looking at.
+    renderAt("/admin/teams?league=l-mlb");
+
+    fireEvent.click(row("New York Yankees"));
+
+    expect(screen.getByTestId("search").textContent).toBe(
+      "?team=t-yankees&league=l-mlb",
+    );
+  });
+});
+
+describe("TeamManagement — the way through to League Management", () => {
+  it("links to the league in hand when the team has one", () => {
+    renderAt("/admin/teams?team=t-yankees");
+
+    expect(
+      screen.getByRole("link", { name: "Manage leagues" }).getAttribute("href"),
+    ).toBe("/admin/leagues?league=l-mlb");
+  });
+
+  it("links to the whole screen when the team has no league", () => {
+    renderAt("/admin/teams?team=t-mariners");
+
+    expect(
+      screen.getByRole("link", { name: "Manage leagues" }).getAttribute("href"),
+    ).toBe("/admin/leagues");
+  });
+
+  it("gives the link a 24px pointer target without touching its text", () => {
+    // text-xs is a 16px line box, 8px short of WCAG 2.2 SC 2.5.8's 24px floor.
+    // `py-1` on an inline-block adds 4px above and below — 16 + 2x4 = 24 — and
+    // grows the hit area without moving the words.
+    renderAt("/admin/teams?team=t-yankees");
+
+    const link = screen.getByRole("link", { name: "Manage leagues" });
+    expect(link.className).toContain("inline-block");
+    expect(link.className).toContain("py-1");
+    expect(link.textContent).toBe("Manage leagues");
+  });
+
+  it("keeps pointing at the team's league while the add dialog is open", () => {
+    // The sentinel never reaches `leagueId` any more, so there is no longer an
+    // impossible id for this link to guard against — and the league the team
+    // actually has is still the right destination while a dialog is up.
+    renderAt("/admin/teams?team=t-yankees");
+    fireEvent.change(select("team-league")!, { target: { value: "__add__" } });
+
+    expect(
+      screen.getByRole("link", { name: "Manage leagues" }).getAttribute("href"),
+    ).toBe("/admin/leagues?league=l-mlb");
+  });
+});
+
+describe("TeamManagement — leagues in level order", () => {
+  // Alphabetically these are Atlantic, International, Major, Nippon. Level
+  // order is Major (major), International (minor), Nippon (international),
+  // Atlantic (no level) — so neither list below can be satisfied by the
+  // server's name sort arriving unchanged.
+  it("orders the detail panel's dropdown by level, then name", () => {
+    renderAt("/admin/teams?team=t-yankees");
+
+    expect(optionLabels("team-league")).toEqual([
+      "— none —",
+      "Major League Baseball (MLB)",
+      "International League (IL)",
+      "Nippon Professional Baseball (NPB)",
+      "Atlantic League (ATL)",
+      "+ Add a new league…",
+    ]);
+  });
+
+  it("orders the filter's dropdown the same way", () => {
+    renderAt("/admin/teams");
+
+    expect(optionLabels("league-filter")).toEqual([
+      "All leagues",
+      "No league",
+      "MLB",
+      "IL",
+      "NPB",
+      "ATL",
+    ]);
+  });
+});
+
+describe("TeamManagement — adding a league from the League select", () => {
+  /** Choose `+ Add a new league…`, which is a command rather than a value. */
+  const openDialog = () => {
+    renderAt("/admin/teams?team=t-yankees");
+    fireEvent.change(select("team-league")!, { target: { value: "__add__" } });
+  };
+
+  const dialog = () => screen.getByRole("dialog");
+
+  it("opens a modal instead of revealing fields under the dropdown", () => {
+    openDialog();
+
+    expect(dialog().getAttribute("aria-modal")).toBe("true");
+    const heading = screen.getByRole("heading", {
+      level: 3,
+      name: "Add a league",
+    });
+    expect(dialog().getAttribute("aria-labelledby")).toBe(heading.id);
+    // The label a Maestro flow would target lives inside the dialog now, not
+    // under the select.
+    expect(dialog().contains(screen.getByLabelText("New league name"))).toBe(
+      true,
+    );
+    // And the sentence that made the old arrangement confusing is gone: the
+    // league is created by the dialog, not by this screen's Save button.
+    expect(
+      screen.queryByText("Created for this team's sport when you save."),
+    ).toBeNull();
+  });
+
+  it("leaves the select showing the league the draft already had", () => {
+    // The sentinel is a command. If it stuck as the select's value, an operator
+    // who then pressed Save with the dialog cancelled would be saving a team
+    // whose league is a string this screen invented.
+    openDialog();
+    expect(select("team-league")).toHaveProperty("value", "l-mlb");
+  });
+
+  it("creates under the team's own sport, which cannot be changed", () => {
+    // A league is keyed on (name, sport). Created under any other sport, it is
+    // a league this team cannot point at.
+    openDialog();
+    expect(screen.getByText("Sport: Baseball")).toBeTruthy();
+    expect(document.getElementById("new-league-sport")).toBeNull();
+  });
+
+  it("opens with focus in the name field", () => {
+    openDialog();
+    expect(document.activeElement).toBe(screen.getByLabelText("New league name"));
+  });
+
+  it.each([
+    ["Escape", () => fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" })],
+    [
+      "Cancel",
+      () => fireEvent.click(screen.getByRole("button", { name: "Cancel" })),
+    ],
+    ["the scrim", () => fireEvent.click(screen.getByRole("dialog"))],
+  ])("closes on %s with the draft untouched, focus back on the select", (
+    _label,
+    dismiss,
+  ) => {
+    openDialog();
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "Nippon Professional Baseball" },
+    });
+
+    dismiss();
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(select("team-league")).toHaveProperty("value", "l-mlb");
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    // Focus goes back where the operator left it. React does not do this on
+    // unmount — it drops focus on <body>, and the next Tab restarts at the top
+    // of the page.
+    expect(document.activeElement).toBe(select("team-league"));
+  });
+
+  it("selects the new league in the dropdown, and closes", async () => {
+    openDialog();
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "  Nippon Professional Baseball  " },
+    });
+    fireEvent.change(screen.getByLabelText("Abbreviation"), {
+      target: { value: " NPB " },
+    });
+    fireEvent.click(
+      screen.getByLabelText("Create league Nippon Professional Baseball"),
+    );
+
+    await waitFor(() =>
+      expect(mockCreateByAdmin).toHaveBeenCalledWith({
+        name: "Nippon Professional Baseball",
+        abbreviation: "NPB",
+        sportId: "sport-baseball",
+      }),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    // The dropdown carries the row BEFORE `leagues.list` re-runs — the mocked
+    // query never does. A controlled select whose value names an option it does
+    // not have renders blank, so without the local copy the operator would
+    // watch their new league vanish out of the field they just added it to.
+    expect(select("team-league")).toHaveProperty("value", "l-new");
+    expect(optionLabels("team-league")).toContain(
+      "Nippon Professional Baseball",
+    );
+  });
+
+  it("does not save the team as a side effect of creating a league", async () => {
+    // The two decisions are separate now: the league exists, and whether THIS
+    // team plays in it is still committed by Save.
+    openDialog();
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "Nippon Professional Baseball" },
+    });
+    fireEvent.click(
+      screen.getByLabelText("Create league Nippon Professional Baseball"),
+    );
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(mockSaveTeamFields).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      id: "t-yankees",
+      leagueId: "l-new",
+    });
+  });
+
+  it("picks the existing league a near match offers, creating nothing", async () => {
+    // The guard the inline fields never had. `leagues.create` was a bare
+    // find-or-create, so "Nippon Pro Baseball" typed here became a second row
+    // that `/admin/leagues` then has to fold back together by hand.
+    nearMatches = [
+      {
+        _id: "l-npb",
+        name: "Nippon Professional Baseball",
+        confidence: "close",
+      },
+    ];
+    openDialog();
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "Nippon Pro Baseball" },
+    });
+
+    fireEvent.click(
+      await screen.findByLabelText("Open Nippon Professional Baseball"),
+    );
+
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(select("team-league")).toHaveProperty("value", "l-npb");
+  });
+
+  it("saves a team with no league at all without going near the dialog", async () => {
+    // The path the sentinel used to sit in the way of: `canSave` no longer has
+    // an "unless a league is half-typed" clause, so `— none —` is just a value.
+    renderAt("/admin/teams?team=t-mariners");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
+    expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({
+      leagueId: null,
+    });
   });
 });

@@ -105,6 +105,14 @@ describe("NearMatchPanel", () => {
 
     rerender(<NearMatchPanel kind="team" matches={[exact]} onPick={vi.fn()} />);
     expect(screen.getByRole("list", { name: "Possible team matches" })).toBeTruthy();
+
+    // NEO-240 — `/admin/leagues` is the third caller. The kind is what keeps a
+    // screen showing two of these lists unambiguous, so a new one must reach
+    // the label rather than quietly reuse a neighbour's.
+    rerender(<NearMatchPanel kind="league" matches={[exact]} onPick={vi.fn()} />);
+    expect(
+      screen.getByRole("list", { name: "Possible league matches" }),
+    ).toBeTruthy();
   });
 
   it("uses a caller-supplied pick label, and still suffixes the exact tag", () => {

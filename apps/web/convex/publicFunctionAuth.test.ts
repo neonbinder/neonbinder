@@ -340,6 +340,113 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-240 — the League Management public surface
+// ---------------------------------------------------------------------------
+
+describe("NEO-240: the League Management surface is admin-gated", () => {
+  /**
+   * Seven public functions arrived with `/admin/leagues`. Every one of them
+   * reads or writes GLOBALLY-SHARED reference data — a league row is the row
+   * every team in it points at — so "admin" is the intended gate for all
+   * seven and signed-in is not enough.
+   *
+   * `leagues.list` and `leagues.create` are NOT in this table and must not be
+   * added to it: `list` is deliberately the softer SIGNED-IN read (the
+   * spine-label designer's league filter is a collector screen) and is pinned
+   * as such below, and `create` is Team Management's inline add, already
+   * covered by convex/leagues.test.ts.
+   *
+   * Called with arguments that are valid but inert — the gate runs before any
+   * of them is used, so a refusal here cannot be argument validation wearing a
+   * guard's clothes.
+   */
+  const LEAGUE_ADMIN_GATED: Array<
+    [
+      string,
+      (
+        t: ReturnType<typeof convexTest>,
+        sportId: Id<"selectorOptions">,
+        leagueId: Id<"leagues">,
+      ) => Promise<unknown>,
+    ]
+  > = [
+    ["leagues.listForManagement", (t) => t.query(api.leagues.listForManagement, {})],
+    // Called with a string that is deliberately NOT an id: this function takes
+    // `v.string()` precisely so a malformed id is a `null` rather than a
+    // throw, so the throw asserted here can only be the identity gate.
+    ["leagues.getByIdParam", (t) => t.query(api.leagues.getByIdParam, { id: "not-an-id" })],
+    [
+      "leagues.nearMatches",
+      (t, sportId) => t.query(api.leagues.nearMatches, { name: "MLB", sportId }),
+    ],
+    [
+      "leagues.createByAdmin",
+      (t, sportId) =>
+        t.mutation(api.leagues.createByAdmin, { name: "Ghost League", sportId }),
+    ],
+    [
+      "leagues.saveLeagueFields",
+      (t, _sportId, leagueId) =>
+        t.mutation(api.leagues.saveLeagueFields, { id: leagueId, level: "minor" as const }),
+    ],
+    ["leagues.teamsIn", (t, _sportId, leagueId) => t.query(api.leagues.teamsIn, { leagueId })],
+    [
+      "leagues.enrichFromWikidata",
+      (t, _sportId, leagueId) => t.action(api.leagues.enrichFromWikidata, { id: leagueId }),
+    ],
+  ];
+
+  async function seedLeague(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+  ): Promise<Id<"leagues">> {
+    return t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        abbreviation: "MLB",
+        nameNormalized: "major league baseball",
+        sportId,
+        level: "major" as const,
+        aliases: ["MLB"],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+  }
+
+  test.each(LEAGUE_ADMIN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await seedLeague(t, sportId);
+    await expect(call(t, sportId, leagueId)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(LEAGUE_ADMIN_GATED)("%s rejects a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await seedLeague(t, sportId);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId, leagueId)).rejects.toThrow(
+      /Admin access required/,
+    );
+  });
+
+  test("leagues.list stays signed-in, not admin, and answers empty when signed out", async () => {
+    // The deliberate exception, recorded so a future sweep does not "fix" it
+    // upward: NEO-156 gave the spine-label designer a league filter and that is
+    // a collector-facing screen. Leagues are globally-shared reference data
+    // with no user content, so the only thing worth gating is cost. Returning
+    // [] rather than throwing keeps a signed-out render a quiet no-op.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedLeague(t, sportId);
+
+    expect(await t.query(api.leagues.list, {})).toEqual([]);
+    expect(
+      (await t.withIdentity(SIGNED_IN).query(api.leagues.list, {})).map((r) => r.name),
+    ).toEqual(["Major League Baseball"]);
+  });
+});
+
 describe("NEO-214: the Set Builder admin panel and its client-callable functions are gone", () => {
   /**
    * Jason, 2026-09-03: "Those should just not be there in production. If we

@@ -2,6 +2,7 @@ import { Link } from "react-router";
 import {
   SignalIcon,
   SquaresPlusIcon,
+  TrophyIcon,
   UserGroupIcon,
   UserIcon,
 } from "@heroicons/react/24/outline";
@@ -13,8 +14,8 @@ import { SECTIONS } from "@/src/layouts/admin-section-layout";
  * Bare /admin lists the tools rather than redirecting to the first one, for the
  * same reason /print does: the sub-tabs above are a strip of names with no room
  * to say what each tool DOES. The hub is where a tool gets a sentence. It is
- * also where the sections still to come land (Features, Leagues), so
- * an empty "pick a tool" screen is not a thing worth avoiding here.
+ * also where the sections still to come land (Features), so an empty "pick a
+ * tool" screen is not a thing worth avoiding here.
  *
  * The cards are driven by the same SECTIONS array the sub-tabs use, so a tool
  * cannot appear in one and be missing from the other.
@@ -45,6 +46,12 @@ const TOOL_DETAILS: Record<
       "Resolve team colors, confirm ambiguous matches, and correct team details by hand.",
     icon: UserGroupIcon,
     accent: "text-neon-purple group-hover:border-neon-purple/50",
+  },
+  "/admin/leagues": {
+    description:
+      "Name the leagues teams play in, set abbreviations and eras, and fold duplicate spellings into one row.",
+    icon: TrophyIcon,
+    accent: "text-neon-teal group-hover:border-neon-teal/50",
   },
   "/admin/pipeline-runs": {
     description:

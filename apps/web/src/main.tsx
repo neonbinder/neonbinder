@@ -48,6 +48,7 @@ import AdminHub from "@/app/admin/page";
 import AdminSetBuilder from "@/app/admin/set-builder/page";
 import AdminPlayers from "@/app/admin/players/page";
 import AdminTeams from "@/app/admin/teams/page";
+import AdminLeagues from "@/app/admin/leagues/page";
 import PipelineRuns from "@/app/pipeline-runs/page";
 import DesignPrimitives from "@/app/design/primitives/page";
 import PrintLayout from "@/src/layouts/print-layout";
@@ -188,6 +189,10 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                   <Route path="set-builder" element={<AdminSetBuilder />} />
                   <Route path="players" element={<AdminPlayers />} />
                   <Route path="teams" element={<AdminTeams />} />
+                  {/* NEO-240 — leagues got a table in NEO-156 and no screen
+                      until now; every row a mid-import find-or-create wrote
+                      stayed exactly as that caller left it. */}
+                  <Route path="leagues" element={<AdminLeagues />} />
                   {/* NEO-170 — operator view of every user's placeholder
                       pipeline runs, with the abort lever. The queries behind
                       it are requireAdmin server-side. Landed top-level while
