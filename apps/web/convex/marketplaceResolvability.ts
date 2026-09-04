@@ -147,27 +147,30 @@ export const SL_SERVED_LEVELS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * At `insert` and `parallel`, SportLots additionally needs an ANCHOR: an SL id
- * somewhere on this set's own subtree.
+ * At `insert` and `parallel`, SportLots additionally requires the SET to be a
+ * MARKETPLACE set at all — linked on at least one side.
  *
- * SL's answer at those levels is every set for the year and brand — it is not
- * "this set's variants". What makes it that is `baseSlPrefix`, the SL label of
- * the set's Base row, which the reconciler matches candidates against. A set
- * with no SL id anywhere beneath the manufacturer has no anchor, so the list
- * is a superset of the whole brand-year offered as one set's variants: the
- * same fail-open shape the BSC required-facet check exists to prevent.
+ * SL's answer at those levels is every set for the year and brand; it is not
+ * "this set's variants" on its own. For a set NeonBinder invented, offering
+ * the whole brand-year as its variants is the same fail-open shape the BSC
+ * required-facet check exists to prevent — and it is what made ten flows call
+ * a marketplace while drilling a hand-made set, then render the failure as a
+ * Retry the operator could never satisfy.
  *
- * A real set has this the moment BaseSetPicker maps its Base row, which is the
- * step that makes SL variant reconciliation meaningful in the first place.
+ * THE TEST IS "linked on EITHER side", and the first version of this rule got
+ * that wrong in a way CI caught immediately. It asked for an SL id beneath the
+ * manufacturer — which is circular, because `BaseMappingForm` fetches at
+ * exactly this level to POPULATE the Base set picker, and the picker is how a
+ * set gets its SL id in the first place. `syncSetsAcrossManufacturers` is
+ * BSC-only, so a freshly synced real set has a BSC id and no SL one; requiring
+ * SL first meant the picker never had candidates, silently took its
+ * "no SL data" branch, and neither "Select Base Set" nor "Re-map Base" ever
+ * rendered.
+ *
+ * A BSC id is sufficient evidence: the set exists on a marketplace, and the
+ * operator is here to pick its SportLots counterpart.
  */
-const SL_ANCHOR_LEVELS: ReadonlySet<string> = new Set([
-  "setName",
-  "variantType",
-  "insert",
-]);
-
-/** Fetch levels where the SL anchor above is required. */
-const SL_ANCHORED_FETCH_LEVELS: ReadonlySet<string> = new Set([
+const SL_LINKED_SET_FETCH_LEVELS: ReadonlySet<string> = new Set([
   "insert",
   "parallel",
 ]);
@@ -288,18 +291,19 @@ export function resolvableSides(
     }
   }
 
-  // The anchor: SL's flat list only means "this set's variants" once something
-  // beneath the manufacturer carries an SL id.
+  // SL's flat list only means "this set's variants" once the set is linked to
+  // some marketplace. EITHER side counts — see the note above for why
+  // requiring the SportLots one specifically was circular.
   if (
     level !== undefined &&
     opts?.slRequired === undefined &&
-    SL_ANCHORED_FETCH_LEVELS.has(level) &&
-    !chain.some(
-      (row) =>
-        SL_ANCHOR_LEVELS.has(row.level) && rowHasSideId(row, "sportlots"),
-    )
+    SL_LINKED_SET_FETCH_LEVELS.has(level)
   ) {
-    missingSl.push("set anchor");
+    const setRow = chain.find((row) => row.level === "setName");
+    const setIsLinked =
+      setRow !== undefined &&
+      (rowHasSideId(setRow, "bsc") || rowHasSideId(setRow, "sportlots"));
+    if (!setIsLinked) missingSl.push("unlinked set");
   }
 
   return {

@@ -29,7 +29,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { NO_MARKETPLACE_IDS_MESSAGE } from "./marketplaceResolvability";
+import {
+  NO_MARKETPLACE_IDS_MESSAGE,
+  resolvableSides,
+} from "./marketplaceResolvability";
 
 const modules = (
   import.meta as unknown as {
@@ -45,6 +48,26 @@ const ADMIN = {
 };
 
 const SENTINEL = 1_000_000;
+
+/** Credentials are not under test — hand both adapters a token. */
+vi.mock("./credentials", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./credentials")>();
+  const { internalAction } = await import("./_generated/server");
+  const { v } = await import("convex/values");
+  return {
+    ...actual,
+    getSiteToken: internalAction({
+      args: { site: v.string() },
+      returns: v.any(),
+      handler: async () => ({ token: "test-token" }),
+    }),
+    authenticateBsc: internalAction({
+      args: {},
+      returns: v.any(),
+      handler: async () => ({ success: true }),
+    }),
+  };
+});
 
 beforeEach(() => {
   vi.spyOn(console, "log").mockImplementation(() => {});
@@ -473,5 +496,153 @@ describe("MIXED chain — real ancestors, hand-made set", () => {
     expect(res.skippedSides).toContain("sportlots");
     // …and no error entry for it: it was never asked.
     expect(res.errors.some((e) => e.platform === "sportlots")).toBe(false);
+  });
+});
+
+// ===========================================================================
+// THE SEED'S REAL SET — the Base mapping picker must get SL candidates
+// ===========================================================================
+
+/**
+ * 2024 Topps Chrome exactly as the seed leaves it when the operator taps
+ * "Base", and the shape that broke in CI run 6.
+ *
+ * The detail that matters: `syncSetsAcrossManufacturers` is BSC-ONLY, so the
+ * setName row carries a BSC id and NO SportLots one, and "Sync Variant Types"
+ * is BSC-only too. The Base picker is how this set gets its SL id — so any
+ * rule that requires an SL id *before* listing SL sets is circular, and the
+ * failure is silent: `BaseMappingForm` sees `slOptions: []`, takes its
+ * "no SL data → auto-write bscOptions[0]" branch, closes, and neither
+ * "Select Base Set" nor "Re-map Base" renders (the latter is SL-keyed).
+ */
+async function seedRealSetAwaitingBaseMapping(
+  t: ReturnType<typeof convexTest>,
+): Promise<Id<"selectorOptions">> {
+  return t.run(async (ctx) => {
+    const sport = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
+      platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const year = await ctx.db.insert("selectorOptions", {
+      level: "year",
+      value: "2024",
+      platformData: { bsc: { b0: "2024" }, sportlots: { s0: "2024" } },
+      parentId: sport,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const manufacturer = await ctx.db.insert("selectorOptions", {
+      level: "manufacturer",
+      value: "Topps",
+      platformData: { sportlots: { s0: "TP" } },
+      parentId: year,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const setName = await ctx.db.insert("selectorOptions", {
+      level: "setName",
+      value: "Topps Chrome",
+      // BSC only — the set sync never writes a SportLots id.
+      platformData: { bsc: { b0: "2024-topps-chrome" } },
+      parentId: manufacturer,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    // What "Sync Variant Types" wrote: a `variant`-tagged BSC slot, the base
+    // role, and nothing on SportLots.
+    return ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: "Base",
+      platformData: { bsc: { b0: "base" } },
+      platformFacets: { bsc: { b0: "variant" } },
+      metadata: { isBase: true },
+      primaryPlatformId: { bsc: "b0" },
+      platformSlotSeq: { bsc: 1 },
+      parentId: setName,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+  });
+}
+
+describe("BaseMappingForm's fetch on the seed's real set", () => {
+  test("SportLots IS asked and returns set candidates for the picker", async () => {
+    const t = convexTest(schema, modules);
+    const baseId = await seedRealSetAwaitingBaseMapping(t);
+
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL | Request) => {
+        // BSC's variantName facet is usually empty under variant=base — that
+        // is precisely why the picker needs the SportLots list.
+        if (String(url).includes("buysportscards")) {
+          return new Response(
+            JSON.stringify({ aggregations: { variantName: [] } }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(
+          `<input type="radio" Name="selset" Value="884412"></td> <td>1  Topps Chrome</td>` +
+            `<input type="radio" Name="selset" Value="884413"></td> <td>2  Topps Chrome Update</td>`,
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    );
+
+    // The exact call BaseMappingForm makes: level "insert", parentId = the
+    // Base variantType row.
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchRawOptions, {
+        level: "insert",
+        parentId: baseId,
+        parentFilters: {
+          sport: "Baseball",
+          year: "2024",
+          manufacturer: "Topps",
+          setName: "Topps Chrome",
+          variantType: "Base",
+        },
+      });
+
+    expect(res.success).toBe(true);
+    // THE REGRESSION: SportLots must not be skipped here. A skip sends
+    // BaseMappingForm down its silent auto-write branch and the picker never
+    // opens.
+    expect(res.skippedSides).not.toContain("sportlots");
+    expect(res.slOptions.length).toBeGreaterThan(0);
+    expect(res.slOptions.map((o) => o.platformValue)).toContain("884412");
+  });
+
+  test("the set being BSC-linked is what licenses the SL list — not an SL id", async () => {
+    // The rule is "this set is a marketplace set at all", satisfied by the BSC
+    // id the set sync wrote. Requiring the SportLots one would be circular:
+    // the picker this fetch feeds is how that id comes to exist.
+    const t = convexTest(schema, modules);
+    const baseId = await seedRealSetAwaitingBaseMapping(t);
+    const setNameId = (await t.run(async (ctx) => ctx.db.get(baseId)))!.parentId!;
+    const chain = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.getAncestorChain, { id: baseId });
+
+    expect(
+      resolvableSides(chain, { level: "insert" }).sportlots.resolvable,
+    ).toBe(true);
+
+    // Strip the set's only id and it becomes NB's own invention — then SL's
+    // year+brand list is a superset offered as one set's variants, and the
+    // side is skipped. That is the ten-flow case.
+    await t.run(async (ctx) =>
+      ctx.db.patch(setNameId, { platformData: {} }),
+    );
+    const unlinked = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.getAncestorChain, { id: baseId });
+    expect(
+      resolvableSides(unlinked, { level: "insert" }).sportlots.resolvable,
+    ).toBe(false);
   });
 });
