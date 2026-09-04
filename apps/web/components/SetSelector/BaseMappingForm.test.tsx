@@ -390,6 +390,98 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
   // NEO-219 — re-map mode: state the impact, and guard the write on a version
   // -------------------------------------------------------------------------
 
+  it("version-guards an INITIAL-mode confirm too, because 'initial' only means SportLots is unmapped", async () => {
+    // Security review 2026-09-04: the parent derives `mode` from
+    // `baseHasMapping`, which counts the SportLots side ONLY. A Base row mapped
+    // to BSC alone — newly reachable now that a BSC-only confirm is allowed —
+    // therefore opens this form as `initial` forever. Sending no baseVersion
+    // there lets setPrimarySlotId silently re-point every card on that BSC slot.
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 777,
+      platformData: { bsc: { b0: "bsc-only" } },
+      primaryPlatformId: { bsc: "b0" },
+    };
+    currentCounts = { bsc: { b0: 0 }, sportlots: {}, total: 0 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm({ mode: "initial" });
+
+    await waitForPickerLoaded();
+    // The Maestro landmark is unchanged in initial mode.
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
+    });
+
+    expect(mockSetPlatformData).toHaveBeenCalledWith({
+      variantTypeId: VARIANT_TYPE_ID,
+      platformData: {
+        sportlots: "tc2024",
+        sportlotsDisplay: "2024 Topps Chrome",
+      },
+      baseVersion: 777,
+    });
+  });
+
+  it("states the impact in INITIAL mode when the row already holds cards through BSC", async () => {
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 777,
+      platformData: { bsc: { b0: "bsc-only" } },
+      platformLabels: { bsc: { b0: "Old BSC Set" } },
+      primaryPlatformId: { bsc: "b0" },
+    };
+    currentCounts = { bsc: { b0: 110 }, sportlots: {}, total: 110 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm({ mode: "initial" });
+
+    await waitForPickerLoaded();
+    expect(
+      screen.getByText(
+        "110 cards are linked through the current mapping; their refs will point at the new set.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Currently mapped: BSC — Old BSC Set")).toBeTruthy();
+    // Still `initial`, so the confirm label stays the constant five flows read.
+    expect(screen.getByText("Confirm Base Set")).toBeTruthy();
+    // One side only → nothing to split.
+    expect(screen.queryByText(/through SportLots,/)).toBeNull();
+  });
+
+  it("stays silent in INITIAL mode when the row holds no cards at all", async () => {
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 777,
+      platformData: {},
+    };
+    currentCounts = { bsc: {}, sportlots: {}, total: 0 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm({ mode: "initial" });
+
+    await waitForPickerLoaded();
+    expect(screen.queryByText(/linked through the current mapping/)).toBeNull();
+  });
+
   it("states how many cards the current mapping holds, and re-labels the confirm", async () => {
     currentRow = {
       _id: "vt-id",

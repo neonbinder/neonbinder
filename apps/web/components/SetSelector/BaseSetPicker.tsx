@@ -476,6 +476,17 @@ export default function BaseSetPicker({
 
   const isRemap = mode === "remap";
   const remapTotal = remapNotice ? remapNotice.totalCards : 0;
+  /**
+   * State the impact whenever cards are actually at stake — not only when the
+   * parent called this a re-map.
+   *
+   * The parent's `mode` is derived from `baseHasMapping`, which counts the
+   * SportLots side only, so a Base row mapped to BSC alone opens here as
+   * `initial` while still holding a slot full of cards that a confirm would
+   * re-point. `initial` mode with nothing linked stays silent, which is the
+   * common case and the one where a notice would be noise.
+   */
+  const showImpact = !!remapNotice && (isRemap || remapTotal > 0);
   const showRemapBreakdown =
     !!remapNotice && remapNotice.slCards > 0 && remapNotice.bscCards > 0;
   const currentMapping = remapNotice
@@ -545,7 +556,7 @@ export default function BaseSetPicker({
               <strong className="text-gray-200">{setName}</strong>&rsquo;s base
               cards. Only what you pick is linked; nothing else changes.
             </p>
-            {isRemap && remapNotice && (
+            {showImpact && remapNotice && (
               <div className="mt-2 text-sm text-amber-300">
                 <p>
                   {remapTotal > 0
@@ -594,7 +605,9 @@ export default function BaseSetPicker({
                 BSC base
               </div>
               {bscCandidates.length === 0 ? (
-                <p className="text-sm text-gray-500">
+                <p className="text-sm text-gray-400">
+                  {/* gray-500 measured ~3.7:1 against this dialog's bg-gray-900 —
+                      under WCAG 1.4.3's 4.5:1 for normal text. */}
                   BSC returned no base set for {setName}
                 </p>
               ) : (
@@ -693,7 +706,7 @@ export default function BaseSetPicker({
                 ))}
               </>
             ) : slOptions.length === 0 ? (
-              <p className="text-sm text-gray-500 py-4">
+              <p className="text-sm text-gray-400 py-4">
                 SportLots returned no base set for {setName}
               </p>
             ) : (
@@ -750,7 +763,7 @@ export default function BaseSetPicker({
                   })}
                 </div>
                 {filteredSlOptions.length === 0 && (
-                  <p className="text-sm text-gray-500 py-4 text-center">
+                  <p className="text-sm text-gray-400 py-4 text-center">
                     No matching sets found
                   </p>
                 )}
@@ -763,7 +776,7 @@ export default function BaseSetPicker({
             {/* The disabled-state REASON lives here rather than on the button:
                 the confirm label is a Maestro landmark in five flows and has to
                 stay constant. */}
-            <p className="text-xs text-gray-500" role="status">
+            <p className="text-xs text-gray-400" role="status">
               {loading
                 ? "Loading marketplace options…"
                 : hasPick

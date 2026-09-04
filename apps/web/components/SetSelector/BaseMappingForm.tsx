@@ -118,17 +118,24 @@ export default function BaseMappingForm({
   const ancestorChain = useQuery(api.selectorOptions.getAncestorChain, {
     id: variantTypeId,
   });
-  // Remap only: the row itself (for `baseVersion` + the current labels) and the
-  // per-slot card counts behind the impact sentence. Skipped in `initial` mode
-  // — there is no prior mapping to be stale against or to count.
-  const variantTypeRow = useQuery(
-    api.selectorOptions.getSelectorOptionById,
-    mode === "remap" ? { id: variantTypeId } : "skip",
-  );
-  const slotCounts = useQuery(
-    api.selectorOptions.getSlotCardCounts,
-    mode === "remap" ? { selectorOptionId: variantTypeId } : "skip",
-  ) as SlotCardCounts | undefined;
+  // The row itself (for `baseVersion` + the current labels) and its per-slot
+  // card counts, in BOTH modes.
+  //
+  // Not remap-only, deliberately (security review, 2026-09-04). `mode` is
+  // derived from `baseHasMapping`, which counts the SPORTLOTS side ONLY — and
+  // this ticket newly permits a BSC-only confirm. So a Base row mapped to BSC
+  // alone reads as unmapped forever: the picker auto-opens in `initial` mode
+  // every time, and an unguarded confirm would let `setPrimarySlotId` re-point
+  // every card already fetched through that BSC slot at a different set, with
+  // no impact sentence and no version check. "Initial" is a statement about
+  // what the parent could see, not about what the row holds. Convex dedupes
+  // both subscriptions against the ones SetSelector already holds for this id.
+  const variantTypeRow = useQuery(api.selectorOptions.getSelectorOptionById, {
+    id: variantTypeId,
+  });
+  const slotCounts = useQuery(api.selectorOptions.getSlotCardCounts, {
+    selectorOptionId: variantTypeId,
+  }) as SlotCardCounts | undefined;
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -166,8 +173,11 @@ export default function BaseMappingForm({
     return slot ? slotLabel(row, side, slot) : undefined;
   };
 
+  // Built in both modes for the same reason the queries above are: whether
+  // cards are at stake is a property of the ROW, not of which button opened
+  // this dialog. The picker decides what to say from the counts.
   const remapNotice: BaseRemapNotice | undefined =
-    mode === "remap" && slotCounts
+    slotCounts
       ? {
           totalCards: typeof slotCounts.total === "number" ? slotCounts.total : 0,
           slCards: primarySlotCards(
@@ -195,10 +205,12 @@ export default function BaseMappingForm({
     await setPlatformData({
       variantTypeId,
       platformData,
-      // Only the re-map is version-guarded: an `initial` mapping has no prior
-      // state a concurrent write could invalidate, and an older Convex would
-      // reject the unknown argument outright.
-      ...(mode === "remap" && typeof variantTypeRow?.lastUpdated === "number"
+      // Sent whenever the row has loaded, in both modes. A version token can
+      // only ever REFUSE a write, so carrying one on a mapping that turns out
+      // to have had nothing at stake costs nothing — while omitting one on a
+      // row that quietly did (the BSC-only case above) is a silent re-point of
+      // every card in that slot.
+      ...(typeof variantTypeRow?.lastUpdated === "number"
         ? { baseVersion: variantTypeRow.lastUpdated }
         : {}),
     });
