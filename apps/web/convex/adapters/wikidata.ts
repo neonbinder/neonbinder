@@ -1174,3 +1174,32 @@ export const runEntityReviewLookup = internalAction({
     return null;
   },
 });
+
+/**
+ * NEO-240 — league enrichment, PLACEHOLDER.
+ *
+ * NEO-240 WP1 replaces this body only. The declaration exists now because the
+ * pool has to be able to name it: `wikidataPool.enqueueEnrichment` accepts
+ * `leagueIds` as of this change, and `leagues.enrichFromWikidata` (the admin
+ * "Discover" button) enqueues onto it. A missing action there is a reference
+ * error in `internal.adapters.wikidata`, not a quiet no-op, so the stub is what
+ * lets the surface ship ahead of the lookup.
+ *
+ * The real body will mirror `enrichTeam` above: read the row through
+ * `internal.leagues.getInternal`, skip it unless `force` when it already
+ * carries an enrichment marker (creation-only, NEO-203), run the SPARQL
+ * lookup, and write results back through
+ * `internal.leagues.applyEnrichmentInternal` — which gap-fills only, so an
+ * operator's own abbreviation or span is never restamped.
+ *
+ * Returning `null` unconditionally is the right placeholder behaviour: an
+ * un-enriched league is a perfectly valid end state ("a miss is fall-back, not
+ * failure", the long-standing convention in this file), so an enqueued item
+ * that does nothing costs one pool slot and leaves the row exactly as the
+ * operator sees it.
+ */
+export const enrichLeague = internalAction({
+  args: { leagueId: v.id("leagues"), force: v.optional(v.boolean()) },
+  returns: v.null(),
+  handler: async (): Promise<null> => null,
+});

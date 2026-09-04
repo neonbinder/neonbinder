@@ -192,6 +192,13 @@ export const enqueueEnrichment = internalMutation({
   args: {
     playerIds: v.optional(v.array(v.id("players"))),
     teamIds: v.optional(v.array(v.id("teams"))),
+    /**
+     * NEO-240: leagues share this lane for the same reason teams do — every
+     * SPARQL caller in the deployment spends ONE 5-wide budget, and a league
+     * lookup that opened its own would put the shared IP back over Wikidata's
+     * ceiling. The same creation-only contract above applies unchanged.
+     */
+    leagueIds: v.optional(v.array(v.id("leagues"))),
     /** Operator re-enrichment only — see the contract note above. */
     force: v.optional(v.boolean()),
   },
@@ -209,6 +216,17 @@ export const enqueueEnrichment = internalMutation({
         ctx,
         internal.adapters.wikidata.enrichTeam,
         { teamId, force: args.force },
+      );
+    }
+    // Leagues last: a card render needs the player's HoF/career-team flags
+    // first and the team's colours second, and a league's abbreviation and
+    // span are context an operator reads on the admin page rather than
+    // anything a collector-facing screen blocks on.
+    for (const leagueId of args.leagueIds ?? []) {
+      await wikidataPool.enqueueAction(
+        ctx,
+        internal.adapters.wikidata.enrichLeague,
+        { leagueId, force: args.force },
       );
     }
     return null;

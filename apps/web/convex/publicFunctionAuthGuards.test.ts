@@ -423,3 +423,105 @@ describe("NEO-212 — admin-gated reads still omit their audit fields", () => {
     expect(near[0]).not.toHaveProperty("createdByUserId");
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-240 — the League Management surface
+// ---------------------------------------------------------------------------
+
+describe("NEO-240 — a refused write to a league persists nothing", () => {
+  async function seedLeague(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+  ): Promise<Id<"leagues">> {
+    return t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        abbreviation: "MLB",
+        nameNormalized: "major league baseball",
+        sportId,
+        level: "major" as const,
+        aliases: ["MLB"],
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("leagues.createByAdmin refuses a non-admin without inserting a league", async () => {
+    // `leagues` is globally shared: a row created here is the row every team
+    // in that league points at, and `findOrCreateLeague` will hand it to every
+    // future writer. An ungated create is a write primitive against reference
+    // data, not a per-user record.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .mutation(api.leagues.createByAdmin, { name: "Ghost League", sportId }),
+    ).rejects.toThrow(/admin access required/i);
+
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
+  });
+
+  test("leagues.saveLeagueFields refuses a non-admin without touching the row", async () => {
+    // The refusal is only meaningful if nothing was written on the way to it —
+    // and a rename here is the one edit that could make a league invisible to
+    // every lookup that resolves a league name onto it.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await seedLeague(t, sportId);
+
+    await expect(
+      t.mutation(api.leagues.saveLeagueFields, { id: leagueId, name: "Nonsense League" }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .mutation(api.leagues.saveLeagueFields, { id: leagueId, name: "Nonsense League" }),
+    ).rejects.toThrow(/admin access required/i);
+
+    const doc = await t.run(async (ctx) => ctx.db.get(leagueId));
+    expect(doc?.name).toBe("Major League Baseball");
+    expect(doc?.nameNormalized).toBe("major league baseball");
+  });
+
+  test("leagues.enrichFromWikidata refuses a non-admin without enqueueing a lookup", async () => {
+    // The COST one: this action spends an outbound SPARQL round-trip from the
+    // deployment's single egress IP, on the pool that Wikidata rate-limits us
+    // by. Ungated it is a free amplifier for anyone holding the deployment URL.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await seedLeague(t, sportId);
+
+    await expect(
+      t.action(api.leagues.enrichFromWikidata, { id: leagueId }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t.withIdentity(MEMBER).action(api.leagues.enrichFromWikidata, { id: leagueId }),
+    ).rejects.toThrow(/admin access required/i);
+
+    expect(
+      await t.run(async (ctx) => ctx.db.system.query("_scheduled_functions").collect()),
+    ).toHaveLength(0);
+  });
+
+  test("leagues.getByIdParam refuses an anonymous caller rather than answering null", async () => {
+    // Same property `players.getByIdParam` is pinned for above: `null` is this
+    // function's answer for "no such league", so a signed-out caller must get
+    // the throw instead. If the guard ever moved below the `normalizeId`, the
+    // refusal and the miss would become the same response and nothing else in
+    // the suite would notice.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await seedLeague(t, sportId);
+
+    await expect(
+      t.query(api.leagues.getByIdParam, { id: leagueId }),
+    ).rejects.toThrow(/not authenticated/i);
+
+    const doc = await t
+      .withIdentity(ADMIN)
+      .query(api.leagues.getByIdParam, { id: leagueId });
+    expect(doc?.name).toBe("Major League Baseball");
+  });
+});

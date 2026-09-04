@@ -851,6 +851,71 @@ export default defineSchema({
     // Leagues are per-sport: "National League" means nothing without one, and
     // two sports can legitimately hold the same league name.
     sportId: v.id("selectorOptions"),
+    // NEO-240: where this league sits in the professional pyramid.
+    //
+    // Added now, rather than when someone asks for a filter, because Wikidata
+    // career-team enrichment (`players.teamYears`, P54) routinely returns MiLB
+    // clubs — a player's stints at Durham and Scranton arrive alongside the MLB
+    // ones — and each of those clubs creates a league row through
+    // `findOrCreateLeague`. Without a level, an operator opening League
+    // Management sees "Major League Baseball" and "International League" as
+    // peers, with nothing on the row saying which one a card set is about.
+    //
+    // Optional because it is not knowable for every row: no backfill was run
+    // (NEO-240 decision), so every pre-existing league carries no level, and an
+    // operator-added league only has one once someone says so. Unset sorts LAST
+    // in `listForManagement`, not first — an unclassified row is the one the
+    // operator has work to do on, and burying it at the top would hide the
+    // classified majority.
+    level: v.optional(
+      v.union(
+        v.literal("major"),
+        v.literal("minor"),
+        v.literal("college"),
+        v.literal("international"),
+        v.literal("independent"),
+        v.literal("other"),
+      ),
+    ),
+    // NEO-240: the league's own lifespan, mirroring `teams.yearsActive`.
+    //
+    // Vintage sets reference leagues that no longer exist (the Federal League,
+    // the ABA, the Negro Leagues), and "when did this exist" is the fact that
+    // tells an operator whether a 1914 set's league is the row in front of them
+    // or a same-named successor. `to` absent means still active.
+    yearsActive: v.optional(
+      v.object({
+        from: v.number(),
+        to: v.optional(v.number()),
+      }),
+    ),
+    // NEO-240: same container shape as `players.externalIds` / `teams.externalIds`.
+    // A `Q<digits>` id validated through `lib/players/wikidata-id.ts` at every
+    // write; nothing else stores an unvalidated id here, because a malformed one
+    // is worse than a missing one (it reads as "already enriched" forever).
+    externalIds: v.optional(
+      v.object({
+        wikidataId: v.optional(v.string()), // e.g. "Q1163715"
+      }),
+    ),
+    // NEO-240: other names the SAME league answers to.
+    //
+    // Two independent sources of them. (1) Operators: "MLB", "the American
+    // League" and "Major League Baseball" are one row in this hobby's usage,
+    // and typing any of the three anywhere a league is resolved must land on
+    // it rather than mint a fourth row. (2) Wikidata: a club's P118 (league)
+    // resolves to a label whose wording is often not ours ("Major League
+    // Baseball" vs "MLB"), and matching on the canonical name alone would
+    // duplicate the row on every enrichment pass.
+    //
+    // Marketplaces contribute NOTHING here — none of the five sends a league
+    // string at all — so this list is entirely NB's own vocabulary, and no NB
+    // behaviour keys on a marketplace value through it.
+    //
+    // Matched normalised (`normalizeLeagueName`), so casing and punctuation
+    // differences do not need their own entries. An alias equal to the row's
+    // own name is redundant and is dropped rather than stored.
+    aliases: v.optional(v.array(v.string())),
     lastUpdated: v.number(),
   })
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
@@ -921,6 +986,12 @@ export default defineSchema({
     // Same compound-index optimization as players above. See its comment.
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     .index("by_sport_id", ["sportId"])
+    // NEO-240: the reverse of `teams.leagueId`, for League Management's
+    // "teams in this league" panel. Without it that panel is a full `teams`
+    // scan filtered in memory per selected league — the same shape the
+    // `by_sport_id` index above exists to avoid, and it gets worse as the
+    // MiLB/defunct-franchise rows arrive.
+    .index("by_league_id", ["leagueId"])
     // NEO-212: mirrors players.search_name. The entity-review wizard's team
     // pickers (and the team editor's) were the same 500-row fetch + client-side
     // `.includes()` filter that NEO-147 removed from the player typeahead —
