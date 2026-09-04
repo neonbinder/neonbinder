@@ -5,6 +5,7 @@ import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Input } from "@/components/primitives";
 import NeonButton from "@/components/modules/NeonButton";
+import { AddLeagueDialog } from "./AddLeagueDialog";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 
 /**
@@ -40,7 +41,14 @@ type League = Doc<"leagues"> & { level?: string };
 
 /** Sentinel for the "no league" option — a select's value must be a string. */
 const NO_LEAGUE = "";
-/** Sentinel for the inline "add a new league" option. */
+/**
+ * The "add a new league" option's value.
+ *
+ * A COMMAND, not a value: choosing it opens a dialog and the select snaps back
+ * to the league the draft already had. Nothing downstream ever sees this string
+ * — `leagueId` is never set to it, so `save()` has no sentinel to unpick and
+ * the "Manage leagues" link has no impossible id to guard against.
+ */
 const ADD_LEAGUE = "__add__";
 /** The league filter's "every team" value — not an id, so it is never a param. */
 const ALL_LEAGUES = "all";
@@ -147,7 +155,6 @@ function TeamDetail({
   onStatus: (status: Status) => void;
 }) {
   const saveTeamFields = useMutation(api.teams.saveTeamFields);
-  const createLeague = useMutation(api.leagues.create);
   const enrichFromWikidata = useAction(api.teams.enrichFromWikidata);
   const chooseColorSource = useAction(api.teamColorSources.chooseColorSource);
 
@@ -156,8 +163,21 @@ function TeamDetail({
   // reactive update landed mid-edit (NEO-39).
   const [name, setName] = useState(team.name);
   const [leagueId, setLeagueId] = useState<string>(team.leagueId ?? NO_LEAGUE);
-  const [newLeague, setNewLeague] = useState("");
-  const [newLeagueAbbreviation, setNewLeagueAbbreviation] = useState("");
+  const [addingLeague, setAddingLeague] = useState(false);
+  /**
+   * Leagues created from the dialog, held here until the reactive list catches
+   * up.
+   *
+   * `leagues.list` re-runs and this row arrives on its own a moment later — but
+   * a controlled `<select>` whose value names an option it does not have renders
+   * BLANK, so for that moment the operator would watch their new league vanish
+   * out of the dropdown they just added it to. Merged by id, so the local copy
+   * disappears silently the instant the real row lands.
+   */
+  const [addedLeagues, setAddedLeagues] = useState<
+    { id: Id<"leagues">; name: string }[]
+  >([]);
+  const leagueSelectRef = useRef<HTMLSelectElement>(null);
   const [city, setCity] = useState(team.city ?? "");
   const [fromYear, setFromYear] = useState(
     team.yearsActive?.from ? String(team.yearsActive.from) : "",
@@ -177,8 +197,8 @@ function TeamDetail({
     setSeededId(team._id);
     setName(team.name);
     setLeagueId(team.leagueId ?? NO_LEAGUE);
-    setNewLeague("");
-    setNewLeagueAbbreviation("");
+    setAddingLeague(false);
+    setAddedLeagues([]);
     setCity(team.city ?? "");
     setFromYear(team.yearsActive?.from ? String(team.yearsActive.from) : "");
     setToYear(team.yearsActive?.to ? String(team.yearsActive.to) : "");
@@ -195,32 +215,41 @@ function TeamDetail({
       ? contrastRatio(normalizedSecondary, normalizedPrimary)
       : null;
 
-  const addingLeague = leagueId === ADD_LEAGUE;
-  const canSave =
-    name.trim().length > 0 &&
-    colorsValid &&
-    (!addingLeague || newLeague.trim().length > 0);
+  const canSave = name.trim().length > 0 && colorsValid;
+
+  /**
+   * Every league this dropdown can offer, in the order the parent sorted them,
+   * with anything just created from the dialog appended.
+   *
+   * The tail is deliberately unsorted: a row that appears for a second or two
+   * before the query re-runs would only be moving somewhere else while the
+   * operator looked at it. Last is where they left it.
+   */
+  const leagueOptions = useMemo(() => {
+    const known = new Set(leagues.map((league) => league._id as string));
+    return [
+      ...leagues.map((league) => ({
+        id: league._id as string,
+        label: league.abbreviation
+          ? `${league.name} (${league.abbreviation})`
+          : league.name,
+      })),
+      ...addedLeagues
+        .filter((league) => !known.has(league.id as string))
+        .map((league) => ({ id: league.id as string, label: league.name })),
+    ];
+  }, [leagues, addedLeagues]);
 
   const save = async () => {
     if (!canSave) return;
     setBusy("save");
     onStatus(null);
     try {
-      // A new league is created first so the team can reference it — an id
-      // cannot be invented client-side.
-      let resolvedLeagueId: Id<"leagues"> | null = null;
-      if (addingLeague) {
-        resolvedLeagueId = await createLeague({
-          name: newLeague.trim(),
-          // Optional both here and on the mutation: an operator adding a
-          // league by hand may only know one of its two forms, and an
-          // abbreviation invented to fill the field would be worse than none.
-          abbreviation: newLeagueAbbreviation.trim() || undefined,
-          sportId: team.sportId,
-        });
-      } else if (leagueId !== NO_LEAGUE) {
-        resolvedLeagueId = leagueId as Id<"leagues">;
-      }
+      // The league already exists by the time Save is pressed — the dialog
+      // creates it and hands back an id. Nothing about a league is written
+      // from here any more.
+      const resolvedLeagueId: Id<"leagues"> | null =
+        leagueId !== NO_LEAGUE ? (leagueId as Id<"leagues">) : null;
 
       const from = Number(fromYear);
       const to = Number(toYear);
@@ -239,9 +268,6 @@ function TeamDetail({
             }
           : null,
       });
-      if (addingLeague && resolvedLeagueId) setLeagueId(resolvedLeagueId);
-      setNewLeague("");
-      setNewLeagueAbbreviation("");
       onStatus({ text: `Saved ${name.trim()}.`, isError: false });
     } catch (e) {
       onStatus({
@@ -373,16 +399,26 @@ function TeamDetail({
           </label>
           <select
             id="team-league"
+            ref={leagueSelectRef}
             value={leagueId}
-            onChange={(e) => setLeagueId(e.target.value)}
+            onChange={(e) => {
+              const value = e.target.value;
+              if (value === ADD_LEAGUE) {
+                // The draft's league does not move. React re-applies `value`
+                // on this render, so the box goes straight back to whatever it
+                // was showing — the dialog is the only thing that changed, and
+                // cancelling it therefore costs nothing to undo.
+                setAddingLeague(true);
+                return;
+              }
+              setLeagueId(value);
+            }}
             className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
           >
             <option value={NO_LEAGUE}>— none —</option>
-            {leagues.map((league) => (
-              <option key={league._id} value={league._id}>
-                {league.abbreviation
-                  ? `${league.name} (${league.abbreviation})`
-                  : league.name}
+            {leagueOptions.map((league) => (
+              <option key={league.id} value={league.id}>
+                {league.label}
               </option>
             ))}
             <option value={ADD_LEAGUE}>+ Add a new league…</option>
@@ -395,9 +431,7 @@ function TeamDetail({
               one. */}
           <Link
             to={
-              leagueId && leagueId !== ADD_LEAGUE
-                ? `/admin/leagues?league=${leagueId}`
-                : "/admin/leagues"
+              leagueId ? `/admin/leagues?league=${leagueId}` : "/admin/leagues"
             }
             // `py-1` on an inline-block, not decoration: text-xs is a 16px
             // line box, which leaves this link's pointer target 8px short of
@@ -408,27 +442,6 @@ function TeamDetail({
             Manage leagues
           </Link>
         </div>
-
-        {addingLeague && (
-          <Input
-            label="New league name"
-            value={newLeague}
-            placeholder="Nippon Professional Baseball"
-            onChange={(e) => setNewLeague(e.target.value)}
-            helperText="Created for this team's sport when you save."
-          />
-        )}
-
-        {addingLeague && (
-          <Input
-            label="New league abbreviation"
-            value={newLeagueAbbreviation}
-            placeholder="NPB"
-            maxLength={16}
-            onChange={(e) => setNewLeagueAbbreviation(e.target.value)}
-            helperText="Optional. Shown beside team names where space is tight."
-          />
-        )}
 
         <Input
           label="City"
@@ -492,6 +505,29 @@ function TeamDetail({
         </NeonButton>
       </div>
 
+      {/* Last in the tree, and last for a reason: everything above it is the
+          TEAM, and this is the one thing on the panel that is about something
+          else. Rendered only while open, so its sport lookup and near-match
+          subscription cost nothing the rest of the time. */}
+      {addingLeague && (
+        <AddLeagueDialog
+          sportId={team.sportId}
+          returnFocusTo={leagueSelectRef}
+          onStatus={onStatus}
+          onClose={() => setAddingLeague(false)}
+          onSelect={(league) => {
+            setAddedLeagues((rows) =>
+              rows.some((row) => row.id === league.id)
+                ? rows
+                : [...rows, { id: league.id, name: league.name }],
+            );
+            // The draft only — the team is not saved here. Creating a league
+            // and deciding this team plays in it are two decisions, and Save
+            // is still where the second one is committed.
+            setLeagueId(league.id);
+          }}
+        />
+      )}
     </div>
   );
 }

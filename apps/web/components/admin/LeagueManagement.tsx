@@ -2,14 +2,23 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import type { Doc, Id } from "@/convex/_generated/dataModel";
+import type { Id } from "@/convex/_generated/dataModel";
 import { Input } from "@/components/primitives";
 import { CopyButton } from "@/components/primitives/CopyButton";
 import NeonButton from "@/components/modules/NeonButton";
+// The add form lives in its own file since NEO-240's review: Team Management
+// renders the same one inside a modal, and two copies of a create form is two
+// duplicate guards to keep in step. `LevelGroup` and the field-metric constants
+// travel with it because the form is their other caller.
 import {
-  NearMatchPanel,
-  type NearMatch,
-} from "@/components/entities/NearMatchPanel";
+  AddLeagueForm,
+  FIELD_BOX_HEIGHT,
+  LABEL_CLASS,
+  LEVELS,
+  LevelGroup,
+  type LeagueLevel,
+  type Status,
+} from "./AddLeagueForm";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 // NEO-240: the same two helpers PlayerManagement's row and TeamManagement's
 // contrast readout use, so no two screens can disagree about what a colour
@@ -54,15 +63,6 @@ import { WIKIDATA_QID, wikidataUrl } from "@/lib/players/wikidata-id";
 // Shapes
 // ---------------------------------------------------------------------------
 
-/** The operator-set classification of a league. */
-export type LeagueLevel =
-  | "major"
-  | "minor"
-  | "college"
-  | "international"
-  | "independent"
-  | "other";
-
 /**
  * Structural rather than `Doc<"leagues">`, and the ids are the exception.
  *
@@ -92,41 +92,10 @@ interface LeagueTeam {
   colors?: { primary?: string; secondary?: string };
 }
 
-type SportRow = Doc<"selectorOptions">;
-
-type Status = { text: string; isError: boolean } | null;
-
-/**
- * The six levels, in the order an operator thinks about them: the two
- * professional tiers a card most often names, then the three that explain an
- * unfamiliar league, then the escape hatch.
- *
- * A button group rather than a select, and that is the one real interface
- * decision on this screen. Six short, mutually exclusive values that all fit on
- * two lines — a select would hide five of six behind a click, and "which of
- * these is set, and is one set at all?" is the exact question an operator opens
- * this panel to answer. A group answers it without being opened.
- */
-const LEVELS: ReadonlyArray<{ value: LeagueLevel; label: string }> = [
-  { value: "major", label: "Major" },
-  { value: "minor", label: "Minor" },
-  { value: "college", label: "College" },
-  { value: "international", label: "International" },
-  { value: "independent", label: "Independent" },
-  { value: "other", label: "Other" },
-];
-
+/** The master row's level column — the same six labels the picker offers. */
 const LEVEL_LABEL = new Map<LeagueLevel, string>(
   LEVELS.map((level) => [level.value, level.label]),
 );
-
-/**
- * Longer than a filter debounce would be. This fires while the operator is
- * still typing a name they intend to CREATE, and a suggestion list that
- * reshuffles under a half-typed name is noise. Same value, same reason, as the
- * Players screen.
- */
-const NEAR_MATCH_DEBOUNCE_MS = 300;
 
 /**
  * How long the counter has to hold still before it is ANNOUNCED.
@@ -141,15 +110,6 @@ const NEAR_MATCH_DEBOUNCE_MS = 300;
  * arrives while the operator is still looking at the list.
  */
 const COUNTER_ANNOUNCE_DEBOUNCE_MS = 400;
-
-/**
- * Height of an `Input` box: 24px line-height + 2×8px padding + 2×1px border.
- * Anything sharing a baseline with a field — the read-only sport — matches it
- * rather than guessing.
- */
-const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
-
-const LABEL_CLASS = "block text-sm font-medium mb-1 text-slate-300";
 
 /**
  * The surface the team chips in the detail panel are painted on — slate-900,
@@ -264,301 +224,6 @@ function rowSignature(row: League): string {
     aliases: row.aliases ?? [],
     wikidataId: row.externalIds?.wikidataId ?? "",
   });
-}
-
-// ---------------------------------------------------------------------------
-// Level picker
-// ---------------------------------------------------------------------------
-
-/**
- * The level, as six toggles.
- *
- * `aria-pressed` rather than a radio group: level is OPTIONAL, and a radio
- * group with nothing checked has no way back to nothing once something is
- * checked. Pressing the pressed button clears it, which is the affordance a
- * toggle already promises — and "not set" is a state this screen exists to fix,
- * so it must stay reachable.
- *
- * Shared by the add form and the detail panel so the two can never offer
- * different levels or different wording.
- */
-function LevelGroup({
-  value,
-  onChange,
-  idPrefix,
-}: {
-  value: LeagueLevel | null;
-  onChange: (next: LeagueLevel | null) => void;
-  /** Only for keys; the group is named by `aria-label`, not by an id. */
-  idPrefix: string;
-}) {
-  return (
-    <div>
-      <span className={LABEL_CLASS}>Level</span>
-      <div role="group" aria-label="Level" className="flex flex-wrap gap-1.5">
-        {LEVELS.map((level) => {
-          const pressed = value === level.value;
-          return (
-            <button
-              key={`${idPrefix}-${level.value}`}
-              type="button"
-              aria-pressed={pressed}
-              onClick={() => onChange(pressed ? null : level.value)}
-              // min-h-8 clears WCAG 2.2 SC 2.5.8's 24px target floor with room
-              // to spare — these sit close together, so the extra is what keeps
-              // a mis-tap from setting the wrong level.
-              //
-              // `font-semibold` is the pressed state's NON-COLOUR cue (WCAG 2.2
-              // SC 1.4.1): teal-on-teal-tint is the whole difference otherwise,
-              // and "which of these is set?" is the question this group exists
-              // to answer at a glance. Weight rather than a leading glyph on
-              // purpose — the label text stays byte-identical, so neither the
-              // accessible name nor a Maestro `tapOn: "Major"` moves.
-              className={`min-h-8 rounded-md border px-2.5 py-1 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-neon-teal ${
-                pressed
-                  ? "border-neon-teal bg-neon-teal/15 font-semibold text-neon-teal"
-                  : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:text-slate-100"
-              }`}
-            >
-              {level.label}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Add form
-// ---------------------------------------------------------------------------
-
-/**
- * Its own component so `useQuery(nearMatches)` is mounted only while the form is
- * open — the lookup costs a subscription and there is no reason to hold one for
- * a form nobody opened.
- */
-function AddLeagueForm({
-  sports,
-  defaultSportId,
-  onStatus,
-  onCreated,
-  onCancel,
-}: {
-  sports: SportRow[];
-  /** Pre-selected from the list's sport filter, when one is set. */
-  defaultSportId: Id<"selectorOptions"> | null;
-  onStatus: (status: Status) => void;
-  onCreated: (id: Id<"leagues">) => void;
-  onCancel: () => void;
-}) {
-  const createByAdmin = useMutation(api.leagues.createByAdmin);
-
-  const [name, setName] = useState("");
-  const [abbreviation, setAbbreviation] = useState("");
-  const [level, setLevel] = useState<LeagueLevel | null>(null);
-  const [sportId, setSportId] = useState<string>(defaultSportId ?? "");
-  const [debouncedName, setDebouncedName] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  /**
-   * The form REPLACES the detail column rather than opening a dialog, so the
-   * control that opened it ("Add league") is still mounted but the column under
-   * it has changed wholesale — and for a screen-reader or keyboard user nothing
-   * says so. Focus moves to the form's own heading, which announces "Add a
-   * league, heading level 3" and puts the next Tab on the first field instead
-   * of at the top of the page (WCAG 2.2 SC 2.4.3).
-   *
-   * `tabIndex={-1}` only makes the heading focusABLE; it stays out of the tab
-   * order, so this adds no stop for anyone moving through the form by hand.
-   */
-  const headingRef = useRef<HTMLHeadingElement>(null);
-  useEffect(() => {
-    headingRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(
-      () => setDebouncedName(name),
-      NEAR_MATCH_DEBOUNCE_MS,
-    );
-    return () => clearTimeout(timer);
-  }, [name]);
-
-  // Three characters, not two: `nearMatches` is a duplicate guard, and two
-  // letters match half a small table without telling the operator anything.
-  const probe = debouncedName.trim();
-  const matches: NearMatch[] | undefined = useQuery(
-    api.leagues.nearMatches,
-    probe.length >= 3 && sportId
-      ? { name: probe, sportId: sportId as Id<"selectorOptions"> }
-      : "skip",
-  );
-
-  const trimmed = name.trim();
-  const trimmedAbbreviation = abbreviation.trim();
-  // The panel exports `hasExact` for callers that only need the boolean; this
-  // one needs the ROW as well, to name the button.
-  const exact = (matches ?? []).find((m) => m.confidence === "exact");
-  /**
-   * What the panel still has to show once the primary action has been promoted.
-   *
-   * When an exact match exists the primary button IS that row — same id, same
-   * `Open {name}` accessible name — so listing it again below puts two controls
-   * with one accessible name on screen, which is ambiguous to a screen reader
-   * reading the list and to a Maestro `tapOn` matching by it. Filtered by
-   * `_id`, so any genuinely different league still belongs in the list.
-   */
-  const panelMatches = exact
-    ? (matches ?? []).filter((m) => m._id !== exact._id)
-    : matches;
-  const canCreate = trimmed.length > 0 && sportId.length > 0 && !busy;
-
-  const create = async () => {
-    if (!canCreate) return;
-    setBusy(true);
-    onStatus(null);
-    try {
-      const result = await createByAdmin({
-        name: trimmed,
-        ...(trimmedAbbreviation ? { abbreviation: trimmedAbbreviation } : {}),
-        ...(level ? { level } : {}),
-        sportId: sportId as Id<"selectorOptions">,
-      });
-      onStatus(
-        result.created
-          ? { text: `Added ${trimmed}.`, isError: false }
-          : { text: "That league already exists — opened it.", isError: false },
-      );
-      onCreated(result.id);
-    } catch (e) {
-      onStatus({
-        text: userFacingMessage(e, "Could not add that league."),
-        isError: true,
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-4">
-      <h3
-        ref={headingRef}
-        tabIndex={-1}
-        className="text-lg font-semibold focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-teal"
-      >
-        Add a league
-      </h3>
-
-      <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
-        <Input
-          label="New league name"
-          value={name}
-          placeholder="American Association"
-          onChange={(e) => setName(e.target.value)}
-        />
-
-        <Input
-          label="Abbreviation"
-          value={abbreviation}
-          placeholder="AA"
-          onChange={(e) => setAbbreviation(e.target.value)}
-        />
-      </div>
-
-      <div>
-        <label htmlFor="new-league-sport" className={LABEL_CLASS}>
-          Sport
-        </label>
-        <select
-          id="new-league-sport"
-          value={sportId}
-          onChange={(e) => setSportId(e.target.value)}
-          className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
-        >
-          <option value="">— pick a sport —</option>
-          {sports.map((sport) => (
-            <option key={sport._id} value={sport._id}>
-              {sport.value}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <LevelGroup value={level} onChange={setLevel} idPrefix="add" />
-
-      <NearMatchPanel
-        kind="league"
-        matches={panelMatches}
-        // Not "Link to": this button opens the row for editing, it does not
-        // link anything to anything.
-        pickLabel={(n) => `Open ${n}`}
-        onPick={(id) => onCreated(id as Id<"leagues">)}
-      />
-
-      {/* The primary action swaps rather than the create button merely warning.
-          An operator who has just been shown the row they were about to
-          duplicate is, nine times in ten, looking for THAT row. "Create anyway"
-          stays one press away — two sports can hold the same league name and
-          two eras of one sport genuinely can too, so this must never block. */}
-      <div className="flex flex-wrap items-center gap-3">
-        {/*
-          ONE primary button element across both states. `nearMatches` lands
-          ~300ms after the operator stops typing, so `exact` can appear while
-          the create button already HAS focus — and a ternary swapping which
-          element renders here unmounts the focused node, sending focus to
-          <body> so the next Tab restarts at the top of the page (WCAG 2.2 SC
-          3.2.2 / 2.4.3). Label, handler and enablement are props on a single
-          element, so React patches the node and focus survives.
-        */}
-        <NeonButton
-          type="button"
-          onClick={() => {
-            if (exact) {
-              onCreated(exact._id as Id<"leagues">);
-              return;
-            }
-            void create();
-          }}
-          disabled={exact ? false : !canCreate}
-          // Busy is part of the NAME, not only of the visible text. The label
-          // was static while the text flipped to "Adding…", so a screen-reader
-          // user pressing it heard "Create league American League" both before
-          // and after — no confirmation that anything happened, and an
-          // invitation to press again (WCAG 2.2 SC 4.1.2). `exact` keeps no
-          // label because the visible "Open {name}" already names it.
-          aria-label={
-            exact
-              ? undefined
-              : busy
-                ? "Adding league"
-                : `Create league ${trimmed}`
-          }
-        >
-          {exact ? `Open ${exact.name}` : busy ? "Adding…" : "Create league"}
-        </NeonButton>
-        {exact && (
-          <button
-            type="button"
-            onClick={() => void create()}
-            disabled={!canCreate}
-            // Same rule as the primary above: the name says busy because the
-            // text does.
-            aria-label={
-              busy ? "Adding league" : `Create league ${trimmed} anyway`
-            }
-            className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {busy ? "Adding…" : "Create anyway"}
-          </button>
-        )}
-        <NeonButton type="button" cancel onClick={onCancel} disabled={busy}>
-          Cancel
-        </NeonButton>
-      </div>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1511,9 +1176,11 @@ export default function LeagueManagement() {
           {adding ? (
             <AddLeagueForm
               sports={sportList}
-              defaultSportId={sportId ?? null}
+              sportId={sportId ?? null}
               onStatus={setStatus}
-              onCreated={selectLeague}
+              // The form reports WHAT it opened; this screen only ever needs
+              // the id, because the panel it hands off to re-reads the row.
+              onCreated={(league) => selectLeague(league.id)}
               onCancel={() => setAdding(false)}
             />
           ) : selected ? (
