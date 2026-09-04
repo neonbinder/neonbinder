@@ -348,8 +348,10 @@ export const list = query({
  *
  * Two things changed under it. `findOrCreateLeague` now schedules a Wikidata
  * lookup on its insert branch, so what lands here goes OUTBOUND as well as
- * into a row; and Team Management's inline add now supplies an abbreviation,
- * a field this function accepted with no bound at all. So it applies exactly
+ * into a row; and an abbreviation arg (Team Management's inline add supplied
+ * one until NEO-240's AddLeagueDialog moved that path to `createByAdmin`; this
+ * function has no client caller today but stays for other callers) was
+ * accepted with no bound at all. So it applies exactly
  * the bounds `createByAdmin` does, through the same two helpers rather than a
  * second copy of them — two admissions gates for one table that can drift
  * apart is how the unbounded one gets found by an attacker instead of a diff.
