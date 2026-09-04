@@ -511,7 +511,10 @@ function Chip({
                   ? `Detaching ${chip.label}`
                   : `Confirm detach ${chip.label}`
             }
-            className="text-xs font-semibold text-[#FF2EB3] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+            // py-1: text-xs's 1rem line-height + 0.25rem top/bottom padding
+            // clears WCAG 2.5.8's 24px target-size minimum; px-1 alone left
+            // this ~16px tall.
+            className="text-xs font-semibold text-[#FF2EB3] hover:text-[#ff5cc0] focus:text-[#ff5cc0] focus:outline-none px-1 py-1 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
           >
             {counting ? "Counting cards…" : busy ? "Detaching…" : "Confirm"}
           </button>
@@ -521,7 +524,7 @@ function Chip({
             onClick={closeConfirm}
             aria-disabled={busy || undefined}
             aria-label={`Cancel detach ${chip.label}`}
-            className="text-xs text-gray-400 hover:text-gray-200 focus:text-gray-200 focus:outline-none px-1 aria-disabled:opacity-50"
+            className="text-xs text-gray-400 hover:text-gray-200 focus:text-gray-200 focus:outline-none px-1 py-1 aria-disabled:opacity-50"
           >
             Cancel
           </button>
@@ -617,7 +620,9 @@ function Chip({
         onClick={() => setMode("confirming")}
         disabled={busy}
         aria-label={`Remove ${chip.label}`}
-        className="text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none px-1"
+        // min-w-6/min-h-6 (24px): the bare "×" glyph plus px-1 alone rendered
+        // an ~18x19px hit area, under WCAG 2.5.8's 24x24 target-size minimum.
+        className="inline-flex items-center justify-center min-w-6 min-h-6 text-gray-400 hover:text-[#FF2E9A] focus:text-[#FF2E9A] focus:outline-none"
       >
         ×
       </button>

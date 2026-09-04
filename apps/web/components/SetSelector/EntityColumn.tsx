@@ -900,12 +900,20 @@ export default function EntityColumn({
             autoFocus
           />
           {customStage.kind === "checking" && (
-            <p className="text-xs text-gray-500 mb-3" role="status">
+            // text-gray-500 measures ~3:1 against both bg-white and the
+            // dark:bg-gray-800 this form actually renders on — below WCAG
+            // 1.4.3's 4.5:1 for normal text. gray-600/dark:gray-400 matches
+            // the same dual-mode pairing already used a few lines down for
+            // "Fetching from marketplaces…".
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3" role="status">
               Checking where this name is already used…
             </p>
           )}
           {customError && (
-            <div className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm">
+            <div
+              role="alert"
+              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+            >
               {customError}
             </div>
           )}
@@ -927,7 +935,10 @@ export default function EntityColumn({
         <>
           <p className="text-sm mb-3">{createSentence}</p>
           {customError && (
-            <div className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm">
+            <div
+              role="alert"
+              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+            >
               {customError}
             </div>
           )}
@@ -953,17 +964,21 @@ export default function EntityColumn({
         <>
           <p className="text-sm mb-1">{existsSentence}</p>
           {otherMatchCount > 0 && (
-            <p className="text-xs text-gray-500 mb-2">
+            // Same dual-mode contrast fix as the "Checking…" status line above.
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">
               {otherMatchCount === 1
                 ? "1 other place also has it."
                 : `${otherMatchCount} other places also have it.`}
             </p>
           )}
-          <p className="text-xs text-gray-500 mb-3">
+          <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
             Going to it keeps one row. Creating it here makes a second.
           </p>
           {customError && (
-            <div className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm">
+            <div
+              role="alert"
+              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+            >
               {customError}
             </div>
           )}
