@@ -443,7 +443,11 @@ type SelectorHoldings = {
   protected: boolean;
 };
 
-/** Singular/plural nouns for every non-row holding kind. */
+/**
+ * Singular/plural nouns for every non-row holding kind that is a COUNT NOUN —
+ * i.e. every kind whose remedy is the sentence's own "delete what is below it
+ * first". `review` deliberately has no entry here; see `reviewClause`.
+ */
 const HOLD_NOUN: Record<string, readonly [string, string]> = {
   cards: ["card", "cards"],
   crossListings: ["cross-listing", "cross-listings"],
@@ -469,17 +473,55 @@ function holdPhrase(hold: SelectorHolding): string {
 }
 
 /**
+ * An in-flight checklist review on this row.
+ *
+ * NOT a `HOLD_NOUN` entry, because it is not the same kind of statement as the
+ * others. "Holds 1 checklist review — delete what is below it first" would give
+ * the operator the wrong instruction: a review is not a thing below the row
+ * waiting to be deleted, it is work in progress on the row itself, and the way
+ * out is to finish or cancel it. So it gets its own clause with its own remedy.
+ */
+function reviewClause(count: number): string {
+  return count === 1
+    ? "a checklist review is in progress here — finish or cancel it first"
+    : `${count} checklist reviews are in progress here — finish or cancel them first`;
+}
+
+/**
  * "Holds 3 sets and 220 cards — delete what is below it first."
  *
  * Exported shape shared by the disabled reason and the server's refusal, so
  * the operator reads the same sentence whichever side produced it.
+ *
+ * Two clauses at most, because there are two different remedies: everything
+ * countable below the row is deleted, and an in-flight review is finished or
+ * cancelled. Both can be true at once, so both are said.
  */
 export function selectorHoldsMessage(
   holds: readonly SelectorHolding[],
 ): string {
-  const parts = holds.filter((h) => h.count > 0).map(holdPhrase);
-  if (parts.length === 0) return "";
-  return `Holds ${joinLabels(parts)} — delete what is below it first`;
+  const present = holds.filter((h) => h.count > 0);
+  const countable = present.filter((h) => h.kind !== "review");
+  const reviewCount = present
+    .filter((h) => h.kind === "review")
+    .reduce((total, h) => total + h.count, 0);
+
+  const clauses: string[] = [];
+  if (countable.length > 0) {
+    clauses.push(
+      `Holds ${joinLabels(countable.map(holdPhrase))} — delete what is below it first`,
+    );
+  }
+  if (reviewCount > 0) {
+    const clause = reviewClause(reviewCount);
+    // Leading clause starts a sentence; a trailing one continues one.
+    clauses.push(
+      clauses.length === 0
+        ? clause.charAt(0).toUpperCase() + clause.slice(1)
+        : clause,
+    );
+  }
+  return clauses.join("; ");
 }
 
 /**

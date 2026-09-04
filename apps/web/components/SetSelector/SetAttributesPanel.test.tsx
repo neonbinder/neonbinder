@@ -500,6 +500,46 @@ describe("SetAttributesPanel — delete affordance (NEO-219)", () => {
     ).toBeTruthy();
   });
 
+  it("names an in-flight checklist review with its own remedy, not 'delete what is below it'", () => {
+    // A review is work in progress ON the row, not a thing below it, so the
+    // instruction has to differ: telling an operator to delete their way out
+    // of a review they are halfway through is the wrong answer.
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    currentHoldings = {
+      holds: [{ kind: "review", count: 1, examples: ["#12 Trout"] }],
+      protected: false,
+    };
+
+    const { unmount } = renderPanel();
+
+    expect(
+      screen.getByLabelText("Delete 2024 Topps Chrome").getAttribute("aria-disabled"),
+    ).toBe("true");
+    expect(
+      screen.getByText(
+        "A checklist review is in progress here — finish or cancel it first",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/delete what is below it first/)).toBeNull();
+    unmount();
+
+    // Both remedies can be true at once, so both are stated — and the review
+    // clause pluralises like every other count in this sentence.
+    currentHoldings = {
+      holds: [
+        { kind: "rows", count: 2, level: "variantType", examples: ["Base"] },
+        { kind: "review", count: 3, examples: [] },
+      ],
+      protected: false,
+    };
+    renderPanel();
+    expect(
+      screen.getByText(
+        "Holds 2 variant types — delete what is below it first; 3 checklist reviews are in progress here — finish or cancel them first",
+      ),
+    ).toBeTruthy();
+  });
+
   it("is inert while the holdings query is still in flight — never optimistically deletable", () => {
     currentRow = makeRow({ level: "setName" });
     currentHoldings = undefined;
