@@ -117,16 +117,25 @@ const ATTRIBUTE_LABEL: Record<string, string> = {
 };
 
 /**
- * NEO-217 — what a print run may be, said once.
+ * NEO-217 — what a print run may be, said once, in the server's own words.
  *
- * `/0` is not a print run and `/2.5` is not a quantity, so both are refused
- * here before the round trip as well as server-side (`updateCard` throws a
- * ConvexError for the same two cases). Clearing the field is a different
- * thing entirely and is allowed: it sends `printRun: null`, which removes the
- * field — there was no way to spell "no print run" on the wire before this
- * ticket, because every arg was `v.optional` and absent means untouched.
+ * `/0` is not a print run, `/2.5` is not a quantity, and a run past 1,000,000
+ * is a typo rather than a card, so all three are refused here before the round
+ * trip as well as server-side (`updateCard` throws
+ * "Print run must be a whole number between 1 and 1,000,000; received N."). The
+ * bound and the wording are kept in step with `selectorOptions.updateCard`
+ * deliberately: an operator who hits it locally and an operator who hits it on
+ * the server must not be told two different rules. The "received N" tail is
+ * dropped only because the value is still in the field beside the message.
+ *
+ * Clearing the field is a different thing entirely and is allowed: it sends
+ * `printRun: null`, which removes the field — there was no way to spell "no
+ * print run" on the wire before this ticket, because every arg was
+ * `v.optional` and absent means untouched.
  */
-const PRINT_RUN_MESSAGE = "Print run must be a whole number of 1 or more.";
+const PRINT_RUN_MAX = 1_000_000;
+const PRINT_RUN_MESSAGE =
+  "Print run must be a whole number between 1 and 1,000,000.";
 
 type CardDetailCard = {
   _id: Id<"cardChecklist">;
@@ -453,7 +462,7 @@ export default function CardDetailPanel({
     value: card.printRun != null ? String(card.printRun) : "",
     onSave: async (trimmed) => {
       const parsed = Number(trimmed);
-      if (!Number.isInteger(parsed) || parsed < 1) {
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > PRINT_RUN_MAX) {
         throw new Error(PRINT_RUN_MESSAGE);
       }
       await commitField({ printRun: parsed }, "Saved Print run");
@@ -513,6 +522,7 @@ export default function CardDetailPanel({
   const nameErrorId = `${uid}-name-error`;
   const titleErrorId = `${uid}-title-error`;
   const descriptionErrorId = `${uid}-description-error`;
+  const descriptionHintId = `${uid}-description-hint`;
   const printRunErrorId = `${uid}-print-run-error`;
   const variationErrorId = `${uid}-variation-error`;
 
@@ -655,6 +665,22 @@ export default function CardDetailPanel({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        // a11y (audit fix, NEO-216/217): every OTHER way of closing this
+        // drawer (clicking the backdrop, ×, or Done) moves the mouse to a
+        // non-focused element first, which the browser turns into a native
+        // blur on whatever field the operator was typing in — and that blur
+        // is what commits the field under this drawer's autosave-on-blur
+        // contract. Escape is the one close path that does NOT touch focus,
+        // so without this, a keyboard user who types a new Card name and
+        // hits Escape before tabbing away loses the edit silently — a
+        // keyboard-only failure mode a mouse user can't hit. Blurring the
+        // active field here (a no-op if it isn't one) makes Escape commit
+        // exactly like every other close path before it unmounts the drawer;
+        // the commit itself is fire-and-forget, same as a blur immediately
+        // followed by a click on Done.
+        if (focusedInEditable()) {
+          (document.activeElement as HTMLElement | null)?.blur();
+        }
         onClose();
         return;
       }
@@ -878,6 +904,10 @@ export default function CardDetailPanel({
               cardFeatures={card.features}
               ancestorSport={ancestorSport}
               cardIsRookie={card.isRookie}
+              // a11y (audit fix, NEO-216/217): route into this drawer's own
+              // single toast region rather than adding a second one — see
+              // CardFeaturesEditor's `onFieldSaved` doc comment.
+              onFieldSaved={announce}
             />
           </div>
 
@@ -1038,12 +1068,34 @@ export default function CardDetailPanel({
               aria-busy={descriptionField.busy || undefined}
               aria-invalid={descriptionField.error ? true : undefined}
               aria-describedby={
-                descriptionField.error ? descriptionErrorId : undefined
+                [descriptionHintId, descriptionField.error ? descriptionErrorId : null]
+                  .filter(Boolean)
+                  .join(" ") || undefined
               }
+              // a11y (audit fix, NEO-216/217): the shortcut this field
+              // actually listens for (see `enterCommit: "modEnter"` above) —
+              // a bare Enter is a newline here, unlike every other field in
+              // this drawer where Enter commits. `aria-keyshortcuts` is the
+              // ARIA-native way to expose that to AT that support it; the
+              // visible hint below (wired via aria-describedby) covers
+              // everyone else.
+              aria-keyshortcuts="Control+Enter Meta+Enter"
               className={`${fieldClass("cardDescription")} w-full p-1.5 text-sm resize-y`}
               placeholder="Listing description reused across marketplaces"
               aria-label="Card description"
             />
+            {/* a11y (audit fix): text-gray-500/text-gray-400, not a bare
+                text-gray-400 — this panel is genuinely bi-themed
+                (bg-white dark:bg-gray-800) and gray-400 alone measures
+                2.6:1 against the light-mode background (fails WCAG 1.4.3's
+                4.5:1). This pairing measures 4.84:1 light / 5.64:1 dark,
+                matching FieldFeedback's own busy-text pair two lines below. */}
+            <p
+              id={descriptionHintId}
+              className="mt-1 text-[10px] text-gray-500 dark:text-gray-400"
+            >
+              Enter adds a line break. ⌘/Ctrl+Enter or leaving the field saves.
+            </p>
             <FieldFeedback
               busy={descriptionField.busy}
               error={descriptionField.error}
@@ -1077,9 +1129,22 @@ export default function CardDetailPanel({
                     type="button"
                     aria-label={`Toggle ${token}`}
                     aria-pressed={active}
-                    disabled={attributesBusy}
+                    // a11y (audit fix, NEO-216/217): NOT native `disabled`.
+                    // The busy flag is shared by the whole row (see
+                    // `toggleAttribute`'s comment), so setting it disables
+                    // EVERY chip on the very next render — including the one
+                    // just clicked. A native `disabled` attribute forces a
+                    // browser blur on the instant it applies, dropping focus
+                    // to `<body>` mid-toggle with zero warning to a keyboard
+                    // user. `aria-disabled` keeps the button focusable and
+                    // reachable while still announcing the state; the
+                    // existing `if (attributesBusy) return` guard in
+                    // `toggleAttribute` already makes a second click while
+                    // busy a no-op, so nothing depends on the native
+                    // click-blocking behaviour `disabled` would have added.
+                    aria-disabled={attributesBusy || undefined}
                     onClick={() => void toggleAttribute(token)}
-                    className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:cursor-progress disabled:opacity-60 ${
+                    className={`text-xs px-2 py-0.5 rounded border transition-colors aria-disabled:cursor-progress aria-disabled:opacity-60 ${
                       active
                         ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
                         : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
@@ -1137,7 +1202,10 @@ export default function CardDetailPanel({
                 aria-label="Print run"
                 // 1, not 0: a print run of zero is not a card. Clearing the
                 // field is how "not numbered" is expressed — see PRINT_RUN_MESSAGE.
+                // `max` mirrors the server's own bound so the browser's stepper
+                // cannot walk past a value the mutation would refuse.
                 min={1}
+                max={PRINT_RUN_MAX}
                 step={1}
               />
               <FieldFeedback
@@ -1156,6 +1224,20 @@ export default function CardDetailPanel({
                   key: "autographed",
                   value,
                 });
+                // a11y (audit fix, NEO-216/217): this row was silent — see
+                // CardFeaturesEditor's `onFieldSaved` doc comment for why
+                // that matters now that "None" is a real, clearable outcome.
+                // This is a `toggleOptions` field (see AUTOGRAPHED_FEATURE):
+                // its off-value is `options[0]` ("None"), never "" — unlike
+                // the text/select rows, which spell "cleared" as "". Reads
+                // `options[0]` rather than hardcoding "None" to match
+                // ToggleOptionsValueControl's own `offValue` derivation
+                // exactly (see CardFeaturesEditor's identical check).
+                announce(
+                  value === (AUTOGRAPHED_FEATURE.options?.[0] ?? "")
+                    ? "Cleared Autographed"
+                    : "Saved Autographed",
+                );
               }}
               onSaveBoolean={async () => {}}
             />

@@ -47,6 +47,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 export type ReactiveFieldElement = HTMLInputElement | HTMLTextAreaElement;
 
+/**
+ * Shown when a commit is attempted while the previous one is still in flight.
+ * Exported so a caller can assert on it rather than duplicating the wording.
+ */
+export const BUSY_MESSAGE = "Still saving the previous change — try again.";
+
 export type ReactiveFieldOptions = {
   /**
    * The external (reactive) value this field mirrors + displays. When the
@@ -128,6 +134,12 @@ export function useReactiveField<
   // the focus-guard without depending on React state timing.
   const focusedRef = useRef(false);
   const busyRef = useRef(false);
+  // The exact value the in-flight save is for. Lets the busy guard tell a
+  // DUPLICATE commit of the edit already being saved (Enter and then tabbing
+  // away fire two commits for one edit; so does a real `.blur()` alongside a
+  // synthetic one in tests) apart from a genuinely NEW edit arriving mid-save.
+  // Only the second is being dropped, so only the second is worth saying.
+  const inFlightValueRef = useRef<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,19 +157,37 @@ export function useReactiveField<
   }, [value]);
 
   const runCommit = useCallback(async () => {
-    if (busyRef.current) return;
     // Read the LIVE DOM value at commit — never a lagged React/library copy.
     const el = inputRef.current;
     const trimmed = (el?.value ?? "").trim();
     const baseline = compareBaseline ?? value;
 
-    // No-op: unchanged vs the persisted baseline.
+    // No-op: unchanged vs the persisted baseline. Checked BEFORE the busy
+    // guard so a redundant commit while a save is in flight stays silent —
+    // there is nothing being dropped.
     if (trimmed === baseline) return;
+
+    // A DIFFERENT change arriving while a save is in flight is dropped — the hook
+    // owns one field and will not interleave two writes on it. That drop used
+    // to be silent, which is the worst possible way to lose an edit: the new
+    // value sits in the input looking saved. It is reported instead, and the
+    // value is left alone so the operator can simply commit again.
+    //
+    // Deliberately NOT a queued retry: queueing would re-read the DOM after
+    // the first save settles, and by then the focus-guard mirroring may have
+    // replaced what is in the field — so the queued write could persist a
+    // value nobody typed. Every caller gets the message for free through the
+    // `error` they already render.
+    if (busyRef.current) {
+      if (trimmed !== inFlightValueRef.current) setError(BUSY_MESSAGE);
+      return;
+    }
 
     if (trimmed.length === 0) {
       if (onEmptyCommit) {
         setBusy(true);
         busyRef.current = true;
+        inFlightValueRef.current = "";
         try {
           await onEmptyCommit();
           setError(null);
@@ -166,6 +196,7 @@ export function useReactiveField<
         } finally {
           setBusy(false);
           busyRef.current = false;
+          inFlightValueRef.current = null;
         }
         return;
       }
@@ -177,6 +208,7 @@ export function useReactiveField<
 
     setBusy(true);
     busyRef.current = true;
+    inFlightValueRef.current = trimmed;
     try {
       await onSave(trimmed);
       setError(null);
@@ -185,6 +217,7 @@ export function useReactiveField<
     } finally {
       setBusy(false);
       busyRef.current = false;
+      inFlightValueRef.current = null;
     }
   }, [value, compareBaseline, onSave, onEmptyCommit]);
 

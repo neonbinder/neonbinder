@@ -34,6 +34,7 @@ export default function CardFeaturesEditor({
   cardFeatures,
   ancestorSport,
   cardIsRookie,
+  onFieldSaved,
 }: {
   cardChecklistId: Id<"cardChecklist">;
   /** The card's own features map — already the complete resolved snapshot. */
@@ -42,6 +43,22 @@ export default function CardFeaturesEditor({
   ancestorSport?: string;
   /** The card's real typed Rookie column — backs the "boolean" input type (NEO-71). */
   cardIsRookie?: boolean;
+  /**
+   * a11y (audit fix, NEO-216/217): announce a successful commit through the
+   * host's own live region — same reason `CardDetailPanel`'s host page has
+   * ONE `role="status"` toast rather than one per field (see that file's
+   * header comment): a region per row would announce the same edit N times.
+   * Before this, every row here (checkbox, toggle, text/select) committed
+   * completely silently for AT users — no feedback at all, not even the
+   * generic "Saved". That was tolerable while a blank field could only ever
+   * mean "never filled in", but NEO-217 made blank a real, reachable
+   * OUTCOME of an edit (clearing a text feature), so a screen-reader user
+   * clearing e.g. "Signed By" now gets zero confirmation that anything
+   * happened — the field is simply empty, indistinguishable from having
+   * always been empty. Optional and additive: omitted, this component
+   * behaves exactly as before (existing callers/tests unaffected).
+   */
+  onFieldSaved?: (message: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const setCardFeature = useMutation(api.selectorOptions.setCardFeature);
@@ -103,9 +120,29 @@ export default function CardFeaturesEditor({
                 key: feat.key,
                 value,
               });
+              // "Cleared" once "back to nothing", however THIS row spells
+              // that: text/select rows send "" (NEO-217 — the server removes
+              // the key); `toggleOptions` rows (e.g. Autographed, Short
+              // Print — see ToggleOptionsValueControl) never send "", they
+              // send `options[0]` (e.g. "None") as their off-value instead.
+              // `checkbox` rows ("true"/"false") have no "cleared" state —
+              // unchecked is just as much a save as checked, same as this
+              // drawer's own RC/RELIC attribute chips always read "Saved".
+              onFieldSaved?.(
+                value.trim().length === 0 ||
+                  // Matches ToggleOptionsValueControl's own `offValue`
+                  // derivation exactly (`options[0] ?? ""`) rather than
+                  // assuming "None" — some future toggleOptions feature
+                  // could spell its off-state differently.
+                  (feat.inputType === "toggleOptions" &&
+                    value === (feat.options?.[0] ?? ""))
+                  ? `Cleared ${feat.label}`
+                  : `Saved ${feat.label}`,
+              );
             }}
             onSaveBoolean={async (v) => {
               await updateCard({ id: cardChecklistId, isRookie: v });
+              onFieldSaved?.(`Saved ${feat.label}`);
             }}
           />
         ))}

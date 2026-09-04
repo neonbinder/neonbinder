@@ -358,10 +358,18 @@ function SelectValueControl({
             it now routes through the same `onSave` with `""`, which the server
             reads as "remove this key" (never as a stored empty string).
 
-            The label is a bare "—" rather than "— Select —": it is a value
-            now, not an instruction, and it matches the "—" placeholder the
-            text rows already use for blank. */}
-        <option value="">—</option>
+            a11y (audit fix, NEO-216/217): the label was a bare "—" (em dash),
+            matching the "—" placeholder the text rows use for blank — but a
+            placeholder is decorative ghost text a screen reader never reads,
+            while THIS text is the option's actual accessible name (`<option>`
+            support for overriding it with `aria-label` is inconsistent across
+            browser/AT pairs, so the visible text has to carry the meaning on
+            its own). A lone dash announces as "hyphen" or nothing at all,
+            with nothing distinguishing it from a rendering glitch — "No
+            value" says what picking it does, same as every real option
+            beside it says what picking THAT does, and it's still not an
+            instruction like "— Select —" was. */}
+        <option value="">No value</option>
         {options.map((opt) => (
           <option key={opt} value={opt}>
             {opt}

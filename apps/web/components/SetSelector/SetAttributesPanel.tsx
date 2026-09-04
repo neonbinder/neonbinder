@@ -7,6 +7,7 @@ import {
   EXPECTED_FEATURES,
   type ExpectedFeature,
 } from "../../convex/features/expectedFeatures";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { FeatureValueControl } from "./FeatureValueControl";
 import RenameEntityControl, { canRenameSelectorRow } from "./RenameEntityControl";
 
@@ -172,7 +173,14 @@ export default function SetAttributesPanel({
     try {
       await setSelectorOptionFeature({ selectorOptionId, key, value: trimmed });
     } catch (e) {
-      setToast(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      // NEVER a raw `.message`. Production redacts a plain Error to "Server
+      // Error", and even a surviving message reaches the client wrapped in
+      // "[CONVEX M(selectorOptions:setSelectorOptionFeature)] [Request ID: …]"
+      // — so the old `Failed: ${e.message}` toast showed an operator either
+      // nothing useful or a request id. Only a ConvexError's `data` is text a
+      // backend deliberately chose for a person, and `userFacingMessage` is
+      // the one place that rule lives.
+      setToast(`Failed: ${userFacingMessage(e, `Could not save ${label}`)}`);
     }
   };
 

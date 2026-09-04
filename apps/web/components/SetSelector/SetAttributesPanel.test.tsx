@@ -60,6 +60,7 @@ import {
   within,
 } from "@testing-library/react";
 import React from "react";
+import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -496,7 +497,10 @@ describe("SetAttributesPanel — clearing an attribute (NEO-217)", () => {
     // It was `disabled`, i.e. a placeholder — which is why League could be set
     // but never un-set.
     expect(blank.disabled).toBe(false);
-    expect(blank.textContent).toBe("—");
+    // a11y (audit fix, NEO-216/217): the option's visible text IS its
+    // accessible name (a11y-1 in FeatureValueControl.tsx) — "No value" says
+    // what picking it does; a bare "—" announced as "hyphen" or nothing.
+    expect(blank.textContent).toBe("No value");
 
     await act(async () => {
       fireEvent.change(leagueSelect, { target: { value: "" } });
@@ -532,5 +536,73 @@ describe("SetAttributesPanel — clearing an attribute (NEO-217)", () => {
     });
 
     expect(mockSetSelectorOptionFeature).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A failure toast must never carry a raw `.message`.
+ *
+ * Production redacts a plain `throw new Error("…")` in a Convex function to
+ * "Server Error", and even a message that survives reaches the client wrapped
+ * in "[CONVEX M(selectorOptions:setSelectorOptionFeature)] [Request ID: …]".
+ * So the old `Failed: ${e.message}` toast showed an operator either nothing
+ * useful or an internal request id. Only a ConvexError's `data` is text the
+ * backend deliberately chose for a person — which is the rule
+ * `lib/errors/user-facing-message` exists to hold in one place.
+ */
+describe("SetAttributesPanel — failure toasts", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function editSeason(value: string) {
+    const seasonInput = screen.getByLabelText(
+      "Value for Season",
+    ) as HTMLInputElement;
+    await act(async () => {
+      seasonInput.focus();
+      fireEvent.focus(seasonInput);
+      fireEvent.change(seasonInput, { target: { value } });
+      seasonInput.blur();
+      fireEvent.blur(seasonInput);
+    });
+  }
+
+  it("does not put a plain Error's text in the toast", async () => {
+    mockSetSelectorOptionFeature.mockRejectedValue(
+      new Error("[CONVEX M(selectorOptions:setSelectorOptionFeature)] boom"),
+    );
+    currentRow = makeRow({ level: "setName", features: {} });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+    await editSeason("2020-21");
+
+    await waitFor(() => {
+      expect(screen.getByText("Failed: Could not save Season")).toBeTruthy();
+    });
+    expect(screen.queryByText(/boom/)).toBeNull();
+    expect(screen.queryByText(/CONVEX M\(/)).toBeNull();
+  });
+
+  it("shows a ConvexError's data verbatim — that text was chosen for a person", async () => {
+    mockSetSelectorOptionFeature.mockRejectedValue(
+      new ConvexError("Season must look like 2020-21."),
+    );
+    currentRow = makeRow({ level: "setName", features: {} });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+    await editSeason("nonsense");
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Failed: Season must look like 2020-21."),
+      ).toBeTruthy();
+    });
   });
 });

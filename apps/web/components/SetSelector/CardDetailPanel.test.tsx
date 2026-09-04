@@ -686,9 +686,15 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     });
     // In words, not only a dimmed pill.
     expect(screen.getByText("Saving…")).toBeTruthy();
+    // a11y audit fix (concurrent w/ this test): NOT native `disabled` — that
+    // would force a browser blur the instant it applied, dropping focus to
+    // <body> mid-toggle for a keyboard user. `aria-disabled` keeps the
+    // button focusable while still announcing/styling the busy state; the
+    // `toggleAttribute` guard (asserted below) is what actually makes the
+    // second click inert, not the DOM disabled behavior.
     expect(
-      (screen.getByLabelText("Toggle AU") as HTMLButtonElement).disabled,
-    ).toBe(true);
+      screen.getByLabelText("Toggle AU").getAttribute("aria-disabled"),
+    ).toBe("true");
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Toggle AU"));
@@ -736,8 +742,11 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     await editAndCommit(printRunInput(), "2.5");
 
     const alert = await screen.findByRole("alert");
+    // Word-for-word the server's own refusal (minus its "received N" tail —
+    // the value is still in the field beside the message). Two different
+    // sentences for one rule would teach the operator two different rules.
     expect(alert.textContent).toBe(
-      "Print run must be a whole number of 1 or more.",
+      "Print run must be a whole number between 1 and 1,000,000.",
     );
     expect(mockUpdateCard).not.toHaveBeenCalled();
     // The rejected value stays put: it is corrected, never retyped.
@@ -750,8 +759,32 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     await editAndCommit(printRunInput(), "0");
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("whole number of 1 or more");
+    expect(alert.textContent).toContain("between 1 and 1,000,000");
     expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("refuses a print run past the server's 1,000,000 bound", async () => {
+    // Mirrored client-side so the operator is not told one rule locally and a
+    // different one by the round trip.
+    renderPanel({ card: makeCard({ printRun: 99 }) });
+
+    await editAndCommit(printRunInput(), "1000001");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("between 1 and 1,000,000");
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("accepts exactly 1,000,000 — the bound is inclusive, as it is server-side", async () => {
+    renderPanel({ card: makeCard({ printRun: 99 }) });
+
+    await editAndCommit(printRunInput(), "1000000");
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      printRun: 1_000_000,
+    });
   });
 
   // -------------------------------------------------------------------------
