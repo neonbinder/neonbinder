@@ -11,21 +11,32 @@ tags:
 #
 # That one sentence is deliberately the whole flow. The sibling admin screen is
 # split across two flows (team-management-filter for the master side,
-# team-management-edit-a-team for the detail side) because the teams table has
-# no row any flow may create; here the flow creates its OWN row, so the master
-# and detail halves are one continuous user story and splitting them would mean
-# creating two throwaway players instead of one.
+# team-management-edit-a-team for the detail side) because its empty state and
+# its detail panel are separate claims with separate preconditions; here the
+# master and detail halves are one continuous user story — add a player, then
+# edit the player you just added — and splitting them would mean creating two
+# throwaway players instead of one.
 #
 # SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
 # redirecting to /admin/players. No in-body login, no credential step. Nothing
 # else in the suite touches /admin/players, and nothing else creates a player
 # by hand, so this duplicates no existing flow.
 #
-# THE FIXTURE IT LEANS ON: "New York Yankees" (Baseball), seeded by setup.yaml's
-# "Seed Test Teams" (convex/teams.ts#seedTestTeams). Used by its FULL name for
-# the same reason team-management-edit-a-team gives at length — `teams` is a
-# GLOBAL table and concurrent workers get-or-create farm clubs ("Gulf Coast
-# League Yankees"), so the bare "Yankees" is not a safe handle.
+# IT LEANS ON NO FIXTURE AT ALL (NEO-214). It used to record its stints against
+# "New York Yankees", a team setup.yaml seeded by clicking a "Seed Test Teams"
+# button. That button, and the mutation behind it, are gone — a global seed is
+# not something the product should carry — so `teams` is empty until a flow puts
+# something in it. This flow therefore creates the team it needs the way an
+# operator would: the career editor's team typeahead offers a "+ Create" row for
+# a name it does not know, and that is `teams.findOrCreate`.
+#
+# The team is named "PMT-<worker>-<attempt>", per-worker AND per-attempt for the
+# same reason the player is: eight runners share one deployment and `teams` is a
+# global table, so a name reused across workers would have them creating and
+# reading each other's row. Per-attempt matters mechanically too — the picker
+# offers "+ Create <name>" only while no team of that name exists, so a name a
+# previous attempt left behind would render "Add <name>" instead and the first
+# stint below would be reaching for a control that is not there.
 #
 # R2 — this cannot go green without the feature working:
 #   * the create button is targeted by its own accessible name, "Create player
@@ -53,10 +64,10 @@ tags:
 #     "PM-<worker>-<attempt>" — unique per worker AND per attempt, so eight
 #     concurrent runners and a retry can never land on the same row. Nothing
 #     pre-existing is edited.
-#   * the Yankees row is READ ONLY: the flow picks it out of the team
-#     typeahead by its exact name, which means TeamPicker offers no "+ Create"
-#     row at all (an exact match suppresses it), and `teams.findOrCreate` is
-#     never called.
+#   * the same is true of its team, "PMT-<worker>-<attempt>": it is CREATED
+#     here, never shared, and no pre-existing team row is read or written. The
+#     second stint reuses the row this flow made moments earlier, so even that
+#     is not a read of anything global.
 #   * no set, checklist, card or variant is touched anywhere, so this flow owns
 #     no entry in SET-REGISTRY.md — that registry governs sets, and this flow
 #     creates none.
@@ -176,9 +187,22 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "New York Yankees"
+- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# CREATE the team from the typeahead. The row is offered only for a name no team
+# in this sport already carries, and it is labelled with the name it would
+# create — so this tap cannot land on some other team's row, and it cannot be
+# satisfied by a row that merely matched.
 - tapOn:
-    id: "Add New York Yankees"
+    id: "Create team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The chip is the proof the creation landed. Waiting for it before touching
+# anything else also removes a race: the create is a round-trip, and the chip is
+# what the picker paints when it returns.
+- extendedWaitUntil:
+    visible:
+      id: "Remove team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 7000
 
 # CLOSE THE TEAM TYPEAHEAD FIRST, by tapping the section heading above it.
 #
@@ -220,13 +244,18 @@ tags:
 # stint grows it, so the row this asserts moves. The scroll is the assertion (R6).
 - scrollUntilVisible:
     element:
-      text: ".*New York Yankees · 2010–2012.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
     centerElement: true
 
 # ── STINT 2 — THE EARLIER ONE, AT THE SAME TEAM ─────────────────────────────
 # Two stints at one franchise is the case the feature exists for (traded away,
 # re-signed later). The team picker was cleared by the add above, so it is
 # reopened and the same team picked again.
+#
+# "Add <name>", not "Create team <name>": the team exists now — this flow made
+# it a few steps ago — and an exact match suppresses the create row. The
+# difference is the assertion: reaching for "Add" here proves the first stint's
+# creation actually persisted a row the picker can find again.
 - scrollUntilVisible:
     element:
       id: "Add team"
@@ -235,9 +264,9 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "New York Yankees"
+- inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 - tapOn:
-    id: "Add New York Yankees"
+    id: "Add PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 # Same popover, same dismissal as above — tap the heading, never a keycode.
 - tapOn: "Career history"
 - tapOn: ".*Stint from year.*"
@@ -254,12 +283,12 @@ tags:
 # which is the point: the same assertion, run twice.
 - scrollUntilVisible:
     element:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
     centerElement: true
 - assertVisible:
-    text: ".*New York Yankees · 2010–2012.*"
+    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
     below:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
 
 # ── SAVE ────────────────────────────────────────────────────────────────────
 - scrollUntilVisible:
@@ -332,12 +361,12 @@ tags:
 # earlier stint came back (R6 — no redundant assertVisible of it here)...
 - scrollUntilVisible:
     element:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"
     centerElement: true
 # ...and this asserts the OTHER stint, still below it. Same single assertion as
 # before the reload, which is the whole point: the order is a property of the
 # stored data, not of the draft that was on screen when Save was pressed.
 - assertVisible:
-    text: ".*New York Yankees · 2010–2012.*"
+    text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2010–2012.*"
     below:
-      text: ".*New York Yankees · 2001–2005.*"
+      text: ".*PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2001–2005.*"

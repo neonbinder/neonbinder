@@ -1,5 +1,5 @@
 appId: com.neonbinder.web
-url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/print/spine-label&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
 name: "Spine Labels — a player's colours default to their longest-tenure team"
 tags:
   - regression
@@ -12,40 +12,294 @@ tags:
 # covers the hand-typed half, which uses a different control entirely — the two
 # are mutually exclusive on screen.
 #
-# SELF-CONTAINED (R3/R4) but DEPENDS ON THE FIXTURE. "E2E Fixture Player" is
-# seeded by setup.yaml's "Seed Test Teams" with TWO stints of deliberately
-# different length — 10 years with the Yankees, 2 with the Mets. That asymmetry
-# is the whole point: a fixture with one team, or two equal stints, would pass
-# whatever the tenure logic did. Do not use a real player from the Topps Chrome
-# sync; those come from marketplace data and their teamYears vary.
+# WHY IT STARTS ON /admin/players (NEO-214). The fixture this flow needs —
+# ONE player with TWO stints of deliberately different length at TWO teams with
+# deliberately different colours — used to be seeded globally by a "Seed Test
+# Teams" button setup.yaml clicked. That button and the mutation behind it are
+# gone, so `players` and `teams` are empty until a flow fills them. The fixture
+# is therefore built here, through the product's own admin screens, in the order
+# the product requires:
+#
+#   1. /admin/players — add the player, then in the career editor create both
+#      teams from the team typeahead ("+ Create") and record a 10-year stint at
+#      one and a 2-year stint at the other. Save.
+#   2. /admin/teams — give each of those two brand-new teams a primary colour.
+#      A team born from a typeahead has none, and `teams.colors` is what the
+#      spine designer reads.
+#   3. /print/spine-label — the feature under test.
+#
+# THE ASYMMETRY IS THE WHOLE POINT, and it is preserved exactly as the old
+# fixture had it: 10 years at team A against 2 years at team B, and two colours
+# that are nothing like each other. A fixture with one team, or with two equal
+# stints, would pass whatever the tenure logic did.
 #
 # R2 — this cannot go green without the feature working. It asserts the
-# defaulted colour is YANKEES navy specifically. A designer that surfaced the
-# chips but defaulted to the wrong team, or to no team, fails on the hex.
+# defaulted colour is team A's hex specifically, and that team B's hex is NOT on
+# screen. A designer that surfaced the chips but defaulted to the wrong team, or
+# to no team, fails on the hex — and neither hex can arrive by accident: the
+# designer's own no-player fallback is #101820.
+#
+# R7 / R7a — writes to NO shared row. The player and both teams are named
+# "<prefix>-<worker>-<attempt>", so eight concurrent runners and a retry can
+# never land on the same rows, and nothing pre-existing is read or edited. The
+# per-attempt half is mechanical as well as safe: the typeahead offers
+# "+ Create <name>" only while no team of that name exists, so a name left by a
+# previous attempt would render "Add <name>" instead.
+#
+# R5 — every wait is Maestro's 7s default except the cold sign-in (45s) and the
+# two in-app reloads (30s, matching the identical openLinks in
+# team-management-edit-a-team). No marketplace is touched anywhere in this flow.
+#
+# Never tap "Print" — it opens the browser print dialog, which blocks every
+# subsequent Maestro command and wedges the run. "Discover" on /admin/teams and
+# "Re-enrich from Wikidata" on /admin/players are never tapped either: both are
+# live outbound calls to third parties from CI.
 
 - launchApp
+
+# Wait for the COUNTER, not the "Player Management" heading — the heading paints
+# while the list is still loading, and the filter would swallow keystrokes then.
 - extendedWaitUntil:
-    visible: "Spine Labels"
+    visible: ".*of .* players.*"
     timeout: 45000
 
+# The runner injects ATTEMPT_ID ("w<worker>-a<attempt>-<random>"). This gives a
+# standalone local run a fallback, and only when unset — a runner-injected value
+# is preserved.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+# ════════════════════════════════════════════════════════════════════════════
+# STEP 1 — THE PLAYER, HIS TWO TEAMS AND HIS TWO STINTS
+# ════════════════════════════════════════════════════════════════════════════
+
+# Every player row prints its sport beside the name, so with rows on screen the
+# word "Baseball" is on the page many times over and the sport picker below
+# could not be identified by what it says. Filtering to a name nothing matches
+# clears the list, and then "Baseball" belongs to the picker alone. (Same
+# precondition, same reasoning, as player-management-add-and-career-history.)
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+
+# The sport is picked on the LIST's picker, with the add form closed: Maestro
+# resolves a native picker's choice against the FIRST picker on the page, so a
+# choice made while the form's own picker is also mounted lands in the wrong
+# one. The form then opens with this sport already chosen.
+- tapOn: "All sports"
+- tapOn: "Baseball"
+
+- tapOn: "Add player"
+# The form's own heading — it gates the two taps below, which would otherwise
+# reach for fields that have not mounted yet.
+- assertVisible: "Add a player"
+- tapOn: "New player name"
+- inputText: "SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      id: "Create player SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+- tapOn:
+    id: "Create player SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# "Added <name>." is said only for a row that was INSERTED — the screen says
+# "That player already exists — opened it." when it merely found one — so this
+# is also the proof this attempt's fixture is its own, and the signal that the
+# new player's panel and career editor are open.
+- extendedWaitUntil:
+    visible: ".*Added SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 7000
+
+# ── THE LONG STINT — 10 years at team A ─────────────────────────────────────
+# The career editor sits below the panel's five fields, past the fold on the
+# 1024x629 headless viewport, so every reach into it is scrolled and centred.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+# Offered only for a name no team in this sport already carries, and labelled
+# with the name it would create — so this tap cannot land on another team's row.
+- tapOn:
+    id: "Create team SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+# The chip is the proof the creation landed; it is a round-trip, and the chip is
+# what the picker paints when it returns.
+- extendedWaitUntil:
+    visible:
+      id: "Remove team SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 7000
+
+# CLOSE THE TEAM TYPEAHEAD FIRST, by tapping the section heading above it.
+# Picking or creating a team deliberately leaves the popover OPEN, and it is
+# `absolute left-0 top-full mt-1 z-10 w-64` — 256px hanging directly over the
+# year boxes, which wrap underneath the picker in this ~440px panel. A tap at
+# their coordinates would land on the popover instead. The close is a TAP
+# OUTSIDE, never a key press: maestro-web's pressKey supports Enter and
+# Backspace only, and ESCAPE is not a web keycode at all. "Career history" is
+# the section's first child, so it sits ABOVE the picker, and the popover only
+# ever hangs BELOW it — it is the one thing here the popover can never cover.
+- tapOn: "Career history"
+- tapOn: ".*Stint from year.*"
+- inputText: "2000"
+- tapOn: ".*Stint to year.*"
+- inputText: "2010"
+- tapOn: "Add stint"
+# The list renders ABOVE the add row, so adding a stint moves what follows.
+# The scroll IS the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: ".*SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2000–2010.*"
+    centerElement: true
+
+# ── THE SHORT STINT — 2 years at team B ─────────────────────────────────────
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- tapOn:
+    id: "Create team SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 7000
+# Same popover, same dismissal as above — tap the heading, never a keycode.
+- tapOn: "Career history"
+- tapOn: ".*Stint from year.*"
+- inputText: "2012"
+- tapOn: ".*Stint to year.*"
+- inputText: "2014"
+- tapOn: "Add stint"
+- scrollUntilVisible:
+    element:
+      text: ".*SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID} · 2012–2014.*"
+    centerElement: true
+
+# The stints live in the panel's DRAFT until Save — unlike the teams themselves,
+# which the typeahead created outright. `players.teamYears` is what the spine
+# designer reads, so this save is what makes the fixture exist at all.
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: ".*Saved SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 15000
+
+# ════════════════════════════════════════════════════════════════════════════
+# STEP 2 — GIVE EACH TEAM ITS COLOUR
+#
+# A team born from the typeahead carries only a name, and `teams.colors` is what
+# the designer reads. Each team is coloured on its own page load: the filter
+# takes focus on arrival (NEO-156) and arrives empty, which is what makes the
+# second team reachable without fighting the first team's name still sitting in
+# the box.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── TEAM A — the long stint, and the colour the designer must default to ────
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- inputText: "SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 15000
+# Anchored below the counter: maestro-web reports an input's value as its text,
+# so the filter box now answers to this same string, and it sits above the list.
+# The counter renders between the two, so "below the counter" is the row alone.
+- tapOn:
+    text: "SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    below:
+      text: "1 of .* teams.*"
+# The Primary colour field, reached by its PLACEHOLDER: maestro-web reports an
+# empty input as its placeholder, and "#01214b" is this field's and appears
+# nowhere else in the app. The scroll IS the assertion that the panel opened on
+# a team with no colours yet (R6).
+- scrollUntilVisible:
+    element:
+      text: "#01214b"
+    centerElement: true
+    timeout: 15000
+- tapOn: "#01214b"
+- inputText: "#132448"
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+    timeout: 10000
+- tapOn: "Save"
+# The mutation confirms by name, so this proves the colour landed on THIS team.
+- extendedWaitUntil:
+    visible: ".*Saved SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 15000
+
+# ── TEAM B — the short stint, in a colour nothing like team A's ─────────────
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- inputText: "SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 15000
+- tapOn:
+    text: "SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    below:
+      text: "1 of .* teams.*"
+- scrollUntilVisible:
+    element:
+      text: "#01214b"
+    centerElement: true
+    timeout: 15000
+- tapOn: "#01214b"
+- inputText: "#002d72"
+- scrollUntilVisible:
+    element:
+      text: "Save"
+    centerElement: true
+    timeout: 10000
+- tapOn: "Save"
+- extendedWaitUntil:
+    visible: ".*Saved SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    timeout: 15000
+
+# ════════════════════════════════════════════════════════════════════════════
+# STEP 3 — THE FEATURE UNDER TEST
+# ════════════════════════════════════════════════════════════════════════════
+- openLink: ${APP_URL || "http://localhost:3000"}/print/spine-label
+- extendedWaitUntil:
+    visible: "Spine Labels"
+    timeout: 30000
+
 # ── PICK THE FIXTURE PLAYER ─────────────────────────────────────────────────
-# The search runs against the players search index (NEO-147). "Fixture" is
-# enough to identify it and cannot collide with a real synced player.
+# The search runs against the players search index (NEO-147). A PREFIX is typed
+# and the FULL name tapped, deliberately: maestro-web reports an input's value
+# as its text, so typing the whole name would make the search box itself answer
+# to the same string as the option beneath it.
 - scrollUntilVisible:
     element:
       text: "Find a player"
     centerElement: true
 - tapOn: "Find a player"
-- inputText: "E2E Fixture"
+- inputText: "SLP-${WORKER_INDEX || 0}"
 - extendedWaitUntil:
-    visible: "E2E Fixture Player"
-    timeout: 20000
-- tapOn: "E2E Fixture Player"
+    visible: "SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 15000
+- tapOn: "SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
 # The pick fills the label's own text — the name field is independent of the
 # search box, so this proves the selection propagated rather than just echoing.
 - extendedWaitUntil:
-    visible: ".*Defaults to the team E2E Fixture Player spent longest with.*"
+    visible: ".*Defaults to the team SLP-${WORKER_INDEX || 0}-${ATTEMPT_ID} spent longest with.*"
     timeout: 15000
 
 # ── BOTH CAREER TEAMS ARE OFFERED ───────────────────────────────────────────
@@ -54,22 +308,23 @@ tags:
 # both proves teamYears was read in full rather than only its first entry.
 # Scrolled into view first: `visible` is false for an element that exists but
 # sits below the 1024x629 headless fold, and the chips sit under two fields.
+# The scroll is the assertion for the first chip (R6); the second is asserted
+# beside it.
 - scrollUntilVisible:
     element:
-      text: "New York Yankees"
+      text: ".*SLA-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     centerElement: true
     timeout: 15000
-- assertVisible: "New York Yankees"
-- assertVisible: "New York Mets"
+- assertVisible: ".*SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 
 # The free-form team picker must NOT be present — the two controls are mutually
 # exclusive, and showing both would be two controls competing to set one value.
 - assertNotVisible: "Find a team"
 
 # ── THE DEFAULT IS THE LONGEST STINT ────────────────────────────────────────
-# Yankees navy from the fixture. This is the assertion the whole flow exists
-# for: 10 Yankees years beat 2 Mets years, so the label comes up in #132448 and
-# NOT in the Mets' #002d72.
+# This is the assertion the whole flow exists for: 10 years at team A beat 2
+# years at team B, so the label comes up in team A's #132448 and NOT in team B's
+# #002d72.
 - scrollUntilVisible:
     element:
       text: "Background"
@@ -80,11 +335,8 @@ tags:
 
 # ── OVERRIDING TO THE OTHER TEAM WORKS ──────────────────────────────────────
 # The default is a default, not a decision — NEO-147 requires the user can pick
-# any team in teamYears. Tapping the Mets chip swaps the colours.
-- tapOn: "New York Mets"
+# any team in teamYears. Tapping the other chip swaps the colours.
+- tapOn: ".*SLB-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 - extendedWaitUntil:
     visible: "#002d72"
     timeout: 10000
-
-# Never tap "Print" — it opens the browser print dialog, which blocks every
-# subsequent Maestro command and wedges the run.
