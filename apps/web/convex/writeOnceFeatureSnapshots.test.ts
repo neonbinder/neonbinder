@@ -21,6 +21,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -158,16 +159,26 @@ describe("own-level heuristic on a root (parentless) node", () => {
     expect(await getFeatures(t, id)).toBeFalsy();
   });
 
-  test("non-year value seeds nothing for era/vintage, but season still mirrors the raw label", async () => {
+  // NEO-219 decision 2: `addCustomSelectorOption` no longer ACCEPTS a
+  // non-four-digit year, so this behaviour is asserted in two halves — the
+  // mutation now refuses the label, and the deriver (which still runs on year
+  // rows a marketplace sync created, and on every row written before the
+  // guard) still mirrors an unparseable one.
+  test("year level refuses a non-four-digit label at the mutation", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const id = await asAdmin.mutation(
-      api.selectorOptions.addCustomSelectorOption,
-      { level: "year", value: "TBD" },
-    );
+    await expect(
+      asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "year",
+        value: "TBD",
+      }),
+    ).rejects.toThrow(/four-digit/);
+  });
+
+  test("non-year value seeds nothing for era/vintage, but season still mirrors the raw label", () => {
     // era/vintage need a parseable 4-digit year; season doesn't — it just
     // mirrors whatever label the year node carries, parseable or not.
-    expect(await getFeatures(t, id)).toEqual({ season: "TBD" });
+    expect(deriveOwnLevelFeatures("year", "TBD")).toEqual({ season: "TBD" });
   });
 });
 
