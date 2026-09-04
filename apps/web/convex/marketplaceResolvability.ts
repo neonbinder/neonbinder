@@ -84,7 +84,99 @@ export const BSC_REQUIRED_LEVELS: ReadonlySet<string> = new Set([
   "setName",
 ]);
 
-/** SportLots' `sprt` + `yr` form fields. */
+/**
+ * SportLots, PER FETCH LEVEL — the ancestor ids the request body actually
+ * consumes, and nothing more.
+ *
+ * A flat `{sport, year}` was too weak, and CI found it: ten flows drill a
+ * MIXED chain — a real `Baseball / 2024 / Topps` plus a hand-made set with no
+ * ids — where sport and year alone made SportLots look resolvable at the
+ * variantType and Inserts columns. SL was then asked at levels it cannot serve
+ * or cannot scope, and the refusal surfaced as a hard error with a Retry on a
+ * column the operator only wanted to add rows to by hand. Under the retired
+ * `isCustom` gate the hand-made set skipped both sides for the whole subtree,
+ * which is why this never showed before.
+ *
+ * The rule is now: the requirement equals what the FORM BODY carries at that
+ * level (see `resolveSlScope` and `fetchSetNames` in adapters/sportlots.ts).
+ *
+ *   sport        → nothing            newinven with no scope; lists sports
+ *   year         → sport              `sprt`
+ *   manufacturer → sport, year        `sprt`, `yr`
+ *   insert       → sport, year, manufacturer   `sprt`, `yr`, `brd`
+ *
+ * Levels absent from this table are ones SportLots does not answer at all —
+ * see `SL_SERVED_LEVELS`.
+ */
+export const SL_SCOPE_BY_LEVEL: Readonly<Record<string, readonly string[]>> = {
+  sport: [],
+  year: ["sport"],
+  manufacturer: ["sport", "year"],
+  insert: ["sport", "year", "manufacturer"],
+};
+
+/**
+ * The levels each side's selector-options fetch can answer AT ALL.
+ *
+ * SportLots has no set/variant split: `dealsets.tpl` returns a flat set list
+ * reached at NB level `insert`, and `fetchSportLotsSelectorOptions` answers
+ * `setName`, `variantType` and `parallel` with a documented
+ * `unsupported_level` empty result. BSC is the mirror image — it has no
+ * `manufacturer` facet and no `parallel` one (`LEVEL_TO_BSC_FACET`).
+ *
+ * Calling a side at a level it does not serve is not merely wasteful, it is
+ * WRONG in a way that reads as an outage: the caller cannot tell "structurally
+ * empty" from "reached and genuinely empty", so `fetchAggregatedOptions`
+ * reports "no options returned from any platform" and the column shows Retry —
+ * on a set where retrying can never help. Worse, an empty success licenses the
+ * unlink pass on that side.
+ */
+export const BSC_SERVED_LEVELS: ReadonlySet<string> = new Set([
+  "sport",
+  "year",
+  "setName",
+  "variantType",
+  "insert",
+]);
+
+export const SL_SERVED_LEVELS: ReadonlySet<string> = new Set([
+  "sport",
+  "year",
+  "manufacturer",
+  "insert",
+]);
+
+/**
+ * At `insert` and `parallel`, SportLots additionally needs an ANCHOR: an SL id
+ * somewhere on this set's own subtree.
+ *
+ * SL's answer at those levels is every set for the year and brand — it is not
+ * "this set's variants". What makes it that is `baseSlPrefix`, the SL label of
+ * the set's Base row, which the reconciler matches candidates against. A set
+ * with no SL id anywhere beneath the manufacturer has no anchor, so the list
+ * is a superset of the whole brand-year offered as one set's variants: the
+ * same fail-open shape the BSC required-facet check exists to prevent.
+ *
+ * A real set has this the moment BaseSetPicker maps its Base row, which is the
+ * step that makes SL variant reconciliation meaningful in the first place.
+ */
+const SL_ANCHOR_LEVELS: ReadonlySet<string> = new Set([
+  "setName",
+  "variantType",
+  "insert",
+]);
+
+/** Fetch levels where the SL anchor above is required. */
+const SL_ANCHORED_FETCH_LEVELS: ReadonlySet<string> = new Set([
+  "insert",
+  "parallel",
+]);
+
+/**
+ * @deprecated NEO-239 — the flat set that CI proved too weak. Kept only as the
+ * default when a caller does not say which level it is fetching; every real
+ * caller passes `level` and gets `SL_SCOPE_BY_LEVEL` instead.
+ */
 export const SL_REQUIRED_LEVELS: ReadonlySet<string> = new Set([
   "sport",
   "year",
@@ -157,12 +249,30 @@ function label(row: ResolvableRow): string {
  */
 export function resolvableSides(
   chain: readonly ResolvableRow[],
-  opts?: { slRequired?: ReadonlySet<string> },
+  opts?: { level?: string; slRequired?: ReadonlySet<string> },
 ): ChainResolution {
-  const slRequired = opts?.slRequired ?? SL_REQUIRED_LEVELS;
+  const level = opts?.level;
+  const slRequired =
+    opts?.slRequired ??
+    (level !== undefined && level in SL_SCOPE_BY_LEVEL
+      ? new Set(SL_SCOPE_BY_LEVEL[level])
+      : SL_REQUIRED_LEVELS);
 
   const missingBsc: string[] = [];
   const missingSl: string[] = [];
+
+  // A side that cannot answer at this level is unresolvable outright, whatever
+  // ids the chain carries. `unsupported_level` is not an empty answer.
+  if (level !== undefined && !BSC_SERVED_LEVELS.has(level)) {
+    missingBsc.push(`level=${level}`);
+  }
+  if (
+    level !== undefined &&
+    opts?.slRequired === undefined &&
+    !SL_SERVED_LEVELS.has(level)
+  ) {
+    missingSl.push(`level=${level}`);
+  }
 
   for (const row of chain) {
     if (BSC_REQUIRED_LEVELS.has(row.level) && !rowHasSideId(row, "bsc")) {
@@ -176,6 +286,20 @@ export function resolvableSides(
     if (slRequired.has(row.level) && !rowHasSideId(row, "sportlots")) {
       missingSl.push(label(row));
     }
+  }
+
+  // The anchor: SL's flat list only means "this set's variants" once something
+  // beneath the manufacturer carries an SL id.
+  if (
+    level !== undefined &&
+    opts?.slRequired === undefined &&
+    SL_ANCHORED_FETCH_LEVELS.has(level) &&
+    !chain.some(
+      (row) =>
+        SL_ANCHOR_LEVELS.has(row.level) && rowHasSideId(row, "sportlots"),
+    )
+  ) {
+    missingSl.push("set anchor");
   }
 
   return {

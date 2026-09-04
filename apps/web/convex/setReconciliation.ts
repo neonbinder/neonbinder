@@ -527,7 +527,7 @@ export const fetchRawOptions = action({
         // for every level not on the required list. Now a side is asked when
         // its ids are there and skipped when they are not, and no NB name ever
         // reaches a marketplace.
-        resolution = resolvableSides(chain);
+        resolution = resolvableSides(chain, { level });
 
         slPlatformFilters = {};
         bscPlatformFilters = {};
@@ -1223,6 +1223,15 @@ export const storeReconciledOptions = mutation({
     // the field exists, so the mutation re-derives the answer from the parent
     // chain it can read itself.
     const parentChain = await loadResolvabilityChain(ctx, parentId);
+    // NO `level` here, deliberately, and it is a different question from the
+    // fetch's. The fetch asks "can this side ANSWER at this level?" — which
+    // includes whether it serves the level at all. The store is not fetching:
+    // its only job (audit F1/R1) is to refuse coverage for a side the chain
+    // carries no ids for, so a caller cannot license the unlink pass on a
+    // marketplace that was never reachable. Applying the served-level table
+    // here would ALSO block a legitimate unlink the caller declared with
+    // evidence — a reconciled variantType batch that says "SportLots answered,
+    // and this row's id was not in it".
     const chainResolution = resolvableSides(parentChain);
     const effectiveCovered = (args.coveredSides ?? [])
       .filter((side) => !truncatedSides.includes(side))

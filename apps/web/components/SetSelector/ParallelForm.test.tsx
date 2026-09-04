@@ -14,6 +14,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
@@ -97,6 +98,35 @@ describe("ParallelForm — single-platform store (NEO-211 plan B)", () => {
     // NEO-211 F1: the empty side arrives as [] — "asked, returned nothing".
     expect(args.returnedIds).toEqual({ bsc: ["gold"], sportlots: [] });
     expect(onDone).toHaveBeenCalled();
+  });
+
+  it("goes IDLE when BOTH sides were skipped — a hand-built subtree, not a failure", async () => {
+    // Same guarantee as VariantForm's, at the Sub-Variants column: no ids on
+    // the chain means neither marketplace was asked, so there is nothing to
+    // retry and "+ Custom" on the idle column is the only next move.
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      skippedSides: ["bsc", "sportlots"],
+      message: NO_MARKETPLACE_IDS_MESSAGE,
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(mockStore).not.toHaveBeenCalled();
+  });
+
+  it("goes IDLE when one side was skipped and the reached side had nothing", async () => {
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      skippedSides: ["sportlots"],
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(mockStore).not.toHaveBeenCalled();
   });
 
   it("does NOT cover a side the fetch SKIPPED for lack of ids (NEO-239)", async () => {

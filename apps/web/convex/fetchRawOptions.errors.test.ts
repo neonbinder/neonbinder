@@ -92,6 +92,58 @@ async function seedChain(
   });
 }
 
+/**
+ * A chain where BOTH sides are fully resolvable at level `insert`: every id
+ * each side's request body consumes, plus the SL set anchor and the BSC
+ * `variant` tag.
+ */
+async function seedInsertReadyChain(
+  t: ReturnType<typeof convexTest>,
+): Promise<Id<"selectorOptions">> {
+  return t.run(async (ctx) => {
+    const sport = await ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Baseball",
+      platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const year = await ctx.db.insert("selectorOptions", {
+      level: "year",
+      value: "2024",
+      platformData: { bsc: { b0: "2024" }, sportlots: { s0: "2024" } },
+      parentId: sport,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const manufacturer = await ctx.db.insert("selectorOptions", {
+      level: "manufacturer",
+      value: "Topps",
+      platformData: { sportlots: { s0: "TP" } },
+      parentId: year,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const setName = await ctx.db.insert("selectorOptions", {
+      level: "setName",
+      value: "Topps",
+      platformData: { bsc: { b0: "topps-2024" }, sportlots: { s0: "884412" } },
+      parentId: manufacturer,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    return ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: "Insert",
+      platformData: { bsc: { b0: "insert" } },
+      platformFacets: { bsc: { b0: "variant" } },
+      parentId: setName,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+  });
+}
+
 describe("fetchRawOptions error shape", () => {
   test("a missing BSC id SKIPS that side — it is not an error, and it is declared", async () => {
     // NEO-239, and a REVERSAL of what this used to assert. A missing slug was
@@ -122,10 +174,13 @@ describe("fetchRawOptions error shape", () => {
     // No BSC entry in `errors`: nothing failed on that side.
     expect(res.errors.some((e) => e.platform === "bsc")).toBe(false);
     expect(res.bscOptions).toEqual([]);
-    // SportLots still has its ids, so it was asked. In this environment it has
-    // no browser service to reach, so it errors — which is the shape the forms
-    // must be able to tell apart from a skip, and the point of the split.
-    expect(res.skippedSides).not.toContain("sportlots");
+    // NEO-239 (the CI cluster) — SportLots is skipped HERE TOO, for a second,
+    // independent reason: it does not SERVE `variantType` at all
+    // (`fetchSportLotsSelectorOptions` answers `unsupported_level`). Judging it
+    // resolvable from sport+year alone is what made ten flows call a
+    // marketplace on a hand-made set and render the empty answer as a failure.
+    expect(res.skippedSides).toContain("sportlots");
+    expect(res.errors).toEqual([]);
   });
 
   test("a path with no marketplace ids at all is a clean SKIP, not an error", async () => {
@@ -169,8 +224,14 @@ describe("fetchRawOptions error shape", () => {
 
 describe("fetchRawOptions when an adapter throws", () => {
   test("each failing platform gets its own { platform, message } entry", async () => {
+    // At `insert`, BOTH sides serve the level and both are scoped by this
+    // chain — SportLots needs sport + year + manufacturer plus an SL anchor
+    // beneath the manufacturer, BSC needs sport + year + setName plus a
+    // `variant`-tagged slot on the variantType row. That is the only shape
+    // where two simultaneous adapter failures are reachable, which is what
+    // this test is about.
     const t = convexTest(schema, modules);
-    const setNameId = await seedChain(t, { setNameBsc: "topps-2024" });
+    const variantTypeId = await seedInsertReadyChain(t);
 
     // Loopback → the OIDC path short-circuits, so no GCP credentials are
     // needed; every browser-service call then fails with the body below.
@@ -191,11 +252,12 @@ describe("fetchRawOptions when an adapter throws", () => {
     const res = await t
       .withIdentity(ADMIN_IDENTITY)
       .action(api.setReconciliation.fetchRawOptions, {
-        level: "variantType",
-        parentId: setNameId,
+        level: "insert",
+        parentId: variantTypeId,
       });
 
     expect(res.success).toBe(true);
+    expect(res.skippedSides).toEqual([]);
     const platforms = res.errors.map((e) => e.platform).sort();
     expect(platforms).toEqual(["bsc", "sportlots"]);
     for (const e of res.errors) expect(typeof e.message).toBe("string");

@@ -1407,6 +1407,15 @@ export const storeSelectorOptions = mutation({
     // mutation re-derives the answer from the parent chain it can read itself.
     // A side the chain cannot scope is not covered, whatever the caller says.
     const parentChain = await loadResolvabilityChain(ctx, parentId);
+    // NO `level` here, deliberately, and it is a different question from the
+    // fetch's. The fetch asks "can this side ANSWER at this level?" — which
+    // includes whether it serves the level at all. The store is not fetching:
+    // its only job (audit F1/R1) is to refuse coverage for a side the chain
+    // carries no ids for, so a caller cannot license the unlink pass on a
+    // marketplace that was never reachable. Applying the served-level table
+    // here would ALSO block a legitimate unlink the caller declared with
+    // evidence — a reconciled variantType batch that says "SportLots answered,
+    // and this row's id was not in it".
     const chainResolution = resolvableSides(parentChain);
     const effectiveCovered = (args.coveredSides ?? [])
       .filter((side) => !truncatedSides.includes(side))
@@ -5109,7 +5118,7 @@ export const ensureSelectorOptions = action({
       //
       // Only the both-sides case short-circuits here. One resolvable side is a
       // real sync, and `fetchAggregatedOptions` runs it and reports the skip.
-      const resolution = resolvableSides(chain);
+      const resolution = resolvableSides(chain, { level });
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(
           `[ensureSelectorOptions] no marketplace ids on this path — ` +
@@ -5394,7 +5403,7 @@ export const fetchAggregatedOptions = action({
         // has one. A side that cannot be scoped is SKIPPED — not queried by
         // name, not failed — and reported in `skippedSides` so nothing
         // downstream reads its silence as "upstream dropped everything".
-        resolution = resolvableSides(chain);
+        resolution = resolvableSides(chain, { level });
 
         slPlatformFilters = {};
         bscPlatformFilters = {};
@@ -5892,7 +5901,7 @@ export const syncSetsAcrossManufacturers = action({
       // (`bscPlatformFilters.sport = ["e2e test sport 3"]`) is gone, because a
       // name BSC does not know scopes nothing and BSC reports that as a
       // successful empty answer.
-      const resolution = resolvableSides(chain);
+      const resolution = resolvableSides(chain, { level: "setName" });
       if (!resolution.bsc.resolvable) {
         console.log(
           `[syncSetsAcrossManufacturers] no BSC ids on this path — ` +
@@ -6530,6 +6539,10 @@ export const fetchCardChecklist = action({
       // tag, not merely an id, is the requirement). SportLots needs sport and
       // year; it has no setName-level concept and resolves the set's
       // radio-button id from the deepest variant row's slot.
+      // No `level`: this is the CHECKLIST fetch, not a selector-options one.
+      // `fetchSportLotsChecklist` scopes itself from the deepest variant row's
+      // slot id and `fetchBscChecklist` from the facet plan, so the served-level
+      // and per-level scope tables above do not describe it.
       const resolution = resolvableSides(chain);
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
         console.log(

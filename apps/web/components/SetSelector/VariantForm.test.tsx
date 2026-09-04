@@ -22,6 +22,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
@@ -126,6 +127,66 @@ describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
     expect(args.reconciledItems).toHaveLength(1);
     // Nothing to report, so the panel closes as it always did.
     expect(onDone).toHaveBeenCalled();
+  });
+
+  it("goes IDLE when BOTH sides were skipped — a hand-built subtree, not a failure", async () => {
+    // CI run 5: ten flows died right here. A chain with no marketplace ids is
+    // never queried, so the fetch answers success with two empty lists, an
+    // EMPTY errors array and both sides in `skippedSides`. Nothing failed and
+    // nothing can be retried — the column has to fall back to idle so
+    // util-drill-to-custom can tap "Add custom Inserts".
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      skippedSides: ["bsc", "sportlots"],
+      message: NO_MARKETPLACE_IDS_MESSAGE,
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    // Never the failure panel: its Retry offers to re-run a fetch that will
+    // skip again, and its presence is what hid "+ Custom" from the flows.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/Sync failed/)).toBeNull();
+    // Nothing to write, so nothing is written — in particular no store call
+    // carrying `coveredSides: []`, which would be an unlink licence for two
+    // marketplaces neither of which was asked.
+    expect(mockStore).not.toHaveBeenCalled();
+  });
+
+  it("goes IDLE when one side was skipped and the reached side had nothing", async () => {
+    // The asymmetric half of the same case: BSC really was queried and really
+    // is empty, SportLots was never asked. Still nothing to store, so still
+    // idle — and still no store call, because an empty `reconciledItems` with
+    // `coveredSides: ["bsc"]` would unlink every BSC-linked child.
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      skippedSides: ["sportlots"],
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(mockStore).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Sync failed/)).toBeNull();
+  });
+
+  it("still BLOCKS when a side actually errored, even with the other skipped", async () => {
+    // The line between the two: an error means a marketplace was asked and
+    // could not answer, which is exactly the partial failure NEO-211 exists to
+    // surface. Going idle here would swallow an outage as "nothing to sync".
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      errors: [{ platform: "bsc", message: "503" }],
+      skippedSides: ["sportlots"],
+    });
+    const { onDone } = await renderForm();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("BuySportsCards failed, nothing was changed.");
+    expect(mockStore).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
   });
 
   it("does NOT cover a side the fetch SKIPPED for lack of ids (NEO-239)", async () => {
