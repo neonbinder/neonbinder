@@ -155,11 +155,14 @@ export default function BaseMappingForm({
         setMessage("No marketplace data found for this Base set.");
       }
       onClose();
-    } catch (error) {
+    } catch {
       setPickerOpen(false);
-      setMessage(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      // NEO-211 F3: the thrown text is a Convex/adapter error that can carry a
+      // marketplace URL, a response body or a credential hint, and this catch
+      // also covers the writePlatformData calls above. Our own fixed string;
+      // the detail stays in the Convex logs. This panel shows Retry for EVERY
+      // message (not only errors), so there is no isError branch to preserve.
+      setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
     } finally {
       setLoading(false);
     }

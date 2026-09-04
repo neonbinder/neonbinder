@@ -334,4 +334,20 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(panel.textContent).not.toContain("SECRET");
     expect(panel.textContent).not.toContain("boom");
   });
+
+  it("renders our own string, not the thrown text, when the action rejects", async () => {
+    // The outer catch also covers the writePlatformData calls, so the thrown
+    // value is a Convex server error that can carry marketplace detail.
+    mockFetchRawOptions.mockRejectedValueOnce(
+      new Error("[Request ID: xyz] GET https://api.sportlots.com/x?key=SECRET 500"),
+    );
+
+    renderForm();
+
+    const panel = await screen.findByText(/Failed to fetch options/);
+    expect(panel.textContent).toBe("Failed to fetch options. Nothing was changed.");
+    expect(panel.textContent).not.toContain("sportlots.com");
+    expect(panel.textContent).not.toContain("SECRET");
+    expect(panel.textContent).not.toContain("Request ID");
+  });
 });
