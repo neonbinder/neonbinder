@@ -1433,7 +1433,28 @@ describe("PlayerManagement — the ?player deep link", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Added Mike Trout.")).toBeTruthy());
-    expect(url()).toBe("?player=p-trout");
+    // `waitFor` on the URL too, not a bare assertion after the toast — this
+    // one flaked in CI (PR #226) roughly one run in three under load, always
+    // as `expected '' to be '?player=p-trout'`.
+    //
+    // The two values settle at DIFFERENT React priorities. The toast is
+    // ordinary state set when the create mutation resolves; the URL comes from
+    // `setSearchParams`, which React Router applies inside `startTransition`
+    // (see the long note above `useSearchParams` in PlayerManagement.tsx —
+    // this screen relies on that lag, it is not an accident). `waitFor` returns
+    // the instant its own condition holds, so it can return on the commit that
+    // painted the toast while the lower-priority location update is still
+    // queued, and the next line reads the URL one render too early.
+    //
+    // The file's three OTHER `expect(url())` assertions follow a synchronous
+    // `fireEvent`, whose `act()` drains pending work including the transition,
+    // which is why only this one — the only one behind an `await` — ever
+    // flaked. Nothing is lost here, only late: `setSearchParams` is called
+    // unconditionally in `selectPlayer` with nothing to interrupt or unmount
+    // it, so the write always lands. Same assertion, same final state, minus
+    // the assumption that a transition commits in lockstep with unrelated
+    // ordinary state.
+    await waitFor(() => expect(url()).toBe("?player=p-trout"));
   });
 
   it("clears the filter once for the link, and never again", async () => {
