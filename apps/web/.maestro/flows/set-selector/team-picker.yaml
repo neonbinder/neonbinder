@@ -10,8 +10,9 @@ tags:
 # WHAT THIS TESTS:
 #   1. The old free-text team input is gone — no "Team" text field visible in edit form.
 #   2. "+ Add team" button exists and opens the popover.
-#   3. Typing in the search input filters the typeahead list.
-#   4. Picking a team adds a chip labeled with the team name.
+#   3. Typing a name the app does not know offers "+ Create", and taking it adds
+#      a chip for the team it just created.
+#   4. Typing an existing name filters the typeahead list to it.
 #   5. The "Remove team <name>" button removes the chip.
 #   6. Typing a non-existent name shows "No matches." in the popover.
 #   7. Pressing Enter on the highlighted match adds the chip (keyboard path).
@@ -26,12 +27,24 @@ tags:
 #   Topps Chrome path.
 #
 #   WHY Baseball/2024/Topps (not E2E Test Sport ${WORKER_INDEX}/2026):
-#     cascade/setup.yaml seeds New York Yankees + New York Mets for Baseball.
-#     The TeamPicker query is sport-scoped — an E2E Test Sport ${WORKER_INDEX} checklist
-#     would return no seeded teams, not Yankees/Mets. Baseball context makes the seeded
-#     teams available for typeahead search. The custom Set name (tp-<worker>) is
-#     unique and not a real marketplace set, so BSC/SL adapters short-circuit
-#     via the NEO-22 gate.
+#     The custom Set name (tp-<worker>) is unique and not a real marketplace
+#     set, so BSC/SL adapters short-circuit via the NEO-22 gate, while the real
+#     Baseball ancestor keeps sport="baseball" — and TeamPicker is sport-scoped
+#     in both directions: it filters its candidate list by the sport row and it
+#     TAGS a team it creates with the same one, which is also what enables its
+#     "+ Create" row at all (no sport row, no creation — NEO-96).
+#
+#   THE TEAM IS THIS FLOW'S OWN (NEO-214):
+#     It used to pick "New York Yankees" and "New York Mets" out of a global
+#     fixture that setup.yaml seeded by clicking a "Seed Test Teams" button.
+#     That button and the mutation behind it are gone, so `teams` is empty until
+#     a flow fills it — and this flow, being a test OF the team picker, is
+#     exactly the right place to create one. It uses a single team named
+#     "TPT-<attempt>", where ATTEMPT_ID is already "w<worker>-a<attempt>-<rand>"
+#     and therefore unique per worker AND per attempt. Per-attempt matters
+#     mechanically: "+ Create <name>" is offered only while no team of that name
+#     exists, so a name a previous attempt left behind would render "Add <name>"
+#     instead and TEST 2 would be reaching for a control that is not there.
 #
 # Uses a fresh custom card (card #889) for each sub-test to avoid state bleed.
 
@@ -133,7 +146,9 @@ tags:
     id: "Add team"
 
 # ============================================================
-# TEST 2 — Open popover, search, and pick a team by clicking
+# TEST 2 — Open the popover, type a name the app does not know, and take the
+# "+ Create" row it offers. This is the picker's escape hatch (teams.findOrCreate)
+# and it is what gives every later sub-test a team to find.
 # (In-place form-field taps use direct tapOn by aria-label — the form
 # is already in-viewport after the Edit tap above; no scroll needed.)
 # ============================================================
@@ -145,27 +160,30 @@ tags:
 
 - tapOn:
     id: "Search teams"
-- inputText: "Yankees"
+- inputText: "TPT-${ATTEMPT_ID}"
+# The row is labelled with the name it would create, so this cannot be satisfied
+# by some other team's row — and it is offered only because no team of this name
+# exists, which is the precondition TEST 5 then reverses.
 - assertVisible:
-    id: "Add New York Yankees"
+    id: "Create team TPT-${ATTEMPT_ID}"
 
 - tapOn:
-    id: "Add New York Yankees"
+    id: "Create team TPT-${ATTEMPT_ID}"
 
-# Yankees chip appears. Close popover by clicking card name.
+# The chip appears. Close popover by clicking card name.
 - tapOn:
     id: "Card name"
 - assertVisible:
-    id: "Remove team New York Yankees"
+    id: "Remove team TPT-${ATTEMPT_ID}"
 
 # ============================================================
 # TEST 3 — Remove the chip using the × button
 # ============================================================
 
 - tapOn:
-    id: "Remove team New York Yankees"
+    id: "Remove team TPT-${ATTEMPT_ID}"
 - assertNotVisible:
-    id: "Remove team New York Yankees"
+    id: "Remove team TPT-${ATTEMPT_ID}"
 
 # ============================================================
 # TEST 4 — "No matches." state when search finds nothing
@@ -186,6 +204,11 @@ tags:
 
 # ============================================================
 # TEST 5 — Keyboard: Enter on highlighted match adds the chip
+#
+# The SAME team as TEST 2, and this time it is offered as a MATCH rather than as
+# a create: TEST 2 really persisted a row, so an exact name now suppresses the
+# "+ Create" row and the typeahead lists the team instead. That is the assertion
+# in "Add TPT-…" — it can only be satisfied by a team that exists.
 # ============================================================
 
 - tapOn:
@@ -195,18 +218,18 @@ tags:
 - tapOn:
     id: "Search teams"
 - eraseText: 20
-- inputText: "Mets"
+- inputText: "TPT-${ATTEMPT_ID}"
 - assertVisible:
-    id: "Add New York Mets"
+    id: "Add TPT-${ATTEMPT_ID}"
 
 # Press Enter to confirm the highlighted first match.
 - pressKey: Enter
 - tapOn:
     id: "Card name"
 
-# The Mets chip should now appear.
+# The chip should now be back.
 - assertVisible:
-    id: "Remove team New York Mets"
+    id: "Remove team TPT-${ATTEMPT_ID}"
 
 # ============================================================
 # TEST 6 — Cancel reverts the team edit
@@ -234,18 +257,18 @@ tags:
 # TEST 7 — Save + reload persists the team name
 # ============================================================
 
-# Add Yankees and save.
+# Add the team again and save.
 - tapOn:
     id: "Add team"
 - assertVisible:
     id: "Search teams"
 - tapOn:
     id: "Search teams"
-- inputText: "Yankees"
+- inputText: "TPT-${ATTEMPT_ID}"
 - assertVisible:
-    id: "Add New York Yankees"
+    id: "Add TPT-${ATTEMPT_ID}"
 - tapOn:
-    id: "Add New York Yankees"
+    id: "Add TPT-${ATTEMPT_ID}"
 - tapOn:
     id: "Card name"
 - tapOn:
@@ -253,7 +276,7 @@ tags:
 - assertVisible: "Team Feature Player ${ATTEMPT_ID}"
 
 - assertVisible:
-    text: ".*Yankees.*"
+    text: ".*TPT-${ATTEMPT_ID}.*"
 
 # ============================================================
 # Reload and re-drill to the SAME per-worker custom set to confirm
@@ -279,7 +302,7 @@ tags:
       text: "Team Feature Player ${ATTEMPT_ID}"
     timeout: 30000
 - assertVisible:
-    text: ".*Yankees.*"
+    text: ".*TPT-${ATTEMPT_ID}.*"
 
 # ============================================================
 # CLEANUP — delete this attempt's test card
