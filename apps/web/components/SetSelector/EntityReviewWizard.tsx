@@ -130,8 +130,14 @@ const DECIDED_LIST_INLINE_MAX = 5;
 const AUTO_ADD_DEBOUNCE_MS = 1500;
 /** Settled-undecided rows that fire immediately instead of waiting out the debounce. */
 const AUTO_ADD_BATCH_THRESHOLD = 5;
-/** Hard cap on automatic re-calls per arming. */
-const AUTO_ADD_MAX_CALLS = 50;
+/**
+ * Hard cap on automatic re-calls per arming — a runaway guard, not a budget.
+ * Sized for the largest real fetch the seed exercises: a ~335-card base set
+ * surfaces ~365 player + team rows, which the 5-wide lookup pool drains in
+ * batches of roughly AUTO_ADD_BATCH_THRESHOLD, i.e. ~70 rounds. A cap that
+ * trips below that disarms mid-drain and Confirm & Save never appears.
+ */
+const AUTO_ADD_MAX_CALLS = 400;
 
 /** A Convex rejection's message, or a written-for-the-operator fallback. */
 const errorMessage = (e: unknown, fallback: string) =>
