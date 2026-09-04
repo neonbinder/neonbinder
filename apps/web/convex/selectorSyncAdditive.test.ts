@@ -1040,21 +1040,97 @@ describe("returnedIds separates what upstream listed from what the operator conf
     ).toEqual({ b0: "live" });
   });
 
-  test("refuses an oversized returned-id list rather than walking it", async () => {
+  test("a real big year (2,563 SportLots sets, 76-item batch) stores normally", async () => {
+    // The CI seed flow that caught this: 2024 Topps Chrome "Sync Inserts".
+    // SportLots returns 2,563 sets for the year, the form passes them all as
+    // `returnedIds.sportlots`, and the old 2,000 cap THREW — so "Save 76 sets"
+    // never completed and the Reconcile Inserts dialog just sat there. A bound
+    // that only guards the unlink pass must never cost the operator the save.
     const t = convexTest(schema, modules);
     const asAdmin = admin(t);
     const parentId = await insertParent(t);
-    // The unlink pass consults this Set once per sibling row, so an unbounded
-    // client-supplied array is transaction time nobody asked for.
+
+    const batch = Array.from({ length: 76 }, (_, i) => ({
+      value: `Insert ${i}`,
+      platformData: { sportlots: `sl-${i}` },
+      metadata: undefined,
+    }));
+    const universe = Array.from({ length: 2563 }, (_, i) => `sl-${i}`);
+
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId,
+        coveredSides: ["sportlots"],
+        returnedIds: { sportlots: universe },
+        reconciledItems: batch,
+      },
+    );
+
+    expect(res.success).toBe(true);
+    expect(res.optionsCount).toBe(76);
+    expect(res.returnedIdsTruncatedSides).toEqual([]);
+    expect(await rowsUnder(t, "insert", parentId)).toHaveLength(76);
+  });
+
+  test("a side over the cap degrades to 'not covered' instead of losing the save", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
+    await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "setName",
+      parentId,
+      options: [
+        { value: "Topps", platformData: { bsc: "t1" } },
+        { value: "Bowman", platformData: { bsc: "b1" } },
+      ],
+      coveredSides: ["bsc"],
+    });
+
+    const res = await asAdmin.mutation(
+      api.selectorOptions.storeSelectorOptions,
+      {
+        level: "setName",
+        parentId,
+        options: [{ value: "Topps", platformData: { bsc: "t1" } }],
+        coveredSides: ["bsc"],
+        returnedIds: {
+          bsc: Array.from({ length: 20001 }, (_, i) => `id-${i}`),
+        },
+      },
+    );
+
+    // The store still ran…
+    expect(res.success).toBe(true);
+    expect(res.optionsCount).toBe(1);
+    // …and reported which side it could not judge…
+    expect(res.returnedIdsTruncatedSides).toEqual(["bsc"]);
+    // …and unlinked nothing on it, so Bowman keeps its slug even though the
+    // options list did not name it.
+    expect(res.unlinked).toEqual([]);
+    const rows = await rowsUnder(t, "setName", parentId);
+    expect(rows.find((r) => r.value === "Bowman")?.platformData.bsc).toEqual({
+      b0: "b1",
+    });
+  });
+
+  test("only a grossly abusive total still throws", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const parentId = await insertParent(t);
     await expect(
       asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
         level: "setName",
         parentId,
         options: [{ value: "Topps", platformData: { bsc: "t1" } }],
         coveredSides: ["bsc"],
-        returnedIds: { bsc: Array.from({ length: 2001 }, (_, i) => `id-${i}`) },
+        returnedIds: {
+          bsc: Array.from({ length: 60000 }, (_, i) => `b-${i}`),
+          sportlots: Array.from({ length: 60000 }, (_, i) => `s-${i}`),
+        },
       }),
-    ).rejects.toThrow(/over the 2000 limit/);
+    ).rejects.toThrow(/over the 100000 hard limit/);
   });
 
   test("a dedupe collision cannot make a live id look delisted", async () => {

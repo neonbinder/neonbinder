@@ -62,31 +62,76 @@ export const platformSideValidator = v.union(
  * misses a genuinely delisted set and reports an operator's own DISBAND as
  * "no longer listed on BSC".
  *
- * Capped at MAX_RETURNED_IDS per side — an unbounded client-supplied array
- * feeding a Set the unlink pass consults per row is a transaction-time bomb.
+ * Bounded, but the bound DEGRADES rather than throws — see
+ * `checkReturnedIds` below.
  */
-export const MAX_RETURNED_IDS = 2000;
+export const MAX_RETURNED_IDS = 20000;
+
+/**
+ * The point past which a `returnedIds` payload is not a big year, it is abuse.
+ *
+ * Total across both sides. A real marketplace year tops out in the low
+ * thousands per side (SportLots returned 2,563 sets for 2024 baseball); ids are
+ * short slugs, so 20k per side is far inside Convex's argument limits and still
+ * a bound. Anything past 100k total is not a fetch result.
+ */
+export const MAX_RETURNED_IDS_TOTAL = 100000;
 
 export const returnedIdsValidator = v.object({
   bsc: v.optional(v.array(v.string())),
   sportlots: v.optional(v.array(v.string())),
 });
 
-/** Throws when either side exceeds the cap. Call before planning. */
-export function assertReturnedIdsWithinLimits(
+/**
+ * Decide what to do with a `returnedIds` payload that is bigger than expected.
+ *
+ * This used to throw at 2,000 per side, which took down a real sync: SportLots
+ * lists 2,563 sets for a single year, the form passed them all, and "Save 76
+ * sets" never completed — the entire additive store was lost to a bound that
+ * only ever guarded the UNLINK pass.
+ *
+ * So the failure mode is now proportionate. A side over the cap is reported as
+ * TRUNCATED and treated as not covered: the store still writes everything the
+ * caller asked it to write, and simply declines to unlink on a side whose
+ * returned-id list it could not trust. Losing an unlink notice for one run is
+ * recoverable; losing the operator's 76 saved sets is not.
+ *
+ * Only a grossly abusive total still throws.
+ */
+export function checkReturnedIds(
   returnedIds: { bsc?: string[]; sportlots?: string[] } | undefined,
   fnName: string,
-): void {
-  if (!returnedIds) return;
+): { truncatedSides: PlatformSide[] } {
+  if (!returnedIds) return { truncatedSides: [] };
+  const total =
+    (returnedIds.bsc?.length ?? 0) + (returnedIds.sportlots?.length ?? 0);
+  if (total > MAX_RETURNED_IDS_TOTAL) {
+    throw new Error(
+      `${fnName}: returnedIds carries ${total} entries, over the ` +
+        `${MAX_RETURNED_IDS_TOTAL} hard limit`,
+    );
+  }
+  const truncatedSides: PlatformSide[] = [];
   for (const side of ["bsc", "sportlots"] as const) {
-    const ids = returnedIds[side];
-    if (ids && ids.length > MAX_RETURNED_IDS) {
-      throw new Error(
-        `${fnName}: returnedIds.${side} has ${ids.length} entries, over the ` +
-          `${MAX_RETURNED_IDS} limit`,
-      );
+    if ((returnedIds[side]?.length ?? 0) > MAX_RETURNED_IDS) {
+      truncatedSides.push(side);
     }
   }
+  if (truncatedSides.length > 0) {
+    console.warn(
+      JSON.stringify({
+        msg: "selector_sync_returned_ids_truncated",
+        fn: fnName,
+        sides: truncatedSides,
+        counts: {
+          bsc: returnedIds.bsc?.length ?? 0,
+          sportlots: returnedIds.sportlots?.length ?? 0,
+        },
+        effect: "side treated as not covered; nothing unlinked on it",
+      }),
+    );
+  }
+  return { truncatedSides };
 }
 
 export const unlinkedEntryValidator = v.object({

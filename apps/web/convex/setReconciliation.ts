@@ -30,7 +30,7 @@ import {
   MAX_SYNC_ITEMS,
   UNLINK_NOTICE_LIMIT,
   annotateHasCards,
-  assertReturnedIdsWithinLimits,
+  checkReturnedIds,
   platformSideValidator,
   returnedIdsValidator,
   unionChildren,
@@ -1069,6 +1069,12 @@ export const storeReconciledOptions = mutation({
     /** Rows rebound to a new id for the same set (a marketplace re-slug). */
     relinked: v.array(unlinkedEntryValidator),
     relinkedTotal: v.number(),
+     /**
+     * Sides whose `returnedIds` list was over the cap and so were treated as
+     * NOT covered this run: everything was still stored additively, but
+     * nothing was unlinked on them. Empty on every normal sync.
+     */
+    returnedIdsTruncatedSides: v.array(platformSideValidator),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1080,7 +1086,6 @@ export const storeReconciledOptions = mutation({
           `${MAX_SYNC_ITEMS}-per-call limit`,
       );
     }
-    assertReturnedIdsWithinLimits(args.returnedIds, "storeReconciledOptions");
 
     // NEO-71-74: reconciledItems share one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every
@@ -1110,11 +1115,34 @@ export const storeReconciledOptions = mutation({
       };
     });
 
+    // NEO-211 — a `returnedIds` side over the cap DEGRADES, it does not throw.
+    // The old throw took down a real sync: SportLots lists 2,563 sets for one
+    // year, the form passed them all, and "Save 76 sets" never completed. The
+    // bound only ever guarded the UNLINK pass, so an oversized list costs an
+    // unlink notice for this run — not the operator's saved work. The side
+    // falls back to the items for staleness (the pre-`returnedIds` behaviour)
+    // and is dropped from coverage, so nothing is unlinked on it.
+    const { truncatedSides } = checkReturnedIds(args.returnedIds, "storeReconciledOptions");
+    const itemUniverse = resolveReturnedIds(items, undefined);
+    const effectiveReturnedIds = args.returnedIds
+      ? {
+          bsc: truncatedSides.includes("bsc")
+            ? [...itemUniverse.bsc]
+            : (args.returnedIds.bsc ?? []),
+          sportlots: truncatedSides.includes("sportlots")
+            ? [...itemUniverse.sportlots]
+            : (args.returnedIds.sportlots ?? []),
+        }
+      : undefined;
+    const effectiveCovered = (args.coveredSides ?? []).filter(
+      (side) => !truncatedSides.includes(side),
+    );
+
     const plan = planSelectorSync({
       existing: existingOptions,
       items,
-      coveredSides: args.coveredSides,
-      returnedIds: args.returnedIds,
+      coveredSides: effectiveCovered,
+      returnedIds: effectiveReturnedIds,
     });
     if (plan.ambiguities.length > 0) {
       console.warn(
@@ -1471,6 +1499,7 @@ export const storeReconciledOptions = mutation({
       unlinkedTotal: unlinkedAll.length,
       relinked: relinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
       relinkedTotal: relinkedAll.length,
+      returnedIdsTruncatedSides: truncatedSides,
     };
   },
 });
