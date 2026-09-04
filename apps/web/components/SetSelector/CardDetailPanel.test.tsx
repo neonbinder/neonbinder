@@ -1,41 +1,40 @@
 /**
- * NEO-71-74 regression coverage — CardDetailPanel.
+ * CardDetailPanel — regression coverage.
  *
- * This session:
- *   - Removed the old free-text "Autograph" input (bound to local
- *     `autographType` state, saved via `updateCard`).
- *   - Replaced it with an always-visible "Autographed" control using the
- *     shared `CardFeatureRow` (exported from CardFeaturesEditor.tsx) bound
- *     to `card.features?.autographed`, saved immediately via
- *     `setCardFeature({ cardChecklistId, key: "autographed", value })` —
- *     NOT part of this panel's dirty/Save cycle. Later (NEO-71-74) the
- *     control itself changed from a `<select>` dropdown to two mutually
- *     exclusive toggle pills ("Auto (On Card)"/"Auto (Sticker)" — the "Auto"
- *     prefix was added so the pills read unambiguously in the shared toggle
- *     row) — same `setCardFeature` wiring, same stored values ("On Card"/
- *     "Sticker/Label"), just a different control. `CardFeatureRow`'s
- *     checkbox-branch condition only
- *     checks `inputType === "checkbox"` (not "toggleOptions"), so Autographed
- *     still falls through to the same labeled-box "default" branch as
- *     before — the "Autographed" label above the control is unchanged, only
- *     the control is now 2 pills instead of a dropdown.
- *   - Replaced the read-only "Players" section with a full
- *     `<PlayerPicker value={playerIds} onChange={setPlayerIds} .../>`, with
- *     `playerIds` now part of this panel's dirty-tracking and `handleSave`'s
- *     `updateCard(...)` payload.
- *   - Renamed the "Variation / parallel" label to just "Variation".
+ * ## NEO-216 (2026-09-04): the drawer autosaves per field
  *
- * This file locks in:
- *   1. The Autographed control renders as two toggle pills ("Auto (On Card)" /
- *      "Auto (Sticker)"), NOT a <select> or a text input, and clicking a pill
- *      calls setCardFeature — never updateCard — and does NOT mark the
- *      panel dirty (the Save button stays enabled/disabled independent of
- *      it, and no discard-confirm appears on close after changing it).
- *   2. The Players picker renders with the card's playerIds; adding/removing
- *      a player marks the panel dirty; Save calls updateCard with the
- *      updated playerIds array.
- *   3. The Variation field's label reads "Variation" (not "Variation /
- *      parallel").
+ * The panel used to seed a draft from the `card` prop and write the whole
+ * draft back on Save. `card` is a row out of the LIVE `getCardChecklist`
+ * query, so a full-replacement Save could (and did) overwrite fields the
+ * server had patched underneath the draft — a `teamOnCardIds: []` sent a
+ * moment after the BSC team queue filled it in was permanent, because that
+ * queue never re-enqueues a card it has stamped.
+ *
+ * There is now no Save button, no draft, no `dirty`, and no discard bar. Each
+ * control writes only its own field, immediately. What this file locks in:
+ *
+ *   1. No Save button is rendered, and closing never offers to discard.
+ *   2. Editing the name and blurring calls `updateCard({ id, cardName })` —
+ *      and NOTHING else. An untouched field never appears in a payload.
+ *   3. **NEO-36 pin**: an external patch arriving while the name field is
+ *      focused with typed text neither loses nor resets that text, the picker
+ *      shows the newly-arrived team, and the commit sends the typed value.
+ *   4. The attribute chips write `attributes` + the two derived booleans, and
+ *      RC drives `isRookie` in BOTH directions (NEO-217 C — the old
+ *      `|| card.isRookie` made RC a one-way switch).
+ *   5. Print run: "99" → `printRun: 99`; cleared → `printRun: null`
+ *      (NEO-217 B); a non-integer is refused inline and sends nothing.
+ *   6. A rejected commit shows an inline error and keeps the typed value.
+ *   7. Teams / players write their own array on change and read the live row.
+ *
+ * ## Still locked in from NEO-71-74
+ *
+ *   - The Autographed control renders as two toggle pills ("Auto (On Card)" /
+ *     "Auto (Sticker)"), NOT a <select> or text input, and clicking a pill
+ *     calls `setCardFeature` — never `updateCard`.
+ *   - The Players picker renders with the card's playerIds.
+ *   - The Variation field's label reads "Variation" (not "Variation /
+ *     parallel").
  *
  * --- Mocking strategy ---
  * convex/react's useMutation is module-mocked, routed by the (string-mocked)
@@ -44,12 +43,13 @@
  * components — both already have their own dedicated test files
  * (TeamPicker.test.tsx, PlayerPicker.test.tsx) covering their internal
  * query/typeahead behavior, so this file only needs to verify CardDetailPanel
- * wires their value/onChange correctly into its own dirty-tracking and Save
- * payload, not re-exercise their popovers.
+ * wires their value/onChange into the right single-field write, not
+ * re-exercise their popovers.
  */
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
+import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -175,6 +175,55 @@ function renderPanel(
   return { ...utils, onClose, onPrev, onNext };
 }
 
+/**
+ * Focus a reactive field the way a person does.
+ *
+ * BOTH the real `.focus()` and the synthetic React event are required:
+ * `useReactiveField` guards its mirroring effect on `document.activeElement`
+ * (only the real call sets that) and guards the commit no-op on its own
+ * `focusedRef` (only the synthetic event sets that). See
+ * components/forms/useReactiveField.test.tsx.
+ */
+function focusField(el: HTMLElement): void {
+  el.focus();
+  fireEvent.focus(el);
+}
+
+function blurField(el: HTMLElement): void {
+  el.blur();
+  fireEvent.blur(el);
+}
+
+/**
+ * Type into an UNCONTROLLED field.
+ *
+ * `fireEvent.change`, not a direct `el.value =` assignment: React keeps a
+ * tracker of the last value it saw on the node, and assigning the property
+ * updates that tracker, so the event that follows looks like a no-change and
+ * React skips `onChange` — which some of these fields use to drive their live
+ * character counter. `fireEvent.change` sets the value through the native
+ * setter, which is the path the tracker does not swallow.
+ */
+function typeInto(el: HTMLInputElement | HTMLTextAreaElement, text: string): void {
+  fireEvent.change(el, { target: { value: text } });
+}
+
+/** Focus → type → blur, which is what commits a reactive field. */
+async function editAndCommit(
+  el: HTMLInputElement | HTMLTextAreaElement,
+  text: string,
+): Promise<void> {
+  await act(async () => {
+    focusField(el);
+    typeInto(el, text);
+    blurField(el);
+  });
+}
+
+const nameInput = () => screen.getByLabelText("Card name") as HTMLInputElement;
+const printRunInput = () =>
+  screen.getByLabelText("Print run") as HTMLInputElement;
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -191,8 +240,7 @@ describe("CardDetailPanel", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Autographed control: toggle pills, not a <select>; setCardFeature;
-  // excluded from dirty-tracking.
+  // Autographed control: toggle pills, not a <select>; setCardFeature.
   // -------------------------------------------------------------------------
 
   it("renders the Autographed control as toggle pills, not a <select>", () => {
@@ -255,7 +303,7 @@ describe("CardDetailPanel", () => {
     expect(mockUpdateCard).not.toHaveBeenCalled();
   });
 
-  it("changing Autographed does NOT mark the panel dirty — the dirty-guarded close exits immediately, no discard-confirm", async () => {
+  it("changing Autographed leaves the drawer closable with no discard prompt", async () => {
     const { onClose } = renderPanel({
       card: makeCard({ features: { autographed: "None" } }),
     });
@@ -270,12 +318,6 @@ describe("CardDetailPanel", () => {
       expect(mockSetCardFeature).toHaveBeenCalled();
     });
 
-    // Use the header "×" close button, which routes through the dirty-guard
-    // (`requestExit`) — unlike the footer "Cancel" button, which calls
-    // `onClose` unconditionally regardless of dirty state. Only the
-    // dirty-guarded path can actually prove autographed edits aren't
-    // tracked in this panel's dirty state (they persist immediately,
-    // independent of Save).
     fireEvent.click(screen.getByLabelText("Close card detail"));
 
     expect(screen.queryByText("Discard unsaved changes?")).toBeNull();
@@ -283,7 +325,7 @@ describe("CardDetailPanel", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Players picker: renders with playerIds; dirty-tracking; Save payload.
+  // Players picker: renders from the live row; writes only playerIds.
   // -------------------------------------------------------------------------
 
   it("renders the Players picker seeded with the card's playerIds", () => {
@@ -294,53 +336,44 @@ describe("CardDetailPanel", () => {
     expect(screen.getByText("Players: player-1,player-2")).toBeTruthy();
   });
 
-  it("adding a player via the picker marks the panel dirty (dirty-guarded close now shows the discard-confirm bar)", () => {
+  it("adding a player writes playerIds immediately — and nothing else", async () => {
     renderPanel({ card: makeCard({ playerIds: ["player-1"] as unknown as Array<Id<"players">> }) });
 
-    fireEvent.click(screen.getByText("Stub add player"));
-    fireEvent.click(screen.getByLabelText("Close card detail"));
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
 
-    expect(screen.getByText("Discard unsaved changes?")).toBeTruthy();
+    await waitFor(() => {
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_ID,
+        playerIds: ["player-1", "player-new"],
+      });
+    });
   });
 
-  it("removing a player via the picker marks the panel dirty", () => {
+  it("removing a player writes the shortened playerIds array", async () => {
     renderPanel({
       card: makeCard({ playerIds: ["player-1", "player-2"] as unknown as Array<Id<"players">> }),
     });
 
-    fireEvent.click(screen.getByText("Stub remove last player"));
-    fireEvent.click(screen.getByLabelText("Close card detail"));
-
-    expect(screen.getByText("Discard unsaved changes?")).toBeTruthy();
-  });
-
-  it("Save calls updateCard with the updated playerIds array", async () => {
-    const { onClose } = renderPanel({
-      card: makeCard({ playerIds: ["player-1"] as unknown as Array<Id<"players">> }),
-    });
-
-    fireEvent.click(screen.getByText("Stub add player"));
-
     await act(async () => {
-      fireEvent.click(screen.getByLabelText("Save card edit"));
+      fireEvent.click(screen.getByText("Stub remove last player"));
     });
 
     await waitFor(() => {
-      expect(mockUpdateCard).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: CARD_ID,
-          playerIds: ["player-1", "player-new"],
-        }),
-      );
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_ID,
+        playerIds: ["player-1"],
+      });
     });
-    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("not touching the Players picker leaves the panel non-dirty (dirty-guarded close exits with no discard-confirm)", () => {
+  it("touching nothing writes nothing, and closing exits straight away", () => {
     const { onClose } = renderPanel();
 
     fireEvent.click(screen.getByLabelText("Close card detail"));
 
+    expect(mockUpdateCard).not.toHaveBeenCalled();
     expect(screen.queryByText("Discard unsaved changes?")).toBeNull();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -358,6 +391,472 @@ describe("CardDetailPanel", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-216 — per-field autosave on the live row
+// ---------------------------------------------------------------------------
+
+describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(undefined);
+    mockSetCardFeature.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders no Save button and no Cancel button", () => {
+    renderPanel();
+
+    expect(screen.queryByLabelText("Save card edit")).toBeNull();
+    expect(screen.queryByLabelText("Cancel card edit")).toBeNull();
+    // The rule is stated where the button used to be — nobody guesses that a
+    // drawer without a Save button has already saved.
+    expect(
+      screen.getByText("Changes save as you leave each field."),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Done editing card")).toBeTruthy();
+  });
+
+  it("editing the card name and blurring sends ONLY { id, cardName }", async () => {
+    renderPanel({ card: makeCard({ cardName: "Mike Trout" }) });
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      cardName: "Shohei Ohtani",
+    });
+  });
+
+  it("an untouched field never appears in any payload", async () => {
+    // The whole point of the change: a name edit must not carry a
+    // `teamOnCardIds` the server filled in a second ago.
+    renderPanel({
+      card: makeCard({
+        cardName: "Mike Trout",
+        teamOnCardIds: ["team-a"] as unknown as Array<Id<"teams">>,
+        printRun: 99,
+        cardVariation: "Gold",
+        listingTitle: "a title",
+      }),
+    });
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    const payload = mockUpdateCard.mock.calls[0][0];
+    expect(Object.keys(payload).sort()).toEqual(["cardName", "id"]);
+  });
+
+  it("committing an unchanged value writes nothing at all", async () => {
+    renderPanel({ card: makeCard({ cardName: "Mike Trout" }) });
+
+    await act(async () => {
+      focusField(nameInput());
+      blurField(nameInput());
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("confirms the save in a status region", async () => {
+    renderPanel();
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe("Saved Card name");
+  });
+
+  /**
+   * NEO-36 pin — the bug class this whole drawer was rebuilt around.
+   *
+   * A reactive push landing mid-edit must not reset, lose, or cross-wire the
+   * text in the field, the picker must show what the server just sent, and the
+   * commit must send what the operator typed — not the value the push carried.
+   */
+  it("keeps typed text when the live row is patched externally, shows the new team, and commits the typed value", async () => {
+    const onClose = vi.fn();
+    const props = {
+      ancestorSport: "Baseball",
+      onClose,
+      onPrev: vi.fn(),
+      onNext: vi.fn(),
+      hasPrev: false,
+      hasNext: false,
+    };
+    const { rerender } = render(
+      <CardDetailPanel card={makeCard({ cardName: "Mike Trout" })} {...props} />,
+    );
+
+    const input = nameInput();
+    await act(async () => {
+      focusField(input);
+      typeInto(input, "Shohei Ohtani");
+    });
+
+    // The BSC per-card team queue lands, and the server also renamed the card
+    // from another surface. Both arrive as a fresh `card` prop while the
+    // operator is still typing.
+    await act(async () => {
+      rerender(
+        <CardDetailPanel
+          card={makeCard({
+            cardName: "Renamed By Sync",
+            teamOnCardIds: ["team-from-sync"] as unknown as Array<Id<"teams">>,
+          })}
+          {...props}
+        />,
+      );
+    });
+
+    // 1. The typed text survives untouched.
+    expect(nameInput().value).toBe("Shohei Ohtani");
+    // 2. The picker reads the LIVE row, so the team the queue wrote is visible
+    //    while the drawer is open (it used to sit behind a mount-time draft).
+    expect(screen.getByText("Teams: team-from-sync")).toBeTruthy();
+    // 3. The commit reads the DOM, not the pushed value.
+    await act(async () => {
+      blurField(nameInput());
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      cardName: "Shohei Ohtani",
+    });
+    // And it carried no teamOnCardIds to overwrite the queue's write with.
+    expect(mockUpdateCard.mock.calls[0][0]).not.toHaveProperty("teamOnCardIds");
+  });
+
+  it("mirrors an external change into an idle field", async () => {
+    const props = {
+      ancestorSport: "Baseball",
+      onClose: vi.fn(),
+      onPrev: vi.fn(),
+      onNext: vi.fn(),
+      hasPrev: false,
+      hasNext: false,
+    };
+    const { rerender } = render(
+      <CardDetailPanel card={makeCard({ cardName: "Mike Trout" })} {...props} />,
+    );
+
+    // The drawer focuses Card name on mount (each remount is a new card), and
+    // a focused field is deliberately NOT mirrored into — so step away first.
+    // "Idle" is the state this test is about.
+    await act(async () => {
+      blurField(nameInput());
+    });
+
+    await act(async () => {
+      rerender(
+        <CardDetailPanel
+          card={makeCard({ cardName: "Renamed By Sync" })}
+          {...props}
+        />,
+      );
+    });
+
+    expect(nameInput().value).toBe("Renamed By Sync");
+  });
+
+  it("the description commits on blur and on Cmd/Ctrl+Enter, but not on a bare Enter", async () => {
+    // A bare Enter here is a paragraph break the operator typed. Swallowing it
+    // to save would make a multi-line description impossible to write.
+    renderPanel({ card: makeCard({ listingDescription: "old copy" }) });
+
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "line one");
+      fireEvent.keyDown(description, { key: "Enter" });
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.keyDown(description, { key: "Enter", metaKey: true });
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      listingDescription: "line one",
+    });
+
+    await act(async () => {
+      typeInto(description, "line one\nline two");
+      blurField(description);
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(2));
+    expect(mockUpdateCard).toHaveBeenLastCalledWith({
+      id: CARD_ID,
+      listingDescription: "line one\nline two",
+    });
+  });
+
+  it("the card variation writes only cardVariation", async () => {
+    renderPanel({ card: makeCard({ cardVariation: "" }) });
+
+    await editAndCommit(
+      screen.getByLabelText("Card variation") as HTMLInputElement,
+      "Gold Refractor",
+    );
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      cardVariation: "Gold Refractor",
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Attribute chips (NEO-217 C)
+  // -------------------------------------------------------------------------
+
+  it("toggling RC on writes attributes plus both derived booleans", async () => {
+    renderPanel({ card: makeCard({ attributes: [] }) });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Toggle RC"));
+    });
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      attributes: ["RC"],
+      isRookie: true,
+      isRelic: false,
+    });
+  });
+
+  it("toggling RC OFF sets isRookie back to false, even on a card already flagged rookie", async () => {
+    // The old `isRookie: attributes.includes("RC") || card.isRookie === true`
+    // made RC a one-way switch: unticking it left isRookie true and the
+    // generated title kept its "RC" token forever.
+    renderPanel({
+      card: makeCard({ attributes: ["RC"], isRookie: true }),
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Toggle RC"));
+    });
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      attributes: [],
+      isRookie: false,
+      isRelic: false,
+    });
+  });
+
+  it("preserves reconciliation tokens it does not render as chips", async () => {
+    renderPanel({ card: makeCard({ attributes: ["unmatched-sl"] }) });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Toggle RELIC"));
+    });
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      attributes: ["unmatched-sl", "RELIC"],
+      isRookie: false,
+      isRelic: true,
+    });
+  });
+
+  it("busy-guards the chip row so a second toggle cannot interleave with the first", async () => {
+    // Both toggles would otherwise derive `attributes` from the same
+    // pre-toggle array, and the second would silently undo the first.
+    let release: (() => void) | undefined;
+    mockUpdateCard.mockImplementation(
+      () => new Promise<void>((resolve) => (release = resolve)),
+    );
+
+    renderPanel({ card: makeCard({ attributes: [] }) });
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Toggle RC"));
+    });
+    // In words, not only a dimmed pill.
+    expect(screen.getByText("Saving…")).toBeTruthy();
+    // a11y audit fix (concurrent w/ this test): NOT native `disabled` — that
+    // would force a browser blur the instant it applied, dropping focus to
+    // <body> mid-toggle for a keyboard user. `aria-disabled` keeps the
+    // button focusable while still announcing/styling the busy state; the
+    // `toggleAttribute` guard (asserted below) is what actually makes the
+    // second click inert, not the DOM disabled behavior.
+    expect(
+      screen.getByLabelText("Toggle AU").getAttribute("aria-disabled"),
+    ).toBe("true");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Toggle AU"));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release?.();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Print run (NEO-217 B)
+  // -------------------------------------------------------------------------
+
+  it("saves a typed print run as a number", async () => {
+    renderPanel({ card: makeCard() });
+
+    await editAndCommit(printRunInput(), "99");
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      printRun: 99,
+    });
+  });
+
+  it("clearing the print run sends null — the only spelling of 'not numbered'", async () => {
+    renderPanel({ card: makeCard({ printRun: 99 }) });
+
+    await editAndCommit(printRunInput(), "");
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      printRun: null,
+    });
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe("Cleared Print run");
+  });
+
+  it("refuses a non-integer print run inline and sends nothing", async () => {
+    renderPanel({ card: makeCard() });
+
+    await editAndCommit(printRunInput(), "2.5");
+
+    const alert = await screen.findByRole("alert");
+    // Word-for-word the server's own refusal (minus its "received N" tail —
+    // the value is still in the field beside the message). Two different
+    // sentences for one rule would teach the operator two different rules.
+    expect(alert.textContent).toBe(
+      "Print run must be a whole number between 1 and 1,000,000.",
+    );
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    // The rejected value stays put: it is corrected, never retyped.
+    expect(printRunInput().value).toBe("2.5");
+  });
+
+  it("refuses a print run below 1", async () => {
+    renderPanel({ card: makeCard({ printRun: 5 }) });
+
+    await editAndCommit(printRunInput(), "0");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("between 1 and 1,000,000");
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("refuses a print run past the server's 1,000,000 bound", async () => {
+    // Mirrored client-side so the operator is not told one rule locally and a
+    // different one by the round trip.
+    renderPanel({ card: makeCard({ printRun: 99 }) });
+
+    await editAndCommit(printRunInput(), "1000001");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("between 1 and 1,000,000");
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("accepts exactly 1,000,000 — the bound is inclusive, as it is server-side", async () => {
+    renderPanel({ card: makeCard({ printRun: 99 }) });
+
+    await editAndCommit(printRunInput(), "1000000");
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      printRun: 1_000_000,
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Refusals
+  // -------------------------------------------------------------------------
+
+  it("a rejected commit shows an inline error and keeps the typed value", async () => {
+    mockUpdateCard.mockRejectedValue(
+      new ConvexError("That title is too long for eBay."),
+    );
+    renderPanel({ card: makeCard({ cardName: "Mike Trout" }) });
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    const alert = await screen.findByRole("alert");
+    // A ConvexError's `data` is the message the backend chose for a person,
+    // so it is shown verbatim rather than replaced by the fallback.
+    expect(alert.textContent).toBe("That title is too long for eBay.");
+    expect(nameInput().value).toBe("Shohei Ohtani");
+    // The field is described by its own error, not merely followed by it.
+    expect(nameInput().getAttribute("aria-invalid")).toBe("true");
+    expect(nameInput().getAttribute("aria-describedby")).toBe(alert.id);
+  });
+
+  it("falls back to a plain sentence when the failure carries no user-facing text", async () => {
+    // Production redacts a plain Error to "Server Error", and `.message`
+    // arrives wrapped in "[CONVEX M(...)] [Request ID: ...]" noise either way.
+    mockUpdateCard.mockRejectedValue(new Error("Server Error"));
+    renderPanel();
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Could not save that change");
+  });
+
+  // -------------------------------------------------------------------------
+  // Exits
+  // -------------------------------------------------------------------------
+
+  it("Escape closes with no discard bar", () => {
+    const { onClose } = renderPanel();
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Discard unsaved changes?")).toBeNull();
+    expect(screen.queryByLabelText("Keep editing")).toBeNull();
+    expect(screen.queryByLabelText("Discard changes")).toBeNull();
+  });
+
+  it("Escape closes even mid-edit — there is nothing left to discard", async () => {
+    const { onClose } = renderPanel();
+
+    await act(async () => {
+      focusField(nameInput());
+      typeInto(nameInput(), "half a name");
+    });
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Discard unsaved changes?")).toBeNull();
+  });
+
+  it("the Done button closes the drawer", () => {
+    const { onClose } = renderPanel();
+
+    fireEvent.click(screen.getByLabelText("Done editing card"));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
 
 /**
  * NEO-189 — the escape hatch for a variation the import could not derive, and
@@ -408,10 +907,10 @@ describe("CardDetailPanel — Variation of", () => {
 //
 // It sits ABOVE the picker rather than inside it because a `TeamPicker` chip is
 // a real `teams._id` the rest of the product can act on; putting a bare string
-// among them would be claiming a link that does not exist. And it is not part
-// of the panel's draft state: the server retires it, derived from a real team
-// write (`updateCard` clears it in the same patch as a non-empty
-// `teamOnCardIds`), so there is nothing here to edit or delete by hand.
+// among them would be claiming a link that does not exist. And it is never
+// edited here: the server retires it, derived from a real team write
+// (`updateCard` clears it in the same patch as a non-empty `teamOnCardIds`), so
+// there is nothing here to edit or delete by hand.
 // ---------------------------------------------------------------------------
 
 describe("CardDetailPanel — NEO-208 pending team names", () => {
@@ -471,18 +970,15 @@ describe("CardDetailPanel — NEO-208 pending team names", () => {
     expect(container).toBeTruthy();
   });
 
-  it("does not mark the panel dirty — it is not draft state", () => {
-    // Nothing about a pending name is editable here, so merely opening a card
-    // that has one must not arm the discard bar. Closing goes straight
-    // through, exactly as it does on a card with no pending names.
+  it("merely opening a card that has one writes nothing", () => {
     const { onClose } = renderPanel({
       card: makeCard({ pendingTeamNames: ["Savannah Bananas"] }),
     });
 
     fireEvent.click(screen.getByLabelText("Close card detail"));
 
+    expect(mockUpdateCard).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText("Discard unsaved changes?")).toBeNull();
   });
 
   it("never sends pendingTeamNames back through updateCard", async () => {
@@ -494,16 +990,16 @@ describe("CardDetailPanel — NEO-208 pending team names", () => {
     await act(async () => {
       fireEvent.click(screen.getByText("Stub add team"));
     });
-    await act(async () => {
-      fireEvent.click(screen.getByLabelText("Save card edit"));
-    });
 
     await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
     expect(mockUpdateCard.mock.calls[0][0]).not.toHaveProperty(
       "pendingTeamNames",
     );
-    // And the team write that retires it server-side did go out.
-    expect(mockUpdateCard.mock.calls[0][0].teamOnCardIds).toEqual(["team-new"]);
+    // And the team write that retires it server-side did go out, on its own.
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      teamOnCardIds: ["team-new"],
+    });
   });
 
   it("shows nothing when there are no pending names", () => {

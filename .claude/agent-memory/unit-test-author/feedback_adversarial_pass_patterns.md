@@ -60,3 +60,129 @@ found one real source bug and several real gaps. Patterns worth re-applying:
 
 See [[project_convex_test_patterns]] and [[project_vitest_projects_setup]] for
 the harness details this pass used unchanged.
+
+## Round 2 (NEO-216/217, 2026-09-04) — autosave race + clearable fields
+
+Target: `CardDetailPanel.tsx` (per-field autosave on `useReactiveField`),
+`updateCard`'s `printRun` null-clear, and `applyFeatureEdit`'s `""`-clear
+shared by `setSelectorOptionFeature`/`setCardFeature`. Already had 41+ 
+component tests and a large convex suite from the feature's own authors.
+Genuine gaps found, none of them regressions — all net-new coverage:
+
+1. **The already-tested race has an untested INVERSE.** The feature's own
+   tests proved "typed text survives an external patch while FOCUSED". They
+   never proved the twin case: a commit already fired (blurred, mutation
+   promise unresolved, `busyRef.current === true`) when an external patch
+   arrives. Same guard code path (`useReactiveField`'s mirror effect checks
+   `busyRef.current` before `document.activeElement`), but a focused-only
+   test suite never exercises it. Whenever a hook guards on TWO independent
+   conditions (focused OR busy), each needs its own test with the other
+   condition explicitly false — testing "focused" doesn't imply "busy" got
+   covered too, even structurally.
+
+2. **A busy-guard's own SYNCHRONOUS-vs-`await` boundary is worth pinning
+   directly**, not just its externally-visible effect. `runCommit` sets
+   `busyRef.current = true` synchronously, before its first `await` —
+   meaning Enter-then-blur in the same tick, or two rapid Enters, can never
+   double-fire, and a second edit attempted mid-save is DROPPED (not queued;
+   nothing re-applies it once the first resolves). All three are one-line
+   tests once you know to ask "what happens if the SECOND trigger fires
+   before the first `await` yields control back?" — worth asking of any hook
+   with a `busyRef`/`isPending` guard set outside an async callback.
+
+3. **A rejected optimistic-looking write with NO optimistic state is a
+   different contract than "revert to server value".** The attribute chips
+   render straight from the live `card.attributes` prop — there is no local
+   "next" state shown before the mutation resolves. So "the chip reverts on
+   rejection" is trivially true (it never moved), and the real thing worth
+   testing is that the error surfaces AND a retry after the failure isn't
+   left wedged by the busy guard. Don't assume a component described as
+   "optimistic" in a ticket actually holds optimistic state — check whether
+   the control's rendered value comes from local state or the live prop
+   before writing a "reverts" test; on the live-prop shape, the interesting
+   assertion is "still exactly what the prop says", not "changed back".
+
+4. **A concurrent sibling-agent edit landing on a file mid-session showed up
+   as a genuine, deterministic (non-flaky) failure in an EXISTING test**,
+   not a new one: an a11y-auditor pass swapped `disabled={busy}` for
+   `aria-disabled={busy || undefined}` on the attribute chips (native
+   `disabled` forces a browser blur the instant it applies, dropping focus
+   for a keyboard user mid-toggle — a real WCAG finding, not a mistake).
+   `git diff HEAD -- <file>` against the source file under test is the fast
+   way to confirm "is this MY regression or a concurrent, intentional source
+   change" before spending time debugging the wrong side. The fix here was a
+   one-line assertion update in the EXISTING test (native `.disabled` →
+   `getAttribute("aria-disabled") === "true"`) — updating an existing test to
+   track a verified, well-reasoned concurrent behavior change is test
+   maintenance, not the "don't edit source" boundary; only silently deleting
+   or weakening the assertion to make it pass would have crossed that line.
+
+5. **A validator's numeric guard (`Number.isInteger(x) && x >= 1`) has real
+   edge values worth enumerating beyond the obvious `0`/`-1`/`2.5`**: `NaN`
+   (typeof "number", not an integer — still rejected, but worth pinning
+   since a validator that only checks `typeof === "number"` would let it
+   through), `Infinity` (`Number.isInteger(Infinity)` is `false`), and `-0`
+   (an integer per `Number.isInteger`, but `-0 < 1` is `true` — rejected via
+   the OTHER half of the guard, which is worth distinguishing from the
+   `Number.isInteger` half in case one is ever "fixed" independently). Also
+   worth PROVING, not assuming: `Number.isInteger` is `true` for any
+   magnitude with no fractional part, so a guard with no explicit upper
+   bound silently accepts something like `1e21` — not necessarily a bug to
+   fix, but a finding worth surfacing to the coordinator rather than leaving
+   implicit, and worth pinning at BOTH the client (whatever parses a text
+   input into a number before the call) and the server layer so the two
+   can't quietly diverge on where the ceiling is.
+
+6. **`{...(existing ?? {})}` then `delete cleared[key]` on a clear helper
+   returns `{}`, not `undefined`, when `existing` was `undefined`** — worth
+   its own test with a fixture that genuinely never set the object at all
+   (not one pre-seeded with sibling keys), since every "clear" test that
+   starts from a non-empty object never exercises the `existing ?? {}`
+   fallback's own return shape.
+
+7. **"Does a per-row clear cascade to already-materialized descendants?" is
+   worth testing for CLEAR specifically even when the SET direction is
+   already proven not to cascade** — a reader who accepts "set doesn't
+   cascade" can still expect "clear" to behave differently (un-setting reads
+   as more global than setting, intuitively), so if a shared helper
+   (`applyFeatureEdit`) drives both, the negative test is cheap and closes a
+   real "is this intentional or a bug" support-desk question before it's
+   asked. Confirm the code path shares the exact same helper before treating
+   this as separately worth testing, though — if set and clear used
+   different functions it would need actual investigation, not just an
+   extrapolated test.
+
+8. **When a "no upper bound" finding gets fixed by ANOTHER concurrent agent
+   mid-pass, your own pinning tests for the gap go stale, not wrong.** In
+   this same session, after I pinned "a 1e21 printRun is accepted (finding,
+   not a failure)" at both the convex and component layers, a concurrent
+   agent added a real `PRINT_RUN_MAX = 1_000_000` ceiling to BOTH
+   `updateCard` and `CardDetailPanel.tsx` — including rewriting the shared
+   `PRINT_RUN_MESSAGE` text — and had already flipped my convex-side test to
+   assert rejection by the time I re-read the file. My component-side
+   sibling test hadn't been touched by them, so it silently regressed from
+   "documents a finding" to "asserts something now false". The tell was the
+   vitest failure diff itself (`expected 'Print run must be a whole number
+   betw…' to be 'Print run must be a whole number of 1…'`) — the RECEIVED
+   side quoting a message I never wrote is a strong signal the SOURCE moved
+   under a test, not that the test has a bug. `git diff HEAD -- <source
+   file>` confirmed it in seconds. Fixed by rewriting my test to assert the
+   new capped/rejected behavior (mirroring how the coordinator's own fix
+   handled its own convex test), not by reverting anything. General rule:
+   a "no bound enforced" pinning test is inherently the most likely kind of
+   test to be invalidated by someone else fixing the exact gap you just
+   found — expect it, and re-run right before the final report even if
+   nothing you touched looks related.
+
+9. **A file can visibly change AGAIN between two `grep`s seconds apart** when
+   another agent is still actively iterating on it — a test name that just
+   failed can be gone by the next search, not because anything was reverted
+   but because the other agent renamed/restructured it mid-edit. Don't chase
+   a moving target's intermediate states; re-run the whole affected project
+   once more after a short beat and trust that result over any single
+   snapshot. In this pass a test titled "stays silent when the redundant
+   commit is a no-op" failed on one run and had no matching name on the next
+   grep two tool calls later (renamed to "stays silent when the second
+   commit is for the value already being saved", now passing) — it was
+   never mine to fix, and re-running instead of investigating the stale
+   snapshot was the right amount of effort.

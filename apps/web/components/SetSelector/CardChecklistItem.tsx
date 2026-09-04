@@ -41,6 +41,9 @@ type CardChecklistItemProps = {
     isRookie?: boolean;
     isRelic?: boolean;
     printRun?: number;
+    // NEO-217: legacy, still passed down by `CardChecklist` from the stored
+    // row but no longer rendered — see the sub-line below, which reads
+    // `features.autographed` instead.
     autographType?: string;
     cardVariation?: string;
     features?: Record<string, string>;
@@ -196,7 +199,17 @@ export default function CardChecklistItem({
   }
   if (card.printRun) subParts.push(`/${card.printRun}`);
   if (card.cardVariation) subParts.push(card.cardVariation);
-  if (card.autographType) subParts.push(`${card.autographType} auto`);
+  // NEO-217: `features.autographed` is the ONE truth for whether this card is
+  // an autograph — it is what the listing title and description read, and the
+  // only autograph value the card detail drawer has written since NEO-71-74.
+  // The legacy `autographType` column is deliberately not consulted: BSC never
+  // sent it and SportLots sends the literal "Unknown", so reading it made
+  // every SportLots auto render "Unknown auto". "None" is a real stored value
+  // meaning "not an autograph", so it prints nothing.
+  const autographed = card.features?.autographed;
+  if (autographed && autographed !== "None") {
+    subParts.push(`${autographed} auto`);
+  }
   // NEO-189: say it in words on the parent. The caret alone shows there is
   // something to open but not that it is worth opening.
   if ((variationCount ?? 0) > 0) {

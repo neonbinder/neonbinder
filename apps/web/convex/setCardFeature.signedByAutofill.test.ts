@@ -263,3 +263,67 @@ describe("setCardFeature: signedBy auto-fill on autographed blank->set transitio
     expect(card!.features?.signedBy).toBe("Mike Trout");
   });
 });
+
+/**
+ * NEO-217 — the seed fires on a real "this card is an autograph" value and
+ * nothing else. Both non-values that can now reach the mutation are pinned:
+ * "None" (the toggle row's first option) and "" (the clear introduced by this
+ * ticket), which the shared `applyFeatureEdit` helper turns into a key
+ * REMOVAL. Neither is a card becoming an autograph, so neither may seed
+ * Signed By — a card with players attached must not sprout a Signed By value
+ * from an operator explicitly saying "not autographed".
+ */
+describe("setCardFeature: 'None' and '' never seed signedBy (NEO-217)", () => {
+  test("autographed set to 'None' from blank does not seed signedBy", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { cardId } = await seedCard(t, { playerNames: ["Mike Trout"] });
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: cardId,
+      key: "autographed",
+      value: "None",
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(card!.features?.autographed).toBe("None");
+    expect(card!.features).not.toHaveProperty("signedBy");
+  });
+
+  test("autographed cleared with '' from blank removes the key and does not seed signedBy", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { cardId } = await seedCard(t, { playerNames: ["Mike Trout"] });
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: cardId,
+      key: "autographed",
+      value: "",
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(card!.features).not.toHaveProperty("autographed");
+    expect(card!.features).not.toHaveProperty("signedBy");
+  });
+
+  test("autographed cleared with '' from a real value removes the key and leaves an existing signedBy alone", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { cardId } = await seedCard(t, {
+      playerNames: ["Mike Trout"],
+      initialFeatures: { autographed: "On Card", signedBy: "Mike Trout" },
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: cardId,
+      key: "autographed",
+      value: "",
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(card!.features).not.toHaveProperty("autographed");
+    // Same discipline as the existing "back to None" case: clearing the
+    // autograph format is not a statement about who signed it.
+    expect(card!.features?.signedBy).toBe("Mike Trout");
+  });
+});

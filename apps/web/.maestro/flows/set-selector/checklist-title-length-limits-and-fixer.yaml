@@ -10,10 +10,12 @@ tags:
 # operator meets IN the product, not at listing time.
 #
 #   • The card drawer's "Card title" carries an N/80 meter, and a title past 80
-#     puts a role="alert" under the field and REFUSES the save (the button is
-#     aria-disabled, and `handleSave` returns early behind it). eBay rejects an
-#     over-length title outright — error 70, no truncation — so the refusal is
-#     the feature, not a nicety.
+#     puts a role="alert" under the field and REFUSES the write. NEO-216 moved
+#     that refusal off a Save button (there isn't one any more) and onto the
+#     per-field COMMIT: pressing Enter over an over-cap title throws before any
+#     mutation is sent, and the typed text stays put so it can be corrected.
+#     eBay rejects an over-length title outright — error 70, no truncation — so
+#     the refusal is the feature, not a nicety.
 #   • "Regenerate" rebuilds the title from the card's own fields and, over a
 #     draft the operator has typed into, costs a second deliberate click. That
 #     is the way BACK under the cap that does not depend on hand-editing a
@@ -29,13 +31,14 @@ tags:
 #   Every step asserts the product's own words, not the mere presence of a
 #   field:
 #     • the over-cap alert ("... over the 80-character limit. Shorten it before
-#       saving.") must appear, and must STILL be there after Save is pressed —
-#       a Save that goes through closes the drawer, so a cap that stopped
-#       blocking fails here rather than reading as a slow save;
+#       saving.") must appear, and the commit that follows must produce NO
+#       "Saved Card title" confirmation — that absence is the refusal, since
+#       the alert alone renders from the field's length and would be there
+#       either way. A cap that stopped blocking fails on that line;
 #     • the warn-only alert must use the OTHER sentence ("You can still save
 #       it, but a marketplace that caps this field will reject the value"), and
-#       that save must close the drawer — a variation cap that started blocking
-#       fails here;
+#       committing it MUST produce a "Saved Variation" confirmation — a
+#       variation cap that started blocking fails here;
 #     • the walker must open on THIS card (the Skip button's accessible name is
 #       the only card-specific handle in the dialog) and its counter must read
 #       "1 card needs attention · 0 fixed" before and "0 cards need attention ·
@@ -233,8 +236,8 @@ tags:
 # outside-click effect was added for in MissingTeamFixer. A pointerdown anywhere
 # outside the picker closes it; the Card name input above is in the form and
 # outside the picker. Escape is NOT used: it is the walker's "defer this card"
-# and the drawer's "discard the draft", and this flow should not depend on which
-# handler happens to see it.
+# and the drawer's "close", and this flow should not depend on which handler
+# happens to see it. (It is also not a web keycode Maestro can send.)
 - tapOn:
     id: "Card name"
 - extendedWaitUntil:
@@ -298,23 +301,35 @@ tags:
 - assertVisible: ".*over the 80-character limit.*"
 - assertVisible: ".*Shorten it before saving.*"
 
-# THE REFUSAL. The button is aria-disabled rather than natively disabled (so the
-# reason stays reachable by keyboard), which means it is still tappable — and
-# `handleSave` returns early behind it. A save that went through would call
-# onClose and the drawer would be gone; it is still here, and still complaining.
-- tapOn:
-    id: "Save card edit"
+# THE REFUSAL. NEO-216 moved it off a Save button and onto the COMMIT itself:
+# a single-line field commits on Enter, and an over-cap title is refused there,
+# with the typed text deliberately left in the field so it can be corrected
+# rather than retyped.
+#
+# The proof that the refusal happened is the ABSENCE of the drawer's own
+# "Saved Card title" confirmation — a commit that went through would put it on
+# screen for six seconds. The over-cap sentence alone would not prove it: it
+# renders from the field's LENGTH and is already there before any commit.
+# A negative assert is followed immediately by positives (a collapsed page
+# satisfies every notVisible), which also say the drawer is still open and
+# still complaining.
+- pressKey: Enter
+- assertNotVisible: ".*Saved Card title.*"
 - assertVisible:
     id: "Card name"
+- assertVisible:
+    id: "Card title"
+    text: ".*NEO101PAD.*"
 - assertVisible: ".*Shorten it before saving.*"
 
 # ════════════════════════════════════════════════════════════════════════════
-# THE WAY BACK — Regenerate, which costs two clicks over a dirty draft.
+# THE WAY BACK — Regenerate, which costs two clicks over text the operator typed.
 #
-# The first click does not replace anything: the draft is the operator's own
-# wording and losing it is a real loss, so it asks. The second click fetches
-# `previewListingTitle` and applies the rebuilt title, which is generated within
-# the cap by construction.
+# The first click does not replace anything: what is in the field is the
+# operator's own wording and losing it is a real loss, so it asks. The second
+# click fetches `previewListingTitle`, puts the rebuilt title in the field and
+# commits it through the SAME per-field path as typing it by hand — so it is
+# generated within the cap by construction and saves itself.
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn:
@@ -428,12 +443,20 @@ tags:
 - inputText: "Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout"
 
 # The OTHER sentence: this one states the risk instead of blocking. If the
-# variation cap ever started blocking, the save below would be refused and the
-# drawer would not close.
+# variation cap ever started blocking, the commit below would be refused and
+# no "Saved Variation" confirmation would appear.
 - assertVisible: ".*a marketplace that caps this field will reject the value.*"
 
+# Commit it. Enter saves a single-line field in place (NEO-216) — the drawer
+# stays open and confirms, which is the assertion that this warn-only cap
+# really does let the value through. Then "Done" closes the drawer (pinned
+# footer, outside the scroll container — R8 exception, no scroll).
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: ".*Saved Variation.*"
+    timeout: 7000
 - tapOn:
-    id: "Save card edit"
+    id: "Done editing card"
 - extendedWaitUntil:
     notVisible:
       id: "Card name"

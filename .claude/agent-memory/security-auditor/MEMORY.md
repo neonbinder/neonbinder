@@ -9,4 +9,4 @@
 - [Entity skip suppression](patterns_entity_skip_suppression.md) — entityReviewSkips is write-only: bulk skip + no delete/list surface + unreadable skippedByUserId = irreversible suppression
 - [Convex CLI target selection](patterns_convex_cli_target_selection.md) — a wrapper script that guards on a deployment NAME is bypassable: CONVEX_DEPLOY_KEY (env or .env.local) is read first and wins
 - [Public function auth registry](patterns_public_function_auth_registry.md) — publicFunctionAuth*.test.ts are the hand-maintained registry; unchanged + green does NOT mean new public functions are pinned
-- [Postage/label trust boundary](patterns_postage_label_trust_boundary.md) — ownership is only as strong as the row's writer; printHtmlDocument never escapes bodyHtml; a control can be dead on a wire-shape mismatch; stamp a cooldown on the attempt, not the success
+- [Card drawer autosave](patterns_card_drawer_autosave.md) — NEO-216/217: per-field commitField writes, the null-clear number pattern, userFacingMessage error contract, feature-key removal is not a privilege
