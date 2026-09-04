@@ -189,12 +189,32 @@ tags:
     id: "Search teams"
 - inputText: "PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
-# CREATE the team from the typeahead. The row is offered only for a name no team
-# in this sport already carries, and it is labelled with the name it would
-# create — so this tap cannot land on some other team's row, and it cannot be
-# satisfied by a row that merely matched.
-- tapOn:
-    id: "Create team PMT-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# NOTHING MATCHES THAT NAME — which is the precondition for creating it, and the
+# reason the popover is now showing its "+ Create" row. It is also a real
+# assertion about the name being this attempt's alone.
+- assertVisible: "No matches."
+
+# CREATE IT WITH ENTER, NOT BY TAPPING THE "+ Create" ROW.
+#
+# The row exists and is correctly labelled — but on this screen it cannot be
+# tapped, and that is geometry, not flakiness. The career editor is the LAST
+# thing on the player panel, so once the page is scrolled as far as it goes
+# "+ Add team" sits at y=510-532 of the 629px headless viewport (measured, CI
+# run 33875599981) and cannot be centred: there is no page left to scroll. Its
+# popover is `absolute top-full`, so it opens BELOW that — search input at
+# y=545-579, first row at y=583. One row fits. Two do not: with no match the
+# popover renders "No matches." AND the "+ Create" row under it, which puts the
+# create row at y>=609, off the bottom of the screen. maestro-web still reports
+# its layout bounds, so `tapOn` "succeeds" while the click lands outside the
+# picker — which is a pointerdown-outside, so the popover closes and no team is
+# ever created. That is exactly how this step failed.
+#
+# Enter on the search input runs the SAME handler the row does: TeamPicker's
+# keydown takes the highlighted match when there is one, and otherwise calls
+# createAndAdd(). "No matches." above is what proves there is none, so Enter
+# here can only mean create — and it needs no coordinates at all.
+- pressKey: Enter
 
 # The chip is the proof the creation landed. Waiting for it before touching
 # anything else also removes a race: the create is a round-trip, and the chip is
