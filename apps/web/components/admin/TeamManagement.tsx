@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
@@ -26,14 +26,89 @@ import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
  */
 
 type Team = Doc<"teams">;
-type League = Doc<"leagues">;
+
+/**
+ * NEO-240 — `leagues.level`, widened to `string`.
+ *
+ * The column arrives with League Management, and this screen only ever reads
+ * it to decide an order. Typing it as `string` rather than off `Doc<"leagues">`
+ * means the screen compiles before the schema change lands AND keeps compiling
+ * if the union later grows a member — an unrecognized level sorts with the
+ * unset ones instead of failing to typecheck.
+ */
+type League = Doc<"leagues"> & { level?: string };
 
 /** Sentinel for the "no league" option — a select's value must be a string. */
 const NO_LEAGUE = "";
 /** Sentinel for the inline "add a new league" option. */
 const ADD_LEAGUE = "__add__";
+/** The league filter's "every team" value — not an id, so it is never a param. */
+const ALL_LEAGUES = "all";
+
+/**
+ * Competitive tier, most prominent first.
+ *
+ * Leagues are listed in this order rather than alphabetically because the
+ * league an operator wants is nearly always the top-flight one: a baseball
+ * team is MLB far more often than it is any of the affiliates, indy leagues
+ * and college conferences that outnumber it in the list. Alphabetical order
+ * buries the common answer among the rare ones.
+ */
+const LEVEL_ORDER: readonly string[] = [
+  "major",
+  "minor",
+  "college",
+  "international",
+  "independent",
+  "other",
+];
+
+/** Unset — and any level this build does not know — sorts last. */
+function levelRank(league: League): number {
+  const index = league.level ? LEVEL_ORDER.indexOf(league.level) : -1;
+  return index === -1 ? LEVEL_ORDER.length : index;
+}
+
+/** Level first, then name. Applied once, so both league pickers agree. */
+function byLevelThenName(a: League, b: League): number {
+  return levelRank(a) - levelRank(b) || a.name.localeCompare(b.name);
+}
 
 type Status = { text: string; isError: boolean } | null;
+
+/**
+ * A URL param this screen follows ONCE per distinct value.
+ *
+ * The screen re-renders on every reactive update to the tables it reads, so a
+ * param applied on each of them would keep yanking the operator back to the
+ * state they arrived in. This remembers what has already been applied.
+ *
+ * TWO values are remembered, not one, and that is not belt-and-braces. React
+ * Router applies every location update inside `startTransition` — the app's
+ * `BrowserRouter` and the tests' `MemoryRouter` share that code path — so the
+ * render that commits a change is a render in which `searchParams` STILL
+ * CARRIES THE PREVIOUS VALUE; the URL catches up one render later. A one-slot
+ * marker cannot tell that stale value apart from a fresh link back to it, so it
+ * follows it — undoing the operator's own action under their hands. Remembering
+ * the superseded value closes exactly that window.
+ *
+ * The cost of the second slot is that a link back to the value just left is
+ * ignored for as long as the screen stays mounted. Every write here is a
+ * `replace`, so there is no history entry to go back to, and every inbound link
+ * arrives as a fresh mount.
+ */
+function useFollowedParam() {
+  const [slots, setSlots] = useState<readonly [string | null, string | null]>([
+    null,
+    null,
+  ]);
+  return {
+    /** The value most recently followed — an effect dependency, not state. */
+    latest: slots[0],
+    hasFollowed: (value: string) => slots.includes(value),
+    follow: (value: string) => setSlots(([current]) => [value, current]),
+  };
+}
 
 function ColorSwatch({ hex, label }: { hex?: string; label: string }) {
   return (
@@ -82,6 +157,7 @@ function TeamDetail({
   const [name, setName] = useState(team.name);
   const [leagueId, setLeagueId] = useState<string>(team.leagueId ?? NO_LEAGUE);
   const [newLeague, setNewLeague] = useState("");
+  const [newLeagueAbbreviation, setNewLeagueAbbreviation] = useState("");
   const [city, setCity] = useState(team.city ?? "");
   const [fromYear, setFromYear] = useState(
     team.yearsActive?.from ? String(team.yearsActive.from) : "",
@@ -102,6 +178,7 @@ function TeamDetail({
     setName(team.name);
     setLeagueId(team.leagueId ?? NO_LEAGUE);
     setNewLeague("");
+    setNewLeagueAbbreviation("");
     setCity(team.city ?? "");
     setFromYear(team.yearsActive?.from ? String(team.yearsActive.from) : "");
     setToYear(team.yearsActive?.to ? String(team.yearsActive.to) : "");
@@ -135,6 +212,10 @@ function TeamDetail({
       if (addingLeague) {
         resolvedLeagueId = await createLeague({
           name: newLeague.trim(),
+          // Optional both here and on the mutation: an operator adding a
+          // league by hand may only know one of its two forms, and an
+          // abbreviation invented to fill the field would be worse than none.
+          abbreviation: newLeagueAbbreviation.trim() || undefined,
           sportId: team.sportId,
         });
       } else if (leagueId !== NO_LEAGUE) {
@@ -160,6 +241,7 @@ function TeamDetail({
       });
       if (addingLeague && resolvedLeagueId) setLeagueId(resolvedLeagueId);
       setNewLeague("");
+      setNewLeagueAbbreviation("");
       onStatus({ text: `Saved ${name.trim()}.`, isError: false });
     } catch (e) {
       onStatus({
@@ -305,6 +387,22 @@ function TeamDetail({
             ))}
             <option value={ADD_LEAGUE}>+ Add a new league…</option>
           </select>
+          {/* Everything this dropdown cannot do — renaming a league, giving it
+              a level, recording what else it is called — lives on League
+              Management, so the dropdown says where that is instead of growing
+              those controls. Deep-linked to the league in hand when there is
+              one, because "manage leagues" from here nearly always means this
+              one. */}
+          <Link
+            to={
+              leagueId && leagueId !== ADD_LEAGUE
+                ? `/admin/leagues?league=${leagueId}`
+                : "/admin/leagues"
+            }
+            className="mt-1 inline-block rounded-sm text-xs text-neon-blue underline underline-offset-2 transition-colors hover:text-neon-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+          >
+            Manage leagues
+          </Link>
         </div>
 
         {addingLeague && (
@@ -314,6 +412,17 @@ function TeamDetail({
             placeholder="Nippon Professional Baseball"
             onChange={(e) => setNewLeague(e.target.value)}
             helperText="Created for this team's sport when you save."
+          />
+        )}
+
+        {addingLeague && (
+          <Input
+            label="New league abbreviation"
+            value={newLeagueAbbreviation}
+            placeholder="NPB"
+            maxLength={16}
+            onChange={(e) => setNewLeagueAbbreviation(e.target.value)}
+            helperText="Optional. Shown beside team names where space is tight."
           />
         )}
 
@@ -392,7 +501,7 @@ export default function TeamManagement() {
   const leagues = useQuery(api.leagues.list, {});
 
   const [filter, setFilter] = useState("");
-  const [leagueFilter, setLeagueFilter] = useState<string>("all");
+  const [leagueFilter, setLeagueFilter] = useState<string>(ALL_LEAGUES);
   const [selectedId, setSelectedId] = useState<Id<"teams"> | null>(null);
   const [status, setStatus] = useState<Status>(null);
 
@@ -424,51 +533,56 @@ export default function TeamManagement() {
   // an unselected list is a navigation the operator has to finish by hand:
   // typing the name of the team they just clicked.
   //
-  // The param is followed during render, not in an effect. The effect version
-  // sets state on a commit that has already happened, which cascades a second
-  // render and the lint rule rejects it; this is React's documented "adjust
-  // state when a prop changes" pattern, the same one TeamDetail above uses to
-  // re-seed its draft.
+  // NEO-240 adds `?league=<id>`, the same idea one level up: League Management
+  // links a league to the teams playing in it. Both params run through
+  // `useFollowedParam` — see it for why a follow is remembered twice.
   //
-  // `followedTeamParams` is what keeps it to once per distinct id: this runs on
-  // every reactive update to the teams table, and re-selecting on each one
-  // would pull the operator off a row they had clicked since arriving. The
-  // click handler below marks it too — the param it writes is the operator's
-  // own selection, not a fresh link to follow.
+  // Both are followed during render, not in an effect. The effect version sets
+  // state on a commit that has already happened, which cascades a second render
+  // and the lint rule rejects it; this is React's documented "adjust state when
+  // a prop changes" pattern, the same one TeamDetail above uses to re-seed its
+  // draft.
   //
-  // TWO ids are remembered, not one, and that is not belt-and-braces. React
-  // Router applies every location update inside `startTransition` — the app's
-  // `BrowserRouter` and the tests' `MemoryRouter` share that code path — so the
-  // render that commits a new selection is a render in which `searchParams`
-  // STILL NAMES THE PREVIOUS TEAM; the URL catches up one render later. A
-  // one-slot marker cannot tell that stale value apart from a fresh link back
-  // to that team, so it follows it — and because following a link clears the
-  // filters, the filter the operator typed a moment ago empties itself under
-  // their own click, and the row they clicked is dropped for the one they came
-  // in on. Remembering the superseded id closes exactly that window.
-  //
-  // The cost of the second slot is that a link BACK to the team just left would
-  // be ignored for as long as this screen stays mounted. Nothing can produce
-  // one: every write here is a `replace`, so there is no history entry to go
-  // back to, and the only other screen that links here (`/admin/players`) links
-  // to a team by id from a career stint, which arrives as a fresh mount.
-  //
-  // `/admin/players` follows its `?player` param through the same pair.
+  // `/admin/players` follows its `?player` param through the same helper.
   const [searchParams, setSearchParams] = useSearchParams();
-  const [followedTeamParams, setFollowedTeamParams] = useState<
-    readonly [string | null, string | null]
-  >([null, null]);
-  const followTeamParam = (id: string) =>
-    setFollowedTeamParams(([current]) => [id, current]);
+  const followedTeam = useFollowedParam();
+  const followedLeague = useFollowedParam();
   const selectedRowRef = useRef<HTMLButtonElement | null>(null);
   const teamParam = searchParams.get("team");
+  const leagueParam = searchParams.get("league");
+
+  // The league filter is applied BEFORE the team param below, so that a link
+  // carrying both lands on the team: selecting a team clears the filters (they
+  // can hide the very row the link names), and that has to be the last word.
+  //
+  // An id this deployment does not carry is ignored rather than applied, since
+  // a filter matching nothing reads as "there are no teams" with no visible
+  // cause. `none` is the filter's own "teams with no league" value, not an id.
+  if (
+    leagueParam !== null &&
+    !followedLeague.hasFollowed(leagueParam) &&
+    leagues !== undefined
+  ) {
+    followedLeague.follow(leagueParam);
+    if (
+      leagueParam === "none" ||
+      leagues.some((league) => league._id === leagueParam)
+    ) {
+      setLeagueFilter(leagueParam);
+    }
+  }
 
   if (
     teamParam !== null &&
-    !followedTeamParams.includes(teamParam) &&
+    !followedTeam.hasFollowed(teamParam) &&
     management !== undefined
   ) {
-    followTeamParam(teamParam);
+    // The click handler below marks the param followed too — what it writes is
+    // the operator's own selection, not a fresh link to follow. Following a
+    // stale one is what the helper's second slot exists to prevent: because a
+    // followed link clears the filters, it would empty the word the operator
+    // typed a moment ago under their own click and drop the row they picked.
+    followedTeam.follow(teamParam);
     const match = management.teams.find((team) => team._id === teamParam);
     // An id this deployment does not carry — a stale link, or one copied from
     // another deployment — leaves the screen exactly as it was: no selection,
@@ -480,23 +594,43 @@ export default function TeamManagement() {
       // both client-side filters below can hide the linked row from the master
       // list, so following a link clears them.
       setFilter("");
-      setLeagueFilter("all");
+      setLeagueFilter(ALL_LEAGUES);
     }
   }
+
+  /**
+   * The URL this screen can be sent as: the team being looked at and the
+   * league it is being looked at under, so a shared link reproduces the screen
+   * rather than half of it.
+   *
+   * `replace` keeps Back an exit from the screen rather than a walk through
+   * every row and filter the operator tried.
+   */
+  const syncUrl = (team: string | null, league: string) => {
+    const next: Record<string, string> = {};
+    if (team) next.team = team;
+    if (league !== ALL_LEAGUES) next.league = league;
+    setSearchParams(next, { replace: true });
+  };
 
   // Bring the row into view once it has rendered. The list is a 32rem scroller
   // over every team, so the selected row can easily sit outside it and the
   // link would look like it had done nothing. `block: "nearest"` leaves a row
   // that is already on screen where it is — which is the usual case for the
   // click below, since that writes the param too.
-  const followedTeamParam = followedTeamParams[0];
+  const followedTeamParam = followedTeam.latest;
   useEffect(() => {
     if (followedTeamParam === null) return;
     selectedRowRef.current?.scrollIntoView({ block: "nearest" });
   }, [followedTeamParam]);
 
   const teams = useMemo(() => management?.teams ?? [], [management]);
-  const leagueList = useMemo(() => leagues ?? [], [leagues]);
+  // Sorted once here so the filter dropdown and the detail panel's league
+  // dropdown cannot present the same leagues in two different orders.
+  const leagueList = useMemo(
+    () => [...(leagues ?? [])].sort(byLevelThenName),
+    [leagues],
+  );
   const leagueById = useMemo(
     () => new Map(leagueList.map((l) => [l._id as string, l])),
     [leagueList],
@@ -506,7 +640,7 @@ export default function TeamManagement() {
     const needle = filter.trim().toLowerCase();
     return teams.filter((team) => {
       if (needle && !team.name.toLowerCase().includes(needle)) return false;
-      if (leagueFilter === "all") return true;
+      if (leagueFilter === ALL_LEAGUES) return true;
       if (leagueFilter === "none") return !team.leagueId;
       return team.leagueId === leagueFilter;
     });
@@ -549,10 +683,21 @@ export default function TeamManagement() {
           <select
             id="league-filter"
             value={leagueFilter}
-            onChange={(e) => setLeagueFilter(e.target.value)}
+            onChange={(e) => {
+              const value = e.target.value;
+              setLeagueFilter(value);
+              // Marked followed as part of writing it: without this, the param
+              // written here reads as a fresh deep link on a later render.
+              followedLeague.follow(value);
+              // `selectedId` before the raw param, because a click one render
+              // ago has not reached `searchParams` yet — see `useFollowedParam`.
+              // Falling back to the param preserves a team id that named a row
+              // this deployment does not carry, which nothing selected.
+              syncUrl(selectedId ?? teamParam, value);
+            }}
             className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
           >
-            <option value="all">All leagues</option>
+            <option value={ALL_LEAGUES}>All leagues</option>
             <option value="none">No league</option>
             {leagueList.map((league) => (
               <option key={league._id} value={league._id}>
@@ -596,10 +741,8 @@ export default function TeamManagement() {
                         // after the fact: without it, the param written here
                         // reads as a fresh deep link on a later render and
                         // clears the filters the operator is working under.
-                        // `replace` keeps Back an exit from the screen rather
-                        // than a walk through every row they looked at.
-                        followTeamParam(team._id);
-                        setSearchParams({ team: team._id }, { replace: true });
+                        followedTeam.follow(team._id);
+                        syncUrl(team._id, leagueFilter);
                       }}
                       aria-current={isSelected ? "true" : undefined}
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
