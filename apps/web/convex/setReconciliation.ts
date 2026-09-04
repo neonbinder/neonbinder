@@ -5,6 +5,7 @@ import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import { platformServesLevel } from "./platformLevels";
 import {
   slotIds,
   initialSlots,
@@ -440,6 +441,22 @@ export const fetchRawOptions = action({
         parentFilters,
       );
 
+      // NEO-216 — the same "serves this level" table the column sync reads
+      // (convex/platformLevels.ts). A marketplace that does not model a level
+      // is not fetched and NEVER lands in `platformErrors`, which is what this
+      // action returns as `errors` — and `errors` is what the forms turn into
+      // "<platform> failed, nothing was changed" and what
+      // `coveredSidesFromErrors` reads. Reporting "not served" there produced a
+      // failure alert on a healthy sync, exactly as it did in the Manufacturers
+      // column.
+      //
+      // At `parallel` NEITHER side serves: BSC never had a facet for it (see
+      // convex/bscFacets.ts) and SportLots has no sub-variant concept, so this
+      // correctly fetches nothing and reports nothing rather than blaming both
+      // marketplaces for a level neither has.
+      const bscServesLevel = platformServesLevel("bsc", level);
+      const slServesLevel = platformServesLevel("sportlots", level);
+
       // Build platform-specific filters from the ancestor chain
       let slPlatformFilters: Record<string, string> | undefined;
       let bscPlatformFilters: Record<string, string[]> | undefined;
@@ -499,7 +516,9 @@ export const fetchRawOptions = action({
           const ancestorBscIds = slotIds(ancestor, "bsc");
           if (ancestorBscIds.length > 0) {
             bscPlatformFilters[lvl] = ancestorBscIds;
-          } else if (BSC_REQUIRED.has(lvl)) {
+          } else if (BSC_REQUIRED.has(lvl) && bscServesLevel) {
+            // NEO-216: only a precondition for a call we are going to MAKE.
+            // See the twin note in fetchAggregatedOptions.
             precondMissingBsc.push(`${lvl}=${ancestor.value}`);
           } else if (ancestor.value) {
             // Display-value fallback is only acceptable for levels that
@@ -546,53 +565,61 @@ export const fetchRawOptions = action({
       const platformErrors: Record<string, string> = {};
 
       // Fetch from SportLots
-      try {
-        const result = await ctx.runAction(
-          api.adapters.sportlots.fetchSportLotsSelectorOptions,
-          {
-            level,
-            parentFilters: parentFilters || {},
-            ...(slPlatformFilters ? { platformFilters: slPlatformFilters } : {}),
-          },
-        );
-        if (result.success && result.options) {
-          // Drop the SL Base anchor row itself (e.g. "Prizm Stars & Stripes")
-          // so it doesn't surface as a variant candidate downstream.
-          slOptions = baseSlPrefix
-            ? result.options.filter(
-                (o) =>
-                  o.value.trim().toLowerCase() !==
-                  baseSlPrefix.trim().toLowerCase(),
-              )
-            : result.options;
-        } else if (!result.success) {
-          platformErrors.sportlots = result.message || "Unknown error";
+      if (slServesLevel) {
+        try {
+          const result = await ctx.runAction(
+            api.adapters.sportlots.fetchSportLotsSelectorOptions,
+            {
+              level,
+              parentFilters: parentFilters || {},
+              ...(slPlatformFilters
+                ? { platformFilters: slPlatformFilters }
+                : {}),
+            },
+          );
+          if (result.success && result.options) {
+            // Drop the SL Base anchor row itself (e.g. "Prizm Stars & Stripes")
+            // so it doesn't surface as a variant candidate downstream.
+            slOptions = baseSlPrefix
+              ? result.options.filter(
+                  (o) =>
+                    o.value.trim().toLowerCase() !==
+                    baseSlPrefix.trim().toLowerCase(),
+                )
+              : result.options;
+          } else if (!result.success) {
+            platformErrors.sportlots = result.message || "Unknown error";
+          }
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "Unknown error";
+          platformErrors.sportlots = msg;
+          console.error(`[fetchRawOptions] SportLots error:`, error);
         }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : "Unknown error";
-        platformErrors.sportlots = msg;
-        console.error(`[fetchRawOptions] SportLots error:`, error);
       }
 
       // Fetch from BSC
-      try {
-        const result = await ctx.runAction(
-          api.adapters.buysportscards.fetchBscSelectorOptions,
-          {
-            level,
-            parentFilters: parentFilters || {},
-            ...(bscPlatformFilters ? { platformFilters: bscPlatformFilters } : {}),
-          },
-        );
-        if (result.success && result.options) {
-          bscOptions = result.options;
-        } else if (!result.success) {
-          platformErrors.bsc = result.message || "Unknown error";
+      if (bscServesLevel) {
+        try {
+          const result = await ctx.runAction(
+            api.adapters.buysportscards.fetchBscSelectorOptions,
+            {
+              level,
+              parentFilters: parentFilters || {},
+              ...(bscPlatformFilters
+                ? { platformFilters: bscPlatformFilters }
+                : {}),
+            },
+          );
+          if (result.success && result.options) {
+            bscOptions = result.options;
+          } else if (!result.success) {
+            platformErrors.bsc = result.message || "Unknown error";
+          }
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "Unknown error";
+          platformErrors.bsc = msg;
+          console.error(`[fetchRawOptions] BSC error:`, error);
         }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : "Unknown error";
-        platformErrors.bsc = msg;
-        console.error(`[fetchRawOptions] BSC error:`, error);
       }
 
       // Log adapter errors to PostHog

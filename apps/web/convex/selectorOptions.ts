@@ -89,6 +89,10 @@ import {
   unlinkedEntryValidator,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
+import {
+  platformServesLevel,
+  platformsServingLevel,
+} from "./platformLevels";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { normalizePlayerName } from "./players";
@@ -4992,6 +4996,54 @@ export const fetchAggregatedOptions = action({
         `requestId=${requestId}`,
       );
 
+      // NEO-216 — WHO SERVES THIS LEVEL. Decided FIRST, because it governs
+      // every step below including the BSC-slug precondition.
+      //
+      // A marketplace either models a level or it does not, and that is a fact
+      // about its taxonomy rather than about this call's luck. BSC has no
+      // manufacturer axis and SportLots has no setName/variantType split, so
+      // asking either one there returns "no such level" — which this
+      // aggregator used to file under `platformErrors`, putting the platform in
+      // `failedPlatforms` and painting NEO-211's partial-failure notice on a
+      // column that had just synced perfectly. See convex/platformLevels.ts.
+      //
+      // A non-serving side is not fetched, not covered, contributes no returned
+      // ids, is not preconditioned on, and cannot appear in `failedPlatforms`.
+      const bscServesLevel = platformServesLevel("bsc", level);
+      const slServesLevel = platformServesLevel("sportlots", level);
+      const servingPlatformNames = platformsServingLevel(level)
+        .map((side) => PLATFORM_LABELS[side] ?? "a marketplace")
+        .join(" and ");
+
+      if (!bscServesLevel && !slServesLevel) {
+        // No marketplace models this level at all (`parallel` today). Nothing
+        // to fetch is a SUCCESS with nothing to say — reporting it as a failure
+        // would put a Retry button on an action that can never work, and a
+        // notice on a column nobody broke.
+        console.log(
+          `[fetchAggregatedOptions] no marketplace serves level=${level} — skipping both adapters`,
+        );
+        await recordAdapterCall(ctx, {
+          requestId,
+          operation: "fetchAggregatedOptions",
+          platform: "aggregator",
+          level,
+          parentSport: parentFilters?.sport,
+          parentYear: parentFilters?.year,
+          parentSetName: parentFilters?.setName,
+          duration_ms: Date.now() - aggregatorStart,
+          success: true,
+          result_count: 0,
+          stage: "aggregator",
+          error_class: "unsupported_level",
+        });
+        return {
+          ...EMPTY_SYNC_RESULT,
+          success: true,
+          message: `No marketplace lists ${level} options — nothing to sync.`,
+        };
+      }
+
       // Build platform-specific filters from the ancestor chain so each
       // adapter receives its own slugs instead of display labels. Catch
       // missing slugs for BSC at the levels it actually filters on; SL
@@ -5057,7 +5109,11 @@ export const fetchAggregatedOptions = action({
           }
           if (bscIdsForLevel.length > 0) {
             bscPlatformFilters[lvl] = bscIdsForLevel;
-          } else if (BSC_REQUIRED.has(lvl)) {
+          } else if (BSC_REQUIRED.has(lvl) && bscServesLevel) {
+            // NEO-216: only a precondition for a call we are going to MAKE. At
+            // a level BSC does not serve there is no BSC request, so a missing
+            // BSC slug on an ancestor cannot break anything — failing the whole
+            // sync on it sent the operator to fix a slug nothing reads.
             aggMissingBsc.push(`${lvl}=${ancestor.value}`);
           } else if (ancestor.value) {
             // Display-value fallback acceptable for non-required levels
@@ -5125,25 +5181,45 @@ export const fetchAggregatedOptions = action({
       // hang upstream of the marketplace fetch (e.g. a stuck cold-login) can
       // never wedge the aggregator — Promise.all here always resolves within
       // max(SL, BSC) deadline, guaranteeing we reach recordAdapterCall.
+      //
+      // NEO-216: a side that does not serve this level is not called at all.
+      // The call itself was never free — each adapter resolved a marketplace
+      // session token before it could discover it had nothing to do — so this
+      // removes a real credential round-trip per sync as well as the false
+      // notice.
       const [slOutcome, bscOutcome] = await Promise.all([
-        withChildDeadline(
-          ctx.runAction(api.adapters.sportlots.fetchSportLotsSelectorOptions, {
-            level,
-            parentFilters: parentFilters || {},
-            ...(slPlatformFilters ? { platformFilters: slPlatformFilters } : {}),
-            requestId,
-          }),
-          SL_CHILD_DEADLINE_MS,
-        ),
-        withChildDeadline(
-          ctx.runAction(api.adapters.buysportscards.fetchBscSelectorOptions, {
-            level,
-            parentFilters: parentFilters || {},
-            ...(bscPlatformFilters ? { platformFilters: bscPlatformFilters } : {}),
-            requestId,
-          }),
-          BSC_CHILD_DEADLINE_MS,
-        ),
+        slServesLevel
+          ? withChildDeadline(
+              ctx.runAction(
+                api.adapters.sportlots.fetchSportLotsSelectorOptions,
+                {
+                  level,
+                  parentFilters: parentFilters || {},
+                  ...(slPlatformFilters
+                    ? { platformFilters: slPlatformFilters }
+                    : {}),
+                  requestId,
+                },
+              ),
+              SL_CHILD_DEADLINE_MS,
+            )
+          : undefined,
+        bscServesLevel
+          ? withChildDeadline(
+              ctx.runAction(
+                api.adapters.buysportscards.fetchBscSelectorOptions,
+                {
+                  level,
+                  parentFilters: parentFilters || {},
+                  ...(bscPlatformFilters
+                    ? { platformFilters: bscPlatformFilters }
+                    : {}),
+                  requestId,
+                },
+              ),
+              BSC_CHILD_DEADLINE_MS,
+            )
+          : undefined,
       ]);
       const slDurationMs = Date.now() - slStart;
       const bscDurationMs = Date.now() - bscStart;
@@ -5156,7 +5232,9 @@ export const fetchAggregatedOptions = action({
       // never came back at all". Set to "both" if both stalled.
       let timedOutPlatform: string | undefined;
 
-      if (slOutcome.kind === "settled") {
+      if (!slOutcome) {
+        // Not served — say nothing about SportLots at all.
+      } else if (slOutcome.kind === "settled") {
         const sportlotsOptions = slOutcome.value;
         if (sportlotsOptions.success && sportlotsOptions.options) {
           slSuccess = true;
@@ -5192,7 +5270,9 @@ export const fetchAggregatedOptions = action({
         console.error(`[fetchAggregatedOptions] SportLots error:`, slOutcome.reason);
       }
 
-      if (bscOutcome.kind === "settled") {
+      if (!bscOutcome) {
+        // Not served — say nothing about BSC at all.
+      } else if (bscOutcome.kind === "settled") {
         const bscOptions = bscOutcome.value;
         if (bscOptions.success && bscOptions.options) {
           bscSuccess = true;
@@ -5294,8 +5374,8 @@ export const fetchAggregatedOptions = action({
           success: false,
           sl_ms: slDurationMs,
           bsc_ms: bscDurationMs,
-          sl_success: slSuccess,
-          bsc_success: bscSuccess,
+          ...(slServesLevel ? { sl_success: slSuccess } : {}),
+          ...(bscServesLevel ? { bsc_success: bscSuccess } : {}),
           result_count: 0,
           stage: "aggregator",
           timed_out_platform: timedOutPlatform,
@@ -5306,7 +5386,12 @@ export const fetchAggregatedOptions = action({
         return {
           ...EMPTY_SYNC_RESULT,
           success: false,
-          message: `No ${level} options returned from any platform. Check that credentials are configured for BSC and SportLots.`,
+          // NEO-216: name only the platforms that were actually asked. Telling
+          // an operator to check BSC credentials for a level BSC does not have
+          // sends them to fix something that is not broken.
+          message:
+            `No ${level} options returned from any platform. Check that ` +
+            `credentials are configured for ${servingPlatformNames}.`,
           failedPlatforms: Object.keys(platformErrors),
         };
       }
@@ -5319,9 +5404,18 @@ export const fetchAggregatedOptions = action({
       // that did not answer cannot be evidence that it dropped anything. When
       // both answered, both are covered and a genuinely delisted set has its
       // link removed and reported.
+      //
+      // NEO-216: and a side that does not SERVE this level is not covered
+      // either. `coveredSides` is positive evidence that a marketplace was
+      // asked and had nothing, which is what licenses detaching its links —
+      // "there is no such level on that marketplace" is not that evidence, and
+      // conflating the two is how a never-asked side could have authorised an
+      // unlink.
       const coveredSides: Array<"bsc" | "sportlots"> = [];
-      if (!platformErrors.bsc) coveredSides.push("bsc");
-      if (!platformErrors.sportlots) coveredSides.push("sportlots");
+      if (bscServesLevel && !platformErrors.bsc) coveredSides.push("bsc");
+      if (slServesLevel && !platformErrors.sportlots) {
+        coveredSides.push("sportlots");
+      }
 
       // …and `returnedIds` comes from the RAW adapter results, not from
       // `deduped`. The dedupe above folds two options with the same normalised
@@ -5349,9 +5443,15 @@ export const fetchAggregatedOptions = action({
           options: deduped,
           parentId,
           coveredSides,
+          // A non-serving side's key is OMITTED, not sent as `[]`. `[]` is the
+          // statement "this marketplace was asked and returned nothing", which
+          // is exactly what the unlink pass acts on; absent means "no
+          // information about this side", which is the truth here.
           returnedIds: {
-            bsc: [...new Set(fetchedIds.bsc)],
-            sportlots: [...new Set(fetchedIds.sportlots)],
+            ...(bscServesLevel ? { bsc: [...new Set(fetchedIds.bsc)] } : {}),
+            ...(slServesLevel
+              ? { sportlots: [...new Set(fetchedIds.sportlots)] }
+              : {}),
           },
         },
       );
@@ -5379,8 +5479,11 @@ export const fetchAggregatedOptions = action({
         success: result.success,
         sl_ms: slDurationMs,
         bsc_ms: bscDurationMs,
-        sl_success: slSuccess,
-        bsc_success: bscSuccess,
+        // Omitted rather than `false` for a side that was never asked — a
+        // dashboard reading `bsc_success: false` on every manufacturer sync is
+        // the same lie in a different surface.
+        ...(slServesLevel ? { sl_success: slSuccess } : {}),
+        ...(bscServesLevel ? { bsc_success: bscSuccess } : {}),
         result_count: result.optionsCount,
         stage: "aggregator",
         timed_out_platform: timedOutPlatform,
@@ -5431,6 +5534,15 @@ export const fetchAggregatedOptions = action({
  * Fetch BSC sets for a sport/year and distribute them across existing
  * manufacturer parents by matching the set name prefix. Unmatched sets
  * go under "All Brands".
+ *
+ * NEO-216 — **BSC-only by design, and SportLots is never reported here.** This
+ * is the other half of the manufacturer story: BSC has no manufacturer axis
+ * (see convex/platformLevels.ts), so NB's Manufacturer rows come from
+ * SportLots and BSC's flat set list is bucketed under them by name prefix
+ * afterwards. SportLots, for its part, does not model `setName` at all — so
+ * there is no SL call to make and no SL side to report on. `failedPlatforms`
+ * out of here is `["bsc"]` or `[]`, never anything about SportLots, and
+ * `platformLevelSupport.test.ts` pins that.
  */
 export const syncSetsAcrossManufacturers = action({
   args: {
