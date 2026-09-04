@@ -66,7 +66,15 @@ tags:
 #
 # R8 — every scroll that precedes a tap centers its target: the 1024x629
 # headless viewport puts the career-history editor and the Save button below
-# the fold once the detail panel is open.
+# the fold once the detail panel is open. CI run 33819386017 proved that is not
+# only true of the taps — the panel's READBACKS are below the fold too, so every
+# assertion about the Career history section is reached by a scroll as well, and
+# the scroll is left to be its own assertion (R6) rather than being followed by
+# an assertVisible of the same text.
+#
+# The other thing that run settled: picking a team leaves the typeahead OPEN by
+# design, and its popover covers the year boxes that wrap underneath it. Escape
+# closes it. See the long note at the first stint.
 
 - launchApp
 
@@ -145,7 +153,15 @@ tags:
 # picked; the empty-state line proves we are starting from no career history, so
 # the two stints added below are unambiguously ours.
 - assertVisible: ".*Sport: Baseball.*"
-- assertVisible: "No stints recorded yet."
+# The empty-state line is BELOW THE FOLD the moment the panel opens: at 1024x629
+# the panel runs out of viewport at the Wikidata id box, and Career history is
+# the section after it (CI run 33819386017 failed on exactly this assertion).
+# The scroll IS the check — it fails loudly if the line never appears, so there
+# is no assertVisible of the same text after it (R6).
+- scrollUntilVisible:
+    element:
+      text: "No stints recorded yet."
+    centerElement: true
 
 # ── STINT 1 — THE LATER ONE, ADDED FIRST ────────────────────────────────────
 # Deliberately out of chronological order. Adding 2010–2012 before 2001–2005 is
@@ -163,15 +179,29 @@ tags:
 - tapOn:
     id: "Add New York Yankees"
 
-# Moving to the year boxes also dismisses the still-open team typeahead — it
-# closes on any press outside itself, and the year boxes sit beside the picker
-# rather than under the popover, so the press reaches them.
+# Escape, NOT a press on the year box. Picking a team deliberately leaves the
+# typeahead OPEN (TeamPicker.addChip: "Stay open so the user can pick a second
+# team"), and its popover is `absolute top-full mt-1 z-10 w-64` — 256px hanging
+# directly over the row below it. This add row is `flex flex-wrap` inside a
+# ~440px panel, and a picker plus two w-28 boxes plus the button cannot fit on
+# one line, so the year boxes WRAP underneath and sit under that popover. A tap
+# at their coordinates would land on the popover instead, and because the
+# popover is inside the picker's own root the outside-pointerdown handler would
+# not even close it — the typing would go nowhere. Escape on the search input
+# calls closePopover() and returns focus to the trigger (TeamPicker onKeyDown).
+# The component documents this same overlap as a known hazard for MissingTeamFixer.
+- pressKey: Escape
 - tapOn: ".*Stint from year.*"
 - inputText: "2010"
 - tapOn: ".*Stint to year.*"
 - inputText: "2012"
 - tapOn: "Add stint"
-- assertVisible: ".*New York Yankees · 2010–2012.*"
+# Scroll rather than assume: the list renders ABOVE the add row, and adding a
+# stint grows it, so the row this asserts moves. The scroll is the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: ".*New York Yankees · 2010–2012.*"
+    centerElement: true
 
 # ── STINT 2 — THE EARLIER ONE, AT THE SAME TEAM ─────────────────────────────
 # Two stints at one franchise is the case the feature exists for (traded away,
@@ -188,6 +218,8 @@ tags:
 - inputText: "New York Yankees"
 - tapOn:
     id: "Add New York Yankees"
+# Same popover, same reason as above.
+- pressKey: Escape
 - tapOn: ".*Stint from year.*"
 - inputText: "2001"
 - tapOn: ".*Stint to year.*"
@@ -196,6 +228,14 @@ tags:
 
 # THE ORDERING ASSERTION. One assertion, both facts: both stints are on screen,
 # and the 2001 stint is ABOVE the 2010 stint even though it was entered second.
+# Centre the earlier row first so BOTH are in the viewport — a `below:` assert
+# needs to find two elements, and either can be pushed out of a 629px-tall
+# viewport by the panel above. Identical shape to the post-reload half below,
+# which is the point: the same assertion, run twice.
+- scrollUntilVisible:
+    element:
+      text: ".*New York Yankees · 2001–2005.*"
+    centerElement: true
 - assertVisible:
     text: ".*New York Yankees · 2010–2012.*"
     below:

@@ -54,29 +54,47 @@ tags:
 #       entity was minted for that name. Had the skip fallen through to "create",
 #       the exact match would suppress "+ Create" and this assert would fail.
 #
-#   (e) THE SKIP IS DURABLE — the wizard never asks again.
-#       A SECOND custom card carrying the SAME skipped name is added and the set
-#       is re-synced. The wizard must NOT reappear; the sync must run straight
-#       through to its committed notice.
+#   (e) THE SKIP IS DURABLE, AND THE SUPPRESSION IS PER-NAME.
+#       A SECOND custom card carries TWO names: the one already skipped, and a
+#       fresh one that has never been seen. The set is re-synced. The wizard must
+#       reopen carrying ONLY the fresh name — footer "Skip Remaining (1)", the
+#       fresh name on the row, and the skipped name nowhere on screen.
+#
+#       WHY A SECOND NAME RATHER THAN A BARE "no wizard appears": a re-sync on a
+#       custom set finishes in well under Maestro's poll interval and its notice
+#       is byte-identical to the previous commit's ("Saved 0 cards." either way),
+#       so there is NO observable edge marking the second sync's completion — CI
+#       run 33819386017 failed here for exactly that reason, with the feature
+#       working perfectly behind it. The fresh name supplies the edge: the wizard
+#       heading is a string that was NOT on screen before the tap, so it cannot
+#       be satisfied early, and no stale-state gate is needed at all. It is also
+#       the stronger claim — "(1) of the 2 names on that card got through" proves
+#       the filter is scoped to the NAME, where "no wizard" is equally satisfied
+#       by a set-wide switch that suppresses the review entirely.
 #
 #       WHY THE SECOND CARD IS LOAD-BEARING AND NOT BUSY-WORK: commit's finalize
-#       pass retires a skipped name from the custom card's `pendingPlayerNames`
+#       pass retires a skipped name from the first card's `pendingPlayerNames`
 #       (selectorOptions.ts, "NEO-212: a SKIPPED name is cleared by the same
-#       pass"). So simply re-syncing the ORIGINAL card would offer the wizard no
-#       candidate at all, and the durability assert would pass without
-#       `entityReviewSkips` ever being read — a green test of nothing. Re-adding
-#       the name puts it back in front of the fetch as a live candidate, so the
-#       ONLY thing that can keep the wizard shut is the durable skip record
+#       pass"). So re-syncing the ORIGINAL card would offer the wizard no
+#       candidate at all, and this step would pass without `entityReviewSkips`
+#       ever being read — a green test of nothing. Re-adding the name puts it
+#       back in front of the fetch as a live candidate, so the ONLY thing that
+#       can keep it out of the batch is the durable skip record
 #       (`findSkippedEntityNames`, consulted by resolveUnknownsAndStartBatch
-#       BEFORE the players-existence check). Remove that record and this step
-#       goes red.
+#       BEFORE the players-existence check). Remove that record and the footer
+#       reads (2) and the assert goes red.
+#
+#       The fresh name is then SKIPPED too (rather than added as a player), so
+#       this flow still creates no global `players` row anywhere, and the name
+#       cannot come back to disturb (f)'s count.
 #
 #   (f) UNSKIP RE-OFFERS EXACTLY THE ONE NAME — the decision's undo.
-#       The set's "Skipped names (3)" disclosure is the operator's see-and-undo
-#       record of (a)-(c); the count is asserted at 3, not 4, which is itself the
-#       proof that re-seeing an already-skipped name UPSERTS rather than
-#       accumulating a row per sync (the commit path keys on
-#       (selectorOptionId, kind, nameNormalized)). One name is then unskipped and
+#       The set's "Skipped names (4)" disclosure is the operator's see-and-undo
+#       record of every skip so far — the three from (a)-(c) plus (e)'s fresh
+#       name. It is asserted at 4, not 5, which is itself the proof that
+#       re-seeing an already-skipped name UPSERTS rather than accumulating a row
+#       per sync (the commit path keys on (selectorOptionId, kind,
+#       nameNormalized)). One name is then unskipped and
 #       the set re-synced, and the wizard must REOPEN — with the footer reading
 #       "Skip Remaining (1)" and the Apollo17 row on screen.
 #
@@ -369,12 +387,19 @@ tags:
     id: "Card name"
 
 # ============================================================
-# STEP 7 — R2(e): THE SKIP IS DURABLE ACROSS A RE-SYNC
-# Put the skipped name back in front of the fetch on a SECOND custom card (see
-# the header for why re-syncing the first card would prove nothing — commit
-# retires a skipped name from that card's pendingPlayerNames), then sync again.
-# The wizard must stay shut, because resolveUnknownsAndStartBatch drops the name
-# via findSkippedEntityNames before it is ever counted as unknown.
+# STEP 7 — R2(e): THE SKIP IS DURABLE, AND SCOPED TO THE NAME
+# A SECOND custom card carries TWO names — the one already skipped, plus a fresh
+# control that has never been seen — and the set is re-synced. The wizard must
+# reopen carrying ONLY the control: resolveUnknownsAndStartBatch drops the
+# skipped name via findSkippedEntityNames before it is ever counted as unknown.
+# (See the header for why re-syncing the FIRST card would prove nothing — commit
+# retires a skipped name from that card's pendingPlayerNames — and for why the
+# control name is what makes this sync's completion observable at all.)
+#
+# Nothing on the checklist behind the wizard can satisfy the negative assert by
+# accident: `pendingPlayerNames` is rendered NOWHERE in the row or the drawer
+# (only pendingTeamNames is, and this card has none), and the "Skipped names"
+# disclosure is still collapsed, so its rows have no layout box.
 # ============================================================
 
 - scrollUntilVisible:
@@ -396,7 +421,14 @@ tags:
     centerElement: true
 - tapOn:
     id: "Players"
-- inputText: "Apollo17Lands-${ATTEMPT_ID}"
+# TWO names: the one already skipped, and a control that has never been seen.
+# The control is what makes the re-sync observable at all (see the header) and
+# what turns this step into a per-NAME claim rather than a per-set one.
+- inputText: "Apollo17Lands-${ATTEMPT_ID}, StillUnknown-${ATTEMPT_ID}"
+# Both names really did land in the field — without this, a dropped control name
+# would make the "(1)" below pass for entirely the wrong reason.
+- assertVisible:
+    text: ".*Apollo17Lands-${ATTEMPT_ID}.*StillUnknown-${ATTEMPT_ID}.*"
 - scrollUntilVisible:
     element:
       text: "Add"
@@ -419,27 +451,47 @@ tags:
       id: "Sync card checklist"
 - tapOn:
     id: "Sync card checklist"
-# Step 5's "Saved N cards" notice is STILL on screen at this point, and the
-# durability check below waits for exactly that string. handleSync clears the
-# notice synchronously when the sync starts, so waiting for it to vanish is what
-# separates the OLD notice from the new one — without this gate the wait below
-# would satisfy itself instantly on the stale notice and the whole durability
-# assertion would be a false pass. Not dead time (R10): it resolves as soon as
-# the sync begins, and it is the only marker that it did.
+# No stale-state gate here, deliberately. The previous commit's notice is still
+# on screen and the re-sync re-sets it to the SAME text faster than Maestro
+# polls, so nothing about the notice can mark this sync's completion (CI run
+# 33819386017 died on exactly that). The wizard heading can: it was not on
+# screen before the tap, so this wait cannot be satisfied early.
 - extendedWaitUntil:
-    notVisible:
-      text: ".*Saved [0-9]+ cards.*"
-# Whichever terminal state this sync reaches, it reaches it here.
+    visible: "Confirm New Players & Teams"
+    timeout: 60000
+
+# THE DURABILITY ASSERT — of the TWO names on card 8005, exactly ONE reached the
+# batch. Still-skipped names are dropped before they are ever counted as unknown,
+# so a skip record that had been forgotten would read (2) here.
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm New Players.*|.*Saved [0-9]+ cards.*"
-    timeout: 60000
-# THE DURABILITY ASSERT — the operator is not asked about the skipped name again.
-- assertNotVisible: "Confirm New Players & Teams"
-# ...and the positive half, because a crashed page satisfies every notVisible
-# vacuously: the sync really did run through to its committed notice.
-- assertVisible:
-    text: ".*Saved [0-9]+ cards.*"
+      text: ".*Skip Remaining \\(1\\).*"
+    timeout: 30000
+# ...and the one that got through is the FRESH name, not the skipped one. Said
+# both ways round: the row on screen is StillUnknown (positive, and the control
+# this step taps), and Apollo17Lands is nowhere in the open dialog. The negative
+# is meaningful rather than vacuous because the wizard is demonstrably up.
+- extendedWaitUntil:
+    visible:
+      id: "Skip StillUnknown-${ATTEMPT_ID}.*not a person"
+    timeout: 30000
+- assertNotVisible:
+    text: ".*Apollo17Lands-${ATTEMPT_ID}.*"
+
+# Settle the control name by skipping it too — this flow mints no global players
+# row anywhere, and a skipped name cannot come back to disturb Step 8's count.
+- tapOn:
+    id: "Skip StillUnknown-${ATTEMPT_ID}.*not a person"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 30000
+- tapOn:
+    text: ".*Confirm & Save.*"
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [0-9]+ cards.*"
+    timeout: 30000
 
 # ============================================================
 # STEP 8 — R2(f): UNSKIP PUTS ONE NAME BACK IN FRONT OF THE NEXT SYNC
@@ -449,20 +501,21 @@ tags:
 # the wait for the Unskip control below doubles as the assertion that the
 # disclosure opened (no separate assert needed, R6).
 #
-# The count is asserted as (3): three names were skipped at the Step 5 commit,
-# and Step 7 re-presented one of them WITHOUT adding a fourth row — commit
-# upserts on (selectorOptionId, kind, nameNormalized) rather than inserting per
-# sync. A (4) here would be that dedupe breaking.
+# The count is asserted as (4): three names skipped at the Step 5 commit plus
+# Step 7's control name. Step 7 also re-presented an ALREADY-skipped name without
+# adding a row for it — commit upserts on (selectorOptionId, kind,
+# nameNormalized) rather than inserting per sync. A (5) here would be that
+# dedupe breaking.
 # ============================================================
 
 - scrollUntilVisible:
     element:
-      text: ".*Skipped names \\(3\\).*"
+      text: ".*Skipped names \\(4\\).*"
     centerElement: true
     visibilityPercentage: 50
     timeout: 15000
 - tapOn:
-    text: ".*Skipped names \\(3\\).*"
+    text: ".*Skipped names \\(4\\).*"
 
 # The row's undo control (aria "Unskip {name}"). Its presence proves the
 # disclosure expanded AND that this exact name is in the set's skip record.
@@ -531,8 +584,8 @@ tags:
 # ============================================================
 # CLEANUP — delete both test cards so the subtree stays clean for the next run
 # (R7: this flow leaves no state behind that a later flow could trip over. Step 8
-# removed the Apollo17 skip row; the two that remain — MoonLanding, Skylab — are
-# keyed to attempt-unique names on this worker's own private set and can never
+# removed the Apollo17 skip row; the three that remain — MoonLanding, Skylab,
+# StillUnknown — are keyed to attempt-unique names on this worker's own private set and can never
 # match anything again. Both test cards go here, so nothing carries their pending
 # names forward either.)
 # ============================================================
