@@ -3,9 +3,13 @@
 # The Admin Tools panel is gone: "Reset Set Builder Data" is no longer a
 # button any admin could click, it's a scripted task. This wraps the sole
 # remaining entry point — `selectorOptions:resetSetBuilderDataFromCli`
-# (apps/web/convex/selectorOptions.ts), an internalAction gated on
-# `requireAdmin` (satisfied by --identity) + ALLOW_RESET_SET_BUILDER_DATA on
-# the target deployment — for CI and for a maintainer's own shell alike.
+# (apps/web/convex/selectorOptions.ts), an internalAction. Internal functions
+# are unreachable from any client and are NOT reachable via `convex run
+# --identity` either — only WITHOUT an identity, authenticated purely by
+# deploy credentials (a login or a deploy key) for the target deployment —
+# so this deliberately passes no --identity. Gated on
+# ALLOW_RESET_SET_BUILDER_DATA on the target deployment; for CI and for a
+# maintainer's own shell alike.
 #
 # Jason, 2026-09-04: "I frequently want to wipe dev/preview data so we need to
 # make sure it is callable from the command line locally." That's the whole
@@ -28,10 +32,20 @@
 #                            e2e-local-up.sh:53-68 already relies on.
 #
 # Safety:
-#   - `--prod` is refused outright — this script has no path to production.
+#   - `--prod` is refused outright.
 #   - Any resolved deployment name matching the known prod deployment, or a
 #     VITE_CONVEX_URL in .env.local pointing at it, is refused.
-#   - Outside CI ($CI unset), the destructive `reset` requires either
+#   - CONVEX_DEPLOY_KEY (exported, or sitting in .env.local) is checked BEFORE
+#     any of the above: the Convex CLI reads that key first and, when set,
+#     resolution is BY THE KEY, not by CONVEX_DEPLOYMENT/--deployment — so a
+#     prod or project-wide key would otherwise sail past every other guard
+#     here (each of which only ever inspects CONVEX_DEPLOYMENT/--deployment).
+#     A prod:*/project:* key, or one naming the prod deployment, is refused
+#     outright; any other key (dev:*/preview:*) requires an explicit
+#     --deployment/$CONVEX_NAME, since without one the key — not the name
+#     this script would print — picks the target.
+#   - Outside CI ($GITHUB_ACTIONS unset — NOT $CI, which many local shells and
+#     tools set to "true" too), the destructive `reset` requires either
 #     E2E_BASELINE_CONFIRM=1 or an interactive "type RESET" prompt — so a
 #     fat-fingered local run isn't silent.
 #   - Never prints CONVEX_DEPLOY_KEY or any other secret.
@@ -45,16 +59,18 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 # Hardcoded refusal target — this script must never be able to reach it.
 PROD_DEPLOYMENT_NAME="first-starfish-800"
 
-# Pinned to match the version pr-pipeline.yml already trusts for the same
-# kind of ad-hoc `npx convex …` CI call (:522) — verified 2026-09-04 that
-# convex@1.39.1 supports every flag this script uses (--deployment,
-# --identity, --typecheck, --codegen). `npx --yes` makes this hermetic: the
-# `seed` job in e2e.yml never runs `npm ci` for apps/web (Maestro needs no
-# node_modules), so a bare `npx convex` would have nothing installed to
-# resolve and no TTY to confirm an ad-hoc install. Pinning also means local
-# and CI runs execute the identical CLI build regardless of what's in
-# apps/web's own node_modules.
-CONVEX_CLI="convex@1.39.1"
+# Pinned to convex@1.45.0 — apps/web's own installed CLI (package.json
+# `^1.44.0`) — rather than pr-pipeline.yml's 1.39.1: the CONVEX_DEPLOY_KEY-vs-
+# --deployment precedence this script's safety checks depend on (see F1 below
+# and the guard right before deployment resolution) was verified 2026-09-04
+# by reading THIS version's source in node_modules/convex/dist/esm/cli/lib/
+# deploymentSelection.js, not by assumption — pin what was actually read.
+# `npx --yes` makes this hermetic regardless: the `seed` job in e2e.yml never
+# runs `npm ci` for apps/web (Maestro needs no node_modules), so a bare
+# `npx convex` would have nothing installed to resolve and no TTY to confirm
+# an ad-hoc install. Pinning also means local and CI runs execute the
+# identical CLI build regardless of what's in apps/web's own node_modules.
+CONVEX_CLI="convex@1.45.0"
 
 usage() {
   cat >&2 <<'EOF'
@@ -72,12 +88,16 @@ Usage: ./e2e-baseline.sh reset [--deployment <name>] [--dry-run]
 Env:
   CONVEX_NAME             Deployment slug — same as --deployment. CI sets this.
   E2E_BASELINE_CONFIRM=1  Skip the interactive confirmation prompt outside CI.
-  CI                      Set by GitHub Actions. When set, the confirmation
-                           prompt is skipped — CI callers are presumed
-                           intentional; the deployment is still printed.
+  CONVEX_DEPLOY_KEY       Checked, never trusted blindly — see Safety below.
+  GITHUB_ACTIONS          Set by GitHub Actions (unlike $CI, which plenty of
+                           local shells/tools also set). When set, the
+                           confirmation prompt is skipped — CI callers are
+                           presumed intentional; the deployment is still
+                           printed.
 
-Never targets production: refuses --prod, a deployment name that resolves to
-production, and a VITE_CONVEX_URL in .env.local pointing at it. See
+Never targets production: refuses --prod; a deployment name, VITE_CONVEX_URL,
+or CONVEX_DEPLOY_KEY that resolves to or could reach production; and a
+project-wide CONVEX_DEPLOY_KEY with no explicit --deployment. See
 docs/operations/neo214-set-builder-admin-scripts.md for the (manual, armed)
 prod runbook.
 EOF
@@ -112,6 +132,48 @@ case "$SUBCOMMAND" in
     exit 1 ;;
 esac
 
+# ── Refuse a production/project-wide CONVEX_DEPLOY_KEY (F1) ─────────────────
+# The Convex CLI reads CONVEX_DEPLOY_KEY FIRST, before anything below this
+# point runs: it dotenv-loads .env.local/.env itself
+# (deploymentSelection.js: `dotenv.config({ path: ".env.local" });
+# dotenv.config();`) and, whenever no --deployment is passed, resolves the
+# target FROM THE KEY — not from CONVEX_DEPLOYMENT. So a maintainer with a
+# prod or project-wide key exported (or left in .env.local from some other
+# tooling) would sail past every check below — each of those only ever
+# inspects CONVEX_DEPLOYMENT/VITE_CONVEX_URL/--deployment, none of which the
+# CLI would actually be using — and `convex run` would silently act on the
+# key's own deployment instead, which can be prod. Check the key itself
+# first. Never echo its value.
+DEPLOY_KEY="${CONVEX_DEPLOY_KEY:-}"
+if [ -z "$DEPLOY_KEY" ] && [ -f .env.local ]; then
+  # `|| true`: grep-no-match is the EXPECTED case (most maintainers have no
+  # CONVEX_DEPLOY_KEY in .env.local at all), and under `set -e` a bare
+  # `VAR="$(grep ... )"` with no match silently kills the whole script right
+  # here — verified empirically, this file's `-e` makes it fatal even though
+  # it's inside an assignment (unlike e2e-local-up.sh, which has no `-e`).
+  DEPLOY_KEY="$(grep -E '^CONVEX_DEPLOY_KEY=' .env.local 2>/dev/null | head -1 | sed -E 's/^CONVEX_DEPLOY_KEY=//; s/[[:space:]]*#.*$//; s/^["'\'']//; s/["'\'']$//' || true)"
+fi
+if [ -n "$DEPLOY_KEY" ]; then
+  # Key prefixes per the CLI (node_modules/convex/dist/esm/cli/lib/deployment.js):
+  # prod:<name>|…, dev:<name>|…, preview:<team>:<project>|…, project:<team>:<project>|….
+  # prod:*/project:* (project-wide, can reach ANY deployment in the project,
+  # prod included) or a key that literally names the prod deployment: refuse
+  # outright, regardless of --deployment.
+  case "$DEPLOY_KEY" in
+    prod:*|project:*|*"$PROD_DEPLOYMENT_NAME"*)
+      echo "✗ refusing: CONVEX_DEPLOY_KEY is a production or project-wide deploy key — it, not --deployment/.env.local, selects the target. Unset it or use a preview/dev key." >&2
+      exit 1 ;;
+  esac
+  # Any OTHER key (dev:*/preview:*) still picks the target itself when no
+  # --deployment is given — the printed CONVEX_DEPLOYMENT slug would be a
+  # lie in that case. Require an explicit target so what's printed is what
+  # actually runs.
+  if [ -z "$DEPLOYMENT_ARG" ] && [ -z "${CONVEX_NAME:-}" ]; then
+    echo "✗ refusing: CONVEX_DEPLOY_KEY is set — the CLI will use the key's deployment, not the name this script would print; pass --deployment." >&2
+    exit 1
+  fi
+fi
+
 # ── Resolve the target deployment ────────────────────────────────────────
 DOTENV=()
 [ -f .env.convex ] && DOTENV=(npx dotenv-cli -e .env.convex --)
@@ -131,7 +193,9 @@ else
     [ -f "$f" ] || continue
     # `npx convex dev` writes this line as `dev:name # team: …, project: …` —
     # strip that trailing comment along with surrounding quotes/whitespace.
-    RESOLVED="$(grep -E '^CONVEX_DEPLOYMENT=' "$f" 2>/dev/null | head -1 | sed -E 's/^CONVEX_DEPLOYMENT=//; s/[[:space:]]*#.*$//; s/^["'\'']//; s/["'\'']$//; s/[[:space:]]+$//')"
+    # `|| true` — same grep-no-match-under-set-e hazard as DEPLOY_KEY above;
+    # .env.convex commonly exists without a CONVEX_DEPLOYMENT line at all.
+    RESOLVED="$(grep -E '^CONVEX_DEPLOYMENT=' "$f" 2>/dev/null | head -1 | sed -E 's/^CONVEX_DEPLOYMENT=//; s/[[:space:]]*#.*$//; s/^["'\'']//; s/["'\'']$//; s/[[:space:]]+$//' || true)"
     [ -n "$RESOLVED" ] && break
   done
   if [ -z "$RESOLVED" ]; then
@@ -146,12 +210,14 @@ fi
 # TARGET may carry a "dev:"/"prod:" prefix when it came from CONVEX_DEPLOYMENT;
 # strip it before comparing against the known prod slug.
 TARGET_BARE="${TARGET#dev:}"; TARGET_BARE="${TARGET_BARE#prod:}"
-if [ "$TARGET_BARE" = "$PROD_DEPLOYMENT_NAME" ]; then
-  echo "✗ refusing: target deployment resolves to PRODUCTION ($PROD_DEPLOYMENT_NAME). This script never targets prod — see docs/operations/neo214-set-builder-admin-scripts.md for the manual, armed prod runbook." >&2
-  exit 1
-fi
+case "$TARGET_BARE" in
+  *"$PROD_DEPLOYMENT_NAME"*)
+    echo "✗ refusing: target deployment resolves to PRODUCTION ($PROD_DEPLOYMENT_NAME). This script never targets prod — see docs/operations/neo214-set-builder-admin-scripts.md for the manual, armed prod runbook." >&2
+    exit 1 ;;
+esac
 if [ -f .env.local ]; then
-  VITE_URL="$(grep -E '^VITE_CONVEX_URL=' .env.local 2>/dev/null | head -1 | sed -E 's/^VITE_CONVEX_URL=//; s/^["'\'']//; s/["'\'']$//')"
+  # `|| true` — same grep-no-match-under-set-e hazard as above.
+  VITE_URL="$(grep -E '^VITE_CONVEX_URL=' .env.local 2>/dev/null | head -1 | sed -E 's/^VITE_CONVEX_URL=//; s/^["'\'']//; s/["'\'']$//' || true)"
   case "$VITE_URL" in
     *"$PROD_DEPLOYMENT_NAME"*)
       echo "✗ refusing: .env.local's VITE_CONVEX_URL points at production ($VITE_URL)." >&2
@@ -168,7 +234,11 @@ if [ -n "$DRY_RUN" ]; then
 fi
 
 # ── Confirmation gate (outside CI only) ──────────────────────────────────
-if [ -z "${CI:-}" ] && [ "${E2E_BASELINE_CONFIRM:-}" != "1" ]; then
+# $GITHUB_ACTIONS, not $CI — plenty of local shells, direnv setups, and other
+# tools export CI=true, which would otherwise silently skip this prompt on a
+# maintainer's own machine (F3). GITHUB_ACTIONS is set only by an actual
+# Actions runner.
+if [ -z "${GITHUB_ACTIONS:-}" ] && [ "${E2E_BASELINE_CONFIRM:-}" != "1" ]; then
   if [ -t 0 ]; then
     read -r -p "Type RESET to wipe Set Builder data on '$DISPLAY_TARGET': " answer
     if [ "$answer" != "RESET" ]; then
@@ -176,7 +246,7 @@ if [ -z "${CI:-}" ] && [ "${E2E_BASELINE_CONFIRM:-}" != "1" ]; then
       exit 1
     fi
   else
-    echo "✗ refusing: not running in CI, and no TTY to confirm. Set E2E_BASELINE_CONFIRM=1 to run non-interactively." >&2
+    echo "✗ refusing: not running in CI (\$GITHUB_ACTIONS unset), and no TTY to confirm. Set E2E_BASELINE_CONFIRM=1 to run non-interactively." >&2
     exit 1
   fi
 fi
@@ -187,8 +257,16 @@ echo "▶ running resetSetBuilderDataFromCli against $DISPLAY_TARGET ..."
 # decision 3) throws "unbound variable" under `set -u` when expanding an
 # EMPTY array's `[@]`, even though the array itself is very much set. Fixed
 # in bash 4.4+, but this has to run on a maintainer's stock macOS bash too.
+#
+# NO --identity: `resetSetBuilderDataFromCli` is an internalAction, and
+# `convex run --identity` only reaches PUBLIC functions — an internal
+# function is reachable only WITHOUT --identity, authenticated by deploy
+# credentials alone (login or deploy key) for the target deployment. Found
+# via a real CI failure ("Could not find function") even though the preview
+# listed the function; confirmed by reproducing on dev. Passing --identity
+# here would silently 404 the function lookup, not fail auth.
 if ! "${DOTENV[@]+"${DOTENV[@]}"}" npx --yes "$CONVEX_CLI" run selectorOptions:resetSetBuilderDataFromCli \
-    '{"confirm":"RESET"}' --identity '{"role":"admin"}' \
+    '{"confirm":"RESET"}' \
     --typecheck disable --codegen disable \
     "${DEPLOY_ARGS[@]+"${DEPLOY_ARGS[@]}"}"; then
   echo "✗ reset failed — see the convex run output above. If it says the deployment isn't armed, see docs/operations/neo214-set-builder-admin-scripts.md." >&2
