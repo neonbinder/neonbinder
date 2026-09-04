@@ -104,35 +104,36 @@ beforeEach(() => {
 
 describe("EntityColumn — suggestions affordance (NEO-211 plan C)", () => {
   it("renders nothing while the query is still loading", async () => {
-    // No ghost "0 suggestions" flash — the same rule the column already applies
-    // to its own loading gate.
+    // No ghost "0 names to check" flash — the same rule the column already
+    // applies to its own loading gate.
     state.suggestions = undefined;
     await renderColumn();
-    expect(screen.queryByText(/suggestion/)).toBeNull();
+    expect(screen.queryByText(/to check/)).toBeNull();
   });
 
   it("renders nothing when there is nothing to review", async () => {
     state.suggestions = [];
     await renderColumn();
-    expect(screen.queryByText(/suggestion/)).toBeNull();
+    expect(screen.queryByText(/to check/)).toBeNull();
   });
 
   it("shows the bare count as visible text, keyboard-reachable", async () => {
-    // Bare count so Maestro can assertVisible / tapOn "1 suggestion" with no id
-    // lookup; a real <button> so it is in the tab order.
+    // The count is in the visible text so Maestro can assertVisible / tapOn
+    // "1 name to check" with no id lookup; a real <button> so it is in the tab
+    // order.
     state.suggestions = [SUGGESTION];
     await renderColumn();
-    const pill = screen.getByText("1 suggestion");
+    const pill = screen.getByText("1 name to check");
     expect(pill.tagName).toBe("BUTTON");
     expect(pill.getAttribute("aria-label")).toBe(
-      "1 naming suggestion from marketplaces — review",
+      "1 name to check — review suggestions",
     );
   });
 
   it("pluralises, and does not disturb the Sync or + Custom buttons", async () => {
     state.suggestions = [SUGGESTION, { ...SUGGESTION, existingId: "selopt_2" }];
     await renderColumn();
-    expect(screen.getByText("2 suggestions")).toBeTruthy();
+    expect(screen.getByText("2 names to check")).toBeTruthy();
     expect(screen.getByText("Sync Sets")).toBeTruthy();
     expect(screen.getByText("+ Custom")).toBeTruthy();
   });
@@ -140,10 +141,10 @@ describe("EntityColumn — suggestions affordance (NEO-211 plan C)", () => {
   it("opens the review dialog and applies the operator's decisions", async () => {
     state.suggestions = [SUGGESTION];
     await renderColumn();
-    fireEvent.click(screen.getByText("1 suggestion"));
+    fireEvent.click(screen.getByText("1 name to check"));
 
     fireEvent.click(
-      screen.getByLabelText('Accept — rename "TCG" to "Topps" (from BSC)'),
+      screen.getByLabelText('Take it — rename "TCG" to "Topps" (from BSC)'),
     );
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Apply decisions"));
@@ -175,8 +176,8 @@ describe("EntityColumn — suggestions affordance (NEO-211 plan C)", () => {
       skipped: 2,
     });
     await renderColumn();
-    fireEvent.click(screen.getByText("1 suggestion"));
-    fireEvent.click(screen.getByLabelText('Accept — rename "TCG" to "Topps" (from BSC)'));
+    fireEvent.click(screen.getByText("1 name to check"));
+    fireEvent.click(screen.getByLabelText('Take it — rename "TCG" to "Topps" (from BSC)'));
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Apply decisions"));
     });

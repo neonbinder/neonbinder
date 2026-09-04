@@ -255,7 +255,7 @@ tags:
 - tapOn: "Sync Sets"
 
 - extendedWaitUntil:
-    visible: "1 suggestion"
+    visible: "1 name to check"
     timeout: 90000
 
 # ============================================================
@@ -288,36 +288,38 @@ tags:
 
 - scrollUntilVisible:
     element:
-      text: "1 suggestion"
+      text: "1 name to check"
     centerElement: true
     timeout: 10000
 - tapOn:
-    id: "1 naming suggestion from marketplaces — review"
+    id: "1 name to check — review suggestions"
 
 - extendedWaitUntil:
-    visible: "Name Suggestions — Sets"
+    visible: "Name Check — Sets"
     timeout: 7000
 
-# The side badge is the modal's own text and appears nowhere else on the page,
+# The side line is the modal's own text and appears nowhere else on the page,
 # so this is the assertion that we are looking at BSC's label for OUR row —
-# rather than at the Sets column behind the dialog.
-- assertVisible: "BSC: Topps NHL Sticker Collection"
+# rather than at the Sets column behind the dialog. The quotes are STRAIGHT
+# ASCII: the component builds this string in a template literal precisely so a
+# YAML assertion typed with " and " cannot silently fail to match (NEO-239).
+- assertVisible: 'BSC calls it "Topps NHL Sticker Collection"'
 
-# The accessible name leads with the VISIBLE word (WCAG 2.5.3 Label in Name),
-# then the per-row context: `Accept — rename "X" to "Y" (from BSC)`
-# (SelectorSyncReviewModal.tsx:310). The dash is an em dash, U+2014.
+# The accessible name leads with the VISIBLE words (WCAG 2.5.3 Label in Name),
+# then the per-row context: `Take it — rename "X" to "Y" (from BSC)`
+# (SelectorSyncReviewModal.tsx). The dash is an em dash, U+2014.
 #
 # Maestro matches `id:` as a FULL-STRING REGEX, so the parentheses have to be
 # escaped — unescaped they are a capture group and the pattern would only match
 # a label without them.
 - tapOn:
-    id: 'Accept — rename "TCG" to "Topps NHL Sticker Collection" \(from BSC\)'
+    id: 'Take it — rename "TCG" to "Topps NHL Sticker Collection" \(from BSC\)'
 
 # The running total is the only feedback that the press registered, and it is
 # exact on purpose: one accepted side, nothing declined. A second suggestion
 # appearing here would mean the re-sync invented a disagreement on a row nobody
 # renamed.
-- assertVisible: "1 to accept · 0 to decline"
+- assertVisible: "1 to take · 0 to keep"
 
 - tapOn:
     id: "Apply decisions"
@@ -344,4 +346,4 @@ tags:
     timeout: 10000
 
 - assertNotVisible: "TCG"
-- assertNotVisible: "1 suggestion"
+- assertNotVisible: "1 name to check"

@@ -1016,9 +1016,9 @@ export default function EntityColumn({
   // destructive or confirmed state, and green and pink are both spoken for.
   //
   // Rendered only when the query has RESOLVED to a non-empty list: no ghost
-  // "0 suggestions" flash while loading, and no dialog that opens with nothing
-  // in it (the `needsSyncReview` precedent). Visible text is the bare count so
-  // Maestro can assert or tap on "1 suggestion" with no id lookup.
+  // "0 names to check" flash while loading, and no dialog that opens with
+  // nothing in it (the `needsSyncReview` precedent). Visible text carries the
+  // count so Maestro can assert or tap "1 name to check" with no id lookup.
   const suggestionsPill =
     suggestions && suggestions.length > 0 ? (
       <button
@@ -1028,12 +1028,12 @@ export default function EntityColumn({
           setSuggestionOutcome(null);
           setShowSuggestions(true);
         }}
-        aria-label={`${suggestions.length} naming suggestion${
+        aria-label={`${suggestions.length} name${
           suggestions.length === 1 ? "" : "s"
-        } from marketplaces — review`}
+        } to check — review suggestions`}
         className="text-xs px-2.5 py-1 rounded-full border border-amber-700 dark:border-amber-400/70 bg-amber-400/15 text-amber-800 dark:text-amber-300 focus:outline-none focus:ring-2 focus:ring-[#00B7FF]"
       >
-        {suggestions.length} suggestion{suggestions.length === 1 ? "" : "s"}
+        {suggestions.length} name{suggestions.length === 1 ? "" : "s"} to check
       </button>
     ) : null;
 
