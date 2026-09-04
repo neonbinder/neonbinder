@@ -73,8 +73,9 @@ tags:
 # an assertVisible of the same text.
 #
 # The other thing that run settled: picking a team leaves the typeahead OPEN by
-# design, and its popover covers the year boxes that wrap underneath it. Escape
-# closes it. See the long note at the first stint.
+# design, and its popover covers the year boxes that wrap underneath it. It is
+# dismissed by TAPPING OUTSIDE it (the "Career history" heading) — Maestro web
+# has no ESCAPE keycode at all. See the long note at the first stint.
 
 - launchApp
 
@@ -179,18 +180,37 @@ tags:
 - tapOn:
     id: "Add New York Yankees"
 
-# Escape, NOT a press on the year box. Picking a team deliberately leaves the
-# typeahead OPEN (TeamPicker.addChip: "Stay open so the user can pick a second
-# team"), and its popover is `absolute top-full mt-1 z-10 w-64` — 256px hanging
-# directly over the row below it. This add row is `flex flex-wrap` inside a
-# ~440px panel, and a picker plus two w-28 boxes plus the button cannot fit on
-# one line, so the year boxes WRAP underneath and sit under that popover. A tap
-# at their coordinates would land on the popover instead, and because the
-# popover is inside the picker's own root the outside-pointerdown handler would
-# not even close it — the typing would go nowhere. Escape on the search input
-# calls closePopover() and returns focus to the trigger (TeamPicker onKeyDown).
-# The component documents this same overlap as a known hazard for MissingTeamFixer.
-- pressKey: Escape
+# CLOSE THE TEAM TYPEAHEAD FIRST, by tapping the section heading above it.
+#
+# Picking a team deliberately leaves the popover OPEN (TeamPicker.addChip:
+# "Stay open so the user can pick a second team"), and that popover is
+# `absolute left-0 top-full mt-1 z-10 w-64` — 256px hanging directly over
+# whatever follows the picker. This add row is `flex flex-wrap` inside a ~440px
+# panel, and a picker plus two w-28 boxes plus the button cannot fit on one
+# line, so the year boxes WRAP underneath and sit right under that popover. A
+# tap at their coordinates lands on the popover instead, and because the
+# popover is inside the picker's own root, the outside-pointerdown handler does
+# not even close it — the typing would go nowhere. TeamPicker's own header
+# documents this overlap as a known hazard for MissingTeamFixer.
+#
+# The close is a TAP OUTSIDE, not a key press: `pressKey` on Maestro web
+# supports Enter only — ESCAPE IS NOT A WEB KEYCODE and fails the command
+# outright ("Keycode ESCAPE is not supported on web", CI run 33823406555).
+# TeamPicker closes on a `pointerdown` whose target is outside its root, which
+# is exactly what a tap on a neutral element is.
+#
+# Why this target: the "Career history" heading is the FIRST child of the
+# section and the picker is the last, so it sits ABOVE the picker — and the
+# popover only ever hangs BELOW it (`top-full`), so the heading is the one
+# thing in this section the popover can never cover. It is a plain <h3> with no
+# handler and is not focusable, so the tap has no effect beyond dismissing the
+# popover. It is also unambiguous: the stint <ul> carries "Career history" as
+# an aria-LABEL, which Maestro exposes as `id`, not as text (see the
+# `id: "Staged career teams"` matcher in checklist-fetch-wizard-add-career-team),
+# so a `text:` matcher can only resolve to the heading. No scroll first: the
+# step above just centred "Add team", and the heading is a fixed two lines
+# above it, so it is on screen by construction.
+- tapOn: "Career history"
 - tapOn: ".*Stint from year.*"
 - inputText: "2010"
 - tapOn: ".*Stint to year.*"
@@ -218,8 +238,8 @@ tags:
 - inputText: "New York Yankees"
 - tapOn:
     id: "Add New York Yankees"
-# Same popover, same reason as above.
-- pressKey: Escape
+# Same popover, same dismissal as above — tap the heading, never a keycode.
+- tapOn: "Career history"
 - tapOn: ".*Stint from year.*"
 - inputText: "2001"
 - tapOn: ".*Stint to year.*"
