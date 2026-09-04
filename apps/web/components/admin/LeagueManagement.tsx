@@ -129,6 +129,20 @@ const LEVEL_LABEL = new Map<LeagueLevel, string>(
 const NEAR_MATCH_DEBOUNCE_MS = 300;
 
 /**
+ * How long the counter has to hold still before it is ANNOUNCED.
+ *
+ * The visible counter is synchronous — it recomputes on every keystroke,
+ * because a sighted operator watching the number fall is how they know the
+ * filter is biting. A live region cannot behave that way: `aria-live="polite"`
+ * queues every intermediate value, so typing eight characters made a screen
+ * reader read eight counts, all of them stale by the time the last was spoken.
+ *
+ * Long enough to outlast a typing burst and short enough that the number
+ * arrives while the operator is still looking at the list.
+ */
+const COUNTER_ANNOUNCE_DEBOUNCE_MS = 400;
+
+/**
  * Height of an `Input` box: 24px line-height + 2×8px padding + 2×1px border.
  * Anything sharing a baseline with a field — the read-only sport — matches it
  * rather than guessing.
@@ -293,9 +307,16 @@ function LevelGroup({
               // min-h-8 clears WCAG 2.2 SC 2.5.8's 24px target floor with room
               // to spare — these sit close together, so the extra is what keeps
               // a mis-tap from setting the wrong level.
+              //
+              // `font-semibold` is the pressed state's NON-COLOUR cue (WCAG 2.2
+              // SC 1.4.1): teal-on-teal-tint is the whole difference otherwise,
+              // and "which of these is set?" is the question this group exists
+              // to answer at a glance. Weight rather than a leading glyph on
+              // purpose — the label text stays byte-identical, so neither the
+              // accessible name nor a Maestro `tapOn: "Major"` moves.
               className={`min-h-8 rounded-md border px-2.5 py-1 text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-neon-teal ${
                 pressed
-                  ? "border-neon-teal bg-neon-teal/15 text-neon-teal"
+                  ? "border-neon-teal bg-neon-teal/15 font-semibold text-neon-teal"
                   : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 hover:text-slate-100"
               }`}
             >
@@ -339,6 +360,22 @@ function AddLeagueForm({
   const [sportId, setSportId] = useState<string>(defaultSportId ?? "");
   const [debouncedName, setDebouncedName] = useState("");
   const [busy, setBusy] = useState(false);
+
+  /**
+   * The form REPLACES the detail column rather than opening a dialog, so the
+   * control that opened it ("Add league") is still mounted but the column under
+   * it has changed wholesale — and for a screen-reader or keyboard user nothing
+   * says so. Focus moves to the form's own heading, which announces "Add a
+   * league, heading level 3" and puts the next Tab on the first field instead
+   * of at the top of the page (WCAG 2.2 SC 2.4.3).
+   *
+   * `tabIndex={-1}` only makes the heading focusABLE; it stays out of the tab
+   * order, so this adds no stop for anyone moving through the form by hand.
+   */
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     const timer = setTimeout(
@@ -406,7 +443,13 @@ function AddLeagueForm({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-lg font-semibold">Add a league</h3>
+      <h3
+        ref={headingRef}
+        tabIndex={-1}
+        className="text-lg font-semibold focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-teal"
+      >
+        Add a league
+      </h3>
 
       <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
         <Input
@@ -479,7 +522,19 @@ function AddLeagueForm({
             void create();
           }}
           disabled={exact ? false : !canCreate}
-          aria-label={exact ? undefined : `Create league ${trimmed}`}
+          // Busy is part of the NAME, not only of the visible text. The label
+          // was static while the text flipped to "Adding…", so a screen-reader
+          // user pressing it heard "Create league American League" both before
+          // and after — no confirmation that anything happened, and an
+          // invitation to press again (WCAG 2.2 SC 4.1.2). `exact` keeps no
+          // label because the visible "Open {name}" already names it.
+          aria-label={
+            exact
+              ? undefined
+              : busy
+                ? "Adding league"
+                : `Create league ${trimmed}`
+          }
         >
           {exact ? `Open ${exact.name}` : busy ? "Adding…" : "Create league"}
         </NeonButton>
@@ -488,7 +543,11 @@ function AddLeagueForm({
             type="button"
             onClick={() => void create()}
             disabled={!canCreate}
-            aria-label={`Create league ${trimmed} anyway`}
+            // Same rule as the primary above: the name says busy because the
+            // text does.
+            aria-label={
+              busy ? "Adding league" : `Create league ${trimmed} anyway`
+            }
             className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? "Adding…" : "Create anyway"}
@@ -634,6 +693,28 @@ function LeagueDetail({
   const yearsCaptionId = useId();
   const aliasCaptionId = useId();
 
+  /**
+   * The panel's own heading takes focus whenever the league it is showing
+   * changes.
+   *
+   * Three paths swap this column out from under the control that was pressed,
+   * and all three unmount that control: creating a league (the add form's
+   * Create button), picking a near match (its `Open {name}`), and the
+   * NAME_TAKEN alert's "Open the existing league" (which changes this panel's
+   * `key`). A React unmount does not move focus — it leaves it on `<body>`, so
+   * the operator's next Tab restarts at the top of the page and a screen
+   * reader is told nothing at all about the panel that just appeared (WCAG 2.2
+   * SC 2.4.3).
+   *
+   * Focusing the heading fixes both halves at once: the name of the league now
+   * on screen is announced, and Tab continues into its fields. `tabIndex={-1}`
+   * makes it focusABLE without adding a tab stop.
+   */
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, [league._id]);
+
   const teams: LeagueTeam[] | undefined = useQuery(api.leagues.teamsIn, {
     leagueId: league._id,
   });
@@ -757,7 +838,13 @@ function LeagueDetail({
         {/* h3, not h4: nothing on this screen renders an <h3> above it, so an
             <h4> here would skip a level and hand a screen reader navigating by
             heading a broken outline (WCAG 2.2 SC 1.3.1). */}
-        <h3 className="text-lg font-semibold leading-tight">{league.name}</h3>
+        <h3
+          ref={headingRef}
+          tabIndex={-1}
+          className="text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-teal"
+        >
+          {league.name}
+        </h3>
         <CopyButton value={league.name} label="league name" />
         {qid &&
           (qidUrl ? (
@@ -861,11 +948,17 @@ function LeagueDetail({
         </div>
 
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
+          {/* BOTH boxes are marked invalid, because the fault is the PAIR:
+              "1990 to 1800" is not a bad end year, it is an inconsistent era,
+              and marking only the second tells an errors-rotor user to go fix a
+              field that may well be the correct one of the two. Both point at
+              the same caption below, which is the sentence that explains it. */}
           <Input
             label="Active from"
             type="number"
             value={fromYear}
             aria-describedby={yearsCaptionId}
+            aria-invalid={yearsValid ? undefined : true}
             onChange={(e) => setFromYear(e.target.value)}
           />
           <Input
@@ -1018,9 +1111,13 @@ function LeagueDetail({
         <NeonButton type="button" onClick={() => void save()} disabled={!canSave}>
           {busy === "save" ? "Saving…" : "Save"}
         </NeonButton>
+        {/* Black label, like the "Add stint" button on the Players screen:
+            NeonButton's `secondary` paints white on #00C2FF, which is 2.07:1 —
+            under SC 1.4.3's 4.5:1 floor. Black on the same blue is 10.1:1. */}
         <NeonButton
           type="button"
           secondary
+          style={{ color: "#000000" }}
           onClick={() => void reEnrich()}
           disabled={busy !== null}
         >
@@ -1223,6 +1320,17 @@ export default function LeagueManagement() {
       }${management.truncated ? " · list truncated" : ""}`
     : "";
 
+  // The announced copy of the counter, one debounce behind the visible one.
+  // See COUNTER_ANNOUNCE_DEBOUNCE_MS for why the two cannot be the same node.
+  const [announcedCounter, setAnnouncedCounter] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setAnnouncedCounter(counter),
+      COUNTER_ANNOUNCE_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [counter]);
+
   return (
     <div className="space-y-4">
       {/* Page-level status — the ADD FORM's messages only. Those report on the
@@ -1265,16 +1373,27 @@ export default function LeagueManagement() {
           </select>
         </div>
         {/* The counter is the only feedback that a filter or a sport change did
-            anything — silent for a screen-reader user unless it is a live
-            region. Centred against the field boxes rather than nudged up with a
-            `pb-2`, so it stays put when the row wraps. */}
+            anything. Centred against the field boxes rather than nudged up with
+            a `pb-2`, so it stays put when the row wraps.
+
+            Deliberately NOT a live region itself: it changes on every keystroke,
+            and a polite region queues every intermediate value rather than
+            replacing it, so filtering by hand read a screen-reader user a count
+            per character — none of them current by the time they were spoken.
+            The announcement rides the sr-only channel below instead, one
+            debounce behind, and this node stays synchronous for the eyes. */}
         <p
-          role="status"
-          aria-live="polite"
           className={`flex items-center text-xs text-slate-400 ${FIELD_BOX_HEIGHT}`}
         >
           {counter}
         </p>
+        {/* The announced counter. Mounted unconditionally and from the first
+            render, empty or not: a live region that appears at the same moment
+            its text does is frequently missed entirely — the region has to
+            already exist for the change to be a CHANGE. */}
+        <span role="status" aria-live="polite" className="sr-only">
+          {announcedCounter}
+        </span>
         <NeonButton
           type="button"
           onClick={() => {

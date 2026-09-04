@@ -311,6 +311,18 @@ describe("TeamManagement — the way through to League Management", () => {
     ).toBe("/admin/leagues");
   });
 
+  it("gives the link a 24px pointer target without touching its text", () => {
+    // text-xs is a 16px line box, 8px short of WCAG 2.2 SC 2.5.8's 24px floor.
+    // `py-1` on an inline-block adds 4px above and below — 16 + 2x4 = 24 — and
+    // grows the hit area without moving the words.
+    renderAt("/admin/teams?team=t-yankees");
+
+    const link = screen.getByRole("link", { name: "Manage leagues" });
+    expect(link.className).toContain("inline-block");
+    expect(link.className).toContain("py-1");
+    expect(link.textContent).toBe("Manage leagues");
+  });
+
   it("links to the whole screen while a new league is being typed", () => {
     // Mid-add there is no league to deep link to, and `__add__` is a sentinel
     // this screen invented — sending it as an id would 404 on the other side.

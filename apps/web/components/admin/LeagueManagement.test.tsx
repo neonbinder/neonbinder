@@ -270,6 +270,28 @@ function openAddForm(container: HTMLElement) {
  * order because position is the whole point: on a 1024x629 viewport the top
  * line is off-screen at the moment Save is pressed.
  */
+/**
+ * The two counters, which are deliberately two different nodes.
+ *
+ * `visibleCounter` is the one on screen and is NOT a live region; `liveCounter`
+ * is the always-mounted sr-only channel that announces it on a debounce. Found
+ * by role rather than by text because at any given moment they legitimately
+ * hold different strings — which is the whole point.
+ */
+function liveCounter(): HTMLElement {
+  const nodes = document.querySelectorAll('[role="status"][aria-live="polite"]');
+  expect(nodes).toHaveLength(1);
+  return nodes[0] as HTMLElement;
+}
+
+function visibleCounter(): HTMLElement {
+  const node = Array.from(document.querySelectorAll("p")).find((el) =>
+    /^\d+ of \d+ leagues/.test(el.textContent ?? ""),
+  );
+  expect(node).toBeTruthy();
+  return node as HTMLElement;
+}
+
 function expectBelowTheActionRow(el: Element) {
   const save = screen.getByRole("button", { name: /^Sav/ });
   expect(
@@ -292,12 +314,51 @@ describe("LeagueManagement — the list", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("Filter leagues"));
   });
 
-  it("counts the list and how much of it needs a human", () => {
+  it("counts the list and how much of it needs a human", async () => {
     render(<LeagueManagement />);
     // PCL has no abbreviation, NHL has no level. AL is complete.
     const counter = screen.getByText("3 of 3 leagues · 2 need attention");
-    expect(counter.getAttribute("role")).toBe("status");
-    expect(counter.getAttribute("aria-live")).toBe("polite");
+
+    // The VISIBLE counter is not the live region. It recomputes on every
+    // keystroke, and a polite region queues each intermediate value instead of
+    // replacing it — filtering by hand read a whole stale countdown aloud.
+    expect(counter.getAttribute("role")).toBeNull();
+    expect(counter.getAttribute("aria-live")).toBeNull();
+
+    // The announcement rides a separate sr-only channel, mounted from the
+    // first render so a later change is a CHANGE, and one debounce behind.
+    expect(liveCounter().textContent).toBe("");
+    await waitFor(
+      () =>
+        expect(liveCounter().textContent).toBe(
+          "3 of 3 leagues · 2 need attention",
+        ),
+      { timeout: 2000 },
+    );
+  });
+
+  it("announces the filtered count once, after the typing stops", async () => {
+    render(<LeagueManagement />);
+    await waitFor(
+      () => expect(liveCounter().textContent).toBe("3 of 3 leagues · 2 need attention"),
+      { timeout: 2000 },
+    );
+
+    // Three keystrokes in a row. The eye sees three counts; the ear gets one.
+    for (const value of ["a", "am", "amer"]) {
+      fireEvent.change(screen.getByLabelText("Filter leagues"), {
+        target: { value },
+      });
+      expect(liveCounter().textContent).toBe("3 of 3 leagues · 2 need attention");
+    }
+
+    await waitFor(
+      () =>
+        expect(liveCounter().textContent).toBe(
+          "1 of 3 leagues · 2 need attention",
+        ),
+      { timeout: 2000 },
+    );
   });
 
   it("drops the attention clause when every league is complete", () => {
@@ -318,7 +379,10 @@ describe("LeagueManagement — the list", () => {
     // is the one they are most likely to type.
     expect(screen.getByRole("button", { name: /American League/ })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Pacific Coast/ })).toBeNull();
-    expect(screen.getByText("1 of 3 leagues · 2 need attention")).toBeTruthy();
+    // Read straight after the change, with no wait: the visible counter is
+    // synchronous precisely so a sighted operator watches the number fall as
+    // they type. The announced copy is the one that waits.
+    expect(visibleCounter().textContent).toBe("1 of 3 leagues · 2 need attention");
   });
 
   it("passes the sport filter to the list query", () => {
@@ -548,6 +612,72 @@ describe("LeagueManagement — the add form", () => {
     ).toBeTruthy();
   });
 
+  it("says it is busy in the NAME, not only in the visible text", async () => {
+    // The label used to be static while the text flipped to "Adding…", so a
+    // screen-reader user pressing Create heard the same "Create league
+    // American League" before and after — no confirmation, and an invitation
+    // to press it again.
+    let release: (() => void) | undefined;
+    mockCreateByAdmin.mockReturnValue(
+      new Promise((resolve) => {
+        release = () => resolve({ id: "lg-al", created: true });
+      }),
+    );
+
+    const { container } = render(<LeagueManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "American League" },
+    });
+
+    // Idle: the name says which league it will create — unchanged, and the
+    // string every E2E flow taps.
+    const create = screen.getByLabelText("Create league American League");
+    expect(create.textContent).toBe("Create league");
+
+    fireEvent.click(create);
+
+    // Busy: text and name move together.
+    await waitFor(() => expect(screen.getByLabelText("Adding league")).toBeTruthy());
+    expect(screen.getByLabelText("Adding league").textContent).toBe("Adding…");
+    expect(
+      screen.queryByLabelText("Create league American League"),
+    ).toBeNull();
+
+    release?.();
+    await screen.findByText("Added American League.");
+  });
+
+  it("says it is busy in 'Create anyway' as well", async () => {
+    nearMatches = [
+      { _id: "lg-al", name: "American League", confidence: "exact" },
+    ];
+    let release: (() => void) | undefined;
+    mockCreateByAdmin.mockReturnValue(
+      new Promise((resolve) => {
+        release = () => resolve({ id: "lg-al", created: true });
+      }),
+    );
+
+    const { container } = render(<LeagueManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "American League" },
+    });
+
+    const anyway = await screen.findByLabelText(
+      "Create league American League anyway",
+    );
+    expect(anyway.textContent).toBe("Create anyway");
+    fireEvent.click(anyway);
+
+    await waitFor(() => expect(screen.getByLabelText("Adding league")).toBeTruthy());
+    expect(screen.getByLabelText("Adding league").textContent).toBe("Adding…");
+
+    release?.();
+    await screen.findByText("Added American League.");
+  });
+
   it("closes on Cancel without creating anything", () => {
     const { container } = render(<LeagueManagement />);
     openAddForm(container);
@@ -581,6 +711,25 @@ describe("LeagueManagement — the level group", () => {
         .getAllByRole("button")
         .every((b) => b.getAttribute("aria-pressed") === "false"),
     ).toBe(true);
+  });
+
+  it("marks the pressed level with weight as well as colour", () => {
+    // Teal-on-teal-tint is otherwise the ONLY difference between pressed and
+    // not (SC 1.4.1). The label text is untouched — the cue is the weight, not
+    // a glyph, so neither the accessible name nor a Maestro `tapOn: "Major"`
+    // moves.
+    render(<LeagueManagement />);
+    selectAL();
+
+    const group = screen.getByRole("group", { name: "Level" });
+    const major = within(group).getByRole("button", { name: "Major" });
+    const minor = within(group).getByRole("button", { name: "Minor" });
+
+    expect(major.getAttribute("aria-pressed")).toBe("true");
+    expect(major.className).toContain("font-semibold");
+    expect(minor.getAttribute("aria-pressed")).toBe("false");
+    expect(minor.className).not.toContain("font-semibold");
+    expect(major.textContent).toBe("Major");
   });
 
   it("clears the level when the pressed button is pressed again", async () => {
@@ -721,6 +870,42 @@ describe("LeagueManagement — the detail panel", () => {
     ).toBe(true);
   });
 
+  it("marks BOTH year boxes invalid, because the fault is the pair", () => {
+    // "1901 to 1800" is not a bad end year, it is an inconsistent era. Marking
+    // only Active to sends an errors-rotor user to fix the field that may well
+    // be the correct one of the two.
+    render(<LeagueManagement />);
+    selectAL();
+
+    fireEvent.change(screen.getByLabelText("Active to"), {
+      target: { value: "1800" },
+    });
+
+    const from = screen.getByLabelText("Active from");
+    const to = screen.getByLabelText("Active to");
+    expect(from.getAttribute("aria-invalid")).toBe("true");
+    expect(to.getAttribute("aria-invalid")).toBe("true");
+
+    // And both point at the one sentence that explains it.
+    const caption = screen.getByText(
+      "An end year cannot come before the start year.",
+    );
+    expect(from.getAttribute("aria-describedby")).toBe(caption.id);
+    expect(to.getAttribute("aria-describedby")).toBe(caption.id);
+  });
+
+  it("drops the invalid marks from both boxes once the era is consistent", () => {
+    render(<LeagueManagement />);
+    selectAL();
+
+    expect(
+      screen.getByLabelText("Active from").getAttribute("aria-invalid"),
+    ).toBeNull();
+    expect(
+      screen.getByLabelText("Active to").getAttribute("aria-invalid"),
+    ).toBeNull();
+  });
+
   it("refuses a Wikidata id that is not one, and says what one looks like", () => {
     render(<LeagueManagement />);
     selectAL();
@@ -822,6 +1007,19 @@ describe("LeagueManagement — the detail panel", () => {
     for (const a of Array.from(document.querySelectorAll("a"))) {
       expect(a.getAttribute("href") ?? "").not.toContain("javascript:");
     }
+  });
+
+  it("prints Re-enrich's label in black on its blue fill", () => {
+    // NeonButton's `secondary` paints white on #00C2FF — 2.07:1, under SC
+    // 1.4.3's 4.5:1 floor. Black on the same blue is 10.1:1, and is what the
+    // Players screen's "Add stint" already does.
+    render(<LeagueManagement />);
+    selectAL();
+
+    const button = screen.getByRole("button", {
+      name: "Re-enrich from Wikidata",
+    }) as HTMLElement;
+    expect(button.style.color).toBe("#000000");
   });
 
   it("queues a re-enrichment and says it is coming", async () => {
@@ -958,6 +1156,82 @@ function renderAt(entry: string) {
 
 const url = () => screen.getByTestId("search").textContent;
 const listRow = (name: RegExp) => screen.getByRole("button", { name });
+
+/**
+ * NEO-240 (a11y) — where focus goes when the right-hand column is REPLACED.
+ *
+ * Three paths swap that column out from under the control that was pressed and
+ * unmount that control in the process: creating a league, picking a near match,
+ * and the NAME_TAKEN alert's "Open the existing league" (which changes the
+ * panel's `key`). A React unmount does not move focus — it leaves it on
+ * `<body>`, so the operator's next Tab restarts at the top of the page and a
+ * screen reader is told nothing about the panel that just appeared.
+ */
+describe("LeagueManagement — focus follows the panel", () => {
+  it("puts focus on the add form's heading when the form opens", () => {
+    render(<LeagueManagement />);
+    fireEvent.click(screen.getByRole("button", { name: "Add league" }));
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 3, name: "Add a league" }),
+    );
+  });
+
+  it("puts focus on the new league's heading once the panel replaces the form", async () => {
+    const { container } = render(<LeagueManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "American League" },
+    });
+    fireEvent.click(screen.getByLabelText("Create league American League"));
+
+    const heading = await screen.findByRole("heading", {
+      level: 3,
+      name: "American League",
+    });
+    expect(document.activeElement).toBe(heading);
+    // Focusable, but not a tab stop: this adds no extra stop for anyone moving
+    // through the panel by hand.
+    expect(heading.getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("puts focus on the heading of the league a near match opens", async () => {
+    nearMatches = [
+      { _id: "lg-pcl", name: "Pacific Coast League", confidence: "close" },
+    ];
+    const { container } = render(<LeagueManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "Pacific Coastal League" },
+    });
+
+    fireEvent.click(await screen.findByLabelText("Open Pacific Coast League"));
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 3, name: "Pacific Coast League" }),
+    );
+  });
+
+  it("puts focus on the heading the NAME_TAKEN alert opens", async () => {
+    mockSaveLeagueFields.mockRejectedValue(new ConvexError("NAME_TAKEN:lg-pcl"));
+    render(<LeagueManagement />);
+    selectAL();
+
+    fireEvent.change(screen.getByLabelText("League name"), {
+      target: { value: "Pacific Coast League" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("That name already exists");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open the existing league" }),
+    );
+
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 3, name: "Pacific Coast League" }),
+    );
+  });
+});
 
 describe("LeagueManagement — the ?league deep link", () => {
   it("opens a league the master list has no row for", () => {

@@ -997,6 +997,19 @@ describe("PlayerManagement — the detail panel", () => {
     }
   });
 
+  it("prints Re-enrich's label in black on its blue fill", () => {
+    // NeonButton's `secondary` paints white on #00C2FF — 2.07:1, under SC
+    // 1.4.3's 4.5:1 floor. Black on the same blue is 10.1:1, and is already
+    // what "Add stint" above it does.
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    const button = screen.getByRole("button", {
+      name: "Re-enrich from Wikidata",
+    }) as HTMLElement;
+    expect(button.style.color).toBe("#000000");
+  });
+
   it("queues a re-enrichment and says it is coming", async () => {
     render(<PlayerManagement />);
     selectGriffey();
