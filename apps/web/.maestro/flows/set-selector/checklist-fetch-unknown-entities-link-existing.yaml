@@ -37,13 +37,14 @@ tags:
 #   source can only ever contain this worker's own cards.
 #
 #   WHY A CUSTOM SET UNDER *REAL* Baseball/2024/Topps (not a synthetic sport):
-#     A custom SET node makes the whole subtree custom (isCustomSubtree → BSC/SL
-#     skipped, NEO-22), so the wizard opens ONLY from this worker's own custom
-#     cards' pending names — never from a marketplace fetch. Keeping the REAL
-#     "Baseball" SPORT ancestor means the wizard's EntityLinkSearch lists that
-#     sport's real, setup-synced roster (incl. Shohei Ohtani), so there is a
-#     genuine link target. A fully-synthetic "E2E Test Sport N" would have an
-#     EMPTY roster and nothing to link to.
+#     A hand-made SET node carries no marketplace ids, and a side is fetched
+#     only when the ids that side needs are present on the ancestors (NEO-239),
+#     so both sides are skipped and the wizard opens ONLY from this worker's
+#     own custom cards' pending names — never from a marketplace fetch. Keeping
+#     the REAL "Baseball" SPORT ancestor means the wizard's EntityLinkSearch
+#     lists that sport's real, setup-synced roster (incl. Shohei Ohtani), so
+#     there is a genuine link target. A fully-synthetic "E2E Test Sport N"
+#     would have an EMPTY roster and nothing to link to.
 #
 #     NEO-96 removed the casing hazard this comment used to warn about. It said
 #     seeding a player via PlayerPicker "+ Create" was "casing-broken" — the
@@ -93,9 +94,10 @@ tags:
 # ============================================================
 # DRILL TO A PER-WORKER CUSTOM SET UNDER REAL Baseball/2024/Topps
 # Real Baseball/2024/Topps ancestors (sport stays "baseball" → real roster is the
-# link target) + a custom Set/VariantType/Variant (isCustomSubtree → the wizard
-# opens only from this worker's own custom cards). lce-<worker> is unique per
-# worker → private selectorOptionId, no cross-runner contention.
+# link target) + a hand-made Set/VariantType/Variant carrying no marketplace
+# ids, so neither side is fetched (NEO-239) and the wizard opens only from this
+# worker's own custom cards. lce-<worker> is unique per worker → private
+# selectorOptionId, no cross-runner contention.
 # ============================================================
 
 - runFlow:

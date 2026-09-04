@@ -22,12 +22,13 @@ tags:
 #   flow's assertions are shaped around: the row, ITS NAME, and ITS CHILDREN.
 #
 # WHY A REAL SET AND NOT A PER-WORKER CUSTOM ONE (the R7a exemption).
-#   A custom Set node makes the whole subtree custom (`isCustomSubtree`,
-#   NEO-22), which short-circuits BSC and SportLots before any fetch. A custom
-#   set therefore has no marketplace id to match on, no marketplace label to
-#   disagree with our name, and no forced sync worth forcing — it cannot express
-#   this feature at all. The suggestion only exists because a real marketplace
-#   holds its own opinion about what this row is called.
+#   A hand-made Set node carries no marketplace ids, and a marketplace side is
+#   fetched only when the ids that side needs are present on the ancestors
+#   (NEO-239) — so for a hand-made set neither BSC nor SportLots is ever
+#   fetched. It therefore has no marketplace id to match on, no marketplace
+#   label to disagree with our name, and no forced sync worth forcing — it
+#   cannot express this feature at all. The suggestion only exists because a
+#   real marketplace holds its own opinion about what this row is called.
 #
 # ⚠️ THE SET — Hockey → 2024 → Topps → "Topps NHL Sticker Collection".
 #   The NEO-211 plan of record (decision 5, 2026-09-03) approved

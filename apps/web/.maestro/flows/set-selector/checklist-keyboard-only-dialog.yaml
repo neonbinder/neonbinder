@@ -58,12 +58,14 @@ tags:
 #   wizard this way and passes.
 #
 #   WHY A CUSTOM SET UNDER *REAL* Baseball/2024/Topps (not a synthetic sport):
-#     A custom SET node makes the whole subtree custom (isCustomSubtree → BSC/SL
-#     skipped, NEO-22), so the wizard opens ONLY from this worker's own custom
-#     cards' pending names. Keeping the REAL "Baseball" sport ancestor means
-#     fetchCardChecklist still derives sport="baseball" (selectorOptions.ts
-#     lowercases the sport ancestor's value), so the wizard's entity lookup and
-#     roster context behave exactly as on the old real-Base path. Same
+#     A hand-made SET node carries no marketplace ids, and a side is fetched
+#     only when the ids that side needs are present on the ancestors (NEO-239),
+#     so both sides are skipped and the wizard opens ONLY from this worker's
+#     own custom cards' pending names. Keeping the REAL "Baseball" sport
+#     ancestor means fetchCardChecklist still derives sport="baseball"
+#     (selectorOptions.ts lowercases the sport ancestor's value), so the
+#     wizard's entity lookup and roster context behave exactly as on the old
+#     real-Base path. Same
 #     Baseball/2024/Topps custom-set pattern as team-picker.yaml,
 #     set-attributes-edit.yaml and the link-existing flow.
 #

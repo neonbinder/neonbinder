@@ -22,9 +22,10 @@ tags:
 # must be GONE while grouped and BACK once unlinked), so a link that silently
 # no-ops fails here rather than passing quietly.
 #
-# WHY A CUSTOM SUBTREE (R7a): marketplace-derived variations need a live BSC/SL
-# fetch, which is neither deterministic nor available per worker. A custom set
-# short-circuits the adapters (isCustomSubtree, NEO-22) and exercises the same
+# WHY A HAND-MADE SUBTREE (R7a): marketplace-derived variations need a live
+# BSC/SL fetch, which is neither deterministic nor available per worker. A
+# hand-made set carries no marketplace ids, so neither side is fetched
+# (NEO-239), and it exercises the same
 # schema field, the same mutation and the same grouping code. Deriving a
 # variation from marketplace card numbers is covered by unit tests against the
 # real payloads (fetchCardChecklist.variationPairing.test.ts,

@@ -118,10 +118,11 @@ tags:
 #   sibling wizard flows already use.
 #
 # R7 / R7a — DATA ISOLATION: everything happens on a PER-WORKER CUSTOM SET,
-#   skp-${WORKER_INDEX}, registered in SET-REGISTRY.md. A custom Set node makes
-#   the whole subtree custom (isCustomSubtree → BSC/SL skipped, NEO-22), so the
-#   wizard can only ever open from THIS worker's own custom cards' pending names —
-#   never a shared marketplace fetch — and the selectorOptionId is private, so no
+#   skp-${WORKER_INDEX}, registered in SET-REGISTRY.md. A hand-made Set node
+#   carries no marketplace ids, so neither side is resolvable and neither is
+#   fetched (NEO-239) — the wizard can only ever open from THIS worker's own
+#   custom cards' pending names — never a shared marketplace fetch — and the
+#   selectorOptionId is private, so no
 #   concurrent runner can seed this batch. That matters more here than in the
 #   sibling flows: `entityReviewSkips` rows are keyed by (selectorOptionId, kind,
 #   name), so a skip written on a SHARED set would suppress that name in every

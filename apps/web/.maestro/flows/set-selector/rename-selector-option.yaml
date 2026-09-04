@@ -1,12 +1,16 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Selector rename — an entry's display name can be changed from its attributes panel and the selection follows the new name (per-worker custom set)"
+name: "Selector rename — a set AND a variant type can each be renamed from the attributes panel, and the selection follows the new name (per-worker hand-made set)"
 tags:
   - set-selector
 ---
 # R1 — ONE FEATURE (NEO-96): a selectorOptions row's DISPLAY NAME can be
 # renamed from its attributes panel, the new name renders, and the selection
 # still resolves to that row afterwards.
+#
+# Exercised at TWO levels, because NEO-239 made the second one possible:
+#   PART 1 — a set row      (the original NEO-96 coverage)
+#   PART 2 — a variantType row (new; see the PART 2 banner for why)
 #
 # WHY THIS IS NEW BEHAVIOUR, NOT A REGRESSION TEST:
 #   `selectorOptions.value` was WRITE-ONCE until NEO-96 — set at insert
@@ -28,10 +32,12 @@ tags:
 #   selecting the row, NOT hunting for it in a column list. The header renders
 #   whether or not attributes are expanded, so no expansion step is needed.
 #
-# ISOLATION (R7a): operates on a PER-WORKER CUSTOM set under real
+# ISOLATION (R7a): operates on a PER-WORKER HAND-MADE set under real
 #   Baseball → 2024 → Topps, so no other runner can observe or race this
 #   rename, and the shared real "2024 Topps Chrome" set is never touched.
-#   Prefix `rnm-` is registered in .maestro/SET-REGISTRY.md.
+#   Prefix `rnm-` is registered in .maestro/SET-REGISTRY.md; the variant type
+#   PART 2 adds lives inside that same per-attempt set, so it is covered by
+#   the same registration and disappears with it.
 #
 #   ALSO PER-ATTEMPT (`-${ATTEMPT_ID}`), which the sibling isolation alone does
 #   NOT give us here: this flow RENAMES its set, so a second run would create a
@@ -46,7 +52,9 @@ tags:
 #   - After committing, that header reads the NEW name. The header renders the
 #     CURRENTLY SELECTED row, so this proves both halves at once: the label
 #     changed, and the selection still resolves to this row rather than being
-#     orphaned by the rename.
+#     orphaned by the rename. (R6: the `scrollUntilVisible` to that header IS
+#     the assertion — it fails loudly if the header never appears — so there is
+#     no trailing `assertVisible` of the same element.)
 #   - The old label is gone from the page entirely.
 #
 # MAESTRO NOTES:
@@ -102,9 +110,6 @@ tags:
     element:
       text: ".*Attributes for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     centerElement: true
-    timeout: 15000
-- assertVisible:
-    text: ".*Attributes for rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 
 # ============================================================
 # RENAME THE ENTRY
@@ -114,7 +119,6 @@ tags:
     element:
       id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
     centerElement: true
-    timeout: 10000
 - tapOn:
     id: "Rename rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
 
@@ -141,11 +145,100 @@ tags:
     element:
       text: ".*Attributes for rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
     centerElement: true
-    timeout: 10000
-- assertVisible:
-    text: ".*Attributes for rnmx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
 
 # The old label is gone everywhere — the panel header, its breadcrumb, and the
 # Sets column's selected chip all re-render from the same row. Substring-safe:
 # "rnm-0-x" is not a substring of "rnmx-0-x".
 - assertNotVisible: "rnm-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# ============================================================
+# PART 2 — RENAME A VARIANT TYPE (NEO-239)
+#
+# WHY THIS IS A DIFFERENT FACT FROM PART 1:
+#   `variantType` was the ONE level where a rename was refused outright. Its
+#   display value was read as code in two places: NB decided which row was the
+#   base set by matching the literal word "base", and the BuySportsCards
+#   checklist fetch re-derived its `variant` query from whatever the row was
+#   called. Rename the row and the fetch quietly asked the marketplace for a
+#   set that does not exist — so the product refused the rename instead.
+#
+#   Both readers now work off ids and an NB role flag rather than the label:
+#   base is a flag NB sets on the row, and the marketplace `variant` comes off
+#   the id the row already carries. Nothing user-facing keys on a marketplace
+#   value, and no marketplace query is built from an NB name. That makes a
+#   variant type's name a plain label like every other level's — so ANY
+#   variant type can be renamed, not merely a hand-added one.
+#
+# WHY THIS CANNOT PASS BY ACCIDENT (R2):
+#   The old refusal exempted rows flagged as hand-added, and this row IS added
+#   by hand. That exemption is gone with the flag: nothing marks a row as
+#   hand-added any more, so the old rule would refuse this exact rename. If the
+#   refusal comes back in any form, the rename below fails and takes the flow
+#   with it — the pencil never opens, or the input reverts and the panel header
+#   still reads the OLD name.
+# ============================================================
+
+# The attributes panel we just used sits BELOW the selector columns, so the
+# Variant Types column is now ABOVE the viewport — scroll back UP to its
+# "+ Custom" button. (R8: centered, because the next step taps it.)
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    direction: UP
+    centerElement: true
+- tapOn:
+    id: "Add custom Variant Types"
+
+# The add form REPLACES the column's list, so gate on the heading going away
+# before looking for the new row (EntityColumn's in-place custom form).
+- assertVisible: "Add Custom Entry"
+- inputText: "vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- pressKey: Enter
+- assertNotVisible: "Add Custom Entry"
+
+# Select the new variant type — that is what re-points the attributes panel at
+# it. (The Variants column header pluralises to "vt-…s", which a full-anchored
+# `text:` match will not collide with.)
+- scrollUntilVisible:
+    element:
+      text: "vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+- tapOn:
+    text: "vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+
+# The panel header names the row we are about to rename — same precondition
+# assert as PART 1, so a mis-selected row fails here rather than renaming
+# something else.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    centerElement: true
+
+# Same pencil, same in-place input, same empty-opens behaviour as PART 1.
+- scrollUntilVisible:
+    element:
+      id: "Rename vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    centerElement: true
+- tapOn:
+    id: "Rename vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible:
+      id: "Edit name for vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    timeout: 7000
+- tapOn:
+    id: "Edit name for vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    waitToSettleTimeoutMs: 250
+- inputText: "vtx-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- pressKey: Enter
+
+# THE ASSERTION: the panel header — which always renders the CURRENTLY
+# SELECTED row — now reads the NEW variant type name. That proves the write
+# landed AND that the selection still resolves to this row.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for vtx-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    centerElement: true
+
+# The old variant type name is gone. Substring-safe: "vt-0-x" is not a
+# substring of "vtx-0-x", and Maestro's text match is full-anchored anyway.
+- assertNotVisible: "vt-${WORKER_INDEX || 0}-${ATTEMPT_ID}"

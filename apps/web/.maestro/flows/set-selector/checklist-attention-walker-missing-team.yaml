@@ -37,8 +37,9 @@ tags:
 # NOT COVERED HERE — and why
 #   • The post-commit banner CTA ("K need attention — Fix them one at a time").
 #     It only renders after a commitCardChecklist, which needs a real
-#     marketplace fetch; a custom subtree never fetches (isCustomSubtree,
-#     NEO-22) and the real sets are read-only (R7a). Component-covered in
+#     marketplace fetch; a hand-made subtree carries no marketplace ids so
+#     neither side is ever fetched (NEO-239), and the real sets are read-only
+#     (R7a). Component-covered in
 #     CardChecklist.test.tsx. (The walker never opens on its own — an earlier
 #     auto-open was removed after it swallowed taps in two wizard flows.)
 #   • The preselected suggestion chips. They come from the card's PLAYERS'

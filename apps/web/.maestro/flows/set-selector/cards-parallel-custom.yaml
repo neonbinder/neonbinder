@@ -1,12 +1,12 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Add custom Parallel — new entry appears with Custom badge and is selectable"
+name: "Add custom Parallel — a hand-added parallel appears in the Parallels column and is selectable"
 tags:
   - set-selector
   - regression
 ---
 # PRODUCT-FEATURE test: a user can ADD A CUSTOM PARALLEL under a set's Parallel
-# variant type, and the new entry shows up as a Custom-badged, selectable row.
+# variant type, and the new entry shows up as a selectable row in the column.
 #
 # This is the ONLY flow that exercises adding a parallel via the "Add custom
 # Parallels" column. (Adding a custom INSERT is covered by
@@ -14,16 +14,18 @@ tags:
 # by move-parallels-of-inserts-custom.)
 #
 # It asserts the ADD outcome — deliberately NOT "Fetch from Marketplaces". That
-# button is an IMPORT (pull the checklist from BSC/SportLots); a custom parallel
-# you invented has no marketplace counterpart, so it imports 0 cards via the
-# isCustomSubtree gate. That gate is exercised incidentally elsewhere and is not
-# this flow's concern. Putting cards INTO a custom variant is the separate
-# "Add Card" path (custom-card-crud.yaml).
+# button is an IMPORT (pull the checklist from BSC/SportLots); a parallel you
+# invented by hand sits under ancestors that carry no marketplace ids, so
+# neither marketplace side is resolvable and neither is fetched — it imports 0
+# cards. That is exercised elsewhere and is not this flow's concern. Putting
+# cards INTO a hand-made variant is the separate "Add Card" path
+# (custom-card-crud.yaml).
 #
-# Fully custom subtree (E2E Test Sport ${WORKER_INDEX} → 2026 → custom set), so
-# no live BSC/SL call happens anywhere — every column's sync short-circuits.
-# Every wait below is the 7s default; the util owns the cold custom-subtree
-# drill and its sync-tolerant waits.
+# Fully hand-made subtree (E2E Test Sport ${WORKER_INDEX} → 2026 → Topps →
+# a hand-added set): no ancestor carries a BSC or SportLots id, so neither
+# side is resolvable at any level and no live marketplace call is made — every
+# column goes idle immediately. Every wait below is the 7s default; the util
+# owns the cold hand-made drill and its sync-tolerant waits.
 
 - launchApp
 - extendedWaitUntil:
@@ -50,18 +52,14 @@ tags:
 - pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 
-# ── FEATURE ASSERTION: the new parallel appears, badged "Custom" ────────────
+# ── FEATURE ASSERTION: the new parallel appears in the column ───────────────
 # The entry renders at the Parallels column top (visible without scrolling).
-# Maestro indexes the value and the badge as SEPARATE elements (the row's
-# value span "Prizm Gold" and a sibling badge span "Custom"), so a combined
-# "Prizm Gold.*Custom" regex matches nothing. Assert them as two facts: the
-# value is present, and a "Custom" badge sits to its RIGHT (rightOf pins it to
-# THIS row's badge — not the column's "+ Custom" add button, which is below).
+#
+# NEO-239 removed the "Custom" badge: a row either carries marketplace ids or
+# it does not, and both kinds render identically. The BSC/SL pills are now the
+# only provenance a row shows, and a hand-added parallel has neither — so the
+# fact to assert here is simply that the value is in the column.
 - assertVisible: ".*Prizm Gold.*"
-- assertVisible:
-    text: "Custom"
-    rightOf:
-      text: "Prizm Gold"
 
 # ── …and it is a real, selectable entry: tapping it opens its CardChecklist ──
 # The CardChecklist panel renders BELOW the columns (off-fold on 1024×629), so

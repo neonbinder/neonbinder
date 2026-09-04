@@ -29,9 +29,9 @@ tags:
 #     cascade/setup.yaml seeds New York Yankees + New York Mets for Baseball.
 #     The TeamPicker query is sport-scoped — an E2E Test Sport ${WORKER_INDEX} checklist
 #     would return no seeded teams, not Yankees/Mets. Baseball context makes the seeded
-#     teams available for typeahead search. The custom Set name (tp-<worker>) is
-#     unique and not a real marketplace set, so BSC/SL adapters short-circuit
-#     via the NEO-22 gate.
+#     teams available for typeahead search. The hand-made Set (tp-<worker>)
+#     carries no marketplace ids, so neither side is resolvable and neither
+#     BSC nor SportLots is ever fetched (NEO-239).
 #
 # Uses a fresh custom card (card #889) for each sub-test to avoid state bleed.
 

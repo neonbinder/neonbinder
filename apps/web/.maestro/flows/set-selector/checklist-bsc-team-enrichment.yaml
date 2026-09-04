@@ -46,9 +46,10 @@ tags:
 #       has no team on file for — nothing to assert — plus transient-failure
 #       retries, which are timing, not structure.
 #     - Reaching it deliberately would mean a fresh fetch + commit, i.e. a
-#       WRITE. Writes must go to a per-worker custom subtree (R7a), and a
-#       custom subtree skips BSC entirely (NEO-22), so its cards have no BSC
-#       ref to enrich. Writing to the real Topps Chrome set is banned.
+#       WRITE. Writes must go to a per-worker hand-made subtree (R7a), which
+#       carries no marketplace ids — so BSC is never fetched there (NEO-239)
+#       and its cards have no BSC ref to enrich. Writing to the real Topps
+#       Chrome set is banned.
 #   The queue's own logic is unit-covered instead, in
 #   convex/bscTeamEnrichmentQueue.test.ts (+ .tolerance.test.ts). The in-fetch
 #   lookup is covered by convex/fetchCardChecklistTeamLookup.test.ts, and the

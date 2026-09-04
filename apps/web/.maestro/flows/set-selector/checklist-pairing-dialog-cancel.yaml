@@ -42,11 +42,12 @@ tags:
 #   team is created and the shared set is left exactly as setup.yaml provisioned
 #   it. That is what makes exercising it here legitimate.
 #
-#   A per-worker CUSTOM set cannot cover this: a custom subtree is short-
-#   circuited before any marketplace fetch (isCustomSubtree, NEO-22), so it has
-#   no candidates, and CardChecklist deliberately SKIPS the pairing dialog when
-#   all three buckets are empty rather than showing an empty step. The dialog is
-#   only reachable with real marketplace data.
+#   A per-worker HAND-MADE set cannot cover this: it carries no marketplace ids
+#   on any ancestor, so neither side is resolvable and neither is ever fetched
+#   (NEO-239). It therefore has no candidates, and CardChecklist deliberately
+#   SKIPS the pairing dialog when all three buckets are empty rather than
+#   showing an empty step. The dialog is only reachable with real marketplace
+#   data.
 #
 #   NO NEW REAL SET IS SYNCED. This uses "Insert → Future Stars" from the
 #   existing 2024 Topps Chrome anchor that setup.yaml already provisions.
@@ -211,9 +212,10 @@ tags:
 #
 # WHY THIS LIVES IN THIS FLOW RATHER THAN A NEW ONE:
 #   The conflict UI is only reachable through CardPairingModal, which is only
-#   reachable from a real marketplace fetch (a custom subtree short-circuits
-#   BSC/SL — isCustomSubtree, NEO-22 — and CardChecklist skips the dialog when
-#   all three buckets are empty). A second flow would therefore have to fetch
+#   reachable from a real marketplace fetch (a hand-made subtree carries no
+#   marketplace ids, so neither BSC nor SportLots is fetched — NEO-239 — and
+#   CardChecklist skips the dialog when all three buckets are empty). A second
+#   flow would therefore have to fetch
 #   THIS SAME shared real set a second time, at ~90s a go. One fetch, one flow.
 #
 #   NOTE (NEO-195 follow-up): the sharper hazard this note used to describe —

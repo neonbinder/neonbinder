@@ -106,9 +106,10 @@ tags:
 
 # ============================================================
 # STEP 4 — WAIT FOR CARDCHECKLIST TO RENDER
-# Custom subtrees short-circuit the BSC/SL adapters via the isCustomSubtree
-# gate (NEO-22), so no marketplace fetch fires. "Open add card form" is
-# the reliable idle signal on custom sets (no "Fetch from Marketplaces" step).
+# Hand-made subtrees carry no marketplace ids on any ancestor, so neither side
+# is resolvable and no marketplace fetch fires (NEO-239). "Open add card form"
+# is the reliable idle signal on hand-made sets (no "Fetch from Marketplaces"
+# step).
 # centerElement: true keeps the target fully in view before the subsequent tap.
 # ============================================================
 

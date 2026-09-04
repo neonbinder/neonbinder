@@ -17,3 +17,6 @@
 - [Maestro web pressKey + picker popovers](patterns_maestro_web_presskey_and_popovers.md) — Enter is the ONLY web keycode; close a picker by tapping a neutral element above it
 - [Column shapes + cold sync](patterns_entity_column_shapes_and_cold_sync.md) — search input needs >8 entries; an EMPTY column shows `Sync <X>` before the sync starts, so gate on the `Syncing <X>` panel
 - [Bare `maestro test` needs SE_BROWSER_PATH](patterns_bare_maestro_needs_chrome_for_testing.md) — otherwise branded Chrome gives a 1x1 viewport and every assert "fails"
+- [NEO-239 retire "custom" — flow impact](reference_neo239_retire_custom_flow_impact.md) — no "Custom" badge to assert; per-side resolvability replaces `isCustomSubtree`; any variantType renameable; Base is `metadata.isBase`
+- [CI's Convex preview starts empty](reference_ci_convex_preview_starts_empty.md) — no dev clone, no `--preview-run`; `e2e.yml`'s seed job runs the setup track, so a backfill is never a CI prerequisite
+- [Never push a branch's Convex to shared dev](feedback_never_push_a_branch_convex_to_shared_dev.md) — use the PR's own preview on a spare-port Vite; seed it with the setup track

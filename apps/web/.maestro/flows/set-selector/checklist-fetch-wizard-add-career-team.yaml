@@ -66,8 +66,9 @@ tags:
 #
 # ── DATA ISOLATION (per-worker custom set — same story as link-existing) ──
 #   The whole flow runs on a PER-WORKER CUSTOM SET (cte-${WORKER_INDEX}) under real
-#   Baseball/2024/Topps. A custom SET node makes the subtree custom (isCustomSubtree
-#   → BSC/SL skipped) so the wizard opens ONLY from THIS worker's own custom card's
+#   Baseball/2024/Topps. A hand-made SET node carries no marketplace ids, so
+#   neither side is resolvable and neither is fetched (NEO-239) — the wizard
+#   opens ONLY from THIS worker's own custom card's
 #   pending player name — never a shared marketplace fetch — and the selectorOptionId
 #   is private to this worker, so no concurrent runner can seed this wizard's batch.
 #   Because the SPORT ancestor is real "Baseball", fetchCardChecklist derives
