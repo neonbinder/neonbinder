@@ -11,6 +11,13 @@ import {
   type NearMatch,
 } from "@/components/entities/NearMatchPanel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
+// NEO-235: `tenureYears` owns the open-ended-stint rule ("still there" counts
+// through the current year). `primaryTeamId` below sums it per team rather than
+// re-deriving it — see that function for why it is not `pickDefaultTeamYear`.
+import { tenureYears } from "@/lib/players/team-tenure";
+// NEO-235: the same two helpers TeamManagement's contrast readout uses, so the
+// row and that readout can never disagree about what a colour pair scores.
+import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 // NEO-212 security review: `WIKIDATA_QID` used to be re-declared here. It now
 // comes from the one module that also gates the href — see
 // lib/players/wikidata-id.ts.
@@ -93,6 +100,126 @@ function stintsEqual(a: Stint[], b: Stint[]): boolean {
 
 function stintRange(stint: Stint): string {
   return `${stint.fromYear}–${stint.toYear ?? "present"}`;
+}
+
+/**
+ * NEO-235 — the franchise a player is most associated with, for the master row.
+ *
+ * Deliberately NOT `pickDefaultTeamYear` from lib/players/team-tenure.ts, and
+ * the difference is the reason there are two. That one names a single STINT,
+ * because the spine label it feeds has to print that stint's years ("Angels
+ * 2011–2019"), so a summed total would leave it with nothing to print. This
+ * one names a TEAM and prints no years at all, so the honest reading of "played
+ * with the longest" is the SUM of the stints there: a player with two four-year
+ * runs in Seattle and one six-year run in Cincinnati is a Mariner to anyone who
+ * collects him, and per-stint ranking would file him under the Reds. That
+ * module anticipated this exact split ("a separate function over the same rows,
+ * not a change to these two"), so only `tenureYears` is borrowed.
+ *
+ * Ties go to the earliest `fromYear` — with nothing to separate two franchises
+ * by time served, the one he came up with is the one the hobby names him after.
+ *
+ * Returns null for a player with no stints; the row then shows the sport alone.
+ */
+function primaryTeamId(
+  stints: Stint[] | undefined,
+  currentYear: number,
+): Id<"teams"> | null {
+  if (!stints || stints.length === 0) return null;
+
+  const totals = new Map<string, { years: number; firstYear: number }>();
+  for (const stint of stints) {
+    const key = stint.teamId as string;
+    const running = totals.get(key);
+    totals.set(key, {
+      years: (running?.years ?? 0) + tenureYears(stint, currentYear),
+      firstYear: Math.min(running?.firstYear ?? stint.fromYear, stint.fromYear),
+    });
+  }
+
+  let bestId: string | null = null;
+  let best: { years: number; firstYear: number } | null = null;
+  for (const [id, totalled] of totals) {
+    if (
+      best === null ||
+      totalled.years > best.years ||
+      (totalled.years === best.years && totalled.firstYear < best.firstYear)
+    ) {
+      bestId = id;
+      best = totalled;
+    }
+  }
+  return bestId as Id<"teams"> | null;
+}
+
+/**
+ * The team as a fan says it out loud: "Padres", not "San Diego Padres".
+ *
+ * Only the row's own stored `city` is stripped, and only as a whole leading
+ * word — nothing here guesses where a city ends. A team whose `city` was never
+ * enriched keeps its full name, which is the safe failure: a longer label,
+ * never a wrong one.
+ *
+ * Row-only. The detail panel and the career-history list stay on full names —
+ * an operator editing a stint needs the name the row actually carries, and the
+ * E2E flows match on it.
+ */
+function teamNickname(team: { name: string; city?: string }): string {
+  const name = team.name.trim();
+  const city = team.city?.trim();
+  if (!city) return name;
+  if (!name.toLowerCase().startsWith(`${city.toLowerCase()} `)) return name;
+  const nickname = name.slice(city.length).trim();
+  return nickname.length > 0 ? nickname : name;
+}
+
+/**
+ * NEO-235 — the master row paints the team nod in the team's OWN livery rather
+ * than in a NeonBinder accent, because a franchise's colours are how a
+ * collector recognises it before they have finished reading the word.
+ *
+ * These are the two backgrounds a row is ever painted on. `ROW_BG_IDLE` is
+ * slate-900, the HOVER fill — not the page's near-black underneath it. The
+ * hover state is the lightest an unselected row ever gets, so a light colour
+ * that clears 4.5:1 there clears it everywhere else on that row; a dark one
+ * fails against both and is rejected either way. `ROW_BG_SELECTED` is
+ * `bg-neon-blue/10` (#00C2FF at 10%) composited over that near-black, worked
+ * out once here rather than guessed at, because the selected row is measurably
+ * lighter and a colour can pass on one row and fail on the other.
+ */
+const ROW_BG_IDLE = "#0f172a";
+const ROW_BG_SELECTED = "#02192e";
+
+/** WCAG 2.2 SC 1.4.3 for text this size. Not a readout, a gate — this is UI. */
+const ROW_TEXT_MIN_CONTRAST = 4.5;
+
+/**
+ * The team's own colour for the row label, or null to leave it muted.
+ *
+ * Primary first, secondary as the fallback, default when neither clears the
+ * floor. That order is not a nicety: a great many franchises are built on a
+ * near-black navy or maroon (the Yankees' #132448 scores about 1.4:1 on a
+ * slate-900 row) and their secondary is the pale one precisely because it is
+ * what they print the dark on. So the fallback is usually the RIGHT colour for
+ * the team as well as the readable one.
+ *
+ * Colour is never the only carrier: the label reads the same word whichever
+ * branch is taken, so a muted row loses decoration and no information (SC
+ * 1.4.1). `normalizeHexColor` first, so a stored `#FFF` or an unhashed value
+ * is measured and emitted in the same form.
+ */
+function teamTextColor(
+  colors: { primary?: string; secondary?: string } | undefined,
+  background: string,
+): string | null {
+  for (const candidate of [colors?.primary, colors?.secondary]) {
+    if (!candidate) continue;
+    const hex = normalizeHexColor(candidate);
+    if (!hex) continue;
+    const ratio = contrastRatio(hex, background);
+    if (ratio !== null && ratio >= ROW_TEXT_MIN_CONTRAST) return hex;
+  }
+  return null;
 }
 
 /**
@@ -979,6 +1106,53 @@ export default function PlayerManagement() {
     return loaded.filter((p) => p.name.toLowerCase().includes(needle));
   }, [searching, results, loaded, filter]);
 
+  /**
+   * NEO-235 — the team nod on each master row.
+   *
+   * ONE batched lookup for the whole visible page, not one per row: the longest
+   * team is derived from `teamYears`, which every row already carries, so the
+   * only thing missing is names. Unique ids, so a page of 500 Yankees costs a
+   * single id; sorted, so the arg set is stable across reactive pushes that
+   * reorder nothing (Convex keys a subscription on the serialized args).
+   *
+   * `getManyByIds` takes an unbounded `v.array(v.id("teams"))` and does one
+   * `db.get` each, so no chunking is needed at this list's 500-row cap — a page
+   * that size cannot name more distinct teams than there are teams.
+   */
+  const currentYear = new Date().getFullYear();
+  const rowTeamIdByPlayer = useMemo(() => {
+    const map = new Map<string, Id<"teams">>();
+    for (const player of visible) {
+      const teamId = primaryTeamId(player.teamYears, currentYear);
+      if (teamId) map.set(player._id as string, teamId);
+    }
+    return map;
+  }, [visible, currentYear]);
+
+  const rowTeamIds = useMemo(
+    () => [...new Set(rowTeamIdByPlayer.values())].sort(),
+    [rowTeamIdByPlayer],
+  );
+
+  const rowTeamRows = useQuery(
+    api.teams.getManyByIds,
+    rowTeamIds.length > 0 ? { ids: rowTeamIds } : "skip",
+  );
+
+  const rowTeamById = useMemo(() => {
+    const map = new Map<
+      string,
+      { label: string; colors?: { primary?: string; secondary?: string } }
+    >();
+    for (const team of rowTeamRows ?? []) {
+      map.set(team._id as string, {
+        label: teamNickname(team),
+        colors: team.colors,
+      });
+    }
+    return map;
+  }, [rowTeamRows]);
+
   // Fetched by id rather than found in `visible`: the row an operator opens
   // from a near-match, or from the NAME_TAKEN alert, is frequently NOT in the
   // current page — it may be past the 500 cap or excluded by the filter that is
@@ -1088,63 +1262,100 @@ export default function PlayerManagement() {
             <ul>
               {visible.map((player) => {
                 const isSelected = player._id === selectedId;
-                const stintCount = player.teamYears?.length ?? 0;
-                const qid = player.externalIds?.wikidataId;
+                const sportLabel =
+                  sportNameById.get(player.sportId as string) ?? "";
+                const rowTeamId = rowTeamIdByPlayer.get(player._id as string);
+                const rowTeam = rowTeamId
+                  ? rowTeamById.get(rowTeamId as string)
+                  : undefined;
+                // The row this is measured against is the one it will be
+                // painted on: selecting a player lightens the background, and
+                // a colour that cleared 4.5:1 on an idle row can stop clearing
+                // it on the selected one.
+                const teamColor = rowTeam
+                  ? teamTextColor(
+                      rowTeam.colors,
+                      isSelected ? ROW_BG_SELECTED : ROW_BG_IDLE,
+                    )
+                  : null;
                 return (
                   <li key={player._id}>
                     <button
                       type="button"
                       onClick={() => selectPlayer(player._id)}
                       aria-current={isSelected ? "true" : undefined}
-                      // NEO-235: `items-baseline`, not `items-center` — the
-                      // name is text-sm and every tag beside it is text-xs, so
-                      // centring left five slightly different lines through one
-                      // row. One gap value across the whole row, and every tag
-                      // `shrink-0` so the NAME is what gives when the row is
-                      // narrow.
-                      className={`flex w-full items-baseline gap-x-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
+                      // NEO-235 — TWO LINES, and the second one is the whole
+                      // reason. Measured in the 18rem master column at 1024px:
+                      // the row has 262px of content, the sport tag and its
+                      // separator take 59 of them, and that leaves 187px for a
+                      // name and a team that need about 112 and 99. They do not
+                      // both fit, so a single line has to truncate one of them,
+                      // and neither answer is any good — a clipped "Bartolo
+                      // C…" defeats the list's only job, and a clipped "New
+                      // York Y…" is a worse nod than no nod. Given a line of
+                      // its own the metadata gets the full 262px and the name
+                      // gets it too, so "Christian Bethancourt-Villarreal" and
+                      // "New York Yankees" both render whole. It costs about
+                      // five visible rows out of fourteen, which is affordable
+                      // here precisely because nobody scans this list: the
+                      // filter takes focus on load and typing a name is how you
+                      // get to a player.
+                      className={`flex w-full flex-col gap-y-0.5 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
                         isSelected
                           ? "border-neon-blue bg-neon-blue/10 text-neon-blue"
                           : "border-transparent text-slate-300 hover:bg-slate-900"
                       }`}
                     >
-                      <span className="min-w-0 flex-1 truncate">
+                      {/* NEO-235 — the row answers "which of the people with
+                          similar names is this?", and nothing else. The Hall of
+                          Fame tag, the stint count and the "Q…" Wikidata glyph
+                          all moved out: none of them tells two Tony Gwynns
+                          apart, and four competing sizes and colours per row
+                          made the NAMES — the only thing anyone comes to this
+                          list for — the hardest thing on it to read. All three
+                          are still in the detail panel, in full. */}
+                      <span className="w-full truncate" title={player.name}>
                         {player.name}
                       </span>
-                      {/* NEO-212 (a11y): slate-400, not slate-500 — #64748b on
-                          the slate-950 row is 4.0:1, under SC 1.4.3's 4.5:1
-                          floor for this size. slate-400 clears it. */}
-                      <span className="shrink-0 text-xs text-slate-400">
-                        {sportNameById.get(player.sportId as string) ?? ""}
+                      <span className="flex w-full items-baseline gap-x-2 text-xs">
+                        {/* NEO-212 (a11y): slate-400, not slate-500 — #64748b
+                            on this row is 4.0:1, under SC 1.4.3's 4.5:1 floor
+                            for text this size. slate-400 clears it. */}
+                        {sportLabel && (
+                          <span className="shrink-0 text-slate-400">
+                            {sportLabel}
+                          </span>
+                        )}
+                        {/* The team nod, held apart from the sport by a hairline
+                            rule rather than a "·". The rule is CSS, so it stays
+                            out of the button's accessible name — which reads
+                            "Ken Griffey Jr. Baseball Padres", three plain words
+                            — and it appears ONLY when there are two facts to
+                            separate: a player with no recorded stints shows the
+                            sport alone, and the row's structure says so.
+
+                            Painted in the team's own livery when that colour is
+                            readable here (see `teamTextColor`); the rule earns
+                            its keep twice over, holding a fixed neutral apart
+                            from a segment that changes colour row to row.
+                            `text-slate-300` stays on the element as the fallback
+                            the inline colour overrides, so a team with no
+                            readable colour is simply muted rather than absent.
+
+                            `truncate` + `title` for the farm clubs ("Gulf Coast
+                            League Yankees Development Complex"); truncation is
+                            CSS, so the full string stays in the DOM for the E2E
+                            matcher and for assistive tech. */}
+                        {rowTeam && (
+                          <span
+                            className="min-w-0 truncate border-l border-slate-700 pl-2 text-slate-300"
+                            title={rowTeam.label}
+                            style={teamColor ? { color: teamColor } : undefined}
+                          >
+                            {rowTeam.label}
+                          </span>
+                        )}
                       </span>
-                      {/* NEO-212 (a11y): `title` is a mouse-hover affordance
-                          and nothing else — it is not announced reliably and
-                          never on touch or keyboard. The aria-label puts the
-                          expansion into the row's accessible name, so "HoF"
-                          and "Q…" are not two unexplained glyphs. */}
-                      {player.isHallOfFame && (
-                        <span
-                          className="shrink-0 text-xs text-neon-orange"
-                          aria-label="Hall of Fame"
-                          title="Hall of Fame"
-                        >
-                          HoF
-                        </span>
-                      )}
-                      {stintCount > 0 && (
-                        <span className="shrink-0 text-xs text-slate-400">
-                          {stintCount} {stintCount === 1 ? "stint" : "stints"}
-                        </span>
-                      )}
-                      {qid && (
-                        <span
-                          className="shrink-0 text-xs text-neon-teal"
-                          aria-label={`Wikidata ${qid}`}
-                          title={`Wikidata ${qid}`}
-                        >
-                          Q…
-                        </span>
-                      )}
                     </button>
                   </li>
                 );

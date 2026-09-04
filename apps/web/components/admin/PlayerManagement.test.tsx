@@ -35,7 +35,13 @@
  * re-exercise a typeahead.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -201,12 +207,28 @@ const PLAYERS_BY_ID: Record<string, unknown> = {
   "p-badqid": BAD_QID_PLAYER,
 };
 
+/**
+ * NEO-235: `city` on one row and not the other is the whole point of the pair.
+ * The master row prints the nickname a fan says out loud, which it can only do
+ * for a team whose city was enriched — "Seattle Mariners" becomes "Mariners",
+ * while the un-enriched Reds keep their full name. Both branches are real:
+ * `teams.city` is optional and plenty of prod rows have never been enriched.
+ */
+/**
+ * The colour pairs are chosen for what they SCORE against the master row's two
+ * backgrounds (slate-900 #0f172a idle, #02192e selected), not for realism — the
+ * exact ratios are in the comment on each team. Every one of the four branches
+ * of `teamTextColor` has a team here, so none of them can rot unnoticed.
+ */
 const TEAMS = [
   {
     _id: "t-mariners",
     _creationTime: 1,
     name: "Seattle Mariners",
+    city: "Seattle",
     sportId: "sport-baseball",
+    // Primary clears the floor comfortably (9.8:1) — the plain case.
+    colors: { primary: "#5fd3bc", secondary: "#0c2c56" },
     lastUpdated: 1,
   },
   {
@@ -214,9 +236,101 @@ const TEAMS = [
     _creationTime: 1,
     name: "Cincinnati Reds",
     sportId: "sport-baseball",
+    // The franchise red is 2.9:1 on this row — under the floor, and exactly the
+    // shape of the problem: a team's signature colour is very often the one
+    // that cannot carry small text on a near-black surface. Secondary (17.9:1)
+    // is what it gets printed on, and is what the row uses instead.
+    colors: { primary: "#c6011f", secondary: "#ffffff" },
+    lastUpdated: 1,
+  },
+  {
+    _id: "t-drab",
+    _creationTime: 1,
+    name: "Midnight Navys",
+    sportId: "sport-baseball",
+    // 1.2:1 and 2.3:1 — a franchise built entirely out of near-blacks. Nothing
+    // here is readable, so the row keeps its muted default.
+    colors: { primary: "#132448", secondary: "#005c5c" },
+    lastUpdated: 1,
+  },
+  {
+    _id: "t-borderline",
+    _creationTime: 1,
+    name: "Borderline Blues",
+    sportId: "sport-baseball",
+    // Deliberately knife-edge: 4.513:1 on an IDLE row and 4.494:1 on a SELECTED
+    // one, i.e. astride the 4.5 floor and on opposite sides of it. The two
+    // backgrounds differ by well under a percent in luminance, so this is the
+    // only way to prove the check is handed the background the row is actually
+    // painted on rather than a single hardcoded one. Contrived, and says so.
+    colors: { primary: "#3c84c6", secondary: "#ffffff" },
     lastUpdated: 1,
   },
 ];
+
+/**
+ * NEO-235 — the two fixtures the master row's team nod is decided by.
+ *
+ * `TRADED_TWICE` separates SUMMED tenure from longest-single-stint: four years
+ * in Seattle plus another four beats one six-year run in Cincinnati, so the row
+ * must say Mariners. `pickDefaultTeamYear` (the spine designer's per-stint
+ * rule) would say Reds here — which is the reason the row does not use it.
+ *
+ * `STILL_PLAYING` pins the open-ended stint: no `toYear` means "still there",
+ * counted through the current year, so nine seasons in Cincinnati beat six in
+ * Seattle. Years are derived from the real current year rather than hardcoded
+ * because "still there" is a fact about now; a frozen literal would quietly
+ * stop testing anything as the fixture aged.
+ */
+const CURRENT_YEAR = new Date().getFullYear();
+
+const TRADED_TWICE = {
+  _id: "p-traded",
+  _creationTime: 5,
+  name: "Traded Twice",
+  nameNormalized: "traded twice",
+  sportId: "sport-baseball",
+  teamYears: [
+    { teamId: "t-mariners", fromYear: 2005, toYear: 2009 },
+    { teamId: "t-reds", fromYear: 2010, toYear: 2016 },
+    { teamId: "t-mariners", fromYear: 2017, toYear: 2021 },
+  ],
+  lastUpdated: 1,
+};
+
+const STILL_PLAYING = {
+  _id: "p-current",
+  _creationTime: 6,
+  name: "Still Playing",
+  nameNormalized: "playing still",
+  sportId: "sport-baseball",
+  teamYears: [
+    { teamId: "t-mariners", fromYear: 1990, toYear: 1996 },
+    { teamId: "t-reds", fromYear: CURRENT_YEAR - 9 },
+  ],
+  lastUpdated: 1,
+};
+
+/** One-team players, each pointing at one colour branch of the row label. */
+const DRAB_PLAYER = {
+  _id: "p-drab",
+  _creationTime: 7,
+  name: "Drab Fixture",
+  nameNormalized: "drab fixture",
+  sportId: "sport-baseball",
+  teamYears: [{ teamId: "t-drab", fromYear: 2000, toYear: 2010 }],
+  lastUpdated: 1,
+};
+
+const BORDERLINE_PLAYER = {
+  _id: "p-borderline",
+  _creationTime: 8,
+  name: "Borderline Fixture",
+  nameNormalized: "borderline fixture",
+  sportId: "sport-baseball",
+  teamYears: [{ teamId: "t-borderline", fromYear: 2000, toYear: 2010 }],
+  lastUpdated: 1,
+};
 
 // Mutable per-test query answers.
 let management: unknown;
@@ -267,6 +381,17 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/**
+ * The team nod on a given row. Found by its `title` (the full label, which is
+ * also what a truncated row recovers on hover) rather than by class or
+ * position, so the assertions below survive any restyling of the row.
+ */
+function teamNod(playerName: RegExp): HTMLElement {
+  const row = screen.getByRole("button", { name: playerName });
+  const label = row.textContent?.match(/Baseball(.*)$/)?.[1]?.trim() ?? "";
+  return within(row).getByTitle(label);
+}
 
 /** Open the detail panel on Ken Griffey Jr. */
 function selectGriffey() {
@@ -368,19 +493,148 @@ describe("PlayerManagement — the list", () => {
     ).toBeTruthy();
   });
 
-  it("badges Hall of Fame, stint count and a known Wikidata id", () => {
+  /**
+   * NEO-235 — the row says who, and which one. Sport and home franchise are the
+   * two things that tell two similarly-named players apart; the Hall of Fame
+   * tag, the stint count and the "Q…" Wikidata glyph tell them apart from
+   * nothing, and four competing sizes and colours per row made the names — the
+   * only thing anyone scans this list for — the hardest thing on it to read.
+   * They are asserted as ABSENT here because they are still rendered a few
+   * hundred lines away in the detail panel, so a regression that put them back
+   * on the row would otherwise show up nowhere.
+   */
+  it("shows the sport, and none of the detail-panel badges", () => {
     render(<PlayerManagement />);
     const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
     expect(row.textContent).toContain("Baseball");
-    expect(row.textContent).toContain("HoF");
-    expect(row.textContent).toContain("2 stints");
-    expect(row.textContent).toContain("Q…");
+    expect(row.textContent).not.toContain("HoF");
+    expect(row.textContent).not.toContain("stint");
+    expect(row.textContent).not.toContain("Q…");
+  });
 
-    // Mike Trout has none of them — the badges mean something.
-    const plain = screen.getByRole("button", { name: /Mike Trout/ });
-    expect(plain.textContent).not.toContain("HoF");
-    expect(plain.textContent).not.toContain("stint");
-    expect(plain.textContent).not.toContain("Q…");
+  it("names the team a player spent longest with, as a fan says it", () => {
+    management = { players: [GRIFFEY], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // Both of Griffey's stints are Seattle's, and Seattle has a `city`, so the
+    // row drops it: "Seattle Mariners" is how the table stores the team and
+    // "Mariners" is how anyone holding the card refers to it.
+    const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
+    expect(row.textContent).toContain("Mariners");
+    expect(row.textContent).not.toContain("Seattle");
+  });
+
+  it("keeps the full name for a team with no city recorded", () => {
+    management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // A longer label is the safe failure; a wrong one is not.
+    expect(
+      screen.getByRole("button", { name: /Still Playing/ }).textContent,
+    ).toContain("Cincinnati Reds");
+  });
+
+  it("totals a player's stints per team rather than ranking single stints", () => {
+    management = { players: [TRADED_TWICE], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // 4 + 4 in Seattle against a single 6 in Cincinnati. Ranking by longest
+    // SINGLE stint — what the spine designer's `pickDefaultTeamYear` does —
+    // would file him under the Reds, and the hobby would not.
+    const row = screen.getByRole("button", { name: /Traded Twice/ });
+    expect(row.textContent).toContain("Mariners");
+    expect(row.textContent).not.toContain("Reds");
+  });
+
+  it("counts an open-ended stint through the current year", () => {
+    management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // Nine seasons and counting in Cincinnati against six long-finished ones in
+    // Seattle. Treating the absent `toYear` as a zero-length stint — the easy
+    // bug — flips this to Mariners.
+    const row = screen.getByRole("button", { name: /Still Playing/ });
+    expect(row.textContent).toContain("Cincinnati Reds");
+    expect(row.textContent).not.toContain("Mariners");
+  });
+
+  it("shows the sport alone for a player with no career history", () => {
+    render(<PlayerManagement />);
+    const row = screen.getByRole("button", { name: /Mike Trout/ });
+    expect(row.textContent).toContain("Baseball");
+    expect(row.textContent).not.toContain("Mariners");
+    expect(row.textContent).not.toContain("Reds");
+  });
+
+  /**
+   * NEO-235 — the team nod is painted in the TEAM's colours, not NeonBinder's.
+   *
+   * A collector recognises a franchise by its livery before they have finished
+   * reading the word, which is the whole reason the owner asked for this. The
+   * gate is WCAG 1.4.3 (4.5:1 for text this size) and it is a real gate, not
+   * the informational readout the spine designer shows — this is UI, not ink on
+   * paper. Colour never carries meaning on its own here: the label reads the
+   * same word down every branch, so a muted row has lost decoration and no
+   * information.
+   */
+  it("paints the team nod in the team's primary colour when it is readable", () => {
+    management = { players: [GRIFFEY], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+    expect(teamNod(/Ken Griffey Jr\./).style.color).toBe("#5fd3bc");
+  });
+
+  it("falls back to the secondary colour when the primary cannot be read", () => {
+    management = { players: [STILL_PLAYING], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // The franchise red scores 2.9:1 on this row. Its secondary is the colour
+    // the team prints that red ON, so the fallback is usually the right colour
+    // for the team as well as the readable one.
+    expect(teamNod(/Still Playing/).style.color).toBe("#ffffff");
+  });
+
+  it("stays muted when neither team colour clears the contrast floor", () => {
+    management = { players: [DRAB_PLAYER], totalCount: 1, truncated: false };
+    render(<PlayerManagement />);
+
+    // No inline colour at all — the class-level slate-300 is what shows, and
+    // the label still names the team, so nothing is lost but the livery.
+    const nod = teamNod(/Drab Fixture/);
+    expect(nod.style.color).toBe("");
+    expect(nod.textContent).toBe("Midnight Navys");
+  });
+
+  it("measures the colour against the background the row is actually painted on", () => {
+    management = {
+      players: [BORDERLINE_PLAYER],
+      totalCount: 1,
+      truncated: false,
+    };
+    render(<PlayerManagement />);
+
+    // 4.513:1 on the idle row — over the floor, so the primary is used.
+    expect(teamNod(/Borderline Fixture/).style.color).toBe("#3c84c6");
+
+    // Selecting the row swaps in `bg-neon-blue/10`, and the same colour now
+    // scores 4.494:1 — under it. A check hardcoded to one background would
+    // leave the primary in place here.
+    fireEvent.click(screen.getByRole("button", { name: /Borderline Fixture/ }));
+    expect(teamNod(/Borderline Fixture/).style.color).toBe("#ffffff");
+  });
+
+  it("asks for every visible row's team in one batched lookup", () => {
+    management = {
+      players: [GRIFFEY, TRADED_TWICE, STILL_PLAYING],
+      totalCount: 3,
+      truncated: false,
+    };
+    render(<PlayerManagement />);
+
+    // Three players, four teams named between them, two distinct ids — one
+    // query, deduped. A per-row lookup would open a subscription per row, and
+    // this list holds up to 500.
+    const ids = lastArgs("teams.getManyByIds")?.ids as string[];
+    expect([...ids].sort()).toEqual(["t-mariners", "t-reds"]);
   });
 
   it("marks the open row as current", () => {
@@ -944,17 +1198,17 @@ describe("PlayerManagement — accessibility", () => {
     expect(counter.getAttribute("aria-live")).toBe("polite");
   });
 
-  it("expands the HoF and Wikidata glyphs for assistive tech", () => {
-    // `title` is a mouse-hover affordance: not announced reliably, and never on
-    // touch or keyboard. Both glyphs carry the expansion as an aria-label too.
+  it("reads the row out as a name, a sport and a team", () => {
+    // NEO-235: the row used to end in two unexplained glyphs ("HoF", "Q…")
+    // carrying their expansion as aria-labels. Both are gone, and what replaced
+    // them needs no expansion — the separator between the sport and the team is
+    // a CSS border, so it contributes nothing to the accessible name and the
+    // button announces the three plain words a person would say out loud.
+    management = { players: [GRIFFEY], totalCount: 1, truncated: false };
     render(<PlayerManagement />);
-    const hof = screen.getByText("HoF");
-    expect(hof.getAttribute("aria-label")).toBe("Hall of Fame");
-    expect(hof.getAttribute("title")).toBe("Hall of Fame");
-
-    const qid = screen.getByText("Q…");
-    expect(qid.getAttribute("aria-label")).toBe("Wikidata Q313256");
-    expect(qid.getAttribute("title")).toBe("Wikidata Q313256");
+    expect(
+      screen.getByRole("button", { name: "Ken Griffey Jr. Baseball Mariners" }),
+    ).toBeTruthy();
   });
 
   it("renders the row's sport tag at a contrast-passing slate", () => {
