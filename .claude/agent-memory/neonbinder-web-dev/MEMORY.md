@@ -7,3 +7,4 @@
 - [Mid-build security conditions override the brief](feedback_midbuild_security_conditions.md) — security-auditor verdicts arrive mid-task as numbered conditions; fold them in, report per-condition with test names
 - [Verify external ids live](external-ids-must-be-verified-live.md) — hard-coded QIDs/vendor ids must be resolved against the source before merge; four HoF QIDs were wrong for months
 - [sportConfig is copied onto rows](sport-config-is-copied-onto-rows.md) — editing the defaults never reaches an existing deployment; a repair has to ship with the change
+- [No inline sub-object forms](feedback-no-inline-sub-object-forms.md) — a "+ Add a new …" select option opens a modal that creates and selects; never inline fields saved by the parent form

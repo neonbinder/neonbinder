@@ -62,6 +62,7 @@ import type * as placeholderPipeline from "../placeholderPipeline.js";
 import type * as placeholderPool from "../placeholderPool.js";
 import type * as placeholderStream from "../placeholderStream.js";
 import type * as placeholderWatchdog from "../placeholderWatchdog.js";
+import type * as platformLevels from "../platformLevels.js";
 import type * as platformSlots from "../platformSlots.js";
 import type * as players from "../players.js";
 import type * as postage from "../postage.js";
@@ -146,6 +147,7 @@ declare const fullApi: ApiFromModules<{
   placeholderPool: typeof placeholderPool;
   placeholderStream: typeof placeholderStream;
   placeholderWatchdog: typeof placeholderWatchdog;
+  platformLevels: typeof platformLevels;
   platformSlots: typeof platformSlots;
   players: typeof players;
   postage: typeof postage;

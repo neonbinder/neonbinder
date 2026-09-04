@@ -32,6 +32,10 @@ export const SECTIONS = [
   // in the order the data does: a card names a player, the player names teams.
   { label: "Players", path: "/admin/players" },
   { label: "Teams", path: "/admin/teams" },
+  // NEO-240. After Teams for the same reason Players sits before it: the entity
+  // tools read in the order the data does — a card names a player, the player
+  // names teams, a team belongs to a league.
+  { label: "Leagues", path: "/admin/leagues" },
   // NEO-170's operator view. Landed as a top-level tab while this section
   // didn't exist yet; its page header planned the move here all along.
   { label: "Pipeline Runs", path: "/admin/pipeline-runs" },

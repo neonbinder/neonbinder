@@ -25,5 +25,12 @@ prefer the REAL identifier over a placeholder for anything asserting a match
 against external data — a fixture that uses the production value would have
 failed loudly here.
 
+A second confirmed instance, NEO-240 (2026-09-04): the work-package brief
+named Q1734 as the NHL's Wikidata id. Q1734 is `volleyball` — the sport. The
+NHL is Q1215892 (no English label at all, only a description and a P1813 short
+name "NHL"). MLB/NFL/NBA in the same brief were right. So a plausible-looking
+QID handed over in a ticket, a spec, or another agent's prompt is not evidence:
+resolve it before you write it down, even when the rest of the list checks out.
+
 Related: identifiers persisted onto rows do not update when the constant
 changes — see [[sport-config-is-copied-onto-rows]].

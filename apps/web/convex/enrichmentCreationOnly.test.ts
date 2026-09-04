@@ -41,6 +41,7 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
+import { normalizeLeagueName } from "./leagues";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -218,6 +219,165 @@ describe("enrichTeam — creation-only (NEO-203)", () => {
   });
 });
 
+describe("enrichLeague — creation-only (NEO-240)", () => {
+  /**
+   * A league shaped EXACTLY as `resolveDefaultLeagueId` → `findOrCreateLeague`
+   * inserts the sport's default row: full name from `sportConfig.espn`, the
+   * abbreviation from `sportConfig.league`, `level: "major"`, and the
+   * abbreviation seeded as an alias.
+   *
+   * That shape is the whole point. `abbreviation` and `level` are the two
+   * fields that LOOK like enrichment output and are written at creation, so
+   * they are the league equivalents of `leagueId`/`lastUpdated` on teams — the
+   * markers that must never be markers. The "bare" case below uses this row,
+   * not a stripped-down one, so the pin actually covers the trap.
+   */
+  async function insertDefaultShapedLeague(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    name = "Major League Baseball",
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name,
+        nameNormalized: normalizeLeagueName(name),
+        abbreviation: "MLB",
+        level: "major" as const,
+        aliases: ["MLB"],
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+  }
+
+  const markerCases: Array<[string, Record<string, unknown>]> = [
+    ["yearsActive", { yearsActive: { from: 1903 } }],
+    ["externalIds.wikidataId", { externalIds: { wikidataId: "Q1163715" } }],
+  ];
+
+  for (const [marker, fields] of markerCases) {
+    test(`a league already carrying ${marker} is skipped without any lookup`, async () => {
+      const t = convexTest(schema, modules);
+      const sportId = await seedSport(t);
+      const leagueId = await insertDefaultShapedLeague(t, sportId);
+      await t.run(async (ctx) => ctx.db.patch(leagueId, fields));
+
+      const before = await t.run(async (ctx) => ctx.db.get(leagueId));
+      vi.stubGlobal("fetch", forbiddenFetch());
+
+      // No throw means no request was attempted.
+      await t.action(internal.adapters.wikidata.enrichLeague, { leagueId });
+
+      // And nothing was written — not even `lastUpdated`.
+      expect(await t.run(async (ctx) => ctx.db.get(leagueId))).toEqual(before);
+    });
+  }
+
+  test("a DEFAULT-SHAPED new league is NOT treated as enriched — the lookup runs", async () => {
+    // The regression pin for this file's header, in its league form. Every
+    // default league row is born with an abbreviation AND a level; if either
+    // became a marker the guard would skip the row on the very hop that
+    // created it, and league enrichment would be dead on arrival for exactly
+    // the leagues that matter most — silently.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await insertDefaultShapedLeague(t, sportId);
+
+    const stub = countingFetch();
+    vi.stubGlobal("fetch", stub.fetch);
+
+    await t.action(internal.adapters.wikidata.enrichLeague, { leagueId });
+
+    expect(stub.calls()).toBeGreaterThan(0);
+  });
+
+  test("force re-enriches an already-enriched league — the operator remedy", async () => {
+    // `leagues.enrichFromWikidata` is the ONLY sanctioned path here:
+    // admin-gated, human-initiated, and the remedy for a match against the
+    // wrong league.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await insertDefaultShapedLeague(t, sportId, "Some Unresolvable League");
+    await t.run(async (ctx) =>
+      ctx.db.patch(leagueId, { externalIds: { wikidataId: "Q-WRONG" } }),
+    );
+
+    const stub = countingFetch();
+    vi.stubGlobal("fetch", stub.fetch);
+
+    await t.action(internal.adapters.wikidata.enrichLeague, {
+      leagueId,
+      force: true,
+    });
+
+    expect(stub.calls()).toBeGreaterThan(0);
+  });
+});
+
+describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () => {
+  const ADMIN = { subject: "admin_neo240", role: "admin" };
+
+  test("a league it CREATED is enqueued exactly once", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await t
+      .withIdentity(ADMIN)
+      .mutation(api.leagues.createByAdmin, { name: "Texas League", sportId });
+
+    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
+  });
+
+  test("a league it FOUND is not enqueued at all", async () => {
+    // The early `return existing._id` in `findOrCreateLeague` is what makes
+    // this honour `enqueueEnrichment`'s creation-only contract.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    const asAdmin = t.withIdentity(ADMIN);
+    const first = await asAdmin.mutation(api.leagues.createByAdmin, {
+      name: "Texas League",
+      sportId,
+    });
+    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
+
+    // Resolved by the SAME alias-aware dedup a real second caller hits, so
+    // this proves the guard is the row lookup and not string equality.
+    const second = await asAdmin.mutation(api.leagues.createByAdmin, {
+      name: "  texas league ",
+      sportId,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(second.created).toBe(false);
+    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
+  });
+
+  test("creating the first team of a sport enqueues the DEFAULT league exactly once", async () => {
+    // The path that actually creates most league rows in production:
+    // `teams.findOrCreate` → `resolveDefaultLeagueId` → `findOrCreateLeague`.
+    // Two enqueues, one per kind — and the second team reuses the league, so
+    // the league is never enqueued twice.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity({ subject: "admin_neo240", role: "admin" });
+
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "New York Yankees",
+      sportId,
+    });
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
+
+    await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Boston Red Sox",
+      sportId,
+    });
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(2);
+    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
+  });
+});
+
 describe("enrichPlayer — creation-only (NEO-203)", () => {
   async function insertBarePlayer(
     t: ReturnType<typeof convexTest>,
@@ -366,24 +526,43 @@ describe("the automatic enqueue path never carries an existing row", () => {
  * already covered above, and letting the pool actually drain here would test
  * the pool, not this wiring.
  */
+/**
+ * How many `enqueueEnrichment` calls were scheduled FOR ONE KIND of row.
+ *
+ * NEO-240 made the kind matter. `leagues.findOrCreateLeague` now schedules its
+ * own enrichment on ITS insert branch, and every team-creation path runs
+ * through `resolveDefaultLeagueId` — so creating the first team of a sport
+ * schedules two enqueues, one carrying `teamIds` and one carrying `leagueIds`,
+ * and a bare count can no longer say which contract it is measuring. Reading
+ * the scheduled ARGS keeps each assertion about the path it names, and makes
+ * the league cases below assertable in the same terms.
+ */
+type EnrichmentKind = "playerIds" | "teamIds" | "leagueIds";
+
 async function scheduledEnrichmentCount(
   t: ReturnType<typeof convexTest>,
+  kind: EnrichmentKind,
 ): Promise<number> {
-  const names = await t.run(async (ctx) => {
-    const rows = await (
+  const rows = await t.run(async (ctx) =>
+    (
       ctx as unknown as {
         db: {
           system: {
             query: (n: string) => {
-              collect: () => Promise<Array<{ name: string }>>;
+              collect: () => Promise<Array<{ name: string; args: unknown[] }>>;
             };
           };
         };
       }
-    ).db.system.query("_scheduled_functions").collect();
-    return rows.map((r) => r.name);
-  });
-  return names.filter((n) => n.includes("enqueueEnrichment")).length;
+    ).db.system
+      .query("_scheduled_functions")
+      .collect(),
+  );
+  return rows.filter((r) => {
+    if (!r.name.includes("enqueueEnrichment")) return false;
+    const arg = r.args[0] as Record<string, unknown> | undefined;
+    return Array.isArray(arg?.[kind]) && (arg[kind] as unknown[]).length > 0;
+  }).length;
 }
 
 describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () => {
@@ -398,7 +577,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
 
     expect(teamId).toBeDefined();
-    expect(await scheduledEnrichmentCount(t)).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
   });
 
   test("a team it FOUND is not enqueued at all", async () => {
@@ -414,7 +593,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
 
     expect(teamId).toBe(existingId);
-    expect(await scheduledEnrichmentCount(t)).toBe(0);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
   });
 
   test("the second call for the same name enqueues nothing more", async () => {
@@ -428,7 +607,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       name: "New York Yankees",
       sportId,
     });
-    expect(await scheduledEnrichmentCount(t)).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
 
     // The normalizer token-SORTS and strips punctuation, so this resolves to
     // the same row — proving the guard is the row lookup, not string equality.
@@ -438,7 +617,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
     });
 
     expect(second).toBe(first);
-    expect(await scheduledEnrichmentCount(t)).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
   });
 
   test("findOrCreateInternal is unchanged — it enqueues nothing", async () => {
@@ -453,7 +632,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       sportId,
     });
 
-    expect(await scheduledEnrichmentCount(t)).toBe(0);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
   });
 
   test("a rejected call — over-long name — enqueues nothing and creates nothing", async () => {
@@ -467,7 +646,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       }),
     ).rejects.toThrow(/the limit is 120/);
 
-    expect(await scheduledEnrichmentCount(t)).toBe(0);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
   });
 
@@ -497,7 +676,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
       }),
     ).rejects.toThrow(/must be created under a sport/);
 
-    expect(await scheduledEnrichmentCount(t)).toBe(0);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
   });
 
@@ -563,7 +742,7 @@ describe("teams.findOrCreate enqueues enrichment on INSERT only (NEO-208)", () =
 
     expect(second).toBe(first);
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
-    expect(await scheduledEnrichmentCount(t)).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(1);
   });
 
   test("team_created is logged as structured JSON, never string-concatenated with the name", async () => {
