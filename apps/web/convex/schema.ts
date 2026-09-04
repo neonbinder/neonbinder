@@ -610,8 +610,13 @@ export default defineSchema({
     // Numbered card print run (e.g. /99). Derived from BSC printRun or
     // set-level metadata; absent on unnumbered cards.
     printRun: v.optional(v.number()),
-    // Autograph signal: presence of autographType implies the card is
-    // autographed. Values: "On-Card" / "Sticker" / "Cut".
+    // LEGACY (NEO-217). The raw marketplace autograph string ("On-Card" /
+    // "Sticker" / "Cut", and SportLots' literal "Unknown"). Still arrives on
+    // the commit wire and is still derived into `features.autographed` at
+    // insert — that derived value is the one truth for "this card is an
+    // autograph". No longer written on insert, no longer displayed on the
+    // row, and no longer diffed by the NEO-203 re-sync review. Kept only for
+    // rows written before NEO-217; there is no backfill.
     autographType: v.optional(v.string()),
     // NEO-189: this card's VARIATION name — "Action", "Nickname", "Sliding",
     // "Standing by bucket". One NeonBinder name per card, settled when the

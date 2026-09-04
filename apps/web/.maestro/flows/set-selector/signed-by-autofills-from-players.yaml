@@ -454,16 +454,17 @@ tags:
 
 # ============================================================
 # STEP 7 — CLOSE (no autographed restore — next run's normalise self-heals)
-# Cancel closes the drawer immediately: the feature edits persist per-row via
-# setCardFeature (they are NOT part of the drawer's dirty draft, which only tracks
-# name/title/description/attributes — untouched here), so Cancel does not trip the
-# dirty guard. Leaving autographed "On Card" is inert under sole-writer tolerance;
-# the next run's Step 5 normalise turns it back to "None" before flipping.
+# NEO-216: the drawer has no Save/Cancel pair and no draft — every field writes
+# itself. This flow touched only the per-row feature controls, which have always
+# persisted immediately via setCardFeature, so "Done" simply closes and no
+# name/title/description/attribute write was ever sent. Leaving autographed
+# "On Card" is inert under sole-writer tolerance; the next run's Step 5
+# normalise turns it back to "None" before flipping.
 # ============================================================
 
 - assertVisible:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"

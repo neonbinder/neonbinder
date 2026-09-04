@@ -36,7 +36,12 @@ export function FeatureValueControl({
   /** Text-only: no-op baseline for useReactiveField. Defaults to `value`. */
   compareBaseline?: string;
   onSave: (value: string) => Promise<unknown>;
-  /** Text-only: handler for an empty commit (e.g. "revert to inherited"). */
+  /**
+   * Text-only: handler for an empty commit. Both hosts pass
+   * `() => onSave("")` (NEO-217 — the server removes the key). Omitting it
+   * makes an emptied field snap back to its previous value, which is what a
+   * row that genuinely cannot be blank should do.
+   */
   onEmptyCommit?: () => Promise<unknown>;
   ariaLabel: string;
   placeholder?: string;
@@ -319,6 +324,8 @@ function SelectValueControl({
   // placeholder option instead of silently coercing to the first option.
   const selected = options.includes(value) ? value : "";
 
+  // The `next === selected` guard stays: re-picking what is already selected
+  // fires no mutation, including re-picking "—" on an already-empty row.
   const handleChange = async (next: string) => {
     if (next === selected) return;
     setBusy(true);
@@ -342,9 +349,27 @@ function SelectValueControl({
         onChange={(e) => void handleChange(e.target.value)}
         className={className}
       >
-        <option value="" disabled>
-          — Select —
-        </option>
+        {/* NEO-217: SELECTABLE, not disabled.
+
+            It was disabled, which made it a pure placeholder and meant a
+            League or Era could be set but never un-set — the one value in the
+            list an operator could not get back to was "none of these", which
+            is a legitimate answer for every feature in this control. Picking
+            it now routes through the same `onSave` with `""`, which the server
+            reads as "remove this key" (never as a stored empty string).
+
+            a11y (audit fix, NEO-216/217): the label was a bare "—" (em dash),
+            matching the "—" placeholder the text rows use for blank — but a
+            placeholder is decorative ghost text a screen reader never reads,
+            while THIS text is the option's actual accessible name (`<option>`
+            support for overriding it with `aria-label` is inconsistent across
+            browser/AT pairs, so the visible text has to carry the meaning on
+            its own). A lone dash announces as "hyphen" or nothing at all,
+            with nothing distinguishing it from a rendering glitch — "No
+            value" says what picking it does, same as every real option
+            beside it says what picking THAT does, and it's still not an
+            instruction like "— Select —" was. */}
+        <option value="">No value</option>
         {options.map((opt) => (
           <option key={opt} value={opt}>
             {opt}

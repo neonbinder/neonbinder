@@ -32,7 +32,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import React, { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useReactiveField } from "./useReactiveField";
+import { BUSY_MESSAGE, useReactiveField } from "./useReactiveField";
 
 // ---------------------------------------------------------------------------
 // Harness component
@@ -468,6 +468,101 @@ describe("useReactiveField", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Adversarial pass (NEO-216/217) — commit serialization.
+  //
+  // `runCommit`'s very first line is `if (busyRef.current) return;`, and
+  // `busyRef.current = true` is set SYNCHRONOUSLY (before the first
+  // `await onSave(...)`), never inside a `.then`. That ordering is what these
+  // pin: two commit triggers arriving back-to-back — Enter then blur on the
+  // same keystroke, or a second edit attempted while the first save is still
+  // in flight — must never both call `onSave`, and must never let a second,
+  // DIFFERENT value land after a first, in-flight one resolves out of turn.
+  // -------------------------------------------------------------------------
+  describe("commit serialization (adversarial)", () => {
+    it("Enter immediately followed by blur on the same commit calls onSave exactly once", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      render(<Harness currentValue="old" onSave={onSave} />);
+
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+      focusInput(input);
+      typeInto(input, "new value");
+
+      // Enter fires runCommit synchronously up to its first await, which is
+      // where busyRef.current flips true — so the blur that follows in the
+      // same tick must see busy and no-op, not queue a second identical call.
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+        blurInput(input);
+      });
+
+      expect(onSave).toHaveBeenCalledOnce();
+      expect(onSave).toHaveBeenCalledWith("new value");
+    });
+
+    it("pressing Enter twice in rapid succession commits only once", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      render(<Harness currentValue="old" onSave={onSave} />);
+
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+      focusInput(input);
+      typeInto(input, "new value");
+
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+        fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+      });
+
+      expect(onSave).toHaveBeenCalledOnce();
+    });
+
+    it("a second, different edit attempted while the first save is in flight is DROPPED, not queued — it never reaches onSave on its own", async () => {
+      let resolveFirst!: (value: unknown) => void;
+      const onSave = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveFirst = resolve;
+          }),
+      );
+      render(<Harness currentValue="v0" onSave={onSave} />);
+
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+      focusInput(input);
+      typeInto(input, "v1");
+      await act(async () => {
+        blurInput(input);
+      });
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(onSave).toHaveBeenLastCalledWith("v1");
+
+      // Re-focus, type a SECOND value, and try to commit it while the first
+      // save is still unresolved. The busy guard drops this attempt outright
+      // — it must not silently queue and fire once the first resolves.
+      focusInput(input);
+      typeInto(input, "v2");
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+      });
+      expect(onSave).toHaveBeenCalledTimes(1); // still just "v1"
+
+      await act(async () => {
+        resolveFirst(undefined);
+      });
+      // The dropped "v2" commit never fires on its own after the first
+      // resolves — no queued write silently lands out of turn.
+      expect(onSave).toHaveBeenCalledTimes(1);
+
+      // The DOM still holds "v2" (nothing reset it), and an explicit new
+      // commit action now succeeds normally, proving the field isn't wedged.
+      expect(input.value).toBe("v2");
+      await act(async () => {
+        blurInput(input);
+      });
+      expect(onSave).toHaveBeenCalledTimes(2);
+      expect(onSave).toHaveBeenLastCalledWith("v2");
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Error handling
   // -------------------------------------------------------------------------
   describe("error handling", () => {
@@ -526,5 +621,266 @@ describe("useReactiveField", () => {
       const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
       expect(input.value).toBe("starting-value");
     });
+  });
+});
+
+/**
+ * NEO-216 — the hook drives a `<textarea>` too, and the Enter key means
+ * something different there.
+ *
+ * The card detail drawer's listing description became a per-field autosave row
+ * like every other field in that drawer, which is what widened the element
+ * type from `HTMLInputElement` to `HTMLInputElement | HTMLTextAreaElement`.
+ * A bare Enter in a textarea is a paragraph break the operator deliberately
+ * typed; swallowing it to save would make a multi-line description impossible
+ * to write. So multi-line rows opt into `enterCommit: "modEnter"` and commit
+ * on Cmd/Ctrl+Enter — or, as always, on blur.
+ */
+function TextareaHarness({
+  currentValue,
+  onSave,
+  enterCommit,
+}: {
+  currentValue: string;
+  onSave: (trimmed: string) => Promise<unknown> | unknown;
+  enterCommit?: "enter" | "modEnter";
+}) {
+  const { inputProps, busy, error } = useReactiveField<HTMLTextAreaElement>({
+    value: currentValue,
+    onSave,
+    enterCommit,
+  });
+
+  return (
+    <>
+      <textarea aria-label="field" {...inputProps} />
+      {busy && <span data-testid="busy">busy</span>}
+      {error && <span data-testid="error">{error}</span>}
+    </>
+  );
+}
+
+describe("useReactiveField — textarea + enterCommit (NEO-216)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const field = () =>
+    screen.getByRole("textbox", { name: "field" }) as HTMLTextAreaElement;
+
+  it("ignores a bare Enter when enterCommit is 'modEnter'", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TextareaHarness
+        currentValue="old"
+        onSave={onSave}
+        enterCommit="modEnter"
+      />,
+    );
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "line one";
+    fireEvent.input(el, { target: { value: "line one" } });
+
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("commits on Cmd/Ctrl+Enter, reading the live DOM value", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TextareaHarness
+        currentValue="old"
+        onSave={onSave}
+        enterCommit="modEnter"
+      />,
+    );
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "line one\nline two";
+    fireEvent.input(el, { target: { value: "line one\nline two" } });
+
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter", metaKey: true });
+    });
+    expect(onSave).toHaveBeenCalledWith("line one\nline two");
+
+    await act(async () => {
+      el.value = "third";
+      fireEvent.input(el, { target: { value: "third" } });
+      fireEvent.keyDown(el, { key: "Enter", ctrlKey: true });
+    });
+    expect(onSave).toHaveBeenCalledWith("third");
+  });
+
+  it("still commits on blur, which is the shared contract", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TextareaHarness
+        currentValue="old"
+        onSave={onSave}
+        enterCommit="modEnter"
+      />,
+    );
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "typed";
+    fireEvent.input(el, { target: { value: "typed" } });
+
+    await act(async () => {
+      el.blur();
+      fireEvent.blur(el);
+    });
+
+    expect(onSave).toHaveBeenCalledWith("typed");
+  });
+
+  it("defaults to committing on a bare Enter, so no existing caller changes", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<TextareaHarness currentValue="old" onSave={onSave} />);
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "typed";
+    fireEvent.input(el, { target: { value: "typed" } });
+
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+
+    expect(onSave).toHaveBeenCalledWith("typed");
+  });
+});
+
+/**
+ * A commit attempted while the previous one is still in flight is DROPPED —
+ * the hook owns one field and will not interleave two writes on it. It used to
+ * drop silently, which is the worst way to lose an edit: the new value sits in
+ * the input looking saved. The live case is the card drawer's Regenerate
+ * button, which writes a generated title into the field and commits it; press
+ * it while a blur-commit is still settling and the generated title stayed on
+ * screen, unsaved, with nothing said.
+ */
+describe("useReactiveField — a commit while busy is reported, not swallowed", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const field = () =>
+    screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+
+  it("surfaces the busy message and does not start a second save", async () => {
+    let release: (() => void) | undefined;
+    const onSave = vi
+      .fn()
+      .mockImplementation(
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+
+    render(<Harness currentValue="old" onSave={onSave} />);
+    const el = field();
+
+    // First commit — still in flight.
+    focusInput(el);
+    typeInto(el, "first");
+    await act(async () => {
+      blurInput(el);
+    });
+    expect(screen.getByTestId("busy")).toBeDefined();
+    expect(onSave).toHaveBeenCalledTimes(1);
+
+    // A second, genuinely different value arrives before it settles.
+    focusInput(el);
+    typeInto(el, "second");
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("error").textContent).toBe(BUSY_MESSAGE);
+    // The value is left exactly where the operator put it, so committing again
+    // is all that is needed — nothing to retype.
+    expect(el.value).toBe("second");
+
+    await act(async () => {
+      release?.();
+    });
+  });
+
+  it("stays silent when the second commit is for the value already being saved", async () => {
+    // Ordinary, and not a dropped edit: press Enter to save, then tab away
+    // before the round trip finishes and the blur commits the same text again.
+    // Reporting that as a lost change would cry wolf on the common path.
+    let release: (() => void) | undefined;
+    const onSave = vi
+      .fn()
+      .mockImplementation(
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+
+    render(<Harness currentValue="old" onSave={onSave} />);
+    const el = field();
+
+    focusInput(el);
+    typeInto(el, "typed");
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+    expect(onSave).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      blurInput(el);
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("error")).toBeNull();
+
+    await act(async () => {
+      release?.();
+    });
+  });
+
+  it("clears the busy message once a later commit succeeds", async () => {
+    let release: (() => void) | undefined;
+    const onSave = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<void>((resolve) => (release = resolve)),
+      )
+      .mockResolvedValue(undefined);
+
+    render(<Harness currentValue="old" onSave={onSave} />);
+    const el = field();
+
+    focusInput(el);
+    typeInto(el, "first");
+    await act(async () => {
+      blurInput(el);
+    });
+    typeInto(el, "second");
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+    expect(screen.getByTestId("error").textContent).toBe(BUSY_MESSAGE);
+
+    await act(async () => {
+      release?.();
+    });
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+
+    expect(onSave).toHaveBeenLastCalledWith("second");
+    expect(screen.queryByTestId("error")).toBeNull();
   });
 });

@@ -20,6 +20,10 @@ import {
   legacyBscFacetForLevel,
   planBscFanOut,
 } from "../bscFacets";
+import {
+  platformServesLevel,
+  unsupportedLevelMessage,
+} from "../platformLevels";
 
 // Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
 // The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
@@ -206,6 +210,38 @@ export const fetchBscSelectorOptions = action({
     let tokenMs: number | undefined;
     let filtersCallMs: number | undefined;
     let statusCode: number | undefined;
+
+    // NEO-216 — BEFORE the token. BSC has no `manufacturer` or `parallel` axis
+    // (see convex/platformLevels.ts), and the check for that used to sit below
+    // the credential fetch, so every Sync Manufacturers paid a real BSC session
+    // round-trip to be told there was nothing to ask for. Callers consult the
+    // same table and no longer call us here at all; this is the backstop for
+    // one that does not, and it is deliberately a `success: false` so a caller
+    // that ignores the table still cannot mistake "no such level" for "asked
+    // and the level is empty" — the second licenses an unlink, the first must
+    // never be able to.
+    if (!platformServesLevel("bsc", args.level)) {
+      await recordAdapterCall(ctx, {
+        requestId,
+        operation: "fetchBscSelectorOptions",
+        platform: "bsc",
+        level: args.level,
+        parentSport: args.parentFilters.sport,
+        parentYear: args.parentFilters.year,
+        parentSetName: args.parentFilters.setName,
+        duration_ms: Date.now() - start,
+        success: false,
+        result_count: 0,
+        stage: "adapter",
+        error_class: "unsupported_level",
+      });
+      return {
+        success: false,
+        options: [],
+        message: unsupportedLevelMessage("bsc", args.level),
+      };
+    }
+
     try {
       // Get BSC token
       const tokenStart = Date.now();
@@ -281,6 +317,10 @@ export const fetchBscSelectorOptions = action({
         }
       }
 
+      // Unreachable since the NEO-216 guard above (which reads the same
+      // `LEVEL_TO_BSC_FACET`-derived table), and kept as defence in depth: if
+      // the table and the facet map ever disagree, this is what stops a
+      // facet-less request going out. platformLevels.test.ts pins them equal.
       const facetKey = LEVEL_TO_BSC_FACET[args.level];
       if (!facetKey) {
         await recordAdapterCall(ctx, {

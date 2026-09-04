@@ -117,12 +117,17 @@ tags:
 
 # ============================================================
 # CLOSE + CLEANUP — delete this attempt's test card
+#
+# NEO-216 removed the drawer's Save/Cancel pair; "Done" is the close control
+# and it only closes. Nothing here needs saving anyway — the Autographed pill
+# writes through setCardFeature the moment it is tapped. The footer sits
+# outside the drawer's scroll container, so no scroll (R8 exception).
 # ============================================================
 
 - assertVisible:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 

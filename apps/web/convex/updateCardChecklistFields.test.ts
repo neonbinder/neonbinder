@@ -452,3 +452,348 @@ describe("updateCard listingTitle length cap (NEO-101)", () => {
     expect(card.listingTitleTruncated).toBeUndefined();
   });
 });
+
+/**
+ * NEO-217 — `printRun` is the one NUMBER an operator can clear.
+ *
+ * Every other editable field already had a spelling for "nothing" that
+ * `updateCard`'s filter-undefined-then-patch loop carries through: "" for a
+ * string, [] for an array, false for a boolean. A number had none, so a card
+ * wrongly marked /99 could never be un-numbered from the drawer. `null` now
+ * means exactly one thing — delete the field — and it must never reach the
+ * database, because a stored `null` would fail `v.optional(v.number())` on the
+ * very next read (which is what `getCardChecklist` below would surface as a
+ * ReturnsValidationError).
+ *
+ * The positive-integer guard exists because the drawer's Print run is a
+ * free-text input and a nonsense print run does not stay in the database — it
+ * goes into a listing title.
+ */
+describe("updateCard printRun clear + validation (NEO-217)", () => {
+  test("null deletes the field, and the row still reads back through getCardChecklist", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      printRun: 99,
+    });
+    let cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.printRun).toBe(99);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      printRun: null,
+    });
+
+    cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.printRun).toBeUndefined();
+
+    // Absent, not stored as null: read the raw document, since the query's
+    // return validator would already have rejected a null.
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored).not.toHaveProperty("printRun");
+  });
+
+  test("null on a card that never had a printRun is a harmless no-op", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      printRun: null,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.printRun).toBeUndefined();
+    expect(card.cardName).toBe("Original Name");
+  });
+
+  test("omitting printRun leaves an existing value untouched", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      printRun: 25,
+    });
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      cardName: "Renamed",
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.printRun).toBe(25);
+    expect(card.cardName).toBe("Renamed");
+  });
+
+  test.each([0, -1, 2.5])(
+    "rejects %p and writes nothing",
+    async (badPrintRun) => {
+      const { asAdmin, variantTypeId, cardId } = await seed();
+
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: 10,
+      });
+
+      await expect(
+        asAdmin.mutation(api.selectorOptions.updateCard, {
+          id: cardId,
+          printRun: badPrintRun,
+        }),
+      ).rejects.toThrow();
+
+      // The whole mutation is rejected, so the previous value survives.
+      const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+        selectorOptionId: variantTypeId,
+      });
+      expect(cards.find((c) => c._id === cardId)!.printRun).toBe(10);
+    },
+  );
+
+  test("a rejected printRun does not let a co-sent field through", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        cardName: "Should Not Land",
+        printRun: 0,
+      }),
+    ).rejects.toThrow();
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.cardName).toBe("Original Name");
+  });
+});
+
+/**
+ * NEO-216 — the card detail drawer now autosaves ONE FIELD PER CALL rather
+ * than sending its whole draft on a Save button. `updateCard`'s
+ * absent-means-untouched contract is what makes that safe, and these pin it
+ * for the exact payload shapes the drawer emits: a lone text field, and the
+ * attribute-chip write that carries `attributes` plus the derived booleans in
+ * a single mutation.
+ *
+ * The failure this prevents is the one the plan of record describes: a
+ * full-replacement save sending `teamOnCardIds: []` a moment after the BSC
+ * per-card team queue filled the team in, permanently un-teaming the card.
+ * With field-scoped writes there is no payload that can say that by accident.
+ */
+describe("updateCard single-field autosave payloads (NEO-216)", () => {
+  test("a lone cardName write leaves every other field untouched", async () => {
+    const { asAdmin, variantTypeId, teamA, playerA, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      attributes: ["RC"],
+      isRookie: true,
+      isRelic: false,
+      printRun: 99,
+      cardVariation: "Gold",
+      playerIds: [playerA],
+      listingTitle: "A title",
+      listingDescription: "A description",
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      cardName: "Just The Name",
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.cardName).toBe("Just The Name");
+    expect(card.attributes).toEqual(["RC"]);
+    expect(card.isRookie).toBe(true);
+    expect(card.isRelic).toBe(false);
+    expect(card.printRun).toBe(99);
+    expect(card.cardVariation).toBe("Gold");
+    expect(card.playerIds).toEqual([playerA]);
+    expect(card.teamOnCardIds).toEqual([teamA]);
+    expect(card.listingTitle).toBe("A title");
+    expect(card.listingDescription).toBe("A description");
+  });
+
+  test("an attributes + isRookie chip write leaves every other field untouched", async () => {
+    const { asAdmin, variantTypeId, teamA, playerA, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      cardName: "Shohei Ohtani",
+      attributes: ["RC"],
+      isRookie: true,
+      printRun: 99,
+      playerIds: [playerA],
+      listingTitle: "A title",
+      listingDescription: "A description",
+    });
+
+    // The chip row's payload: the new token array plus the boolean it derives.
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      attributes: [],
+      isRookie: false,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.attributes).toEqual([]);
+    // NEO-217 (C): RC off really turns the flag off. The old panel's
+    // "never AND-downgrade" OR is gone, and nothing else may resurrect it.
+    expect(card.isRookie).toBe(false);
+    expect(card.cardName).toBe("Shohei Ohtani");
+    expect(card.printRun).toBe(99);
+    expect(card.playerIds).toEqual([playerA]);
+    expect(card.teamOnCardIds).toEqual([teamA]);
+    expect(card.listingTitle).toBe("A title");
+    expect(card.listingDescription).toBe("A description");
+  });
+
+  test("a lone listingTitle write does not disturb the team the enrichment queue just linked", async () => {
+    const { asAdmin, variantTypeId, teamA, cardId } = await seed();
+
+    // Stand in for `applyBscTeamResolution` landing while the drawer is open.
+    await asAdmin.run(async (ctx) => {
+      await ctx.db.patch(cardId, {
+        teamOnCardIds: [teamA],
+        teamCheckDoneAt: Date.now(),
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingTitle: "Operator title",
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.listingTitle).toBe("Operator title");
+    expect(card.teamOnCardIds).toEqual([teamA]);
+  });
+});
+
+/**
+ * Adversarial pass (NEO-216/217) — `printRun` boundary values the sweep at
+ * `test.each([0, -1, 2.5])` above does not reach. The client (the drawer's
+ * `Number(trimmed)`) can hand the mutation any of these if it is ever called
+ * with something other than a clean digit string — direct API/CLI callers
+ * are not bound by the panel's own text input at all. `updateCard`'s guard
+ * is `!Number.isInteger(x) || x < 1`, so these pin exactly what that
+ * expression does at its edges rather than assume it.
+ */
+describe("updateCard printRun — boundary values beyond the basic sweep", () => {
+  test("rejects NaN (typeof \"number\", but not an integer)", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: NaN,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("rejects Infinity (Number.isInteger(Infinity) is false)", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: Infinity,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("rejects -0 — it is an integer but still < 1", async () => {
+    // Object.is(-0, 0) is false, but `-0 < 1` is true, so this must be
+    // refused by the SAME branch as 0/-1, not silently coerced to a
+    // positive zero and let through by an `x < 1` that treats -0 specially.
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: -0,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("rejects an absurdly large integer print run — the ceiling is enforced", async () => {
+    // `Number.isInteger` is true for any finite value with no fractional part,
+    // including magnitudes far past MAX_SAFE_INTEGER (doubles represent them
+    // exactly as whole numbers even though they cannot count anything real at
+    // that scale). Without a ceiling, 1e21 round-tripped and reached a listing
+    // title verbatim as "1e+21" — nonsense on the listing, and a
+    // title-length-shaped input for NEO-101's cap to absorb.
+    const { asAdmin, cardId } = await seed();
+    const huge = 1e21;
+    expect(Number.isInteger(huge)).toBe(true);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: huge,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("accepts exactly 1,000,000 — the bound is inclusive", async () => {
+    // The ceiling is orders of magnitude above the largest print run ever
+    // produced, so it must never be what stops a real edit. Pinned inclusive
+    // so an off-by-one tightening is a test failure, not a support ticket.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      printRun: 1_000_000,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.printRun).toBe(1_000_000);
+  });
+
+  test("rejects 1,000,001 — one past the bound", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: 1_000_001,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+});

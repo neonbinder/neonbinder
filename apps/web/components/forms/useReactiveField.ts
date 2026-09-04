@@ -32,7 +32,26 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * This hook owns ONE field. Each editable row mounts its own `useReactiveField`
  * (per-field autosave), mirroring how the existing rows each carry their own
  * busy/error/commit state.
+ *
+ * NEO-216 widened it from `<input>` to `<input> | <textarea>` (the card
+ * drawer's listing description is multi-line and now autosaves per field like
+ * everything else in that drawer). The element type is a type parameter that
+ * defaults to `HTMLInputElement`, so every existing caller is unchanged.
  */
+
+/**
+ * The elements this hook can drive. `<textarea>` was added for NEO-216 (the
+ * card drawer's listing description): the commit/mirror/read-at-commit
+ * contract is identical for both, only the "commit without leaving the field"
+ * keystroke differs — see `enterCommit`.
+ */
+export type ReactiveFieldElement = HTMLInputElement | HTMLTextAreaElement;
+
+/**
+ * Shown when a commit is attempted while the previous one is still in flight.
+ * Exported so a caller can assert on it rather than duplicating the wording.
+ */
+export const BUSY_MESSAGE = "Still saving the previous change — try again.";
 
 export type ReactiveFieldOptions = {
   /**
@@ -61,44 +80,72 @@ export type ReactiveFieldOptions = {
    * persisted value here.
    */
   compareBaseline?: string;
+  /**
+   * Which keystroke commits without leaving the field.
+   *
+   * `"enter"` (default) suits a single-line `<input>`, where Enter has no
+   * other meaning. `"modEnter"` is for a `<textarea>`: there, a bare Enter is
+   * a newline the operator deliberately typed, so swallowing it to save would
+   * make multi-line text impossible to write. Blur commits either way.
+   */
+  enterCommit?: "enter" | "modEnter";
 };
 
 /**
- * Props the consumer spreads onto its `<input>`: `ref` + `defaultValue` make
- * it uncontrolled; `onFocus`/`onBlur`/`onKeyDown` layer the focus-guard +
- * commit-on-blur/Enter on top. The caller still supplies its own `aria-label`,
- * `placeholder`, `className`, `disabled`, etc.
+ * Props the consumer spreads onto its `<input>`/`<textarea>`: `ref` +
+ * `defaultValue` make it uncontrolled; `onFocus`/`onBlur`/`onKeyDown` layer
+ * the focus-guard + commit-on-blur/Enter on top. The caller still supplies its
+ * own `aria-label`, `placeholder`, `className`, `disabled`, etc.
  */
-export type ReactiveFieldInputProps = {
-  ref: (el: HTMLInputElement | null) => void;
+export type ReactiveFieldInputProps<
+  E extends ReactiveFieldElement = HTMLInputElement,
+> = {
+  ref: (el: E | null) => void;
   defaultValue: string;
-  onFocus: React.FocusEventHandler<HTMLInputElement>;
-  onBlur: React.FocusEventHandler<HTMLInputElement>;
-  onKeyDown: React.KeyboardEventHandler<HTMLInputElement>;
+  onFocus: React.FocusEventHandler<E>;
+  onBlur: React.FocusEventHandler<E>;
+  onKeyDown: React.KeyboardEventHandler<E>;
 };
 
-export type ReactiveFieldApi = {
-  /** Spread onto the `<input>`: wires the uncontrolled ref + focus-guard + commit. */
-  inputProps: ReactiveFieldInputProps;
+export type ReactiveFieldApi<
+  E extends ReactiveFieldElement = HTMLInputElement,
+> = {
+  /** Spread onto the field: wires the uncontrolled ref + focus-guard + commit. */
+  inputProps: ReactiveFieldInputProps<E>;
   /** True while a save is in flight. Drives the disabled/busy affordance. */
   busy: boolean;
   /** Last commit error message, or null. */
   error: string | null;
   /** Imperatively commit the live value (blur + Enter both route here). */
   commit: () => Promise<void>;
+  /**
+   * Replace the field's contents programmatically and commit them. Retires any
+   * standing error first — it described the value being replaced. Use this,
+   * never a hand-rolled `el.value = x` followed by `commit()`.
+   */
+  replace: (next: string) => Promise<void>;
 };
 
-export function useReactiveField({
+export function useReactiveField<
+  E extends ReactiveFieldElement = HTMLInputElement,
+>({
   value,
   onSave,
   onEmptyCommit,
   compareBaseline,
-}: ReactiveFieldOptions): ReactiveFieldApi {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  enterCommit = "enter",
+}: ReactiveFieldOptions): ReactiveFieldApi<E> {
+  const inputRef = useRef<E | null>(null);
   // Track focus + busy in refs (synchronous) so the mirroring effect honors
   // the focus-guard without depending on React state timing.
   const focusedRef = useRef(false);
   const busyRef = useRef(false);
+  // The exact value the in-flight save is for. Lets the busy guard tell a
+  // DUPLICATE commit of the edit already being saved (Enter and then tabbing
+  // away fire two commits for one edit; so does a real `.blur()` alongside a
+  // synthetic one in tests) apart from a genuinely NEW edit arriving mid-save.
+  // Only the second is being dropped, so only the second is worth saying.
+  const inFlightValueRef = useRef<string | null>(null);
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -113,22 +160,44 @@ export function useReactiveField({
     if (!el || busyRef.current) return;
     if (typeof document !== "undefined" && document.activeElement === el) return;
     el.value = value ?? "";
+    // The error described the text we just overwrote. Leaving it up points a
+    // refusal at content that is no longer on screen — see `replace` below for
+    // the same rule applied to a programmatic replacement.
+    setError(null);
   }, [value]);
 
   const runCommit = useCallback(async () => {
-    if (busyRef.current) return;
     // Read the LIVE DOM value at commit — never a lagged React/library copy.
     const el = inputRef.current;
     const trimmed = (el?.value ?? "").trim();
     const baseline = compareBaseline ?? value;
 
-    // No-op: unchanged vs the persisted baseline.
+    // No-op: unchanged vs the persisted baseline. Checked BEFORE the busy
+    // guard so a redundant commit while a save is in flight stays silent —
+    // there is nothing being dropped.
     if (trimmed === baseline) return;
+
+    // A DIFFERENT change arriving while a save is in flight is dropped — the hook
+    // owns one field and will not interleave two writes on it. That drop used
+    // to be silent, which is the worst possible way to lose an edit: the new
+    // value sits in the input looking saved. It is reported instead, and the
+    // value is left alone so the operator can simply commit again.
+    //
+    // Deliberately NOT a queued retry: queueing would re-read the DOM after
+    // the first save settles, and by then the focus-guard mirroring may have
+    // replaced what is in the field — so the queued write could persist a
+    // value nobody typed. Every caller gets the message for free through the
+    // `error` they already render.
+    if (busyRef.current) {
+      if (trimmed !== inFlightValueRef.current) setError(BUSY_MESSAGE);
+      return;
+    }
 
     if (trimmed.length === 0) {
       if (onEmptyCommit) {
         setBusy(true);
         busyRef.current = true;
+        inFlightValueRef.current = "";
         try {
           await onEmptyCommit();
           setError(null);
@@ -137,6 +206,7 @@ export function useReactiveField({
         } finally {
           setBusy(false);
           busyRef.current = false;
+          inFlightValueRef.current = null;
         }
         return;
       }
@@ -148,6 +218,7 @@ export function useReactiveField({
 
     setBusy(true);
     busyRef.current = true;
+    inFlightValueRef.current = trimmed;
     try {
       await onSave(trimmed);
       setError(null);
@@ -156,6 +227,7 @@ export function useReactiveField({
     } finally {
       setBusy(false);
       busyRef.current = false;
+      inFlightValueRef.current = null;
     }
   }, [value, compareBaseline, onSave, onEmptyCommit]);
 
@@ -169,18 +241,47 @@ export function useReactiveField({
   }, [runCommit]);
 
   const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        void runCommit();
-      }
+    (e: React.KeyboardEvent<E>) => {
+      if (e.key !== "Enter") return;
+      // A textarea's bare Enter belongs to the operator (it is a newline they
+      // meant to type), so only Cmd/Ctrl+Enter commits there.
+      if (enterCommit === "modEnter" && !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      void runCommit();
+    },
+    [runCommit, enterCommit],
+  );
+
+  /**
+   * Replace the field's contents programmatically, then commit them.
+   *
+   * NEO-216 bug (CI, PR #225): the card drawer's Regenerate button used to
+   * write the generated title into the DOM itself and call `commit()`. When
+   * the operator had just been REFUSED an over-cap title, the refusal left
+   * `error` set AND left the stored value unchanged — so the regenerated title
+   * frequently equalled the stored one, `runCommit` returned at its no-op
+   * guard, and the alert about the 157-character title stayed on screen above
+   * a field now holding a 71-character one.
+   *
+   * Clearing `error` here rather than inside `runCommit` is the point: the
+   * error belongs to the VALUE that was refused, so it must die the moment
+   * that value is replaced, whether or not the follow-up commit does anything.
+   * If the replacement is itself refused, `runCommit` sets the new message
+   * over the cleared one.
+   */
+  const replace = useCallback(
+    async (next: string) => {
+      const el = inputRef.current;
+      if (el) el.value = next;
+      setError(null);
+      await runCommit();
     },
     [runCommit],
   );
 
   return {
     inputProps: {
-      ref: (el: HTMLInputElement | null) => {
+      ref: (el: E | null) => {
         inputRef.current = el;
       },
       defaultValue: value ?? "",
@@ -191,5 +292,6 @@ export function useReactiveField({
     busy,
     error,
     commit: runCommit,
+    replace,
   };
 }

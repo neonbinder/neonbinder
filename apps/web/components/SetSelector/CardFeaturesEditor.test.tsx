@@ -210,3 +210,89 @@ describe("CardFeaturesEditor — write-once feature snapshot reads (NEO-71-74)",
     expect(screen.getByLabelText("Feature League")).toBeTruthy();
   });
 });
+
+/**
+ * NEO-217 — a per-card feature can be UN-set.
+ *
+ * `FeatureValueControl`'s text branch is `useReactiveField`, whose empty
+ * commit is a no-op that writes the previous value back into the input unless
+ * the caller supplies `onEmptyCommit`. This row supplied none, so an operator
+ * who deleted a wrong "Signed By" and tabbed out watched it reappear — the
+ * value was correctable but not removable.
+ *
+ * Both hosts of this shared control now pass `() => onSave("")`, and the
+ * server removes the key rather than storing an empty string, so the card and
+ * set levels behave identically and "feature gone" has one spelling.
+ */
+describe("CardFeaturesEditor — clearing a per-card feature (NEO-217)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetCardFeature.mockResolvedValue(undefined);
+    mockUpdateCard.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emptying a text feature calls setCardFeature with \"\"", async () => {
+    renderEditor({ cardFeatures: { signedBy: "Mike Trout" } });
+
+    const signedByInput = screen.getByLabelText(
+      "Value for Signed By",
+    ) as HTMLInputElement;
+
+    await act(async () => {
+      signedByInput.focus();
+      fireEvent.focus(signedByInput);
+      fireEvent.change(signedByInput, { target: { value: "" } });
+      signedByInput.blur();
+      fireEvent.blur(signedByInput);
+    });
+
+    await waitFor(() => {
+      expect(mockSetCardFeature).toHaveBeenCalledWith({
+        cardChecklistId: CARD_CHECKLIST_ID,
+        key: "signedBy",
+        value: "",
+      });
+    });
+  });
+
+  it("leaves the field empty rather than restoring the old value", async () => {
+    // The visible symptom of the old behaviour: delete, tab out, and the
+    // value is back — with no error and nothing to suggest why.
+    renderEditor({ cardFeatures: { signedBy: "Mike Trout" } });
+
+    const signedByInput = screen.getByLabelText(
+      "Value for Signed By",
+    ) as HTMLInputElement;
+
+    await act(async () => {
+      signedByInput.focus();
+      fireEvent.focus(signedByInput);
+      fireEvent.change(signedByInput, { target: { value: "" } });
+      signedByInput.blur();
+      fireEvent.blur(signedByInput);
+    });
+
+    expect(signedByInput.value).toBe("");
+  });
+
+  it("writes nothing when a field that was already blank is committed empty", async () => {
+    renderEditor({ cardFeatures: {} });
+
+    const signedByInput = screen.getByLabelText(
+      "Value for Signed By",
+    ) as HTMLInputElement;
+
+    await act(async () => {
+      signedByInput.focus();
+      fireEvent.focus(signedByInput);
+      signedByInput.blur();
+      fireEvent.blur(signedByInput);
+    });
+
+    expect(mockSetCardFeature).not.toHaveBeenCalled();
+  });
+});
