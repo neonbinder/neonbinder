@@ -1445,22 +1445,28 @@ describe("PlayerManagement — the ?player deep link", () => {
       screen.getByRole("button", { name: "Create player Mike Trout" }),
     );
 
-    // TWO COMMITS, not one, and only the second carries the URL.
+    await waitFor(() => expect(screen.getByText("Added Mike Trout.")).toBeTruthy());
+    // `waitFor` on the URL too, not a bare assertion after the toast — this
+    // one flaked in CI (PR #226) roughly one run in three under load, always
+    // as `expected '' to be '?player=p-trout'`.
     //
-    // `Added {name}.` is a plain setState in the mutation's continuation, so it
-    // lands in an urgent render. `selectPlayer`'s `setSearchParams` is applied
-    // inside React Router's `startTransition` and commits separately — and both
-    // continuations run after `await createByAdmin(...)`, i.e. outside `act`, so
-    // nothing forces them into one commit. `waitFor` on the text therefore
-    // returns as soon as the urgent commit lands, and sampling `useLocation` on
-    // the next line reads the location as it was BEFORE the transition flushed.
+    // The two values settle at DIFFERENT React priorities. The toast is
+    // ordinary state set when the create mutation resolves; the URL comes from
+    // `setSearchParams`, which React Router applies inside `startTransition`
+    // (see the long note above `useSearchParams` in PlayerManagement.tsx —
+    // this screen relies on that lag, it is not an accident). `waitFor` returns
+    // the instant its own condition holds, so it can return on the commit that
+    // painted the toast while the lower-priority location update is still
+    // queued, and the next line reads the URL one render too early.
     //
-    // The ORDER of the two commits is not what is under test — that the param
-    // is written at all is — so the wait moves onto the URL itself. This only
-    // failed in the full `--project components` run: a cold module cache made
-    // the urgent commit slow enough that the transition had already flushed by
-    // the first `waitFor` poll, and a warmed one does not.
-    await screen.findByText("Added Mike Trout.");
+    // The file's three OTHER `expect(url())` assertions follow a synchronous
+    // `fireEvent`, whose `act()` drains pending work including the transition,
+    // which is why only this one — the only one behind an `await` — ever
+    // flaked. Nothing is lost here, only late: `setSearchParams` is called
+    // unconditionally in `selectPlayer` with nothing to interrupt or unmount
+    // it, so the write always lands. Same assertion, same final state, minus
+    // the assumption that a transition commits in lockstep with unrelated
+    // ordinary state.
     await waitFor(() => expect(url()).toBe("?player=p-trout"));
   });
 

@@ -8,11 +8,17 @@ metadata:
 When auditing a stored "needs attention" flag on `cardChecklist`
 (`listingTitleTruncated`, `teamNoneConfirmedAt`, and whatever comes next), the
 mutation-level rule "cleared by any write of field X" is NOT the whole story.
-Check what the client actually sends: `CardDetailPanel.handleSave` sends the
-full field set on every save (`listingTitle`, `cardVariation`, teams, features),
-so "cleared on any write of the title" means "cleared whenever the drawer is
-saved for any reason" — the attention item disappears without being addressed
-and, because the flag is only ever set at insert, it never comes back.
+Check what the client actually sends. `CardDetailPanel` USED to send the full
+field set on every save (`listingTitle`, `cardVariation`, teams, features), so
+"cleared on any write of the title" meant "cleared whenever the drawer is saved
+for any reason" — the attention item disappeared without being addressed and,
+because the flag is only ever set at insert, it never came back.
+
+**Corrected 2026-09-04 (NEO-216):** that drawer is now per-field autosave —
+no Save button, no draft, one field per `updateCard` call. The full-payload
+hazard is gone for THIS dialog; see [[patterns-card-drawer-autosave]]. The
+rule below still governs every other client and every new control added to
+the drawer.
 
 **Why:** these flags gate an operator review pass. Silent clearing is the same
 false-green class as an unauthenticated e2e queue mutation — the gate reports

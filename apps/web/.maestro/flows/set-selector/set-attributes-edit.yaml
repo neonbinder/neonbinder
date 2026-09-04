@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "SetAttributesPanel — breadcrumb scope, metadata editing, collapse/expand, inherited values at child level (per-worker custom set)"
+name: "SetAttributesPanel — breadcrumb scope, metadata editing, CLEARING an attribute, collapse/expand, child scope (per-worker custom set)"
 tags:
   - regression
   - set-selector
@@ -32,6 +32,15 @@ tags:
 #      distribution context now render below it.
 #        - "Value for Release Date" → "Saved Release Date"
 #
+#   2b. CLEARING AN ATTRIBUTE (NEO-217)
+#      Emptying the field and committing REMOVES the attribute. Before NEO-217
+#      an empty commit was swallowed and the old value was written straight back
+#      into the input, so a set attribute could be set but never un-set. The
+#      confirmation is deliberately a different sentence — "Cleared Release
+#      Date", never "Saved …" — so a toast can never claim a value was stored
+#      when the key was deleted.
+#        - erase "Value for Release Date" → "Cleared Release Date", field blank
+#
 #   3. COLLAPSED STATE / EXPAND / INHERITED VALUES AT CHILD LEVEL
 #      a. Tap "Hide attributes" to collapse the panel manually. Verify "Edit
 #         attributes" appears (collapsed summary bar) and "Hide attributes" is gone.
@@ -46,7 +55,8 @@ tags:
 #   A. Sign in → navigate to /set-selector
 #   B. Drill Baseball → 2024 → Topps → custom set (add if absent)
 #   C. Assert breadcrumb scope text at setName level
-#   C.  Edit "Value for Release Date" → assert "Saved Release Date" toast
+#   C.  Edit "Value for Release Date" → assert "Saved Release Date" toast,
+#       then CLEAR it → assert "Cleared Release Date" and a blank field
 #   D. Manually collapse panel → assert "Edit attributes" visible
 #   E. Re-expand panel → assert "Hide attributes" visible
 #   F. Drill into custom variant type → assert breadcrumb updates to child scope
@@ -159,6 +169,50 @@ tags:
       text: ".*Saved Release Date.*"
     timeout: 7000
 
+# Step 3 (NEO-217): CLEAR it. An empty commit removes the attribute instead of
+# being swallowed, and the panel says "Cleared", not "Saved".
+#
+# Step 1's clearing sentinel is what makes this safe to run repeatedly: it
+# rewrites the field from whatever a previous attempt left — INCLUDING a blank
+# database, since "1900-01-01" differs from absent — so Step 2 and this clear
+# are both real changes every run.
+- tapOn:
+    id: "Value for Release Date"
+- eraseText: 30
+# Prove the field really is EMPTY before committing. An <input> with no value
+# reads back its placeholder, and this control's placeholder is "—" — so that
+# IS the empty state. If a stray character survived the erase, this fails here
+# saying so, rather than silently committing a different date and failing on
+# the toast below for a reason that reads like a product bug.
+- assertVisible:
+    id: "Value for Release Date"
+    text: "—"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      text: ".*Cleared Release Date.*"
+    timeout: 7000
+
+# Now LEAVE the field, which is what makes the next assertion decisive. The
+# reactive-field hook only mirrors the stored value back into an input while
+# that input is neither focused nor saving — and Enter does not blur — so a
+# check made with the caret still in the box would only be re-reading what we
+# typed. Tapping the Total Cards input beside it moves focus (focus alone
+# commits nothing) and lets Release Date re-render from the database.
+- tapOn:
+    id: "Value for Total Cards"
+
+# What comes back is the placeholder, not the date: the attribute is GONE from
+# the stored record, not merely blanked on screen. The negative that follows is
+# guarded by that positive — a page that has fallen over satisfies every
+# notVisible, but it cannot satisfy this.
+- assertVisible:
+    id: "Value for Release Date"
+    text: "—"
+- assertNotVisible:
+    id: "Value for Release Date"
+    text: ".*2024-08-01.*"
+
 # ============================================================
 # PART D — COLLAPSE THE PANEL VIA "Hide attributes"
 # On a custom set (no card checklist) the panel stays expanded; we test the
@@ -231,6 +285,15 @@ tags:
       - assertVisible: "Add Custom Entry"
       - inputText: "BaseAttr-${WORKER_INDEX || 0}"
       - pressKey: Enter
+      # NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+      # confirm with the Create button already focused; this second Enter presses it.
+      - pressKey: Enter
+      # The form must be GONE before the value below is matched: while the
+      # confirm is up, the sentence "Create ... '{v}' under ...?" contains the
+      # very value the assertion looks for, so the row-visible check could pass
+      # on the confirm rather than on the new row (NEO-219).
+      - extendedWaitUntil:
+          notVisible: "Add Custom Entry"
       - assertVisible:
           text: ".*BaseAttr-${WORKER_INDEX || 0}.*"
 

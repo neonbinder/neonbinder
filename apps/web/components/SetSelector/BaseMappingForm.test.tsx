@@ -56,6 +56,8 @@ vi.mock("../../convex/_generated/api", () => ({
     selectorOptions: {
       setVariantTypePlatformData: "setVariantTypePlatformData",
       getAncestorChain: "getAncestorChain",
+      getSelectorOptionById: "getSelectorOptionById",
+      getSlotCardCounts: "getSlotCardCounts",
     },
   },
 }));
@@ -63,14 +65,22 @@ vi.mock("../../convex/_generated/api", () => ({
 const mockFetchRawOptions = vi.fn();
 const mockSetPlatformData = vi.fn();
 let currentChain: unknown;
+// NEO-219: remap-only subscriptions — the variantType row (for `baseVersion`
+// and the current labels) and the per-slot card counts behind the impact line.
+let currentRow: unknown;
+let currentCounts: unknown;
 
 vi.mock("convex/react", () => ({
   useAction: (ref: string) =>
     ref === "fetchRawOptions" ? mockFetchRawOptions : vi.fn(),
   useMutation: (ref: string) =>
     ref === "setVariantTypePlatformData" ? mockSetPlatformData : vi.fn(),
-  useQuery: (ref: string) =>
-    ref === "getAncestorChain" ? currentChain : undefined,
+  useQuery: (ref: string) => {
+    if (ref === "getAncestorChain") return currentChain;
+    if (ref === "getSelectorOptionById") return currentRow;
+    if (ref === "getSlotCardCounts") return currentCounts;
+    return undefined;
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -130,11 +140,29 @@ function renderForm(
     <BaseMappingForm
       variantTypeId={VARIANT_TYPE_ID}
       autoOpen={true}
+      mode="initial"
       onClose={onClose}
       {...props}
     />,
   );
   return { ...utils, onClose };
+}
+
+/**
+ * Wait for the picker AND for its pre-selection effects to have run.
+ *
+ * `fetchRawOptions` resolves in a promise continuation outside `act()`, so the
+ * render carrying the loaded option lists commits one microtask before the
+ * pre-select effects do. `waitFor` can observe the new rows in that gap and a
+ * click issued immediately after would read the pre-load selection. A real
+ * browser flushes passive effects before it delivers the next user event; the
+ * empty `act` is how a test says the same thing.
+ */
+async function waitForPickerLoaded() {
+  await waitFor(() => {
+    expect(screen.getByText("Select Base Set")).toBeTruthy();
+  });
+  await act(async () => {});
 }
 
 // Mounts with SL+BSC options present (so the picker stays open), waits for
@@ -168,6 +196,8 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     currentChain = makeChain();
+    currentRow = undefined;
+    currentCounts = undefined;
     mockSetPlatformData.mockResolvedValue(undefined);
   });
 
@@ -241,32 +271,45 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("auto-takes the BSC option and shows a message panel when SL has no options (unchanged success path)", async () => {
+  it("keeps the picker OPEN with the BSC candidate when SL has no options, and writes nothing until Confirm (NEO-219)", async () => {
+    // Before NEO-219 this branch closed the picker and stored bscOptions[0]
+    // with no UI at all, so the set a Base row ended up linked to was one the
+    // operator never saw.
     mockFetchRawOptions.mockResolvedValue({
       success: true,
-      bscOptions: [{ value: "Topps", platformValue: "topps" }],
+      bscOptions: [{ value: "2024 Topps Chrome", platformValue: "topps-chrome" }],
       slOptions: [],
     });
 
     const { onClose } = renderForm();
 
-    await waitFor(() => {
-      expect(mockSetPlatformData).toHaveBeenCalledWith({
-        variantTypeId: VARIANT_TYPE_ID,
-        platformData: { bsc: "topps" },
-      });
+    await waitForPickerLoaded();
+    // The SL side says so out loud rather than silently taking the other side.
+    expect(
+      screen.getByText("SportLots returned no base set for 2024 Topps Chrome"),
+    ).toBeTruthy();
+    expect(mockSetPlatformData).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    // A BSC-only pick is a legitimate confirm.
+    await act(async () => {
+      fireEvent.click(
+        screen.getByLabelText("BSC base candidate: 2024 Topps Chrome"),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
     });
 
-    await waitFor(() => {
-      expect(screen.getByText("Stored Base mapping: Topps")).toBeTruthy();
+    expect(mockSetPlatformData).toHaveBeenCalledWith({
+      variantTypeId: VARIANT_TYPE_ID,
+      platformData: { bsc: "topps-chrome" },
     });
-    expect(screen.queryByText("Select Base Set")).toBeNull();
     expect(onClose).toHaveBeenCalledTimes(1);
-    // Retry is now unconditional, even on this success message.
-    expect(screen.getByText("Retry")).toBeTruthy();
   });
 
-  it("falls back to the set's BSC slug and shows a message panel when neither platform has options but the set has a stored BSC slug (unchanged fallback path)", async () => {
+  it("offers the SET's own BSC slug as a VISIBLE candidate row when neither platform returned options (NEO-219)", async () => {
+    // Before NEO-219 this branch wrote the set slug with no UI at all.
     currentChain = makeChain({ setBsc: "2024-topps-chrome" });
     mockFetchRawOptions.mockResolvedValue({
       success: true,
@@ -276,19 +319,53 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
 
     const { onClose } = renderForm();
 
-    await waitFor(() => {
-      expect(mockSetPlatformData).toHaveBeenCalledWith({
-        variantTypeId: VARIANT_TYPE_ID,
-        platformData: { bsc: "2024-topps-chrome" },
-      });
+    await waitForPickerLoaded();
+    const listingRow = screen.getByLabelText(
+      "BSC base candidate: 2024 Topps Chrome — set listing (BSC)",
+    );
+    expect(listingRow).toBeTruthy();
+    // Sole candidate → pre-selected (decision 4), but still not WRITTEN.
+    expect(listingRow.getAttribute("aria-selected")).toBe("true");
+    expect(mockSetPlatformData).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
     });
 
-    await waitFor(() => {
-      expect(
-        screen.getByText("Stored Base mapping (fallback to set slug)"),
-      ).toBeTruthy();
+    expect(mockSetPlatformData).toHaveBeenCalledWith({
+      variantTypeId: VARIANT_TYPE_ID,
+      platformData: { bsc: "2024-topps-chrome" },
     });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT substitute the set slug for a BSC pick the operator did not make (NEO-219)", async () => {
+    // The old handlePickerConfirm silently fell back to the set's BSC slug
+    // whenever the picker came back without a BSC selection.
+    currentChain = makeChain({ setBsc: "2024-topps-chrome" });
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [{ value: "Some Other BSC Set", platformValue: "other" }],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm();
+
+    await waitForPickerLoaded();
+    // Exact set-name match on the SL side → pre-selected; BSC has two
+    // candidates (the marketplace row + the set listing) so neither is.
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
+    });
+
+    expect(mockSetPlatformData).toHaveBeenCalledWith({
+      variantTypeId: VARIANT_TYPE_ID,
+      platformData: {
+        sportlots: "tc2024",
+        sportlotsDisplay: "2024 Topps Chrome",
+      },
+    });
   });
 
   it("shows a final 'no marketplace data found' message and writes nothing when neither platform has options and the set has no BSC slug either (unchanged fallback path)", async () => {
@@ -307,6 +384,182 @@ describe("BaseMappingForm — cancel-recovery fix (NEO-71-74)", () => {
     });
     expect(mockSetPlatformData).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-219 — re-map mode: state the impact, and guard the write on a version
+  // -------------------------------------------------------------------------
+
+  it("version-guards an INITIAL-mode confirm too, because 'initial' only means SportLots is unmapped", async () => {
+    // Security review 2026-09-04: the parent derives `mode` from
+    // `baseHasMapping`, which counts the SportLots side ONLY. A Base row mapped
+    // to BSC alone — newly reachable now that a BSC-only confirm is allowed —
+    // therefore opens this form as `initial` forever. Sending no baseVersion
+    // there lets setPrimarySlotId silently re-point every card on that BSC slot.
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 777,
+      platformData: { bsc: { b0: "bsc-only" } },
+      primaryPlatformId: { bsc: "b0" },
+    };
+    currentCounts = { bsc: { b0: 0 }, sportlots: {}, total: 0 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm({ mode: "initial" });
+
+    await waitForPickerLoaded();
+    // The Maestro landmark is unchanged in initial mode.
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
+    });
+
+    expect(mockSetPlatformData).toHaveBeenCalledWith({
+      variantTypeId: VARIANT_TYPE_ID,
+      platformData: {
+        sportlots: "tc2024",
+        sportlotsDisplay: "2024 Topps Chrome",
+      },
+      baseVersion: 777,
+    });
+  });
+
+  it("states the impact in INITIAL mode when the row already holds cards through BSC", async () => {
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 777,
+      platformData: { bsc: { b0: "bsc-only" } },
+      platformLabels: { bsc: { b0: "Old BSC Set" } },
+      primaryPlatformId: { bsc: "b0" },
+    };
+    currentCounts = { bsc: { b0: 110 }, sportlots: {}, total: 110 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm({ mode: "initial" });
+
+    await waitForPickerLoaded();
+    expect(
+      screen.getByText(
+        "110 cards are linked through the current mapping; their refs will point at the new set.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Currently mapped: BSC — Old BSC Set")).toBeTruthy();
+    // Still `initial`, so the confirm label stays the constant five flows read.
+    expect(screen.getByText("Confirm Base Set")).toBeTruthy();
+    // One side only → nothing to split.
+    expect(screen.queryByText(/through SportLots,/)).toBeNull();
+  });
+
+  it("stays silent in INITIAL mode when the row holds no cards at all", async () => {
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 777,
+      platformData: {},
+    };
+    currentCounts = { bsc: {}, sportlots: {}, total: 0 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm({ mode: "initial" });
+
+    await waitForPickerLoaded();
+    expect(screen.queryByText(/linked through the current mapping/)).toBeNull();
+  });
+
+  it("states how many cards the current mapping holds, and re-labels the confirm", async () => {
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 4242,
+      platformData: { bsc: { b0: "old-bsc" }, sportlots: { s0: "old-sl" } },
+      platformLabels: { bsc: { b0: "Old BSC Set" }, sportlots: { s0: "Old SL Set" } },
+      primaryPlatformId: { bsc: "b0", sportlots: "s0" },
+    };
+    // `total` is the ROW's distinct card count — deliberately NOT the sum of
+    // the two side maps, which double-count a card sourced from both.
+    currentCounts = { bsc: { b0: 110 }, sportlots: { s0: 110 }, total: 110 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+
+    renderForm({ mode: "remap" });
+
+    await waitForPickerLoaded();
+    expect(
+      screen.getByText(
+        "110 cards are linked through the current mapping; their refs will point at the new set.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("110 through SportLots, 110 through BSC.")).toBeTruthy();
+    expect(
+      screen.getByText("Currently mapped: SportLots — Old SL Set · BSC — Old BSC Set"),
+    ).toBeTruthy();
+    expect(screen.getByText("Re-map Base Set")).toBeTruthy();
+    expect(screen.queryByText("Confirm Base Set")).toBeNull();
+  });
+
+  it("sends the row's baseVersion on a re-map, and re-opens on BASE_MAPPING_STALE without writing", async () => {
+    currentRow = {
+      _id: "vt-id",
+      level: "variantType",
+      value: "Base",
+      lastUpdated: 4242,
+      platformData: { sportlots: { s0: "old-sl" } },
+      primaryPlatformId: { sportlots: "s0" },
+    };
+    currentCounts = { bsc: {}, sportlots: { s0: 3 }, total: 3 };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [],
+      slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
+    });
+    mockSetPlatformData.mockRejectedValueOnce({
+      message: "[Request ID: xyz] Server Error",
+      data: { code: "BASE_MAPPING_STALE" },
+    });
+
+    const { onClose } = renderForm({ mode: "remap" });
+
+    await waitForPickerLoaded();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Re-map Base Set"));
+    });
+
+    expect(mockSetPlatformData).toHaveBeenCalledWith({
+      variantTypeId: VARIANT_TYPE_ID,
+      platformData: {
+        sportlots: "tc2024",
+        sportlotsDisplay: "2024 Topps Chrome",
+      },
+      baseVersion: 4242,
+    });
+    // Refused: the picker stays open on a re-fetched (fresh) row, the fixed
+    // message says so, and the raw server text never reaches the DOM.
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("changed somewhere else");
+    expect(alert.textContent).not.toContain("Request ID");
+    expect(screen.getByText("Select Base Set")).toBeTruthy();
+    expect(mockFetchRawOptions).toHaveBeenCalledTimes(2);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("renders neither the URL nor the raw message of a failed fetch (NEO-211 F3)", async () => {

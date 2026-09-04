@@ -121,7 +121,9 @@ const FIELD_LABEL: Record<string, string> = {
   isRookie: "Rookie",
   isRelic: "Relic",
   printRun: "Print run",
-  autographType: "Autograph",
+  // NEO-217 (E): `autographType` was retired from NB_CONTENT_FIELDS and the
+  // diff, so the server can no longer emit a field entry for it — a label here
+  // would be dead. "Is this card autographed" is `features.autographed` alone.
   cardVariation: "Variation",
 };
 

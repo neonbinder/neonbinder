@@ -220,14 +220,19 @@ tags:
     text: "English"
 
 # ============================================================
-# CLEANUP — cancel edit and delete this attempt's test card
+# CLEANUP — close the drawer and delete this attempt's test card
+#
+# NEO-216: "Done" replaced the Save/Cancel pair and only closes the drawer.
+# This flow only READ the auto-populated values, so there is nothing to save
+# and nothing to discard. The footer is outside the scroll container (R8
+# exception: no scroll can centre it).
 # ============================================================
 
 - assertVisible:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - tapOn:
-    id: "Cancel card edit"
-# Cancel collapses the edit form and resets the Virtuoso scroll position — the
+    id: "Done editing card"
+# Closing collapses the drawer and resets the Virtuoso scroll position — the
 # row may not be in the viewport. centerElement keeps the delete button clear of
 # the sticky header/footer before the tap (R8).
 - scrollUntilVisible:

@@ -65,6 +65,9 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars"
 - pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
+- pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 
 # --- <ID> Stars Gold (prefix-matches Stars → suggested parallel) ---
@@ -77,6 +80,9 @@ tags:
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Stars Gold"
 - pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
+- pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 
 # --- <ID> Champions (no prefix match → stays top-level; gives 3 inserts) ---
@@ -88,6 +94,9 @@ tags:
     id: "Add custom Inserts"
 - assertVisible: "Add Custom Entry"
 - inputText: "${ATTEMPT_ID} Champions"
+- pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
 - pressKey: Enter
 - assertNotVisible: "Add Custom Entry"
 - assertVisible:

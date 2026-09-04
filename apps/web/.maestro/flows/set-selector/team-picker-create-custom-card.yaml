@@ -19,11 +19,13 @@ tags:
 #   - The typed UNIQUE name has no existing match, so "+ Create '<name>'" MUST
 #     appear (id "Create team <name>"); choosing it MUST produce a chip whose
 #     remove button is "Remove team <name>". A no-op create leaves no chip → fail.
-#   - PERSISTENCE: after Save + reopen, the chip is STILL there — the created
-#     team durably attached to the card.
+#   - PERSISTENCE: after closing and reopening the drawer, the chip is STILL
+#     there — the created team durably attached to the card. NEO-216 removed the
+#     Save button, so the write goes out on the tap and the drawer's
+#     "Saved Teams" confirmation is asserted before the close.
 #
 # R3 — DEDUP: team-picker.yaml covers picking EXISTING (seeded) teams, remove,
-#   keyboard Enter, "No matches", cancel-revert, and save+reload — but NOT the
+#   keyboard Enter, "No matches", close-and-reopen, and reload — but NOT the
 #   create-new path (it depends on seeded Baseball teams and must not pollute
 #   that shared pool). This flow owns create-new, on an ISOLATED per-worker
 #   custom sport so it neither depends on nor pollutes the Baseball seed. Mirrors
@@ -102,15 +104,21 @@ tags:
     id: "Remove team NBTeam-${ATTEMPT_ID}"
 
 # ============================================================
-# SAVE — teamOnCardIds ARE part of the drawer's dirty draft, so the attachment
-# only persists to this card via the Save button (findOrCreate created the team
-# ENTITY; Save writes updateCard.teamOnCardIds to link it). The Save button is in
-# the sticky footer (outside the scroll body / open popover), so tapping it
-# directly commits and closes.
+# THE WRITE — NEO-216: choosing "+ Create" both creates the team entity
+# (findOrCreate) AND links it to this card in one gesture. The drawer has no
+# Save button and no draft: TeamPicker sends `updateCard.teamOnCardIds` on the
+# tap itself, and the drawer's one status region confirms it.
 # ============================================================
 
+- extendedWaitUntil:
+    visible: ".*Saved Teams.*"
+    timeout: 7000
+
+# Close with "Done" — it only closes. It lives in the drawer's pinned footer,
+# outside the scroll body and clear of the open popover, so it needs no scroll
+# (R8 exception: a footer element can never satisfy centering).
 - tapOn:
-    id: "Save card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 
@@ -132,7 +140,7 @@ tags:
       id: "Card name"
     timeout: 15000
 
-# The chip survived Save + reopen (its label resolves from the created team row).
+# The chip survived close + reopen (its label resolves from the created team row).
 - assertVisible:
     id: "Remove team NBTeam-${ATTEMPT_ID}"
 
@@ -141,7 +149,7 @@ tags:
 # ============================================================
 
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 

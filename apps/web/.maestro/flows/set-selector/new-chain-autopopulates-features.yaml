@@ -20,7 +20,12 @@ tags:
 # the deepest (variantType) node where the complete write-once snapshot lands:
 #   We build a fully-custom, per-worker chain rooted at the suite's standard
 #   per-worker custom sport ("E2E Test Sport <worker>"):
-#     year  "1975-w<worker>"  → derives era="Vintage (1970-79)", vintage="true"
+#     year  "1975"            → derives era="Vintage (1970-79)", vintage="true"
+#                               (NEO-219 made custom Years strictly four-digit, so
+#                                the old per-worker "1975-w<worker>" is now refused
+#                                at the form. It does not need to be per-worker: the
+#                                SPORT above already is, so this "1975" row hangs off
+#                                this worker's own sport and no other worker sees it.)
 #     mfr   "WOMfr-<worker>"  → derives manufacturer="WOMfr-<worker>" (verbatim)
 #     set   "WOSet3-<worker>" → derives isReprint="false", autographed="None",
 #                               and the physical defaults cardThickness="20pt",
@@ -196,7 +201,7 @@ tags:
     file: util-drill-to-custom.yaml
     env:
       SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
-      YEAR: "1975-w${WORKER_INDEX || 0}"
+      YEAR: "1975"
       MANUFACTURER: "WOMfr-${WORKER_INDEX || 0}"
       SET_NAME: "WOSet3-${WORKER_INDEX || 0}"
       VARIANT_TYPE: "WOVT3-${WORKER_INDEX || 0}"
@@ -222,7 +227,7 @@ tags:
 # vintage to have derived — asserting it here guards the precondition for the
 # Vintage value assertion below.
 - assertVisible:
-    text: ".*1975-w${WORKER_INDEX || 0}.*WOVT3-${WORKER_INDEX || 0}.*"
+    text: ".*1975.*WOVT3-${WORKER_INDEX || 0}.*"
 
 # Step 5 — make sure the panel is EXPANDED (it may default collapsed at the
 # variantType level, or a prior retry may have left it either way). Idempotent:

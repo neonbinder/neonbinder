@@ -280,6 +280,270 @@ describe("setSelectorOptionFeature", () => {
 });
 
 // ===========================================================================
+// NEO-217: an empty value CLEARS the attribute (removes the key)
+// ===========================================================================
+
+/**
+ * Both feature setters route through one shared helper (`applyFeatureEdit` in
+ * convex/selectorOptions.ts), so these assert the same three things at set
+ * level and at card level:
+ *
+ *  1. `""` REMOVES the key. "Attribute gone" is the key being absent, not the
+ *     key present with an empty value — a stored `""` would be a third
+ *     spelling of nothing that every reader would then have to know about.
+ *  2. Sibling keys on the same row survive the clear untouched.
+ *  3. The clear SKIPS `validateFeatureValue`, which is the whole point for
+ *     `era`: its closed 4-bucket vocabulary does not contain `""`, so
+ *     validating a clear would make the enum features the only ones an
+ *     operator could never un-set.
+ */
+describe("clearing a feature with an empty value (NEO-217)", () => {
+  test("setSelectorOptionFeature: '' removes the key and leaves siblings intact", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(subtree.setNameId, {
+        features: { season: "2024", manufacturer: "Topps", league: "MLB" },
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+      selectorOptionId: subtree.setNameId,
+      key: "season",
+      value: "",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(subtree.setNameId));
+    // Absent, not "" — assert on the key itself, since `?.season` reads the
+    // same `undefined` either way.
+    expect(Object.keys(row!.features ?? {}).sort()).toEqual([
+      "league",
+      "manufacturer",
+    ]);
+    expect(row!.features).not.toHaveProperty("season");
+    expect(row!.features?.manufacturer).toBe("Topps");
+    expect(row!.features?.league).toBe("MLB");
+  });
+
+  test("setSelectorOptionFeature: '' clears `era` even though '' is not an era bucket", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(subtree.setNameId, {
+        features: { era: "Modern (1980-Now)", manufacturer: "Topps" },
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+      selectorOptionId: subtree.setNameId,
+      key: "era",
+      value: "",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(subtree.setNameId));
+    expect(row!.features).not.toHaveProperty("era");
+    expect(row!.features?.manufacturer).toBe("Topps");
+  });
+
+  test("setSelectorOptionFeature: a non-empty era value is still validated", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+        selectorOptionId: subtree.setNameId,
+        key: "era",
+        value: "Junk Wax",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("setSelectorOptionFeature: clearing a key that was never set does not add an empty one", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(subtree.setNameId, {
+        features: { manufacturer: "Topps" },
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+      selectorOptionId: subtree.setNameId,
+      key: "season",
+      value: "",
+    });
+
+    const row = await t.run(async (ctx) => ctx.db.get(subtree.setNameId));
+    expect(Object.keys(row!.features ?? {})).toEqual(["manufacturer"]);
+  });
+
+  test("setCardFeature: '' removes the key and leaves siblings intact", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t, {
+      cardFeaturesPerIndex: {
+        0: { season: "2024", manufacturer: "Topps", autographed: "On Card" },
+      },
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: subtree.cardIds[0],
+      key: "season",
+      value: "",
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(card!.features).not.toHaveProperty("season");
+    expect(Object.keys(card!.features ?? {}).sort()).toEqual([
+      "autographed",
+      "manufacturer",
+    ]);
+    expect(card!.features?.manufacturer).toBe("Topps");
+    expect(card!.features?.autographed).toBe("On Card");
+  });
+
+  test("setCardFeature: '' clears `era` even though '' is not an era bucket", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t, {
+      cardFeaturesPerIndex: {
+        0: { era: "Modern (1980-Now)", manufacturer: "Topps" },
+      },
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: subtree.cardIds[0],
+      key: "era",
+      value: "",
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(card!.features).not.toHaveProperty("era");
+    expect(card!.features?.manufacturer).toBe("Topps");
+  });
+
+  test("setCardFeature: clearing one card's feature does not touch its siblings' rows", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t, {
+      cardFeaturesPerIndex: {
+        0: { season: "2024" },
+        1: { season: "2024" },
+      },
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: subtree.cardIds[0],
+      key: "season",
+      value: "",
+    });
+
+    const [first, second] = await t.run(async (ctx) => [
+      await ctx.db.get(subtree.cardIds[0]),
+      await ctx.db.get(subtree.cardIds[1]),
+    ]);
+    expect(first!.features).not.toHaveProperty("season");
+    expect(second!.features?.season).toBe("2024");
+  });
+
+  // -------------------------------------------------------------------------
+  // Adversarial pass (NEO-216/217) — two things the design doc calls out by
+  // name but the block above never actually pins.
+  // -------------------------------------------------------------------------
+
+  test("applyFeatureEdit: clearing a key on a row whose `features` was NEVER set writes an empty object, not undefined", async () => {
+    // `applyFeatureEdit` is `{...(existing ?? {})}` then `delete cleared[key]`
+    // — on `existing === undefined` that is `{}` with nothing to delete, so
+    // the row goes from "no features field at all" to "features: {}" rather
+    // than staying field-less. Every existing clear test in this file pre-
+    // seeds SOME features object first; this is the one path where the row
+    // never had one, and it is the one `applyFeatureEdit`'s own doc comment
+    // makes an explicit claim about ("returns {} not undefined").
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+
+    const before = await t.run(async (ctx) => ctx.db.get(subtree.setNameId));
+    expect(before!.features).toBeUndefined();
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+      selectorOptionId: subtree.setNameId,
+      key: "season",
+      value: "",
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(subtree.setNameId));
+    expect(after!.features).toEqual({});
+    expect("features" in after!).toBe(true);
+  });
+
+  test("setCardFeature: clearing a key on a card whose `features` was never set writes an empty object, not undefined", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+
+    const before = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(before!.features).toBeUndefined();
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: subtree.cardIds[0],
+      key: "season",
+      value: "",
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(after!.features).toEqual({});
+  });
+
+  test("clearing a feature at the parent leaves a descendant's own already-copied-down value stale — single-row-patch by design (NEO-71-74)", async () => {
+    // The clear path shares `applyFeatureEdit` with the set path, and the set
+    // path already proved (above, "edits only the target row") that NEITHER
+    // direction cascades. This is the same guarantee stated for a CLEAR
+    // specifically, because "clear" reads like it should propagate an
+    // un-setting even to someone who already accepts that a SET doesn't
+    // propagate a value. It doesn't: a descendant that copied the value down
+    // at its own creation keeps it, unaffected, exactly like an unrelated
+    // per-card override would. This is the documented, intentional behavior
+    // (NEO-71-74 killed the cascade engine) — pinned here because "the parent
+    // now says nothing about season, but this card still says 2024" is a real
+    // support-desk-shaped surprise if it is ever assumed to be a bug and
+    // "fixed" into a cascade by accident.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t, {
+      cardFeaturesPerIndex: { 0: { season: "2024" } },
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(subtree.sportId, { features: { season: "2024" } });
+      await ctx.db.patch(subtree.variantTypeId, {
+        features: { season: "2024" },
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+      selectorOptionId: subtree.sportId,
+      key: "season",
+      value: "",
+    });
+
+    const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
+    expect(root!.features).not.toHaveProperty("season");
+
+    // Stale on both a descendant NODE and a descendant CARD.
+    const variantTypeNode = await t.run(async (ctx) =>
+      ctx.db.get(subtree.variantTypeId),
+    );
+    expect(variantTypeNode!.features?.season).toBe("2024");
+    const card0 = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(card0!.features?.season).toBe("2024");
+  });
+});
+
+// ===========================================================================
 // commitCardChecklist: card creation reads the leaf node's complete snapshot
 // ===========================================================================
 
@@ -519,6 +783,13 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     // raw autographType string.
     expect(c1.features?.autographed).toBe("On Card");
     expect(c1.features?.signedBy).toBe("Mike Trout");
+    // NEO-217: the RAW `autographType` column is no longer written on insert.
+    // The wire field still arrives (and is still exactly what the derivation
+    // above reads), but `features.autographed` is the one stored truth — the
+    // column would otherwise give the row sub-line and the NEO-203 re-sync
+    // diff a second, worse answer ("Unknown" for every SportLots auto).
+    expect(c1).not.toHaveProperty("autographType");
+    expect(c2).not.toHaveProperty("autographType");
     expect(c1.features?.parallelName).toBe("Gold");
     expect(c1.features?.isRelic).toBeUndefined();
 

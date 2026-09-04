@@ -249,6 +249,10 @@ export default function VariantForm({
         );
         // A detach the operator has not seen is a silent data change. Hold the
         // panel open so the notice renders; they close it themselves.
+        // NB: empty-empty-no-errors MUST land here and call onDone — it is the
+        // normal path for a custom subtree (both adapters short-circuit), and
+        // EntityColumn renders this form INSTEAD of the idle "+ Custom" button
+        // while mode === "sync", so not returning to idle hides that button.
         if (unlinkedRows.length === 0) onDone?.();
       }
     } catch {

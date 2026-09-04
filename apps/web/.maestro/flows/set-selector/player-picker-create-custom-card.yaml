@@ -24,8 +24,12 @@ tags:
 #     option MUST appear (id "Create player <name>"); choosing it MUST produce a
 #     chip whose remove button is "Remove player <name>". A create path that
 #     silently no-oped would leave no chip and fail the assert.
-#   - PERSISTENCE ON A CUSTOM CARD (the actual gap): after Save + reopen, the
-#     chip is STILL there — proving the custom card now durably holds a player.
+#   - PERSISTENCE ON A CUSTOM CARD (the actual gap): after closing and
+#     reopening the drawer, the chip is STILL there — proving the custom card
+#     now durably holds a player. NEO-216: the picker writes `playerIds` on the
+#     TAP (there is no Save button and no draft), so the drawer's own
+#     "Saved Players" confirmation is asserted as the write going out, and the
+#     reopen is what proves it landed.
 #
 # R3 — DEDUP: team-picker.yaml covers the sibling TeamPicker; signed-by-autofills
 #   reads playerIds on a REAL card but explicitly notes a custom card CANNOT
@@ -124,15 +128,21 @@ tags:
     id: "Remove player NBPlayer-${ATTEMPT_ID}"
 
 # ============================================================
-# SAVE — playerIds ARE part of the drawer's dirty draft, so the attachment only
-# persists to this card via the Save button. (findOrCreate already created the
-# player ENTITY; Save writes updateCard.playerIds to link it to this card.)
-# The Save button lives in the sticky footer (outside the scroll body / open
-# popover), so tapping it directly commits and closes.
+# THE WRITE — NEO-216: choosing "+ Create" both creates the player entity
+# (findOrCreate) AND links it to this card in the same gesture. There is no
+# Save button; `updateCard.playerIds` goes out on the tap, and the drawer
+# confirms it in its one status region.
 # ============================================================
 
+- extendedWaitUntil:
+    visible: ".*Saved Players.*"
+    timeout: 7000
+
+# Close with "Done" — it only closes. It lives in the drawer's pinned footer,
+# outside the scroll body and clear of the open popover, so it needs no scroll
+# (R8 exception: a footer element can never satisfy centering).
 - tapOn:
-    id: "Save card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 
@@ -154,7 +164,7 @@ tags:
       id: "Card name"
     timeout: 15000
 
-# Reach the Players section again and confirm the chip survived Save + reopen.
+# Reach the Players section again and confirm the chip survived close + reopen.
 - swipe:
     start: "80%, 80%"
     end: "80%, 20%"
@@ -173,7 +183,7 @@ tags:
 # ============================================================
 
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 

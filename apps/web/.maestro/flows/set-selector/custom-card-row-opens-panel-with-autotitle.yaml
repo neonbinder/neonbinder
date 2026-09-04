@@ -109,13 +109,15 @@ tags:
 
 # ============================================================
 # CLOSE + CLEANUP — delete this attempt's test card
-# We made no edits, so Cancel closes immediately (no dirty guard).
+# NEO-216: the drawer autosaves per field, so there is no Save/Cancel pair and
+# nothing to discard. "Done" is the close control; the pinned footer cannot be
+# centred by a scroll (R8 exception), so assert + tap.
 # ============================================================
 
 - assertVisible:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - tapOn:
-    id: "Cancel card edit"
+    id: "Done editing card"
 - assertNotVisible:
     id: "Card name"
 

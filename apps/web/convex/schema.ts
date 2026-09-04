@@ -511,6 +511,13 @@ export default defineSchema({
     unlinked: v.optional(
       v.array(
         v.object({
+          // NEO-219: may DANGLE. `deleteSelectorOption` sweeps the status rows
+          // keyed on the deleted row (its child columns'), but not one that
+          // merely NAMES it here — a sibling column's notice can outlive the
+          // row it points at. Inert today: the notice renders `value`, which
+          // is denormalised right here, and the id is only ever used to scroll
+          // to a row that is either present or not. Anything that starts
+          // dereferencing this id must tolerate a null `ctx.db.get`.
           id: v.id("selectorOptions"),
           value: v.string(),
           side: v.union(v.literal("bsc"), v.literal("sportlots")),
@@ -603,8 +610,13 @@ export default defineSchema({
     // Numbered card print run (e.g. /99). Derived from BSC printRun or
     // set-level metadata; absent on unnumbered cards.
     printRun: v.optional(v.number()),
-    // Autograph signal: presence of autographType implies the card is
-    // autographed. Values: "On-Card" / "Sticker" / "Cut".
+    // LEGACY (NEO-217). The raw marketplace autograph string ("On-Card" /
+    // "Sticker" / "Cut", and SportLots' literal "Unknown"). Still arrives on
+    // the commit wire and is still derived into `features.autographed` at
+    // insert — that derived value is the one truth for "this card is an
+    // autograph". No longer written on insert, no longer displayed on the
+    // row, and no longer diffed by the NEO-203 re-sync review. Kept only for
+    // rows written before NEO-217; there is no backfill.
     autographType: v.optional(v.string()),
     // NEO-189: this card's VARIATION name — "Action", "Nickname", "Sliding",
     // "Standing by bucket". One NeonBinder name per card, settled when the

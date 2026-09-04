@@ -149,6 +149,12 @@ describe("fetchRawOptions error shape", () => {
 
 describe("fetchRawOptions when an adapter throws", () => {
   test("each failing platform gets its own { platform, message } entry", async () => {
+    // NEO-216: driven at `insert`, the level BOTH marketplaces serve. This used
+    // to run at `variantType` and still saw two entries — because SportLots was
+    // being called at a level it does not have, failed on the dead browser
+    // service, and was counted as an outage. That conflation is the bug NEO-216
+    // fixes; the two-entry SHAPE this test exists to pin is real, so it moves to
+    // a level where both sides genuinely answer.
     const t = convexTest(schema, modules);
     const setNameId = await seedChain(t, { setNameBsc: "topps-2024" });
 
@@ -171,7 +177,7 @@ describe("fetchRawOptions when an adapter throws", () => {
     const res = await t
       .withIdentity(ADMIN_IDENTITY)
       .action(api.setReconciliation.fetchRawOptions, {
-        level: "variantType",
+        level: "insert",
         parentId: setNameId,
       });
 
@@ -179,5 +185,35 @@ describe("fetchRawOptions when an adapter throws", () => {
     const platforms = res.errors.map((e) => e.platform).sort();
     expect(platforms).toEqual(["bsc", "sportlots"]);
     for (const e of res.errors) expect(typeof e.message).toBe("string");
+  }, 60_000);
+
+  test("a platform that does not serve the level is not among them (NEO-216)", async () => {
+    // Same dead browser service, one level up. SportLots does not model
+    // `variantType`, so it is not called and cannot be blamed — only BSC, which
+    // does serve it and really did fail, is reported. Without this the forms'
+    // alert named a marketplace that was never asked anything.
+    const t = convexTest(schema, modules);
+    const setNameId = await seedChain(t, { setNameBsc: "topps-2024" });
+
+    process.env.NEONBINDER_BROWSER_URL = "http://localhost:9999";
+    vi.stubGlobal("fetch", async (url: string | URL | Request) => {
+      if (String(url).endsWith("/health")) {
+        return new Response(
+          JSON.stringify({ status: "ok", environment: "test", contractVersion: 1 }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("upstream failed", { status: 500 });
+    });
+
+    const res = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.setReconciliation.fetchRawOptions, {
+        level: "variantType",
+        parentId: setNameId,
+      });
+
+    expect(res.success).toBe(true);
+    expect(res.errors.map((e) => e.platform)).toEqual(["bsc"]);
   }, 60_000);
 });

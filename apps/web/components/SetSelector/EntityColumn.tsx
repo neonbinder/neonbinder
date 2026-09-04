@@ -1,5 +1,5 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
-import { useAction, useMutation, useQuery } from "convex/react";
+import { useAction, useConvex, useMutation, useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
@@ -13,11 +13,13 @@ import SyncDoneNotice from "./SyncDoneNotice";
 import {
   buildUnlinkedNotices,
   levelLabelPlural,
+  LEVEL_SINGULAR,
   unlinkNoticeText,
   UNLINKED_NAME_LIMIT_TOAST,
   type SyncSide,
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
+import { checkCustomSelectorValue } from "../../convex/selectorSyncMatch";
 
 type Level =
   | "sport"
@@ -27,6 +29,97 @@ type Level =
   | "variantType"
   | "insert"
   | "parallel";
+
+/**
+ * NEO-219 — one row this column's "+ Custom" value already exists as, under a
+ * DIFFERENT parent. `path` is that row's ancestor chain (root-first), which is
+ * what `onDrillToExisting` replays to move the whole cascade onto it.
+ */
+export type ElsewhereMatch = {
+  _id: GenericId<"selectorOptions">;
+  value: string;
+  parentId?: GenericId<"selectorOptions">;
+  path: Array<{
+    _id: GenericId<"selectorOptions">;
+    level: Level;
+    value: string;
+  }>;
+};
+
+/**
+ * NEO-219 — the custom-entry form is three states, not one.
+ *
+ * It used to write on the first Enter with no validation and a duplicate check
+ * scoped to this column only, so "2o24" became a Year and a set that already
+ * existed under a sibling manufacturer became a second, unsyncable copy. Typing
+ * now leads to a CONFIRM, and the confirm is where the operator finds out the
+ * value lives somewhere else.
+ */
+type CustomStage =
+  | { kind: "input" }
+  /** `findSelectorOptionElsewhere` in flight. The input stays mounted. */
+  | { kind: "checking" }
+  | { kind: "confirm-create"; value: string }
+  | { kind: "confirm-exists"; value: string; matches: ElsewhereMatch[] };
+
+/**
+ * The server's structured refusals for a custom create.
+ *
+ * Read from `data`, never `.message`: production redacts the message, and the
+ * reason/matches are the only fields this UI can render meaningfully.
+ * Structural rather than `instanceof ConvexError` for the same reason
+ * `RenameEntityControl` is — a rethrown or mocked error still has to surface.
+ */
+function customRefusal(
+  e: unknown,
+):
+  | { code: "CUSTOM_VALUE_INVALID"; reason: string }
+  | { code: "CUSTOM_EXISTS_ELSEWHERE"; matches: ElsewhereMatch[] }
+  | null {
+  if (typeof e !== "object" || e === null) return null;
+  const data = (e as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return null;
+  const { code, reason, matches } = data as {
+    code?: unknown;
+    reason?: unknown;
+    matches?: unknown;
+  };
+  if (code === "CUSTOM_VALUE_INVALID") {
+    return {
+      code,
+      reason:
+        typeof reason === "string" && reason.length > 0
+          ? reason
+          : "That value isn't allowed here.",
+    };
+  }
+  if (code === "CUSTOM_EXISTS_ELSEWHERE") {
+    return {
+      code,
+      matches: Array.isArray(matches) ? (matches as ElsewhereMatch[]) : [],
+    };
+  }
+  return null;
+}
+
+/**
+ * How many ancestors to name in a confirm sentence.
+ *
+ * Two: the column is `min-w-[260px] max-w-[340px]`, and the two closest
+ * ancestors ("2021 > Topps") are what actually disambiguate a set — the sport
+ * is never the thing an operator confuses.
+ */
+const BREADCRUMB_DEPTH = 2;
+
+function breadcrumbOf(
+  chain: Array<{ value: string }> | undefined | null,
+): string {
+  if (!chain || chain.length === 0) return "";
+  return chain
+    .slice(-BREADCRUMB_DEPTH)
+    .map((a) => a.value)
+    .join(" \u203a ");
+}
 
 export type EntityColumnProps = {
   selector: ReactNode;
@@ -41,6 +134,13 @@ export type EntityColumnProps = {
   // cascade drills into the existing row — identical to searching for and
   // selecting it. A genuinely-new value still creates a custom entry.
   onSelectExisting?: (id: GenericId<"selectorOptions">) => void;
+  // NEO-219: the typed value exists under a DIFFERENT parent and the operator
+  // chose "Go to it". The path is root-first and ends at the matched row, so
+  // the parent replays it through its own level-select handlers in order and
+  // the cascade lands on the existing row instead of minting a second copy.
+  onDrillToExisting?: (
+    path: Array<{ _id: GenericId<"selectorOptions">; level: Level }>,
+  ) => void;
   // Extra buttons rendered alongside Sync / + Custom in idle mode. Used by
   // the Variants column to expose the "Group Parallels" trigger without
   // forcing every column to learn about that domain.
@@ -98,6 +198,7 @@ export default function EntityColumn({
   level,
   parentId,
   onSelectExisting,
+  onDrillToExisting,
   extraActions,
   useEnsureSync,
   syncingLabel,
@@ -106,6 +207,10 @@ export default function EntityColumn({
   const [mode, setMode] = useState<"idle" | "sync" | "custom">("idle");
   const [customValue, setCustomValue] = useState("");
   const [customError, setCustomError] = useState<string | null>(null);
+  // NEO-219: where the custom-entry form is in its type -> confirm -> write
+  // sequence. See CustomStage.
+  const [customStage, setCustomStage] = useState<CustomStage>({ kind: "input" });
+  const [creating, setCreating] = useState(false);
   // Set once the user engages this column after its first sync — see the
   // freeze-on-interaction effect below. Frozen columns stop auto-syncing.
   const [hasInteracted, setHasInteracted] = useState(false);
@@ -144,6 +249,16 @@ export default function EntityColumn({
   const fieldClass = useFieldTestClass();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // NEO-219: the confirm's primary button. Focused DIRECTLY in an effect (not
+  // through requestAnimationFrame): the confirm is not portalled, so the node
+  // exists by the time the effect runs, and the E2E drills press Enter twice in
+  // immediate succession — a frame of delay is a dropped keystroke.
+  const confirmPrimaryRef = useRef<HTMLButtonElement | null>(null);
+  // An Enter that arrived while `findSelectorOptionElsewhere` was still in
+  // flight. Replayed onto the CREATE confirm only, never onto the
+  // exists-elsewhere offer: "create the thing I typed" is what the second Enter
+  // meant, and drilling into somebody else's row is not.
+  const pendingCreateEnterRef = useRef(false);
   // a11y: the pill the suggestions dialog was opened from, so focus comes back
   // to it on close rather than dropping to <body>.
   const suggestionsBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -170,6 +285,19 @@ export default function EntityColumn({
     api.selectorOptions.getSelectorOptions,
     level ? { level, parentId } : "skip",
   );
+
+  // NEO-219: the parent's own ancestry, so a confirm can say WHERE the row is
+  // about to be created ("under 2021 › Topps"). Skipped at the root level,
+  // which has no parent and therefore no breadcrumb.
+  const parentChain = useQuery(
+    api.selectorOptions.getAncestorChain,
+    parentId ? { id: parentId } : "skip",
+  );
+
+  // One-shot reads (not a subscription): the cross-parent duplicate check runs
+  // once per submit, on a value that does not exist yet, so there is nothing to
+  // stay subscribed to.
+  const convex = useConvex();
 
   // NEO-83: surface the pure-read loading state to the ResilientEntityColumn
   // backstop. `items === undefined` is exactly the "Loading <level>…" gate in
@@ -303,6 +431,15 @@ export default function EntityColumn({
     setHasInteracted(false);
     setSelfRequestedSync(false);
     hasSyncedRef.current = false;
+    // NEO-219: the custom-entry form is scoped to the parent it was opened
+    // under. Leaving `mode`/`customValue`/`customError` alone meant a
+    // half-typed value (and, worse, an open confirm naming the OLD parent)
+    // survived a parent change and the next Enter wrote it under the new one.
+    setMode((m) => (m === "custom" ? "idle" : m));
+    setCustomValue("");
+    setCustomError(null);
+    setCustomStage({ kind: "input" });
+    pendingCreateEnterRef.current = false;
   }, [parentId]);
 
   // Freeze-on-interaction (FE stability for concurrent users): once the user
@@ -525,78 +662,349 @@ export default function EntityColumn({
     }
   };
 
-  const handleCustomSubmit = async () => {
-    const trimmed = customValue.trim();
-    if (!trimmed || !level) return;
+  /**
+   * The single write path for a new custom row.
+   *
+   * `allowDuplicateElsewhere` is the explicit, operator-chosen escape hatch
+   * from the cross-parent check — never a default, so a value that exists
+   * somewhere else can only be duplicated deliberately.
+   */
+  const runCreate = async (value: string, allowDuplicateElsewhere: boolean) => {
+    if (!level || creating) return;
+    setCreating(true);
     setCustomError(null);
+    try {
+      await addCustomOption({
+        level,
+        value,
+        parentId,
+        ...(allowDuplicateElsewhere ? { allowDuplicateElsewhere: true } : {}),
+      });
+      setCustomValue("");
+      setCustomStage({ kind: "input" });
+      setMode("idle");
+    } catch (error) {
+      // The server re-runs both checks this form ran, so its refusal is the
+      // authority — a stale bundle or a row created a second ago by somebody
+      // else still cannot get the write through. Render the STRUCTURE
+      // (`data.reason` / `data.matches`), never the raw text.
+      const refusal = customRefusal(error);
+      if (refusal?.code === "CUSTOM_EXISTS_ELSEWHERE") {
+        setCustomStage({
+          kind: "confirm-exists",
+          value,
+          matches: refusal.matches,
+        });
+        return;
+      }
+      if (refusal?.code === "CUSTOM_VALUE_INVALID") {
+        setCustomValue(value);
+        setCustomStage({ kind: "input" });
+        setCustomError(refusal.reason);
+        return;
+      }
+      setCustomValue(value);
+      setCustomStage({ kind: "input" });
+      setCustomError(
+        error instanceof Error ? error.message : "Failed to add custom entry",
+      );
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleCustomSubmit = async () => {
+    if (!level) return;
+    // An Enter that lands while the cross-parent lookup is in flight is the
+    // operator (or the E2E driver) confirming ahead of the round-trip. Hold it
+    // rather than dropping it; the confirm effect replays it.
+    if (customStage.kind === "checking") {
+      pendingCreateEnterRef.current = true;
+      return;
+    }
+    if (customStage.kind !== "input") return;
+    setCustomError(null);
+
+    // Validate BEFORE anything else. "2o24" is not a year, and the row it
+    // would create is one nothing can ever sync or reconcile.
+    const checked = checkCustomSelectorValue(level, customValue);
+    if (!checked.ok) {
+      setCustomError(checked.reason);
+      return;
+    }
+    const trimmed = checked.value;
 
     // "Custom" is only for values the marketplaces don't have. If the typed
     // value already exists at this column — whether it was synced from a
     // marketplace OR added as a prior custom entry — treat it exactly like
     // searching for and selecting it: drill into the existing row via the
-    // parent's level-select handler. No duplicate, no error. (The server's
-    // addCustomSelectorOption is idempotent and returns the existing _id on a
-    // match, but the FE drives the actual selection so the cascade advances.)
+    // parent's level-select handler. No duplicate, no error, and no confirm:
+    // this is a navigation, not a write. (The server's addCustomSelectorOption
+    // is idempotent and returns the existing _id on a match, but the FE drives
+    // the actual selection so the cascade advances.)
     const normalized = trimmed.toLowerCase();
     const existing = (items ?? []).find(
       (o) => o.value.toLowerCase().trim() === normalized,
     );
     if (existing) {
       setCustomValue("");
+      setCustomStage({ kind: "input" });
       setMode("idle");
       onSelectExisting?.(existing._id);
       return;
     }
 
-    // Genuinely-new value → create a custom entry. The new row appears in the
-    // list and the operator taps it to drill (unchanged behavior — existing
-    // custom-drill Maestro flows depend on it NOT auto-drilling here).
+    setCustomStage({ kind: "checking" });
+    let matches: ElsewhereMatch[] = [];
     try {
-      await addCustomOption({
-        level,
-        value: trimmed,
-        parentId,
-      });
-      setCustomValue("");
-      setMode("idle");
-    } catch (error) {
-      setCustomError(
-        error instanceof Error ? error.message : "Failed to add custom entry",
+      const result = await convex.query(
+        api.selectorOptions.findSelectorOptionElsewhere,
+        { level, value: trimmed, parentId },
       );
+      matches = Array.isArray(result) ? (result as ElsewhereMatch[]) : [];
+    } catch {
+      // A failed lookup must not become a wall. Fall through to the plain
+      // create confirm — the mutation runs the same check server-side and
+      // refuses with CUSTOM_EXISTS_ELSEWHERE if there is something to find.
+      matches = [];
     }
+    setCustomStage(
+      matches.length > 0
+        ? { kind: "confirm-exists", value: trimmed, matches }
+        : { kind: "confirm-create", value: trimmed },
+    );
   };
 
+  // NEO-219: move the whole cascade onto the row that already exists elsewhere.
+  // `path` is root-first and ends at the matched row itself, so the parent can
+  // replay it through its own level-select handlers in order.
+  const handleDrillToMatch = (match: ElsewhereMatch) => {
+    if (!level) return;
+    const ancestors = (match.path ?? []).filter((p) => p._id !== match._id);
+    setCustomValue("");
+    setCustomStage({ kind: "input" });
+    setMode("idle");
+    onDrillToExisting?.([
+      ...ancestors.map((p) => ({ _id: p._id, level: p.level })),
+      { _id: match._id, level },
+    ]);
+  };
+
+  const backToInput = () => {
+    pendingCreateEnterRef.current = false;
+    setCustomStage((stage) =>
+      stage.kind === "confirm-create" || stage.kind === "confirm-exists"
+        ? { kind: "input" }
+        : stage,
+    );
+  };
+
+  const closeCustomForm = () => {
+    pendingCreateEnterRef.current = false;
+    setCustomValue("");
+    setCustomError(null);
+    setCustomStage({ kind: "input" });
+    setMode("idle");
+  };
+
+  // Focus the confirm's primary button the moment it mounts, and replay a
+  // buffered Enter onto the CREATE confirm only.
+  useEffect(() => {
+    if (customStage.kind !== "confirm-create" && customStage.kind !== "confirm-exists") {
+      return;
+    }
+    confirmPrimaryRef.current?.focus();
+    if (customStage.kind === "confirm-create" && pendingCreateEnterRef.current) {
+      pendingCreateEnterRef.current = false;
+      // Replays the operator's own second Enter onto the confirm it was aimed
+      // at. Not a state write from the effect body: `runCreate` is an async
+      // mutation call, exactly what the button's own onClick runs.
+      void runCreate(customStage.value, false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the stage transition; runCreate is recreated every render
+  }, [customStage]);
+
   if (!isVisible) return null;
+
+  // The noun this column creates, mid-sentence ("set", "sport", "sub-variant").
+  const levelNounSingular = level ? LEVEL_SINGULAR[level].toLowerCase() : "entry";
+  const parentBreadcrumb = breadcrumbOf(parentChain);
+  const confirmValue =
+    customStage.kind === "confirm-create" || customStage.kind === "confirm-exists"
+      ? customStage.value
+      : "";
+  // Sentences are composed in JS, not assembled from JSX text nodes, so what
+  // Maestro reads is exactly one string with exactly one set of spaces in it.
+  const createSentence = parentBreadcrumb
+    ? `Create ${levelNounSingular} '${confirmValue}' under ${parentBreadcrumb}?`
+    : `Create ${levelNounSingular} '${confirmValue}'?`;
+  const firstMatch =
+    customStage.kind === "confirm-exists" ? customStage.matches[0] : undefined;
+  const matchBreadcrumb = firstMatch
+    ? breadcrumbOf((firstMatch.path ?? []).filter((a) => a._id !== firstMatch._id))
+    : "";
+  const existsSentence = matchBreadcrumb
+    ? `'${confirmValue}' already exists under ${matchBreadcrumb}`
+    : `'${confirmValue}' already exists elsewhere`;
+  const otherMatchCount =
+    customStage.kind === "confirm-exists" ? customStage.matches.length - 1 : 0;
 
   // Extracted so both the legacy mode-machine path and the new ensureSync path
   // render byte-identical custom-entry + idle-button UI (keeps NEO-39 field-class
   // + the "Add custom X" aria-label the drills target).
+  //
+  // NEO-219: the heading is deliberately CONSTANT across all three stages.
+  // Eleven Maestro flows wait on "Add Custom Entry" to appear and on the same
+  // string to disappear once the row is written, so it brackets the whole
+  // interaction rather than just its first screen. (It is also the only place
+  // in this column allowed to contain the bare word "Custom" —
+  // `custom-entry-survives-resync.yaml` asserts `text: "Custom"` positioned
+  // rightOf a row, and a second match here is a resolution hazard.)
   const customForm = (
-    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+    <div
+      className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") return;
+        // Escape steps BACK out of a confirm before it closes the form: the
+        // operator who opened a confirm by mistake should not also lose what
+        // they typed.
+        e.stopPropagation();
+        if (
+          customStage.kind === "confirm-create" ||
+          customStage.kind === "confirm-exists"
+        ) {
+          backToInput();
+        } else {
+          closeCustomForm();
+        }
+      }}
+    >
       <h2 className="text-lg font-semibold mb-3">Add Custom Entry</h2>
-      <Input
-        bare
-        type="text"
-        value={customValue}
-        onChange={(e) => setCustomValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") handleCustomSubmit();
-        }}
-        className={`${fieldClass("customvalue")} w-full p-2 mb-3`}
-        placeholder="Enter custom value..."
-        autoFocus
-      />
-      {customError && (
-        <div className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm">
-          {customError}
-        </div>
+
+      {(customStage.kind === "input" || customStage.kind === "checking") && (
+        <>
+          <Input
+            bare
+            type="text"
+            value={customValue}
+            onChange={(e) => setCustomValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleCustomSubmit();
+            }}
+            className={`${fieldClass("customvalue")} w-full p-2 mb-3`}
+            placeholder="Enter custom value..."
+            // The input stays MOUNTED while the cross-parent lookup runs so it
+            // keeps focus: unmounting it drops focus to <body>, and the second
+            // Enter of the keyboard flow lands on nothing.
+            readOnly={customStage.kind === "checking"}
+            autoFocus
+          />
+          {customStage.kind === "checking" && (
+            // text-gray-500 measures ~3:1 against both bg-white and the
+            // dark:bg-gray-800 this form actually renders on — below WCAG
+            // 1.4.3's 4.5:1 for normal text. gray-600/dark:gray-400 matches
+            // the same dual-mode pairing already used a few lines down for
+            // "Fetching from marketplaces…".
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3" role="status">
+              Checking where this name is already used…
+            </p>
+          )}
+          {customError && (
+            <div
+              role="alert"
+              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+            >
+              {customError}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <NeonButton
+              onClick={handleCustomSubmit}
+              disabled={customStage.kind === "checking"}
+            >
+              Add
+            </NeonButton>
+            <NeonButton cancel onClick={closeCustomForm}>
+              Cancel
+            </NeonButton>
+          </div>
+        </>
       )}
-      <div className="flex gap-2">
-        <NeonButton onClick={handleCustomSubmit}>Add</NeonButton>
-        <NeonButton cancel onClick={() => setMode("idle")}>
-          Cancel
-        </NeonButton>
-      </div>
+
+      {customStage.kind === "confirm-create" && (
+        <>
+          <p className="text-sm mb-3">{createSentence}</p>
+          {customError && (
+            <div
+              role="alert"
+              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+            >
+              {customError}
+            </div>
+          )}
+          <div className="flex gap-2">
+            {/* Create is the PRIMARY and holds focus (decision 3): this confirm
+                is not destructive, and the keyboard flow it exists to serve is
+                type → Enter → Enter. */}
+            <NeonButton
+              ref={confirmPrimaryRef}
+              onClick={() => void runCreate(customStage.value, false)}
+              disabled={creating}
+            >
+              Create
+            </NeonButton>
+            <NeonButton secondary onClick={backToInput} disabled={creating}>
+              Back
+            </NeonButton>
+          </div>
+        </>
+      )}
+
+      {customStage.kind === "confirm-exists" && firstMatch && (
+        <>
+          <p className="text-sm mb-1">{existsSentence}</p>
+          {otherMatchCount > 0 && (
+            // Same dual-mode contrast fix as the "Checking…" status line above.
+            <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">
+              {otherMatchCount === 1
+                ? "1 other place also has it."
+                : `${otherMatchCount} other places also have it.`}
+            </p>
+          )}
+          <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+            Going to it keeps one row. Creating it here makes a second.
+          </p>
+          {customError && (
+            <div
+              role="alert"
+              className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
+            >
+              {customError}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            <NeonButton
+              ref={confirmPrimaryRef}
+              onClick={() => handleDrillToMatch(firstMatch)}
+              disabled={creating}
+            >
+              Go to it
+            </NeonButton>
+            {/* Decision 5: kept, but secondary and explicit — duplicating a
+                name across parents is sometimes right, and never a default. */}
+            <NeonButton
+              secondary
+              onClick={() => void runCreate(customStage.value, true)}
+              disabled={creating}
+            >
+              Create here anyway
+            </NeonButton>
+            <NeonButton cancel onClick={backToInput} disabled={creating}>
+              Back
+            </NeonButton>
+          </div>
+        </>
+      )}
     </div>
   );
 
@@ -638,7 +1046,15 @@ export default function EntityColumn({
       {level && (
         <NeonButton
           secondary
-          onClick={() => setMode("custom")}
+          onClick={() => {
+            // Always open on a clean form: a stage left over from a previous
+            // visit would put the operator straight into a confirm for a value
+            // they no longer see.
+            setCustomError(null);
+            setCustomStage({ kind: "input" });
+            pendingCreateEnterRef.current = false;
+            setMode("custom");
+          }}
           aria-label={`Add custom ${addButtonText.replace(/^Sync /, "")}`}
         >
           + Custom

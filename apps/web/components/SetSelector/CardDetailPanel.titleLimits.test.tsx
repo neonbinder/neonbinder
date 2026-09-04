@@ -8,13 +8,17 @@
  * path untestable while still passing every other assertion here.
  *
  * What this file locks in:
- *   1. Over the 80-character cap, Save stops working and says why — and it
- *      stays in the tab order while doing so (aria-disabled, not `disabled`;
- *      the alert explaining the refusal is reached through the button).
+ *   1. Over the 80-character cap the title REFUSES TO COMMIT and says why,
+ *      keeping the over-length text in the field so it can be shortened. The
+ *      refusal used to belong to a Save button; NEO-216 removed that button
+ *      (the drawer autosaves per field on blur/Enter), so the cap is enforced
+ *      at commit instead — same constant, same wording, same server backstop.
  *   2. The soft bands are WORDS, not just colours, at 55 and 70. This is the
- *      accessibility requirement, so it is asserted on the text.
- *   3. Regenerate replaces the draft with the server's title and shows the
- *      facts it was built from — and asks twice before discarding an edit.
+ *      accessibility requirement, so it is asserted on the text. They are
+ *      display truncation, not a rule: a title in either band still saves.
+ *   3. Regenerate replaces the field with the server's title, PERSISTS it
+ *      through the same single-field path, and shows the facts it was built
+ *      from — and asks twice before discarding an edit.
  *   4. A row whose auto-title was cut short says so.
  */
 
@@ -96,7 +100,37 @@ function renderPanel(card = makeCard()) {
 
 const titleInput = () =>
   screen.getByLabelText("Card title") as HTMLInputElement;
-const saveButton = () => screen.getByLabelText("Save card edit");
+
+/**
+ * Focus a reactive field the way a person does. BOTH the real `.focus()` and
+ * the synthetic React event are needed — see the note in
+ * components/forms/useReactiveField.test.tsx.
+ */
+function focusField(el: HTMLElement): void {
+  el.focus();
+  fireEvent.focus(el);
+}
+
+function blurField(el: HTMLElement): void {
+  el.blur();
+  fireEvent.blur(el);
+}
+
+/**
+ * Type into the uncontrolled field, then blur — which is what commits it.
+ *
+ * `fireEvent.change` rather than assigning `el.value` by hand: React tracks
+ * the last value it saw on the node, and a direct property assignment updates
+ * that tracker, so the subsequent event looks like a no-change and React skips
+ * `onChange` — which is what drives the live character counter here.
+ */
+async function editAndCommit(el: HTMLInputElement, text: string): Promise<void> {
+  await act(async () => {
+    focusField(el);
+    fireEvent.change(el, { target: { value: text } });
+    blurField(el);
+  });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -135,7 +169,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     expect(screen.getByText("55/80")).toBeTruthy();
     expect(screen.getByText("may clip on mobile")).toBeTruthy();
     // Still saveable: the soft bands are display truncation, not a rule.
-    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("warns in words at the 70-character search band", () => {
@@ -143,44 +177,53 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
 
     expect(screen.getByText("70/80")).toBeTruthy();
     expect(screen.getByText("may clip in search")).toBeTruthy();
-    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("exactly 80 characters (at the cap) does not alert and leaves Save enabled", () => {
-    renderPanel(makeCard({ listingTitle: titleOfLength(80) }));
+  it("exactly 80 characters (at the cap) does not alert and still commits", async () => {
+    renderPanel(makeCard({ listingTitle: "short" }));
+
+    await editAndCommit(titleInput(), titleOfLength(80));
 
     expect(screen.getByText("80/80")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
   });
 
-  it("exactly 81 characters (one past the cap) alerts and blocks Save", () => {
+  it("exactly 81 characters (one past the cap) alerts", () => {
     renderPanel(makeCard({ listingTitle: titleOfLength(81) }));
 
     expect(screen.getByText("81/80")).toBeTruthy();
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain("1 over the 80-character limit");
-    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("blocks Save over the cap, explains why in an alert, and keeps the button reachable", async () => {
-    renderPanel(makeCard({ listingTitle: titleOfLength(84) }));
+  it("refuses to commit over the cap, explains why, and keeps the text so it can be shortened", async () => {
+    renderPanel(makeCard({ listingTitle: "short" }));
 
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain("84 characters");
-    expect(alert.textContent).toContain("4 over the 80-character limit");
+    await editAndCommit(titleInput(), titleOfLength(84));
 
-    const save = saveButton();
-    expect(save.getAttribute("aria-disabled")).toBe("true");
-    // aria-disabled, NOT the native attribute: a natively-disabled button
-    // leaves the tab order, taking the only route to the explanation with it.
-    expect(save.hasAttribute("disabled")).toBe(false);
-    expect(save.getAttribute("aria-describedby")).toBe(alert.id);
+    // The counter row and the alert below the input both say it, in words.
+    expect(screen.getByText("84/80")).toBeTruthy();
+    const alerts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.some((t) => t.includes("84 characters"))).toBe(true);
+    expect(
+      alerts.some((t) => t.includes("4 over the 80-character limit")),
+    ).toBe(true);
 
-    await act(async () => {
-      fireEvent.click(save);
-    });
+    // Nothing was sent, and nothing was thrown away either: the over-length
+    // title an operator cannot SEE is one they cannot fix.
     expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(titleInput().value.length).toBe(84);
+
+    // The input itself points at the explanation.
+    const capAlert = screen
+      .getAllByRole("alert")
+      .find((a) => (a.textContent ?? "").includes("over the 80-character"))!;
+    expect(titleInput().getAttribute("aria-invalid")).toBe("true");
+    expect(titleInput().getAttribute("aria-describedby")).toContain(
+      capAlert.id,
+    );
   });
 
   it("does not cap the input itself — pasted overflow stays visible so it can be fixed", () => {
@@ -192,19 +235,37 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     expect(screen.getByText("120/80")).toBeTruthy();
   });
 
-  it("saves the trimmed title once it fits", async () => {
+  it("saves the trimmed title on blur, and sends nothing but the title", async () => {
     renderPanel(makeCard({ listingTitle: "old" }));
 
-    fireEvent.change(titleInput(), { target: { value: "  2024 Topps Chrome #1  " } });
-    await act(async () => {
-      fireEvent.click(saveButton());
-    });
+    await editAndCommit(titleInput(), "  2024 Topps Chrome #1  ");
 
     await waitFor(() => expect(mockUpdateCard).toHaveBeenCalled());
     expect(mockUpdateCard.mock.calls[0][0].listingTitle).toBe("2024 Topps Chrome #1");
+    expect(Object.keys(mockUpdateCard.mock.calls[0][0]).sort()).toEqual([
+      "id",
+      "listingTitle",
+    ]);
   });
 
-  it("Regenerate replaces a clean draft and shows the facts the title was built from", async () => {
+  it("Enter commits without leaving the field", async () => {
+    renderPanel(makeCard({ listingTitle: "old" }));
+
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), {
+        target: { value: "2024 Topps Chrome #1" },
+      });
+      fireEvent.keyDown(titleInput(), { key: "Enter" });
+    });
+
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard.mock.calls[0][0].listingTitle).toBe(
+      "2024 Topps Chrome #1",
+    );
+  });
+
+  it("Regenerate replaces a clean field, persists it, and shows the facts the title was built from", async () => {
     renderPanel(makeCard({ listingTitle: "stale title" }));
 
     // Nothing is fetched until asked: no chips before the click.
@@ -216,6 +277,15 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
 
     await waitFor(() =>
       expect(titleInput().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
+    );
+
+    // NEO-216: the fetched title goes through the SAME single-field path a
+    // typed one does, so it is saved without a Save button to press.
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_ID,
+        listingTitle: "2024 Topps Chrome Julio Rodriguez #300b",
+      }),
     );
 
     const chips = screen.getByLabelText("Title built from");
@@ -298,6 +368,128 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     );
   });
 
+  /**
+   * CI regression, PR #225 —
+   * `.maestro/flows/set-selector/checklist-title-length-limits-and-fixer.yaml`.
+   *
+   * The operator typed a 157-character title, pressed Enter (refused, alert
+   * shown), then pressed Regenerate. The field then held the regenerated
+   * 71-character title — and the refusal alert was STILL on screen, pointing
+   * at text that no longer existed.
+   *
+   * Two things conspired. `error` was only ever cleared by a SUCCESSFUL
+   * `runCommit`, and the refusal meant `card.listingTitle` never changed — so
+   * the regenerated title matched the stored one, `runCommit` returned at its
+   * no-op guard, and nothing cleared the error. `applyTitle` now goes through
+   * `useReactiveField`'s `replace`, which retires the error with the value it
+   * described, before the commit is even attempted.
+   */
+  it("Regenerate after a refused over-cap title clears the refusal and saves the new title", async () => {
+    renderPanel(makeCard({ listingTitle: "stale title" }));
+
+    // 1. Type an over-cap title and press Enter. Refused.
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), { target: { value: titleOfLength(157) } });
+      fireEvent.keyDown(titleInput(), { key: "Enter" });
+    });
+
+    expect(screen.getByText("157/80")).toBeTruthy();
+    const refusals = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(
+      refusals.some((t) => t.includes("77 over the 80-character limit")),
+    ).toBe(true);
+    expect(refusals.some((t) => t.includes("Not saved"))).toBe(true);
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+
+    // 2. Regenerate. The typed text is the operator's own wording, so the
+    //    first press only arms the confirm; the second replaces it.
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    // 3. The field holds the regenerated title, and NOTHING is still alerting.
+    await waitFor(() =>
+      expect(titleInput().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(titleInput().getAttribute("aria-invalid")).toBeNull();
+    expect(screen.getByText("39/80")).toBeTruthy();
+
+    // 4. And it was actually saved, through the single-field path.
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_ID,
+        listingTitle: "2024 Topps Chrome Julio Rodriguez #300b",
+      }),
+    );
+  });
+
+  it("clears the refusal even when the regenerated title is identical to the stored one", async () => {
+    // The exact shape of the CI failure: the refused write never changed the
+    // stored title, so Regenerate hands back what is already saved and the
+    // commit legitimately no-ops. The alert must still go — it described text
+    // that has been replaced, and a no-op commit is not a reason to keep it.
+    renderPanel(
+      makeCard({ listingTitle: "2024 Topps Chrome Julio Rodriguez #300b" }),
+    );
+
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), { target: { value: titleOfLength(157) } });
+      fireEvent.keyDown(titleInput(), { key: "Enter" });
+    });
+    expect(screen.getAllByRole("alert").length).toBeGreaterThan(0);
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    await waitFor(() =>
+      expect(titleInput().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Nothing to write: the value on screen is the value on the server.
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("replaces the old refusal with the new one when the regenerated title is also refused", async () => {
+    previewResult = {
+      ...(previewResult as Record<string, unknown>),
+      title: titleOfLength(120),
+    };
+    renderPanel(makeCard({ listingTitle: "stale title" }));
+
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), { target: { value: titleOfLength(157) } });
+      fireEvent.keyDown(titleInput(), { key: "Enter" });
+    });
+    expect(screen.getByText("157/80")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+
+    await waitFor(() => expect(screen.getByText("120/80")).toBeTruthy());
+    // The standing message is about the value on screen now, not the old one.
+    const alerts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.some((t) => t.includes("40 over the 80-character limit"))).toBe(
+      true,
+    );
+    expect(alerts.some((t) => t.includes("77 over"))).toBe(false);
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
   it("says so when the stored auto-title was cut short", () => {
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
@@ -311,7 +503,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     expect(screen.queryByText(/Variation is/)).toBeNull();
   });
 
-  it("counts the variation against 65 and warns without blocking Save", async () => {
+  it("counts the variation against 65 and warns without refusing the write", async () => {
     renderPanel(
       makeCard({ listingTitle: "fine", cardVariation: "y".repeat(70) }),
     );
@@ -321,11 +513,14 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     // aspect is not settled, so this cannot block a save.
     const notice = screen.getByText(/Variation is 70 characters/);
     expect(notice.getAttribute("role")).toBe("status");
-    expect(saveButton().getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
 
-    await act(async () => {
-      fireEvent.click(saveButton());
-    });
+    const variation = screen.getByLabelText(
+      "Card variation",
+    ) as HTMLInputElement;
+    await editAndCommit(variation, "z".repeat(70));
+
     await waitFor(() => expect(mockUpdateCard).toHaveBeenCalled());
+    expect(mockUpdateCard.mock.calls[0][0].cardVariation).toBe("z".repeat(70));
   });
 });
