@@ -646,3 +646,159 @@ describe("BaseMappingForm's fetch on the seed's real set", () => {
     ).toBe(false);
   });
 });
+
+// ===========================================================================
+// A STRUCTURAL skip is silent; an ID skip is a notice
+// ===========================================================================
+
+/**
+ * The product bug this pins: a real year's Manufacturers column carried
+ * "BuySportsCards skipped: no BuySportsCards ids on this path." as a `done`
+ * notice after every healthy sync.
+ *
+ * BuySportsCards has no manufacturer axis at all — NB's Manufacturer rows come
+ * from SportLots' brand list and BSC's sets are bucketed under them afterwards
+ * by name prefix. So BSC was never going to be asked, no id would change that,
+ * and the sentence is false. It is also the exact noise NEO-216 removed
+ * ("the Manufacturers column reporting a BSC outage after every sync"),
+ * reintroduced in different words by NEO-239 — and being a `done` notice, tall
+ * enough to push the next column's Sync / + Custom buttons below the
+ * 1024x629 fold.
+ *
+ * `skippedSides` still reports BOTH reasons, because the FE subtracts every
+ * skipped side from `coveredSides` and a side nobody asked must never license
+ * an unlink. Only the notice narrows.
+ */
+describe("the skip NOTICE excludes sides that do not serve the level", () => {
+  /** sport → year → manufacturer, every level linked on both sides. */
+  async function seedLinkedYear(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const sport = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: { bsc: { b0: "baseball" }, sportlots: { s0: "BB" } },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const year = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "2024",
+        platformData: { bsc: { b0: "2024" }, sportlots: { s0: "2024" } },
+        parentId: sport,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const manufacturer = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Topps",
+        platformData: { sportlots: { s0: "TP" } },
+        parentId: year,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      return { year, manufacturer };
+    });
+  }
+
+  test("manufacturer on a fully linked chain: NO notice, status cleared", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const { year } = await seedLinkedYear(t);
+
+    // SportLots serves manufacturer and is scoped by sport + year, so it is
+    // asked; BSC has no manufacturer axis and is not. One SL option comes back.
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(
+          '<select name="brd"><option value="TP">Topps</option></select>',
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    );
+
+    const res = await asAdmin.action(
+      api.selectorOptions.ensureSelectorOptions,
+      { level: "manufacturer", parentId: year, force: true },
+    );
+
+    // BSC is in `skippedSides` — the FE must not count it as covered…
+    expect(res.skippedSides).toContain("bsc");
+
+    // …and yet the column says NOTHING. A structural non-fetch is not news.
+    const status = await asAdmin.query(
+      api.selectorOptions.getSelectorSyncStatus,
+      { level: "manufacturer", parentId: year },
+    );
+    if (status !== null) {
+      expect(status.message ?? "").not.toContain("BuySportsCards");
+      expect(status.message ?? "").not.toContain("skipped");
+    }
+  });
+
+  test("setName with a manufacturer lacking its SL id: SportLots IS notified", async () => {
+    // The contrast case. SportLots MODELS this level, so being unable to scope
+    // it is a real gap the operator can close by attaching an id — and the
+    // notice says so.
+    const t = convexTest(schema, modules);
+    const { manufacturer } = await seedLinkedYear(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(manufacturer, { platformData: {} }),
+    );
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response(JSON.stringify({ aggregations: { setName: [] } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })) as unknown as typeof fetch,
+    );
+
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.fetchRawOptions, {
+        level: "setName",
+        parentId: manufacturer,
+      });
+
+    expect(res.skippedSides).toContain("sportlots");
+    // SL does not serve setName either, so it is STRUCTURAL here — no notice.
+    // The level that proves the notice still fires is `insert`, below.
+    expect(res.message ?? "").not.toContain("skipped");
+  });
+
+  test("insert on the mixed shape: both sides skipped, and NO notice", async () => {
+    // Both skips are id-based and BOTH sides serve `insert`, so both are
+    // notifiable — and the two-sided case is deliberately silent anyway: it is
+    // the hand-made subtree, where a notice on every column down the tree is
+    // about a marketplace the operator never involved.
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedMixedSubtree(t);
+
+    const res = await fetchRaw(t, "insert", variantTypeId);
+
+    expect(res.skippedSides.slice().sort()).toEqual(["bsc", "sportlots"]);
+    expect(res.message).toBe(NO_MARKETPLACE_IDS_MESSAGE);
+    expect(res.message).not.toContain("skipped:");
+  });
+
+  test("an ID skip on a SERVED level still produces its notice", async () => {
+    // The guard against over-correcting: narrowing the notice must not mute
+    // the case it exists for. BSC serves `insert` and this chain cannot scope
+    // it (no setName BSC id), while SportLots is fully scoped — so exactly one
+    // side is notifiable and the operator is told which.
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedHandMadeSubtree(t, {
+      sportlots: true,
+    });
+    vi.stubGlobal(
+      "fetch",
+      (async () => new Response("<html></html>", { status: 200 })) as typeof fetch,
+    );
+
+    const res = await fetchRaw(t, "insert", variantTypeId);
+
+    expect(res.skippedSides).toEqual(["bsc"]);
+    expect(res.message ?? "").toContain("BuySportsCards");
+    expect(res.message ?? "").toContain("skipped");
+  });
+});

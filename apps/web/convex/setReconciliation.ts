@@ -46,6 +46,7 @@ import { selectorOptionFields } from "./schema";
 import {
   NO_MARKETPLACE_IDS_MESSAGE,
   SL_ATTACH_REQUIRED_LEVELS,
+  notifiableSkippedSides,
   resolvableSides,
   skippedSideList,
   type ChainResolution,
@@ -524,8 +525,8 @@ export const fetchRawOptions = action({
       let bscPlatformFilters: Record<string, string[]> | undefined;
       // No parent = nothing to scope by and nothing that can be missing.
       let resolution: ChainResolution = {
-        bsc: { resolvable: true, missing: [] },
-        sportlots: { resolvable: true, missing: [] },
+        bsc: { served: true, resolvable: true, missing: [] },
+        sportlots: { served: true, resolvable: true, missing: [] },
       };
 
       if (parentId) {
@@ -708,8 +709,13 @@ export const fetchRawOptions = action({
         message,
       }));
 
+      // Only sides that MODEL this level — see `notifiableSkippedSides`. A
+      // structural skip is silent.
+      const notifiableSkipped = notifiableSkippedSides(resolution);
       const skipSuffix =
-        skippedSides.length > 0 ? ` ${skippedSyncMessage(skippedSides)}` : "";
+        notifiableSkipped.length > 0
+          ? ` ${skippedSyncMessage(notifiableSkipped)}`
+          : "";
 
       return {
         success: true,

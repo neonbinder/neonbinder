@@ -66,6 +66,24 @@ export type ResolvableRow = {
 };
 
 export type SideResolution = {
+  /**
+   * Does this marketplace model the level being fetched at all
+   * (`platformServesLevel`)? `false` is structural — no retry, no credential
+   * and no attached id can change it.
+   *
+   * Kept separate from `resolvable` because the two failures read completely
+   * differently to an operator. A side that does not serve the level was never
+   * going to be asked and there is nothing to say about it; a side that COULD
+   * have been asked and had no ids is worth a notice, because attaching an id
+   * fixes it. Conflating them put "BuySportsCards skipped: no BuySportsCards
+   * ids on this path" under every healthy Manufacturers sync — BSC has no
+   * manufacturer axis — which is exactly the false-outage noise NEO-216
+   * removed, reintroduced in different words.
+   *
+   * `true` when no level was supplied: with nothing to serve, nothing is
+   * unserved.
+   */
+  served: boolean;
   /** True when every ancestor this side needs an id from carries one. */
   resolvable: boolean;
   /**
@@ -298,9 +316,34 @@ export function resolvableSides(
   }
 
   return {
-    bsc: { resolvable: missingBsc.length === 0, missing: missingBsc },
-    sportlots: { resolvable: missingSl.length === 0, missing: missingSl },
+    bsc: {
+      served: level === undefined || platformServesLevel("bsc", level),
+      resolvable: missingBsc.length === 0,
+      missing: missingBsc,
+    },
+    sportlots: {
+      served: level === undefined || platformServesLevel("sportlots", level),
+      resolvable: missingSl.length === 0,
+      missing: missingSl,
+    },
   };
+}
+
+/**
+ * The skipped sides an operator should be TOLD about: ones this marketplace
+ * models at this level, that were skipped only because the chain carries none
+ * of the ids they need.
+ *
+ * A strict subset of `skippedSideList`, which stays complete — the FE's
+ * coverage logic must subtract every skipped side, whatever the reason, or a
+ * side nobody asked authorises an unlink. Only the NOTICE narrows.
+ */
+export function notifiableSkippedSides(
+  resolution: ChainResolution,
+): PlatformSide[] {
+  return skippedSideList(resolution).filter(
+    (side) => resolution[side].served,
+  );
 }
 
 /** The sides worth calling, in a stable order. */

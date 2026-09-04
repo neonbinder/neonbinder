@@ -122,6 +122,7 @@ import {
 // the seven old gates cannot drift into seven different answers.
 import {
   NO_MARKETPLACE_IDS_MESSAGE,
+  notifiableSkippedSides,
   resolvableSides,
   rowHasBscFacet,
   skippedSideList,
@@ -6146,9 +6147,21 @@ export const ensureSelectorOptions = action({
       // never involved. That path returns `ran: false` above and clears the
       // status so the column goes idle instantly — which 37 Maestro flows and
       // every "+ Custom" drill depend on.
+      // NEO-216 + NEO-239 — only a side that MODELS this level can be worth a
+      // notice. `res.skippedSides` deliberately carries both reasons (the FE
+      // subtracts every one of them from coverage), so the structural ones are
+      // filtered out here, where the question is what to TELL the operator.
+      //
+      // Without this the Manufacturers column carried "BuySportsCards skipped:
+      // no BuySportsCards ids on this path" after every healthy sync — BSC has
+      // no manufacturer axis — which is both false and, being a "done" notice,
+      // tall enough to push the next column's controls below the fold.
+      const notifiableSkipped = res.skippedSides.filter((side) =>
+        platformServesLevel(side, level),
+      );
       const skippedNotice =
-        res.skippedSides.length > 0 && res.skippedSides.length < 2
-          ? skippedSyncMessage(res.skippedSides)
+        notifiableSkipped.length > 0 && notifiableSkipped.length < 2
+          ? skippedSyncMessage(notifiableSkipped)
           : undefined;
       const failedNotice =
         res.failedPlatforms.length > 0
@@ -6348,8 +6361,8 @@ export const fetchAggregatedOptions = action({
       // be missing: the top-level sport sync asks both marketplaces for their
       // whole facet list, which is the query it means to send.
       let resolution: ChainResolution = {
-        bsc: { resolvable: true, missing: [] },
-        sportlots: { resolvable: true, missing: [] },
+        bsc: { served: true, resolvable: true, missing: [] },
+        sportlots: { served: true, resolvable: true, missing: [] },
       };
 
       if (parentId) {
@@ -6813,8 +6826,15 @@ export const fetchAggregatedOptions = action({
       // half-populated and the operator is owed the reason. Built from the
       // platform NAME only (NEO-47): `selectorSyncStatus.message` is reactive
       // state, and `ensureSelectorOptions` surfaces the same sentence there.
+      //
+      // ONLY sides that could have been asked. A side that does not model this
+      // level was never going to be, and saying so on every healthy sync is
+      // the false-outage noise NEO-216 removed — see `notifiableSkippedSides`.
+      const notifiableSkipped = notifiableSkippedSides(resolution);
       const skipSuffix =
-        skippedSides.length > 0 ? ` ${skippedSyncMessage(skippedSides)}` : "";
+        notifiableSkipped.length > 0
+          ? ` ${skippedSyncMessage(notifiableSkipped)}`
+          : "";
 
       return {
         success: result.success,
