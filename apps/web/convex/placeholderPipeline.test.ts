@@ -28,7 +28,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -214,8 +214,76 @@ const SUCCESS_BODY = {
   output_written: true,
 };
 
+/**
+ * The convexTest instances this file has created, newest last.
+ *
+ * convex-test's scheduler queue is SHARED across every instance in a file (see
+ * the same note in placeholderWarmup.test.ts), so any live instance can drain
+ * it — but only an instance whose database actually holds the job rows can run
+ * the pending work to completion rather than erroring on a missing row.
+ */
+let harnesses: Array<ReturnType<typeof convexTest>> = [];
+
+/**
+ * Every test builds its world through this rather than calling `convexTest`
+ * directly, so `afterEach` below can drain what the test scheduled.
+ */
+function harness(): ReturnType<typeof convexTest> {
+  const t = convexTest(schema, modules);
+  harnesses.push(t);
+  return t;
+}
+
 beforeEach(() => {
   vi.unstubAllGlobals();
+  harnesses = [];
+});
+
+afterEach(async () => {
+  // ── Own the scheduled work, do not leave it for teardown ────────────────
+  //
+  // Several pipeline paths schedule `placeholderPairing:runPairing`
+  // (placeholderPipeline.ts: the no-usable-images hand-off, the incremental
+  // debounce, and the final finalize). These tests assert what was WRITTEN and
+  // stopped there, leaving that work queued — it then fired after the file's
+  // environment had been torn down and surfaced as
+  // `EnvironmentTeardownError: Cannot load '/convex/lib/pairing/pairBatch.ts'
+  // … after the environment was torn down` in a full run.
+  //
+  // convex-test only prints that, so the run stayed green while the defect sat
+  // one timing change away from failing it — which is exactly what happened to
+  // `bscTeamEnrichmentQueue.tolerance.test.ts` on CI run 9.
+  //
+  // The stub is what makes draining safe: pairing reaches out to the
+  // preprocess service, and an un-stubbed call would trip the NEO-188 network
+  // guard. A recorded no-op instead.
+  // `/warmup` answers like the real service; everything else is a terminal 404
+  // so a drained cascade fails FAST rather than deep-recursing or choking on a
+  // body it cannot parse. Mirrors `makeBatchStartStub` in
+  // placeholderWarmup.test.ts, which uses the same 404-on-/extract trick.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL): Promise<Response> => {
+      const u = String(url);
+      if (u.endsWith("/warmup")) {
+        return new Response(
+          JSON.stringify({ status: "warm", was_cold: false }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    }) as unknown as typeof fetch,
+  );
+  vi.useFakeTimers();
+  try {
+    for (const t of harnesses) {
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    }
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    harnesses = [];
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -226,7 +294,7 @@ describe("startPlaceholderBatch — status guard", () => {
   test.each(["pending", "uploaded", "failed"] as const)(
     "starts from %s and moves the job to extracting",
     async (status) => {
-      const t = convexTest(schema, modules);
+      const t = harness();
       await seedJob(t, { status });
 
       const result = await t
@@ -246,7 +314,7 @@ describe("startPlaceholderBatch — status guard", () => {
   test.each(["extracting", "processing", "pairing", "succeeded"] as const)(
     "refuses to start from %s, without throwing",
     async (status) => {
-      const t = convexTest(schema, modules);
+      const t = harness();
       await seedJob(t, { status });
 
       const result = await t
@@ -261,7 +329,7 @@ describe("startPlaceholderBatch — status guard", () => {
   );
 
   test("throws when unauthenticated", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "uploaded" });
     await expect(
       t.mutation(api.placeholderPipeline.startPlaceholderBatch, { jobId: JOB_A }),
@@ -269,7 +337,7 @@ describe("startPlaceholderBatch — status guard", () => {
   });
 
   test("another user cannot start someone else's job, and cannot tell it exists", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "uploaded" });
 
     await expect(
@@ -295,7 +363,7 @@ describe("startPlaceholderBatch — status guard", () => {
     // 7-second budget. The rows now survive Start untouched; reconciling them
     // is registerExtractedImages' job, and keeping the done ones is the whole
     // point of doing it there.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "failed" });
     await seedImage(t, JOB_A, 0, USER_A.subject, "failed");
     await seedImage(t, JOB_A, 1, USER_A.subject, "done");
@@ -310,7 +378,7 @@ describe("startPlaceholderBatch — status guard", () => {
   });
 
   test("starting clears a previous run's terminal error fields", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "failed" });
     await t.run(async (ctx) => {
       const jobs = await ctx.db.query("placeholderJobs").collect();
@@ -342,7 +410,7 @@ describe("startPlaceholderBatch — per-user active-batch cap", () => {
     // The cap bounds two things at once: concurrent /extract calls, which do
     // NOT go through the workpool and so are not bounded by its parallelism,
     // and how fast one account can replay paid per-image API spend.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { jobId: "job-active-1", status: "processing" });
     await seedJob(t, { jobId: "job-active-2", status: "pairing" });
     await seedJob(t, { jobId: JOB_A, status: "uploaded" });
@@ -357,7 +425,7 @@ describe("startPlaceholderBatch — per-user active-batch cap", () => {
   });
 
   test("allows a second batch — the cap is two, not one", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { jobId: "job-active-1", status: "extracting" });
     await seedJob(t, { jobId: JOB_A, status: "uploaded" });
 
@@ -374,7 +442,7 @@ describe("startPlaceholderBatch — per-user active-batch cap", () => {
     async (status) => {
       // Counting "pending" in particular would leave a user with two unstarted
       // uploads unable to start either of them.
-      const t = convexTest(schema, modules);
+      const t = harness();
       await seedJob(t, { jobId: "job-idle-1", status });
       await seedJob(t, { jobId: "job-idle-2", status });
       await seedJob(t, { jobId: JOB_A, status: "uploaded" });
@@ -388,7 +456,7 @@ describe("startPlaceholderBatch — per-user active-batch cap", () => {
   );
 
   test("another user's active batches do not count against you", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { jobId: "job-b-1", userId: USER_B.subject, status: "processing" });
     await seedJob(t, { jobId: "job-b-2", userId: USER_B.subject, status: "processing" });
     await seedJob(t, { jobId: JOB_A, status: "uploaded" });
@@ -404,7 +472,7 @@ describe("startPlaceholderBatch — per-user active-batch cap", () => {
     // Cancel forces "failed", which is not an active status — so the recovery
     // path (cancel, then start again) is never blocked by the job it just
     // canceled.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { jobId: "job-active-1", status: "processing" });
     await seedJob(t, { jobId: "job-active-2", status: "processing" });
 
@@ -444,7 +512,7 @@ describe("sweepJobPairs", () => {
   }
 
   test("deletes this job's pairs and leaves every other job alone", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedPair(t, JOB_A, 0, 1);
     await seedPair(t, JOB_A, 2, 3);
     await seedPair(t, "job-other", 0, 1);
@@ -461,14 +529,14 @@ describe("sweepJobPairs", () => {
   });
 
   test("is a no-op on a first run, when there is nothing to sweep", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await expect(
       t.mutation(internal.placeholderPipeline.sweepJobPairs, { jobId: JOB_A }),
     ).resolves.toEqual({ deleted: 0, done: true });
   });
 
   test("starting a batch schedules the sweep rather than deleting inline", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "failed" });
     await seedPair(t, JOB_A, 0, 1);
 
@@ -488,7 +556,7 @@ describe("sweepJobPairs", () => {
 
 describe("registerExtractedImages", () => {
   test("inserts rows for accepted entries only, and counts the rest as rejected", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
 
     const result = await registerAll(t, {
@@ -526,7 +594,7 @@ describe("registerExtractedImages", () => {
     // another Vision round-trip and another model inference, paid for, to
     // re-derive an answer we already have. The upload is write-once, so the
     // answer cannot have changed.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     const doneId = await seedImage(t, JOB_A, 0, USER_A.subject, "done", {
       players: ["Ken Griffey Jr."],
@@ -565,7 +633,7 @@ describe("registerExtractedImages", () => {
   });
 
   test("a restart RESETS every non-done row, dropping the last attempt's state", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     const failedId = await seedImage(t, JOB_A, 0, USER_A.subject, "failed", {
       workId: "work-old-0",
@@ -623,7 +691,7 @@ describe("registerExtractedImages", () => {
     // (jobId, entryIndex) is the key every read of this table uses, and
     // `unique()` on it throws when two rows match — a duplicate row would not
     // be a cosmetic problem, it would poison every later read of the job.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
 
     const result = await registerAll(t, {
@@ -648,7 +716,7 @@ describe("registerExtractedImages", () => {
     // The chunk size is sized against MAX_ZIP_ENTRIES in the preprocess repo;
     // 120 entries is three chunks, which is what proves the cursor and the
     // carried keptDone survive the hand-off.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     const entries = Array.from({ length: 120 }, (_, i) => ({
       index: i,
@@ -674,7 +742,7 @@ describe("registerExtractedImages", () => {
     // The counters and the "processing" transition belong to the LAST chunk —
     // a job that flipped to processing halfway through registration would
     // advertise a total it does not yet have rows for.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     const entries = Array.from({ length: 60 }, (_, i) => ({
       index: i,
@@ -699,7 +767,7 @@ describe("registerExtractedImages", () => {
     // immediately, so this is a routine ordering, not a rare race. Without the
     // guard the job would flip back to "processing" and enqueue a whole zip's
     // worth of paid work the user had already stopped.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     await t
       .withIdentity(USER_A)
@@ -719,7 +787,7 @@ describe("registerExtractedImages", () => {
   });
 
   test("rejects a userId that disagrees with the job row", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     await expect(
       t.mutation(internal.placeholderPipeline.registerExtractedImages, {
@@ -741,7 +809,7 @@ describe("pruneUnregisteredImages", () => {
     // extract sees the same entries. The guard matters because an orphan would
     // be enqueued, complete, and push processedImages past totalImages, at
     // which point the equality that ends the batch is stepped over forever.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2 });
     await seedImage(t, JOB_A, 0, USER_A.subject, "queued");
     await seedImage(t, JOB_A, 1, USER_A.subject, "queued");
@@ -760,7 +828,7 @@ describe("pruneUnregisteredImages", () => {
     // Nothing will be enqueued, so no onComplete ever fires and the
     // last-one-done transition can never run. Without this branch the job
     // spins forever.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
 
     await registerAndPrune(t, {
@@ -778,7 +846,7 @@ describe("pruneUnregisteredImages", () => {
     // enqueueImageChunk enqueues nothing and no completion will ever arrive to
     // fire the transition. The counters already say the batch is finished, so
     // pairing is where it belongs.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done");
     await seedImage(t, JOB_A, 1, USER_A.subject, "done");
@@ -801,7 +869,7 @@ describe("pruneUnregisteredImages", () => {
     // The sweep is scheduled behind registration, so a cancel can land between
     // them. Scheduling the next stage on top of a terminal job would undo the
     // cancel.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     await registerAll(t, { entries: [{ index: 0, name: "front.jpg", accepted: true }] });
     await t
@@ -816,7 +884,7 @@ describe("pruneUnregisteredImages", () => {
   });
 
   test("leaves a job with outstanding work in processing, for the enqueue chain", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done");
 
@@ -848,7 +916,7 @@ describe("enqueueImageChunk", () => {
       // is what this asserts — `preprocessPool.enqueueAction` would throw here,
       // since convex-test cannot mount the workpool component, so reaching it
       // fails the test rather than passing quietly.
-      const t = convexTest(schema, modules);
+      const t = harness();
       await seedJob(t, { status, totalImages: 1 });
       await seedImage(t, JOB_A, 0, USER_A.subject, "queued");
 
@@ -870,7 +938,7 @@ describe("enqueueImageChunk", () => {
 
 describe("recordImageOutcomeImpl", () => {
   test("success maps the snake_case wire body onto the row and marks it done", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
 
@@ -907,7 +975,7 @@ describe("recordImageOutcomeImpl", () => {
   test("a malformed dhash is dropped rather than stored", async () => {
     // Pairing compares hashes by Hamming distance; a bad hash would not fail
     // loudly, it would silently mis-pair cards.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
 
@@ -932,7 +1000,7 @@ describe("recordImageOutcomeImpl", () => {
     // the 1MB document limit; the patch inside the onComplete mutation throws;
     // the image never reaches a terminal status and the job's counters never
     // reach their total. A bad value must cost its own field, never the batch.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
 
@@ -965,7 +1033,7 @@ describe("recordImageOutcomeImpl", () => {
   test("a players array with a non-string element is dropped, not filtered", async () => {
     // Filtering would renumber the list silently, and players[0] is the
     // headline name every caller reads.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
 
@@ -986,7 +1054,7 @@ describe("recordImageOutcomeImpl", () => {
   });
 
   test("failure marks the row failed with a code and detail, and counts as failed", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
 
@@ -1011,7 +1079,7 @@ describe("recordImageOutcomeImpl", () => {
   test("cancellation is recorded as a failed image with a CANCELED code", async () => {
     // Canceled work still flows through onComplete — that is what lets the
     // counters converge, so a cancel doesn't strand the batch mid-flight.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
 
@@ -1026,7 +1094,7 @@ describe("recordImageOutcomeImpl", () => {
   });
 
   test("the invocation that completes the last image moves the job to pairing", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const first = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
     const second = await seedImage(t, JOB_A, 1, USER_A.subject, "processing");
@@ -1060,7 +1128,7 @@ describe("recordImageOutcomeImpl", () => {
     // The end-to-end statement of the restart contract: two images, one kept
     // from the previous attempt, and the single remaining completion is the
     // one that ends the batch.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done");
     await registerAndPrune(t, {
@@ -1085,7 +1153,7 @@ describe("recordImageOutcomeImpl", () => {
   });
 
   test("a repeated completion for an already-terminal image does not double-count", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
 
@@ -1111,7 +1179,7 @@ describe("recordImageOutcomeImpl", () => {
     // The stale-row sweep can delete a row while old work is still draining.
     // Throwing here would make the pool retry a mutation that can never
     // succeed.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 1, processedImages: 0, failedImages: 0 });
     const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
     await t.run(async (ctx) => ctx.db.delete(imageId));
@@ -1134,7 +1202,7 @@ describe("recordImageOutcomeImpl", () => {
     // canceled work arrives afterwards. It must not fire the pairing
     // transition (the job is no longer "processing") and must not clobber a
     // row the restart has since reset.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
     const first = await seedImage(t, JOB_A, 0, USER_A.subject, "processing");
     await seedImage(t, JOB_A, 1, USER_A.subject, "processing");
@@ -1173,7 +1241,7 @@ describe("recordImageOutcomeImpl", () => {
 
 describe("markJobFailed / markJobSucceeded", () => {
   test("markJobFailed sets the status, the grouping code, the detail and finishedAt", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
 
     await t.mutation(internal.placeholderPipeline.markJobFailed, {
@@ -1190,7 +1258,7 @@ describe("markJobFailed / markJobSucceeded", () => {
   });
 
   test("markJobFailed on an unknown job is a no-op", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await expect(
       t.mutation(internal.placeholderPipeline.markJobFailed, {
         jobId: "job-nope",
@@ -1200,7 +1268,7 @@ describe("markJobFailed / markJobSucceeded", () => {
   });
 
   test("markJobSucceeded clears any stale error fields", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "pairing" });
     await t.mutation(internal.placeholderPipeline.markJobFailed, {
       jobId: JOB_A,
@@ -1224,7 +1292,7 @@ describe("markJobFailed / markJobSucceeded", () => {
 
 describe("cancelPlaceholderBatch", () => {
   test("throws for a job the caller does not own", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing" });
     await expect(
       t
@@ -1234,7 +1302,7 @@ describe("cancelPlaceholderBatch", () => {
   });
 
   test("throws when unauthenticated", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing" });
     await expect(
       t.mutation(api.placeholderPipeline.cancelPlaceholderBatch, { jobId: JOB_A }),
@@ -1244,7 +1312,7 @@ describe("cancelPlaceholderBatch", () => {
   test.each(["succeeded", "failed"] as const)(
     "refuses to cancel a %s job without touching the pool",
     async (status) => {
-      const t = convexTest(schema, modules);
+      const t = harness();
       await seedJob(t, { status });
       const result = await t
         .withIdentity(USER_A)
@@ -1261,7 +1329,7 @@ describe("cancelPlaceholderBatch", () => {
       // Without this the only exit from a mid-flight status was the counters
       // reaching their total. If any link of the chain is lost that never
       // happens, and the job is stuck: not terminal, so not startable either.
-      const t = convexTest(schema, modules);
+      const t = harness();
       await seedJob(t, { status, totalImages: 3, processedImages: 1, failedImages: 0 });
       // No workId on the rows, so the cancel loop skips the pool entirely —
       // the terminal patch is what is under test here.
@@ -1281,7 +1349,7 @@ describe("cancelPlaceholderBatch", () => {
   );
 
   test("a canceled job is startable again, and the restart keeps its done images", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "processing", totalImages: 2, processedImages: 1, failedImages: 0 });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done");
     await seedImage(t, JOB_A, 1, USER_A.subject, "processing");
@@ -1319,7 +1387,7 @@ describe("runExtract error hygiene", () => {
     // request, a framework traceback for a service exception. The status and a
     // fixed phrase are the parts a user can act on; the rest belongs in the
     // operator channel.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "extracting" });
     process.env.NEONBINDER_PREPROCESS_URL = "http://localhost:9998";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -1362,7 +1430,7 @@ describe("runExtract error hygiene", () => {
 
 describe("runPairing", () => {
   test("pairs two adjacent sides, marks both images, and succeeds the job", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "pairing", totalImages: 2, processedImages: 2, failedImages: 0 });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done", {
       side: "front",
@@ -1399,7 +1467,7 @@ describe("runPairing", () => {
   });
 
   test("marks an image that found no partner as unmatched, by id", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "pairing", totalImages: 1, processedImages: 1, failedImages: 0 });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done", { side: "front", textCount: 1 });
 
@@ -1414,7 +1482,7 @@ describe("runPairing", () => {
   });
 
   test("a batch where most images failed is terminal-failed, not succeeded", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "pairing", totalImages: 3, processedImages: 1, failedImages: 2 });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done", { side: "front", textCount: 1 });
 
@@ -1443,7 +1511,7 @@ describe("runPairing", () => {
     // down as an unhandled error — a genuinely intermittent failure roughly
     // one run in seven, which is exactly the kind of "flake" that is really a
     // test bug.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "pairing", totalImages: 1, processedImages: 1, failedImages: 0 });
     await seedImage(t, JOB_A, 0, USER_A.subject, "done", { side: "front", textCount: 1 });
 
@@ -1508,7 +1576,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
   }
 
   test("the owner sees the job, its counters and its pair count", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedFullJob(t);
 
     const job = await t
@@ -1525,7 +1593,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
   test("getPlaceholderJob never returns the server-only objectPath", async () => {
     // Returning it would re-introduce the client-supplied-path problem the
     // whole design exists to prevent — see the schema.ts table comment.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedFullJob(t);
     const job = await t
       .withIdentity(USER_A)
@@ -1534,7 +1602,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
   });
 
   test("user B gets null for user A's job, and the same null for a job that doesn't exist", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedFullJob(t);
 
     await expect(
@@ -1548,7 +1616,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
   });
 
   test("listPlaceholderImages returns the owner's images in index order, and nothing to user B", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedFullJob(t);
 
     const mine = await t
@@ -1566,7 +1634,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
   });
 
   test("listPlaceholderPairs returns the owner's pairs, and nothing to user B", async () => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedFullJob(t);
 
     const mine = await t
@@ -1587,7 +1655,7 @@ describe("public queries are scoped to the caller's own jobs", () => {
     "listPlaceholderImages",
     "listPlaceholderPairs",
   ] as const)("%s throws when unauthenticated", async (name) => {
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedFullJob(t);
     await expect(
       t.query(api.placeholderPipeline[name], { jobId: JOB_A }),
@@ -1605,7 +1673,7 @@ describe("listDoneImagesForPairing", () => {
     // adjacency pre-pass assumes a sheet's front and back are neighbours. The
     // `_id` is what lets pairing patch the exact row it read, minutes later,
     // rather than re-resolving a key a restart may have re-pointed.
-    const t = convexTest(schema, modules);
+    const t = harness();
     await seedJob(t, { status: "pairing", totalImages: 4 });
     await seedImage(t, JOB_A, 2, USER_A.subject, "done");
     await seedImage(t, JOB_A, 0, USER_A.subject, "done");
