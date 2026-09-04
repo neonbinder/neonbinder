@@ -10,6 +10,8 @@
  *  - empty custom row is deleted, the parent's children array shrinks, and the
  *    transient per-batch rows keyed on it go with it
  *  - refused for child rows / cards / cross-listings, each naming what it found
+ *  - a "rows" holding carries the children's LEVEL when they share one, and
+ *    omits it when they are mixed
  *  - sport row holding players (and teams, and leagues) refused
  *  - non-custom variantType refused as protected, custom variantType allowed
  *  - an empty SYNCED row IS deletable and reports syncedBack
@@ -63,9 +65,17 @@ type HoldKind =
   | "teams"
   | "leagues";
 
+type Hold = {
+  kind: HoldKind;
+  count: number;
+  examples: string[];
+  /** `kind: "rows"` only, and only when every child shares one level. */
+  level?: Level;
+};
+
 type NotEmptyData = {
   code: string;
-  holds: Array<{ kind: HoldKind; count: number; examples: string[] }>;
+  holds: Hold[];
 };
 
 async function insertRow(
@@ -121,10 +131,7 @@ async function insertCard(
   );
 }
 
-function holdFor(
-  data: NotEmptyData,
-  kind: HoldKind,
-): { kind: HoldKind; count: number; examples: string[] } | undefined {
+function holdFor(data: NotEmptyData, kind: HoldKind): Hold | undefined {
   return data.holds.find((hold) => hold.kind === kind);
 }
 
@@ -307,6 +314,9 @@ describe("deleteSelectorOption — refusals", () => {
     expect(rows?.examples).toEqual(
       expect.arrayContaining(["Topps Chrome", "Topps Series 1"]),
     );
+    // The children's level, so the FE says "2 sets" — the PARENT's level
+    // cannot say this (a variantType holds inserts OR parallels).
+    expect(rows?.level).toBe("setName");
 
     expect(await t.run(async (ctx) => ctx.db.get(mfrId))).not.toBeNull();
   });
@@ -443,6 +453,56 @@ describe("deleteSelectorOption — refusals", () => {
     expect(result.deleted).toBe(true);
   });
 
+  test("names the children's level, not the parent's, for parallels under an insert", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome");
+    const insertId = await insertRow(t, "insert", "Future Stars", {
+      parentId: setId,
+      isCustom: true,
+    });
+    await insertRow(t, "parallel", "Gold /50", { parentId: insertId });
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, {
+        id: insertId,
+      }),
+    );
+
+    expect(holdFor(error.data, "rows")).toEqual({
+      kind: "rows",
+      count: 1,
+      examples: ["Gold /50"],
+      level: "parallel",
+    });
+  });
+
+  test("omits level when the children are mixed rather than guessing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const setId = await insertRow(t, "setName", "Topps Chrome");
+    // A variantType legitimately holds BOTH — inserts of an Insert variant
+    // type and parallels of the row itself.
+    const vtId = await insertRow(t, "variantType", "Insert", {
+      parentId: setId,
+      isCustom: true,
+    });
+    await insertRow(t, "insert", "Future Stars", { parentId: vtId });
+    await insertRow(t, "parallel", "Gold /50", { parentId: vtId });
+
+    const error = await expectRefusal(() =>
+      asAdmin.mutation(api.selectorOptions.deleteSelectorOption, { id: vtId }),
+    );
+
+    const rows = holdFor(error.data, "rows");
+    expect(rows?.count).toBe(2);
+    // Absent, so the FE falls back to the neutral "2 rows" instead of naming
+    // two parallels that are actually one parallel and one insert.
+    expect(rows?.level).toBeUndefined();
+  });
+
   test("refuses a non-custom variantType as protected", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -571,6 +631,28 @@ describe("getSelectorOptionHoldings", () => {
       { kind: "cards", count: 1, examples: ["#1 Shohei Ohtani"] },
     ]);
     expect(await t.run(async (ctx) => ctx.db.get(rowId))).not.toBeNull();
+  });
+
+  test("carries the children's level on a rows holding", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const yearId = await insertRow(t, "year", "2024");
+    await insertRow(t, "manufacturer", "Topps", { parentId: yearId });
+
+    const holdings = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: yearId },
+    );
+
+    expect(holdings.holds).toEqual([
+      {
+        kind: "rows",
+        count: 1,
+        examples: ["Topps"],
+        level: "manufacturer",
+      },
+    ]);
   });
 
   test("flags a non-custom variantType as protected", async () => {

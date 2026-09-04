@@ -2405,6 +2405,21 @@ const holdingValidator = v.object({
    */
   count: v.number(),
   examples: v.array(v.string()),
+  /**
+   * `kind: "rows"` ONLY, and only when every child shares one level — what the
+   * children ARE, so the FE can say "3 parallels" rather than "3 rows".
+   *
+   * "rows" cannot be named from the PARENT's level: a `variantType` legitimately
+   * holds `insert` children (an Insert variant type) or `parallel` children
+   * (parallels of Base), so the parent tells you nothing. When the children are
+   * genuinely mixed this is ABSENT rather than a guess — the FE falls back to
+   * the neutral "3 rows", which is true, instead of naming three parallels that
+   * are actually two parallels and an insert.
+   *
+   * Absent on every other kind: `cards` / `players` / `teams` / `leagues` /
+   * `crossListings` already say what they are.
+   */
+  level: v.optional(levelValidator),
 });
 
 type Holding = {
@@ -2417,6 +2432,7 @@ type Holding = {
     | "leagues";
   count: number;
   examples: string[];
+  level?: Level;
 };
 
 const ALL_SELECTOR_LEVELS = [
@@ -2463,12 +2479,16 @@ async function collectSelectorOptionHoldings(
     .withIndex("by_parent", (q) => q.eq("parentId", row._id))
     .take(HOLDING_SCAN_CAP);
   if (childRows.length > 0) {
+    const levels = new Set(childRows.map((child) => child.level));
     holds.push({
       kind: "rows",
       count: childRows.length,
       examples: childRows
         .slice(0, HOLDING_EXAMPLE_LIMIT)
         .map((child) => child.value),
+      // One level, or none at all — never the most common one. See the
+      // validator above for why a guess is worse than silence here.
+      ...(levels.size === 1 ? { level: childRows[0].level } : {}),
     });
   }
 
