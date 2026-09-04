@@ -343,6 +343,19 @@ export const list = query({
  * Idempotent by (name, sport) — re-adding an existing league returns it rather
  * than creating a duplicate, which is what makes the inline "add new league"
  * path safe to use without first checking the list.
+ *
+ * ## NEO-240 security review: this is no longer a thin wrapper
+ *
+ * Two things changed under it. `findOrCreateLeague` now schedules a Wikidata
+ * lookup on its insert branch, so what lands here goes OUTBOUND as well as
+ * into a row; and Team Management's inline add now supplies an abbreviation,
+ * a field this function accepted with no bound at all. So it applies exactly
+ * the bounds `createByAdmin` does, through the same two helpers rather than a
+ * second copy of them — two admissions gates for one table that can drift
+ * apart is how the unbounded one gets found by an attacker instead of a diff.
+ *
+ * The return shape stays a bare `v.id("leagues")`: Team Management depends on
+ * it, and `createByAdmin` is where the richer `{ id, created }` answer lives.
  */
 export const create = mutation({
   args: {
@@ -353,11 +366,13 @@ export const create = mutation({
   returns: v.id("leagues"),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const name = args.name.trim();
-    if (!name) throw new Error("League name cannot be empty");
+    // `ConvexError`, not a bare `Error`: a deployed Convex backend replaces a
+    // plain error's message with "Server Error", so the operator standing in
+    // front of the inline add would be told nothing about what they typed.
+    const name = requireValidLeagueName(args.name);
     return await findOrCreateLeague(ctx, {
       name,
-      abbreviation: args.abbreviation?.trim() || undefined,
+      abbreviation: requireValidLeagueAbbreviation(args.abbreviation),
       sportId: args.sportId,
     });
   },
@@ -518,6 +533,31 @@ function validateLeagueYears(years: { from: number; to?: number }): void {
       throw new ConvexError("A league cannot end before it starts.");
     }
   }
+}
+
+/**
+ * Trim an operator-typed abbreviation, refuse an over-long one, and report
+ * "unset" as `undefined` — an emptied text box and an omitted field are the
+ * same intent, and the editor should not have to send a different value
+ * depending on which one happened.
+ *
+ * Shared by `create`, `createByAdmin` and `saveLeagueFields` rather than
+ * re-typed at each. NEO-240's security review found `create` — the path Team
+ * Management's inline add uses — carrying no bound at all while its two
+ * siblings did, which is the failure mode a copied check has.
+ */
+function requireValidLeagueAbbreviation(
+  raw: string | undefined | null,
+): string | undefined {
+  const trimmed = raw?.trim() ?? "";
+  if (!trimmed) return undefined;
+  if (trimmed.length > MAX_LEAGUE_ABBREVIATION_LENGTH) {
+    // The LENGTH, never the value.
+    throw new ConvexError(
+      `An abbreviation is ${trimmed.length} characters; the limit is ${MAX_LEAGUE_ABBREVIATION_LENGTH}.`,
+    );
+  }
+  return trimmed;
 }
 
 /** Refuse an empty or over-long operator-typed league name. */
@@ -734,16 +774,10 @@ export const createByAdmin = mutation({
     created: v.boolean(),
   }),
   handler: async (ctx, args): Promise<{ id: Id<"leagues">; created: boolean }> => {
-    await requireAdmin(ctx);
+    const userId = await requireAdmin(ctx);
 
     const name = requireValidLeagueName(args.name);
-
-    const abbreviation = args.abbreviation?.trim() || undefined;
-    if (abbreviation && abbreviation.length > MAX_LEAGUE_ABBREVIATION_LENGTH) {
-      throw new ConvexError(
-        `An abbreviation is ${abbreviation.length} characters; the limit is ${MAX_LEAGUE_ABBREVIATION_LENGTH}.`,
-      );
-    }
+    const abbreviation = requireValidLeagueAbbreviation(args.abbreviation);
 
     // `sportId` is a bare `v.id("selectorOptions")` — the validator proves it
     // is an id in that table, not that it points at a SPORT. A league hung off,
@@ -771,9 +805,21 @@ export const createByAdmin = mutation({
     // An audit trail for a shared-row creation an operator triggers from a
     // form. Structured JSON, not concatenation — the name is operator input
     // and must not be able to shape a log line.
+    //
+    // NEO-240 security review: the line now names the ACTOR. A creation on a
+    // globally-shared reference table with no `who` recorded is not an audit
+    // trail, it is a timestamp. `userId` comes back from `requireAdmin`
+    // itself rather than being re-derived, so the line cannot disagree with
+    // the check that admitted the write. The NAME is still absent by design —
+    // it is operator input, and the row id is enough to look it up.
     if (!existing) {
       console.log(
-        JSON.stringify({ msg: "league_created", leagueId: id, sportId: args.sportId }),
+        JSON.stringify({
+          msg: "league_created",
+          leagueId: id,
+          sportId: args.sportId,
+          userId,
+        }),
       );
     }
 
@@ -816,7 +862,7 @@ export const saveLeagueFields = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const userId = await requireAdmin(ctx);
 
     const existing = await ctx.db.get(args.id);
     if (!existing) throw new ConvexError("League not found");
@@ -894,16 +940,8 @@ export const saveLeagueFields = mutation({
     }
 
     if (args.abbreviation !== undefined) {
-      // An empty string is a cleared text box, which is the same intent as
-      // `null` — the editor should not have to send a different value
-      // depending on how the operator emptied the field.
-      const trimmed = args.abbreviation?.trim() ?? "";
-      if (trimmed.length > MAX_LEAGUE_ABBREVIATION_LENGTH) {
-        throw new ConvexError(
-          `An abbreviation is ${trimmed.length} characters; the limit is ${MAX_LEAGUE_ABBREVIATION_LENGTH}.`,
-        );
-      }
-      patch.abbreviation = trimmed || undefined;
+      // `null` and "" both mean "cleared" — see the helper.
+      patch.abbreviation = requireValidLeagueAbbreviation(args.abbreviation);
     }
 
     if (args.level !== undefined) {
@@ -921,14 +959,22 @@ export const saveLeagueFields = mutation({
         delete rest.wikidataId;
       } else {
         const qid = args.wikidataId.trim();
+        // Read BEFORE the guard: `isWikidataQid` is a type guard, so inside
+        // the refusal branch `qid` has narrowed to `never`.
+        const qidLength = qid.length;
         // Validated at the write, not just in the UI. A malformed id is worse
         // than a missing one: enrichment treats ANY stored `wikidataId` as
         // "already enriched" and skips the row forever, so a typo here
         // silently opts the league out of it.
         if (!isWikidataQid(qid)) {
-          // The raw argument rather than `qid`: `isWikidataQid` is a type
-          // guard, so inside this branch `qid` has narrowed to `never`.
-          throw new ConvexError(`Not a Wikidata entity id: ${args.wikidataId}`);
+          // NEO-240 security review: the LENGTH, not the value — the same
+          // rule every other refusal in this file follows. This string
+          // reaches Sentry and the browser console through Convex's error
+          // path, and echoing an arbitrary operator-supplied string back into
+          // it is how a rejected value gets logged verbatim anyway.
+          throw new ConvexError(
+            `Not a Wikidata entity id; the value is ${qidLength} characters.`,
+          );
         }
         rest.wikidataId = qid;
       }
@@ -936,6 +982,30 @@ export const saveLeagueFields = mutation({
     }
 
     await ctx.db.patch(args.id, patch);
+
+    // NEO-240 security review: the edit half of the audit trail
+    // `league_created` opens. `leagues` is globally-shared reference data —
+    // a rename reaches every team in the league, Team Management's filter and
+    // the spine-label designer — so "who changed what" has to be recoverable
+    // from logs alone.
+    //
+    // Field NAMES only, never values. Half of these fields (`name`,
+    // `aliases`) ARE the operator's free text, and a log line that carries it
+    // is the thing structured JSON exists to avoid. The names are the
+    // arguments the operator actually sent, so an omitted field — which
+    // `saveLeagueFields` leaves alone — never appears as a change.
+    const fields = (
+      ["name", "abbreviation", "level", "yearsActive", "aliases", "wikidataId"] as const
+    ).filter((field) => args[field] !== undefined);
+    console.log(
+      JSON.stringify({
+        msg: "league_fields_saved",
+        leagueId: args.id,
+        userId,
+        fields,
+      }),
+    );
+
     return null;
   },
 });

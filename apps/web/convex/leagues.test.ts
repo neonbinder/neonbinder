@@ -8,6 +8,7 @@
  */
 
 import { convexTest } from "convex-test";
+import { ConvexError } from "convex/values";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
@@ -131,12 +132,56 @@ describe("league creation", () => {
     expect(rows[0].abbreviation).toBe("NPB");
   });
 
-  test("rejects an empty name", async () => {
+  // ── NEO-240 security review: `create` shares `createByAdmin`'s bounds ────
+  //
+  // This is Team Management's inline add, and two things moved under it: the
+  // insert branch it reaches now schedules a Wikidata lookup, and the caller
+  // now sends an abbreviation. It had no bound on either field. These three
+  // tests are what keep it from drifting away from `createByAdmin` again —
+  // the limits themselves are covered against that mutation in
+  // leagues.management.test.ts, so what is asserted here is that THIS door
+  // has them at all.
+
+  test("refuses an empty name, as a ConvexError rather than a bare Error", async () => {
+    // A deployed Convex backend rewrites a plain `Error`'s message to "Server
+    // Error", so the operator standing in front of the inline add would be
+    // told nothing about what they typed. The message has to survive.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
       t.withIdentity(ADMIN).mutation(api.leagues.create, { name: "   ", sportId }),
-    ).rejects.toThrow(/cannot be empty/i);
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.leagues.create, { name: "   ", sportId }),
+    ).rejects.toThrow(/A league name is required/);
+    expect(await leagues(t)).toHaveLength(0);
+  });
+
+  test("refuses an over-long name, reporting the length and not the name", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.leagues.create, {
+        name: "L".repeat(121),
+        sportId,
+      }),
+    ).rejects.toThrow(/121 characters; the limit is 120/);
+    expect(await leagues(t)).toHaveLength(0);
+  });
+
+  test("refuses an over-long abbreviation", async () => {
+    // The field Team Management's inline add started sending, and the one
+    // this mutation used to store unbounded.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(
+      t.withIdentity(ADMIN).mutation(api.leagues.create, {
+        name: "Pacific Coast League",
+        abbreviation: "A".repeat(17),
+        sportId,
+      }),
+    ).rejects.toThrow(/17 characters; the limit is 16/);
+    expect(await leagues(t)).toHaveLength(0);
   });
 
   test("requires admin", async () => {

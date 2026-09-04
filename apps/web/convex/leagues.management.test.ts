@@ -993,11 +993,26 @@ describe("leagues.saveLeagueFields", () => {
     const t = convexTest(schema, modules);
     const { id } = await seedEditable(t);
 
+    // NEO-240 security review: the refusal reports the LENGTH, not the value.
+    // The rejected string is operator input and this message reaches Sentry
+    // and the browser console through Convex's error path — echoing it back is
+    // how a value we refused to store gets logged verbatim anyway.
+    // "not-a-qid" is 9 characters.
     await expect(
       t
         .withIdentity(ADMIN)
         .mutation(api.leagues.saveLeagueFields, { id, wikidataId: "not-a-qid" }),
-    ).rejects.toThrow(/Not a Wikidata entity id: not-a-qid/);
+    ).rejects.toThrow(/Not a Wikidata entity id; the value is 9 characters/);
+
+    // …and the refused value itself appears nowhere in what came back.
+    const error: unknown = await t
+      .withIdentity(ADMIN)
+      .mutation(api.leagues.saveLeagueFields, { id, wikidataId: "not-a-qid" })
+      .then(
+        () => null,
+        (thrown: unknown) => thrown,
+      );
+    expect(String((error as Error).message)).not.toContain("not-a-qid");
 
     expect(
       (await t.run(async (ctx) => ctx.db.get(id)))!.externalIds?.wikidataId,

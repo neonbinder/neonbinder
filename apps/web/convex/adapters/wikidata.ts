@@ -417,6 +417,39 @@ function classifyMembership(m: MembershipBindings): CareerTeamMatch | undefined 
 }
 
 /**
+ * NEO-240 security review — a sport QID that is safe to interpolate into a
+ * SPARQL body, or `undefined`.
+ *
+ * All three `find*Qid` functions below build their query by string
+ * interpolation, and `wd:${sportQid}` puts an arbitrary value directly into
+ * the query TEXT: a value containing `.`, `}` or `#` closes the triple and
+ * writes the rest of the pattern. The value is not attacker-supplied over the
+ * wire, but it is not a constant either — it comes off a `selectorOptions`
+ * sport row, which an operator can edit, which a legacy row may predate any
+ * validation of, and which `storeSelectorOptions` writes from config. "The
+ * schema says string" is not the same as "this is safe to inline".
+ *
+ * So it is validated at the point of interpolation, exactly as
+ * `hallOfFameQid` already is further down this file — the one place the claim
+ * can be made true rather than assumed.
+ *
+ * Warn-and-degrade rather than throw: a mis-typed sport QID is a
+ * configuration defect, and the right outcome is the same graceful "no match"
+ * an unconfigured sport already gets, with a log line naming which lookup saw
+ * it so the row can be found. `where` is a literal from the call site, never
+ * input.
+ */
+function safeSportQid(
+  sportQid: string | undefined,
+  where: string,
+): string | undefined {
+  if (sportQid === undefined) return undefined;
+  if (isWikidataQid(sportQid)) return sportQid;
+  console.warn(JSON.stringify({ msg: "wikidata_sport_qid_not_a_qid", where }));
+  return undefined;
+}
+
+/**
  * Find the best Wikidata QID for a player using the MediaWiki entity
  * search inlined in SPARQL — much faster than a label-FILTER scan since
  * Wikidata indexes labels and aliases for prefix lookup. The sport
@@ -432,7 +465,14 @@ async function findPlayerQid(
   // function — it was keyed lowercase while callers passed "Baseball", so
   // player enrichment silently matched nobody until a `.toLowerCase()` was
   // patched in. Passing the resolved value removes the class of bug.
-  if (!sportQid) return null;
+  //
+  // NEO-240 security review: validated before it is interpolated — see
+  // `safeSportQid`. A non-QID is indistinguishable from an ABSENT one for
+  // this function, and both refuse: `wdt:P641` is what makes "any human"
+  // matching a name tolerable, so running without it is not a degraded
+  // lookup, it is a wrong one.
+  const safeQid = safeSportQid(sportQid, "findPlayerQid");
+  if (!safeQid) return null;
 
   const safeName = sparqlStringLiteral(name);
   const query = `
@@ -445,7 +485,7 @@ async function findPlayerQid(
         ?player wikibase:apiOutputItem mwapi:item .
       }
       ?player wdt:P31 wd:Q5 ;
-              wdt:P641 wd:${sportQid} .
+              wdt:P641 wd:${safeQid} .
     }
     LIMIT 1
   `;
@@ -460,8 +500,11 @@ async function findTeamQid(
   name: string,
   sportQid: string | undefined,
 ): Promise<string | null> {
-  // See the NEO-96 note in findPlayerQid above.
-  if (!sportQid) return null;
+  // See the NEO-96 note in findPlayerQid above, and the NEO-240 one: the same
+  // interpolation, the same validation, and the same refusal on a non-QID —
+  // "any sports team" needs `wdt:P641` for the same reason "any human" does.
+  const safeQid = safeSportQid(sportQid, "findTeamQid");
+  if (!safeQid) return null;
 
   const safeName = sparqlStringLiteral(name);
   // Sports team class is Q12973014; sports club Q847017 catches international
@@ -478,7 +521,7 @@ async function findTeamQid(
       { ?team wdt:P31/wdt:P279* wd:Q12973014 . }
       UNION
       { ?team wdt:P31/wdt:P279* wd:Q847017 . }
-      ?team wdt:P641 wd:${sportQid} .
+      ?team wdt:P641 wd:${safeQid} .
     }
     LIMIT 1
   `;
@@ -567,7 +610,13 @@ async function findLeagueQid(
   sportQid: string | undefined,
 ): Promise<string | null> {
   const safeName = sparqlStringLiteral(name);
-  const sportFilter = sportQid ? `?league wdt:P641 wd:${sportQid} .` : "";
+  // NEO-240 security review — see `safeSportQid`. This is the one of the three
+  // that DEGRADES rather than refusing: the sports-league class filter is a
+  // tight enough bound on its own (see above), so a non-QID lands on exactly
+  // the sport-less path a custom sport already takes. What it must never do is
+  // reach the query body.
+  const safeQid = safeSportQid(sportQid, "findLeagueQid");
+  const sportFilter = safeQid ? `?league wdt:P641 wd:${safeQid} .` : "";
   const query = `
     SELECT DISTINCT ?league ?num WHERE {
       SERVICE wikibase:mwapi {

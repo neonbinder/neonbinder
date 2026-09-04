@@ -467,4 +467,56 @@ describe("enrichLeague", () => {
     expect(queries[0]).not.toContain("wdt:P641");
     expect((await getLeague(t, leagueId))!.abbreviation).toBe("IPL");
   });
+
+  test("an injection-shaped sportQid never reaches the query body", async () => {
+    // NEO-240 security review. The sport QID is interpolated into the SPARQL
+    // TEXT as `wd:${…}`, so a value carrying `.`, `}` or `#` closes the triple
+    // and writes the rest of the pattern itself. It is not attacker-supplied
+    // over the wire, but it is not a constant either: it lives on a
+    // `selectorOptions` sport row that an operator can edit and that a legacy
+    // row may predate any validation of.
+    //
+    // The lookup degrades to the sport-less path rather than refusing — the
+    // sports-league class filter is a tight enough bound on its own — but the
+    // value itself must be nowhere in the outgoing query.
+    const evilSportQid = 'Q5369 . } UNION { ?league wdt:P31 wd:Q5 . #';
+
+    const t = convexTest(schema, modules);
+    const sportId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: evilSportQid },
+        },
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const leagueId = await insertLeague(t, sportId, { name: "Texas League" });
+
+    const queries: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        queries.push(decodeURIComponent(String(url)));
+        return jsonResponse(makeSparqlSearchBody(null));
+      }) as unknown as typeof fetch,
+    );
+
+    await t.action(internal.adapters.wikidata.enrichLeague, { leagueId });
+
+    expect(queries).toHaveLength(1);
+    // Not the whole payload, not a fragment of it, not the filter it would
+    // have ridden in on.
+    expect(queries[0]).not.toContain(evilSportQid);
+    expect(queries[0]).not.toContain("UNION");
+    expect(queries[0]).not.toContain("wdt:P641");
+    // Degraded, not disabled: the class filter is still doing its job.
+    expect(queries[0]).toContain("wdt:P31/wdt:P279* wd:Q623109");
+  });
 });
