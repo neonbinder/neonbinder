@@ -67,11 +67,20 @@ type CareerTeamFixture = {
   teamLabel: string;
   fromYear?: number;
   toYear?: number;
+  // NEO-235: the RAW binding values, for shapes a bare year cannot express —
+  // a full-precision P580 ("1982-07-19T00:00:00Z"). Wins over fromYear/toYear.
+  startRaw?: string;
+  endRaw?: string;
 };
 
 function makePlayerDetailBody(opts: {
   careerTeams?: CareerTeamFixture[];
   hofAwardQid?: string;
+  // NEO-235: the P463 "member of" shape — how the National Baseball Hall of
+  // Fame records the majority of its inductees (Gwynn, Ruth, Griffey), and the
+  // shape that was invisible to the P166-only detection this ticket replaces.
+  // Binds the `?memberOf` column the memberOf strategy's OPTIONAL block emits.
+  hofMemberOfQid?: string;
   // NEO-212: the SPARQL response is the cross-product of memberships ×
   // awards, and these three are entity-level — so they repeat identically on
   // every row, which is exactly how the real endpoint returns them.
@@ -93,24 +102,37 @@ function makePlayerDetailBody(opts: {
   // `hofAwardQid` is the single-award shorthand the pre-NEO-212 tests use;
   // `awardQids` is the explicit list, for exercising the cross-product.
   const awards = opts.awardQids ?? (opts.hofAwardQid ? [opts.hofAwardQid] : []);
+  // NEO-235: `?memberOf` is entity-level and binds at most once (its OPTIONAL
+  // block matches a FIXED object), so unlike `?award` it repeats identically
+  // on every row rather than multiplying them.
+  const withMemberOf = (row: Record<string, SparqlBindingFixture>) => {
+    if (opts.hofMemberOfQid !== undefined) row.memberOf = uriBinding(opts.hofMemberOfQid);
+    return row;
+  };
   for (const ct of opts.careerTeams ?? []) {
     const base: Record<string, SparqlBindingFixture> = {
       team: uriBinding(ct.teamQid),
       teamLabel: literalBinding(ct.teamLabel),
     };
-    if (ct.fromYear !== undefined) base.start = literalBinding(`${ct.fromYear}-01-01T00:00:00Z`);
-    if (ct.toYear !== undefined) base.end = literalBinding(`${ct.toYear}-01-01T00:00:00Z`);
+    // NEO-235: a membership with NEITHER is the undated shape — Gwynn's third
+    // P54 statement, which carries no qualifiers at all.
+    if (ct.startRaw !== undefined) base.start = literalBinding(ct.startRaw);
+    else if (ct.fromYear !== undefined) base.start = literalBinding(`${ct.fromYear}-01-01T00:00:00Z`);
+    if (ct.endRaw !== undefined) base.end = literalBinding(ct.endRaw);
+    else if (ct.toYear !== undefined) base.end = literalBinding(`${ct.toYear}-01-01T00:00:00Z`);
     if (awards.length === 0) {
-      rows.push(decorate({ ...base }));
+      rows.push(decorate(withMemberOf({ ...base })));
     } else {
       for (const award of awards) {
-        rows.push(decorate({ ...base, award: uriBinding(award) }));
+        rows.push(decorate(withMemberOf({ ...base, award: uriBinding(award) })));
       }
     }
   }
   if (rows.length === 0) {
     if (awards.length > 0) {
-      for (const award of awards) rows.push(decorate({ award: uriBinding(award) }));
+      for (const award of awards) rows.push(decorate(withMemberOf({ award: uriBinding(award) })));
+    } else if (opts.hofMemberOfQid !== undefined) {
+      rows.push(decorate(withMemberOf({})));
     } else if (opts.descr !== undefined || opts.dob !== undefined || opts.title !== undefined) {
       // A player with no teams and no awards still has entity-level fields,
       // and they arrive on a single otherwise-empty row.
@@ -416,6 +438,359 @@ describe("lookupPlayerEnrichment: disambiguation fields (description / birthYear
     expect(detailQuery).toContain("schema:description");
     expect(detailQuery).toContain("wdt:P569");
     expect(detailQuery).toContain("schema:isPartOf <https://en.wikipedia.org/>");
+  });
+});
+
+// ===========================================================================
+// NEO-235 — Hall of Fame is not one property, and a career team is not always
+// dated.
+//
+// Found on production with Tony Gwynn (Q1145222), who came back
+// `isHallOfFame: false`. His induction is recorded as P463 "member of" →
+// Q809892 (National Baseball Hall of Fame and Museum) with a P580 of 2007;
+// he has no P166 statement for the Hall at all, and P166 was the only shape we
+// looked for. Verified live on 2026-09-04 — endpoint-wide, Q809892 is reached
+// by P463 for 66 people and by P166 for 41, so the property we handled was the
+// MINORITY shape for the sport with the most cards.
+//
+// The fixtures below are Gwynn-shaped on purpose: the same three P54
+// statements (one full-precision, one year-precision, one with no qualifiers
+// at all) and the same P463-only induction.
+// ===========================================================================
+
+/**
+ * The real National Baseball Hall of Fame and Museum. The fixtures elsewhere
+ * in this file use the placeholder the sport row used to carry; these use the
+ * live value, because these tests are about matching what Wikidata actually
+ * returns.
+ */
+const HOF_QID = "Q809892";
+
+const BASEBALL_SPORT = {
+  label: "Baseball",
+  wikidata: { sportQid: "Q5369", hallOfFameQid: HOF_QID },
+  espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+};
+
+/** Gwynn's three P54 statements, exactly as WDQS renders them. */
+const GWYNN_MEMBERSHIPS: CareerTeamFixture[] = [
+  {
+    teamQid: "Q721134",
+    teamLabel: "San Diego Padres",
+    // Precision 11 (day) — the case a year-only parser would drop entirely.
+    startRaw: "1982-07-19T00:00:00Z",
+    endRaw: "2001-01-01T00:00:00Z",
+  },
+  {
+    teamQid: "Q7413724",
+    teamLabel: "San Diego State Aztecs men's basketball",
+    fromYear: 1977,
+    toYear: 1981,
+  },
+  // No qualifiers at all. Cannot become a stint; must not vanish silently.
+  { teamQid: "Q16969667", teamLabel: "San Diego State Aztecs baseball" },
+];
+
+describe("lookupPlayerEnrichment: Hall-of-Fame detection strategies (NEO-235)", () => {
+  test("P463 'member of' alone flips isHallOfFame true — the Tony Gwynn shape", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({ qid: "Q1145222", detail: { hofMemberOfQid: HOF_QID } }),
+    );
+
+    const result = await lookupPlayerEnrichment("Tony Gwynn", BASEBALL_SPORT);
+    expect(result!.isHallOfFame).toBe(true);
+  });
+
+  test("P166 'award received' alone still flips it true — the shape we already handled", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({ qid: "Q505423", detail: { hofAwardQid: HOF_QID } }),
+    );
+
+    const result = await lookupPlayerEnrichment("Jerry Rice", BASEBALL_SPORT);
+    expect(result!.isHallOfFame).toBe(true);
+  });
+
+  test("a link on ONE property is enough even when the other names a different entity", async () => {
+    // The failure this guards: an `else`/precedence slip that let a
+    // non-matching P166 mask a matching P463.
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1145222",
+        detail: { awardQids: ["Q120649", "Q1366948"], hofMemberOfQid: HOF_QID },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Tony Gwynn", BASEBALL_SPORT);
+    expect(result!.isHallOfFame).toBe(true);
+  });
+
+  test("neither property matching is a definitive false when the sport's Hall is known", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({ qid: "Q1000", detail: { awardQids: ["Q120649"] } }),
+    );
+
+    const result = await lookupPlayerEnrichment("Some Journeyman", BASEBALL_SPORT);
+    expect(result!.isHallOfFame).toBe(false);
+  });
+
+  test("no hallOfFameQid on the sport leaves isHallOfFame UNDEFINED, never false", async () => {
+    // Soccer ships without one deliberately (no single canonical Hall), and a
+    // false there would be a claim we cannot support.
+    vi.stubGlobal("fetch", makePlayerFetchStub({ qid: "Q1000", detail: {} }));
+
+    const result = await lookupPlayerEnrichment("Some Footballer", {
+      label: "Soccer",
+      wikidata: { sportQid: "Q2736" },
+    });
+    expect(result!.isHallOfFame).toBeUndefined();
+  });
+
+  test("a hallOfFameQid that is not a QID is refused, not interpolated — undefined, not false", async () => {
+    // The sport row is the source of truth for this value and nothing stops a
+    // legacy or hand-edited row holding something else. It reaches SPARQL as
+    // `wd:${hofQid}` now, so it is validated first.
+    const queries: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        queries.push(decodeURIComponent(String(url)));
+        return makePlayerFetchStub({ qid: "Q1000", detail: {} })(url);
+      }) as unknown as typeof fetch,
+    );
+
+    const result = await lookupPlayerEnrichment("Some Player", {
+      label: "Baseball",
+      wikidata: { sportQid: "Q5369", hallOfFameQid: "} } INJECTED { #" },
+    });
+
+    expect(result!.isHallOfFame).toBeUndefined();
+    for (const q of queries) expect(q).not.toContain("INJECTED");
+  });
+
+  test("both HoF strategies emit a fixed-object block — the query does not bind every award", async () => {
+    // The row-count reason, not a style preference: an unfiltered `?award`
+    // column multiplied the membership rows by the player's whole award list
+    // (Michael Jordan: ~350 rows for 7 teams).
+    let detailQuery = "";
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        const decoded = decodeURIComponent(String(url));
+        if (decoded.includes("p:P54")) detailQuery = decoded;
+        return makePlayerFetchStub({ qid: "Q1000", detail: {} })(url);
+      }) as unknown as typeof fetch,
+    );
+
+    await lookupPlayerEnrichment("Some Player", BASEBALL_SPORT);
+
+    expect(detailQuery).toContain(`wdt:P166 wd:${HOF_QID}`);
+    expect(detailQuery).toContain(`wdt:P463 wd:${HOF_QID}`);
+    expect(detailQuery).not.toContain("wdt:P166 ?award");
+  });
+});
+
+describe("lookupPlayerEnrichment: career-team strategies (NEO-235)", () => {
+  test("a full-precision P580 yields the YEAR — 1982-07-19 is a 1982 stint", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1145222",
+        detail: {
+          careerTeams: [
+            {
+              teamQid: "Q721134",
+              teamLabel: "San Diego Padres",
+              startRaw: "1982-07-19T00:00:00Z",
+              endRaw: "2001-01-01T00:00:00Z",
+            },
+          ],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Tony Gwynn", BASEBALL_SPORT);
+    expect(result!.careerTeams).toEqual([
+      { name: "San Diego Padres", fromYear: 1982, toYear: 2001 },
+    ]);
+  });
+
+  test("an undated P54 is surfaced in undatedCareerTeams and kept OUT of careerTeams", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1145222",
+        detail: { careerTeams: GWYNN_MEMBERSHIPS, hofMemberOfQid: HOF_QID },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Tony Gwynn", BASEBALL_SPORT);
+
+    expect(result!.careerTeams).toEqual([
+      { name: "San Diego State Aztecs men's basketball", fromYear: 1977, toYear: 1981 },
+      { name: "San Diego Padres", fromYear: 1982, toYear: 2001 },
+    ]);
+    expect(result!.undatedCareerTeams).toEqual(["San Diego State Aztecs baseball"]);
+    expect(result!.isHallOfFame).toBe(true);
+  });
+
+  test("undatedCareerTeams is ABSENT (not an empty array) when every membership is dated", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [{ teamQid: "Q721134", teamLabel: "San Diego Padres", fromYear: 1982 }],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+    expect(result!.undatedCareerTeams).toBeUndefined();
+    expect("undatedCareerTeams" in result!).toBe(false);
+  });
+
+  test("an undated membership with no English label is dropped, not surfaced as a bare QID", async () => {
+    // Same reason the dated path drops it: the operator would be shown
+    // "Q127635", which is not a team name.
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: { careerTeams: [{ teamQid: "Q127635", teamLabel: "Q127635" }] },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+    expect(result!.undatedCareerTeams).toBeUndefined();
+    expect(result!.careerTeams).toEqual([]);
+  });
+
+  test("the same undated team repeated across cross-product rows is named ONCE", async () => {
+    vi.stubGlobal(
+      "fetch",
+      makePlayerFetchStub({
+        qid: "Q1000",
+        detail: {
+          careerTeams: [{ teamQid: "Q16969667", teamLabel: "San Diego State Aztecs baseball" }],
+          // Three awards ⇒ the membership arrives on three rows.
+          awardQids: ["Q120649", "Q1366948", "Q3405246"],
+        },
+      }),
+    );
+
+    const result = await lookupPlayerEnrichment("Someone", BASEBALL_SPORT);
+    expect(result!.undatedCareerTeams).toEqual(["San Diego State Aztecs baseball"]);
+  });
+});
+
+// ===========================================================================
+// NEO-235 — the two consumers of PlayerLookupResult must agree.
+//
+// `enrichPlayer` (post-creation, writes `players`) and `runEntityReviewLookup`
+// (pre-creation preview, writes `entityReviewQueue.enrichment`) both go through
+// `lookupPlayerEnrichment`, so a strategy added for one is a strategy the other
+// has too. These drive ONE Gwynn-shaped fixture through BOTH and assert they
+// reach the same conclusion — the pin against a future "fix it in enrichPlayer
+// only" divergence.
+// ===========================================================================
+
+describe("both enrichment paths agree on a Gwynn-shaped fixture (NEO-235)", () => {
+  const modules = (import.meta as unknown as {
+    glob: (pattern: string) => Record<string, () => Promise<unknown>>;
+  }).glob("./**/*.*s");
+
+  const seedGwynnSport = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport" as const,
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        sportConfig: {
+          skuCode: "BB",
+          league: "MLB",
+          espn: { path: "baseball/mlb", leagueName: "Major League Baseball" },
+          wikidata: { sportQid: "Q5369", hallOfFameQid: HOF_QID },
+        },
+        lastUpdated: Date.now(),
+      }),
+    );
+
+  const gwynnStub = () =>
+    makePlayerFetchStub({
+      qid: "Q1145222",
+      detail: { careerTeams: GWYNN_MEMBERSHIPS, hofMemberOfQid: HOF_QID },
+    });
+
+  test("enrichPlayer writes isHallOfFame true and both DATED stints, ignoring the undated one", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedGwynnSport(t);
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Tony Gwynn",
+        nameNormalized: "tony gwynn",
+        sportId,
+        createdByUserId: "user_test",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    vi.stubGlobal("fetch", gwynnStub());
+    await t.action(internal.adapters.wikidata.enrichPlayer, { playerId });
+
+    const player = await t.run(async (ctx) => ctx.db.get(playerId));
+    expect(player!.isHallOfFame).toBe(true);
+    expect(player!.externalIds?.wikidataId).toBe("Q1145222");
+    // Two stints, earliest first — the undated Aztecs baseball membership has
+    // no `fromYear` and `players.teamYears` has nowhere to put it.
+    expect(player!.teamYears).toHaveLength(2);
+    expect(player!.teamYears!.map((ty) => ty.fromYear)).toEqual([1977, 1982]);
+    const teamNames = await Promise.all(
+      player!.teamYears!.map(async (ty) =>
+        t.run(async (ctx) => (await ctx.db.get(ty.teamId))?.name),
+      ),
+    );
+    expect(teamNames).toEqual([
+      "San Diego State Aztecs men's basketball",
+      "San Diego Padres",
+    ]);
+  });
+
+  test("runEntityReviewLookup stores the same verdict, plus the undated team by name", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedGwynnSport(t);
+    const rowId = await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: sportId,
+        batchId: "batch-neo235",
+        createdByUserId: "user_review_001",
+        kind: "player" as const,
+        name: "Tony Gwynn",
+        sportId,
+        status: "pending" as const,
+      }),
+    );
+
+    vi.stubGlobal("fetch", gwynnStub());
+    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId });
+
+    const row = await t.run(async (ctx) => ctx.db.get(rowId));
+    expect(row!.status).toBe("ready");
+    expect(row!.enrichment?.isHallOfFame).toBe(true);
+    expect(row!.enrichment?.careerTeams).toEqual([
+      { name: "San Diego State Aztecs men's basketball", fromYear: 1977, toYear: 1981 },
+      { name: "San Diego Padres", fromYear: 1982, toYear: 2001 },
+    ]);
+    // The whole point of surfacing it: the preview row carries it, so the
+    // wizard CAN show it. Proves the enrichment validator accepts the field —
+    // an unvalidated extra key would have thrown on the patch.
+    expect(row!.enrichment?.undatedCareerTeams).toEqual([
+      "San Diego State Aztecs baseball",
+    ]);
   });
 });
 

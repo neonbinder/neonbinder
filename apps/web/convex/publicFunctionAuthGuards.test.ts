@@ -208,6 +208,45 @@ describe("NEO-202 — players.getManyByIds requires a signed-in caller", () => {
   });
 });
 
+describe("NEO-235 — players.getByIdParam is guarded, and stays a throw", () => {
+  /**
+   * The registry entry for the deep-link read. `convex/players.management.test.ts`
+   * covers what it RESOLVES; this pins the one property that is easy to lose
+   * here, because this function's whole point is answering `null` instead of
+   * throwing: `null` is its answer for "no such player", so a signed-out caller
+   * must get the throw rather than be quietly told the row is not there. If the
+   * guard ever moved below the `normalizeId`, the refusal and the miss would
+   * become the same response and nothing else in the suite would notice.
+   */
+  test("refuses an anonymous caller rather than answering null", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: "Ronald Acuna Jr",
+        nameNormalized: "acuna jr ronald",
+        sportId,
+        createdByUserId: "clerk_some_operator",
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await expect(
+      t.query(api.players.getByIdParam, { id: playerId }),
+    ).rejects.toThrow(/not authenticated/i);
+
+    // Signed-in, not admin: `players` is reference data, and every screen that
+    // deep-links a player sits behind ProtectedLayout. The row comes back
+    // without the audit field — the returns validator enforces it, and the
+    // validator is public.
+    const doc = await t
+      .withIdentity(MEMBER)
+      .query(api.players.getByIdParam, { id: playerId });
+    expect(doc?.name).toBe("Ronald Acuna Jr");
+    expect(doc).not.toHaveProperty("createdByUserId");
+  });
+});
+
 describe("NEO-202 — the deliberately anonymous queries stay anonymous", () => {
   // Not an oversight and not a finding: reviewed under NEO-154, re-confirmed
   // here. Guarding either one would break signup and the /u/<username> buyer

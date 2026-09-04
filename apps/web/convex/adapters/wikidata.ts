@@ -201,6 +201,15 @@ function qidFromIri(iri: string): string | undefined {
  * Parse a Wikidata date binding (xsd:dateTime, e.g. "2011-01-01T00:00:00Z")
  * to a 4-digit year. Wikidata sometimes uses "+0000-01-01" for unknown
  * precision — those return undefined.
+ *
+ * NEO-235: a qualifier is NOT always a bare year. Wikidata stores each date
+ * with a precision, and WDQS renders whatever it has: Tony Gwynn's P580 for
+ * the Padres is precision 11 (day) and arrives as "1982-07-19T00:00:00Z",
+ * where a year-precision one arrives as "1982-01-01T00:00:00Z". Both must
+ * yield 1982 — the regex anchors on the first `<digits>-` group, which is the
+ * year in either rendering, so day precision was already handled. There is now
+ * a test pinning that, because the failure mode (a full date silently becoming
+ * no stint) is exactly the class of bug this ticket is about.
  */
 function yearFromBinding(binding?: SparqlBinding): number | undefined {
   if (!binding) return undefined;
@@ -208,6 +217,203 @@ function yearFromBinding(binding?: SparqlBinding): number | undefined {
   if (!m) return undefined;
   const n = Number(m[1]);
   return Number.isFinite(n) && n > 1800 ? n : undefined;
+}
+
+/**
+ * ── NEO-235: how Wikidata actually records the facts we want ────────────────
+ *
+ * Verified live against query.wikidata.org and Special:EntityData on
+ * 2026-09-04. Everything below is transcribed from that dump, not inferred.
+ *
+ * ## Hall of Fame is NOT one property
+ *
+ * We shipped a single rule — `wdt:P166` (award received) == the sport's
+ * `hallOfFameQid` — and it is correct but PARTIAL. Wikidata's editors record
+ * an induction under either of two properties depending on whether they model
+ * the Hall as an award or as an institution you become a member of, and which
+ * one they picked varies BY SPORT:
+ *
+ *   Tony Gwynn        Q1145222  P463 → Q809892 (P580 2007)   ← no P166 at all
+ *   Babe Ruth         Q213812   P463 → Q809892 (P585 1936)   ← no P166 at all
+ *   Ken Griffey Jr.   Q536900   P463 → Q809892 (P585 2016)   ← no P166 at all
+ *   Jerry Rice        Q505423   P166 → Q778412 (Pro Football HoF)
+ *   Wayne Gretzky     Q209518   P166 → Q1136687 (Hockey HoF)
+ *
+ * Endpoint-wide counts of humans linked to each Hall (SPARQL, same date):
+ *
+ *   National Baseball HoF Q809892   P463  66   P166  41   ← both, majority P463
+ *   Pro Football HoF      Q778412   P463   0   P166 314
+ *   Naismith BB HoF       Q290922   P463   0   P166  52
+ *   Hockey HoF            Q1136687  P463   2   P166 402
+ *
+ * So P166 alone loses roughly two thirds of baseball's Hall of Famers, and
+ * baseball is the sport with the most cards. Both properties are checked now.
+ *
+ * P1344 (participant in) and P39 (position held) were sampled too and carry
+ * nothing HoF-shaped for any of the four Halls — they are not strategies.
+ *
+ * Known upstream GAP, not a code gap: Michael Jordan (Q41421) has no statement
+ * of any property pointing at Q290922. No strategy can find what is not there;
+ * he resolves to `isHallOfFame: false` until Wikidata is edited.
+ *
+ * ## Career teams are not always dated
+ *
+ * Gwynn's three `P54` (member of sports team) statements:
+ *
+ *   Q721134   San Diego Padres                    P580 1982-07-19  P582 2001
+ *   Q7413724  San Diego State Aztecs men's bball   P580 1977        P582 1981
+ *   Q16969667 San Diego State Aztecs baseball      (no qualifiers)
+ *
+ * The Padres' P580 is a FULL date, which is why `yearFromBinding` has to cope
+ * with more than a bare year — see the test that pins 1982-07-19 → 1982.
+ *
+ * The third has no qualifiers at all, and `players.teamYears` requires
+ * `fromYear`, so it cannot become a stint. See `CAREER_TEAM_STRATEGIES` below
+ * for why we do NOT synthesize one from P2031/P2032.
+ */
+
+/**
+ * The ordered list of ways a Hall-of-Fame induction can be recorded, checked
+ * in order — first match wins and the rest are skipped. Adding a newly
+ * discovered shape means adding one entry here: the SPARQL fragment and the
+ * row parser are both generated from this array, so the two cannot drift.
+ *
+ * `binding` is the SPARQL result variable the strategy's block binds. The
+ * label SERVICE auto-binds any `?<var>Label` whose prefix is another variable
+ * in scope, so these names must not collide with one another's prefixes.
+ *
+ * `award` is deliberately still called `award` — it is the pre-NEO-235
+ * variable name, and keeping it means the existing fixtures keep describing
+ * the same wire shape they always did.
+ */
+interface HallOfFameStrategy {
+  /** Stable id, used in the log line that says which strategy answered. */
+  id: string;
+  /** The Wikidata property that carries the link. */
+  property: string;
+  /** The SPARQL result variable this strategy's OPTIONAL block binds. */
+  binding: string;
+}
+
+const HALL_OF_FAME_STRATEGIES: ReadonlyArray<HallOfFameStrategy> = [
+  // P166 "award received" — how football, basketball and hockey record it,
+  // and a large minority of baseball.
+  { id: "awardReceived", property: "P166", binding: "award" },
+  // P463 "member of" — how the majority of baseball records it (Gwynn, Ruth,
+  // Griffey). NEO-235: the shape that was invisible to us before.
+  { id: "memberOf", property: "P463", binding: "memberOf" },
+];
+
+/**
+ * The strategies' SPARQL fragment, or "" when the sport has no usable Hall
+ * QID (an unmapped sport, or a row carrying a non-QID string).
+ *
+ * Each block matches a FIXED object — `wd:<hofQid>` — rather than binding
+ * every award the player ever won and filtering in JS. That is both the
+ * cheaper query (a single triple lookup instead of a scan) and a large
+ * response saving: the old `?award` column multiplied the membership rows by
+ * the player's entire award list, so Michael Jordan's detail query returned
+ * ~350 rows for 7 teams. Gwynn's returns exactly 3 — one per membership.
+ */
+function hallOfFameSparqlBlocks(qid: string, hofQid: string | undefined): string {
+  if (!hofQid) return "";
+  return HALL_OF_FAME_STRATEGIES.map(
+    (s) =>
+      `      OPTIONAL { wd:${qid} wdt:${s.property} wd:${hofQid} . ` +
+      `BIND(wd:${hofQid} AS ?${s.binding}) }`,
+  ).join("\n");
+}
+
+/**
+ * The id of the first strategy whose binding resolves to the sport's Hall,
+ * or undefined when none does.
+ *
+ * The `=== hofQid` re-check is not redundant with the SPARQL fixed object: it
+ * is the same defensive posture as `qidFromIri` itself — the endpoint's
+ * response is external input, and this is the value that decides a stored
+ * boolean.
+ */
+function detectHallOfFame(
+  row: Record<string, SparqlBinding>,
+  hofQid: string,
+): string | undefined {
+  for (const strategy of HALL_OF_FAME_STRATEGIES) {
+    const binding = row[strategy.binding];
+    if (binding && qidFromIri(binding.value) === hofQid) return strategy.id;
+  }
+  return undefined;
+}
+
+/** One P54 membership as it arrives from the detail query. */
+interface MembershipBindings {
+  start?: SparqlBinding;
+  end?: SparqlBinding;
+}
+
+/**
+ * What a career-team strategy decided about one membership: either a real
+ * stint, or a membership we can name but not place in time.
+ */
+type CareerTeamMatch =
+  | { kind: "stint"; fromYear: number; toYear?: number }
+  | { kind: "undated" };
+
+interface CareerTeamStrategy {
+  id: string;
+  match: (m: MembershipBindings) => CareerTeamMatch | undefined;
+}
+
+/**
+ * The ordered list of P54 membership shapes, checked in order — first match
+ * wins. Like `HALL_OF_FAME_STRATEGIES`, this is the extension point: a newly
+ * discovered shape is one more entry, and both consumers of
+ * `PlayerLookupResult` (the review wizard's preview and `enrichPlayer`'s
+ * write) pick it up at once because both read the same parsed result.
+ *
+ * ## NEO-235: why an undated membership is NOT given a synthetic span
+ *
+ * `players.teamYears` requires `fromYear`, so a membership with no P580
+ * cannot be stored as a stint. The tempting fix is to borrow the player's
+ * P2031/P2032 (start/end of work period) when there is exactly one undated
+ * membership. Gwynn is the counter-example that rules it out: his undated P54
+ * is San Diego State Aztecs BASEBALL — a college team he played for around
+ * 1977-1981 — while his P2031/P2032 are 1982 and 2001, his MLB career. That
+ * inference would have written "Tony Gwynn, San Diego State Aztecs baseball,
+ * 1982-2001", a stint that never happened, into a table the SKU/listing paths
+ * read. Fabricating a wrong date is strictly worse than admitting we have
+ * none.
+ *
+ * So undated memberships are excluded from `careerTeams` and surfaced by NAME
+ * in `undatedCareerTeams`, where an operator can see that Wikidata knows about
+ * the team and add the years by hand if they matter.
+ */
+const CAREER_TEAM_STRATEGIES: ReadonlyArray<CareerTeamStrategy> = [
+  {
+    // A closed stint: P580 and P582 both present. Also the OPEN-ENDED case
+    // (P580 only, an active player) — `yearFromBinding` answers undefined for
+    // a missing end, which is exactly what `toYear` optional means.
+    id: "datedMembership",
+    match: (m) => {
+      const fromYear = yearFromBinding(m.start);
+      if (fromYear === undefined) return undefined;
+      return { kind: "stint", fromYear, toYear: yearFromBinding(m.end) };
+    },
+  },
+  {
+    // No usable P580. Named, but not placeable in time — see the block
+    // comment above for why we do not invent one.
+    id: "undatedMembership",
+    match: () => ({ kind: "undated" }),
+  },
+];
+
+/** First strategy to claim the membership. The list ends in a total match. */
+function classifyMembership(m: MembershipBindings): CareerTeamMatch | undefined {
+  for (const strategy of CAREER_TEAM_STRATEGIES) {
+    const match = strategy.match(m);
+    if (match) return match;
+  }
+  return undefined;
 }
 
 /**
@@ -300,6 +506,26 @@ export interface PlayerLookupResult {
    * STINT — a player who left a franchise and came back has two.
    */
   careerTeams: Array<{ name: string; fromYear: number; toYear?: number }>;
+  /**
+   * NEO-235 — teams Wikidata links the player to with NO usable start year,
+   * by name, sorted alphabetically. Absent (not `[]`) when there are none.
+   *
+   * These are real memberships that simply cannot be stored: `teamYears`
+   * requires `fromYear`, and inventing one from the player's P2031/P2032 work
+   * period fabricates a stint that never happened (see
+   * `CAREER_TEAM_STRATEGIES` for the Gwynn case that proves it). Before this
+   * they were dropped SILENTLY, so a Wikidata team the operator could have
+   * dated by hand was invisible to them.
+   *
+   * Alphabetical rather than response order for the same reason `careerTeams`
+   * is sorted: SPARQL binding order is not stable, and an unsorted list would
+   * make the same player read back differently on two lookups.
+   *
+   * Preview-only — `enrichPlayer` ignores it, because `players.teamYears` has
+   * nowhere to put a team with no years. The review wizard can render it as
+   * "also listed, without dates: …"; no UI consumes it yet.
+   */
+  undatedCareerTeams?: string[];
   isHallOfFame?: boolean;
   // ── NEO-212: player disambiguation context for the review wizard ──────────
   //
@@ -362,7 +588,26 @@ export async function lookupPlayerEnrichment(
   // lowercase-keyed HOF_QIDS map with display-cased callers, which silently
   // meant `isHallOfFame` never resolved for anyone until a `.toLowerCase()` was
   // patched in — the second outage of that exact class in this file.
-  const hofQid = sport.wikidata?.hallOfFameQid;
+  //
+  // NEO-235 security: this value reaches SPARQL as `wd:${hofQid}` now, so it
+  // has to be a QID before it is interpolated. It comes off a `selectorOptions`
+  // sport row — written from `sportConfig.ts` defaults today, but the row is
+  // the source of truth and nothing stops an operator edit or a legacy row from
+  // holding something else. A non-QID is treated as "this sport has no Hall we
+  // know of" (isHallOfFame stays undefined), which is the same graceful
+  // degradation an unmapped sport already gets — never a definitive `false`
+  // derived from a value we refused to use.
+  const configuredHofQid = sport.wikidata?.hallOfFameQid;
+  const hofQid =
+    configuredHofQid && isWikidataQid(configuredHofQid) ? configuredHofQid : undefined;
+  if (configuredHofQid && !hofQid) {
+    console.warn(
+      JSON.stringify({
+        msg: "wikidata_sport_hall_of_fame_qid_not_a_qid",
+        sport: sport.label,
+      }),
+    );
+  }
 
   // NEO-212: the three disambiguation fields are all OPTIONAL and all
   // single-valued per entity, so they ride along on the existing membership ×
@@ -371,15 +616,20 @@ export async function lookupPlayerEnrichment(
   // SERVICE below auto-binds any `?<var>Label`/`?<var>Description` whose
   // prefix is another variable in scope, and colliding with that would make it
   // overwrite our own bindings.
+  //
+  // NEO-235: the Hall-of-Fame blocks are GENERATED from
+  // `HALL_OF_FAME_STRATEGIES` rather than written out here, so adding a newly
+  // discovered shape never means remembering to edit both the query and the
+  // parser. They are omitted entirely for a sport with no usable Hall QID.
   const detailQuery = `
-    SELECT ?team ?teamLabel ?start ?end ?award ?descr ?dob ?title WHERE {
+    SELECT ?team ?teamLabel ?start ?end ${HALL_OF_FAME_STRATEGIES.map((s) => `?${s.binding} `).join("")}?descr ?dob ?title WHERE {
       OPTIONAL {
         wd:${qid} p:P54 ?membership .
         ?membership ps:P54 ?team .
         OPTIONAL { ?membership pq:P580 ?start . }
         OPTIONAL { ?membership pq:P582 ?end . }
       }
-      OPTIONAL { wd:${qid} wdt:P166 ?award . }
+${hallOfFameSparqlBlocks(qid, hofQid)}
       OPTIONAL {
         wd:${qid} schema:description ?descr .
         FILTER(LANG(?descr) = "en")
@@ -397,21 +647,34 @@ export async function lookupPlayerEnrichment(
   if (!result) return null;
 
   const careerTeams: Array<{ name: string; fromYear: number; toYear?: number }> = [];
+  // NEO-235: undated memberships, keyed by team QID so the same team repeated
+  // across cross-product rows is named once. Values are the en labels.
+  const undatedByTeamQid = new Map<string, string>();
   let isHallOfFame: boolean | undefined;
+  // Which strategy answered, for the log line below — the whole point of
+  // NEO-235 is that this is no longer always P166, and when a player comes back
+  // wrong we need to know which shape we read them from.
+  let hallOfFameVia: string | undefined;
   let description: string | undefined;
   let birthYear: number | undefined;
   let enwikiTitle: string | undefined;
   // NEO-212: keyed on the full STINT, not the team.
   //
-  // The query returns the cross-product of memberships × awards, so a
-  // Hall-of-Famer with three teams and two awards yields six rows and each
-  // membership repeats. This set collapses that repetition — that is the only
-  // job it ever had. Keying it on the bare team QID also collapsed something
-  // real, though: a player traded away and later re-signed has TWO P54
-  // statements for one team, with different P580/P582 qualifiers, and the
-  // second one was silently dropped. Including the years in the key keeps the
-  // cross-product collapse (identical repeated rows still collide) while
-  // letting two genuinely distinct stints both through.
+  // The query returns the cross-product of memberships × whatever else binds
+  // more than once, so a membership can repeat across rows. This set collapses
+  // that repetition — that is the only job it ever had. Keying it on the bare
+  // team QID also collapsed something real, though: a player traded away and
+  // later re-signed has TWO P54 statements for one team, with different
+  // P580/P582 qualifiers, and the second one was silently dropped. Including
+  // the years in the key keeps the cross-product collapse (identical repeated
+  // rows still collide) while letting two genuinely distinct stints both
+  // through.
+  //
+  // NEO-235 shrank the cross-product at the source — the Hall-of-Fame blocks
+  // now match a fixed object instead of binding every award — but did not
+  // remove the need for this: Wikidata itself carries duplicate P54 statements
+  // for one stint (Michael Jordan has North Carolina twice at 1981-1984, at
+  // different date precisions), and those still arrive as two identical rows.
   const seenStints = new Set<string>();
 
   for (const row of result.results.bindings) {
@@ -426,40 +689,54 @@ export async function lookupPlayerEnrichment(
       const stintKey = `${teamWdId}|${row.start?.value ?? ""}|${row.end?.value ?? ""}`;
       if (!seenStints.has(stintKey)) {
         seenStints.add(stintKey);
-        const fromYear = yearFromBinding(row.start);
-        if (fromYear !== undefined) {
-          // Wikidata's label service returns the bare QID as the label
-          // when no label exists in the requested language (en).
-          // Q127635 turned up via the Yakult Swallows lineage — a real
-          // NPB team that simply hasn't had its English label added on
-          // Wikidata yet. Rather than create a team named "Q127635",
-          // skip the membership and leave a breadcrumb so we can
-          // backfill once an English label appears upstream.
-          const labelLooksLikeQid = /^Q\d+$/.test(row.teamLabel.value);
-          if (labelLooksLikeQid) {
-            // NEO-208: structured for the same reason as the no-match log
-            // above — `name` is operator input.
-            console.warn(
-              JSON.stringify({
-                msg: "wikidata_player_team_membership_skipped_no_en_label",
-                name,
-                teamWdId,
-              }),
-            );
-          } else {
+        // Wikidata's label service returns the bare QID as the label
+        // when no label exists in the requested language (en).
+        // Q127635 turned up via the Yakult Swallows lineage — a real
+        // NPB team that simply hasn't had its English label added on
+        // Wikidata yet. Rather than create a team named "Q127635",
+        // skip the membership and leave a breadcrumb so we can
+        // backfill once an English label appears upstream.
+        //
+        // NEO-235: hoisted ABOVE the dated/undated split — an unlabelled team
+        // is unusable in `undatedCareerTeams` for exactly the same reason it is
+        // unusable as a stint (the operator would be shown "Q127635").
+        const labelLooksLikeQid = /^Q\d+$/.test(row.teamLabel.value);
+        if (labelLooksLikeQid) {
+          // NEO-208: structured for the same reason as the no-match log
+          // above — `name` is operator input.
+          console.warn(
+            JSON.stringify({
+              msg: "wikidata_player_team_membership_skipped_no_en_label",
+              name,
+              teamWdId,
+            }),
+          );
+        } else {
+          // NEO-235: which shape this membership is in is decided by the
+          // ordered `CAREER_TEAM_STRATEGIES`, not by an inline `if`, so a
+          // newly discovered shape is one array entry rather than a new branch
+          // here.
+          const match = classifyMembership({ start: row.start, end: row.end });
+          if (match?.kind === "stint") {
             careerTeams.push({
               name: row.teamLabel.value,
-              fromYear,
-              toYear: yearFromBinding(row.end),
+              fromYear: match.fromYear,
+              toYear: match.toYear,
             });
+          } else if (match?.kind === "undated") {
+            undatedByTeamQid.set(teamWdId, row.teamLabel.value);
           }
         }
       }
     }
-    // `undefined === hofQid` is false, so a malformed award IRI simply fails to
-    // match rather than needing a branch of its own.
-    if (hofQid && row.award && qidFromIri(row.award.value) === hofQid) {
-      isHallOfFame = true;
+    // NEO-235: strategy-driven. `hofQid` undefined short-circuits before the
+    // loop, so a sport with no known Hall never claims an answer either way.
+    if (hofQid && hallOfFameVia === undefined) {
+      const via = detectHallOfFame(row, hofQid);
+      if (via !== undefined) {
+        hallOfFameVia = via;
+        isHallOfFame = true;
+      }
     }
     // NEO-212: entity-level, so identical on every row of the cross-product —
     // keep the first non-empty answer. Guarded on "still undefined" rather
@@ -477,6 +754,23 @@ export async function lookupPlayerEnrichment(
     isHallOfFame = false;
   }
 
+  // NEO-235: WHICH strategy answered, not just that one did. The bug this
+  // ticket fixes was invisible precisely because a false negative and a
+  // genuine non-inductee looked identical in the logs; naming the shape means
+  // the next player who comes back wrong tells us whether we read a shape we
+  // do not handle yet or Wikidata simply has nothing. Structured for the same
+  // reason as the no-match log above — `name` is operator input.
+  if (isHallOfFame) {
+    console.log(
+      JSON.stringify({
+        msg: "wikidata_player_hall_of_fame_detected",
+        name,
+        qid,
+        via: hallOfFameVia,
+      }),
+    );
+  }
+
   return {
     wikidataId: qid,
     // NEO-212: SPARQL binding order is not a career timeline — it is whatever
@@ -484,6 +778,11 @@ export async function lookupPlayerEnrichment(
     // the wizard's preview, the committed `players.teamYears`, and
     // `enrichPlayer`'s own write all present the same sequence.
     careerTeams: sortTeamYears(careerTeams),
+    // NEO-235: alphabetical, and omitted entirely when empty so a player with
+    // nothing undated does not carry an empty array through the review row.
+    ...(undatedByTeamQid.size > 0
+      ? { undatedCareerTeams: Array.from(undatedByTeamQid.values()).sort() }
+      : {}),
     isHallOfFame,
     ...(description !== undefined ? { description } : {}),
     ...(birthYear !== undefined ? { birthYear } : {}),
