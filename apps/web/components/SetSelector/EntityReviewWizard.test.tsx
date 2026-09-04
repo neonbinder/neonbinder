@@ -56,7 +56,15 @@
  * CardDetailPanel's TeamPicker/PlayerPicker).
  */
 
-import { act, render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  createEvent,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -880,6 +888,78 @@ describe("EntityReviewWizard — Enter", () => {
     const { onConfirm } = renderWizard();
 
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Enter" });
+
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("commits on a SYNTHETIC Enter delivered to the focused Confirm button", () => {
+    /*
+     * THE CI REGRESSION, in one assertion.
+     *
+     * `checklist-keyboard-only-dialog` taps "Add All Remaining as New", waits
+     * for "Confirm & Save (Enter)", and sends `pressKey: Enter`. maestro-web
+     * implements that as a constructed KeyboardEvent dispatched at
+     * `document.activeElement` — and a synthetic event has NO default action,
+     * so a focused <button> is never activated by it. The flow only ever
+     * passed because the dialog root committed on Enter from any non-input
+     * target; removing that handler (NEO-220 D5, because it also made Enter on
+     * the focused CANCEL button commit) took the flow's only working path with
+     * it. `fireEvent.keyDown` is the same shape of event.
+     */
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard();
+
+    const confirm = screen.getByRole("button", { name: /Confirm & Save/ });
+    expect(document.activeElement).toBe(confirm);
+
+    fireEvent.keyDown(confirm, { key: "Enter" });
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("prevents the default action so a REAL keypress cannot commit twice", () => {
+    // A real browser turns Enter-on-a-button into a click. Without
+    // preventDefault the handler above and that click would both fire.
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    renderWizard();
+
+    const confirm = screen.getByRole("button", { name: /Confirm & Save/ });
+    const event = createEvent.keyDown(confirm, { key: "Enter" });
+    fireEvent(confirm, event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("ignores Enter on Confirm while the commit is already in flight", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard({ saving: true });
+
+    fireEvent.keyDown(screen.getByRole("button", { name: /Saving/ }), { key: "Enter" });
+
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+
+  it("does not commit on Enter aimed at Cancel — the handler is on Confirm alone", async () => {
+    // The reason the root-level handler could not simply come back: it fired
+    // for any non-input target, so Enter on the focused Cancel button both
+    // committed the fetch and cancelled it.
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard();
+
+    const cancel = screen.getByRole("button", { name: "Cancel (Esc)" });
+    (cancel as HTMLElement).focus();
+    fireEvent.keyDown(cancel, { key: "Enter" });
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+  });
+
+  it("does not commit on Enter aimed at the dialog root", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard();
+
+    fireEvent.keyDown(screen.getAllByRole("dialog")[0], { key: "Enter" });
 
     expect(onConfirm).not.toHaveBeenCalled();
   });
@@ -3027,5 +3107,80 @@ describe("EntityReviewWizard — armed bulk add does not stall", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// The keyboard-only flow, end to end (checklist-keyboard-only-dialog)
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — keyboard-only bulk-then-commit", () => {
+  const wizardEl = (props: Partial<Parameters<typeof EntityReviewWizard>[0]> = {}) => (
+    <EntityReviewWizard
+      isOpen
+      selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+      batchId="batch-1"
+      summary={SUMMARY}
+      onConfirm={vi.fn()}
+      onCancel={vi.fn()}
+      {...props}
+    />
+  );
+
+  const solo = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-solo" as unknown as Id<"entityReviewQueue">,
+      name: "Solo",
+      kind: "player",
+      status: "ready",
+      ...over,
+    });
+
+  it("tap the bulk button, then Enter, and the commit runs", async () => {
+    // The exact CI shape: ONE already-settled unknown, so the bulk decides it
+    // immediately with no arming, "Confirm & Save (Enter)" renders, and the
+    // driver sends a synthetic Enter to whatever has focus.
+    const onConfirm = vi.fn();
+    currentRows = [solo()];
+    const { rerender } = render(wizardEl({ onConfirm }));
+
+    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (1)" });
+    // Tapping it is what puts focus on it — and what makes it unmount a moment
+    // later, which is why the autofocus below has to be doing real work.
+    (bulk as HTMLElement).focus();
+    fireEvent.click(bulk);
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    currentRows = [solo({ decision: { action: "create" } })];
+    rerender(wizardEl({ onConfirm }));
+
+    const confirm = screen.getByRole("button", { name: "Confirm & Save (Enter)" });
+    expect(document.activeElement).toBe(confirm);
+
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Enter" });
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers focus after the tapped bulk button unmounts under it", async () => {
+    // Belt to the fix's braces. Tapping the bulk button drops focus to <body>
+    // the instant the footer swaps, so the `allDecided` autofocus effect is the
+    // only thing that puts a target under the operator's next keystroke.
+    currentRows = [solo()];
+    const { rerender } = render(wizardEl());
+
+    const bulk = screen.getByRole("button", { name: "Add All Remaining as New (1)" });
+    (bulk as HTMLElement).focus();
+    fireEvent.click(bulk);
+    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    currentRows = [solo({ decision: { action: "create" } })];
+    rerender(wizardEl());
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Confirm & Save (Enter)" }),
+    );
   });
 });

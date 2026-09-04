@@ -1804,7 +1804,43 @@ export default function EntityReviewWizard({
                     Cancel (Esc)
                   </NeonButton>
                   {allDecided && !commitError && (
-                    <NeonButton ref={confirmButtonRef} onClick={onConfirm} disabled={saving}>
+                    <NeonButton
+                      ref={confirmButtonRef}
+                      onClick={onConfirm}
+                      disabled={saving}
+                      /*
+                       * THE BUTTON HANDLES ITS OWN ENTER, and this is not
+                       * belt-and-braces around native activation — it is the
+                       * only thing that makes the label true for the driver
+                       * that reads it.
+                       *
+                       * A focused <button> is activated by Enter through the
+                       * browser's DEFAULT ACTION on the keydown. A SYNTHETIC
+                       * KeyboardEvent has no default action: `dispatchEvent`
+                       * runs the listeners and stops. maestro-web's
+                       * `pressKey: Enter` is exactly that — a constructed
+                       * KeyboardEvent dispatched at `document.activeElement`
+                       * — so it fires React onKeyDown handlers and never
+                       * clicks anything. Every other flow in the suite that
+                       * presses Enter aims it at an input whose onKeyDown does
+                       * the work; this button was the one control relying on
+                       * activation the driver cannot produce. It only ever
+                       * worked because the dialog ROOT used to commit on Enter
+                       * from any non-input target — the same handler that made
+                       * Enter on the focused Cancel button both save and
+                       * cancel (NEO-220 D5), so it could not simply stay.
+                       *
+                       * Scoped to this element, so Enter still does only what
+                       * the focused control does. `preventDefault` keeps a
+                       * REAL keypress from also firing the native click and
+                       * committing twice.
+                       */
+                      onKeyDown={(e) => {
+                        if (e.key !== "Enter" || saving) return;
+                        e.preventDefault();
+                        onConfirm();
+                      }}
+                    >
                       {saving ? "Saving..." : "Confirm & Save (Enter)"}
                     </NeonButton>
                   )}
