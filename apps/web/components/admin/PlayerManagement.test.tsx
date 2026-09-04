@@ -37,13 +37,21 @@
 
 import {
   fireEvent,
-  render,
+  render as renderBare,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router";
 import { ConvexError } from "convex/values";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// NEO-235: the career-history rows link into Team Management, so the panel now
+// needs a router around it. Every render in this file goes through the same
+// wrapper rather than each call site growing one.
+const render = (ui: ReactElement) =>
+  renderBare(ui, { wrapper: MemoryRouter });
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -804,6 +812,40 @@ describe("PlayerManagement — the detail panel", () => {
     expect(
       screen.getByLabelText("Remove Seattle Mariners 2009 stint"),
     ).toBeTruthy();
+  });
+
+  it("links each stint to its team in Team Management", () => {
+    // NEO-235. Two assertions, and the second is the load-bearing one: the
+    // link wraps the WHOLE "{team} · {years}" string. A link around the team
+    // name alone would leave the row reading as two separate pieces of text,
+    // which is what both the Maestro flow (it matches that string and anchors
+    // a `below:` assertion on it) and the row-order test above depend on.
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    const rows = screen
+      .getByRole("list", { name: "Career history" })
+      .querySelectorAll("li");
+
+    const links = Array.from(rows).map((li) => li.querySelector("a"));
+    expect(links.map((a) => a?.getAttribute("href"))).toEqual([
+      "/admin/teams?team=t-mariners",
+      "/admin/teams?team=t-mariners",
+    ]);
+    // The visible text is the accessible name — no aria-label overriding it.
+    expect(links.map((a) => a?.textContent)).toEqual([
+      "Seattle Mariners · 1989–1999",
+      "Seattle Mariners · 2009–present",
+    ]);
+    expect(links[0]?.getAttribute("title")).toBe(
+      "Open Seattle Mariners in Team Management",
+    );
+
+    // The row's own text is unchanged by the link — see above.
+    expect(Array.from(rows).map((li) => li.textContent)).toEqual([
+      "Seattle Mariners · 1989–1999Remove stint",
+      "Seattle Mariners · 2009–presentRemove stint",
+    ]);
   });
 
   it("scopes the team picker to the player's sport", () => {

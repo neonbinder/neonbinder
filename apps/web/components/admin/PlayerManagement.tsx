@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
@@ -906,8 +907,27 @@ function PlayerDetail({
                 key={`${stint.teamId}-${stint.fromYear}`}
                 className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 text-sm text-slate-200"
               >
+                {/* NEO-235 — the stint row is a way INTO the team.
+                    Correcting a stint usually means the team behind it needs
+                    looking at (wrong colors, no league, a name to fix), and
+                    the only route there was to leave, open Team Management
+                    and retype the name that was already on screen.
+
+                    The whole "{team} · {years}" string is one link, name and
+                    years together, so the row still reads as a single piece of
+                    text: the E2E flow matches that string and anchors a
+                    `below:` assertion on it, and a link wrapping only the name
+                    would split it into two text nodes for both of those. The
+                    visible text IS the accessible name, so no aria-label —
+                    `title` carries the destination for a pointer instead. */}
                 <span className="truncate">
-                  {teamName(stint.teamId)} · {stintRange(stint)}
+                  <Link
+                    to={`/admin/teams?team=${stint.teamId}`}
+                    title={`Open ${teamName(stint.teamId)} in Team Management`}
+                    className="rounded-sm text-neon-blue underline underline-offset-2 transition-colors hover:text-neon-blue/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+                  >
+                    {teamName(stint.teamId)} · {stintRange(stint)}
+                  </Link>
                 </span>
                 <button
                   type="button"
