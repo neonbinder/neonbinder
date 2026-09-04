@@ -125,6 +125,7 @@ import {
   notifiableSkippedSides,
   resolvableSides,
   rowHasBscFacet,
+  slotLabelCanNameRow,
   skippedSideList,
   type ChainResolution,
   type ResolvableRow,
@@ -5726,6 +5727,12 @@ export const getSelectorSyncSuggestions = query({
       for (const side of PLATFORM_SIDES) {
         const slot = primarySlot(row, side);
         if (!slot) continue;
+        // NEO-239 — the slot must be this row's OWN level on this marketplace.
+        // SportLots has no variant-type level, so the SL id on a Base row is
+        // the SL SET holding the base cards and its label is the set's name:
+        // that is how "rename Base to Chrome" reached the modal on 2024 Topps
+        // Chrome. See `slotLabelCanNameRow`.
+        if (!slotLabelCanNameRow(row, side, slot)) continue;
         const label = row.platformLabels?.[side]?.[slot];
         if (!label) continue;
         const labelKey = selectorValueKey(label);
@@ -5859,11 +5866,16 @@ export const applySelectorSyncSuggestions = mutation({
         continue;
       }
 
-      // The label comes off the row, not off the wire.
+      // The label comes off the row, not off the wire — and only from a slot
+      // that names this row's own level (NEO-239). The query above already
+      // filters these out, so a decision naming one is a stale or hand-made
+      // client; re-checked here because a guard on one of two doors is not a
+      // guard.
       const slot = primarySlot(row, decision.side);
-      const label = slot
-        ? row.platformLabels?.[decision.side]?.[slot]
-        : undefined;
+      const label =
+        slot && slotLabelCanNameRow(row, decision.side, slot)
+          ? row.platformLabels?.[decision.side]?.[slot]
+          : undefined;
       if (!label) {
         skipped++;
         continue;

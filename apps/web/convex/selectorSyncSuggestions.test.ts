@@ -361,7 +361,13 @@ describe("applySelectorSyncSuggestions", () => {
     const parentId = await parentRow(t);
     const id = await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
-        level: "setName",
+        // NEO-239 — `insert`, not `setName`. A row can only disagree with a
+        // marketplace that MODELS its level, and SportLots has no setName
+        // level: an SL slot on a setName row is a set id whose label is the
+        // set's name, which must never be offered as that row's name. `insert`
+        // is where SL's flat set list actually lands, so it is the level at
+        // which a two-sided disagreement is real.
+        level: "insert",
         value: "TCG",
         platformData: { bsc: { b0: "topps-slug" }, sportlots: { s0: "sl-slug" } },
         platformLabels: {
@@ -379,7 +385,7 @@ describe("applySelectorSyncSuggestions", () => {
     const res = await asAdmin.mutation(
       api.selectorOptions.applySelectorSyncSuggestions,
       {
-        level: "setName",
+        level: "insert",
         parentId,
         decisions: [
           { existingId: id, baseVersion: SENTINEL, side: "bsc", action: "accept" },
@@ -803,5 +809,193 @@ describe("NEO-239 — every variantType renames, on every write path", () => {
     expect((await t.run(async (ctx) => ctx.db.get(synced)))?.value).toBe(
       "Base Set",
     );
+  });
+});
+
+// ===========================================================================
+// NEO-239 — a label may only name the row whose OWN LEVEL it came from
+// ===========================================================================
+
+/**
+ * Jason, on the preview: the suggestions modal offered to rename 2024 Topps
+ * Chrome's **Base** variant type to "Chrome".
+ *
+ * Nothing was corrupt. SportLots has no variant-type level, so the SL id on a
+ * Base row is the SL SET that holds the base cards, and its label is therefore
+ * the set's name — which our brand-prefix strip had tidied from "Topps Chrome"
+ * to "Chrome". A correct set label, offered as a variant-type name.
+ *
+ * The guard is `slotLabelCanNameRow`, and it is applied on BOTH doors: the
+ * query that offers and the mutation that applies.
+ */
+describe("a set label is never offered as a variant-type name", () => {
+  const vt = async (
+    t: ReturnType<typeof convexTest>,
+    parentId: Id<"selectorOptions">,
+    over: Record<string, unknown>,
+  ) =>
+    t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        metadata: { isBase: true },
+        platformData: {},
+        parentId,
+        children: [],
+        lastUpdated: SENTINEL,
+        ...over,
+      }),
+    );
+
+  const suggestionsFor = (
+    t: ReturnType<typeof convexTest>,
+    level: "variantType" | "manufacturer" | "setName",
+    parentId: Id<"selectorOptions">,
+  ) =>
+    t
+      .withIdentity(ADMIN_IDENTITY)
+      .query(api.selectorOptions.getSelectorSyncSuggestions, {
+        level,
+        parentId,
+      });
+
+  test("THE BUG: a variantType row's SportLots set label suggests nothing", async () => {
+    const t = convexTest(schema, modules);
+    const parentId = await parentRow(t);
+    await vt(t, parentId, {
+      platformData: { sportlots: { s0: "884412" } },
+      platformLabels: { sportlots: { s0: "Chrome" } },
+      primaryPlatformId: { sportlots: "s0" },
+    });
+
+    expect(await suggestionsFor(t, "variantType", parentId)).toEqual([]);
+  });
+
+  test("a variantType row's `variant`-tagged BSC label DOES suggest", async () => {
+    // The case the feature exists for, and proof the guard is not a blanket
+    // mute: this slot really is the row's own level on BSC.
+    const t = convexTest(schema, modules);
+    const parentId = await parentRow(t);
+    await vt(t, parentId, {
+      platformData: { bsc: { b0: "base" } },
+      platformFacets: { bsc: { b0: "variant" } },
+      platformLabels: { bsc: { b0: "Base Set" } },
+      primaryPlatformId: { bsc: "b0" },
+    });
+
+    const out = await suggestionsFor(t, "variantType", parentId);
+    expect(out).toHaveLength(1);
+    expect(out[0].suggestions).toEqual([
+      { side: "bsc", label: "Base Set", foldEqual: false },
+    ]);
+  });
+
+  test("a `setName`-tagged BSC slot on a variantType row suggests nothing", async () => {
+    // NEO-189's legitimate "this Base draws from two BSC setName sets"
+    // mapping. A real id, correctly attached — and still a SET's name, not
+    // this row's.
+    const t = convexTest(schema, modules);
+    const parentId = await parentRow(t);
+    await vt(t, parentId, {
+      platformData: { bsc: { b0: "2024-topps-chrome" } },
+      platformFacets: { bsc: { b0: "setName" } },
+      platformLabels: { bsc: { b0: "Topps Chrome" } },
+      primaryPlatformId: { bsc: "b0" },
+    });
+
+    expect(await suggestionsFor(t, "variantType", parentId)).toEqual([]);
+  });
+
+  test("an UNTAGGED BSC slot on a variantType row suggests nothing either", async () => {
+    // `legacyBscFacetForLevel` answers `undefined` at variantType — the slug
+    // is not self-describing and one class of them is known to be corrupt.
+    const t = convexTest(schema, modules);
+    const parentId = await parentRow(t);
+    await vt(t, parentId, {
+      platformData: { bsc: { b0: "base" } },
+      platformLabels: { bsc: { b0: "Base Set" } },
+      primaryPlatformId: { bsc: "b0" },
+    });
+
+    expect(await suggestionsFor(t, "variantType", parentId)).toEqual([]);
+  });
+
+  test("a manufacturer row's BSC label suggests nothing — BSC has no such level", async () => {
+    const t = convexTest(schema, modules);
+    const parentId = await parentRow(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Topps",
+        platformData: { bsc: { b0: "topps" } },
+        platformLabels: { bsc: { b0: "Topps Company" } },
+        primaryPlatformId: { bsc: "b0" },
+        parentId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    expect(await suggestionsFor(t, "manufacturer", parentId)).toEqual([]);
+  });
+
+  test("a setName row: the SportLots label suggests nothing, the BSC one does", async () => {
+    const t = convexTest(schema, modules);
+    const parentId = await parentRow(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "TCG",
+        platformData: {
+          bsc: { b0: "topps-slug" },
+          sportlots: { s0: "884412" },
+        },
+        platformLabels: {
+          bsc: { b0: "Topps" },
+          sportlots: { s0: "Topps Chewing Gum" },
+        },
+        primaryPlatformId: { bsc: "b0", sportlots: "s0" },
+        parentId,
+        children: [],
+        lastUpdated: SENTINEL,
+      }),
+    );
+
+    const out = await suggestionsFor(t, "setName", parentId);
+    expect(out).toHaveLength(1);
+    // SportLots does not model setName; only BSC's label is this row's name.
+    expect(out[0].suggestions).toEqual([
+      { side: "bsc", label: "Topps", foldEqual: false },
+    ]);
+  });
+
+  test("the APPLY door refuses the same label, not just the query", async () => {
+    // A stale bundle (or a hand-made call) can still send a decision the query
+    // has stopped offering. The label is re-derived server-side and refused.
+    const t = convexTest(schema, modules);
+    const parentId = await parentRow(t);
+    const id = await vt(t, parentId, {
+      platformData: { sportlots: { s0: "884412" } },
+      platformLabels: { sportlots: { s0: "Chrome" } },
+      primaryPlatformId: { sportlots: "s0" },
+    });
+
+    const res = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.applySelectorSyncSuggestions, {
+        level: "variantType",
+        parentId,
+        decisions: [
+          {
+            existingId: id,
+            baseVersion: SENTINEL,
+            side: "sportlots",
+            action: "accept",
+          },
+        ],
+      });
+
+    expect(res).toMatchObject({ applied: 0, skipped: 1 });
+    expect((await t.run(async (ctx) => ctx.db.get(id)))?.value).toBe("Base");
   });
 });

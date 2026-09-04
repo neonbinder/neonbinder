@@ -56,6 +56,7 @@ import type {
 } from "./platformSlots";
 import { slotEntries, slotFacet } from "./platformSlots";
 import { platformServesLevel } from "./platformLevels";
+import { LEVEL_TO_BSC_FACET, legacyBscFacetForLevel } from "./bscFacets";
 
 /** The minimum a chain node must expose to be judged. */
 export type ResolvableRow = {
@@ -370,4 +371,55 @@ export function skippedSideList(
   if (!resolution.bsc.resolvable) out.push("bsc");
   if (!resolution.sportlots.resolvable) out.push("sportlots");
   return out;
+}
+
+
+/**
+ * NEO-239 — may this slot's LABEL be offered as a name for the row it sits on?
+ *
+ * ## The bug
+ *
+ * NEO-211's suggestions modal offered to rename 2024 Topps Chrome's **Base**
+ * variant type to "Chrome". Nothing was corrupt: SportLots has no variant-type
+ * level, so the SL id on a Base row is the SL SET that holds the base cards,
+ * and its label is therefore the set's name — which the brand-prefix strip had
+ * tidied from "Topps Chrome" to "Chrome". A perfectly correct set label,
+ * offered as a variant-type name.
+ *
+ * ## The rule
+ *
+ * A label names a row only if the slot it came from is the row's OWN LEVEL on
+ * that marketplace. Two independent conditions, and the first is what catches
+ * the case above:
+ *
+ *   1. the marketplace must model this level at all — SportLots does not model
+ *      `variantType`, `setName` or `parallel`, so an SL slot on any of those
+ *      rows is a set id wearing the row's clothes and can never name it;
+ *   2. for BSC, whose slots are facet-tagged, the slot's facet must be the
+ *      facet this level IS. A `setName`-tagged slot on a Base row is NEO-189's
+ *      legitimate "this Base draws from two BSC sets" mapping — a real id, and
+ *      still not a name for the row. An UNTAGGED slot resolves through
+ *      `legacyBscFacetForLevel`, which answers `undefined` at variantType and
+ *      parallel — so the untrustworthy slugs stay silent here too.
+ *
+ * SportLots has one unit of attachment and no facets, so condition 1 is the
+ * whole test for it.
+ *
+ * Shared by every door that can write a name from a label
+ * (`getSelectorSyncSuggestions` offers, `applySelectorSyncSuggestions`
+ * applies), because a guard on one of two doors is not a guard.
+ */
+export function slotLabelCanNameRow(
+  row: Pick<ResolvableRow, "level" | "platformData" | "platformFacets">,
+  side: PlatformSide,
+  slot: string,
+): boolean {
+  if (!platformServesLevel(side, row.level)) return false;
+  if (side === "sportlots") return true;
+
+  const levelFacet = LEVEL_TO_BSC_FACET[row.level];
+  if (!levelFacet) return false;
+  const effective =
+    slotFacet(row, "bsc", slot) ?? legacyBscFacetForLevel(row.level);
+  return effective === levelFacet;
 }
