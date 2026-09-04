@@ -226,6 +226,15 @@ tags:
 
 # Press Enter to confirm the highlighted first match.
 - pressKey: Enter
+
+# NEO-216: the picker writes `teamOnCardIds` on the pick itself — no Save
+# button, no draft — and the drawer confirms it in its one status region. This
+# is where the write happens, so this is where it is confirmed. (TEST 6 is the
+# AUTHORITATIVE proof it persisted; the toast only says the mutation went out.)
+- extendedWaitUntil:
+    visible: ".*Saved Teams.*"
+    timeout: 7000
+
 - tapOn:
     id: "Card name"
 
@@ -248,7 +257,7 @@ tags:
     id: "Done editing card"
 - assertNotVisible: "Card name"
 
-# Re-open — the Mets chip is still there, unsaved by anything.
+# Re-open — the chip is still there, unsaved by anything.
 - tapOn:
     id: "Edit card 889-${ATTEMPT_ID}"
     waitToSettleTimeoutMs: 2000
@@ -258,32 +267,23 @@ tags:
     timeout: 15000
 
 - assertVisible:
-    id: "Remove team New York Mets"
+    id: "Remove team TPT-${ATTEMPT_ID}"
 
 # ============================================================
 # TEST 7 — the write reaches the ROW and survives a reload
+#
+# NOTHING IS ADDED HERE, deliberately. Since NEO-214 this flow owns ONE team,
+# and TEST 5 already re-attached it — so re-adding would be reaching for a
+# control the picker does not render: `matches` drops every id already in
+# `value` (TeamPicker.tsx), and an exact case-insensitive name match also
+# suppresses the "+ Create" row, so typing "TPT-<attempt>" with the chip
+# attached shows "No matches." That is correct product behaviour, not a bug —
+# the flow simply has nothing left to add. What is still unproven at this point
+# is that the write reached the ROW behind the drawer and survives a reload,
+# and that is all this step does.
 # ============================================================
 
-# Add the team again. The confirmation toast is the product saying the write
-# went out; the row and the reload below say it landed.
-- tapOn:
-    id: "Add team"
-- assertVisible:
-    id: "Search teams"
-- tapOn:
-    id: "Search teams"
-- inputText: "TPT-${ATTEMPT_ID}"
-- assertVisible:
-    id: "Add TPT-${ATTEMPT_ID}"
-- tapOn:
-    id: "Add TPT-${ATTEMPT_ID}"
-- extendedWaitUntil:
-    visible: ".*Saved Teams.*"
-    timeout: 7000
-
-# Close the popover, then the drawer, and read the row underneath.
-- tapOn:
-    id: "Card name"
+# Close the drawer and read the row underneath.
 - tapOn:
     id: "Done editing card"
 - assertVisible: "Team Feature Player ${ATTEMPT_ID}"
