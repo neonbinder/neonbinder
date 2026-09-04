@@ -1,0 +1,242 @@
+appId: com.neonbinder.web
+name: "Util — drill to a Sport → Year → Manufacturer that has never been synced, paying the cold marketplace waits"
+tags:
+  - util
+---
+# THE COLD TWIN OF util-drill-to-2024-topps-chrome.
+#
+# That util drills the hierarchy setup.yaml has ALREADY synced, so every one of
+# its waits is short on purpose — a slow column there is a bug and should fail
+# fast rather than sit for a minute. This util is for the opposite case: a
+# hierarchy no flow has ever opened, where each column arrives EMPTY, fires
+# `ensureSelectorOptions` on its own, and only renders once a live BSC +
+# SportLots round-trip comes back. Those long waits are the R5 marketplace
+# exception, and they are the only reason this file exists separately: folding
+# them into the warm util would hide a genuinely stuck warm column for 90
+# seconds on every flow in the suite.
+#
+# INPUTS (all optional, defaulting to the registry set's ancestors — see
+# .maestro/SET-REGISTRY.md):
+#   SPORT        = "Hockey"
+#   YEAR         = "2024"
+#   MANUFACTURER = "Topps"
+#
+# RETURN CONTRACT:
+#   The Manufacturer is selected and the SETS column has finished its own cold
+#   sync. This util deliberately stops SHORT of picking a set: the caller owns
+#   that, because a flow that RENAMES its set is the only thing that knows which
+#   of the two possible names the row is currently carrying.
+#
+# ── THREE THINGS THIS FILE GETS RIGHT THAT ARE EASY TO GET WRONG ─────────────
+#
+# 1. A COLUMN'S IDLE BUTTON IS NOT PROOF IT HAS DATA.
+#    An empty column renders "Sync <X>" and "+ Custom" IMMEDIATELY, and only
+#    switches to the "Syncing <X>" panel once `ensureSelectorOptions` has
+#    round-tripped and flipped `selectorSyncStatus`. So a gate that waits for
+#    "Sync <X>" alone passes in the first 300ms of a 60-second fetch. Measured:
+#    a probe against dev on 2026-09-03 dumped the Sets column with nothing in it
+#    at exactly that moment. Every level therefore waits out the "Syncing <X>"
+#    panel FIRST, and only then gates on real content.
+#
+# 2. THE SEARCH INPUT APPEARS ONLY ABOVE 8 ENTRIES.
+#    `EntitySelector`'s `showSearch = sortedItems.length > 8` — not "more than
+#    one", which is what the older comments in this directory say. A vintage
+#    year with three manufacturers has no input at all, so every level here
+#    branches on the input's presence rather than assuming it.
+#
+# 3. THE TWO BRANCHES ARE GATED ON THE NEXT COLUMN'S HEADER, NEVER ON THE
+#    SEARCH INPUT. Selecting a row COLLAPSES the column and removes the input,
+#    so gating both on the input runs BOTH branches and the second re-toggles
+#    the selection. util-drill-to-2024-topps-chrome carries the full write-up of
+#    that failure; read it before touching this.
+#
+#    The `notVisible:` guard does cost one full poll on the path where the first
+#    branch already ran (R10's documented exception, ~7s per level). That is the
+#    price of not knowing a marketplace's entry count in advance, and it is the
+#    same price the warm util already pays at its Set level.
+#
+# CALLER CAVEAT: the content gate below is `".*Search <x>.*|<VALUE>"`, so the
+# VALUE you pass must not be a full-string match for an ancestor's collapsed
+# chip, or the gate is satisfied before the column has loaded. Hockey / 2024 /
+# Topps is safe (no level's value equals another's).
+
+# ── NAVIGATE ─────────────────────────────────────────────────────────────────
+- openLink: ${APP_URL || "http://localhost:3000"}/set-selector
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 20000
+
+# ── SPORT ─────────────────────────────────────────────────────────────────────
+# Sports are seeded by the setup track, so this level is WARM even here — the
+# cold part of this drill starts one level down. Every marketplace sport plus
+# the suite's synthetic ones is far more than 8 entries, so the input is always
+# rendered.
+- extendedWaitUntil:
+    visible: ".*Search sports.*"
+    timeout: 60000
+- scrollUntilVisible:
+    element:
+      text: ".*Search sports.*"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    text: ".*Search sports.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${SPORT || "Hockey"}
+# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the row tap
+# ONCE iff the next column doesn't appear.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ${SPORT || "Hockey"}
+          below:
+            id: "Search sports"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Years"
+          timeout: 20000
+
+# ── YEAR (COLD) ───────────────────────────────────────────────────────────────
+# First live fetch of this drill: the Years column for a sport nobody has opened
+# is empty, so it calls ensureSelectorOptions and waits on BSC + SportLots.
+# 150s is the R5 marketplace exception; it also absorbs the Convex action cold
+# start, which setup.yaml's own first fetch budgets 90s for.
+- runFlow:
+    when:
+      visible: "Syncing Year Options"
+    commands:
+      - extendedWaitUntil:
+          notVisible: "Syncing Year Options"
+          timeout: 150000
+- extendedWaitUntil:
+    visible: ".*Search years.*|${YEAR || '2024'}"
+    timeout: 60000
+
+- runFlow:
+    when:
+      visible: ".*Search years.*"
+    commands:
+      # centerElement is load-bearing, not cosmetic (NEO-210): the tap below is
+      # a `below:` RELATIVE selector, and Maestro throws
+      # "null cannot be cast to non-null type kotlin.Int" when the candidate row
+      # is clipped by the viewport. Centering the INPUT puts the row under it
+      # mid-screen instead of under the fold.
+      - scrollUntilVisible:
+          element:
+            text: ".*Search years.*"
+          centerElement: true
+          timeout: 10000
+      - tapOn:
+          text: ".*Search years.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${YEAR || "2024"}
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${YEAR || "2024"}
+                below:
+                  id: "Search years"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Manufacturers"
+                timeout: 20000
+
+- runFlow:
+    when:
+      notVisible: "Manufacturers"
+    commands:
+      # 8-or-fewer entries: no search input to anchor on, so anchor on the
+      # column HEADER, which is always rendered. Never a bare `text: ${YEAR}` —
+      # a year string also appears in a breadcrumb and in an ancestor chip.
+      - scrollUntilVisible:
+          element:
+            text: ${YEAR || "2024"}
+            below:
+              text: "Years"
+          centerElement: true
+          timeout: 15000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${YEAR || "2024"}
+                below:
+                  text: "Years"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Manufacturers"
+                timeout: 20000
+
+# ── MANUFACTURER (COLD) ───────────────────────────────────────────────────────
+- runFlow:
+    when:
+      visible: "Syncing Manufacturer Options"
+    commands:
+      - extendedWaitUntil:
+          notVisible: "Syncing Manufacturer Options"
+          timeout: 150000
+- extendedWaitUntil:
+    visible: ".*Search manufacturers.*|${MANUFACTURER || 'Topps'}"
+    timeout: 60000
+
+- runFlow:
+    when:
+      visible: ".*Search manufacturers.*"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*Search manufacturers.*"
+          centerElement: true
+          timeout: 10000
+      - tapOn:
+          text: ".*Search manufacturers.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${MANUFACTURER || "Topps"}
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${MANUFACTURER || "Topps"}
+                below:
+                  id: "Search manufacturers"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Sets"
+                timeout: 20000
+
+- runFlow:
+    when:
+      notVisible: "Sets"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ${MANUFACTURER || "Topps"}
+            below:
+              text: "Manufacturers"
+          centerElement: true
+          timeout: 15000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${MANUFACTURER || "Topps"}
+                below:
+                  text: "Manufacturers"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Sets"
+                timeout: 20000
+
+# ── RETURN CONTRACT — THE SETS COLUMN HAS FINISHED ITS COLD SYNC ─────────────
+# The set list for this manufacturer's year comes from syncSetsAcrossManufacturers
+# (BSC-only, every manufacturer under the year in one call), so this is the last
+# cold wait of the drill. The caller picks the set itself; see the header.
+- runFlow:
+    when:
+      visible: "Syncing Sets"
+    commands:
+      - extendedWaitUntil:
+          notVisible: "Syncing Sets"
+          timeout: 150000

@@ -24,6 +24,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ReconciliationModal, {
   type PlatformItem,
 } from "./ReconciliationModal";
+import type { Id } from "../../convex/_generated/dataModel";
 
 const BSC_S1: PlatformItem = {
   value: "Dugout Collection Artist's Proofs Series 1",
@@ -394,5 +395,87 @@ describe("ReconciliationModal — restoring saved rows", () => {
     expect(
       screen.getByLabelText(`NeonBinder set name for ${BSC_S1.value}`),
     ).toHaveProperty("value", BSC_S1.value);
+  });
+});
+
+/**
+ * NEO-211 (plan E) — the modal carries the NB row's `_id`.
+ *
+ * Before this the modal had no notion of `_id` at all: `title` WAS the identity
+ * on save, so editing a title in here was a delete of the old row plus an insert
+ * of a new one. That took the row's children, its checklist, and every
+ * cross-listing pointed at it — the "rename then re-sync loses the subtree"
+ * failure the whole ticket exists to remove.
+ */
+describe("ReconciliationModal — carrying the NB row id (NEO-211)", () => {
+  const ROW_ID = "selopt_abc" as Id<"selectorOptions">;
+
+  function renderWithExistingRow(existingId?: Id<"selectorOptions">) {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        level="insert"
+        initialData={{
+          autoMatched: [],
+          unmatchedBsc: [],
+          unmatchedSl: [],
+          slCandidates: [],
+        }}
+        existingRows={[
+          {
+            existingId,
+            value: "Dugout Collection Artists Proofs",
+            platformData: { bsc: ["dcap-series-1"], sportlots: ["884412"] },
+          },
+        ]}
+      />,
+    );
+    return { onConfirm };
+  }
+
+  test("a saved row's id comes back out on save", async () => {
+    const { onConfirm } = renderWithExistingRow(ROW_ID);
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect((items[0] as { existingId?: unknown }).existingId).toBe(ROW_ID);
+  });
+
+  test("a RENAME inside the modal KEEPS the id — that is the whole point", async () => {
+    // Without the id, this exact gesture was delete-and-insert on save.
+    const { onConfirm } = renderWithExistingRow(ROW_ID);
+
+    const title = screen.getByLabelText(
+      "NeonBinder set name for Dugout Collection Artists Proofs",
+    );
+    fireEvent.change(title, { target: { value: "Dugout Collection APs" } });
+    fireEvent.blur(title);
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items[0].value).toBe("Dugout Collection APs");
+    expect((items[0] as { existingId?: unknown }).existingId).toBe(ROW_ID);
+  });
+
+  test("a set built in the dialog carries no id, so the store matches it normally", async () => {
+    const { onConfirm } = renderModal(allPending());
+    fireEvent.click(screen.getByText(BSC_S1.value));
+    fireEvent.click(screen.getByText(SL_COMBINED.value));
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect((items[0] as { existingId?: unknown }).existingId).toBeUndefined();
+  });
+
+  test("a caller that omits existingId still works — the prop is additive", async () => {
+    const { onConfirm } = renderWithExistingRow(undefined);
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect((items[0] as { existingId?: unknown }).existingId).toBeUndefined();
+    expect(items[0].platformData.bsc).toEqual(["dcap-series-1"]);
   });
 });

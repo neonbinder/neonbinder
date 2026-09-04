@@ -66,7 +66,53 @@ import { Input } from "../primitives/Input";
  * Interaction mirrors MultiSourcePanel's Chip, the existing inline-rename
  * precedent: Enter commits, Escape reverts, blur commits, errors surface in a
  * role="alert" rather than being swallowed.
+ *
+ * ── NOT EVERY ROW IS RENAMEABLE (NEO-211, plan F) ───────────────────────────
+ * A non-custom `variantType` row's VALUE is load-bearing code, not a label:
+ * `SetSelector` detects the Base variant by the literal string "Base" (terminal
+ * detection, column hiding, the Base mapping panel), `getBaseVariantBySet` and
+ * `wipeLegacyBaseChildren` do the same, and the BSC checklist fetch derives its
+ * `variant` facet straight from this display value — so "Insert", "Parallel" and
+ * "Promo" are every bit as load-bearing as "Base". Renaming one silently breaks
+ * the fetch rather than failing loudly.
+ *
+ * `canRenameSelectorRow` is the render-time gate for that, and the server
+ * refuses the same rows independently (`VARIANT_TYPE_RENAME_REFUSED`). Both,
+ * deliberately: the gate is the affordance, the refusal is the guarantee — a
+ * stale bundle, a second tab, or a row that turns out not to be custom after all
+ * still cannot get the write through.
  */
+
+/**
+ * The server's refusal payload for a rename this control should not have
+ * offered. Matched structurally rather than with `instanceof ConvexError` so a
+ * mocked/rethrown error in a test, or a version skew in the convex client,
+ * still surfaces the server's own words.
+ */
+function refusalMessage(e: unknown): string | null {
+  if (typeof e !== "object" || e === null) return null;
+  const data = (e as { data?: unknown }).data;
+  if (typeof data !== "object" || data === null) return null;
+  const { code, message } = data as { code?: unknown; message?: unknown };
+  if (code !== "VARIANT_TYPE_RENAME_REFUSED") return null;
+  return typeof message === "string" && message.length > 0
+    ? message
+    : "This name can't be changed.";
+}
+
+/**
+ * May this row's display value be edited at all?
+ *
+ * Exported so the panel that renders the control and this control's own tests
+ * agree on one rule. A CUSTOM variantType is renameable: it was never one of the
+ * four magic strings, so nothing keys off it.
+ */
+export function canRenameSelectorRow(row: {
+  level?: string;
+  isCustom?: boolean;
+}): boolean {
+  return !(row.level === "variantType" && !row.isCustom);
+}
 export default function RenameEntityControl({
   id,
   currentValue,
@@ -83,9 +129,25 @@ export default function RenameEntityControl({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  // Guards the focus-restore effect below so it only fires on a genuine
+  // editing->not-editing transition, never on this component's own initial
+  // mount (where `editing` is already false and there is nothing to restore
+  // focus FROM).
+  const wasEditingRef = useRef(false);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  // The input unmounts the instant `editing` goes false (commit succeeding,
+  // or Escape reverting) and the pencil button takes its place — with nothing
+  // to move focus onto it, the browser drops focus to <body>. Same shape as
+  // every other busy/unmount focus-park case in this codebase; here the
+  // return target is simply the control that opened the editor.
+  useEffect(() => {
+    if (wasEditingRef.current && !editing) buttonRef.current?.focus();
+    wasEditingRef.current = editing;
   }, [editing]);
 
   const commit = async () => {
@@ -104,8 +166,10 @@ export default function RenameEntityControl({
       setEditing(false);
     } catch (e) {
       // Surface it: a sibling-name collision is the expected failure here and
-      // the user needs to see why their rename didn't take.
-      setError(e instanceof Error ? e.message : "Rename failed");
+      // the user needs to see why their rename didn't take. A variantType
+      // refusal (NEO-211) arrives as a structured ConvexError whose own message
+      // explains WHY the value is load-bearing — render that, not a generic.
+      setError(refusalMessage(e) ?? (e instanceof Error ? e.message : "Rename failed"));
     } finally {
       setSaving(false);
     }
@@ -120,12 +184,16 @@ export default function RenameEntityControl({
   if (!editing) {
     return (
       <button
+        ref={buttonRef}
         type="button"
         disabled={disabled}
         onClick={() => setEditing(true)}
         aria-label={`Rename ${currentValue}`}
         title={`Rename ${currentValue}`}
-        className="shrink-0 text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none disabled:opacity-50"
+        // p-1: a bare 16x16 icon with no padding is a ~16x16 hit target,
+        // under WCAG 2.5.8's 24x24 CSS pixel minimum. p-1 (4px/side) brings
+        // it to 24x24.
+        className="shrink-0 p-1 text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none disabled:opacity-50"
       >
         <PencilSquareIcon className="w-4 h-4" />
       </button>
@@ -138,9 +206,16 @@ export default function RenameEntityControl({
         bare
         ref={inputRef}
         placeholder={currentValue}
-        disabled={saving}
+        // readOnly + aria-disabled, not disabled: this field's own onKeyDown
+        // triggers commit() directly (Enter), which sets `saving` true
+        // synchronously — a native `disabled` on the still-focused input
+        // would force-blur it to <body> for the duration of the rename
+        // round-trip. readOnly blocks edits without removing focusability;
+        // aria-disabled still announces the busy state.
+        readOnly={saving}
+        aria-disabled={saving || undefined}
         aria-label={`Edit name for ${currentValue}`}
-        className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm`}
+        className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
         onKeyDown={(e) => {
           // Stop the row's own handlers from seeing these — the row is a
           // sibling button and Enter would otherwise also select it.

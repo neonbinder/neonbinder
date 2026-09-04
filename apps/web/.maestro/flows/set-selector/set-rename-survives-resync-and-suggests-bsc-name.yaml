@@ -1,0 +1,346 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "A renamed set survives a forced Sync Sets with its subtree, and BSC's own name comes back as a suggestion the operator can accept"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-211, acceptance 1 + 4): a forced re-sync of a
+# marketplace-backed column NEVER deletes or renames a NeonBinder row. Rename a
+# synced set, force "Sync Sets", and the row is still there — same row, same
+# name, same children. The marketplace's own name for it does not overwrite
+# ours; it arrives as a SUGGESTION that changes nothing until a human accepts
+# it.
+#
+# WHY THIS IS NEW BEHAVIOUR, NOT A REGRESSION TEST.
+#   Before this branch, `storeSelectorOptions` matched incoming marketplace rows
+#   to existing ones by their DISPLAY VALUE and then DELETED every non-custom
+#   row the fetch had not named. Renaming a set was therefore self-destructive:
+#   the next forced sync no longer recognised our name as the row BSC calls
+#   something else, deleted it, and inserted a fresh empty one — taking the
+#   whole subtree (variant types, inserts, parallels and every card checklist
+#   hanging off them) with it, because nothing re-parents. That is the bug this
+#   flow's assertions are shaped around: the row, ITS NAME, and ITS CHILDREN.
+#
+# WHY A REAL SET AND NOT A PER-WORKER CUSTOM ONE (the R7a exemption).
+#   A custom Set node makes the whole subtree custom (`isCustomSubtree`,
+#   NEO-22), which short-circuits BSC and SportLots before any fetch. A custom
+#   set therefore has no marketplace id to match on, no marketplace label to
+#   disagree with our name, and no forced sync worth forcing — it cannot express
+#   this feature at all. The suggestion only exists because a real marketplace
+#   holds its own opinion about what this row is called.
+#
+# ⚠️ THE SET — Hockey → 2024 → Topps → "Topps NHL Sticker Collection".
+#   The NEO-211 plan of record (decision 5, 2026-09-03) approved
+#   "Hockey → 1972-73 → Topps → Topps". THAT SET DOES NOT EXIST in NeonBinder's
+#   synced taxonomy, verified live against dev on 2026-09-03:
+#     * the Years column for Hockey holds PLAIN four-digit years — filtering
+#       "1972" returns exactly one row, `1972`, and there is no `1972-73`;
+#     * Hockey → 1972 → Topps returns ZERO sets (the Sets column settles empty,
+#       with only "Sync Sets" and "+ Custom");
+#     * Hockey → 2024 → Topps returns three — "Topps NHL Sticker Collection",
+#       "Topps Now NHL Stickers", "Topps Now The Gr8 Chase" — and the first of
+#       them carries a BSC link and the variant types `Base` and `Parallel`.
+#   So the SHAPE the plan asked for is available on the same sport and
+#   manufacturer, one year apart. Adding a real set needs owner approval EVERY
+#   time (SET-REGISTRY.md rule 1), and this is a different set from the one
+#   approved — so this substitution is flagged for sign-off, not assumed.
+#
+# WHY ACCEPTING AT THE END IS PART OF THE TEST, NOT CLEANUP.
+#   Accept is the one decision that WRITES a rename, so it is the half of the
+#   review dialog worth paying a live round-trip for (Decline is covered end to
+#   end at insert level by
+#   inserts-1996-score-one-nb-set-two-bsc-sources.yaml). It also restores the
+#   row to BSC's name, which makes this flow idempotent: every run starts and
+#   ends at "Topps NHL Sticker Collection".
+#
+# R5 — every wait is the 7s default EXCEPT the ones driving a live BSC round
+#   trip: the cold drill (owned by util-drill-to-cold-real-set), the cold
+#   variant-type sync, and the forced "Sync Sets". Those are the sanctioned
+#   marketplace exception. Nothing else is padded.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — DRILL TO Hockey / 2024 / Topps
+#
+# R9: the drill lives in a util. On a fresh deployment this hierarchy has never
+# been synced (setup.yaml provisions Baseball only), so it uses the COLD util,
+# which owns the marketplace-length waits and the "wait out the Syncing panel"
+# rule for every level it walks.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Hockey"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+
+# ============================================================
+# STEP 2 — SELECT THE SET
+#
+# The util stops one level short on purpose: this flow is the only thing that
+# knows the row may be carrying either of TWO names.
+#
+#   "Topps NHL Sticker Collection" — BSC's name, and what every clean run starts
+#                                    and ends with.
+#   "TCG"                          — what a run that died between STEP 3's
+#                                    rename and STEP 6's accept left behind. One
+#                                    regex covers both, so a local re-run repairs
+#                                    itself instead of failing at the drill.
+#                                    (CI never sees this: setup.yaml resets the
+#                                    set-builder tables at the head of every run,
+#                                    so the set is always re-synced from BSC.)
+#
+# `text:` is a FULL-match regex in Maestro, so the alternation matches those two
+# names exactly and never the sibling "Topps Now …" sets or the manufacturer's
+# collapsed "Topps" chip.
+#
+# BOTH COLUMN SHAPES ARE HANDLED. `EntitySelector` renders its search input only
+# above 8 entries; this column has three today, so the second branch is the live
+# one — but BSC can add products to a year, and a flow that breaks the first time
+# a ninth set ships is not worth the seven seconds saved.
+# ============================================================
+
+- runFlow:
+    when:
+      visible: ".*Search sets.*"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*Search sets.*"
+          centerElement: true
+          timeout: 10000
+      - tapOn:
+          text: ".*Search sets.*"
+          waitToSettleTimeoutMs: 250
+      # A fragment both candidate names contain, so the filter cannot hide the
+      # row whichever name a previous run left on it.
+      - inputText: "C"
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: "Topps NHL Sticker Collection|TCG"
+                below:
+                  id: "Search sets"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Variant Types"
+                timeout: 20000
+
+# Exclusivity gate is the NEXT column, never the search input: selecting a set
+# collapses the Sets column and removes the input, so gating on the input would
+# run BOTH branches and the second would re-toggle the selection. See
+# util-drill-to-2024-topps-chrome's long comment on exactly this.
+#
+# The 60s scroll ceiling is the marketplace exception, absorbing any residual
+# cold set sync the util's own guard did not already wait out.
+- runFlow:
+    when:
+      notVisible: "Variant Types"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: "Topps NHL Sticker Collection|TCG"
+            below:
+              text: "Sets"
+          centerElement: true
+          timeout: 60000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: "Topps NHL Sticker Collection|TCG"
+                below:
+                  text: "Sets"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Variant Types"
+                timeout: 20000
+
+# ── THE BASELINE SUBTREE ─────────────────────────────────────────────────────
+# Selecting the set fires its variant-type sync (BSC-only). These rows ARE the
+# subtree the old delete-and-reinsert destroyed, so establishing that they exist
+# BEFORE the rename is what makes the identical assertion after the re-sync mean
+# something. This set's variant types are `Base` and `Parallel` (verified on dev
+# 2026-09-03). 60s is the sanctioned cold-fetch ceiling, matching
+# util-drill-to-2024-topps-chrome's own variant-type contract.
+- extendedWaitUntil:
+    visible: "Base"
+    timeout: 60000
+
+# ============================================================
+# STEP 3 — RENAME THE SET TO "TCG"
+#
+# The plan of record's chosen name (Topps Chewing Gum). It shares no words with
+# BSC's, so the suggestion it provokes is a rewrite and not a reformatting — a
+# fold-equal difference arrives pre-Accepted, which would make STEP 6's footer
+# count meaningless.
+#
+# The pencil lives in SetAttributesPanel's header, scoped to the deepest current
+# selection — this set. See rename-selector-option.yaml for the control's
+# mechanics; the input opens EMPTY with the current name as a placeholder, so
+# there is nothing to erase.
+#
+# SKIPPED when the row already reads TCG (a previous aborted run). The guard is
+# cheap on the normal path — "TCG" is absent, so `notVisible` resolves at once —
+# and it cannot green the flow on its own: the hard assert immediately after it
+# fails unless the row really is named TCG, whichever path got it there.
+# ============================================================
+
+- runFlow:
+    when:
+      notVisible: "TCG"
+    commands:
+      - scrollUntilVisible:
+          element:
+            id: "Rename Topps NHL Sticker Collection"
+          centerElement: true
+          timeout: 15000
+      - tapOn:
+          id: "Rename Topps NHL Sticker Collection"
+      - extendedWaitUntil:
+          visible:
+            id: "Edit name for Topps NHL Sticker Collection"
+          timeout: 7000
+      - tapOn:
+          id: "Edit name for Topps NHL Sticker Collection"
+          waitToSettleTimeoutMs: 250
+      - inputText: "TCG"
+      - pressKey: Enter
+
+# HARD PRECONDITION (R2). The panel header renders the CURRENTLY SELECTED row
+# as "Attributes for <name> (Set)", so this proves both halves at once: the name
+# is ours now, and the selection still resolves to this row. Everything below is
+# meaningless without it.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for TCG.*"
+    centerElement: true
+    timeout: 10000
+
+# ============================================================
+# STEP 4 — FORCE A FULL RE-SYNC OF THE SETS COLUMN
+#
+# "Sync Sets" calls ensureSelectorOptions with force:true, which re-fetches
+# every set BSC lists for this year and stores them over the existing rows.
+# This is the exact operation that used to delete a renamed row.
+#
+# The wait is keyed on the SUGGESTION AFFORDANCE rather than on the syncing
+# label disappearing, and that is deliberate: a `notVisible` gate passes
+# instantly if the panel never rendered, proving nothing. The pill can only
+# appear once the store has actually written BSC's label onto our row, so it is
+# a positive terminal signal for the round-trip AND the first half of the
+# feature. 90s is the sanctioned marketplace ceiling.
+#
+# ONE suggestion, not two: `setName` is a BSC-only level — the SportLots adapter
+# returns `success: true, options: []` for it by design — so SportLots never
+# records a label here and can never disagree with our name.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Sync Sets"
+    centerElement: true
+    timeout: 15000
+- tapOn: "Sync Sets"
+
+- extendedWaitUntil:
+    visible: "1 suggestion"
+    timeout: 90000
+
+# ============================================================
+# STEP 5 — THE ROW AND ITS SUBTREE BOTH SURVIVED
+#
+# THE ACCEPTANCE CRITERION. Our name is still on the row, the row is still the
+# one selected, and its children are still hanging off it. A delete-and-reinsert
+# would fail all three: the name would be back to BSC's, the selection would be
+# orphaned, and the Variant Types column would be empty.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for TCG.*"
+    centerElement: true
+    timeout: 10000
+
+- scrollUntilVisible:
+    element:
+      text: "Base"
+    centerElement: true
+    timeout: 10000
+
+# ============================================================
+# STEP 6 — REVIEW BSC'S NAME AND ACCEPT IT
+#
+# Nothing has been written to `value` by the sync. The marketplace's label was
+# recorded and is offered here, and only pressing Apply turns it into a rename.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "1 suggestion"
+    centerElement: true
+    timeout: 10000
+- tapOn:
+    id: "1 naming suggestion from marketplaces — review"
+
+- extendedWaitUntil:
+    visible: "Name Suggestions — Sets"
+    timeout: 7000
+
+# The side badge is the modal's own text and appears nowhere else on the page,
+# so this is the assertion that we are looking at BSC's label for OUR row —
+# rather than at the Sets column behind the dialog.
+- assertVisible: "BSC: Topps NHL Sticker Collection"
+
+# The accessible name leads with the VISIBLE word (WCAG 2.5.3 Label in Name),
+# then the per-row context: `Accept — rename "X" to "Y" (from BSC)`
+# (SelectorSyncReviewModal.tsx:310). The dash is an em dash, U+2014.
+#
+# Maestro matches `id:` as a FULL-STRING REGEX, so the parentheses have to be
+# escaped — unescaped they are a capture group and the pattern would only match
+# a label without them.
+- tapOn:
+    id: 'Accept — rename "TCG" to "Topps NHL Sticker Collection" \(from BSC\)'
+
+# The running total is the only feedback that the press registered, and it is
+# exact on purpose: one accepted side, nothing declined. A second suggestion
+# appearing here would mean the re-sync invented a disagreement on a row nobody
+# renamed.
+- assertVisible: "1 to accept · 0 to decline"
+
+- tapOn:
+    id: "Apply decisions"
+
+# The outcome line is written from the SERVER's own tally, so it is the proof
+# that the rename landed rather than being counted as stale or clashed. One
+# Convex mutation, no marketplace call — plain 7s.
+- extendedWaitUntil:
+    visible: "1 renamed"
+    timeout: 7000
+
+# ============================================================
+# STEP 7 — THE ACCEPTED NAME IS ON THE ROW, AND NOTHING IS LEFT TO REVIEW
+#
+# Positive first: the panel header is the selected row's own name, so BSC's name
+# here proves the accept renamed THIS row. Only then the two negatives — an
+# error-boundary page would satisfy a `notVisible` on its own.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for Topps NHL Sticker Collection.*"
+    centerElement: true
+    timeout: 10000
+
+- assertNotVisible: "TCG"
+- assertNotVisible: "1 suggestion"

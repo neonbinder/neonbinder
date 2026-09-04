@@ -100,3 +100,42 @@ one-directional is a materially different risk than one that drives a
 `setState` cascade. **Any future "arm now, auto-open later on a live
 condition" feature in this codebase should get the same guard** — check for
 one whenever a dialog can mount itself with no antecedent user click.
+
+## A control's own click can hide the `<div>` it lives in, taking itself with it (NEO-211, `VariantForm`/`ParallelForm`/`SelectorSyncReviewModal`)
+
+Two more instances of the same bug class, neither involving `disabled` or
+`aria-disabled` at all — a whole wrapping element unmounts because a state
+flag it's conditionally rendered on flips, and the control that was JUST
+CLICKED is inside that element:
+
+1. **`{!loading && (...)}` around the whole button row.** `VariantForm`'s
+   Retry button calls `doSync()`, which sets `loading=true` SYNCHRONOUSLY
+   before its first `await`. The button row is gated on `!loading`, so on the
+   very next render the entire `<div>` containing Retry (Retry included)
+   unmounts. Fixed with a guarded effect on `[loading]` (transition
+   false→true, and `document.activeElement === document.body` per
+   [[raf-focus-park-race]]'s lesson) parking focus on the panel's own
+   container (`tabIndex={-1}`, `aria-labelledby` pointing at the panel's own
+   heading — no rAF needed here since there's no async gap between the
+   button's own removal and the effect running).
+2. **A notice box unmounts on its OWN dismiss-button click.** `SyncDoneNotice`'s
+   Dismiss button calls `onDismiss`, and every current caller's `onDismiss`
+   (`setUnlinked([])` in the forms; an optimistic key-stamp in `EntityColumn`)
+   makes the notice's own visibility condition go false on the SAME render —
+   so Dismiss removes itself, with no sibling control positioned to inherit
+   focus. Same fix shape: a guarded effect keyed on the notice's own
+   visibility input (`unlinked.length`) transitioning non-empty→empty, only
+   when `document.activeElement === document.body`, parking on the panel.
+3. In `SelectorSyncReviewModal`, the SAME `saving` flag disables Apply, Close,
+   both bulk buttons AND every per-side pill at once — the busy-flag-disables-
+   everything shape this file already tracks, just newly confirmed on a THIRD
+   component. Fixed the established way: park on the dialog's own
+   `tabIndex={-1}` container when `saving` becomes true.
+
+**Lesson repeated for a third time in this codebase**: any `{condition && (
+<JSX containing the button that sets condition>
+)}` — whether the condition is `loading`, an emptied list, or a `disabled`
+flag — is a focus-park candidate. Check what UNMOUNTS (not just what
+disables) on the exact click that flips the state, and don't assume "it's not
+`disabled={...}` so it's fine" — a conditional-render gate strands focus
+exactly the same way a native `disabled` attribute does.

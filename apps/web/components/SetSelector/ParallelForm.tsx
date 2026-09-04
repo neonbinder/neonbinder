@@ -5,6 +5,17 @@ import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { slotIds } from "../../convex/platformSlots";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
+import SyncDoneNotice from "./SyncDoneNotice";
+import {
+  blockedMessageFromErrors,
+  buildUnlinkedNotices,
+  coveredSidesFromErrors,
+  returnedIdsFromFetch,
+  totalsBySideFor,
+  partialFailureMessage,
+  planSinglePlatformStore,
+  type UnlinkedEntry,
+} from "./selector-sync-feedback";
 
 type RawOptionsResult = {
   success: boolean;
@@ -41,7 +52,23 @@ export default function ParallelForm({
   const [message, setMessage] = useState<string | null>(null);
   const [showReconciliation, setShowReconciliation] = useState(false);
   const [reconciliationData, setReconciliationData] = useState<RawOptionsResult | null>(null);
+  // NEO-211 (plan D): rows whose marketplace link the store just detached
+  // because that side was reached and no longer lists them. The rows themselves
+  // survive — this is the only place the admin is told it happened.
+  const [unlinked, setUnlinked] = useState<UnlinkedEntry[]>([]);
+  // The server truncates `unlinked` to a 50-row sample and reports the real
+  // count here, so the notice can say "312 sets" while naming two of them.
+  const [unlinkedTotal, setUnlinkedTotal] = useState<number | undefined>(undefined);
+  // NEO-211: a failed save from inside the reconciliation dialog. Shown IN the
+  // dialog so the operator's reconciliation survives and Save can be retried.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const triggered = useRef(false);
+  // a11y: focus-park landing spot — see VariantForm.tsx's own copy of these
+  // two effects for the full rationale (Retry-unmount and Dismiss-unmount).
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const headingId = `parallel-sync-heading-${insertId}`;
+  const wasLoadingRef = useRef(false);
+  const hadUnlinkedRef = useRef(false);
 
   const sportValue = ancestorChain?.find((a: { level: string }) => a.level === "sport")?.value;
   const yearValue = ancestorChain?.find((a: { level: string }) => a.level === "year")?.value;
@@ -85,31 +112,52 @@ export default function ParallelForm({
       });
 
       if (!result.success) {
-        setMessage(result.message || "Failed to fetch options");
+        // NEO-211 F3: `result.message` here is fetchRawOptions' OUTER-CATCH
+        // string, which embeds the thrown exception text — an adapter response
+        // body, a marketplace URL, or a credential hint. Raw marketplace text
+        // must never reach the DOM, so the platform names are ours and the
+        // detail stays in the Convex logs.
+        setMessage(
+          blockedMessageFromErrors(SYNC_FAILED_PREFIX, result.errors) ??
+            `${SYNC_FAILED_PREFIX}.`,
+        );
         return;
       }
 
-      // Defensive empty-with-errors guard — see VariantForm.doSync for the
-      // full rationale. Surface the error AND return to idle so the panel-
-      // header actions remain reachable.
+      // Both adapters came back empty with at least one error — see
+      // VariantForm.doSync for the full rationale, including why this path
+      // deliberately does NOT call onDone (NEO-211: it would unmount the form
+      // and destroy the alert and its Retry button).
       if (
         result.bscOptions.length === 0 &&
         result.slOptions.length === 0 &&
         result.errors.length > 0
       ) {
-        const detail = result.errors
-          .map((e) => `${e.platform}: ${e.message}`)
-          .join("; ");
-        setMessage(`${SYNC_FAILED_PREFIX}. ${detail}`);
-        onDone?.();
+        setMessage(
+          blockedMessageFromErrors(SYNC_FAILED_PREFIX, result.errors) ??
+            `${SYNC_FAILED_PREFIX}.`,
+        );
         return;
       }
 
       if (result.bscOptions.length > 0 && result.slOptions.length > 0) {
         setReconciliationData(result);
         setShowReconciliation(true);
-        setMessage(result.message || null);
+        // Not `result.message`: its warning suffix interpolates each adapter's
+        // own error text. The modal is opening anyway, so there is nothing to say.
+        setMessage(null);
       } else {
+        // Only ONE platform has data — see VariantForm.doSync for the full
+        // rationale. NEO-211 (plan B): storing a one-sided result is a claim
+        // about the OTHER side too, so an adapter error means write nothing and
+        // name the platform. No onDone() on this path: it would unmount the
+        // form and take the alert and its Retry button with it.
+        const plan = planSinglePlatformStore(result.errors);
+        if (plan.kind === "blocked") {
+          setMessage(partialFailureMessage(SYNC_FAILED_PREFIX, plan));
+          return;
+        }
+
         const items = [
           ...result.bscOptions.map((o: PlatformItem) => ({
             value: o.value,
@@ -121,44 +169,98 @@ export default function ParallelForm({
           })),
         ];
 
+        let unlinkedRows: UnlinkedEntry[] = [];
         if (items.length > 0) {
-          await storeReconciledOptions({
+          const stored = await storeReconciledOptions({
             level: "parallel",
             parentId: insertId,
             reconciledItems: items,
+            // Both sides were reached, so the store may act on the empty one.
+            coveredSides: plan.coveredSides,
+            // The empty side arrives as [] — the statement that licenses
+            // unlinking its rows.
+            returnedIds: returnedIdsFromFetch(result),
           });
+          unlinkedRows = stored?.unlinked ?? [];
+          setUnlinkedTotal(stored?.unlinkedTotal);
         }
 
+        setUnlinked(unlinkedRows);
         setMessage(
-          result.message || `Stored ${items.length} parallels (single platform)`,
+          // Our own sentence. `result.message` carries the same adapter-text
+          // warning suffix as the modal path above.
+          `Stored ${items.length} parallels (single platform)`,
         );
-        onDone?.();
+        // Hold the panel open while there is a detach to report.
+        if (unlinkedRows.length === 0) onDone?.();
       }
-    } catch (error) {
-      setMessage(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+    } catch {
+      // NEO-211 F3: the thrown text here is a Convex/adapter error that can
+      // carry a marketplace URL, a response body or a credential hint, and this
+      // catch also covers the single-platform store call. Our own fixed string;
+      // the detail stays in the Convex logs. Keeps the SYNC_FAILED_PREFIX lead
+      // so the isError branch still renders Retry + Cancel.
+      setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
     } finally {
       setLoading(false);
     }
   };
 
   const handleReconciliationConfirm = async (result: ReconciledResult) => {
-    await storeReconciledOptions({
-      level: "parallel",
-      parentId: insertId,
-      reconciledItems: result.items.map((item) => ({
-        value: item.value,
-        platformData: item.platformData,
-        // Forwarded so every allocated slot gets the marketplace's own set
-        // name. A set may map to several sets per side, and without labels
-        // the slots are indistinguishable ids downstream.
-        platformLabels: item.platformLabels,
-        metadata: item.metadata,
-      })),
-    });
+    // Both read off the fetch result the modal was built from. If it is gone
+    // we say nothing rather than guessing — see `coveredSidesFromErrors`.
+    const covered = coveredSidesFromErrors(reconciliationData?.errors);
+    const returnedIds = reconciliationData
+      ? returnedIdsFromFetch(reconciliationData)
+      : undefined;
+    // Clear any previous failure so a retry does not show a stale reason.
+    setSaveError(null);
+    let stored;
+    try {
+      stored = await storeReconciledOptions({
+        level: "parallel",
+        parentId: insertId,
+        reconciledItems: result.items.map((item) => ({
+          value: item.value,
+          platformData: item.platformData,
+          // Forwarded so every allocated slot gets the marketplace's own set
+          // name. A set may map to several sets per side, and without labels
+          // the slots are indistinguishable ids downstream.
+          platformLabels: item.platformLabels,
+          metadata: item.metadata,
+          // NEO-211 (plan E): the NB row this modal row IS, so a title edit here
+          // renames that row instead of deleting and reinserting it.
+          existingId: item.existingId,
+        })),
+        // Every side that answered. Both did here (the modal only opens when both
+        // returned rows), but deriving it keeps the guarantee honest. Spread
+        // rather than assigned so an absent fetch result OMITS the arg — the
+        // store then unlinks nothing, instead of being told both sides were fine.
+        ...(covered ? { coveredSides: covered } : {}),
+        // NEO-211 F1: what the MARKETPLACE returned, sent separately from what the
+        // operator confirmed above. The store cannot derive "no longer listed"
+        // from `reconciledItems`: a restored row is always in there (so a delisted
+        // set could never be unlinked) and a row the operator disbanded is not
+        // (so a set the marketplace still lists looked delisted, and the admin got
+        // a false "No longer listed" notice). Derived from the FETCH, never from
+        // the modal's output.
+        ...(returnedIds ? { returnedIds } : {}),
+      });
+    } catch {
+      // Our own fixed string: the thrown text is a Convex server error that can
+      // carry marketplace/response detail, and it must not reach the DOM.
+      // Deliberately does NOT close the dialog — the operator's whole
+      // reconciliation is in there and closing would discard it.
+      setSaveError(
+        "Couldn't save these sets. Nothing was changed — press Save to try again, or Cancel to close.",
+      );
+      return;
+    }
     setShowReconciliation(false);
-    onDone?.();
+    const unlinkedRows = stored?.unlinked ?? [];
+    setUnlinkedTotal(stored?.unlinkedTotal);
+    setUnlinked(unlinkedRows);
+    if (unlinkedRows.length === 0) onDone?.();
   };
 
   useEffect(() => {
@@ -169,10 +271,33 @@ export default function ParallelForm({
   // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch as BaseMappingForm; including it would loop
   }, [sportValue, yearValue, manufacturerValue, variantTypeValue, setNameValue]);
 
+  useEffect(() => {
+    const wasLoading = wasLoadingRef.current;
+    wasLoadingRef.current = loading;
+    if (!wasLoading && loading && document.activeElement === document.body) {
+      panelRef.current?.focus();
+    }
+  }, [loading]);
+
+  useEffect(() => {
+    const hadUnlinked = hadUnlinkedRef.current;
+    hadUnlinkedRef.current = unlinked.length > 0;
+    if (hadUnlinked && unlinked.length === 0 && document.activeElement === document.body) {
+      panelRef.current?.focus();
+    }
+  }, [unlinked]);
+
   return (
     <>
-      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
-        <h2 className="text-xl font-semibold mb-4">Syncing Parallels</h2>
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        aria-labelledby={headingId}
+        className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+      >
+        <h2 id={headingId} className="text-xl font-semibold mb-4">
+          Syncing Parallels
+        </h2>
 
         {loading && (
           <p className="text-gray-600 dark:text-gray-400 mb-4">
@@ -188,9 +313,23 @@ export default function ParallelForm({
               message.startsWith(SYNC_FAILED_PREFIX));
           return (
             <>
+              {/* NEO-211 (plan D): rows the marketplace stopped listing. The
+                  rows are still ours — only the link went away — so this is a
+                  notice, not an error. */}
+              {!showReconciliation && (
+                <SyncDoneNotice
+                  notices={buildUnlinkedNotices(unlinked, "parallel", {
+                    totalsBySide: totalsBySideFor(unlinked, unlinkedTotal),
+                  })}
+                  onDismiss={() => setUnlinked([])}
+                />
+              )}
+
               {message && !showReconciliation && (
+                // WCAG 4.1.3: give the success/info case an announcement too —
+                // see VariantForm.tsx's identical fix for the full rationale.
                 <div
-                  role={isError ? "alert" : undefined}
+                  role={isError ? "alert" : "status"}
                   className={
                     isError
                       ? "p-3 mb-4 bg-[#FF2EB3]/10 border border-[#FF2EB3] rounded-md text-[#FF2EB3] text-sm"
@@ -218,10 +357,12 @@ export default function ParallelForm({
         <ReconciliationModal
           isOpen={showReconciliation}
           onClose={() => {
+            setSaveError(null);
             setShowReconciliation(false);
             onDone?.();
           }}
           onConfirm={handleReconciliationConfirm}
+          saveError={saveError}
           level="parallel"
           initialData={{
             autoMatched: reconciliationData.autoMatched,
@@ -237,6 +378,9 @@ export default function ParallelForm({
           usedSlPlatformValues={usedIdentifiers?.slPlatformValues}
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
           existingRows={existingParallelRows.map((r) => ({
+            // NEO-211 (plan E): carried through so a rename in the modal stays
+            // a rename of THIS row.
+            existingId: r._id,
             value: r.value,
             // The modal speaks marketplace IDs, not slots (NEO-137).
             platformData: {

@@ -68,3 +68,34 @@ npx convex function-spec   # .functions[].identifier is "module.js:name"
 ```
 Anything in the first list absent from the second is a branch-only call; then
 grep for its call site to see whether it is gated or mounted unconditionally.
+## Update 2026-09-03 — the sanctioned local push can be blocked by ANOTHER branch
+
+`apps/web/e2e-local-stack.sh` now opens with "push THIS branch's Convex
+functions to dev" (`npx convex dev --once --typecheck disable`), so pushing to
+shared dev IS a documented workflow — but it is not always available:
+
+> ✖ Schema validation failed. Document … in table `labelPurchases` does not
+> match the schema: Object contains extra field `estDeliveryAt` …
+
+Another in-flight worktree had already pushed ITS schema and written fixture
+rows carrying fields this branch's `schema.ts` (branched off an older `main`)
+does not declare. Convex validates every existing document against the incoming
+schema, so **whichever branch pushed last owns dev**, and a branch that predates
+those fields cannot push at all until that data or that branch is gone. There is
+no per-push override short of editing `schema.ts` (`schemaValidation: false`),
+which is app source and must not be left in a branch.
+
+**Consequence for NEO-211:** `EntityColumn` subscribes to
+`getSelectorSyncSuggestions` on EVERY column unconditionally, so with shared dev
+lacking the function the whole `/set-selector` page falls to its error boundary
+and NO set-selector flow can run locally — not just the new ones. Hierarchy dump
+confirms it: one node, `"An error occurred. Please refresh the page."`.
+
+**What still works, and is worth doing:** run the flow's pre-feature steps
+against the OTHER checkout's bundle. `main/apps/web` has its own `node_modules`
+and `.env.local`; start it on a spare port (`VITE_DEV_DISABLE_HTTPS=1 npx vite
+--port 3002 --strictPort --host`) and point a truncated scratchpad copy of the
+flow at it. That validated NEO-211's whole cold drill, set selection, rename
+control and attributes-panel assertions for real — everything except the steps
+that call the missing functions. Add `--host`: Chrome resolves `localhost` to
+`::1` and Vite binds IPv4 only by default.

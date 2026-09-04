@@ -152,6 +152,13 @@ tags:
     when:
       visible: "No cards in this checklist yet."
     commands:
+      # The fetch CTA is the last thing in the Cards card, below the fold on a
+      # 1024x629 viewport — scroll and centre it before tapping (R8).
+      - scrollUntilVisible:
+          element:
+            text: ".*Fetch from Marketplaces.*"
+          centerElement: true
+          timeout: 15000
       - tapOn:
           text: ".*Fetch from Marketplaces.*"
       # NEO-137: pairing runs before any card is generated. This is a real set,

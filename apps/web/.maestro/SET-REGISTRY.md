@@ -19,6 +19,80 @@ These are provisioned once by `flows/setup.yaml` at the head of every run and ar
 |---|---|---|
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards) | `flows/setup.yaml` |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
+| Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
+
+### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
+
+The owner approved **Hockey → 1972-73 → Topps → "Topps"** on 2026-09-03
+(NEO-211 plan of record, decision 5). **That set does not exist in NeonBinder's
+synced taxonomy.** Verified live against dev the same day:
+
+* the Years column for Hockey holds PLAIN four-digit years — filtering `1972`
+  returns exactly one row, `1972`, and there is no `1972-73`;
+* **Hockey → 1972 → Topps returns ZERO sets.** The column settles (its
+  `Syncing Sets` panel comes and goes) showing only `Sync Sets` and `+ Custom`;
+* **Hockey → 2024 → Topps returns three** — `Topps NHL Sticker Collection`,
+  `Topps Now NHL Stickers`, `Topps Now The Gr8 Chase` — and the first carries a
+  BSC link plus the variant types `Base` and `Parallel`.
+
+So the SHAPE the plan asked for is available on the same sport and manufacturer,
+one year apart, and the flow is written against it. Because rule 1 above requires
+owner approval for **every** real set, this substitution is flagged rather than
+assumed: confirm it, or name a different set and change the four `env:` values
+in the flow's STEP 1 plus the four name literals below it.
+
+It exists to prove one thing that no custom set can express: **a NeonBinder
+rename survives a forced marketplace re-sync, and the marketplace's own name
+comes back as a suggestion rather than as an overwrite.**
+
+A custom Set node makes its whole subtree custom (`isCustomSubtree`, NEO-22),
+which short-circuits BSC and SportLots before any fetch — so a custom set has no
+marketplace id to match on, no marketplace label to disagree with our name, and
+no forced sync worth forcing. The feature only exists where a real marketplace
+holds an opinion about what the row is called.
+
+`setName` is a **BSC-only level** — the SportLots adapter returns
+`success: true, options: []` for it by design — so a renamed set can only ever
+disagree with one marketplace, and the flow's `1 suggestion` assertion is exact
+rather than data-dependent.
+
+**What the flow does, and what it leaves behind** (this IS the contract):
+
+| | |
+| -- | -- |
+| drills | Hockey → 2024 → Topps → `Topps NHL Sticker Collection`, all four levels COLD (see `util-drill-to-cold-real-set.yaml`) |
+| writes | renames the set row to `TCG`, forces `Sync Sets`, then ACCEPTS BSC's suggestion |
+| leaves | the set named **`Topps NHL Sticker Collection`** again — accepting restores the baseline, so the flow is idempotent |
+| never touches | cards, players, teams, or anything below `Variant Types` |
+
+The flow tolerates a run that died between the rename and the accept (the row
+left as `TCG`) by selecting on the regex `Topps NHL Sticker Collection|TCG` and
+skipping the rename when the row already reads `TCG`. CI never needs that:
+`setup.yaml` resets the set-builder tables at the head of every run, so the set
+is always re-synced from BSC under its own name.
+
+**Sole writer.** Exactly ONE flow may ever touch this set. A second would race
+it on `selectorOptions`, which is global and unscoped, and the whole point of
+the fixture is a rename that is observable for the duration of one sync.
+
+**Cost.** Four cold syncs on a fresh deployment — years, manufacturers, sets
+(one `syncSetsAcrossManufacturers` call for the whole year) and variant types —
+plus the forced `Sync Sets`. Measure it before adding anything to this flow; it
+is budgeted against the 600s per-flow kill in `run-e2e-queue.sh`.
+
+**Two taxonomy facts this fixture pinned down**, both worth knowing before
+choosing any future real set:
+
+* `EntitySelector` renders a column's search input only **above 8 entries**
+  (`showSearch = sortedItems.length > 8`), not "more than one" as older comments
+  in `flows/set-selector/` claim. A three-set column has no input at all, so any
+  drill that assumes one will hang on a `.*Search sets.*` wait.
+* An **empty** column renders its `Sync <X>` / `+ Custom` buttons immediately and
+  only switches to the `Syncing <X>` panel once `ensureSelectorOptions` has
+  round-tripped. So "the idle button is visible" is NOT proof the column has
+  data — a probe on 2026-09-03 dumped an empty Sets column at exactly that
+  moment. `util-drill-to-cold-real-set.yaml` waits out the `Syncing <X>` panel
+  before gating on content, for that reason.
 
 ### 1996 Score — approved for NEO-137, sole-writer
 
@@ -42,11 +116,12 @@ every run, so these are the values it re-establishes):
 
 | | |
 | -- | -- |
-| NB insert rows | exactly ONE, named `Dugout Collection Artists Proofs` |
+| NB insert rows | exactly ONE, built as `Dugout Collection Artists Proofs` |
 | its BSC mappings | both series |
 | its SportLots mappings | the one combined set |
 | its card checklist | **220** cards, every one paired across both marketplaces |
 | its FIRST card's name | carries a `NB203-<ATTEMPT_ID>` marker (NEO-203, below) |
+| its NB insert row's name | carries a ` NB211-<ATTEMPT_ID>` suffix (NEO-211, below) |
 
 **NEO-203 — the flow now re-syncs the set once more before it ends.** Its
 STEP 7 edits the first card's name in NeonBinder, re-fetches the same
@@ -62,6 +137,26 @@ dialog. Two consequences worth knowing:
   a re-sync is having a committed marketplace-backed set to re-sync — which
   this flow has just built, and which the sole-writer rule below forbids a
   second flow from building.
+
+**NEO-211 — the flow now also re-syncs the INSERT LEVEL once, after all of
+that.** Its STEP 8 renames the single insert row (appending ` NB211-<ATTEMPT_ID>`),
+forces `Sync Inserts`, saves the reconcile dialog with no edits, and then
+DECLINES both marketplaces' competing names in the new Name Suggestions dialog.
+Consequences worth knowing:
+
+* The set still ends with **exactly ONE** insert row and **220** cards. Only the
+  insert row's NAME changes, and it changes to a per-attempt marker for the same
+  reason the NB203 card marker does — it has to be unmistakably ours and unique
+  to the run. `setup.yaml`'s reset clears it at the head of every run.
+* The row also ends with `declinedUpstreamLabels` set on both sides, which is
+  what makes the marketplace stop suggesting those names. Nothing else reads
+  that field.
+* This is the ONLY end-to-end coverage of the DECLINE half of the selector-sync
+  suggestion dialog (Accept is covered on 1972-73 Topps Hockey, below), and of
+  `storeReconciledOptions` being additive across a re-sync. It lives here for
+  the same reason STEP 7 does: the costly part is having a committed,
+  two-BSC-source insert row to re-sync, and the sole-writer rule forbids a
+  second flow from building one.
 
 220 is also the fan-out regression guard. BSC does not OR multi-value facets:
 before `fetchBscChecklist` fanned out one request per source set, this exact
