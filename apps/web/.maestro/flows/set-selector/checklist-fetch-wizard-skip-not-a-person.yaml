@@ -196,10 +196,15 @@ tags:
           commands:
             - tapOn:
                 text: ".*Add All Remaining as New.*"
+      # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
+      # SETTLED, staying armed for the rest, so this wait is gated on that live
+      # external round-trip rather than on one mutation. Raised for that reason;
+      # it resolves the moment the wizard is done, so a healthy run pays nothing
+      # for the bigger ceiling.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"
-          timeout: 30000
+          timeout: 120000
       - tapOn:
           text: ".*Confirm & Save.*"
 - extendedWaitUntil:

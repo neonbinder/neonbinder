@@ -145,10 +145,15 @@ tags:
           commands:
             - tapOn:
                 text: ".*Add All Remaining as New.*"
+      # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
+      # SETTLED, staying armed for the rest, so this wait is gated on that live
+      # external round-trip rather than on one mutation. Raised from 30s for that
+      # reason; it resolves the moment the wizard is done, so a healthy run pays
+      # nothing for the bigger ceiling.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"
-          timeout: 30000
+          timeout: 120000
       - tapOn:
           text: ".*Confirm & Save.*"
       # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
@@ -249,8 +254,10 @@ tags:
 # The keyboard assertion is the final Enter-confirm below; getting there just
 # requires every unknown decided. Decide them all at once via the bulk
 # "Add All Remaining as New (N)" button, which is visible whenever any item is
-# undecided and marks every remaining row (including still-pending ones) as
-# "create" in a single call — so no per-item entity-lookup wait.
+# undecided. Since NEO-221 it marks every SETTLED remaining row as "create" and
+# then keeps going as the rest of the lookups land, so the wait below is on the
+# lookups rather than on one mutation. Its label can also carry a
+# "— N still looking up, wait or skip" suffix, which the prefix regex tolerates.
 #
 # The guard is retained because Step 1's pre-clean can leave the batch already
 # fully decided in a retry edge case, in which case the button is absent and the
@@ -272,10 +279,15 @@ tags:
 # transition), then Enter fires onConfirm — the keyboard-only commit.
 # ============================================================
 
+# NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
+# SETTLED, staying armed for the rest, so this wait is gated on that live
+# external round-trip rather than on one mutation. Raised from 30s for that
+# reason; it resolves the moment the wizard is done, so a healthy run pays
+# nothing for the bigger ceiling.
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"
-    timeout: 30000
+    timeout: 120000
 - pressKey: Enter
 
 # ============================================================

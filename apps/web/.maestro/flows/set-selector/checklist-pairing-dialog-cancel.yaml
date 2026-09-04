@@ -29,6 +29,9 @@ tags:
 #   - NEO-189 follow-up: when NEITHER marketplace has the name right, clicking
 #     the row's title opens a field, and the typed name becomes a third checked
 #     option in the same group — the name the row would be saved with.
+#   - NEO-220: Cancel with edits on screen asks "Discard N pairings?" before it
+#     throws them away — a session this long is not something one stray click
+#     should be able to lose.
 #   - Cancel writes nothing: the status message says so and the card count on
 #     the set is unchanged.
 #
@@ -507,6 +510,15 @@ tags:
 - tapOn:
     id: "Cancel card matching"
     retryTapIfNoChange: true
+# NEO-220 — leaving a matching session with edits on screen now asks first.
+# This flow has unlinked two auto-pairs, cross-linked their halves and renamed a
+# row, so the confirm ALWAYS opens here and this tap is the only way out. The
+# dialog's HEADING also begins "Discard …", so anchor the tap below its
+# explanation to be certain it lands on the button rather than the title.
+- tapOn:
+    text: "Discard .*"
+    below:
+      text: ".*No cards have been saved.*"
 - extendedWaitUntil:
     notVisible: "Match Cards.*"
     timeout: 10000

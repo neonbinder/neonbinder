@@ -11,9 +11,20 @@ tags:
 # (entityReviewQueue.cancelBatch) whose user-visible effect is identical to
 # before: "no cards saved".
 #
+# NEO-220 EXTENDS THAT ONE FEATURE — cancel no longer throws work away on a
+# single click. With a decision on the books it asks "Discard N decision(s)?"
+# first, and the answer is honoured BOTH ways. That is the same feature (what
+# cancel costs you), not a second one, so it lives here rather than in a flow
+# of its own.
+#
 # WHAT THIS TESTS:
 #   - The wizard opens after a fetch that surfaces unknown players.
-#   - Tapping "Cancel (Esc)" closes the wizard without saving.
+#   - One name is decided ("Add as New Player").
+#   - "Cancel (Esc)" then opens a confirm naming the exact count —
+#     "Discard 1 decision?" — rather than closing.
+#   - The confirm's own Cancel KEEPS the session: the wizard is still open and
+#     the decision is still listed under "Decided (1)".
+#   - "Cancel (Esc)" again, then "Discard", closes the wizard without saving.
 #   - The status message reads "Fetch cancelled — no cards saved."
 #   - The custom card the preamble added is still present (cancel only discards
 #     the fetch preview, never previously-saved rows).
@@ -146,10 +157,15 @@ tags:
           commands:
             - tapOn:
                 text: ".*Add All Remaining as New.*"
+      # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
+      # SETTLED, staying armed for the rest, so this wait is gated on that live
+      # external round-trip rather than on one mutation. Raised from 30s for that
+      # reason; it resolves the moment the wizard is done, so a healthy run pays
+      # nothing for the bigger ceiling.
       - extendedWaitUntil:
           visible:
             text: ".*Confirm & Save.*"
-          timeout: 30000
+          timeout: 120000
       - tapOn:
           text: ".*Confirm & Save.*"
       # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below is
@@ -236,23 +252,78 @@ tags:
     timeout: 60000
 
 # ============================================================
-# STEP 4 — CANCEL — the footer Cancel is present on EVERY step of the wizard
-# "Cancel (Esc)" is available on every step (review, "looking up…", and the
-# final "all reviewed") and its cancelBatch semantics are identical regardless
-# of how many items were reviewed — so cancel WITHOUT reviewing an item first.
-# Step 1's pre-clean guarantees this attempt's two unknowns are the only items,
-# so the wizard is on a review step with items outstanding.
+# STEP 4 — DECIDE ONE NAME, so the cancel has something to lose (NEO-220)
+# Cancel used to throw a review session away on one click. It now asks first,
+# and only once there IS something to lose: with nothing decided it still
+# closes straight away (that is Step 6 below, unchanged).
+#
+# Step 1's pre-clean guarantees this attempt's two unknowns (CDPlayerA and
+# CDPlayerB) are the only items, so deciding one leaves exactly one decision
+# on the books and the confirm can name an exact number.
+#
+# WHICH of the two is presented first is not asserted: the wizard presents the
+# first name whose background lookup has SETTLED, and the two lookups race. The
+# decision is taken on whichever is on screen, which is all this step needs.
+#
+# The wait is 30s, not the 7s default: the wizard only offers an action once
+# that name's live Wikidata lookup has come back, which is an external
+# round-trip (same allowance, and the same number, as the sibling
+# checklist-fetch-unknown-entities-link-existing flow).
+# ============================================================
+
+- extendedWaitUntil:
+    visible:
+      id: "Add as New Player"
+    timeout: 30000
+- tapOn:
+    id: "Add as New Player"
+
+# ============================================================
+# STEP 5 — CANCEL, THEN CHANGE YOUR MIND — the session is still there
+# "Cancel (Esc)" with a decision on the books opens a confirm naming the count.
+# Pressing the confirm's own Cancel means "keep working": the wizard is still
+# open and the decision is still recorded.
 # ============================================================
 
 - tapOn:
     text: "Cancel (Esc)"
     retryTapIfNoChange: true
+# The confirm names exactly what is at stake. One decision → "Discard 1
+# decision?" (singular), which is also the proof that the decision above landed.
+- assertVisible:
+    text: "Discard 1 decision.*"
+# "Cancel" here is the confirm's own keep-working button, NOT the wizard's
+# "Cancel (Esc)" behind it. Anchored below the confirm's explanation so it can
+# only be the one inside the dialog.
+- tapOn:
+    text: "Cancel"
+    below:
+      text: ".*The same names come back the next time you sync this set.*"
+
+# Nothing was lost: the wizard is still open …
+- assertVisible: "Confirm New Players & Teams"
+# … and the decision is still on the books, listed under the current name.
+- assertVisible:
+    text: "Decided \\(1\\)"
+
+# ============================================================
+# STEP 6 — CANCEL FOR REAL — confirm the discard, and nothing is saved
+# Same "Cancel (Esc)", this time followed through. The confirm's destructive
+# button is labelled exactly "Discard" (the dialog's HEADING is the longer
+# "Discard 1 decision?"), so this matcher cannot land on the title.
+# ============================================================
+
+- tapOn:
+    text: "Cancel (Esc)"
+    retryTapIfNoChange: true
+- tapOn:
+    text: "Discard"
 - extendedWaitUntil:
     notVisible: "Confirm New Players & Teams"
     timeout: 5000
 
 # ============================================================
-# STEP 5 — VERIFY NOTHING WAS SAVED
+# STEP 7 — VERIFY NOTHING WAS SAVED
 # ============================================================
 
 # Cancel message — set by CardChecklist's onCancel (cancelBatch + this text).

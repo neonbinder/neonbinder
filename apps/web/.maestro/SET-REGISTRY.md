@@ -313,6 +313,7 @@ would put the wrong question on screen.
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
 | `vme-insert-` | `variant-metadata-editor-insert.yaml` |
+| `wbr-` | `checklist-fetch-wizard-back-and-resume.yaml` — no `ATTEMPT_ID`: the review batch under test has to survive between two syncs on the SAME `selectorOptionId`, so the flow's Step 1 pre-clean is what makes a retry start clean. |
 | `WOSet3-` | `new-chain-autopopulates-features.yaml` (under synthetic `E2E Test Sport N`) |
 | `xag-`, `xsrc-` | `cross-release-card-appears-in-guest-checklist.yaml` |
 | `xbg-`, `xbs-` | `cross-release-import-reports-missing-numbers.yaml` |
