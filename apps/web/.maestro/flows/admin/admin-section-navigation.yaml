@@ -32,7 +32,7 @@ tags:
 # Step 1: land on the admin hub.
 #
 # Gated on a HUB CARD's sentence, not on a heading. "Admin" is unusable — it is
-# the binder nav tab, the section h1 and part of "Admin Tools". The section
+# both the binder nav tab and the section h1. The section
 # subtitle that used to serve here was deleted: it was one of five header lines
 # stacked above the Set Builder cascade, and on the 1024x629 headless viewport
 # that pushed the Sports column below the fold and broke setup.yaml. Anchoring
@@ -80,6 +80,19 @@ tags:
 # 7s default (R5): mounting a route is a page load and a Convex read, not a
 # marketplace round-trip.
 - assertVisible: ".*Build set parameters using marketplace APIs.*"
+
+# NEO-214 — and the Admin Tools panel is NOT on it. "Admin Tools" was the h2 of
+# a box that sat between that subtitle and the cascade, offering "Reset Set
+# Builder Data", "Seed Test Teams" and "Wipe Legacy Base Children": three
+# irreversible, deployment-wide data operations one click away for any admin.
+# They are scripted commands now, and the panel is gone.
+#
+# Placed HERE, immediately after the positive assert above, and that placement
+# is the whole point: an assertNotVisible on its own passes on a blank page, a
+# 404 or a route that never mounted. Following a hard assert that the Set
+# Builder panel IS on screen means this can only be read as "the panel rendered
+# and the box is not in it".
+- assertNotVisible: "Admin Tools"
 
 # Step 5: and back again, via the Teams sub-tab. "Teams" appears only in the nav
 # strip on the Set Builder page, so this too is unambiguous.

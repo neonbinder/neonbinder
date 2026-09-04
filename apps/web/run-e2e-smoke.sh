@@ -5,10 +5,11 @@
 # block. Three families exist:
 #
 #   - `isolated:true` (or legacy `serial-global`) — flow mutates global Convex
-#     tables (selectorOptions / cardChecklist / players / teams) by clicking
-#     "Reset Set Builder Data" or otherwise touching cross-user data. These
-#     flows must serialize alone and cannot run concurrently with the cascade
-#     (see below).
+#     tables (selectorOptions / cardChecklist / players / teams), e.g. it runs
+#     after the scripted Set Builder reset (`e2e-baseline.sh reset` — NEO-214;
+#     no more "Reset Set Builder Data" button) or otherwise touches
+#     cross-user data. These flows must serialize alone and cannot run
+#     concurrently with the cascade (see below).
 #
 #   - `serial-marketplace` — flow hits /login/bsc or /login/sportlots on the
 #     browser service. The browser service returns 503 on concurrent
@@ -628,6 +629,21 @@ if [ -n "${MAESTRO_PLAN_ONLY:-}" ]; then
   exit 0
 fi
 
+# ─── Scripted reset ahead of the setup track (NEO-214) ──────────────────────
+# setup.yaml no longer clicks "Reset Set Builder Data" itself — the Admin
+# Tools panel is gone. This is the ONLY place in the setup path that resets:
+# `e2e-baseline.sh reset` runs once here, before setup.yaml's own flow (which
+# does the Sports sync that creates the Baseball row setup.yaml depends on),
+# then setup.yaml runs against the freshly-emptied deployment exactly as
+# before. CONVEX_NAME (CI) / --deployment / the .env.local default and the
+# CI-vs-interactive confirmation gate are all e2e-baseline.sh's own job — see
+# that script. Runs in CI and locally alike; this is the single entry point
+# both go through, so they can't drift.
+if [ "$SELECT_MODE" = "setup" ]; then
+  echo "── setup track: scripted reset before setup.yaml ──"
+  ./e2e-baseline.sh reset
+fi
+
 # ─── Worker runner ──────────────────────────────────────────────────────────
 # run_flow_on_worker <worker_index> <flow>
 # Runs a single maestro test, appends its outcome to that worker's results
@@ -701,8 +717,9 @@ run_flow_on_worker() {
     # Per-attempt unique ID. Flows that add cards to the global
     # cardChecklist table reference ${ATTEMPT_ID} in their card
     # numbers + player names so attempt 2 doesn't collide with the
-    # rows attempt 1 left behind (setup.yaml's resetSetBuilderData
-    # only runs once per CI run, not between in-run retries).
+    # rows attempt 1 left behind (the scripted `e2e-baseline.sh reset`
+    # only runs once per CI run, ahead of setup.yaml, not between
+    # in-run retries).
     local attempt_id="w${global_worker}-a${attempt}-${RANDOM}"
     local attempt_args=("${worker_args[@]}" -e "ATTEMPT_ID=$attempt_id")
     if [ -n "$TIMEOUT_CMD" ]; then
