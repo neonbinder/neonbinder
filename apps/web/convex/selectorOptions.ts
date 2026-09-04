@@ -2518,17 +2518,30 @@ export const updateCard = mutation({
     // Convex deletes a field, and a stored `null` would fail the schema's
     // `v.optional(v.number())` on the very next read.
     //
-    // A non-null value must be a positive integer: the panel's Print run is a
-    // free-text input, and /0, /-1 and /2.5 are not print runs. Rejected
-    // loudly rather than coerced, because silently storing a nonsense print
-    // run puts it in a listing title.
+    // A non-null value must be a whole number in a range a print run can
+    // actually take: the panel's Print run is a free-text input, and /0, /-1
+    // and /2.5 are not print runs. Rejected loudly rather than coerced,
+    // because silently storing a nonsense print run puts it in a listing
+    // title.
+    //
+    // The CEILING is not decoration. `Number.isInteger` is true of any finite
+    // double with no fractional part, including magnitudes far past
+    // MAX_SAFE_INTEGER — so without it `1e21` round-trips and reaches an eBay
+    // title verbatim as "1e+21", which is both nonsense and a title-length
+    // problem NEO-101's cap would then have to absorb. A million is orders of
+    // magnitude above the largest real print run ever produced, so the bound
+    // costs nothing an operator will ever hit.
     if (filtered.printRun === null) {
       filtered.printRun = undefined;
     } else if (filtered.printRun !== undefined) {
       const requestedPrintRun = filtered.printRun as number;
-      if (!Number.isInteger(requestedPrintRun) || requestedPrintRun < 1) {
+      if (
+        !Number.isInteger(requestedPrintRun) ||
+        requestedPrintRun < 1 ||
+        requestedPrintRun > 1_000_000
+      ) {
         throw new ConvexError(
-          `Print run must be a whole number of 1 or more; received ${requestedPrintRun}.`,
+          `Print run must be a whole number between 1 and 1,000,000; received ${requestedPrintRun}.`,
         );
       }
     }

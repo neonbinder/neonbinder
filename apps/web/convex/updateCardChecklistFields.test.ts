@@ -688,3 +688,112 @@ describe("updateCard single-field autosave payloads (NEO-216)", () => {
     expect(card.teamOnCardIds).toEqual([teamA]);
   });
 });
+
+/**
+ * Adversarial pass (NEO-216/217) — `printRun` boundary values the sweep at
+ * `test.each([0, -1, 2.5])` above does not reach. The client (the drawer's
+ * `Number(trimmed)`) can hand the mutation any of these if it is ever called
+ * with something other than a clean digit string — direct API/CLI callers
+ * are not bound by the panel's own text input at all. `updateCard`'s guard
+ * is `!Number.isInteger(x) || x < 1`, so these pin exactly what that
+ * expression does at its edges rather than assume it.
+ */
+describe("updateCard printRun — boundary values beyond the basic sweep", () => {
+  test("rejects NaN (typeof \"number\", but not an integer)", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: NaN,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("rejects Infinity (Number.isInteger(Infinity) is false)", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: Infinity,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("rejects -0 — it is an integer but still < 1", async () => {
+    // Object.is(-0, 0) is false, but `-0 < 1` is true, so this must be
+    // refused by the SAME branch as 0/-1, not silently coerced to a
+    // positive zero and let through by an `x < 1` that treats -0 specially.
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: -0,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("rejects an absurdly large integer print run — the ceiling is enforced", async () => {
+    // `Number.isInteger` is true for any finite value with no fractional part,
+    // including magnitudes far past MAX_SAFE_INTEGER (doubles represent them
+    // exactly as whole numbers even though they cannot count anything real at
+    // that scale). Without a ceiling, 1e21 round-tripped and reached a listing
+    // title verbatim as "1e+21" — nonsense on the listing, and a
+    // title-length-shaped input for NEO-101's cap to absorb.
+    const { asAdmin, cardId } = await seed();
+    const huge = 1e21;
+    expect(Number.isInteger(huge)).toBe(true);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: huge,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+
+  test("accepts exactly 1,000,000 — the bound is inclusive", async () => {
+    // The ceiling is orders of magnitude above the largest print run ever
+    // produced, so it must never be what stops a real edit. Pinned inclusive
+    // so an off-by-one tightening is a test failure, not a support ticket.
+    const { asAdmin, variantTypeId, cardId } = await seed();
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      printRun: 1_000_000,
+    });
+
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(cards.find((c) => c._id === cardId)!.printRun).toBe(1_000_000);
+  });
+
+  test("rejects 1,000,001 — one past the bound", async () => {
+    const { asAdmin, cardId } = await seed();
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        printRun: 1_000_001,
+      }),
+    ).rejects.toThrow();
+
+    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
+    expect(stored!.printRun).toBeUndefined();
+  });
+});

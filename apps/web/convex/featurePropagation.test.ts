@@ -449,6 +449,98 @@ describe("clearing a feature with an empty value (NEO-217)", () => {
     expect(first!.features).not.toHaveProperty("season");
     expect(second!.features?.season).toBe("2024");
   });
+
+  // -------------------------------------------------------------------------
+  // Adversarial pass (NEO-216/217) — two things the design doc calls out by
+  // name but the block above never actually pins.
+  // -------------------------------------------------------------------------
+
+  test("applyFeatureEdit: clearing a key on a row whose `features` was NEVER set writes an empty object, not undefined", async () => {
+    // `applyFeatureEdit` is `{...(existing ?? {})}` then `delete cleared[key]`
+    // — on `existing === undefined` that is `{}` with nothing to delete, so
+    // the row goes from "no features field at all" to "features: {}" rather
+    // than staying field-less. Every existing clear test in this file pre-
+    // seeds SOME features object first; this is the one path where the row
+    // never had one, and it is the one `applyFeatureEdit`'s own doc comment
+    // makes an explicit claim about ("returns {} not undefined").
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+
+    const before = await t.run(async (ctx) => ctx.db.get(subtree.setNameId));
+    expect(before!.features).toBeUndefined();
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+      selectorOptionId: subtree.setNameId,
+      key: "season",
+      value: "",
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(subtree.setNameId));
+    expect(after!.features).toEqual({});
+    expect("features" in after!).toBe(true);
+  });
+
+  test("setCardFeature: clearing a key on a card whose `features` was never set writes an empty object, not undefined", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t);
+
+    const before = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(before!.features).toBeUndefined();
+
+    await asAdmin.mutation(api.selectorOptions.setCardFeature, {
+      cardChecklistId: subtree.cardIds[0],
+      key: "season",
+      value: "",
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(after!.features).toEqual({});
+  });
+
+  test("clearing a feature at the parent leaves a descendant's own already-copied-down value stale — single-row-patch by design (NEO-71-74)", async () => {
+    // The clear path shares `applyFeatureEdit` with the set path, and the set
+    // path already proved (above, "edits only the target row") that NEITHER
+    // direction cascades. This is the same guarantee stated for a CLEAR
+    // specifically, because "clear" reads like it should propagate an
+    // un-setting even to someone who already accepts that a SET doesn't
+    // propagate a value. It doesn't: a descendant that copied the value down
+    // at its own creation keeps it, unaffected, exactly like an unrelated
+    // per-card override would. This is the documented, intentional behavior
+    // (NEO-71-74 killed the cascade engine) — pinned here because "the parent
+    // now says nothing about season, but this card still says 2024" is a real
+    // support-desk-shaped surprise if it is ever assumed to be a bug and
+    // "fixed" into a cascade by accident.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const subtree = await seedSubtree(t, {
+      cardFeaturesPerIndex: { 0: { season: "2024" } },
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(subtree.sportId, { features: { season: "2024" } });
+      await ctx.db.patch(subtree.variantTypeId, {
+        features: { season: "2024" },
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
+      selectorOptionId: subtree.sportId,
+      key: "season",
+      value: "",
+    });
+
+    const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
+    expect(root!.features).not.toHaveProperty("season");
+
+    // Stale on both a descendant NODE and a descendant CARD.
+    const variantTypeNode = await t.run(async (ctx) =>
+      ctx.db.get(subtree.variantTypeId),
+    );
+    expect(variantTypeNode!.features?.season).toBe("2024");
+    const card0 = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
+    expect(card0!.features?.season).toBe("2024");
+  });
 });
 
 // ===========================================================================
