@@ -16,6 +16,10 @@ tags:
 #
 # This test also confirms the "Custom" badge is shown on custom entries
 # both before and after a re-sync.
+#
+# STEP 4 (NEO-219) then removes the row again through the new delete control in
+# the attributes header, which is what makes this flow self-cleaning: it creates
+# exactly one throwaway sport per attempt and takes it away before it ends.
 
 - launchApp
 - extendedWaitUntil:
@@ -61,8 +65,8 @@ tags:
 # team-picker, move-parallels-of-inserts-custom, etc.). This makes the
 # sport name genuinely new each run, so the STEP-3 "still there after sync"
 # assertion proves survival (not a left-over from a prior run).
-# Known trade-off: adds one global custom-sport row per run (selectorOptions
-# has no delete yet); the list grows over time but doesn't break other flows.
+# STEP 4 deletes this row again (NEO-219), so the flow no longer leaks a
+# custom-sport row into the shared Sports column on every run.
 - tapOn: "Enter custom value..."
 - inputText: "TestCustomSport-${ATTEMPT_ID}"
 # Press Enter to submit — the input's `onKeyDown` handler
@@ -71,6 +75,9 @@ tags:
 # "Add Custom Entry" heading and the "Add" button; with the heading
 # above the button in DOM order, Index: 0 sometimes resolves to the
 # heading (a non-tappable element).
+- pressKey: Enter
+# NEO-219: the first Enter raises a "Create <noun> '<value>' under <parent>?"
+# confirm with the Create button already focused; this second Enter presses it.
 - pressKey: Enter
 
 # Wait for the "Add Custom Entry" form to close before checking the list.
@@ -241,3 +248,88 @@ tags:
 # Sports no longer show pills. "Baseball" appearing confirms marketplace data
 # was written to the Sports column during re-sync.
 - assertVisible: "Baseball"
+
+# ============================================================
+# STEP 4 — AND THE ROW CAN BE DELETED AGAIN, BECAUSE NOTHING IS BELOW IT
+#          (NEO-219)
+#
+# WHAT A USER SEES. Selecting a row opens its attributes header, which now
+# carries a bin next to the rename pencil. Because this sport holds nothing —
+# no years, no sets, no cards, no players or teams — the bin is live, and it
+# asks once before removing the row.
+#
+# WHY IT LIVES HERE. STEP 1 creates a sport row that no other flow ever reads,
+# and until now the flow LEAKED one of them into the shared Sports column on
+# every run — the header comment above says so outright ("adds one global
+# custom-sport row per run … the list grows over time"). The delete is the
+# missing other half of the same story, and putting it here turns the flow
+# self-cleaning: it now creates exactly what it needs, proves the re-sync did
+# not touch it, and takes it away again.
+#
+# THIS IS NOT A DESTRUCTIVE ACTION IN THE R7 SENSE. The row deleted is the one
+# this attempt created, named with this attempt's own ATTEMPT_ID, and it is
+# gone from the picture the moment the flow ends. No shared data, no other
+# worker's data, nothing another flow reads.
+# ============================================================
+
+# Filter the Sports column down to this attempt's row and select it. Selecting
+# is what mounts the attributes panel for that row.
+- tapOn:
+    id: "Search sports"
+- inputText: "TestCustomSport-${ATTEMPT_ID}"
+- tapOn:
+    text: "TestCustomSport-${ATTEMPT_ID}"
+    below:
+      id: "Search sports"
+
+# The attributes header renders BELOW the selector columns, so scroll to it —
+# and centre it, because the bin sits on that same header line and is what we
+# press next (R8). The header naming this row is also the proof that the panel
+# is pointed at the row we mean, which everything below depends on.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for TestCustomSport-${ATTEMPT_ID}.*"
+    centerElement: true
+    timeout: 15000
+
+# The bin is disabled — and says why — while the app is still counting what is
+# below the row, and a press in that window only reveals the reason instead of
+# opening the dialog. That window is short (one indexed Convex read) and has
+# normally closed by the time the scroll above finishes, so a single re-press
+# recovers it. R2 is intact: a row that genuinely holds something never opens
+# this dialog at all, on either attempt, and the flow fails.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "Delete TestCustomSport-${ATTEMPT_ID}"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Delete Sport .TestCustomSport-${ATTEMPT_ID}..*"
+          timeout: 7000
+
+# The dialog states the guarantee the whole feature rests on: this row can go
+# because nothing is under it. (No marketplace-linked clause here — a custom
+# sport carries no BSC or SportLots id, so no sync can bring it back.)
+- assertVisible: "Nothing is below it. This cannot be undone."
+
+- tapOn: "Yes, delete"
+
+# THE ACCEPTANCE CRITERION. Re-load, search for the row by its per-attempt name,
+# and the column says there is no such row. "No matches found" is EntitySelector's
+# own empty-filter text, so this is a positive assertion about a live column —
+# not a bare notVisible, which an error page would satisfy just as well.
+- openLink: ${APP_URL || "http://localhost:3000"}/set-selector
+- assertVisible: ".*Build set parameters using marketplace APIs.*"
+- extendedWaitUntil:
+    visible: "Baseball"
+    timeout: 30000
+- tapOn:
+    id: "Search sports"
+- inputText: "TestCustomSport-${ATTEMPT_ID}"
+- extendedWaitUntil:
+    visible: "No matches found"
+    timeout: 7000
+# Deliberately no `assertNotVisible` on the name itself: the search box still
+# HOLDS that text, and maestro-web reads an <input>'s value as its text, so such
+# an assertion could never pass however thoroughly the row was deleted.

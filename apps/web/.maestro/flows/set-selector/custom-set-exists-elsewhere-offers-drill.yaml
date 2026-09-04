@@ -1,0 +1,184 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Custom entry — a name that already exists under another brand offers to go to it instead of making a second row (NEO-219)"
+tags:
+  - set-selector
+  - regression
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE: typing a custom SET name that already exists somewhere else
+# under the same YEAR stops and offers to take you to the existing row, rather
+# than silently minting a second row with the same name under a different brand.
+#
+# WHAT A USER SEES. They open "+ Custom" in the Sets column under brand A, type
+# a set name, and press Enter. Instead of the row appearing, the form says
+# "'<name>' already exists under 2026 › <brand B>" and offers "Go to it" (the
+# default), "Create here anyway", or "Back". Pressing "Go to it" moves the whole
+# cascade onto the existing row — the attributes header then names that row and
+# its breadcrumb reads through brand B, not brand A.
+#
+# WHY THIS MATTERS. The duplicate this prevents is the "same set filed twice"
+# problem: two rows with one name, cards split between them, and only one of
+# them linked to the marketplaces. Before NEO-219 the duplicate check only
+# looked at the column you were standing in, so a set under a DIFFERENT brand in
+# the same year was invisible and the second row was created without a word.
+#
+# THE SECOND, SMALLER ASSERTION (same feature family, one flow): a custom YEAR
+# is validated before anything is written. "2o24" — the letter o, the classic
+# typo — is refused inline with "Year must be a four-digit number" and the form
+# stays open with nothing created. It is here rather than in its own flow
+# because it is three steps and shares this flow's per-worker sport.
+#
+# DATA ISOLATION (R7 / R7a). Everything is created under this worker's own
+# synthetic sport, "E2E Test Sport <worker>", inside year 2026 — the suite's
+# existing per-worker custom playground. No real, marketplace-backed set is
+# read or written, and no other worker can see these rows. The two brand rows
+# (`xp-<worker>-A` / `xp-<worker>-B`) are stable per worker so retries reuse
+# them; only the SET name carries ATTEMPT_ID, because a retry must find the row
+# THIS attempt put under B, not one a previous attempt left behind. Prefix
+# registered in .maestro/SET-REGISTRY.md.
+#
+# R4 — enters through the sign-in redirect; no in-body login.
+# R5 — every wait is the 7s default. Nothing here touches a marketplace: a
+#   custom sport makes the whole subtree custom (NEO-22), so every column
+#   short-circuits before any BSC/SportLots call. The only longer waits are the
+#   cold sign-in and the drill util's own column waits.
+# R9 — all drilling goes through util-drill-to-custom.yaml.
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# The runner injects ATTEMPT_ID per attempt; this is the standalone-run
+# fallback, matching move-parallels-of-inserts-custom.yaml.
+- evalScript: ${output.ATTEMPT_ID = output.ATTEMPT_ID || String(Date.now()).slice(-4)}
+
+# ============================================================
+# PART 1 — A CUSTOM YEAR MUST BE A YEAR
+#
+# Drill only as far as this worker's own sport; the util leaves the Years
+# column open next to it.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+
+# Open the Years column's custom form. centerElement so the button is fully in
+# view before it is pressed (R8).
+- scrollUntilVisible:
+    element:
+      id: "Add custom Years"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Add custom Years"
+- assertVisible: "Add Custom Entry"
+
+# The letter "o" instead of a zero. The input is auto-focused when the form
+# opens, so this types straight into it.
+- inputText: "2o24"
+- pressKey: Enter
+
+# THE ACCEPTANCE CRITERION for this part: the typo is named, in the operator's
+# own words, before anything is written.
+- extendedWaitUntil:
+    visible: "Year must be a four-digit number"
+    timeout: 7000
+
+# And NOTHING was created: the form is still standing where it was, waiting for
+# a corrected value. (A created row would have closed it — that is the same
+# signal ten other flows use to know a custom entry landed.)
+- assertVisible: "Add Custom Entry"
+
+# ============================================================
+# PART 2 — BUILD THE SITUATION: the same set name under brand B
+#
+# The drill creates brand B and the set under it, then selects both.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "xp-${WORKER_INDEX || 0}-B"
+      SET_NAME: "xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome"
+
+# PRECONDITION (R2): the set really is under brand B. The attributes header
+# follows the deepest selection, so this names both the row and the brand it
+# hangs off — everything below is meaningless without it.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"
+    centerElement: true
+    timeout: 15000
+- assertVisible:
+    text: ".*2026 › xp-${WORKER_INDEX || 0}-B › xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"
+
+# ============================================================
+# PART 3 — TYPE THE SAME NAME UNDER BRAND A
+#
+# Drill to brand A only (no SET_NAME), so the util stops with A selected and
+# an EMPTY Sets column open next to it.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
+      YEAR: "2026"
+      MANUFACTURER: "xp-${WORKER_INDEX || 0}-A"
+
+- scrollUntilVisible:
+    element:
+      id: "Add custom Sets"
+    centerElement: true
+    timeout: 15000
+- tapOn:
+    id: "Add custom Sets"
+- assertVisible: "Add Custom Entry"
+
+- inputText: "xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome"
+# ONE Enter only. Under brand A this name is new, so the form goes off to check
+# the rest of the year — and comes back with the offer below rather than the
+# plain "Create …?" confirm that a genuinely-new name gets. Pressing Enter a
+# second time here would press "Go to it" before we have read the sentence.
+- pressKey: Enter
+
+# THE ACCEPTANCE CRITERION. The form names the row it found AND where it lives —
+# the year and the OTHER brand — which is the whole difference between this and
+# the old column-only check.
+- extendedWaitUntil:
+    visible:
+      text: ".*xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome. already exists under 2026 › xp-${WORKER_INDEX || 0}-B.*"
+    timeout: 7000
+
+# Both ways out are offered, and neither is taken by accident: "Go to it" is the
+# default, and duplicating the name is the deliberate secondary.
+- assertVisible: "Create here anyway"
+
+- tapOn: "Go to it"
+
+# The form closes without writing anything — "Go to it" is a navigation, not a
+# write dressed up as one. Paired with the positive assertions immediately
+# below, so it cannot be satisfied by a page that has fallen over.
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+
+# THE SECOND ACCEPTANCE CRITERION: the cascade moved. The attributes header now
+# describes the EXISTING row, and its breadcrumb runs through brand B — so no
+# second row was created under brand A and the operator was taken to the one
+# that already existed. The header renders below the selector columns, so scroll
+# to it; the scroll IS the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"
+    centerElement: true
+    timeout: 15000
+- assertVisible:
+    text: ".*2026 › xp-${WORKER_INDEX || 0}-B › xp-${WORKER_INDEX || 0}-${ATTEMPT_ID} Chrome.*"

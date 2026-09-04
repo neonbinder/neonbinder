@@ -158,6 +158,16 @@ Consequences worth knowing:
   two-BSC-source insert row to re-sync, and the sole-writer rule forbids a
   second flow from building one.
 
+**NEO-219 — STEP 9 opens the detach confirm on one BSC source and CANCELS.**
+It presses the `×` on `Dugout Collection Artist's Proofs Series 1`, reads back
+"110 cards were fetched from it" (the per-SOURCE count, which only this
+two-source set can distinguish from the row's 220 total), and then presses
+Cancel. **Nothing is detached.** The set is left with both BSC sources, the one
+SportLots source and 220 paired cards — exactly as STEP 8 leaves it. This step
+lives here for the same reason STEPs 7 and 8 do: the shape it needs (one NB row,
+two sources, a known split) exists nowhere else, and the sole-writer rule below
+forbids a second flow from building it.
+
 220 is also the fan-out regression guard. BSC does not OR multi-value facets:
 before `fetchBscChecklist` fanned out one request per source set, this exact
 configuration returned 200 OK with zero rows and the UI reported "0 BSC cards".
@@ -239,6 +249,18 @@ directly in the UI — "Cards (337)" against "Found 335 cards". Both flows are n
 on per-worker custom sets. `NEO-109` (read-only `signed-by-autofills-from-players`
 failing on card #300) is very likely the same pollution.
 
+### Per-attempt custom SPORT rows — `custom-entry-survives-resync`, self-cleaning
+
+`custom-entry-survives-resync.yaml` creates one custom SPORT row per attempt,
+`TestCustomSport-<attempt>`, proves a marketplace re-sync does not delete it,
+and — since NEO-219 — **deletes it again through the attributes header's delete
+control** (STEP 4). It therefore leaves the Sports column exactly as it found it.
+That delete is the flow's contract: if STEP 4 is ever removed, the flow goes back
+to leaking one global sport row per run.
+
+The row is safe to delete because it holds nothing — no years, sets, cards,
+players or teams — which is the only condition `deleteSelectorOption` accepts.
+
 ## Custom sets
 
 A **custom Set node makes the whole subtree custom** (`isCustomSubtree` → BSC/SL
@@ -296,6 +318,7 @@ would put the wrong question on screen.
 | `xbg-`, `xbs-` | `cross-release-import-reports-missing-numbers.yaml` |
 | `xcg-`, `xsrc-` | `cross-release-hide-toggle-filters-guest-cards.yaml` |
 | `xdg-`, `xds-` | `cross-release-unlink-keeps-card-in-home-set.yaml` |
+| `xp-` | `custom-set-exists-elsewhere-offers-drill.yaml` — the brand rows `xp-<worker>-A` / `xp-<worker>-B` under `E2E Test Sport <worker>` / 2026, plus a set `xp-<worker>-<attempt> Chrome` under B |
 
 `xsrc-` is intentionally shared between the two cross-release flows that both
 need the same guest-source set; it is still per-worker.
