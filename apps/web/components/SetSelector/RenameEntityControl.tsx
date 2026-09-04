@@ -70,11 +70,11 @@ import { Input } from "../primitives/Input";
  * ── NOT EVERY ROW IS RENAMEABLE (NEO-211, plan F) ───────────────────────────
  * A non-custom `variantType` row's VALUE is load-bearing code, not a label:
  * `SetSelector` detects the Base variant by the literal string "Base" (terminal
- * detection, column hiding, the Base mapping panel), `getBaseVariantBySet` and
- * `wipeLegacyBaseChildren` do the same, and the BSC checklist fetch derives its
- * `variant` facet straight from this display value — so "Insert", "Parallel" and
- * "Promo" are every bit as load-bearing as "Base". Renaming one silently breaks
- * the fetch rather than failing loudly.
+ * detection, column hiding, the Base mapping panel), `getBaseVariantBySet` does
+ * the same, and the BSC checklist fetch derives its `variant` facet straight
+ * from this display value — so "Insert", "Parallel" and "Promo" are every bit
+ * as load-bearing as "Base". Renaming one silently breaks the fetch rather
+ * than failing loudly.
  *
  * `canRenameSelectorRow` is the render-time gate for that, and the server
  * refuses the same rows independently (`VARIANT_TYPE_RENAME_REFUSED`). Both,

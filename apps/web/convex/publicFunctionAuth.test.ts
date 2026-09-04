@@ -333,3 +333,58 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     ).toEqual([]);
   });
 });
+
+describe("NEO-214: the Set Builder admin panel and its client-callable functions are gone", () => {
+  /**
+   * Jason, 2026-09-03: "Those should just not be there in production. If we
+   * want to do either of those it should be a scripted admin task, not
+   * something in the UI that any admin can hit."
+   *
+   * `AdminTools` mounted three functions on the Set Builder page — a full
+   * data reset, a legacy-migration wipe, and an E2E fixture seed — each one
+   * click away for any admin on any deployment. The panel is deleted; the
+   * reset survives only as an `internalAction` driven by `npx convex run`
+   * (see `docs/operations/neo214-set-builder-admin-scripts.md`), and the
+   * other two are deleted outright.
+   *
+   * Same reading-the-source approach as the NEO-154 block above, for the same
+   * reason: `convex-test` does not enforce the public/internal boundary, so
+   * calling the function proves nothing about which keyword declared it.
+   */
+  test("the AdminTools panel is not back", () => {
+    expect(
+      existsSync(join(__dirname, "..", "components", "SetSelector", "AdminTools.tsx")),
+    ).toBe(false);
+  });
+
+  test("resetSetBuilderData (the public action behind the button) is gone", () => {
+    const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
+    expect(src).not.toContain("export const resetSetBuilderData = action(");
+  });
+
+  test("resetSetBuilderDataFromCli is the single entry point, and internal", () => {
+    const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
+    expect(src).toContain(
+      "export const resetSetBuilderDataFromCli = internalAction({",
+    );
+    expect(src).not.toContain("export const resetSetBuilderDataFromCli = action(");
+  });
+
+  test("wipeLegacyBaseChildren is gone", () => {
+    // A public `mutation` with `requireAdmin` and NO env gate that deleted
+    // every insert/parallel under every "Base" variantType across the whole
+    // database. It was the one-time "Base becomes terminal" migration, long
+    // since run, and the panel was its only caller.
+    const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
+    expect(src).not.toContain("export const wipeLegacyBaseChildren");
+  });
+
+  test("seedTestTeams is gone", () => {
+    // Deleted rather than made internal (Jason, 2026-09-04): "we can use
+    // admin/teams and admin/players to create teams and players", so the
+    // fixture no longer needs a seeding function of its own.
+    const src = readFileSync(join(__dirname, "teams.ts"), "utf8");
+    expect(src).not.toContain("export const seedTestTeams");
+    expect(existsSync(join(__dirname, "seedTestTeams.test.ts"))).toBe(false);
+  });
+});
