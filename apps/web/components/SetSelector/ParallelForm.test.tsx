@@ -155,6 +155,42 @@ describe("ParallelForm — reconciliation confirm (NEO-211 F1)", () => {
   });
 });
 
+describe("ParallelForm — failed save (NEO-211)", () => {
+  it("surfaces our own error in the dialog and keeps it open for a retry", async () => {
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [{ value: "Gold", platformValue: "bsc-gold" }],
+      slOptions: [{ value: "Gold", platformValue: "sl-gold" }],
+      autoMatched: [
+        {
+          displayName: "Gold",
+          bsc: { value: "Gold", platformValue: "bsc-gold" },
+          sl: { value: "Gold", platformValue: "sl-gold" },
+          confidence: 0.9,
+        },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+      message: "BSC: 1, SL: 1",
+    });
+    mockStore.mockRejectedValueOnce(new Error("[Request ID: xyz] cap exceeded"));
+    await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 1 sets/));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Couldn't save these sets. Nothing was changed — press Save to try again, or Cancel to close.",
+    );
+    expect(alert.textContent).not.toContain("Request ID");
+    expect(screen.getByText(/Save 1 sets/)).toBeTruthy();
+  });
+});
+
 describe("ParallelForm — both adapters empty (NEO-211)", () => {
   it("keeps the alert and Retry mounted instead of closing the panel", async () => {
     // Same fix as VariantForm: this branch used to call onDone(), unmounting

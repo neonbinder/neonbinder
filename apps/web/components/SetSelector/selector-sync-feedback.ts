@@ -31,6 +31,8 @@
  * `buildUnlinkedNotices`.
  */
 
+import { MAX_RETURNED_IDS } from "../../convex/selectorSyncStore";
+
 export type SyncSide = "bsc" | "sportlots";
 
 export const ALL_SIDES: readonly SyncSide[] = ["bsc", "sportlots"];
@@ -406,8 +408,8 @@ export type FetchedOptionUniverse = {
  * an id missing from this set is a false "no longer listed" notice.
  */
 export function returnedIdsFromFetch(result: FetchedOptionUniverse): {
-  bsc: string[];
-  sportlots: string[];
+  bsc?: string[];
+  sportlots?: string[];
 } {
   const bsc = new Set<string>();
   const sportlots = new Set<string>();
@@ -419,10 +421,29 @@ export function returnedIdsFromFetch(result: FetchedOptionUniverse): {
     bsc.add(m.bsc.platformValue);
     sportlots.add(m.sl.platformValue);
   }
-  // Both keys always present, an empty array included: `[]` is the meaningful
-  // statement "this side was asked and returned nothing", which is exactly what
-  // licenses an unlink. Omitting the key would mean "no information".
-  return { bsc: [...bsc], sportlots: [...sportlots] };
+
+  // A side over the store's per-side cap is OMITTED rather than sent.
+  //
+  // The cap is enforced server-side and used to THROW, which surfaced as a
+  // reconcile dialog that stayed open after "Save 76 sets" with no visible
+  // error at all — SportLots returns 2,563 sets for a single year, so this is
+  // an ordinary Tuesday, not an edge case. Omitting is the honest degrade: an
+  // absent key means "no information about this side", so the store leaves that
+  // side's links alone (it only unlinks on a side it was positively told about)
+  // and the save still succeeds. The alternative — truncating to the first N —
+  // would be far worse, because every id past the cut would look DELISTED and
+  // get silently unlinked.
+  //
+  // Belt and braces with the backend raising the cap: this makes an oversized
+  // universe unable to fail the save regardless of which backend version is
+  // deployed, which matters because the FE and Convex deploy separately.
+  const ids: { bsc?: string[]; sportlots?: string[] } = {};
+  // Both keys are otherwise ALWAYS present, `[]` included: `[]` is the
+  // meaningful statement "this side was asked and returned nothing", which is
+  // what licenses an unlink.
+  if (bsc.size <= MAX_RETURNED_IDS) ids.bsc = [...bsc];
+  if (sportlots.size <= MAX_RETURNED_IDS) ids.sportlots = [...sportlots];
+  return ids;
 }
 
 /**

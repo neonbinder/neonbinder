@@ -333,6 +333,18 @@ type ReconciliationModalProps = {
   // Previously-saved insert rows for this variantType. Used to seed the
   // modal's matched / keptBsc / keptSl sections so re-running a sync
   // preserves prior reconciliation work instead of starting fresh.
+  /**
+   * NEO-211: a failure from the caller's own save, shown IN the dialog.
+   *
+   * `onConfirm` rejecting used to be an unhandled promise rejection: this
+   * component's `handleConfirm` has a `finally` that clears `confirming` but no
+   * `catch`, so the dialog simply sat there after "Save 76 sets" with no error
+   * and no explanation. The caller now catches and hands the reason back here,
+   * where the operator can read it and press Save again — the dialog stays open
+   * deliberately, because closing it would throw away the whole reconciliation
+   * they just did.
+   */
+  saveError?: string | null;
   existingRows?: Array<{
     /** The row's own `_id` — see `ReadySet.existingId`. Optional so callers
      *  that predate NEO-211 (and the tests that construct rows by hand) keep
@@ -678,6 +690,7 @@ export default function ReconciliationModal({
   usedSlPlatformValues = [],
   usedBscPlatformValues = [],
   existingRows = [],
+  saveError = null,
 }: ReconciliationModalProps) {
   const usedSlSet = useMemo(
     () => new Set(usedSlPlatformValues),
@@ -1312,7 +1325,17 @@ export default function ReconciliationModal({
         </DndContext>
 
         {/* Footer */}
-        <div className="px-6 py-4 border-t border-gray-700 flex justify-end gap-3">
+        <div className="px-6 py-4 border-t border-gray-700 flex justify-end items-center gap-3 flex-wrap">
+          {saveError && (
+            // role="alert": the operator pressed Save and is watching the
+            // button, not this spot, so this has to interrupt.
+            <span
+              role="alert"
+              className="mr-auto text-sm text-[#FF2EB3] max-w-md"
+            >
+              {saveError}
+            </span>
+          )}
           <NeonButton cancel onClick={onClose} disabled={confirming}>
             Cancel
           </NeonButton>

@@ -59,6 +59,9 @@ export default function ParallelForm({
   // The server truncates `unlinked` to a 50-row sample and reports the real
   // count here, so the notice can say "312 sets" while naming two of them.
   const [unlinkedTotal, setUnlinkedTotal] = useState<number | undefined>(undefined);
+  // NEO-211: a failed save from inside the reconciliation dialog. Shown IN the
+  // dialog so the operator's reconciliation survives and Save can be retried.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const triggered = useRef(false);
   // a11y: focus-park landing spot — see VariantForm.tsx's own copy of these
   // two effects for the full rationale (Retry-unmount and Dismiss-unmount).
@@ -191,10 +194,13 @@ export default function ParallelForm({
         // Hold the panel open while there is a detach to report.
         if (unlinkedRows.length === 0) onDone?.();
       }
-    } catch (error) {
-      setMessage(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+    } catch {
+      // NEO-211 F3: the thrown text here is a Convex/adapter error that can
+      // carry a marketplace URL, a response body or a credential hint, and this
+      // catch also covers the single-platform store call. Our own fixed string;
+      // the detail stays in the Convex logs. Keeps the SYNC_FAILED_PREFIX lead
+      // so the isError branch still renders Retry + Cancel.
+      setMessage(`${SYNC_FAILED_PREFIX}. Nothing was changed.`);
     } finally {
       setLoading(false);
     }
@@ -207,35 +213,49 @@ export default function ParallelForm({
     const returnedIds = reconciliationData
       ? returnedIdsFromFetch(reconciliationData)
       : undefined;
-    const stored = await storeReconciledOptions({
-      level: "parallel",
-      parentId: insertId,
-      reconciledItems: result.items.map((item) => ({
-        value: item.value,
-        platformData: item.platformData,
-        // Forwarded so every allocated slot gets the marketplace's own set
-        // name. A set may map to several sets per side, and without labels
-        // the slots are indistinguishable ids downstream.
-        platformLabels: item.platformLabels,
-        metadata: item.metadata,
-        // NEO-211 (plan E): the NB row this modal row IS, so a title edit here
-        // renames that row instead of deleting and reinserting it.
-        existingId: item.existingId,
-      })),
-      // Every side that answered. Both did here (the modal only opens when both
-      // returned rows), but deriving it keeps the guarantee honest. Spread
-      // rather than assigned so an absent fetch result OMITS the arg — the
-      // store then unlinks nothing, instead of being told both sides were fine.
-      ...(covered ? { coveredSides: covered } : {}),
-      // NEO-211 F1: what the MARKETPLACE returned, sent separately from what the
-      // operator confirmed above. The store cannot derive "no longer listed"
-      // from `reconciledItems`: a restored row is always in there (so a delisted
-      // set could never be unlinked) and a row the operator disbanded is not
-      // (so a set the marketplace still lists looked delisted, and the admin got
-      // a false "No longer listed" notice). Derived from the FETCH, never from
-      // the modal's output.
-      ...(returnedIds ? { returnedIds } : {}),
-    });
+    // Clear any previous failure so a retry does not show a stale reason.
+    setSaveError(null);
+    let stored;
+    try {
+      stored = await storeReconciledOptions({
+        level: "parallel",
+        parentId: insertId,
+        reconciledItems: result.items.map((item) => ({
+          value: item.value,
+          platformData: item.platformData,
+          // Forwarded so every allocated slot gets the marketplace's own set
+          // name. A set may map to several sets per side, and without labels
+          // the slots are indistinguishable ids downstream.
+          platformLabels: item.platformLabels,
+          metadata: item.metadata,
+          // NEO-211 (plan E): the NB row this modal row IS, so a title edit here
+          // renames that row instead of deleting and reinserting it.
+          existingId: item.existingId,
+        })),
+        // Every side that answered. Both did here (the modal only opens when both
+        // returned rows), but deriving it keeps the guarantee honest. Spread
+        // rather than assigned so an absent fetch result OMITS the arg — the
+        // store then unlinks nothing, instead of being told both sides were fine.
+        ...(covered ? { coveredSides: covered } : {}),
+        // NEO-211 F1: what the MARKETPLACE returned, sent separately from what the
+        // operator confirmed above. The store cannot derive "no longer listed"
+        // from `reconciledItems`: a restored row is always in there (so a delisted
+        // set could never be unlinked) and a row the operator disbanded is not
+        // (so a set the marketplace still lists looked delisted, and the admin got
+        // a false "No longer listed" notice). Derived from the FETCH, never from
+        // the modal's output.
+        ...(returnedIds ? { returnedIds } : {}),
+      });
+    } catch {
+      // Our own fixed string: the thrown text is a Convex server error that can
+      // carry marketplace/response detail, and it must not reach the DOM.
+      // Deliberately does NOT close the dialog — the operator's whole
+      // reconciliation is in there and closing would discard it.
+      setSaveError(
+        "Couldn't save these sets. Nothing was changed — press Save to try again, or Cancel to close.",
+      );
+      return;
+    }
     setShowReconciliation(false);
     const unlinkedRows = stored?.unlinked ?? [];
     setUnlinkedTotal(stored?.unlinkedTotal);
@@ -337,10 +357,12 @@ export default function ParallelForm({
         <ReconciliationModal
           isOpen={showReconciliation}
           onClose={() => {
+            setSaveError(null);
             setShowReconciliation(false);
             onDone?.();
           }}
           onConfirm={handleReconciliationConfirm}
+          saveError={saveError}
           level="parallel"
           initialData={{
             autoMatched: reconciliationData.autoMatched,

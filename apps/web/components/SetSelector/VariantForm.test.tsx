@@ -240,6 +240,55 @@ describe("VariantForm — reconciliation confirm (NEO-211 F1)", () => {
     expect(args.coveredSides).toEqual(["bsc", "sportlots"]);
   });
 
+  it("shows an error IN the dialog when the save throws, keeping the work", async () => {
+    // Regression for the CI seed flow: storeReconciledOptions threw (the
+    // returnedIds cap), ReconciliationModal's handleConfirm has a `finally` but
+    // no `catch`, so it became an unhandled rejection — the dialog sat open
+    // after "Save 76 sets" with no error and no way to tell anything failed.
+    mockFetchRawOptions.mockResolvedValue(bothSides());
+    mockStore.mockRejectedValueOnce(
+      new Error("[Request ID: abc] returnedIds.sportlots has 2563 entries"),
+    );
+    await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 2 sets/));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Couldn't save these sets. Nothing was changed — press Save to try again, or Cancel to close.",
+    );
+    // Our own string only — no thrown text, no request id, no counts.
+    expect(alert.textContent).not.toContain("2563");
+    expect(alert.textContent).not.toContain("Request ID");
+    // The dialog stays open: it holds the whole reconciliation, and closing it
+    // would make the operator redo every mapping.
+    expect(screen.getByText(/Save 2 sets/)).toBeTruthy();
+  });
+
+  it("lets the operator retry Save after a failure, and clears the stale error", async () => {
+    mockFetchRawOptions.mockResolvedValue(bothSides());
+    mockStore.mockRejectedValueOnce(new Error("boom"));
+    const { onDone } = await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 2 sets/));
+    });
+    await screen.findByRole("alert");
+    expect(onDone).not.toHaveBeenCalled();
+
+    // Second press succeeds — Save is live again (confirming reset in finally).
+    mockStore.mockResolvedValue({ success: true, unlinked: [] });
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save 2 sets/));
+    });
+
+    expect(mockStore).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onDone).toHaveBeenCalled();
+  });
+
   it("omits coveredSides entirely rather than claiming both sides were fine", async () => {
     // coveredSidesFromErrors fails closed on an absent fetch result; this pins
     // that the confirm path spreads it rather than assigning undefined.

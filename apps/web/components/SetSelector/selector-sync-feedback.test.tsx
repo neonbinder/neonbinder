@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { MAX_RETURNED_IDS } from "../../convex/selectorSyncStore";
 import {
   blockedMessageFromErrors,
   buildUnlinkedNotices,
@@ -201,9 +202,38 @@ describe("returnedIdsFromFetch", () => {
     ).toEqual({ bsc: ["b1", "b2"], sportlots: ["s1"] });
   });
 
+  it("OMITS a side that blows the store's per-side cap, and keeps the other", () => {
+    // The CI seed flow hit this for real: SportLots returns 2,563 sets for one
+    // year, the store's cap threw, and the reconcile dialog sat open after
+    // "Save 76 sets" with no visible error. Omitting means "no information
+    // about this side" — the store leaves its links alone and the save still
+    // lands. Truncating would be far worse: every id past the cut would look
+    // delisted and get silently unlinked.
+    const huge = Array.from({ length: MAX_RETURNED_IDS + 1 }, (_, i) => ({
+      platformValue: `sl-${i}`,
+    }));
+    const ids = returnedIdsFromFetch({
+      bscOptions: [{ platformValue: "b1" }],
+      slOptions: huge,
+    });
+    expect(ids.sportlots).toBeUndefined();
+    expect("sportlots" in ids).toBe(false);
+    // The healthy side is unaffected — a partial answer beats no answer.
+    expect(ids.bsc).toEqual(["b1"]);
+  });
+
+  it("keeps a side sitting exactly ON the cap", () => {
+    const atCap = Array.from({ length: MAX_RETURNED_IDS }, (_, i) => ({
+      platformValue: `sl-${i}`,
+    }));
+    const ids = returnedIdsFromFetch({ slOptions: atCap });
+    expect(ids.sportlots).toHaveLength(MAX_RETURNED_IDS);
+  });
+
   it("reports an untouched side as [], not as a missing key", () => {
     // `[]` says "asked, returned nothing" — which is what licenses an unlink.
-    // Omitting the key would say "no information" and unlink nothing.
+    // Omitting the key would say "no information" and unlink nothing. The two
+    // are NOT interchangeable, which is why the over-cap case above omits.
     const ids = returnedIdsFromFetch({ bscOptions: [{ platformValue: "b1" }] });
     expect(ids.sportlots).toEqual([]);
     expect(Object.keys(ids).sort()).toEqual(["bsc", "sportlots"]);
