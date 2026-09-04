@@ -528,3 +528,141 @@ describe("useReactiveField", () => {
     });
   });
 });
+
+/**
+ * NEO-216 — the hook drives a `<textarea>` too, and the Enter key means
+ * something different there.
+ *
+ * The card detail drawer's listing description became a per-field autosave row
+ * like every other field in that drawer, which is what widened the element
+ * type from `HTMLInputElement` to `HTMLInputElement | HTMLTextAreaElement`.
+ * A bare Enter in a textarea is a paragraph break the operator deliberately
+ * typed; swallowing it to save would make a multi-line description impossible
+ * to write. So multi-line rows opt into `enterCommit: "modEnter"` and commit
+ * on Cmd/Ctrl+Enter — or, as always, on blur.
+ */
+function TextareaHarness({
+  currentValue,
+  onSave,
+  enterCommit,
+}: {
+  currentValue: string;
+  onSave: (trimmed: string) => Promise<unknown> | unknown;
+  enterCommit?: "enter" | "modEnter";
+}) {
+  const { inputProps, busy, error } = useReactiveField<HTMLTextAreaElement>({
+    value: currentValue,
+    onSave,
+    enterCommit,
+  });
+
+  return (
+    <>
+      <textarea aria-label="field" {...inputProps} />
+      {busy && <span data-testid="busy">busy</span>}
+      {error && <span data-testid="error">{error}</span>}
+    </>
+  );
+}
+
+describe("useReactiveField — textarea + enterCommit (NEO-216)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const field = () =>
+    screen.getByRole("textbox", { name: "field" }) as HTMLTextAreaElement;
+
+  it("ignores a bare Enter when enterCommit is 'modEnter'", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TextareaHarness
+        currentValue="old"
+        onSave={onSave}
+        enterCommit="modEnter"
+      />,
+    );
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "line one";
+    fireEvent.input(el, { target: { value: "line one" } });
+
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("commits on Cmd/Ctrl+Enter, reading the live DOM value", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TextareaHarness
+        currentValue="old"
+        onSave={onSave}
+        enterCommit="modEnter"
+      />,
+    );
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "line one\nline two";
+    fireEvent.input(el, { target: { value: "line one\nline two" } });
+
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter", metaKey: true });
+    });
+    expect(onSave).toHaveBeenCalledWith("line one\nline two");
+
+    await act(async () => {
+      el.value = "third";
+      fireEvent.input(el, { target: { value: "third" } });
+      fireEvent.keyDown(el, { key: "Enter", ctrlKey: true });
+    });
+    expect(onSave).toHaveBeenCalledWith("third");
+  });
+
+  it("still commits on blur, which is the shared contract", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TextareaHarness
+        currentValue="old"
+        onSave={onSave}
+        enterCommit="modEnter"
+      />,
+    );
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "typed";
+    fireEvent.input(el, { target: { value: "typed" } });
+
+    await act(async () => {
+      el.blur();
+      fireEvent.blur(el);
+    });
+
+    expect(onSave).toHaveBeenCalledWith("typed");
+  });
+
+  it("defaults to committing on a bare Enter, so no existing caller changes", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<TextareaHarness currentValue="old" onSave={onSave} />);
+
+    const el = field();
+    el.focus();
+    fireEvent.focus(el);
+    el.value = "typed";
+    fireEvent.input(el, { target: { value: "typed" } });
+
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+
+    expect(onSave).toHaveBeenCalledWith("typed");
+  });
+});

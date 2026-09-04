@@ -32,7 +32,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * This hook owns ONE field. Each editable row mounts its own `useReactiveField`
  * (per-field autosave), mirroring how the existing rows each carry their own
  * busy/error/commit state.
+ *
+ * NEO-216 widened it from `<input>` to `<input> | <textarea>` (the card
+ * drawer's listing description is multi-line and now autosaves per field like
+ * everything else in that drawer). The element type is a type parameter that
+ * defaults to `HTMLInputElement`, so every existing caller is unchanged.
  */
+
+/**
+ * The elements this hook can drive. `<textarea>` was added for NEO-216 (the
+ * card drawer's listing description): the commit/mirror/read-at-commit
+ * contract is identical for both, only the "commit without leaving the field"
+ * keystroke differs — see `enterCommit`.
+ */
+export type ReactiveFieldElement = HTMLInputElement | HTMLTextAreaElement;
 
 export type ReactiveFieldOptions = {
   /**
@@ -61,25 +74,38 @@ export type ReactiveFieldOptions = {
    * persisted value here.
    */
   compareBaseline?: string;
+  /**
+   * Which keystroke commits without leaving the field.
+   *
+   * `"enter"` (default) suits a single-line `<input>`, where Enter has no
+   * other meaning. `"modEnter"` is for a `<textarea>`: there, a bare Enter is
+   * a newline the operator deliberately typed, so swallowing it to save would
+   * make multi-line text impossible to write. Blur commits either way.
+   */
+  enterCommit?: "enter" | "modEnter";
 };
 
 /**
- * Props the consumer spreads onto its `<input>`: `ref` + `defaultValue` make
- * it uncontrolled; `onFocus`/`onBlur`/`onKeyDown` layer the focus-guard +
- * commit-on-blur/Enter on top. The caller still supplies its own `aria-label`,
- * `placeholder`, `className`, `disabled`, etc.
+ * Props the consumer spreads onto its `<input>`/`<textarea>`: `ref` +
+ * `defaultValue` make it uncontrolled; `onFocus`/`onBlur`/`onKeyDown` layer
+ * the focus-guard + commit-on-blur/Enter on top. The caller still supplies its
+ * own `aria-label`, `placeholder`, `className`, `disabled`, etc.
  */
-export type ReactiveFieldInputProps = {
-  ref: (el: HTMLInputElement | null) => void;
+export type ReactiveFieldInputProps<
+  E extends ReactiveFieldElement = HTMLInputElement,
+> = {
+  ref: (el: E | null) => void;
   defaultValue: string;
-  onFocus: React.FocusEventHandler<HTMLInputElement>;
-  onBlur: React.FocusEventHandler<HTMLInputElement>;
-  onKeyDown: React.KeyboardEventHandler<HTMLInputElement>;
+  onFocus: React.FocusEventHandler<E>;
+  onBlur: React.FocusEventHandler<E>;
+  onKeyDown: React.KeyboardEventHandler<E>;
 };
 
-export type ReactiveFieldApi = {
-  /** Spread onto the `<input>`: wires the uncontrolled ref + focus-guard + commit. */
-  inputProps: ReactiveFieldInputProps;
+export type ReactiveFieldApi<
+  E extends ReactiveFieldElement = HTMLInputElement,
+> = {
+  /** Spread onto the field: wires the uncontrolled ref + focus-guard + commit. */
+  inputProps: ReactiveFieldInputProps<E>;
   /** True while a save is in flight. Drives the disabled/busy affordance. */
   busy: boolean;
   /** Last commit error message, or null. */
@@ -88,13 +114,16 @@ export type ReactiveFieldApi = {
   commit: () => Promise<void>;
 };
 
-export function useReactiveField({
+export function useReactiveField<
+  E extends ReactiveFieldElement = HTMLInputElement,
+>({
   value,
   onSave,
   onEmptyCommit,
   compareBaseline,
-}: ReactiveFieldOptions): ReactiveFieldApi {
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  enterCommit = "enter",
+}: ReactiveFieldOptions): ReactiveFieldApi<E> {
+  const inputRef = useRef<E | null>(null);
   // Track focus + busy in refs (synchronous) so the mirroring effect honors
   // the focus-guard without depending on React state timing.
   const focusedRef = useRef(false);
@@ -169,18 +198,20 @@ export function useReactiveField({
   }, [runCommit]);
 
   const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLInputElement>) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        void runCommit();
-      }
+    (e: React.KeyboardEvent<E>) => {
+      if (e.key !== "Enter") return;
+      // A textarea's bare Enter belongs to the operator (it is a newline they
+      // meant to type), so only Cmd/Ctrl+Enter commits there.
+      if (enterCommit === "modEnter" && !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      void runCommit();
     },
-    [runCommit],
+    [runCommit, enterCommit],
   );
 
   return {
     inputProps: {
-      ref: (el: HTMLInputElement | null) => {
+      ref: (el: E | null) => {
         inputRef.current = el;
       },
       defaultValue: value ?? "",

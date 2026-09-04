@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
@@ -11,6 +11,7 @@ import TeamPicker from "./TeamPicker";
 import PlayerPicker from "./PlayerPicker";
 import CardFeaturesEditor, { CardFeatureRow } from "./CardFeaturesEditor";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
+import { useReactiveField } from "../forms/useReactiveField";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -30,21 +31,57 @@ const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
  * NEO-25: right-anchored card detail panel. Replaces the old per-row edit
  * modal in CardChecklistItem. ONE instance serves the whole list — selection
  * state is hoisted into CardChecklist and the parent re-keys this component on
- * `card._id`, so switching cards (arrow nav / prev-next) remounts it with fresh
- * draft state (no manual reset effect).
+ * `card._id`, so switching cards (arrow nav / prev-next) remounts it fresh.
  *
- * Editable: cardName, teams, players, attributes (chip toggles → derives
- * isRelic, and isRookie via an OR with the checkbox below — see NEO-71
- * comment at the isRookie write site), printRun, cardVariation, listingTitle,
- * listingDescription. Per-card feature overrides live in the embedded
- * CardFeaturesEditor (persists immediately via setCardFeature, so they're NOT
- * part of this panel's dirty/Save cycle) — this now includes a Rookie
- * checkbox (NEO-71) that writes `cardChecklist.isRookie` directly and
- * independently of the RC chip above. The Autographed dropdown is the same
- * `features.autographed` control, promoted out of that collapsed editor to
- * always-visible here (previously a redundant free-text `autographType`
- * input lived here instead — removed so there's one source of truth for
- * "is this card autographed", not two disagreeing controls).
+ * ## NEO-216 (Jason, 2026-09-04) — this drawer autosaves per field. There is
+ * ## no Save button, no draft state, and no discard bar.
+ *
+ * It used to seed a full draft from the `card` prop at mount and write the
+ * WHOLE draft back in one `updateCard` on Save. Two things were wrong with
+ * that, and both were data loss rather than annoyance:
+ *
+ *   1. `card` is a row out of the LIVE `getCardChecklist` query, so the server
+ *      keeps patching it underneath a stale draft. The BSC per-card team queue
+ *      fills in `teamOnCardIds` seconds after a commit; a Save a moment later
+ *      sent `teamOnCardIds: []` from a draft seeded before that write, and the
+ *      queue never re-enqueues a card it has stamped — so the team was gone
+ *      for good. `playerIds` raced the same way via NEO-212's finalize.
+ *   2. Because `dirty` compared the draft against that moving prop, an
+ *      external patch with no operator edit made the panel look dirty, and an
+ *      external patch plus an unrelated edit was invisible.
+ *
+ * The fix is not a conflict UI — it is to stop sending fields nobody edited.
+ * Every editable control now writes ONLY its own field, immediately:
+ *
+ *   - text fields (`cardName`, `listingTitle`, `listingDescription`,
+ *     `printRun`, `cardVariation`) are each one `useReactiveField`
+ *     (components/forms/useReactiveField.ts, NEO-39) rendered through the
+ *     `Input`/`Textarea` primitives — uncontrolled, external pushes mirrored
+ *     only while the field is idle, value read from the DOM at commit. Commit
+ *     is on blur or Enter (Cmd/Ctrl+Enter in the description, where a bare
+ *     Enter is a newline). Never per keystroke: the title generator and the
+ *     NEO-101 length rules must not fire mid-word.
+ *   - the attribute chips write `attributes` plus the two booleans derived
+ *     from it on every toggle (see the RC note at the write site);
+ *   - TeamPicker / PlayerPicker write their own array on change, and now READ
+ *     the live row, so a team the BSC queue fills in appears while the drawer
+ *     is open instead of being overwritten by it.
+ *
+ * Two writers on the same field at the same instant resolve last-write-wins
+ * (single-admin product), and the hook keeps the operator's text while they
+ * are in the field, so a sync can never wipe in-flight typing. There is
+ * nothing left for a conflict bar to arbitrate.
+ *
+ * Closing (Escape, the overlay, the × or Done) just closes. Nothing is
+ * unsaved by then except a commit already in flight, which is left to land —
+ * cancelling it would be the data loss the whole change is about. NEO-233
+ * ("one persistence rule per edit dialog") is resolved in the autosave
+ * direction for this dialog.
+ *
+ * Per-field feedback matches SetAttributesPanel, the drawer's sibling editor:
+ * one `role="status"` toast that says "Saved {field}", a per-field "Saving…"
+ * note, and a per-field `role="alert"` that keeps the typed value so a refusal
+ * can be corrected rather than retyped.
  *
  * Display-only: card images (imageUrls or placeholder), and the
  * inherited-from-set hierarchy (sport→…→variant). The hierarchy levels stay
@@ -52,6 +89,16 @@ const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
  * additive "Also appears in" section below (cardCrossListings) rather than by
  * letting a card override its own home set, so `selectorOptionId` remains the
  * single source of truth for release year, SKU and provenance.
+ *
+ * Per-card feature overrides live in the embedded CardFeaturesEditor, which
+ * has always persisted immediately via `setCardFeature` — the pattern this
+ * whole drawer has now been brought in line with. That editor includes a
+ * Rookie checkbox (NEO-71) writing `cardChecklist.isRookie` directly and
+ * independently of the RC chip above. The Autographed dropdown is the same
+ * `features.autographed` control, promoted out of that collapsed editor to
+ * always-visible here (previously a redundant free-text `autographType`
+ * input lived here instead — removed so there's one source of truth for
+ * "is this card autographed", not two disagreeing controls).
  */
 
 // Attribute tokens the panel exposes as toggle chips. Any other token already
@@ -69,6 +116,18 @@ const ATTRIBUTE_LABEL: Record<string, string> = {
   NUM: "#'d",
 };
 
+/**
+ * NEO-217 — what a print run may be, said once.
+ *
+ * `/0` is not a print run and `/2.5` is not a quantity, so both are refused
+ * here before the round trip as well as server-side (`updateCard` throws a
+ * ConvexError for the same two cases). Clearing the field is a different
+ * thing entirely and is allowed: it sends `printRun: null`, which removes the
+ * field — there was no way to spell "no print run" on the wire before this
+ * ticket, because every arg was `v.optional` and absent means untouched.
+ */
+const PRINT_RUN_MESSAGE = "Print run must be a whole number of 1 or more.";
+
 type CardDetailCard = {
   _id: Id<"cardChecklist">;
   selectorOptionId: Id<"selectorOptions">;
@@ -85,11 +144,10 @@ type CardDetailCard = {
    * does not exist. The drawer's job is to make the name VISIBLE (it rendered
    * nowhere before this ticket) and to say what will happen to it.
    *
-   * Not part of this panel's draft state or dirty-tracking. It is retired by
-   * the server, derived from a real team write — see `updateCard`, which
-   * clears it in the same patch as a non-empty `teamOnCardIds`. So an operator
-   * "replaces" a pending name by picking a team and saving; there is nothing
-   * here for them to edit or delete directly.
+   * Never edited here. It is retired by the server, derived from a real team
+   * write — see `updateCard`, which clears it in the same patch as a non-empty
+   * `teamOnCardIds`. So an operator "replaces" a pending name by picking a
+   * team; there is nothing here for them to edit or delete directly.
    */
   pendingTeamNames?: string[];
   attributes?: string[];
@@ -145,9 +203,50 @@ const LEVEL_LABEL: Record<string, string> = {
   parallel: "Parallel",
 };
 
-function arraysEqual<T>(a: T[], b: T[]): boolean {
-  if (a.length !== b.length) return false;
-  return a.every((v, i) => v === b[i]);
+/**
+ * The per-field busy/error line, rendered under every autosaving control.
+ *
+ * At module scope, not inside the panel: a component declared in another
+ * component's body is a new type on every render, so React remounts it rather
+ * than updating it — which would blow away focus and re-announce the alert on
+ * each keystroke (react-hooks/static-components).
+ *
+ * "Saving…" is words, not a spinner or a colour, so the busy state survives
+ * both a screen reader and a monochrome display. The error is `role="alert"`
+ * (announced once, when it appears) and the hook deliberately leaves the typed
+ * value in the field behind it, so a refusal is corrected, never retyped.
+ */
+function FieldFeedback({
+  busy,
+  error,
+  errorId,
+}: {
+  busy: boolean;
+  error: string | null;
+  errorId: string;
+}) {
+  return (
+    <>
+      {busy && (
+        <p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">
+          Saving…
+        </p>
+      )}
+      {error && (
+        // a11y: NOT the brand `#FF2EB3` — measured 3.34:1 on this drawer's
+        // light-mode `bg-white` and 4.4:1 on its `dark:bg-gray-800`, both under
+        // WCAG 1.4.3's 4.5:1 floor. This darkened/lightened pair in the same
+        // hue measures 5.55:1 / 5.87:1 and is the file's existing precedent.
+        <p
+          id={errorId}
+          role="alert"
+          className="mt-1 text-[10px] text-[#C2178A] dark:text-[#FF6FCB]"
+        >
+          {error}
+        </p>
+      )}
+    </>
+  );
 }
 
 export default function CardDetailPanel({
@@ -272,126 +371,263 @@ export default function CardDetailPanel({
     api.selectorOptions.removeCrossListing,
   );
   const cardNameInputRef = useRef<HTMLInputElement | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // field rather than the first input in the drawer (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
-
-  // ----- editable draft state (initialized fresh on each remount) -----
-  const [cardName, setCardName] = useState(card.cardName);
-  const [teamIds, setTeamIds] = useState<Array<Id<"teams">>>(
-    card.teamOnCardIds ?? [],
-  );
-  const [attributes, setAttributes] = useState<string[]>(card.attributes ?? []);
-  const [printRun, setPrintRun] = useState<string>(
-    card.printRun != null ? String(card.printRun) : "",
-  );
-  const [cardVariation, setCardVariation] = useState(card.cardVariation ?? "");
-  const [playerIds, setPlayerIds] = useState<Array<Id<"players">>>(
-    card.playerIds ?? [],
-  );
-  const [listingTitle, setListingTitle] = useState(card.listingTitle ?? "");
-  const [listingDescription, setListingDescription] = useState(
-    card.listingDescription ?? "",
-  );
-  const [saving, setSaving] = useState(false);
-  // pendingAction: which exit the operator requested while dirty. The inline
-  // discard bar resolves it (Discard → run it; Keep editing → clear).
-  const [pendingAction, setPendingAction] = useState<
-    null | "close" | "prev" | "next"
-  >(null);
-
-  // ----- dirty tracking (features are excluded — they persist immediately) -
-  const dirty =
-    cardName !== card.cardName ||
-    !arraysEqual(teamIds, card.teamOnCardIds ?? []) ||
-    !arraysEqual(playerIds, card.playerIds ?? []) ||
-    !arraysEqual(attributes, card.attributes ?? []) ||
-    printRun !== (card.printRun != null ? String(card.printRun) : "") ||
-    cardVariation !== (card.cardVariation ?? "") ||
-    listingTitle !== (card.listingTitle ?? "") ||
-    listingDescription !== (card.listingDescription ?? "");
-
-  // ----- NEO-101 length limits -----------------------------------------
-  // The title is the ONLY field here with a hard cap: an over-length title is
-  // rejected by the marketplace at listing time rather than trimmed, and this
-  // panel plus the attention walker are the only two places an operator can
-  // write one. `updateCard` enforces the same constant server-side, so this is
-  // a courtesy that explains the refusal early, not the enforcement itself.
-  const titleState = titleLengthState(listingTitle.length, LISTING_TITLE_MAX, true);
-  const variationOverCap = cardVariation.length > ASPECT_VALUE_MAX;
   const uid = useId();
+
+  // ----- per-field autosave plumbing -----------------------------------
+  //
+  // ONE live region for the whole drawer, matching SetAttributesPanel. A
+  // `role="status"` per field would announce the same edit N times and, worse,
+  // would be N regions competing for one announcement queue.
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const announce = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
+  }, []);
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
+
+  /**
+   * Write ONE field and say so. Every editable control in this drawer goes
+   * through here, and the patch it passes carries only the field it owns —
+   * that single rule is what makes the sync race impossible rather than
+   * merely unlikely (`updateCard` treats an absent key as untouched).
+   *
+   * A refusal is re-thrown as a plain `Error` carrying the user-facing text:
+   * `useReactiveField` surfaces `error.message` verbatim, and a raw Convex
+   * rejection reads "[CONVEX M(selectorOptions:updateCard)] [Request ID: …]"
+   * in front of the sentence that matters.
+   */
+  const commitField = useCallback(
+    async (patch: Record<string, unknown>, done: string) => {
+      try {
+        await updateCard({ id: card._id, ...patch });
+      } catch (err) {
+        throw new Error(userFacingMessage(err, "Could not save that change"));
+      }
+      announce(done);
+    },
+    [updateCard, card._id, announce],
+  );
+
+  const nameField = useReactiveField({
+    value: card.cardName,
+    onSave: (trimmed) => commitField({ cardName: trimmed }, "Saved Card name"),
+  });
+
+  /**
+   * NEO-101's cap, enforced at commit rather than on the Save button that no
+   * longer exists. Refusing here (instead of letting the server refuse) keeps
+   * the over-length text in the field with the explanation beside it; the
+   * server enforces the same constant either way.
+   */
+  const titleField = useReactiveField({
+    value: card.listingTitle ?? "",
+    onSave: async (trimmed) => {
+      const state = titleLengthState(trimmed.length, LISTING_TITLE_MAX, true);
+      if (state.over) {
+        throw new Error(`Title is ${state.alert} Shorten it before saving.`);
+      }
+      await commitField({ listingTitle: trimmed }, "Saved Card title");
+    },
+  });
+
+  const descriptionField = useReactiveField<HTMLTextAreaElement>({
+    value: card.listingDescription ?? "",
+    // A bare Enter here is a paragraph break the operator typed, not a save.
+    enterCommit: "modEnter",
+    onSave: (trimmed) =>
+      commitField({ listingDescription: trimmed }, "Saved Card description"),
+  });
+
+  const printRunField = useReactiveField({
+    value: card.printRun != null ? String(card.printRun) : "",
+    onSave: async (trimmed) => {
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new Error(PRINT_RUN_MESSAGE);
+      }
+      await commitField({ printRun: parsed }, "Saved Print run");
+    },
+    // NEO-217: blank is a real answer ("this card is not numbered"), and
+    // `null` is the only spelling of it on the wire — every other arg is
+    // optional, so an omitted number means "leave it alone".
+    onEmptyCommit: () => commitField({ printRun: null }, "Cleared Print run"),
+  });
+
+  const variationField = useReactiveField({
+    value: card.cardVariation ?? "",
+    onSave: (trimmed) =>
+      commitField({ cardVariation: trimmed }, "Saved Variation"),
+  });
+
+  // ----- live length readouts (NEO-101) --------------------------------
+  //
+  // The two capped fields are uncontrolled, so their length cannot come from
+  // React state the way it did from the old draft. It is tracked here instead:
+  // updated on input while the operator types, and re-derived from the live row
+  // whenever that changes and the field is idle — the same focus-guard the hook
+  // itself applies, for the same reason (a reactive push must not renumber a
+  // counter for text the operator can still see in front of them).
+  const [titleLength, setTitleLength] = useState(
+    (card.listingTitle ?? "").length,
+  );
+  const [variationLength, setVariationLength] = useState(
+    (card.cardVariation ?? "").length,
+  );
+  const variationInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (
+      typeof document !== "undefined" &&
+      document.activeElement === titleInputRef.current
+    ) {
+      return;
+    }
+    // Mirroring an external (reactive) value, not deriving render state.
+    setTitleLength((card.listingTitle ?? "").length);
+  }, [card.listingTitle]);
+
+  useEffect(() => {
+    if (
+      typeof document !== "undefined" &&
+      document.activeElement === variationInputRef.current
+    ) {
+      return;
+    }
+    setVariationLength((card.cardVariation ?? "").length);
+  }, [card.cardVariation]);
+
+  const titleState = titleLengthState(titleLength, LISTING_TITLE_MAX, true);
   const titleAlertId = `${uid}-title-limit`;
   const variationAlertId = `${uid}-variation-limit`;
-  const titleDirty = listingTitle !== (card.listingTitle ?? "");
+  const nameErrorId = `${uid}-name-error`;
+  const titleErrorId = `${uid}-title-error`;
+  const descriptionErrorId = `${uid}-description-error`;
+  const printRunErrorId = `${uid}-print-run-error`;
+  const variationErrorId = `${uid}-variation-error`;
 
   // Regenerate. Lazy: no preview is fetched until the operator asks for one,
   // because the drawer opens for every card they arrow through.
-  const preview = useTitlePreview(card._id, setListingTitle);
+  //
+  // The fetched title lands in the DOM and is then committed through the SAME
+  // single-field path as typing it by hand — `titleField.commit()` reads the
+  // live input, so Regenerate inherits the cap check, the busy state, the
+  // error line and the "Saved Card title" toast for free. Held in a ref
+  // because `commit`'s identity changes with the row, and `applyTitle` is a
+  // dependency of an effect inside useTitlePreview.
+  const commitTitleRef = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => {
+    commitTitleRef.current = titleField.commit;
+  }, [titleField.commit]);
+  const applyTitle = useCallback((title: string) => {
+    const el = titleInputRef.current;
+    if (el) el.value = title;
+    setTitleLength(title.length);
+    void commitTitleRef.current?.();
+  }, []);
+  const preview = useTitlePreview(card._id, applyTitle);
+  /** Does the field hold something other than what is stored? Read live. */
+  const titleIsEdited = () =>
+    (titleInputRef.current?.value ?? "") !== (card.listingTitle ?? "");
 
-  const toggleAttribute = (token: string) => {
-    setAttributes((prev) =>
-      prev.includes(token)
-        ? prev.filter((t) => t !== token)
-        : [...prev, token],
-    );
-  };
+  // ----- attributes: one mutation per toggle ---------------------------
+  const attributes = useMemo(() => card.attributes ?? [], [card.attributes]);
+  const [attributesBusy, setAttributesBusy] = useState(false);
+  const [attributesError, setAttributesError] = useState<string | null>(null);
+  const attributesErrorId = `${uid}-attributes-error`;
 
-  const handleSave = async () => {
-    // Guard as well as the button's aria-disabled: the button stays in the tab
-    // order while over the cap (so the reason is reachable by keyboard), which
-    // means it stays activatable too.
-    if (saving || titleState.over) return;
-    setSaving(true);
+  const toggleAttribute = async (token: string) => {
+    // Busy-guard: two toggles in flight would both derive `attributes` from
+    // the same pre-toggle array, and the second would undo the first.
+    if (attributesBusy) return;
+    const next = attributes.includes(token)
+      ? attributes.filter((t) => t !== token)
+      : [...attributes, token];
+    setAttributesBusy(true);
     try {
-      const parsedPrintRun = printRun.trim() === "" ? undefined : Number(printRun);
-      await updateCard({
-        id: card._id,
-        cardName,
-        teamOnCardIds: teamIds,
-        playerIds,
-        // Full-replacement: send the entire desired token array. Derive the
-        // denormalized booleans from it so they can't drift (matches
-        // fetchCardChecklist / commitCardChecklist semantics).
-        attributes,
-        // NEO-71: the embedded CardFeaturesEditor's Rookie checkbox writes
-        // isRookie directly and can autosave between this panel's mount and
-        // this Save click. OR (never AND-downgrade) so Save can still turn
-        // isRookie on via the RC chip, but can never silently revert a
-        // `true` the checkbox already set — `card` is the live reactive
-        // prop, so it reflects the checkbox's write by the time Save fires.
-        isRookie: attributes.includes("RC") || card.isRookie === true,
-        isRelic: attributes.includes("RELIC"),
-        ...(parsedPrintRun != null && !Number.isNaN(parsedPrintRun)
-          ? { printRun: parsedPrintRun }
-          : {}),
-        cardVariation,
-        // "" clears the stored value; undefined would leave it untouched.
-        // Trimmed here as well as server-side so what the operator sees after a
-        // save is what they saved — a trailing space is otherwise invisible and
-        // makes the panel look dirty the moment it reopens.
-        listingTitle: listingTitle.trim(),
-        listingDescription,
-      });
-      onClose();
+      await commitField(
+        {
+          // Full-replacement: send the entire desired token array, and derive
+          // the denormalized booleans from it so they cannot drift (matches
+          // fetchCardChecklist / commitCardChecklist semantics).
+          //
+          // NEO-217 (C): `isRookie` is `attributes.includes("RC")`, with no OR
+          // against the current value. The old OR existed because a full-panel
+          // Save could otherwise revert a `true` that CardFeaturesEditor's
+          // Rookie checkbox had just written — but it also made the RC chip a
+          // one-way switch, so unticking RC left `isRookie: true` and the
+          // generated title kept its "RC" token. Per-field writes remove the
+          // reason for the OR: this mutation fires only when the operator
+          // toggles a chip, so it can no longer trample an unrelated edit, and
+          // RC now drives isRookie in both directions. The checkbox remains a
+          // second, independent writer on purpose (NEO-71).
+          attributes: next,
+          isRookie: next.includes("RC"),
+          isRelic: next.includes("RELIC"),
+        },
+        "Saved Attributes",
+      );
+      setAttributesError(null);
+    } catch (e) {
+      setAttributesError(e instanceof Error ? e.message : String(e));
     } finally {
-      setSaving(false);
+      setAttributesBusy(false);
     }
   };
 
-  // Guarded exit: if dirty, stash the requested action and surface the inline
-  // discard confirm instead of leaving. Otherwise perform it immediately.
-  const requestExit = (action: "close" | "prev" | "next") => {
-    if (dirty) {
-      setPendingAction(action);
-      return;
+  // ----- teams / players: write their own array, read the live row -----
+  //
+  // `pending` holds the operator's choice only until the mutation resolves.
+  // Convex updates the subscribed query BEFORE the mutation promise settles,
+  // so by the time this clears, `card` already carries the new array and the
+  // chips never flicker. On a refusal it clears too — the picker snapping back
+  // to server truth beside the error is the honest reading of what happened.
+  const [teamsPending, setTeamsPending] = useState<Array<Id<"teams">> | null>(
+    null,
+  );
+  const [teamsError, setTeamsError] = useState<string | null>(null);
+  const [playersPending, setPlayersPending] = useState<Array<
+    Id<"players">
+  > | null>(null);
+  const [playersError, setPlayersError] = useState<string | null>(null);
+  const teamsErrorId = `${uid}-teams-error`;
+  const playersErrorId = `${uid}-players-error`;
+
+  const teamIds = teamsPending ?? card.teamOnCardIds ?? [];
+  const playerIds = playersPending ?? card.playerIds ?? [];
+
+  const saveTeams = async (next: Array<Id<"teams">>) => {
+    setTeamsPending(next);
+    try {
+      await commitField({ teamOnCardIds: next }, "Saved Teams");
+      setTeamsError(null);
+    } catch (e) {
+      setTeamsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTeamsPending(null);
     }
-    runAction(action);
   };
 
-  const runAction = (action: "close" | "prev" | "next") => {
-    if (action === "close") onClose();
-    else if (action === "prev") onPrev();
-    else onNext();
+  const savePlayers = async (next: Array<Id<"players">>) => {
+    setPlayersPending(next);
+    try {
+      await commitField({ playerIds: next }, "Saved Players");
+      setPlayersError(null);
+    } catch (e) {
+      setPlayersError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPlayersPending(null);
+    }
   };
 
   const focusedInEditable = () => {
@@ -409,38 +645,31 @@ export default function CardDetailPanel({
     cardNameInputRef.current?.focus();
   }, []);
 
-  // Keyboard: Escape closes; Arrow Up/Down move card selection — both routed
-  // through the dirty guard. Listening on document covers focus inside the
-  // TeamPicker popover too. Arrows are ignored while typing in a field (so the
-  // caret can move) and while the discard bar is open.
+  // Keyboard: Escape closes; Arrow Up/Down move card selection. Listening on
+  // document covers focus inside the TeamPicker popover too. Arrows are
+  // ignored while typing in a field (so the caret can move).
+  //
+  // None of these are guarded any more: there is no unsaved draft to discard.
+  // A commit triggered by the blur these actions cause is left to land.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        // Escape is an explicit dismiss — discard and close immediately
-        // (matches the old edit modal + the ticket's "Escape to close
-        // panel"). If the discard confirm is showing, Escape dismisses it.
-        if (pendingAction) {
-          setPendingAction(null);
-        } else {
-          onClose();
-        }
+        onClose();
         return;
       }
-      if (pendingAction) return;
       if (focusedInEditable()) return;
       if (e.key === "ArrowDown" && hasNext) {
         e.preventDefault();
-        requestExit("next");
+        onNext();
       } else if (e.key === "ArrowUp" && hasPrev) {
         e.preventDefault();
-        requestExit("prev");
+        onPrev();
       }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirty, pendingAction, hasPrev, hasNext]);
+  }, [hasPrev, hasNext, onClose, onPrev, onNext]);
 
   // Read-only tokens we render but don't expose as toggles (preserved on save).
   const readOnlyTokens = useMemo(
@@ -459,20 +688,40 @@ export default function CardDetailPanel({
   const back = card.imageUrls?.back;
   const hasImages = Boolean(front || back);
 
+  const { ref: nameHookRef, ...nameInputProps } = nameField.inputProps;
+  const { ref: titleHookRef, ...titleInputProps } = titleField.inputProps;
+  const { ref: variationHookRef, ...variationInputProps } =
+    variationField.inputProps;
+
   return createPortal(
     // NEO-71-74 QA fix: see BaseSetPicker.tsx for why this nested <Theme> is
     // needed — createPortal(document.body) escapes the root Theme's CSS scope.
     <Theme>
     <div className="fixed inset-0 z-50">
-      {/* Backdrop. Clicking it requests close (dirty-guarded). The panel is a
-          sibling layered above, so taps inside the panel never reach here —
-          e.g. tapping the Card name input to dismiss the TeamPicker popover
-          does not close the panel. */}
+      {/* Backdrop. Clicking it closes. The panel is a sibling layered above,
+          so taps inside the panel never reach here — e.g. tapping the Card
+          name input to dismiss the TeamPicker popover does not close the
+          panel. */}
       <div
         className="absolute inset-0 bg-black/60"
         aria-hidden="true"
-        onClick={() => requestExit("close")}
+        onClick={onClose}
       />
+      {/* The one save confirmation for the whole drawer.
+
+          NEO-47's reasoning, inherited from SetAttributesPanel: FIXED in the
+          viewport rather than in-flow, because an edit made while scrolled
+          down to the print run would otherwise render its confirmation above
+          the fold, invisible to the operator who just made it. */}
+      {toast && (
+        <div
+          className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          role="status"
+          aria-live="polite"
+        >
+          {toast}
+        </div>
+      )}
       <div
         role="dialog"
         aria-modal="true"
@@ -493,7 +742,7 @@ export default function CardDetailPanel({
             )}
           </h2>
           <button
-            onClick={() => requestExit("prev")}
+            onClick={onPrev}
             disabled={!hasPrev}
             aria-label="Previous card"
             title="Previous card (↑)"
@@ -502,7 +751,7 @@ export default function CardDetailPanel({
             ↑
           </button>
           <button
-            onClick={() => requestExit("next")}
+            onClick={onNext}
             disabled={!hasNext}
             aria-label="Next card"
             title="Next card (↓)"
@@ -511,7 +760,7 @@ export default function CardDetailPanel({
             ↓
           </button>
           <button
-            onClick={() => requestExit("close")}
+            onClick={onClose}
             aria-label="Close card detail"
             title="Close (Esc)"
             className="px-2 py-1 text-lg leading-none rounded text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none"
@@ -531,13 +780,28 @@ export default function CardDetailPanel({
             </label>
             <Input
               bare
-              ref={cardNameInputRef}
+              {...nameInputProps}
+              ref={(el) => {
+                nameHookRef(el);
+                cardNameInputRef.current = el;
+              }}
               type="text"
-              value={cardName}
-              onChange={(e) => setCardName(e.target.value)}
+              // readOnly, never `disabled`, while a commit is in flight: a
+              // disabled control leaves the tab order, so committing with
+              // Enter would drop focus to <body> mid-edit. readOnly keeps the
+              // caret exactly where the operator left it.
+              readOnly={nameField.busy}
+              aria-busy={nameField.busy || undefined}
+              aria-invalid={nameField.error ? true : undefined}
+              aria-describedby={nameField.error ? nameErrorId : undefined}
               className={`${fieldClass("cardName")} w-full p-1.5 text-sm`}
               placeholder="Card name"
               aria-label="Card name"
+            />
+            <FieldFeedback
+              busy={nameField.busy}
+              error={nameField.error}
+              errorId={nameErrorId}
             />
           </div>
 
@@ -592,7 +856,16 @@ export default function CardDetailPanel({
                 </p>
               </div>
             )}
-            <TeamPicker value={teamIds} onChange={setTeamIds} sportId={ancestorSportId} />
+            <TeamPicker
+              value={teamIds}
+              onChange={(next) => void saveTeams(next)}
+              sportId={ancestorSportId}
+            />
+            <FieldFeedback
+              busy={teamsPending !== null}
+              error={teamsError}
+              errorId={teamsErrorId}
+            />
           </div>
 
           {/* Per-card feature overrides (persists immediately via setCardFeature).
@@ -621,10 +894,10 @@ export default function CardDetailPanel({
             <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               <span>Card title</span>
               <span className="flex items-center gap-2">
-                <TitleLengthMeter length={listingTitle.length} soft />
+                <TitleLengthMeter length={titleLength} soft />
                 <button
                   type="button"
-                  onClick={() => preview.request(titleDirty)}
+                  onClick={() => preview.request(titleIsEdited())}
                   // a11y (2.5.3, audit fix): the visible text also becomes
                   // "Rebuilding…"/"Replace?", neither a substring of a fully
                   // static name. "Replace?" is kept as the fixed string on
@@ -660,25 +933,43 @@ export default function CardDetailPanel({
             </div>
             <Input
               bare
+              {...titleInputProps}
+              ref={(el) => {
+                titleHookRef(el);
+                titleInputRef.current = el;
+              }}
               type="text"
-              value={listingTitle}
               onChange={(e) => {
-                setListingTitle(e.target.value);
+                setTitleLength(e.target.value.length);
                 // Typing is the operator changing their mind about replacing
                 // the draft — drop the pending confirm rather than leaving a
                 // second click armed against text they just wrote.
                 preview.cancelConfirm();
               }}
+              readOnly={titleField.busy}
+              aria-busy={titleField.busy || undefined}
               // No maxLength, deliberately: it would silently swallow the tail
               // of a pasted title, and an over-length title the operator cannot
               // SEE is one they cannot fix. Let it overflow and say so.
               className={`${fieldClass("cardTitle")} w-full p-1.5 text-sm`}
               placeholder="Listing title reused across marketplaces"
               aria-label="Card title"
-              aria-invalid={titleState.over || undefined}
-              aria-describedby={titleState.over ? titleAlertId : undefined}
+              aria-invalid={titleState.over || Boolean(titleField.error) || undefined}
+              aria-describedby={
+                [
+                  titleState.over ? titleAlertId : null,
+                  titleField.error ? titleErrorId : null,
+                ]
+                  .filter(Boolean)
+                  .join(" ") || undefined
+              }
             />
-            <TitleLengthAlert id={titleAlertId} length={listingTitle.length} />
+            <TitleLengthAlert id={titleAlertId} length={titleLength} />
+            <FieldFeedback
+              busy={titleField.busy}
+              error={titleField.error}
+              errorId={titleErrorId}
+            />
             {preview.confirming && (
               <p
                 id={`${uid}-regen-confirm`}
@@ -741,21 +1032,43 @@ export default function CardDetailPanel({
             </label>
             <Textarea
               bare
-              value={listingDescription}
-              onChange={(e) => setListingDescription(e.target.value)}
+              {...descriptionField.inputProps}
               rows={3}
+              readOnly={descriptionField.busy}
+              aria-busy={descriptionField.busy || undefined}
+              aria-invalid={descriptionField.error ? true : undefined}
+              aria-describedby={
+                descriptionField.error ? descriptionErrorId : undefined
+              }
               className={`${fieldClass("cardDescription")} w-full p-1.5 text-sm resize-y`}
               placeholder="Listing description reused across marketplaces"
               aria-label="Card description"
+            />
+            <FieldFeedback
+              busy={descriptionField.busy}
+              error={descriptionField.error}
+              errorId={descriptionErrorId}
             />
           </div>
 
           {/* Attributes */}
           <div>
-            <label className="block text-[10px] uppercase tracking-wide text-gray-400 mb-1">
-              Attributes
-            </label>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+              <span>Attributes</span>
+              {/* The busy state in words as well as the dimmed chips: a
+                  disabled-looking pill is a colour-only signal, and this row is
+                  the one control here with no text field to carry a note. */}
+              {attributesBusy && <span className="normal-case">Saving…</span>}
+            </div>
+            <div
+              className="flex flex-wrap gap-1.5"
+              role="group"
+              aria-label="Card attributes"
+              aria-busy={attributesBusy || undefined}
+              aria-describedby={
+                attributesError ? attributesErrorId : undefined
+              }
+            >
               {EDITABLE_ATTRIBUTES.map((token) => {
                 const active = attributes.includes(token);
                 return (
@@ -764,8 +1077,9 @@ export default function CardDetailPanel({
                     type="button"
                     aria-label={`Toggle ${token}`}
                     aria-pressed={active}
-                    onClick={() => toggleAttribute(token)}
-                    className={`text-xs px-2 py-0.5 rounded border transition-colors ${
+                    disabled={attributesBusy}
+                    onClick={() => void toggleAttribute(token)}
+                    className={`text-xs px-2 py-0.5 rounded border transition-colors disabled:cursor-progress disabled:opacity-60 ${
                       active
                         ? "bg-[#00D558] text-black border-[#00D558] font-semibold"
                         : "bg-transparent text-gray-500 border-gray-300 dark:border-gray-600 hover:border-[#00D558] hover:text-[#00D558]"
@@ -789,6 +1103,11 @@ export default function CardDetailPanel({
                 </span>
               ))}
             </div>
+            <FieldFeedback
+              busy={false}
+              error={attributesError}
+              errorId={attributesErrorId}
+            />
           </div>
 
           {/* Print run / autograph. Autographed is the same features.autographed
@@ -805,13 +1124,26 @@ export default function CardDetailPanel({
               </label>
               <Input
                 bare
+                {...printRunField.inputProps}
                 type="number"
-                value={printRun}
-                onChange={(e) => setPrintRun(e.target.value)}
+                readOnly={printRunField.busy}
+                aria-busy={printRunField.busy || undefined}
+                aria-invalid={printRunField.error ? true : undefined}
+                aria-describedby={
+                  printRunField.error ? printRunErrorId : undefined
+                }
                 className={`${fieldClass("printRun")} w-full p-1.5 text-sm`}
                 placeholder="e.g. 99"
                 aria-label="Print run"
-                min={0}
+                // 1, not 0: a print run of zero is not a card. Clearing the
+                // field is how "not numbered" is expressed — see PRINT_RUN_MESSAGE.
+                min={1}
+                step={1}
+              />
+              <FieldFeedback
+                busy={printRunField.busy}
+                error={printRunField.error}
+                errorId={printRunErrorId}
               />
             </div>
             <CardFeatureRow
@@ -836,26 +1168,45 @@ export default function CardDetailPanel({
             <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-gray-400 mb-1">
               <span>Variation</span>
               <TitleLengthMeter
-                length={cardVariation.length}
+                length={variationLength}
                 max={ASPECT_VALUE_MAX}
               />
             </div>
             <Input
               bare
+              {...variationInputProps}
+              ref={(el) => {
+                variationHookRef(el);
+                variationInputRef.current = el;
+              }}
               type="text"
-              value={cardVariation}
-              onChange={(e) => setCardVariation(e.target.value)}
+              onChange={(e) => setVariationLength(e.target.value.length)}
+              readOnly={variationField.busy}
+              aria-busy={variationField.busy || undefined}
               className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm`}
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
-              aria-describedby={variationOverCap ? variationAlertId : undefined}
+              aria-invalid={variationField.error ? true : undefined}
+              aria-describedby={
+                [
+                  variationLength > ASPECT_VALUE_MAX ? variationAlertId : null,
+                  variationField.error ? variationErrorId : null,
+                ]
+                  .filter(Boolean)
+                  .join(" ") || undefined
+              }
             />
             <TitleLengthAlert
               id={variationAlertId}
-              length={cardVariation.length}
+              length={variationLength}
               max={ASPECT_VALUE_MAX}
               what="Variation"
               blocking={false}
+            />
+            <FieldFeedback
+              busy={variationField.busy}
+              error={variationField.error}
+              errorId={variationErrorId}
             />
           </div>
 
@@ -926,16 +1277,15 @@ export default function CardDetailPanel({
             )}
             {parentError && (
               // a11y: NOT the brand `#FF2EB3` used for errors/destructive
-              // actions elsewhere in this file (e.g. the Cancel/Discard
-              // buttons) — measured contrast for that hex against this
-              // panel's own background is 3.34:1 on white and 4.4:1 on
-              // dark:bg-gray-800, both under WCAG 1.4.3's 4.5:1 minimum for
-              // normal-size text. This is a systemic app-wide issue (the same
-              // hex is used as text-on-light elsewhere already), out of scope
-              // to fix everywhere here, but an *error message* specifically
-              // has to be legible, so this instance uses a darkened/lightened
-              // variant in the same hue: 5.55:1 on white, 5.87:1 on
-              // dark:bg-gray-800.
+              // actions elsewhere in this file — measured contrast for that
+              // hex against this panel's own background is 3.34:1 on white and
+              // 4.4:1 on dark:bg-gray-800, both under WCAG 1.4.3's 4.5:1
+              // minimum for normal-size text. This is a systemic app-wide
+              // issue (the same hex is used as text-on-light elsewhere
+              // already), out of scope to fix everywhere here, but an *error
+              // message* specifically has to be legible, so this instance uses
+              // a darkened/lightened variant in the same hue: 5.55:1 on white,
+              // 5.87:1 on dark:bg-gray-800.
               <p className="text-xs text-[#C2178A] dark:text-[#FF6FCB] mt-1" role="alert">
                 {parentError}
               </p>
@@ -963,8 +1313,13 @@ export default function CardDetailPanel({
             </label>
             <PlayerPicker
               value={playerIds}
-              onChange={setPlayerIds}
+              onChange={(next) => void savePlayers(next)}
               sportId={ancestorSportId}
+            />
+            <FieldFeedback
+              busy={playersPending !== null}
+              error={playersError}
+              errorId={playersErrorId}
             />
           </div>
 
@@ -1053,63 +1408,27 @@ export default function CardDetailPanel({
           </div>
         </div>
 
-        {/* Footer: inline discard confirm when dirty-and-leaving, else actions */}
-        {pendingAction ? (
-          <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3 bg-amber-50 dark:bg-amber-900/20">
-            <span className="text-xs text-gray-600 dark:text-gray-300">
-              Discard unsaved changes?
-            </span>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPendingAction(null)}
-                aria-label="Keep editing"
-                className="px-3 py-1.5 text-xs rounded bg-gray-600 text-white hover:bg-gray-700"
-              >
-                Keep editing
-              </button>
-              <button
-                onClick={() => {
-                  const action = pendingAction;
-                  setPendingAction(null);
-                  runAction(action);
-                }}
-                aria-label="Discard changes"
-                className="px-3 py-1.5 text-xs rounded bg-[#FF2EB3] text-white hover:bg-[#FF2EB3]/85"
-              >
-                Discard changes
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex gap-2 justify-end">
-            <button
-              onClick={onClose}
-              aria-label="Cancel card edit"
-              className="px-3 py-1.5 text-xs bg-gray-600 text-white rounded hover:bg-gray-700"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              // aria-disabled rather than `disabled` for the over-cap case:
-              // native disabled drops the button out of the tab order, and the
-              // alert explaining WHY it is inert is reached through this
-              // button's aria-describedby — so disabling it natively would
-              // hide the reason from exactly the person who needs it (the
-              // NEO-189 stranding finding). `saving` keeps the native
-              // attribute: that state is momentary and self-explanatory.
-              aria-disabled={titleState.over || undefined}
-              aria-describedby={titleState.over ? titleAlertId : undefined}
-              aria-label="Save card edit"
-              className={`px-3 py-1.5 text-xs bg-[#00D558] text-black rounded hover:bg-[#00D558]/85 disabled:opacity-50 font-semibold ${
-                titleState.over ? "opacity-50 cursor-not-allowed" : ""
-              }`}
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        )}
+        {/* Footer.
+
+            The Save and Cancel buttons are gone with the draft they served.
+            What replaces them is not nothing: the rule has to be STATED
+            (nobody guesses that a drawer with no Save button has already
+            saved), and the last element in the dialog has to be focusable, or
+            tabbing off the final field lands outside a modal that is still
+            open — the NEO-189 stranding finding. "Done" is that element, and
+            it does exactly what Escape and the × do. */}
+        <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-3">
+          <span className="text-[10px] text-gray-500 dark:text-gray-400">
+            Changes save as you leave each field.
+          </span>
+          <button
+            onClick={onClose}
+            aria-label="Done editing card"
+            className="px-3 py-1.5 text-xs bg-[#00D558] text-black rounded hover:bg-[#00D558]/85 font-semibold"
+          >
+            Done
+          </button>
+        </div>
       </div>
     </div>
     </Theme>,

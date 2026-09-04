@@ -206,6 +206,12 @@ function CardFeatureRow({
         value={displayed}
         compareBaseline={cardValue ?? ""}
         onSave={onSave}
+        // NEO-217: the same clear path SetFeatureRow uses, so the shared
+        // control behaves identically in both hosts. Without it the hook
+        // treats an emptied field as "revert" and writes the old value back
+        // into the input, and a per-card feature could never be un-set.
+        // `""` removes the key server-side; it is never stored.
+        onEmptyCommit={() => onSave("")}
         ariaLabel={`Value for ${label}`}
         placeholder="—"
         className={`${fieldClass()} w-full p-1 border rounded text-xs dark:bg-gray-900 dark:border-gray-700 focus:border-[#00D558] focus:outline-none`}

@@ -12,9 +12,15 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
  * `bare` renders the lone `<textarea>` with no wrapper chrome, which is how
  * existing markup migrates without any DOM or selector change.
  *
- * There is no `reactive` mode here (unlike `Input`): `useReactiveField` is typed
- * to `HTMLInputElement`, and no reactive row in the app is currently multi-line.
- * Widen the hook first if that changes.
+ * There is still no `reactive` PROP here (unlike `Input`), but the underlying
+ * hook is no longer the reason: NEO-216 widened `useReactiveField` to
+ * `HTMLInputElement | HTMLTextAreaElement`, so a multi-line reactive row is now
+ * possible. A caller that needs one calls the hook itself and spreads
+ * `inputProps` onto `<Textarea bare>` — the same shape `TextValueControl` uses
+ * with `Input`, and the shape a row needs in order to render the hook's `error`
+ * (which the `reactive` prop swallows). Pass `enterCommit: "modEnter"` there: a
+ * bare Enter in a textarea is a newline the operator meant to type. Add a
+ * `reactive` prop here only once a caller wants the busy-only behaviour.
  */
 export interface TextareaProps
   extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {

@@ -402,3 +402,135 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
     });
   });
 });
+
+/**
+ * NEO-217 — a set attribute can be UN-set.
+ *
+ * `handleSaveFeature` used to `return` on an empty value, and
+ * `SelectValueControl`'s blank option was `disabled`. Between them, anything
+ * ever written at this level was permanent: a League typed against the wrong
+ * row, or a Season that turned out to belong to the parallel rather than the
+ * set, could be corrected to a different wrong value but never to nothing.
+ * Blank is a complete answer for every field in this panel — the panel's own
+ * header comment says so — which made this a hole rather than a safeguard.
+ *
+ * The wire spelling is `value: ""`, and the server removes the key rather than
+ * storing an empty string, so "attribute gone" has exactly one representation.
+ */
+describe("SetAttributesPanel — clearing an attribute (NEO-217)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetSelectorOptionFeature.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emptying a text row saves \"\" and says Cleared, not Saved", async () => {
+    currentRow = makeRow({ level: "setName", features: { season: "2020-21" } });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    const seasonInput = screen.getByLabelText(
+      "Value for Season",
+    ) as HTMLInputElement;
+
+    await act(async () => {
+      // Real focus() + synthetic focus (sets both document.activeElement and
+      // the hook's internal focusedRef — see useReactiveField.test.tsx).
+      seasonInput.focus();
+      fireEvent.focus(seasonInput);
+      fireEvent.change(seasonInput, { target: { value: "" } });
+      seasonInput.blur();
+      fireEvent.blur(seasonInput);
+    });
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionFeature).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        key: "season",
+        value: "",
+      });
+    });
+
+    // A distinct string on purpose: "Saved Season" would claim a value was
+    // stored. "Saved {label}" itself is unchanged — Maestro asserts it.
+    await waitFor(() => {
+      expect(screen.getByText("Cleared Season")).toBeTruthy();
+    });
+    expect(screen.queryByText("Saved Season")).toBeNull();
+  });
+
+  it("does not write when clearing a row that was already blank", async () => {
+    currentRow = makeRow({ level: "setName", features: {} });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    const seasonInput = screen.getByLabelText(
+      "Value for Season",
+    ) as HTMLInputElement;
+
+    await act(async () => {
+      seasonInput.focus();
+      fireEvent.focus(seasonInput);
+      seasonInput.blur();
+      fireEvent.blur(seasonInput);
+    });
+
+    expect(mockSetSelectorOptionFeature).not.toHaveBeenCalled();
+  });
+
+  it("the League select offers an ENABLED blank option that clears the value", async () => {
+    currentRow = makeRow({ level: "setName", features: { league: "MLB" } });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    const leagueSelect = screen.getByLabelText(
+      "Value for League",
+    ) as HTMLSelectElement;
+    const blank = Array.from(leagueSelect.options).find((o) => o.value === "")!;
+    // It was `disabled`, i.e. a placeholder — which is why League could be set
+    // but never un-set.
+    expect(blank.disabled).toBe(false);
+    expect(blank.textContent).toBe("—");
+
+    await act(async () => {
+      fireEvent.change(leagueSelect, { target: { value: "" } });
+    });
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionFeature).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        key: "league",
+        value: "",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Cleared League")).toBeTruthy();
+    });
+  });
+
+  it("re-picking the blank option on an already-blank select writes nothing", async () => {
+    // The `next === selected` guard stays: a select that fires a mutation for
+    // a no-op pick would write on every stray change event.
+    currentRow = makeRow({ level: "setName", features: {} });
+    currentChain = makeChain("Baseball");
+
+    renderPanel();
+
+    const leagueSelect = screen.getByLabelText(
+      "Value for League",
+    ) as HTMLSelectElement;
+    expect(leagueSelect.value).toBe("");
+
+    await act(async () => {
+      fireEvent.change(leagueSelect, { target: { value: "" } });
+    });
+
+    expect(mockSetSelectorOptionFeature).not.toHaveBeenCalled();
+  });
+});

@@ -36,7 +36,12 @@ export function FeatureValueControl({
   /** Text-only: no-op baseline for useReactiveField. Defaults to `value`. */
   compareBaseline?: string;
   onSave: (value: string) => Promise<unknown>;
-  /** Text-only: handler for an empty commit (e.g. "revert to inherited"). */
+  /**
+   * Text-only: handler for an empty commit. Both hosts pass
+   * `() => onSave("")` (NEO-217 — the server removes the key). Omitting it
+   * makes an emptied field snap back to its previous value, which is what a
+   * row that genuinely cannot be blank should do.
+   */
   onEmptyCommit?: () => Promise<unknown>;
   ariaLabel: string;
   placeholder?: string;
@@ -319,6 +324,8 @@ function SelectValueControl({
   // placeholder option instead of silently coercing to the first option.
   const selected = options.includes(value) ? value : "";
 
+  // The `next === selected` guard stays: re-picking what is already selected
+  // fires no mutation, including re-picking "—" on an already-empty row.
   const handleChange = async (next: string) => {
     if (next === selected) return;
     setBusy(true);
@@ -342,9 +349,19 @@ function SelectValueControl({
         onChange={(e) => void handleChange(e.target.value)}
         className={className}
       >
-        <option value="" disabled>
-          — Select —
-        </option>
+        {/* NEO-217: SELECTABLE, not disabled.
+
+            It was disabled, which made it a pure placeholder and meant a
+            League or Era could be set but never un-set — the one value in the
+            list an operator could not get back to was "none of these", which
+            is a legitimate answer for every feature in this control. Picking
+            it now routes through the same `onSave` with `""`, which the server
+            reads as "remove this key" (never as a stored empty string).
+
+            The label is a bare "—" rather than "— Select —": it is a value
+            now, not an instruction, and it matches the "—" placeholder the
+            text rows already use for blank. */}
+        <option value="">—</option>
         {options.map((opt) => (
           <option key={opt} value={opt}>
             {opt}
